@@ -1,5 +1,6 @@
-from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 from torch.nn import CrossEntropyLoss
+
+from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 
 
 class LigerCrossEntropyLoss(CrossEntropyLoss):

@@ -3,7 +3,6 @@ from typing import List
 
 import torch
 import triton
-from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaMLP
 from utils import (
@@ -12,6 +11,8 @@ from utils import (
     _test_memory,
     get_current_file_directory,
 )
+
+from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
 LLAMA_CONFIG = LlamaConfig(
     hidden_size=4096,

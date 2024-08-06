@@ -9,8 +9,9 @@ def test_import_from_root():
 
 
 def test_import_custom_cache_manager():
-    from liger_kernel.triton import apply_liger_triton_cache_manager
     from triton.runtime.cache import get_cache_manager
+
+    from liger_kernel.triton import apply_liger_triton_cache_manager
 
     apply_liger_triton_cache_manager()
     cache_manager = get_cache_manager(key="test_hash")

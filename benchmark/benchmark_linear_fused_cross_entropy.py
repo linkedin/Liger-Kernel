@@ -2,11 +2,12 @@ import os
 
 import torch
 import triton
+from utils import _test_memory, get_current_file_directory
+
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.linear_fused_cross_entropy import (
     LigerLinearFusedCrossEntropyLoss,
 )
-from utils import _test_memory, get_current_file_directory
 
 
 class TorchLinearFusedCE(torch.nn.Module):

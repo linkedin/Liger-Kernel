@@ -2,7 +2,6 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
-from liger_kernel.transformers.linear_fused_cross_entropy import LigerStatelessLCE
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.llama.modeling_llama import (
@@ -13,6 +12,8 @@ from transformers.utils import (
     add_start_docstrings_to_model_forward,
     replace_return_docstrings,
 )
+
+from liger_kernel.transformers.linear_fused_cross_entropy import LigerStatelessLCE
 
 
 @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)

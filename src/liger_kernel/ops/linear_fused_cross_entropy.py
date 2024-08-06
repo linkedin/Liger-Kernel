@@ -5,6 +5,7 @@ Reference: https://github.com/mgmalek/efficient_cross_entropy
 
 import torch
 import triton
+
 from liger_kernel.ops.cross_entropy import element_mul, liger_cross_entropy_kernel
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19

@@ -4,11 +4,6 @@ from test.utils import assert_verbose_allclose, set_seed
 import pytest
 import torch
 from datasets import load_dataset
-from liger_kernel.transformers import (
-    apply_liger_kernel_to_llama,
-    apply_liger_kernel_to_mistral,
-    apply_liger_kernel_to_mixtral,
-)
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
@@ -19,6 +14,12 @@ from transformers import (
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
+
+from liger_kernel.transformers import (
+    apply_liger_kernel_to_llama,
+    apply_liger_kernel_to_mistral,
+    apply_liger_kernel_to_mixtral,
+)
 
 
 @dataclass

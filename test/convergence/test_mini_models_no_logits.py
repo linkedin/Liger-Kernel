@@ -4,7 +4,6 @@ from test.utils import assert_verbose_allclose, set_seed
 import pytest
 import torch
 from datasets import load_dataset
-from liger_kernel.transformers import apply_liger_kernel_to_llama
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
@@ -13,6 +12,8 @@ from transformers import (
     PreTrainedModel,
 )
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
+
+from liger_kernel.transformers import apply_liger_kernel_to_llama
 
 
 @dataclass

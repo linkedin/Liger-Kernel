@@ -1,9 +1,10 @@
 import numpy as np
 import torch
+from torch.nn import CrossEntropyLoss
+
 from liger_kernel.ops.linear_fused_cross_entropy import (
     LigerLinearFusedCrossEntropyFunction,
 )
-from torch.nn import CrossEntropyLoss
 
 
 class LigerLinearFusedCrossEntropyLoss(torch.nn.Module):

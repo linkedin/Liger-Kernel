@@ -3,7 +3,6 @@ from typing import List
 
 import torch
 import triton
-from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from transformers.models.llama.modeling_llama import (
     LlamaRotaryEmbedding,
     apply_rotary_pos_emb,
@@ -14,6 +13,8 @@ from utils import (
     _test_memory,
     get_current_file_directory,
 )
+
+from liger_kernel.transformers.rope import liger_rotary_pos_emb
 
 
 def _get_perf_configs(target: str, ylabel: str, modes: List[str] = ["full"]):

@@ -3,8 +3,9 @@ import os
 import torch
 import torch.nn as nn
 import triton
-from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from utils import _print_memory_banner, _print_speed_banner, _test_memory
+
+from liger_kernel.transformers.rms_norm import LigerRMSNorm
 
 
 class LlamaRMSNorm(nn.Module):

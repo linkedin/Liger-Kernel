@@ -1,10 +1,11 @@
 import pytest
 import torch
-from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from transformers.models.llama.modeling_llama import (
     LlamaRotaryEmbedding,
     apply_rotary_pos_emb,
 )
+
+from liger_kernel.transformers.rope import liger_rotary_pos_emb
 
 SLEEP_SECONDS = 0.1
 

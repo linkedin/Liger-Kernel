@@ -1,8 +1,9 @@
 import pytest
 import torch
-from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaMLP
+
+from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
 LLAMA_CONFIG = LlamaConfig(
     hidden_size=4096,
