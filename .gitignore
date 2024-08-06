@@ -1,0 +1,7 @@
+__pycache__/
+*.egg-info/
+site/
+.cache/
+
+# Misc
+.DS_Store
