@@ -1,0 +1,4 @@
+total_hidden_size,Liger,Hugging Face
+512.0,0.1,0.1
+2048.0,0.1,0.2
+8192.0,0.1,0.5

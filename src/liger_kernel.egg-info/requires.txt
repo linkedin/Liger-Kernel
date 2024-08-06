@@ -1,0 +1,13 @@
+torch==2.1.2.1
+transformers==4.40.1
+datasets==2.19.0
+accelerate==0.29.3
+triton==2.3.0
+
+[dev]
+matplotlib==3.7.2
+flake8==4.0.1.1
+black==24.4.2
+isort==5.13.2
+pre-commit==3.7.1
+torch-tb-profiler==0.4.1

@@ -1,0 +1,10 @@
+# .flake8
+[flake8]
+max-line-length = 120
+exclude = 
+    .git,
+    __pycache__,
+    benchmark_internal/others
+extend-ignore=E501,B006,E731,A002
+per-file-ignores =
+    src/liger_kernel/__init__.py:F401

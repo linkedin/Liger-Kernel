@@ -1,0 +1,27 @@
+apply plugin: 'li-python-lib'
+
+// See http://go/ligradle-python for general information and configuration guide.
+python {
+    version = '3.10'
+}
+
+pyCodeQuality {
+    coverage = false
+    mypy = false
+    flake8 = false
+    // TODO: Disable alwaysRerunTests and displayTaskOutput if you would like
+    //       test output only when results change.
+
+    alwaysRerunTests = false
+    displayTaskOutput = false
+}
+
+
+dependencies {
+    // python spec.product.'lipy-utils'.'lipy-utils'
+    python spec.external."transformers"
+    python spec.external."datasets"
+    python spec.external."accelerate"
+    python spec.external."torch"
+    python spec.external."triton"
+}
