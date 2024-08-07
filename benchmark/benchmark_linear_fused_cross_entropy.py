@@ -134,8 +134,8 @@ def benchmark_memory_cross_entropy_wrapper():
             x_vals=[2**i for i in range(12, 16)],
             xlabel="B x T",
             line_arg="provider",
-            line_vals=["huggingface", "huggingface_ligerce"],
-            line_names=["Hugging Face", "Hugging Face+LigerCE"],
+            line_vals=["liger", "huggingface", "huggingface_ligerce"],
+            line_names=["Liger", "Hugging Face", "Hugging Face+LigerCE"],
             styles=[
                 ("blue", "solid"),
                 ("orange", "solid"),

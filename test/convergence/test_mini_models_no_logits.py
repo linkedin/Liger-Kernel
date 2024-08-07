@@ -141,7 +141,6 @@ def run_mini_model(
     return {"loss": loss_list, "logits": output.logits, "model": model}
 
 
-@pytest.mark.convergence
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
