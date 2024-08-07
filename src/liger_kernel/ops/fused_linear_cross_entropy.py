@@ -14,7 +14,7 @@ from liger_kernel.ops.cross_entropy import element_mul, liger_cross_entropy_kern
 MAX_FUSED_SIZE = 65536 // 2  # manual tune a bit
 
 
-class LigerLinearFusedCrossEntropyFunction(torch.autograd.Function):
+class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, _input, linear, target, ignore_index):
         """

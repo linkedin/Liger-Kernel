@@ -13,7 +13,9 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 
-from liger_kernel.transformers.linear_fused_cross_entropy import LigerStatelessLCE
+from liger_kernel.transformers.fused_linear_cross_entropy import (
+    LigerFusedLinearCrossEntropyLoss,
+)
 
 
 @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
@@ -100,7 +102,7 @@ def lce_forward(
         shift_hidden_states = shift_hidden_states.view(-1, self.config.hidden_size)
         shift_labels = shift_labels.view(-1)
 
-        lce = LigerStatelessLCE()
+        lce = LigerFusedLinearCrossEntropyLoss()
         loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
 
     else:
