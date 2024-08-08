@@ -5,3 +5,7 @@ site/
 
 # Misc
 .DS_Store
+
+# Build
+build/
+dist/
