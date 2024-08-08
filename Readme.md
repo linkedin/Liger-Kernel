@@ -1,1 +1,1 @@
-Liger: Linkedin’s GPU Efficient Runtime
+Liger (Linkedin’s GPU Efficient Runtime)
