@@ -1,0 +1,49 @@
+name: Publish Liger Kernel Nightly
+
+# Though it is name "nightly", we will trigger this workflow on push to the main branch for convenience.
+
+on:
+  push:
+    branches:
+      - main  # Trigger on push to the main branch
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.8'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine wheel
+
+    - name: Update package name and version
+      run: |
+        VERSION=$(python setup.py --version)
+        COMMIT_ID=$(git rev-parse --short HEAD)
+        NEW_VERSION="$VERSION.dev$COMMIT_ID"
+        sed -i "s/name='liger_kernel'/name='liger_kernel_nightly'/" setup.py
+        sed -i "s/version='$VERSION'/version='$NEW_VERSION'/" setup.py
+
+    - name: Build package
+      run: |
+        python setup.py sdist bdist_wheel
+
+    - name: Publish package to PyPI
+      env:
+        TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}
+        TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+      run: |
+        twine upload dist/*
+
+    - name: Create release notes
+      run: |
+        echo "Nightly build published to PyPI with the name 'liger-kernel-nightly'."
