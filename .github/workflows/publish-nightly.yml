@@ -28,8 +28,8 @@ jobs:
     - name: Update package name and version
       run: |
         VERSION=$(python setup.py --version)
-        COMMIT_ID=$(git rev-parse HEAD)
-        NEW_VERSION="$COMMIT_ID"
+        DATE=$(date +%Y%m%d%H%M%S)
+        NEW_VERSION="$VERSION.dev$DATE"
         sed -i "s/name=\"liger_kernel\"/name=\"liger_kernel_nightly\"/" setup.py
         sed -i "s/__version__ = \"$VERSION\"/__version__ = \"$NEW_VERSION\"/" setup.py
 
