@@ -1,0 +1,7 @@
+torch>=2.3.0
+transformers>=4.41.2
+datasets>=2.19.0
+accelerate>=0.29.3
+triton==2.3.0
+trl
+liger-kernel
