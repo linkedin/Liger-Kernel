@@ -7,6 +7,7 @@ def test_import_from_root():
             apply_liger_kernel_to_llama,
             apply_liger_kernel_to_mistral,
             apply_liger_kernel_to_mixtral,
+            apply_liger_kernel_to_gemma,
         )
     except Exception:
         pytest.fail("Import kernel patch from root fails")
