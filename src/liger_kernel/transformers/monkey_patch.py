@@ -118,7 +118,7 @@ def apply_liger_kernel_to_gemma(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
     """
-    from transformers.models.gemma import moodeling_gemma
+    from transformers.models.gemma import modeling_gemma
 
     if rope:
         modeling_gemma.apply_rotary_pos_emb = liger_rotary_pos_emb
