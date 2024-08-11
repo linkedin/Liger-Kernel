@@ -6,13 +6,7 @@ import transformers
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 import time
 
-# apply_liger_kernel_to_llama(
-#     rms_norm=False,
-#     rope=False,
-#     swiglu=False,
-#     cross_entropy=False,
-#     fused_linear_cross_entropy=False,
-# )
+apply_liger_kernel_to_llama()
 
 # model = transformers.AutoModelForCausalLM.from_pretrained(
 #     "/shared/public/models/Meta-Llama-3-8B",
@@ -78,11 +72,11 @@ class FixedLengthTokenDataset(Dataset):
 # Parameters
 vocab_size = 128256  # Example vocabulary size, can be adjusted
 num_sequences = 400  # Number of sequences in the dataset
-fixed_length = 1024  # Set the desired fixed length in tokens
+fixed_length = 2048  # Set the desired fixed length in tokens
 
 # Create the dataset and dataloader
 dataset = FixedLengthTokenDataset(vocab_size=vocab_size, num_sequences=num_sequences, fixed_length=fixed_length)
-dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+dataloader = DataLoader(dataset, batch_size=8, shuffle=True)
 
 
 import torch
@@ -100,7 +94,8 @@ model = transformers.AutoModelForCausalLM.from_pretrained(
     torch_dtype=torch.bfloat16,
 ).to("cuda")
 
-#  model = torch.compile(model, mode="reduce-overhead")
+model.gradient_checkpointing_enable()
+model = torch.compile(model)
 
 # Define optimizer
 optimizer = SGD(model.parameters(), lr=5e-5)
