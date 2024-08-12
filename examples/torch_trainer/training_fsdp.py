@@ -3,10 +3,34 @@ from dataclasses import dataclass, field
 import datasets
 import torch
 import transformers
-from liger_kernel.transformers import apply_liger_kernel_to_llama
 import time
+import functools
 
+from liger_kernel.transformers import apply_liger_kernel_to_llama
 from torch.utils.data import Dataset, DataLoader
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+import torch.distributed as dist
+from torch.distributed import init_process_group
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from torch.optim import AdamW, SGD
+from transformers.models.llama import modeling_llama
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+    CheckpointImpl,
+    apply_activation_checkpointing,
+    checkpoint_wrapper,
+)
+
+
+# Initialize distributed environment
+dist.init_process_group(backend="nccl")
+device_id = dist.get_rank()
+torch.cuda.set_device(device_id)
+
+# # Initialize FSDP parameters
+# fsdp_params = {
+#     "cpu_offload": CPUOffload(offload_params=True),
+#     "mixed_precision": MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16),
+# }
 
 class FixedLengthTokenDataset(Dataset):
     def __init__(self, vocab_size, num_sequences, fixed_length=128):
@@ -29,15 +53,10 @@ class FixedLengthTokenDataset(Dataset):
             'labels': labels
         }
 
-
-# apply_liger_kernel_to_llama(
-#     rms_norm=False,
-#     rope=False,
-#     swiglu=False,
-#     cross_entropy=False,
-#     fused_linear_cross_entropy=True,
-# )
-
+apply_liger_kernel_to_llama(
+    cross_entropy=False,
+    fused_linear_cross_entropy=True
+)
 
 tokenizer = transformers.AutoTokenizer.from_pretrained(
     "/shared/public/models/Meta-Llama-3-8B",
@@ -55,24 +74,47 @@ dataset = FixedLengthTokenDataset(vocab_size=vocab_size, num_sequences=num_seque
 dataloader = DataLoader(dataset, batch_size=8, shuffle=True)
 
 
-import torch
-from torch.utils.data import DataLoader
-from torch.optim import AdamW, SGD
-import transformers
-
-# Assuming the dataset and dataloader are already created as in the previous example
-
 # Initialize the model
 model = transformers.AutoModelForCausalLM.from_pretrained(
     "/shared/public/models/Meta-Llama-3-8B",
     use_cache=False,
     attn_implementation="sdpa",
     torch_dtype=torch.bfloat16,
-).to("cuda")
+)
 
-model.gradient_checkpointing_enable()
+
 # model = torch.compile(model)
-# model.model.compile()
+model.model.compile()
+
+wrap_policy = functools.partial(
+    transformer_auto_wrap_policy,
+    # Transformer layer class to wrap
+    transformer_layer_cls=set([modeling_llama.LlamaDecoderLayer]),
+)
+
+# Wrap the model with FSDP
+model = FSDP(
+    model,
+    auto_wrap_policy=wrap_policy,
+    device_id=dist.get_rank(),
+    use_orig_params=True,
+)
+
+
+# act checkpointing
+# https://sourcegraph.com/github.com/huggingface/accelerate/-/blob/src/accelerate/accelerator.py?L1493
+
+
+apply_activation_checkpointing(
+    model,
+    checkpoint_wrapper_fn=functools.partial(
+        checkpoint_wrapper,
+        checkpoint_impl=CheckpointImpl.NO_REENTRANT,
+    ),
+    auto_wrap_policy=wrap_policy,
+)
+
+
 
 # Define optimizer
 optimizer = AdamW(model.parameters(), lr=5e-5)
@@ -114,16 +156,21 @@ for step, batch in enumerate(dataloader):
     total_tokens += input_ids.numel()
 
     # Print statistics every few steps
-    if step % 10 == 0:  # Adjust print frequency if necessary
+    if step % 10 == 0 and device_id == 0:  # Adjust print frequency if necessary
         elapsed_time = time.time() - step_start_time
         throughput = input_ids.numel() / elapsed_time
         mem_allocated = torch.cuda.max_memory_allocated('cuda') / (1024 * 1024)  # in MB
         mem_reserved = torch.cuda.max_memory_reserved('cuda') / (1024 * 1024)    # in MB
 
-        print(f"Step {step}, Loss: {loss.item():.4f}, Step Time: {step_time:.4f}s, "
+        print(f"[Rank {device_id}] Step {step}, Loss: {loss.item():.4f}, Step Time: {step_time:.4f}s, "
             f"Throughput: {throughput:.2f} tokens/s, "
             f"Memory Allocated: {mem_allocated:.2f} MB, "
             f"Memory Reserved: {mem_reserved:.2f} MB")
 
 # Print total time and throughput
 print("Single pass through the dataset completed.")
+
+# Shutdown the process group
+dist.destroy_process_group()
+
+# [Rank 0] Step 20, Loss: 11.8414, Step Time: 8.2615s, Throughput: 3966.34 tokens/s, Memory Allocated: 57967.86 MB, Memory Reserved: 77476.00 MB
