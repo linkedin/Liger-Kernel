@@ -53,13 +53,13 @@ class FixedLengthTokenDataset(Dataset):
             'labels': labels
         }
 
-apply_liger_kernel_to_llama(
-    rms_norm=True,
-    rope=True,
-    swiglu=True,
-    cross_entropy=False,
-    fused_linear_cross_entropy=True
-)
+# apply_liger_kernel_to_llama(
+#     rms_norm=True,
+#     rope=True,
+#     swiglu=True,
+#     cross_entropy=False,
+#     fused_linear_cross_entropy=True
+# )
 
 tokenizer = transformers.AutoTokenizer.from_pretrained(
     "/shared/public/models/Meta-Llama-3-8B",
@@ -70,11 +70,11 @@ tokenizer = transformers.AutoTokenizer.from_pretrained(
 # Parameters
 vocab_size = 128256  # Example vocabulary size, can be adjusted
 num_sequences = 400  # Number of sequences in the dataset
-fixed_length = 1024 # Set the desired fixed length in tokens
+fixed_length = 128 # Set the desired fixed length in tokens
 
 # Create the dataset and dataloader
 dataset = FixedLengthTokenDataset(vocab_size=vocab_size, num_sequences=num_sequences, fixed_length=fixed_length)
-dataloader = DataLoader(dataset, batch_size=8, shuffle=True)
+dataloader = DataLoader(dataset, batch_size=48, shuffle=True)
 
 
 # Initialize the model
@@ -86,8 +86,8 @@ model = transformers.AutoModelForCausalLM.from_pretrained(
 )
 
 
-# model.compile()
-model.model.compile()
+model.compile()
+# model.model.compile()
 
 wrap_policy = functools.partial(
     transformer_auto_wrap_policy,

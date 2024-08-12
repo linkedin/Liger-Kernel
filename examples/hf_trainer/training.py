@@ -7,7 +7,14 @@ import trl
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from profiler import ProfilerCallback
 import time
+from efficiency import EfficiencyCallback
+import random
 
+def set_seed(seed: int = 11):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    transformers.set_seed(seed)  # This sets the seed for transformers-specific code.
 
 @dataclass
 class CustomArguments:
@@ -17,59 +24,43 @@ class CustomArguments:
     liger_kernel: bool = field(default=False)
 
 
+QUESTION = "<Question>"
+CHOICES = "<Choices>"
+ANSWER = "<Answer>"
+
 def formatting_func(example):
-    output = ""
-    output += f"TEXT: {example['text']} "
 
-    for i in range(len(example["summary"])):
-        output += f"SUMMARY:{i} {example['summary'][i]} "
-
-    return [output]
-
-
-class EfficiencyCallback(transformers.TrainerCallback):
-
-    def __init__(self, n_warmup_steps=2):
-        self.n_warmup_steps = n_warmup_steps
-
-
-    def on_train_begin(self, args, state, control, **kwargs):
-        print("warm up step starts...")
-
-    def on_step_end(
-        self,
-        args,
-        state,
-        control,
-        **kwargs,
-    ):
-        
-        if state.global_step == self.n_warmup_steps:
-            print("warm up step ends...")
-            self.start_time = time.time()
-            torch.cuda.reset_peak_memory_stats()
-
-    def on_train_end(self, args, state, control, **kwargs):
-        """
-        Event called at the end of training.
-        """
-        print(f"Training took {time.time() - self.start_time:.2f} seconds")
-        print(f"Peak memory allocated: {torch.cuda.max_memory_allocated() / 1024 ** 2:.2f} MB")
-        print(f"Peak memory reserved: {torch.cuda.max_memory_reserved() / 1024 ** 2:.2f} MB")
-
+    output_texts = []
+    
+    for i in range(len(example['question'])):
+        choices = ""
+        for j in range(len(example["choices"][i])):
+            choices += f"{j+1}. {example['choices'][i][j]}; "
+        s = "Below is a question and multiple choice answers, choices separated by a semicolon. Please select the best answer for the question. "
+        s += f"{QUESTION}{example['question'][i]} "
+        s += f"{CHOICES}{choices} "
+        s += f"{ANSWER}{example['answer'][i]}"
+        output_texts.append(s)
+    
+    return output_texts
 
 
 def main():
+    set_seed()
+
     parser = transformers.HfArgumentParser(
         (transformers.TrainingArguments, CustomArguments)
     )
     training_args, custom_args = parser.parse_args_into_dataclasses()
 
     if custom_args.liger_kernel:
-        apply_liger_kernel_to_llama()
+        apply_liger_kernel_to_llama(
+            cross_entropy=False,
+            fused_linear_cross_entropy=True,
+        )
 
-    dataset = datasets.load_dataset(path=custom_args.data_path)
-    dataset_train, dataset_eval = dataset["train"], dataset["test"]
+    dataset = datasets.load_from_disk(custom_args.data_path)
+    dataset_train, dataset_eval = dataset["auxiliary_train"], dataset["test"]
 
     model = transformers.AutoModelForCausalLM.from_pretrained(
         custom_args.model_path,
@@ -92,7 +83,7 @@ def main():
         formatting_func=formatting_func,
         max_seq_length=custom_args.max_seq_length,
         args=training_args,
-        callbacks=[EfficiencyCallback()],
+        callbacks=[EfficiencyCallback(), transformers.integrations.MLflowCallback(),],
     )
     trainer.train()
 
