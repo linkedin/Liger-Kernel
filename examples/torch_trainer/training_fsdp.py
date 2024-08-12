@@ -54,6 +54,9 @@ class FixedLengthTokenDataset(Dataset):
         }
 
 apply_liger_kernel_to_llama(
+    rms_norm=True,
+    rope=True,
+    swiglu=True,
     cross_entropy=False,
     fused_linear_cross_entropy=True
 )
@@ -67,7 +70,7 @@ tokenizer = transformers.AutoTokenizer.from_pretrained(
 # Parameters
 vocab_size = 128256  # Example vocabulary size, can be adjusted
 num_sequences = 400  # Number of sequences in the dataset
-fixed_length = 2048  # Set the desired fixed length in tokens
+fixed_length = 1024 # Set the desired fixed length in tokens
 
 # Create the dataset and dataloader
 dataset = FixedLengthTokenDataset(vocab_size=vocab_size, num_sequences=num_sequences, fixed_length=fixed_length)
@@ -83,7 +86,7 @@ model = transformers.AutoModelForCausalLM.from_pretrained(
 )
 
 
-# model = torch.compile(model)
+# model.compile()
 model.model.compile()
 
 wrap_policy = functools.partial(
@@ -129,6 +132,9 @@ for step, batch in enumerate(dataloader):
     # Track step start time
     step_start_time = time.time()
 
+    # Reset memory
+    torch.cuda.reset_peak_memory_stats()
+
     # Move batch to GPU
     input_ids = batch['input_ids'].to('cuda')
     attention_mask = batch['attention_mask'].to('cuda')
@@ -156,7 +162,7 @@ for step, batch in enumerate(dataloader):
     total_tokens += input_ids.numel()
 
     # Print statistics every few steps
-    if step % 10 == 0 and device_id == 0:  # Adjust print frequency if necessary
+    if step % 2 == 0 and device_id == 0:  # Adjust print frequency if necessary
         elapsed_time = time.time() - step_start_time
         throughput = input_ids.numel() / elapsed_time
         mem_allocated = torch.cuda.max_memory_allocated('cuda') / (1024 * 1024)  # in MB
