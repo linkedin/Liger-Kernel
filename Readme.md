@@ -1,4 +1,4 @@
-# 🦁⚡ Liger Kernel
+# Liger Kernel
 
 **Liger Kernel** is a collection of Triton-native kernels designed specifically for LLM training. It aims to be **performant**, **correct**, and **lightweight**. We welcome contributions from the community to help us enhance and grow this project.
 
