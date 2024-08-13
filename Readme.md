@@ -24,7 +24,7 @@ Gain +20% throughput and -60% memory usage. Achieve longer context lengths and l
 | ![Speed up](docs/images/e2e-tps.png) | ![Memory](docs/images/e2e-memory.png) |
 
 > **Note:**  
-> 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1  
+> 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s. 
 > 2. HuggingFace models start to OOM at 4K context length, whereas Liger Kernel scales up to 16K.  
 > 3. **Fused Linear Cross Entropy Loss** is enabled to significantly reduce memory usage.
 
@@ -110,7 +110,7 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile.
 
 > **Note:**  
 > 1. **Fused Linear Cross Entropy Loss** is enabled.  
-> 2. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Seq Len = 4096, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1  
+> 2. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Seq Len = 4096, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
 > 3. Tested on torch `2.5.0.dev20240731+cu118`
 
 ### 2. 🌩️ Lightning Thunder
