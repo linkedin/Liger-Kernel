@@ -3,7 +3,7 @@
 **Liger Kernel** is a collection of Triton-native kernels designed specifically for LLM training. It aims to be **performant**, **correct**, and **lightweight**. We welcome contributions from the community to help us enhance and grow this project.
 
 ### ✨ Key Features
-- **🚀 Performant:** All kernels are written in OpenAI Triton with optimized tuning, which increases multi-GPU training throughput by 20% and reduces memory usage by 60%.
+- **🚀 Performant:** All kernels are written in OpenAI Triton with optimized tuning, increasing multi-GPU training throughput by 20% and reducing memory usage by 60%.
 - **✅ Correct:** Each kernel undergoes rigorous unit and convergence testing to ensure accuracy.
 - **🌱 Lightweight:** The kernels have minimal dependencies, requiring only Torch and Triton—no extra libraries needed!
 
@@ -26,7 +26,7 @@ Gain +20% throughput and -60% memory usage. Achieve longer context lengths and l
 > **Note:**  
 > 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s. 
 > 2. HuggingFace models start to OOM at 4K context length, whereas Liger Kernel scales up to 16K.  
-> 3. **Fused Linear Cross Entropy Loss** is enabled to reduce memory usage significantly.
+> 3. **Fused Linear Cross Entropy Loss** is enabled to significantly reduce memory usage.
 
 ### ✨ Utilize Individual Kernels or Enhance Existing Models
 
