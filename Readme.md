@@ -3,7 +3,7 @@
 **Liger Kernel** is a collection of Triton-native kernels designed specifically for LLM training. It aims to be **performant**, **correct**, and **lightweight**. We welcome contributions from the community to help us enhance and grow this project.
 
 ### ✨ Key Features
-- **🚀 Performant:** All kernels are written in OpenAI Triton with optimized tuning, increasing multi-GPU training throughput by 20% and reducing memory usage by 60%.
+- **🚀 Performant:** All kernels are written in OpenAI Triton with optimized tuning, which increases multi-GPU training throughput by 20% and reduces memory usage by 60%.
 - **✅ Correct:** Each kernel undergoes rigorous unit and convergence testing to ensure accuracy.
 - **🌱 Lightweight:** The kernels have minimal dependencies, requiring only Torch and Triton—no extra libraries needed!
 
@@ -26,7 +26,7 @@ Gain +20% throughput and -60% memory usage. Achieve longer context lengths and l
 > **Note:**  
 > 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s. 
 > 2. HuggingFace models start to OOM at 4K context length, whereas Liger Kernel scales up to 16K.  
-> 3. **Fused Linear Cross Entropy Loss** is enabled to significantly reduce memory usage.
+> 3. **Fused Linear Cross Entropy Loss** is enabled to reduce memory usage significantly.
 
 ### ✨ Utilize Individual Kernels or Enhance Existing Models
 
@@ -91,7 +91,7 @@ import torch
 
 model = nn.Linear(128, 256).to("cuda")
 
-# LigerFusedLinearCrossEntropyLoss fuses linear and cross entropy layer together and performs chunk-by-chunk computation to reduce memory
+# LigerFusedLinearCrossEntropyLoss fuses linear and cross entropy layers together and performs chunk-by-chunk computation to reduce memory
 loss_fn = LigerFusedLinearCrossEntropyLoss()
 
 input = torch.randn(4, 128, requires_grad=True, device="cuda")
@@ -108,7 +108,7 @@ loss.backward()
 
 ### 1. ⚡ Torch Compile
 
-Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile. In the following example, Liger Kernel can further optimize on top of Torch Compile, reducing the memory by more than half.
+Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile. In the following example, Liger Kernel can be further optimized on top of Torch Compile, reducing the memory by more than half.
 
 | Configuration                  | ⚡ Throughput (tokens/sec) | 💾 Memory Reserved (MB) |
 |--------------------------------|----------------------------|-------------------------|
