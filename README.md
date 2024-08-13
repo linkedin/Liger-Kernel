@@ -168,11 +168,11 @@ WIP
 
 ## 🤝 Contributing
 
-WIP
+[CONTRIBUTING GUIDE](https://github.com/linkedin/Liger-Kernel/blob/main/CONTRIBUTING.md)
 
 ## 📜 License
 
-WIP
+[BSD 2-CLAUSE](https://github.com/linkedin/Liger-Kernel/blob/main/LICENSE)
 
 ## Citation
 
