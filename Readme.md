@@ -78,6 +78,10 @@ apply_liger_kernel_to_llama()
 model = transformers.AutoModelForCausalLM.from_pretrained("<some llama model>")
 ```
 
+[TODO] huggingface trainer
+[TODO] lightning trainer
+
+
 ### 2. 🧩 Compose Your Own Model
 
 ```python
@@ -96,6 +100,9 @@ target = torch.empty(4, dtype=torch.long, device="cuda").random_(256)
 loss = loss_fn(model.weight, input, target)
 loss.backward()
 ```
+
+[TODO] multi-head llama3 model
+[TODO] large vocab model
 
 ## ⚙️ Note on ML Compiler
 
