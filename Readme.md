@@ -91,7 +91,7 @@ import torch
 
 model = nn.Linear(128, 256).to("cuda")
 
-# LigerFusedLinearCrossEntropyLoss fuses linear and cross entropy layer together and performs chunk-by-chunk computation to reduce memory
+# LigerFusedLinearCrossEntropyLoss fuses linear and cross entropy layers together and performs chunk-by-chunk computation to reduce memory
 loss_fn = LigerFusedLinearCrossEntropyLoss()
 
 input = torch.randn(4, 128, requires_grad=True, device="cuda")
@@ -108,7 +108,7 @@ loss.backward()
 
 ### 1. ⚡ Torch Compile
 
-Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile. In the following example, Liger Kernel can further optimize on top of Torch Compile, reducing the memory by more than half.
+Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile. In the following example, Liger Kernel can be further optimized on top of Torch Compile, reducing the memory by more than half.
 
 | Configuration                  | ⚡ Throughput (tokens/sec) | 💾 Memory Reserved (MB) |
 |--------------------------------|----------------------------|-------------------------|
