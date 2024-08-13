@@ -108,7 +108,7 @@ loss.backward()
 
 ### 1. ⚡ Torch Compile
 
-Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile. In the following example, Liger Kernel can further optimize on top of Torch Compile, reducing the memory by more than half.
+Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile. In the following example, Liger Kernel can be further optimized on top of Torch Compile, reducing the memory by more than a half.
 
 | Configuration                  | ⚡ Throughput (tokens/sec) | 💾 Memory Reserved (MB) |
 |--------------------------------|----------------------------|-------------------------|
