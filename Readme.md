@@ -147,31 +147,21 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile.
 
 
 ### Kernels
-Here’s the table with the description and API columns swapped:
 
----
 
-| **Kernel**                | **Description**                                                | **API**                                                     | **Benchmark (A100)**                                           |
-|----------------------------|----------------------------------------------------------------|-------------------------------------------------------------|--------------------------------------------------------|
-| RMSNorm                    | TBA                                                            | `liger_kernel.transformers.LigerRMSNorm`                    | [time](./benchmark/rms_norm_speed/) / [memory](./benchmark/rms_norm_memory/)                   |
-| RoPE                       | TBA                                                            | `liger_kernel.transformers.liger_rotary_pos_emb`            | [time](./benchmark/rope_speed/) / [memory](./benchmark/rope_memory/)                        |
-| SwiGLU                     | TBA                                                            | `liger_kernel.transformers.LigerSwiGLUMLP`                  | [time](./benchmark/swiglu_speed/) / [memory](./benchmark/swiglu_memory/)                      |
-| CrossEntropy               | Liger Cross Entropy Loss computes both loss and gradient in the forward pass with in-place replacement of input to reduce peak memory usage. Only hard labels with mean reduction are supported. See the [torch documentation](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) for more details. | `liger_kernel.transformers.LigerCrossEntropyLoss`           | [time](./benchmark/cross_entropy_speed/) / [memory](./benchmark/cross_entropy_memory/)               |
-| FusedLinearCrossEntropy    | This variant further reduces peak memory usage by fusing the model's final output head layer with the CE loss and chunking the input for block-wise loss and gradient calculation. | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`| [time](./benchmark/fused_linear_cross_entropy_speed/) / [memory](./benchmark/fused_linear_cross_entropy_memory/)  |
 
----
+| **Kernel**                | **API**                                                     | **Description** |
+|----------------------------|-------------------------------------------------------------|-----------------|
+| RMSNorm                    | `liger_kernel.transformers.LigerRMSNorm`                    | [RMSNorm Paper](https://arxiv.org/pdf/1910.07467) |
+| RoPE                       | `liger_kernel.transformers.liger_rotary_pos_emb`            | [RoPE Paper](https://arxiv.org/pdf/2104.09864)    |
+| SwiGLU                     | `liger_kernel.transformers.LigerSwiGLUMLP`                  | [SwiGLU Paper](https://arxiv.org/pdf/2002.05202)  |
+| CrossEntropy               | `liger_kernel.transformers.LigerCrossEntropyLoss`           | [PyTorch CrossEntropyLoss Documentation](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) |
+| FusedLinearCrossEntropy    | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`| Inspired by [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy), with additional optimizations |
 
-Let me know if you need any further adjustments!
 
 ## Roadmap
 
 ## Contributing
-
-## Acknowledgements
-
-- Triton
-- CUDA Mode
-- Unsloth
 
 ## License
 
