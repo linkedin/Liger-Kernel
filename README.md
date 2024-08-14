@@ -1,12 +1,12 @@
-# Liger Kernel
+# 🦁 Liger Kernel
 
 [![Downloads](https://static.pepy.tech/badge/liger-kernel)](https://pepy.tech/project/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel.svg)](https://badge.fury.io/py/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel-nightly.svg)](https://badge.fury.io/py/liger-kernel-nightly)
 
-**Liger Kernel** is a collection of Triton-native kernels designed specifically for LLM training. It aims to be **ease of use**, **exact**, **time- and memory-efficient**, and **lightweight**. We welcome contributions from the community to gather the best kernels for LLM training.
+**Liger (Linkedin GPU Efficient Runtime)Kernel** is a collection of Triton-native kernels designed specifically for LLM training. It aims to be **ease of use**, **exact**, **time- and memory-efficient**, and **lightweight**. We welcome contributions from the community to gather the best kernels for LLM training.
 
 ## 🌟 Overview
 
-### Supercharge Your Model with Liger Kernel
+### 🔌 Supercharge Your Model with Liger Kernel
 
 Gain +20% throughput and reduce memory usage by 60%. Achieve longer context lengths and larger batch sizes. It’s also useful if you want to scale up your model to multi-head training or large vocabulary sizes.
 
@@ -16,10 +16,10 @@ Gain +20% throughput and reduce memory usage by 60%. Achieve longer context leng
 
 > **Note:**  
 > 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s. 
-> 2. HuggingFace models start to OOM at 4K context length, whereas Liger Kernel scales up to 16K.  
+> 2. HuggingFace models start to OOM at a 4K context length, whereas Liger Kernel scales up to 16K.  
 > 3. **Fused Linear Cross Entropy Loss** is enabled to significantly reduce memory usage.
 
-### ✨ Utilize Individual Kernels or Enhance Existing Models
+### ✨ Patch HF model with one line or take individual kernels
 
 | 🛠️ Patch Existing HF Model               | 🧩 Compose Your Own Model       |
 |--------------------------|-------------------------|
