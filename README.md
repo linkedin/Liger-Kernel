@@ -64,6 +64,8 @@ $ pip install liger-kernel-nightly
 
 ### 1. 🛠️ Patch Existing Hugging Face Models
 
+Using [patching APIs](#patching), you can swap Hugging Face model with optimized Liger Kernels.
+
 ```python
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from transformers import Trainer
@@ -84,6 +86,8 @@ apply_liger_kernel_to_llama()
 
 
 ### 2. 🧩 Compose Your Own Model
+
+You can take individual [kernels](#-kernels) to compose your models.
 
 ```python
 from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
