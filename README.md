@@ -158,7 +158,7 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile.
 | Mixtral     | `liger_kernel.transformers.apply_liger_kernel_to_mixtral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss        |
 
 
-### 🧩 Kernels
+### Kernels
 
 | **Kernel**                | **API**                                                     | **Description** |
 |---------------------------|-------------------------------------------------------------|-----------------|
