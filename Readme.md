@@ -4,7 +4,8 @@
 [![Downloads](https://static.pepy.tech/badge/liger-kernel/week)](https://pepy.tech/project/liger-kernel) -->
 
 
-[![Downloads](https://static.pepy.tech/badge/liger-kernel)](https://pepy.tech/project/liger-kernel) ![PyPI - Version](https://img.shields.io/pypi/v/liger-kernel?label=liger-kernel) ![PyPI - Version](https://img.shields.io/pypi/v/liger-kernel-nightly?label=liger-kernel-nightly&link=https%3A%2F%2Fpypi.org%2Fproject%2Fliger-kernel-nightly)
+[![Downloads](https://static.pepy.tech/badge/liger-kernel)](https://pepy.tech/project/liger-kernel) ![PyPI - Version](https://img.shields.io/pypi/v/liger-kernel?label=liger-kernel) <img alt="PyPI - Version" src="https://img.shields.io/pypi/v/liger-kernel-nightly?label=liger-kernel-nightly&link=https%3A%2F%2Fpypi.org%2Fproject%2Fliger-kernel-nightly">
+
 
 
 
