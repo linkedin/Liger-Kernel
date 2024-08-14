@@ -28,7 +28,7 @@ Gain +20% throughput and reduce memory usage by 60%. Achieve longer context leng
 ### ✨ Key Features
 
 - **🔧 Ease of use:** Simply patch your Hugging Face model with one line of code, or compose your own model using our kernels.
-- **🚀 Time- and memory-efficient:** In the same spirit as Flash-Attn, but for layers like RMSNorm, RoPE, CrossEntropy, and more—not just attention! Increases multi-GPU training throughput by 20% and reduces memory usage by 60%.
+- **🚀 Time- and memory-efficient:** In the same spirit as Flash-Attn, but for layers like RMSNorm, RoPE, CrossEntropy, and more—not just attention! Increases multi-GPU training throughput by 20% and reduces memory usage by 60% with kernel fusion, in-place tensor replacement, and chunking techniques.
 - **✅ Exact:** Exact (fwd + bwd) kernels—no approximations. Each kernel undergoes rigorous unit and convergence testing to ensure accuracy.
 - **🌱 Lightweight:** The kernels have minimal dependencies, requiring only Torch and Triton—no extra libraries needed! Say goodbye to dependency headaches!
 - **💻 Multi-GPU supported:** Compatible with multi-GPU setups (PyTorch FSDP and DeepSpeed).
