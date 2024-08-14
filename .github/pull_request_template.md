@@ -11,3 +11,6 @@ This is an optional section; is there anything specific that reviewers should be
 
 Complete the following tasks before sending your PR, and replace `[ ]` with
 `[x]` to indicate you have done them.
+- [ ] run `make test` to ensure correctness
+- [ ] run `make checkstyle` to ensure code style
+- [ ] run `make test-convergence` to ensure convergence
