@@ -1,23 +1,14 @@
 # Liger Kernel
 
-**Liger Kernel** is a collection of Triton-native kernels designed specifically for LLM training. It aims to be **performant**, **correct**, and **lightweight**. We welcome contributions from the community to help us enhance and grow this project.
+[![Downloads](https://static.pepy.tech/badge/liger-kernel)](https://pepy.tech/project/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel.svg)](https://badge.fury.io/py/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel-nightly.svg)](https://badge.fury.io/py/liger-kernel-nightly)
 
-### ✨ Key Features
-- **🚀 Performant:** All kernels are written in OpenAI Triton with optimized tuning, increasing multi-GPU training throughput by 20% and reducing memory usage by 60%.
-- **✅ Correct:** Each kernel undergoes rigorous unit and convergence testing to ensure accuracy.
-- **🌱 Lightweight:** The kernels have minimal dependencies, requiring only Torch and Triton—no extra libraries needed!
-
-### 🎯 Target Audiences
-
-- **Researchers**: Looking to compose models using efficient and reliable kernels for frontier experiments.
-- **ML Practitioners**: Focused on maximizing GPU training efficiency with optimal, high-performance kernels.
-- **Curious Novices**: Eager to learn how to write reliable Triton kernels to enhance training efficiency.
+**Liger Kernel** is a collection of Triton-native kernels designed specifically for LLM training. It aims to be **ease of use**, **exact**, **time- and memory-efficient**, and **lightweight**. We welcome contributions from the community to gather the best kernels for LLM training.
 
 ## 🌟 Overview
 
 ### Supercharge Your Model with Liger Kernel
 
-Gain +20% throughput and -60% memory usage. Achieve longer context lengths and larger batch sizes.
+Gain +20% throughput and reduce memory usage by 60%. Achieve longer context lengths and larger batch sizes. It’s also useful if you want to scale up your model to multi-head training or large vocabulary sizes.
 
 | ⚡ Speed Up                 | 💾 Memory Reduction        |
 |--------------------------|-------------------------|
@@ -34,16 +25,20 @@ Gain +20% throughput and -60% memory usage. Achieve longer context lengths and l
 |--------------------------|-------------------------|
 | ![Patch](docs/images/patch.gif) | ![Compose](docs/images/compose.gif) |
 
-## 🚀 Features
+### ✨ Key Features
 
-- +20% throughput and -60% memory usage for multi-GPU training.
-- Unlock large vocabulary sizes, long contexts, or multi-head training.
-- Minimal dependencies—only `torch` and `triton` are required.
-- Hugging Face model compatible—speed up your models with just one line of code.
-- Forward and backward passes implemented.
-- 0% loss in correctness—kernels are validated through robust unit and convergence tests.
-- Compatible with multi-GPU setups (PyTorch FSDP and DeepSpeed).
-- Seamless integration with Torch Compile.
+- **🔧 Ease of use:** Simply patch your Hugging Face model with one line of code, or compose your own model using our kernels.
+- **🚀 Time- and memory-efficient:** In the same spirit as Flash-Attn, but for layers like RMSNorm, RoPE, CrossEntropy, and more—not just attention! Increases multi-GPU training throughput by 20% and reduces memory usage by 60%.
+- **✅ Exact:** Exact (fwd + bwd) kernels—no approximations. Each kernel undergoes rigorous unit and convergence testing to ensure accuracy.
+- **🌱 Lightweight:** The kernels have minimal dependencies, requiring only Torch and Triton—no extra libraries needed! Say goodbye to dependency headaches!
+- **💻 Multi-GPU supported:** Compatible with multi-GPU setups (PyTorch FSDP and DeepSpeed).
+
+### 🎯 Target Audiences
+
+- **Researchers**: Looking to compose models using efficient and reliable kernels for frontier experiments.
+- **ML Practitioners**: Focused on maximizing GPU training efficiency with optimal, high-performance kernels.
+- **Curious Novices**: Eager to learn how to write reliable Triton kernels to enhance training efficiency.
+
 
 ## 🔧 Installation
 
@@ -73,13 +68,19 @@ $ pip install liger-kernel-nightly
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from transformers import Trainer
 
+
+model = transformers.AutoModelForCausalLM.from_pretrained("<some llama model>")
+
 # By adding this line, it automatically monkey patches the model with the optimized kernels
 apply_liger_kernel_to_llama() 
-model = transformers.AutoModelForCausalLM.from_pretrained("<some llama model>")
 ```
 
-[TODO] huggingface trainer
-[TODO] lightning trainer
+
+
+| **Example**       | **Description**                                                  |
+|------------------------|------------------------------------------------------------------|
+| **Hugging Face Trainer** | [TODO] Add example for using Hugging Face Trainer with Liger Kernel |
+| **Lightning Trainer**   | [TODO] Add example for using Lightning Trainer with Liger Kernel  |
 
 
 ### 2. 🧩 Compose Your Own Model
@@ -101,8 +102,10 @@ loss = loss_fn(model.weight, input, target)
 loss.backward()
 ```
 
-[TODO] multi-head llama3 model
-[TODO] large vocab model
+| **Example**       | **Description**                                                  |
+|------------------------|------------------------------------------------------------------|
+| **Multi-head Trainer** | [TODO] Add example for medusa training |
+
 
 ## ⚙️ Note on ML Compiler
 
