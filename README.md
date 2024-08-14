@@ -2,9 +2,7 @@
 
 [![Downloads](https://static.pepy.tech/badge/liger-kernel)](https://pepy.tech/project/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel.svg)](https://badge.fury.io/py/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel-nightly.svg)](https://badge.fury.io/py/liger-kernel-nightly)
 
-**Liger (Linkedin GPU Efficient Runtime) Kernel** is a collection of Triton-native kernels designed specifically for LLM training. It aims to be **ease of use**, **exact**, **time- and memory-efficient**, and **lightweight**. We welcome contributions from the community to gather the best kernels for LLM training.
-
-
+**Liger (Linkedin GPU Efficient Runtime) Kernel** is a collection of Triton-native kernels designed specifically for LLM training. We welcome contributions from the community to gather the best kernels for LLM training.
 
 ## 🌟 Overview
 
