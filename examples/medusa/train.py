@@ -37,7 +37,8 @@ from torch.nn import functional as F
 import os
 
 from liger_kernel.transformers.medusa.medusa_utils import add_medusa_heads
-
+from liger_kernel.transformers import apply_liger_kernel_to_llama
+from callback import EfficiencyCallback
 
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
@@ -103,7 +104,7 @@ class TrainingArguments(transformers.TrainingArguments):
         metadata={"help": "If train medusa heads only, default is False, the whole model will be trained"}, 
     )
     with_liger: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "If apply liger kernel to the model."}, 
     )
 
@@ -169,7 +170,7 @@ def preprocess(
 
     # Mask targets. Only compute loss on the assistant outputs.
     for conv_index, (conversation, target, prompt) in enumerate(zip(conversations, targets, prompts)):
-        print(conv_index)
+        # print(conv_index)
         for turn in conversation:
             if turn["role"] == "assistant":
                 content = turn["content"]
@@ -318,9 +319,13 @@ def train():
         torch_dtype=torch.bfloat16,
     )
 
+    if training_args.with_liger is True:
+        apply_liger_kernel_to_llama()
+
     # Freeze the base model
     for param in model.base_model.parameters():
         param.requires_grad = False
+
 
     add_medusa_heads(model, training_args.medusa_num_heads, training_args.medusa_num_layers, 
                      training_args.medusa_return, training_args.medusa_only_heads, training_args.with_liger)
@@ -343,34 +348,35 @@ def train():
 
     # Start trainner
     trainer = Trainer(
-        model=model, tokenizer=tokenizer, args=training_args, **data_module
+        model=model, tokenizer=tokenizer, args=training_args, callbacks=[EfficiencyCallback()], **data_module
     )
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)
     else:
         trainer.train()
-    model.config.use_cache = True
+    # model.config.use_cache = True
+
     # trainer.save_state()
     # safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
     # Save MedusaHead seperately
-    if hasattr(medusa_lm_head, "module"):
-        lm_head = medusa_lm_head.module.medusa_head
-    else:
-        lm_head = medusa_lm_head.medusa_head
-    import deepspeed
-    with deepspeed.zero.GatheredParameters(lm_head.parameters()):
-        state_dict = lm_head.state_dict()
+    # if hasattr(medusa_lm_head, "module"):
+    #     lm_head = medusa_lm_head.module.medusa_head
+    # else:
+    #     lm_head = medusa_lm_head.medusa_head
+    # import deepspeed
+    # with deepspeed.zero.GatheredParameters(lm_head.parameters()):
+    #     state_dict = lm_head.state_dict()
 
-    # Save Medusa heads
-    if local_rank == 0:
-        # Modify the tokenizer internal state before saving.
-        tokenizer.encode("Test", truncation=None, padding="do_not_pad")
-        tokenizer.save_pretrained(training_args.output_dir)
-        save_file(
-            state_dict,
-            os.path.join(training_args.output_dir, "medusa_lm_head.safetensors"),
-        )
+    # # Save Medusa heads
+    # if local_rank == 0:
+    #     # Modify the tokenizer internal state before saving.
+    #     tokenizer.encode("Test", truncation=None, padding="do_not_pad")
+    #     tokenizer.save_pretrained(training_args.output_dir)
+    #     save_file(
+    #         state_dict,
+    #         os.path.join(training_args.output_dir, "medusa_lm_head.safetensors"),
+    #     )
 
 
 if __name__ == "__main__":
