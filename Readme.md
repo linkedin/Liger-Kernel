@@ -2,11 +2,11 @@
 
 **Liger Kernel** is a collection of Triton-native kernels designed specifically for LLM training. It aims to be **ease of use**, **exact**, **time- and memory-efficient**, and **lightweight**. We welcome contributions from the community to gather the best kernels for LLM training.
 
-![Total Downloads](https://img.shields.io/pypi/dt/liger-kernel)
+![Total Downloads](https://static.pepy.tech/badge/liger-kernel)](https://pepy.tech/project/liger-kernel)
 ![Monthly Downloads](https://img.shields.io/pypi/dm/liger-kernel)
-![Daily Downloads](https://img.shields.io/pypi/dd/liger-kernel)
-![PyPI Version](https://img.shields.io/pypi/v/liger-kernel)
-![PyPI Version](https://img.shields.io/pypi/v/liger-kernel-nightly)
+![Weekly Downloads](https://img.shields.io/pypi/dw/liger-kernel)
+![PyPI liger-kernel](https://img.shields.io/pypi/v/liger-kernel)
+![PyPI liger-kernel-nightly](https://img.shields.io/pypi/v/liger-kernel-nightly)
 
 ## 🌟 Overview
 
