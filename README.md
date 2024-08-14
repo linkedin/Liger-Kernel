@@ -183,7 +183,7 @@ Biblatex entry:
 ```bib
 @software{liger2024,
   title  = {Liger-Kernel: Efficient Triton Kernels for LLM Training},
-  author = {Hsu, Pin-Lun and Dai, Yun and Kothapalli, Vignesh and Song, Qingquan and Tang, Shao},
+  author = {Hsu, Pin-Lun and Dai, Yun and Kothapalli, Vignesh and Song, Qingquan and Tang, Shao and Zhu, Siyu},
   url    = {https://github.com/linkedin/Liger-Kernel},
   year   = {2024}
 }
