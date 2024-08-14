@@ -28,7 +28,7 @@ ANSWER = "<Answer>"
 class Args:
     model: str = "meta-llama/Meta-Llama-3-8B"
     data: str = "cais/mmlu"
-    output_dir: str = f"/shared/user/mmlu-output/{os.environ['FLYTE_INTERNAL_EXECUTION_ID']}-{datetime.datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
+    output_dir: str = "mmlu_finetuning"
     max_length: int = 2048
     batch_size: int = 16
     lr: float = 6e-6
