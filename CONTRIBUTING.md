@@ -24,11 +24,14 @@ Add your kernel implementation in src/liger_kernel/.
 Create unit tests for your kernel in the tests directory. Ensure that your tests cover all kernel functionalities.
 
 ## Run test
-Install the package
+1. **Install the package**
    ```sh
    pip install -e .[dev]
    ```
-run `make test`.
+2. **Execute test**
+   ```sh
+   make test
+   ```
 
 ## Submit PR
 Submit the PR followed by the PR template.
