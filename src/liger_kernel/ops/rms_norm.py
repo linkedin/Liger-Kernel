@@ -107,8 +107,8 @@ class LigerRMSNormFunction(torch.autograd.Function):
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-        Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device="cuda")
-        r = torch.empty(n_rows, dtype=X.dtype, device="cuda")
+        Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
+        r = torch.empty(n_rows, dtype=X.dtype, device=X.device)
 
         # Check constraints.
         assert (
