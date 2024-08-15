@@ -18,6 +18,9 @@ sh scripts/llama3_8b_medusa.sh
 
 # Memory Profiling Result
 
+> **Note:**  
+> 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 4, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
+
 ## Stage1
 
 Stage1 refers to Medusa-1 where the backbone model is frozen and only weights of LLM heads are updated.
