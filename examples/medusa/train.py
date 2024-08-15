@@ -17,24 +17,17 @@
 # Adapted from: https://github.com/lm-sys/FastChat/blob/main/fastchat/train/train.py
 
 import json
-import math
-import os
 import pathlib
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Sequence
+from typing import Dict, Optional
 
-import numpy as np
 import torch
 import transformers
 from callback import EfficiencyCallback
 from medusa_util import add_medusa_heads
-from safetensors.torch import save_file
 from sklearn.model_selection import train_test_split
-from torch import nn
-from torch.nn import CrossEntropyLoss
-from torch.nn import functional as F
 from torch.utils.data import Dataset
-from transformers import BitsAndBytesConfig, Trainer
+from transformers import Trainer
 from transformers.trainer_pt_utils import LabelSmoother
 
 from liger_kernel.transformers import apply_liger_kernel_to_llama
@@ -154,7 +147,7 @@ def preprocess(
     conversations = []
     prompts = []
     # import pdb; pdb.set_trace()
-    for i, conversation in enumerate(sources[:50]):
+    for conversation in sources[:50]:
         tokenizer_compatible_conv = [
             {
                 "role": "user" if c["from"] == "human" else "assistant",
@@ -190,7 +183,7 @@ def preprocess(
                 content = turn["content"]
                 # Unfortunate strip() necessary because chat templates are doing the same.
                 start = prompt.index(content.strip())
-                stop = start + len(content)
+                # stop = start + len(content)
                 indices = []
                 for tok_index, (tok_start, tok_stop) in enumerate(
                     encoding.offset_mapping[conv_index]
