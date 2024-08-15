@@ -84,19 +84,14 @@ $ pip install liger-kernel-nightly
 Using [patching APIs](#patching), you can swap Hugging Face models with optimized Liger Kernels.
 
 ```python
+import transformers
 from liger_kernel.transformers import apply_liger_kernel_to_llama
-from transformers import Trainer
-
 
 model = transformers.AutoModelForCausalLM.from_pretrained("<some llama model>")
 
 # By adding this line, it automatically monkey patches the model with the optimized kernels
 apply_liger_kernel_to_llama() 
 ```
-
-
-
-
 
 ### 2. Compose Your Own Model
 
