@@ -8,7 +8,6 @@
 **Liger (Linkedin GPU Efficient Runtime) Kernel** is a collection of Triton kernels designed specifically for LLM training. We have implemented **Hugging Face Compatible** `RMSNorm`, `RoPE`, `SwiGLU`, `CrossEntropy`, `FusedLinearCrossEntropy`, and more to come. It can effectively increase multi-GPU **training throughput by 20%** and reduces **memory usage by 60%**. The kernel works out of the box with [flash attention](https://github.com/Dao-AILab/flash-attention), PyTorch FSDP, and Microsoft DeepSpeed. We welcome contributions from the community to gather the best kernels for LLM training.
 
 
-
 ### Basic
 
 | **Example**                                    | **Description**                                                                                   | **Lightning Studio** |
@@ -121,27 +120,6 @@ loss.backward()
 ```
 
 
-
-## Note on ML Compiler
-
-### 1. Torch Compile
-
-Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile. In the following example, Liger Kernel can further optimize the model on top of Torch Compile, reducing the memory by more than half.
-
-| Configuration                  | Throughput (tokens/sec) | Memory Reserved (MB) |
-|--------------------------------|----------------------------|-------------------------|
-| Torch Compile                  | 3780                       | 66358                   |
-| Torch Compile + Liger Kernel   | 3702                       | 31000                   |
-
-> **Note:**  
-> 1. **Fused Linear Cross Entropy Loss** is enabled.  
-> 2. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Seq Len = 4096, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
-> 3. Tested on torch `2.5.0.dev20240731+cu118`
-
-### 2. Lightning Thunder
-
-*WIP*
-
 ## Structure
 
 ### Source Code
@@ -180,9 +158,26 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile.
 | FusedLinearCrossEntropy    | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`| Inspired by [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy), with additional optimizations |
 
 
-## Roadmap
 
-WIP
+## Note on ML Compiler
+
+### 1. Torch Compile
+
+Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile. In the following example, Liger Kernel can further optimize the model on top of Torch Compile, reducing the memory by more than half.
+
+| Configuration                  | Throughput (tokens/sec) | Memory Reserved (MB) |
+|--------------------------------|----------------------------|-------------------------|
+| Torch Compile                  | 3780                       | 66358                   |
+| Torch Compile + Liger Kernel   | 3702                       | 31000                   |
+
+> **Note:**  
+> 1. **Fused Linear Cross Entropy Loss** is enabled.  
+> 2. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Seq Len = 4096, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
+> 3. Tested on torch `2.5.0.dev20240731+cu118`
+
+### 2. Lightning Thunder
+
+*WIP*
 
 ## Contributing
 
