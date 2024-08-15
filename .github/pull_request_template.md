@@ -20,8 +20,8 @@ Complete the following tasks before sending your PR, and replace `[ ]` with
 - [ ] I have run `make checkstyle` to ensure code style.
 - [ ] I have run `make test-convergence` to ensure convergence.
 
-- Select one of the following.
-  - [ ] I modify the `/ops` and `/transformers` and have added or updated tests accordingly.
-  - [ ] I add new examples and have tested the examples end to end.
-  - [ ] This PR does not need a test because `FILL THIS IN`.
+Select one of the following.
+- [ ] I modify the `/ops` and `/transformers` and have added or updated tests accordingly.
+- [ ] I add new examples and have tested the examples end to end.
+- [ ] This PR does not need a test because `FILL THIS IN`.
 
