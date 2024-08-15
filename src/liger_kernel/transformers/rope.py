@@ -16,4 +16,5 @@ def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: The query and key tensors after applying the RoPE operation.
     """
+
     return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
