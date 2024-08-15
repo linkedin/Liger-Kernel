@@ -36,7 +36,6 @@ body:
   validations:
     required: false
 
-
 - type: textarea
   attributes:
     label: Versions
@@ -44,6 +43,7 @@ body:
       Please provide triton, torch, hardware, and other necessary versions to reproduce the bug.
   validations:
     required: true
+
 - type: markdown
   attributes:
     value: >
