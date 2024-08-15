@@ -1,3 +1,4 @@
+import functools
 from dataclasses import dataclass
 from test.utils import assert_verbose_allclose, set_seed
 
@@ -25,7 +26,7 @@ from liger_kernel.transformers import (
 @dataclass
 class MiniModelConfig:
     tokenizer_path: str
-    liger_kernel_path_func: callable
+    liger_kernel_patch_func: callable
     model_class: PreTrainedModel
     mini_model_config: PretrainedConfig
 
@@ -33,7 +34,9 @@ class MiniModelConfig:
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
         tokenizer_path="/shared/public/models/Meta-Llama-3-8B/",
-        liger_kernel_path_func=apply_liger_kernel_to_llama,
+        liger_kernel_patch_func=functools.partial(
+            apply_liger_kernel_to_llama, fused_linear_cross_entropy=False
+        ),
         model_class=LlamaForCausalLM,
         mini_model_config=LlamaConfig(
             attention_bias=False,
@@ -64,7 +67,7 @@ MINI_MODEL_SETUPS = {
     ),
     "mini_mistral": MiniModelConfig(
         tokenizer_path="/shared/public/models/Mistral-7B",
-        liger_kernel_path_func=apply_liger_kernel_to_mistral,
+        liger_kernel_patch_func=apply_liger_kernel_to_mistral,
         model_class=MistralForCausalLM,
         mini_model_config=MistralConfig(
             attention_dropout=0.0,
@@ -89,7 +92,7 @@ MINI_MODEL_SETUPS = {
     ),
     "mini_mixtral": MiniModelConfig(
         tokenizer_path="/shared/public/models/Mixtral-8x7B-v0.1/",
-        liger_kernel_path_func=apply_liger_kernel_to_mixtral,
+        liger_kernel_patch_func=apply_liger_kernel_to_mixtral,
         model_class=MixtralForCausalLM,
         mini_model_config=MixtralConfig(
             attention_dropout=0.0,
@@ -174,7 +177,7 @@ def run_mini_model(
     set_seed(42)
 
     if with_liger is True:
-        MINI_MODEL_SETUPS[model_name].liger_kernel_path_func(
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(
             rope=True, rms_norm=True, cross_entropy=True, swiglu=True
         )
 
@@ -206,6 +209,7 @@ def run_mini_model(
     [
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 1e-4, 1e-5, 2e-3, 1e-5),
         ("mini_llama3", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        # TODO: torch 2.5.0 nightly breaks mixtral test, but torch 2.3.0 works fine
         ("mini_mixtral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 1e-3, 1e-5, 8e-3, 1e-5),
         ("mini_mixtral", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 2.0, 1e-5, 1e-2, 1e-5),
         ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),

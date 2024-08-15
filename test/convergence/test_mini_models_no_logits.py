@@ -19,7 +19,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_llama
 @dataclass
 class MiniModelConfig:
     tokenizer_path: str
-    liger_kernel_path_func: callable
+    liger_kernel_patch_func: callable
     model_class: PreTrainedModel
     mini_model_config: PretrainedConfig
 
@@ -27,7 +27,7 @@ class MiniModelConfig:
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
         tokenizer_path="/shared/public/models/Meta-Llama-3-8B/",
-        liger_kernel_path_func=apply_liger_kernel_to_llama,
+        liger_kernel_patch_func=apply_liger_kernel_to_llama,
         model_class=LlamaForCausalLM,
         mini_model_config=LlamaConfig(
             attention_bias=False,
@@ -110,7 +110,7 @@ def run_mini_model(
     set_seed(42)
 
     if with_liger is True:
-        MINI_MODEL_SETUPS[model_name].liger_kernel_path_func(
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(
             rope=True,
             rms_norm=True,
             cross_entropy=False,
