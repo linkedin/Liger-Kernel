@@ -1,7 +1,10 @@
 import functools
+import importlib
+from typing import Callable
 
 import torch
 import triton
+from packaging.version import Version
 
 
 def ensure_contiguous(fn):
@@ -36,3 +39,12 @@ def calculate_settings(n):
     elif BLOCK_SIZE >= 2048:
         num_warps = 8
     return BLOCK_SIZE, num_warps
+
+
+def compare_version(package: str, operator: Callable, target: str):
+    try:
+        pkg = importlib.import_module(package)
+    except ImportError:
+        return False
+    pkg_version = Version(pkg.__version__)
+    return operator(pkg_version, Version(target))
