@@ -5,11 +5,10 @@ from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP, LigerSwiGLUMLP
 
 
-# TODO: probably rename utils.py as hf_patcher.py to be more descriptive
 def apply_liger_kernel_to_llama(
     rope: bool = True,
-    cross_entropy: bool = True,
-    fused_linear_cross_entropy: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
 ) -> None:
@@ -19,9 +18,9 @@ def apply_liger_kernel_to_llama(
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
-        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
-            Whether to apply Liger's fused lienar cross entropy loss. Default is False.
+            Whether to apply Liger's fused lienar cross entropy loss. Default is True.
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
