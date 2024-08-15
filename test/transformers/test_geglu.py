@@ -12,8 +12,6 @@ LLAMA_CONFIG = LlamaConfig(
 )
 SLEEP_SECONDS = 0.1
 
-# TODO (yun dai): triton 3.0.0 breaks geglu due to tanh module issue
-
 
 @pytest.mark.parametrize(
     "bsz, seq_len, hidden_size, intermediate_size",

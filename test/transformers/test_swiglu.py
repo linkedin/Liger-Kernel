@@ -29,7 +29,7 @@ SLEEP_SECONDS = 0.1
         # atol is for small values: they have more difference, so set atol higher
         # rtol is for larger values: they are very close, so set rtol lower
         (torch.float32, 1e-0, 1e-5),
-        # TODO: we should find a better way to tune this lol. 1e4 is too large apparently
+        # TODO: we should find a better way to tune this. 1e4 is too large apparently
         (torch.bfloat16, 1e4, 1e-2),
     ],
 )

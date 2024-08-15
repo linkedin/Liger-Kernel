@@ -58,6 +58,7 @@ class LigerLMHeadCE(torch.nn.Module):
     [
         (2, 4, 512, 512),
         (8, 2048, 4096, 32000),  # llama2, mistral
+        # Comment out to speed up testing
         # (4, 2048, 4096, 128256),  # llama3 8B
         # (4, 1024, 8192, 128256),  # llama3 70B
         (4, 423, 8192, 32000),  # random shape

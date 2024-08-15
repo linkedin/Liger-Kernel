@@ -155,16 +155,8 @@ def test_correctness_with_ignore_index(
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        # (0.01, torch.bfloat16, 1e-8, 5e-2),
-        # (0.1, torch.bfloat16, 1e-8, 5e-2),
         (1.0, torch.bfloat16, 1e-8, 5e-2),
-        # (10.0, torch.bfloat16, 1e-8, 5e-2),
-        # (100.0, torch.bfloat16, 1e-8, 5e-2),
-        # (0.01, torch.float32, 1e-8, 1e-6),
-        # (0.1, torch.float32, 1e-8, 1e-6),
         (1.0, torch.float32, 1e-8, 1e-6),
-        # (10.0, torch.float32, 1e-8, 1e-6),
-        # (100.0, torch.float32, 1e-8, 1e-6),
     ],
 )
 def test_correctness_not_last_layer(B, T, V, scalar, dtype, atol, rtol):
