@@ -17,7 +17,7 @@ def liger_cross_entropy_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    This kernel computes both cross entropy loss and the gradient of the _input.
+    This kernel computes both cross entropy loss and the gradient of the input.
     We only consider hard label + mean reduction for now. Please refer to https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html for the math.
 
     Parameters:
@@ -34,7 +34,7 @@ def liger_cross_entropy_kernel(
     """
 
     # https://github.com/triton-lang/triton/issues/1058
-    # Essentially if B*T*V is too large, program_id * stride will overflow out of int32
+    # If B*T*V is too large, program_id * stride will overflow out of int32, so we convert to int64
     program_id = tl.program_id(0).to(tl.int64)
 
     # 1. Load Y_ptr first because if the target is ignore_index, we can return right away
@@ -90,13 +90,7 @@ def liger_cross_entropy_kernel(
     tl.debug_barrier()
 
     # 5. Calculate the loss
-    # Old Approach: Problematic LogSoftmax
-    # min of bfloat16 and float32 is 1e-38, so we set a value larger than that but small enough
-    # This will overflow if X_y * n_non_ignore is too small. Even if we add a tiny epsilon, it will still overflow
-    # loss = -tl.log(X_y * n_non_ignore)
 
-    # New Approach: Safe LogSoftmax
-    # Therefore, we propose to use safe logsoftmax by reordering the formula.
     # loss = log (softmax(X_y)) = log ((e ^ (X_y - max(X)) / sum(e ^ (X - max(X))))
     #      = (X_y - max(X)) - log(sum(e ^ (X - max(X))))
     # sum(e ^ (X - max(X))) must >= 1 because the max term is e ^ 0 = 1
@@ -114,7 +108,7 @@ def liger_cross_entropy_kernel(
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
-MAX_FUSED_SIZE = 65536 // 2  # manual tune a bit
+MAX_FUSED_SIZE = 65536 // 2  # the best size we found by manually tuning
 
 
 @triton.jit
@@ -184,28 +178,6 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         n_non_ignore = (target != ignore_index).sum().item()
 
         # ensure _input and target are contiguous in the last dimension
-        # there are examples that are NOT contiguous overall but contiguous in the last dimension
-        ####################################################################
-        # tensor = torch.arange(1, 21).reshape(5, -1)
-        # print(tensor)
-        # tensor([[ 1,  2,  3,  4],
-        # [ 5,  6,  7,  8],
-        # [ 9, 10, 11, 12],
-        # [13, 14, 15, 16],
-        # [17, 18, 19, 20]])
-        # print(tensor.is_contiguous())
-        # True
-        # slice = tensor[::2, :]
-        # print(slice)
-        # tensor([[ 1,  2,  3,  4],
-        # [ 9, 10, 11, 12],
-        # [17, 18, 19, 20]])
-        # print(slice.is_contiguous())
-        # False
-        # print(slice.stride())
-        # (8, 1)
-        # slice is NOT a contiguous tensor but is contiguous in the last dimension, CE kernel can execute because the stride is 8, and each triton program will jump by 8
-        ####################################################################
         if _input.stride(-1) != 1:
             _input = _input.contiguous()
         if target.stride(-1) != 1:
@@ -252,10 +224,9 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
         if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
             pass
+
         # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
         # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
-        # Although the Brew trainer should only perform backward once, it encounters this issue.
-        # https://github.com/triton-lang/triton/issues/4004
         else:
             BT, V = _input.shape
             n_rows = BT

@@ -14,7 +14,6 @@ def apply_liger_kernel_to_llama(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Llama models (2 and 3)
-    to make GPU go burrr.
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
@@ -53,7 +52,6 @@ def apply_liger_kernel_to_mistral(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Mistral models
-    to make GPU go burrr.
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
@@ -82,12 +80,12 @@ def apply_liger_kernel_to_mixtral(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Mixtral models
-    to make GPU go burrr.
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
     """
 
     from transformers.models.mixtral import modeling_mixtral

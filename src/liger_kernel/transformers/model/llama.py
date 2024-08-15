@@ -37,6 +37,9 @@ def lce_forward(
     cache_position: Optional[torch.LongTensor] = None,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
     r"""
+    Copy paste llama forward but replace torch cross entropy with liger fused linear cross entropy
+
+
     Args:
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
