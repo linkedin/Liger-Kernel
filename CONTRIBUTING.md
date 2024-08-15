@@ -23,13 +23,11 @@ Add your kernel implementation in `src/liger_kernel/`.
 3. **Add Unit Tests**
 Create unit tests and convergence tests for your kernel in the tests directory. Ensure that your tests cover all kernel functionalities.
 
-## Run correctness test
+## Run tests
 
-1. **Execute test**
-
-run `make test` to ensure correctness.
-run `make checkstyle` to ensure code style.
-run `make test-convergence` to ensure convergence.
+1. run `make test` to ensure correctness.
+2. run `make checkstyle` to ensure code style.
+3. run `make test-convergence` to ensure convergence.
 
 ## Submit PR
 Fork the repo, copy and paste the successful test logs in the PR and submit the PR followed by the PR template.
