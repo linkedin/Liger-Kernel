@@ -12,26 +12,25 @@ Thank you for your interest in contributing to Liger-Kernel! This guide will hel
    git clone https://github.com/linkedin/Liger-Kernel.git
    cd Liger-Kernel
    ```
-
 2. **Install Dependencies**
-
+3. **Install Liger Package**
+   ```
+   pip install . -e[dev]
+   ```
 ## Adding a New Kernel
+To get familiar with the folder structure, please refer to https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.
 
 1. **Create Your Kernel**
 Add your kernel implementation in src/liger_kernel/.
 
-2. **Add Unit Tests**
-Create unit tests for your kernel in the tests directory. Ensure that your tests cover all kernel functionalities.
+3. **Add Unit Tests**
+Create unit tests and convergence tests for your kernel in the tests directory. Ensure that your tests cover all kernel functionalities.
 
-## Run test
-1. **Install the package**
-   ```sh
-   pip install -e .[dev]
-   ```
-2. **Execute test**
-   ```sh
-   make test
-   ```
+## Run correctness test
+1. **Execute test**
+run `make test` to ensure correctness.
+run `make checkstyle` to ensure code style.
+run `make test-convergence` to ensure convergence.
 
 ## Submit PR
-Submit the PR followed by the PR template.
+Fork the repo, copy and paste the successful test logs in the PR and submit the PR followed by the PR template.
