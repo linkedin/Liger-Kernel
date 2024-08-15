@@ -70,7 +70,7 @@ def liger_cross_entropy_kernel(
         )
         block_max = tl.max(X_block)
         m_new = tl.maximum(m, block_max)
-        d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
+        d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))                                                                                                                                                         
         m = m_new
 
     # 4. [Oneline softmax] second pass: calculate the gradients
