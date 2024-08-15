@@ -5,4 +5,5 @@ exclude =
     .git,
     __pycache__,
     benchmark_internal/others
-extend-ignore=E501,B006,E731,A002
+# E203: https://github.com/psf/black/issues/315
+extend-ignore=E501,B006,E731,A002,E203
