@@ -25,7 +25,8 @@ body:
       We are going to copy-paste your code and we expect to get the same result as you did: avoid any external data, and include the relevant imports, etc. 
       If the code is too long (hopefully, it isn't), feel free to put it in a public gist and link it in the issue: https://gist.github.com.
       Please also paste or describe the results you observe instead of the expected results. 
-      If you observe an error, please paste the error message including the **full** traceback of the exception. 
+      If you observe an error, please paste the error message including the **full** traceback of the exception.
+  validations:
     required: false
 
 - type: textarea
