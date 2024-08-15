@@ -1,8 +1,8 @@
-torchrun --nnodes=1 --nproc-per-node=8 training.py \
+torchrun --nnodes=1 --nproc-per-node=4 training.py \
     --bf16 \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 16 \
-    --per_device_eval_batch_size 16 \
+    --per_device_train_batch_size 8 \
+    --per_device_eval_batch_size 8 \
     --gradient_checkpointing \
     --evaluation_strategy "steps" \
     --eval_steps 40 \

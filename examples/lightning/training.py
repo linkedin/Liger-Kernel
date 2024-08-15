@@ -1,19 +1,19 @@
 import argparse
+import math
 import os
 from dataclasses import _MISSING_TYPE, dataclass
-import datetime
+
 import datasets
-import lightning.pytorch as pl
 import torch
 import transformers
-from trl import DataCollatorForCompletionOnlyLM
-from lightning.pytorch.strategies import FSDPStrategy
+from liger_kernel.transformers import apply_liger_kernel_to_llama
 from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision
 from torch.utils.data import DataLoader
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaForCausalLM
-from liger_kernel.transformers import apply_liger_kernel_to_llama
-import math
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+from trl import DataCollatorForCompletionOnlyLM
 
+import lightning.pytorch as pl
+from lightning.pytorch.strategies import FSDPStrategy
 
 apply_liger_kernel_to_llama(fused_linear_cross_entropy=True, cross_entropy=False)
 
@@ -44,7 +44,9 @@ def warmup_cosine_schedule(warmup_steps, total_steps, min_lr=0):
             return float(current_step) / float(max(1, warmup_steps))
         else:
             # Cosine annealing
-            progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+            progress = float(current_step - warmup_steps) / float(
+                max(1, total_steps - warmup_steps)
+            )
             return max(min_lr, 0.5 * (1 + math.cos(math.pi * progress)))
 
     return lr_lambda
@@ -71,7 +73,7 @@ class LanguageModel(pl.LightningModule):
         # https://lightning.ai/docs/pytorch/stable/advanced/model_parallel/fsdp.html#speed-up-model-initialization
         if self.model is not None:
             return
-        self.model = LlamaForCausalLM.from_pretrained(
+        self.model = transformers.AutoModelForCausalLM.from_pretrained(
             self.args.model,
             use_cache=False,
         )
@@ -122,12 +124,13 @@ class LanguageModel(pl.LightningModule):
             self.parameters(),
             lr=self.args.lr,
             weight_decay=self.args.weight_decay,
-            fused=True
+            fused=True,
         )
         lr_lambda = warmup_cosine_schedule(
-            warmup_steps=self.trainer.estimated_stepping_batches * self.args.warmup_ratio,
+            warmup_steps=self.trainer.estimated_stepping_batches
+            * self.args.warmup_ratio,
             total_steps=self.trainer.estimated_stepping_batches,
-            min_lr=0
+            min_lr=0,
         )
         lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
         return {
@@ -150,7 +153,7 @@ class DataModule(pl.LightningDataModule):
 
     def formatting_func(self, example):
         output_texts = []
-        for i in range(len(example['question'])):
+        for i in range(len(example["question"])):
             choices = ""
             for j in range(len(example["choices"][i])):
                 choices += f"{j+1}. {example['choices'][i][j]}; "
@@ -176,20 +179,20 @@ class DataModule(pl.LightningDataModule):
     def setup(self, stage) -> None:
         dataset = datasets.load_dataset(self.args.data, "auxiliary_train")
         dataset = dataset.train_test_split(test_size=4096, seed=self.args.seed)
-        train_dataset, val_dataset = dataset['train'], dataset['test']
+        train_dataset, val_dataset = dataset["train"], dataset["test"]
         self.train_dataset = train_dataset.map(
             self.tokenize,
             remove_columns=list(set(train_dataset.column_names) - _RETAIN_COLUMNS),
             batched=True,
             batch_size=1,
-            num_proc=4
+            num_proc=4,
         )
         self.val_dataset = val_dataset.map(
             self.tokenize,
             remove_columns=list(set(val_dataset.column_names) - _RETAIN_COLUMNS),
             batched=True,
             batch_size=1,
-            num_proc=4
+            num_proc=4,
         )
 
     def train_dataloader(self):
