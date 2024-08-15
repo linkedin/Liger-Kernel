@@ -30,7 +30,7 @@ Create unit tests and convergence tests for your kernel in the tests directory. 
 3. run `make test-convergence` to ensure convergence.
 
 ## Submit PR
-Fork the repo, copy and paste the successful test logs in the PR and submit the PR followed by the PR template.
+Fork the repo, copy and paste the successful test logs in the PR and submit the PR followed by the PR template (**[example PR](https://github.com/linkedin/Liger-Kernel/pull/21)**).
 
 > As a contributor, you represent that the code you submit is your original work or that of your employer (in which case you represent you have the right to bind your employer).  By submitting code, you (and, if applicable, your employer) are licensing the submitted code to LinkedIn and the open source community subject to the BSD 2-Clause license.
 
