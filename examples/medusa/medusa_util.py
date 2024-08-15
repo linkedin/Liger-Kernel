@@ -218,7 +218,7 @@ def add_medusa_heads(
                         .contiguous()
                         .view(-1, model.config.hidden_size)
                     )
-                    shift_labels = labels[..., (1 + i):].contiguous().view(-1)
+                    shift_labels = labels[..., (1 + i) :].contiguous().view(-1)
 
                     weight = (
                         model.lm_head.weight
@@ -246,7 +246,7 @@ def add_medusa_heads(
                     )
                     medusa_logits_i = medusa_logits_i.float()
                     medusa_labels = (
-                        labels[..., (1 + i):]
+                        labels[..., (1 + i) :]
                         .contiguous()
                         .view(-1)
                         .to(medusa_logits_i.device)
