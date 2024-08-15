@@ -1,0 +1,18 @@
+torchrun --nnodes=1 --nproc-per-node=8 training.py \
+    --bf16 \
+    --num_train_epochs 1 \
+    --per_device_train_batch_size 16 \
+    --per_device_eval_batch_size 16 \
+    --gradient_checkpointing \
+    --evaluation_strategy "steps" \
+    --eval_steps 40 \
+    --save_strategy "no" \
+    --learning_rate 6e-6 \
+    --weight_decay 0.05 \
+    --warmup_ratio 0.1 \
+    --lr_scheduler_type "cosine" \
+    --logging_steps 1 \
+    --report_to none \
+    --fsdp "full_shard auto_wrap" \
+    --seed 42 \
+    --output_dir alpaca_finetuning
