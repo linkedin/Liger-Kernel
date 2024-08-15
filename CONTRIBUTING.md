@@ -32,4 +32,11 @@ Create unit tests and convergence tests for your kernel in the tests directory. 
 ## Submit PR
 Fork the repo, copy and paste the successful test logs in the PR and submit the PR followed by the PR template.
 
-> As a contributor, you represent that the code you submit is your original work or that of your employer (in which case you represent you have the right to bind your employer).  By submitting code, you (and, if applicable, your employer) are licensing the submitted code to LinkedIn and the open source community subject to the BSD 2-Clause license. 
+> As a contributor, you represent that the code you submit is your original work or that of your employer (in which case you represent you have the right to bind your employer).  By submitting code, you (and, if applicable, your employer) are licensing the submitted code to LinkedIn and the open source community subject to the BSD 2-Clause license.
+
+## Release (maintainer only)
+
+1. Bump the version in setup.py
+2. Submit a PR and merge
+3. Create a new release based on the current HEAD
+4. New pip uploading will be tried upon a new release 
