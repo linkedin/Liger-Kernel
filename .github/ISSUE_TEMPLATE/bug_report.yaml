@@ -5,7 +5,7 @@ body:
 - type: markdown
   attributes:
     value: >
-      #### Before submitting a bug, please make sure the issue hasn't been already addressed by searching through [the existing and past issues](https://github.com/triton-lang/triton/issues).
+      #### Before submitting a bug, please make sure the issue hasn't been already addressed by searching through [the existing and past issues](https://github.com/linkedin/Liger-Kernel/issues).
 - type: textarea
   attributes:
     label: 🐛 Describe the bug
