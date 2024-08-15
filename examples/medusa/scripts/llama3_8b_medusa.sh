@@ -9,7 +9,7 @@ echo "Starting training... Num nodes: $NUM_NODES, Num workers: $WORLD_SIZE"
 export OUTPUT_DIR="/shared/user/Meta-Llama-3-70B-Instruct-code-act-3ep"
 export DATA_PATH="/shared/public/data/jaszhu/medusa/ShareGPT_V4.3_unfiltered_cleaned_split.json"
 
-export LOCAL_TRAIN_BATCH_SIZE=64
+export LOCAL_TRAIN_BATCH_SIZE=4
 export GRADIENT_ACCUMULATION_STEPS=1
 export LR=1e-5
 
@@ -43,16 +43,17 @@ accelerate launch --config_file fsdp/acc-fsdp.conf \
     --warmup_ratio 0.04 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --model_max_length 2048 \
+    --model_max_length 1024 \
     --gradient_checkpointing True \
     --lazy_preprocess False \
     --report_to none \
+    --include_num_input_tokens_seen \
     --medusa_num_heads $MEDUSA_NUM_HEADS \
     --medusa_num_layers $MEDUSA_NUM_LAYERS \
     --medusa_heads_coefficient $MEDUSA_HEADS_COEFFICIENT \
     --medusa_decay_coefficient $MEDUSA_DECAY_COEFFICIENT \
     --medusa_scheduler $MEDUSA_SCHEDULER \
     --medusa_lr_multiplier $MEDUSA_LR_MULTIPLIER \
+    --medusa_only_heads False \
     --medusa_return True \
-    --medusa_only_heads True \
-    --include_num_input_tokens_seen
+    --with_liger True
