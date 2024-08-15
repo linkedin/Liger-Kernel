@@ -14,13 +14,12 @@ from transformers import (
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 
 from liger_kernel.transformers import apply_liger_kernel_to_llama
-from liger_kernel.transformers.medusa.medusa_utils import add_medusa_heads
 
 
 @dataclass
 class MiniModelConfig:
     tokenizer_path: str
-    liger_kernel_path_func: callable
+    liger_kernel_patch_func: callable
     model_class: PreTrainedModel
     mini_model_config: PretrainedConfig
 
@@ -28,7 +27,7 @@ class MiniModelConfig:
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
         tokenizer_path="/shared/public/models/Meta-Llama-3-8B/",
-        liger_kernel_path_func=apply_liger_kernel_to_llama,
+        liger_kernel_patch_func=apply_liger_kernel_to_llama,
         model_class=LlamaForCausalLM,
         mini_model_config=LlamaConfig(
             attention_bias=False,
@@ -102,7 +101,6 @@ def run_mini_model(
     dtype=torch.bfloat16,
     lr=1e-5,
     with_liger=False,
-    apply_medusa=False,
 ):
     # If we move it to the beginning of test_mini_model, the two runs are initialized with different weights.
     # This is due to RNG (Random Number Generator). The formula of RNG progression is x_(n+1) = (a * x_n + c) % m
@@ -112,7 +110,7 @@ def run_mini_model(
     set_seed(42)
 
     if with_liger is True:
-        MINI_MODEL_SETUPS[model_name].liger_kernel_path_func(
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(
             rope=True,
             rms_norm=True,
             cross_entropy=False,
@@ -123,10 +121,6 @@ def run_mini_model(
     tokenizer = create_tokenizer(model_name)
     train_dataset = prepare_dataset(tokenizer)
     model = create_model(model_name).to(dtype).to("cuda")
-    if apply_medusa:
-        add_medusa_heads(
-            model, with_liger=with_liger, medusa_return=True, medusa_only_heads=False
-        )
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     loader = DataLoader(
         train_dataset, batch_size=16, shuffle=False, collate_fn=data_collator
@@ -174,75 +168,6 @@ def test_mini_model(
 
     actual_output = run_mini_model(
         model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True
-    )
-
-    # Compare every step of the loss
-    assert_verbose_allclose(
-        torch.tensor([expected_output["loss"]]),
-        torch.tensor([actual_output["loss"]]),
-        atol=loss_atol,
-        rtol=loss_rtol,
-    )
-
-    # No logits are materialized
-
-    # # Compare the logits from the last step
-    # assert_verbose_allclose(
-    #     expected_output["logits"],
-    #     actual_output["logits"],
-    #     atol=logits_atol,
-    #     rtol=logits_rtol,
-    # )
-
-    # Compare the params from the last step
-    # Iterate over the model's parameters and compare them
-    for expected_param, actual_param in zip(
-        expected_output["model"].named_parameters(),
-        actual_output["model"].named_parameters(),
-    ):
-        assert_verbose_allclose(
-            expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol
-        )
-
-
-@pytest.mark.convergence
-@pytest.mark.parametrize(
-    "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
-    [
-        ("mini_llama3", 32, 1e-5, torch.float32, 1e-8, 1e-5, 1e-4, 1e-5, 5e-3, 1e-5),
-        ("mini_llama3", 32, 1e-5, torch.bfloat16, 5e-3, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
-    ],
-)
-def test_mini_model_medusa(
-    model_name,
-    num_steps,
-    lr,
-    dtype,
-    loss_atol,
-    loss_rtol,
-    logits_atol,
-    logits_rtol,
-    param_atol,
-    param_rtol,
-):
-    # Non-liger models should be initialized and tested first to avoid the module being overridden
-    # DEBUG tips: Run `export DEBUG_LIGER=true` before `make test-convergence` to show the liger kernel being used. `unset DEBUG_LIGER` to unset.
-
-    expected_output = run_mini_model(
-        model_name=model_name,
-        num_steps=num_steps,
-        dtype=dtype,
-        lr=lr,
-        apply_medusa=True,
-    )
-
-    actual_output = run_mini_model(
-        model_name=model_name,
-        num_steps=num_steps,
-        dtype=dtype,
-        lr=lr,
-        with_liger=True,
-        apply_medusa=True,
     )
 
     # Compare every step of the loss
