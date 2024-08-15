@@ -9,9 +9,9 @@ The Liger fused CE kernel is highly effective in this scenario, eliminating the 
 
 ```
 git clone git@github.com:linkedin/Liger-Kernel.git
-cd /home/jobuser/Liger-Kernel/
+cd {PATH_TO_Liger-Kernel}/Liger-Kernel/
 pip install -e .
-cd /home/jobuser/Liger-Kernel/examples/medusa
+cd {PATH_TO_Liger-Kernel}/Liger-Kernel/examples/medusa
 pip install -r requirements.txt
 sh scripts/llama3_8b_medusa.sh
 ```
