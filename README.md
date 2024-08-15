@@ -4,6 +4,31 @@
 
 **Liger (Linkedin GPU Efficient Runtime) Kernel** is a collection of Triton-native kernels designed specifically for LLM training. We welcome contributions from the community to gather the best kernels for LLM training.
 
+- [🌟 Overview](#-overview)
+  - [🔌 Supercharge Your Model with Liger Kernel](#-supercharge-your-model-with-liger-kernel)
+  - [✨ Patch HF model with one line or use individual kernels](#-patch-hf-model-with-one-line-or-use-individual-kernels)
+  - [✨ Key Features](#-key-features)
+  - [🎯 Target Audiences](#-target-audiences)
+- [🔧 Installation](#-installation)
+  - [Dependencies](#dependencies)
+- [🚀 Getting Started](#-getting-started)
+  - [1. 🛠️ Patch Existing Hugging Face Models](#1-️-patch-existing-hugging-face-models)
+  - [2. 🧩 Compose Your Own Model](#2-️-compose-your-own-model)
+- [⚙️ Note on ML Compiler](#️-note-on-ml-compiler)
+  - [1. ⚡ Torch Compile](#1-⚡-torch-compile)
+  - [2. 🌩️ Lightning Thunder](#2-️-lightning-thunder)
+- [📂 Structure](#-structure)
+  - [Source Code](#source-code)
+  - [Tests](#tests)
+  - [Benchmark](#benchmark)
+- [🔧 APIs](#-apis)
+  - [Patching](#patching)
+  - [Kernels](#kernels)
+- [🛣️ Roadmap](#️-roadmap)
+- [🤝 Contributing](#-contributing)
+- [📜 License](#-license)
+
+  
 ## 🌟 Overview
 
 ### 🔌 Supercharge Your Model with Liger Kernel
