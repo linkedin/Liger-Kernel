@@ -1,4 +1,5 @@
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
+from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.model.llama import lce_forward
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
@@ -98,3 +99,32 @@ def apply_liger_kernel_to_mixtral(
         modeling_mixtral.CrossEntropyLoss = LigerCrossEntropyLoss
     if swiglu:
         modeling_mixtral.MixtralBlockSparseTop2MLP = LigerBlockSparseTop2MLP
+
+
+def apply_liger_kernel_to_gemma(
+    rope: bool = True,
+    cross_entropy: bool = True,
+    rms_norm: bool = True,
+    geglu: bool = True,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma2 models
+    to make GPU go burrr.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+    """
+    # TODO(yundai424): add convergence test for gemma
+    from transformers.models.gemma import modeling_gemma
+
+    if rope:
+        modeling_gemma.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_gemma.GemmaRMSNorm = LigerRMSNorm
+    if cross_entropy:
+        modeling_gemma.CrossEntropyLoss = LigerCrossEntropyLoss
+    if geglu:
+        modeling_gemma.GemmaMLP = LigerGEGLUMLP
