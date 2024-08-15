@@ -72,5 +72,5 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol):
         )
         is True
     )
-    # import pdb; pdb.set_trace()
+
     assert torch.allclose(h1.grad, h2.grad, atol=atol, rtol=rtol) is True

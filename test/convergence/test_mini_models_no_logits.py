@@ -26,6 +26,7 @@ class MiniModelConfig:
 
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
+        # TODO (easy): replace with oss public path
         tokenizer_path="/shared/public/models/Meta-Llama-3-8B/",
         liger_kernel_patch_func=apply_liger_kernel_to_llama,
         model_class=LlamaForCausalLM,
