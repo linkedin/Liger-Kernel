@@ -1,8 +1,19 @@
+import operator
+
 import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import calculate_settings, ensure_contiguous
+from liger_kernel.ops.utils import (
+    calculate_settings,
+    compare_version,
+    ensure_contiguous,
+)
+
+if compare_version("triton", operator.ge, "3.0.0"):
+    from triton.language.extra.libdevice import tanh
+else:
+    from triton.language.math import tanh
 
 
 @triton.jit
@@ -26,7 +37,7 @@ def _geglu_tanh_forward_kernel(
     sqrt_2_over_pi = 0.7978845608028654  # sqrt(2 / pi)
     a_cubed = a_row * a_row * a_row
     tanh_arg = sqrt_2_over_pi * (a_row + 0.044715 * a_cubed)
-    tanh_result = tl.math.tanh(tanh_arg)
+    tanh_result = tanh(tanh_arg)
     geglu_a = 0.5 * a_row * (1 + tanh_result)
     c_row = geglu_a * b_row
     tl.store(c + col_offsets, c_row, mask=mask)
@@ -54,7 +65,7 @@ def _geglu_tanh_backward_kernel(
     sqrt_2_over_pi = 0.7978845608028654  # sqrt(2 / pi)
     a_cubed = a_row * a_row * a_row
     tanh_arg = sqrt_2_over_pi * (a_row + 0.044715 * a_cubed)
-    tanh_result = tl.math.tanh(tanh_arg)
+    tanh_result = tanh(tanh_arg)
     geglu_a = 0.5 * a_row * (1 + tanh_result)
 
     db_row = dc_row * geglu_a
