@@ -1,8 +1,3 @@
-"""Fusing the last linear layer with cross-entropy loss
-
-Reference: https://github.com/mgmalek/efficient_cross_entropy
-"""
-
 import torch
 import triton
 
@@ -11,13 +6,15 @@ from liger_kernel.ops.cross_entropy import element_mul, liger_cross_entropy_kern
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
-MAX_FUSED_SIZE = 65536 // 2  # manual tune a bit
-
+MAX_FUSED_SIZE = 65536 // 2
 
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, _input, linear, target, ignore_index):
         """
+        Fusing the last linear layer with cross-entropy loss
+            Reference: https://github.com/mgmalek/efficient_cross_entropy
+        
         Handle the forward and backward pass of the final linear layer via cross-entropy loss by avoiding
         the materialization of the large logits tensor. Since Cross Entropy Loss is the last layer, we can
         compute the gradient at the forward pass. By doing so, we don't have to store the _input and target
@@ -54,6 +51,8 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
 
         grad_linear = torch.zeros_like(linear, device=device)
         grad_input = torch.zeros_like(_input, device=device)
+
+        # we use fp32 for loss accumulator
         loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
 
         total_n_non_ignore = (target != ignore_index).sum().item()
