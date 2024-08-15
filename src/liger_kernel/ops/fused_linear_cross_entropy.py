@@ -8,13 +8,14 @@ from liger_kernel.ops.cross_entropy import element_mul, liger_cross_entropy_kern
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
 MAX_FUSED_SIZE = 65536 // 2
 
+
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, _input, linear, target, ignore_index):
         """
         Fusing the last linear layer with cross-entropy loss
             Reference: https://github.com/mgmalek/efficient_cross_entropy
-        
+
         Handle the forward and backward pass of the final linear layer via cross-entropy loss by avoiding
         the materialization of the large logits tensor. Since Cross Entropy Loss is the last layer, we can
         compute the gradient at the forward pass. By doing so, we don't have to store the _input and target
