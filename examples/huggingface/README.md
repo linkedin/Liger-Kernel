@@ -14,5 +14,10 @@ sh run.sh
 
 
 ## Benchmark Result
-![MFU](img/hf_mfu.png)
-![GPU Memory Allocated](img/hf_mem_alloc.png)
+
+Benchmark conditions: LLaMA 3-8B, Alpaca Dataset, Max seq len = 512, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 4 A100s.
+
+The throughput increases by approximately 20% with more data, but the GPU memory is reduced by 40%. This means you can train the model on smaller GPUs, with larger batch sizes, or with longer sequence lengths at no additional cost.
+
+![Throughput](img/hf_tps_2.png)
+![GPU Memory Allocated](img/hf_mem_alloc_2.png)
