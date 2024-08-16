@@ -2,6 +2,9 @@ import os
 import random
 
 import torch
+from dataclasses import dataclass
+from transformers import PreTrainedModel, PretrainedConfig
+from transformers.tokenization_utils_base import BatchEncoding
 
 
 def set_seed(seed=42):
@@ -77,3 +80,28 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
             )
 
         raise AssertionError("\n".join(mismatch_details))
+
+
+# Pre-tokenized dataset using Mistral-7B tokenizer used for convergence tests
+DEFAULT_DATASET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare_tokenized")
+
+@dataclass
+class MiniModelConfig:
+    liger_kernel_patch_func: callable
+    model_class: PreTrainedModel
+    mini_model_config: PretrainedConfig
+
+
+def simple_collate_fn(batch):
+    # Convert all items in the batch to tensors and stack them directly
+    input_ids = torch.stack([torch.tensor(item['input_ids']) for item in batch])
+    attention_mask = torch.stack([torch.tensor(item['attention_mask']) for item in batch])
+
+    # Clone input_ids to create labels
+    labels = input_ids.clone()
+
+    return BatchEncoding({
+        'input_ids': input_ids,
+        'attention_mask': attention_mask,
+        'labels': labels,
+    })

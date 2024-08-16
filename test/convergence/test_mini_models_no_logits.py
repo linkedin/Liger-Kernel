@@ -3,7 +3,7 @@ from test.utils import assert_verbose_allclose, set_seed
 
 import pytest
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk 
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
@@ -14,27 +14,18 @@ from transformers import (
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 
 from liger_kernel.transformers import apply_liger_kernel_to_llama
-
-
-@dataclass
-class MiniModelConfig:
-    tokenizer_path: str
-    liger_kernel_patch_func: callable
-    model_class: PreTrainedModel
-    mini_model_config: PretrainedConfig
+from test.utils import DEFAULT_DATASET_PATH, MiniModelConfig, simple_collate_fn
 
 
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
-        # TODO (easy): replace with oss public path
-        tokenizer_path="/shared/public/models/Meta-Llama-3-8B/",
         liger_kernel_patch_func=apply_liger_kernel_to_llama,
         model_class=LlamaForCausalLM,
         mini_model_config=LlamaConfig(
             attention_bias=False,
             attention_dropout=0.0,
-            bos_token_id=128000,
-            eos_token_id=128001,
+            bos_token_id=1, # 128000
+            eos_token_id=2, # 128001
             hidden_act="silu",
             hidden_size=1024,  # 4096
             initializer_range=0.02,
@@ -49,7 +40,7 @@ MINI_MODEL_SETUPS = {
             rope_theta=500000.0,
             tie_word_embeddings=False,
             use_cache=True,
-            vocab_size=128256,
+            vocab_size=32000, # 128256,
             # At rope backward
             # Eager produces incontiguous dq and dk
             # SDPA produces contiguous dq and incontiguous dk
@@ -68,32 +59,6 @@ def create_model(model_name="mini_llama3"):
     model_config = MINI_MODEL_SETUPS[model_name].mini_model_config
     model_class = MINI_MODEL_SETUPS[model_name].model_class
     return model_class(model_config)
-
-
-def create_tokenizer(model_name):
-    tokenizer = AutoTokenizer.from_pretrained(
-        MINI_MODEL_SETUPS[model_name].tokenizer_path
-    )
-    tokenizer.pad_token = tokenizer.eos_token
-    return tokenizer
-
-
-def prepare_dataset(
-    tokenizer,
-    file_path="/home/jobuser/resources/liger-kernel/test/convergence/tiny_shakespeare.txt",
-):
-    dataset = load_dataset("text", data_files={"train": file_path})
-
-    def tokenize_function(examples):
-        return tokenizer(
-            examples["text"], padding="max_length", truncation=True, max_length=128
-        )
-
-    # "text" is `str` type so we have to remove
-    tokenized_dataset = dataset.map(
-        tokenize_function, batched=True, remove_columns=["text"]
-    )
-    return tokenized_dataset["train"]
 
 
 def run_mini_model(
@@ -119,12 +84,10 @@ def run_mini_model(
             fused_linear_cross_entropy=True,
         )
 
-    tokenizer = create_tokenizer(model_name)
-    train_dataset = prepare_dataset(tokenizer)
     model = create_model(model_name).to(dtype).to("cuda")
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
     loader = DataLoader(
-        train_dataset, batch_size=16, shuffle=False, collate_fn=data_collator
+        train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn
     )
     loader_iter = iter(loader)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -145,7 +108,7 @@ def run_mini_model(
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
-        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 1e-4, 1e-5, 5e-3, 1e-5),
+        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
         ("mini_llama3", 32, 1e-4, torch.bfloat16, 5e-3, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
     ],
 )

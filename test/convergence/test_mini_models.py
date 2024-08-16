@@ -14,7 +14,7 @@ from transformers import (
     PretrainedConfig,
     PreTrainedModel,
 )
-from transformers.tokenization_utils_base import BatchEncoding
+# from transformers.tokenization_utils_base import BatchEncoding
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
@@ -24,21 +24,12 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_mistral,
     apply_liger_kernel_to_mixtral,
 )
+from test.utils import DEFAULT_DATASET_PATH, MiniModelConfig, simple_collate_fn
 
-# Pre-tokenized dataset using Mistral-7B tokenizer
-DEFAULT_DATASET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../resources/tiny_shakespeare_tokenized")
-
-@dataclass
-class MiniModelConfig:
-    tokenizer_path: str
-    liger_kernel_patch_func: callable
-    model_class: PreTrainedModel
-    mini_model_config: PretrainedConfig
 
 
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
-        tokenizer_path="/shared/public/models/Meta-Llama-3-8B/",
         liger_kernel_patch_func=functools.partial(
             apply_liger_kernel_to_llama, fused_linear_cross_entropy=False
         ),
@@ -46,8 +37,8 @@ MINI_MODEL_SETUPS = {
         mini_model_config=LlamaConfig(
             attention_bias=False,
             attention_dropout=0.0,
-            bos_token_id=128000,
-            eos_token_id=128001,
+            bos_token_id=1, # 128000
+            eos_token_id=2, # 128001
             hidden_act="silu",
             hidden_size=1024,  # 4096
             initializer_range=0.02,
@@ -71,7 +62,6 @@ MINI_MODEL_SETUPS = {
         ),
     ),
     "mini_mistral": MiniModelConfig(
-        tokenizer_path="/shared/public/models/Mistral-7B",
         liger_kernel_patch_func=apply_liger_kernel_to_mistral,
         model_class=MistralForCausalLM,
         mini_model_config=MistralConfig(
@@ -96,7 +86,6 @@ MINI_MODEL_SETUPS = {
         ),
     ),
     "mini_mixtral": MiniModelConfig(
-        tokenizer_path="/shared/public/models/Mixtral-8x7B-v0.1/",
         liger_kernel_patch_func=apply_liger_kernel_to_mixtral,
         model_class=MixtralForCausalLM,
         mini_model_config=MixtralConfig(
@@ -141,31 +130,6 @@ def create_model(model_name="mini_llama3"):
     return model_class(model_config)
 
 
-def create_tokenizer(model_name):
-    tokenizer = AutoTokenizer.from_pretrained(
-        MINI_MODEL_SETUPS[model_name].tokenizer_path
-    )
-    tokenizer.pad_token = tokenizer.eos_token
-    return tokenizer
-
-
-def prepare_dataset(
-    tokenizer,
-    file_path="/home/jobuser/resources/liger-kernel/test/convergence/tiny_shakespeare.txt",
-):
-    dataset = load_dataset("text", data_files={"train": file_path})
-
-    def tokenize_function(examples):
-        return tokenizer(
-            examples["text"], padding="max_length", truncation=True, max_length=128
-        )
-
-    # "text" is `str` type so we have to remove
-    tokenized_dataset = dataset.map(
-        tokenize_function, batched=True, remove_columns=["text"]
-    )
-    return tokenized_dataset["train"]
-
 
 def run_mini_model(
     model_name="mini_llama3",
@@ -173,7 +137,6 @@ def run_mini_model(
     dtype=torch.bfloat16,
     lr=1e-5,
     with_liger=False,
-    dataset_path=DEFAULT_DATASET_PATH,
 ):
     # If we move it to the beginning of test_mini_model, the two runs are initialized with different weights.
     # This is due to RNG (Random Number Generator). The formula of RNG progression is x_(n+1) = (a * x_n + c) % m
@@ -188,23 +151,11 @@ def run_mini_model(
         )
 
     model = create_model(model_name).to(dtype).to("cuda")
-    train_dataset = datasets.load_from_disk(dataset_path)
-
-    def simple_collate_fn(batch):
-        input_ids = [torch.tensor(item['input_ids']) for item in batch]
-        attention_mask = [torch.tensor(item['attention_mask']) for item in batch]
-        labels = [ids.clone() for ids in input_ids]
-
-        return BatchEncoding({
-            'input_ids': torch.stack(input_ids),
-            'attention_mask': torch.stack(attention_mask),
-            'labels': torch.stack(labels),
-        })
-
+    train_dataset = datasets.load_from_disk(DEFAULT_DATASET_PATH)
+    
     loader = DataLoader(
         train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn
     )
-
     loader_iter = iter(loader)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
