@@ -1,10 +1,8 @@
-import os
 import time
 from dataclasses import dataclass
 
 import torch
 import transformers
-from accelerate.utils.constants import FSDP_SHARDING_STRATEGY
 from transformers import TrainerControl, TrainerState, TrainingArguments
 
 # https://simple.wikipedia.org/wiki/Byte
@@ -27,7 +25,6 @@ class Precision:
     n_decimal_time: int
     n_decimal_memory: int
     n_decimal_TPS: int
-    n_decimal_MFU: int
 
 
 @dataclass
@@ -47,9 +44,6 @@ class State:
 
     step_start_tokens_seen: int = 0
     elapsed_tokens_seen: int = 0
-
-    step_start_flos: float = 0.0
-    elapsed_flos: float = 0.0
 
     global_start_step: int = 0
 
@@ -87,20 +81,10 @@ class TPS:
     avg_tokens_per_second: float = 0.0
 
 
-@dataclass
-class MFU:
-    """
-    MFU is a dataclass to store the MFU metrics.
-    """
-
-    step_MFU: float = 0.0
-    avg_MFU: float = 0.0
-
-
 class EfficiencyCallback(transformers.TrainerCallback):
     """
     EfficiencyCallback is a callback to track the efficiency of the training process.
-    The tracked stats include: step time, memory, throughput, and MFU.
+    The tracked stats include: step time, memory, and throughput.
 
     It requires including `--include_num_input_tokens_seen` and `logging_steps=1` in the training arguments.
 
@@ -111,32 +95,20 @@ class EfficiencyCallback(transformers.TrainerCallback):
         n_decimal_time: number of decimal points for time
         n_decimal_memory: number of decimal points for memory
         n_decimal_TPS: number of decimal points for TPS
-        n_decimal_MFU: number of decimal points for MFU in percentage
     """
 
     def __init__(
-        self,
-        n_warmup_steps=2,
-        n_decimal_time=2,
-        n_decimal_memory=2,
-        n_decimal_TPS=2,
-        n_decimal_MFU=4,
+        self, n_warmup_steps=2, n_decimal_time=2, n_decimal_memory=2, n_decimal_TPS=2
     ):
         self.state = State(
             n_warmup_steps,
         )
 
-        self.precision = Precision(
-            n_decimal_time,
-            n_decimal_memory,
-            n_decimal_TPS,
-            n_decimal_MFU,
-        )
+        self.precision = Precision(n_decimal_time, n_decimal_memory, n_decimal_TPS)
 
         self.time = Time()
         self.memory = Memory()
         self.tps = TPS()
-        self.mfu = MFU()
 
     def on_init_end(
         self,
@@ -180,11 +152,10 @@ class EfficiencyCallback(transformers.TrainerCallback):
         ):
             return
         else:
-            # spread self.time, self.memory, self.tps, self.mfu to logs
+            # spread self.time, self.memory, self.tps to logs
             logs.update(self.time.__dict__)
             logs.update(self.memory.__dict__)
             logs.update(self.tps.__dict__)
-            # logs.update(self.mfu.__dict__)
 
     def on_step_begin(
         self,
@@ -213,12 +184,10 @@ class EfficiencyCallback(transformers.TrainerCallback):
         if state.global_step < (
             self.state.global_start_step + self.state.n_warmup_steps
         ):
-            # The end the current step_start_tokens_seen and step_start_flos are the start of next iteration
+            # The end the current step_start_tokens_seen is the start of next iteration
 
             # tokens
             self.state.step_start_tokens_seen = state.num_input_tokens_seen
-            # flos
-            self.state.step_start_flos = state.total_flos
             return
 
         # time
@@ -291,113 +260,7 @@ class EfficiencyCallback(transformers.TrainerCallback):
             self.precision.n_decimal_TPS,
         )
 
-        # flos
-        step_flos = state.total_flos - self.state.step_start_flos
-        self.state.elapsed_flos += step_flos
-
-        # MFU
-        # 1. Definition
-        #
-        # MFU is defined as (achieved TPS) / (theoretical maximum TPS) = (achieved floating point operations per sec) / (theoretical maximum floating point operations per sec)
-        # Crucially, the "theoretical maximum" throughput only accounts for the required operations to compute the forward+backward passes, and not rematerialization. MFU therefore allows fair comparisons
-        # between training runs on different systems, as the numerator is simply the observed tokens-per-second, and the denominator is only dependent on the model architecture and published maximum FLOPs for a given system.
-        # Ref: https://arxiv.org/pdf/2204.02311
-        # The benefit of MFU is that it
-        #
-        # 2. Implementation in huggingface
-        #
-        # current_flos = 6 * estimate_tokens(input_dict) * num_parameters()
-        # total_flos = sum(current_flos) # across all GPUs
-        # Ref: https://github.com/huggingface/transformers/blob/616bb11d487aabc231bb230b245c42214ea4b254/src/transformers/modeling_utils.py#L1196
-        #
-        # 3. Derive MFU on rank 0
-        #
-        # rank_0_flos = tatal_flos / n_gpus = measured_flos / effecitve_n_gpus
-        # rank_0_MFU = rank_0_flos / step_time
-        #
-        # For FSDP, num_parameters() is (1 / n_gpus) of the total parameters. So, the effective_n_gpus = 1
-        # For HSDP, num_parameters() is (1 / local_world_size) of the total parameters. So, the effective_n_gpus = n_nodes
-        # For no sharding and zero-2, num_parameters() is the total parameters. So, the effective_n_gpus = n_gpus
-
-        num_gpus = EfficiencyCallback._get_effective_num_gpus()
-        step_achieved_tflops = step_flos / step_time / num_gpus / T_DEC_UNIT
-
-        avg_achieved_tflops = (
-            self.state.elapsed_flos / self.state.elapsed_time / num_gpus / T_DEC_UNIT
-        )
-
-        precision_bits = 16 if args.bf16 or args.fp16 else 32
-        gpu_peak_tflops = EfficiencyCallback._get_gpu_peak_tflops(precision_bits)
-
-        self.mfu.step_MFU = round_to_n_decimal(
-            step_achieved_tflops / gpu_peak_tflops, self.precision.n_decimal_MFU
-        )
-
-        self.mfu.avg_MFU = round_to_n_decimal(
-            avg_achieved_tflops / gpu_peak_tflops, self.precision.n_decimal_MFU
-        )
-
-        # The end the current step_start_tokens_seen and step_start_flos are the start of next iteration
+        # The end the current step_start_tokens_seen is the start of next iteration
 
         # tokens
         self.state.step_start_tokens_seen = state.num_input_tokens_seen
-        # flos
-        self.state.step_start_flos = state.total_flos
-
-    @staticmethod
-    def _get_effective_num_gpus():
-        # Calculate the number of effective GPUs for the total FLOPs in order to calculate the single GPU FLOP
-        world_size = int(os.environ.get("WORLD_SIZE", "1"))
-
-        if transformers.utils.strtobool(os.environ.get("ACCELERATE_USE_FSDP", "false")):
-            sharding_strategy = os.environ.get(
-                "FSDP_SHARDING_STRATEGY", FSDP_SHARDING_STRATEGY[0]
-            ).upper()
-
-            # Either specified as string or enum number
-            if sharding_strategy in {
-                "FULL_SHARD",
-                str(FSDP_SHARDING_STRATEGY.index("FULL_SHARD") + 1),
-            }:
-                return 1
-
-            elif sharding_strategy in {
-                "HYBRID_SHARD",
-                str(FSDP_SHARDING_STRATEGY.index("HYBRID_SHARD") + 1),
-            }:
-                return world_size // int(os.environ.get("LOCAL_WORLD_SIZE", 1))
-            else:
-                return world_size
-
-        assert (
-            world_size != 0
-        ), "WORLD_SIZE should be set to a positive integer. For single GPU training, please explicitly set WORLD_SIZE=1."
-
-        # TODO: add deepspeed support
-        return world_size
-
-    @staticmethod
-    def _get_gpu_peak_tflops(precision_bits: int = 16):
-        if precision_bits not in {16, 32}:
-            raise Exception(f"Precision bits {precision_bits} is not supported")
-
-        device_name = torch.cuda.get_device_name()
-
-        if "A100" in device_name:
-            # data from https://www.nvidia.com/en-us/data-center/a100/
-            return 312 if precision_bits == 16 else 156
-        elif "H100" in device_name:
-            # data from https://www.nvidia.com/en-us/data-center/h100/
-            # NOTE: Specifications are one-half lower without sparsity.
-            if "NVL" in device_name:
-                return 1979 if precision_bits == 16 else 989
-            elif "PCIe" in device_name:
-                return 756 if precision_bits == 16 else 378
-            else:  # for SXM and other variants
-                return 989 if precision_bits == 16 else 494
-        elif "V100" in device_name:
-            if "NVL" in device_name:
-                return 125
-            else:
-                return 112
-        return None
