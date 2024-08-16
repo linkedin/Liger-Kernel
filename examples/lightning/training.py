@@ -179,8 +179,7 @@ class DataModule(pl.LightningDataModule):
         }
 
     def setup(self, stage) -> None:
-        # dataset = datasets.load_dataset(self.args.data, "auxiliary_train")
-        dataset = datasets.load_from_disk(self.args.data)["auxiliary_train"]
+        dataset = datasets.load_dataset(self.args.data, "auxiliary_train")
         dataset = dataset.train_test_split(test_size=4096, seed=self.args.seed)
         train_dataset, val_dataset = dataset["train"], dataset["test"]
         self.train_dataset = train_dataset.map(
