@@ -1,10 +1,8 @@
-import os
 import time
 from dataclasses import dataclass
 
 import torch
 import transformers
-from accelerate.utils.constants import FSDP_SHARDING_STRATEGY
 from transformers import TrainerControl, TrainerState, TrainingArguments
 
 # https://simple.wikipedia.org/wiki/Byte
@@ -100,21 +98,13 @@ class EfficiencyCallback(transformers.TrainerCallback):
     """
 
     def __init__(
-        self,
-        n_warmup_steps=2,
-        n_decimal_time=2,
-        n_decimal_memory=2,
-        n_decimal_TPS=2
+        self, n_warmup_steps=2, n_decimal_time=2, n_decimal_memory=2, n_decimal_TPS=2
     ):
         self.state = State(
             n_warmup_steps,
         )
 
-        self.precision = Precision(
-            n_decimal_time,
-            n_decimal_memory,
-            n_decimal_TPS
-        )
+        self.precision = Precision(n_decimal_time, n_decimal_memory, n_decimal_TPS)
 
         self.time = Time()
         self.memory = Memory()
