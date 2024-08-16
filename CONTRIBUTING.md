@@ -43,4 +43,4 @@ Fork the repo, copy and paste the successful test logs in the PR and submit the 
 1. Bump the version in setup.py
 2. Submit a PR and merge
 3. Create a new release based on the current HEAD
-4. New pip uploading will be tried upon a new release 
+4. New pip uploading will be triggered upon a new release 
