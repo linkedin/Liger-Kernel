@@ -1,0 +1,6 @@
+lightning
+transformers
+trl
+liger-kernel
+torch
+triton
