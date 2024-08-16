@@ -1,4 +1,4 @@
-transformers
+transformers==4.43.3
 trl
 liger-kernel
 torch
