@@ -1,7 +1,8 @@
 import functools
+import os
 from dataclasses import dataclass
 from test.utils import assert_verbose_allclose, set_seed
-
+import datasets
 import pytest
 import torch
 from datasets import load_dataset
@@ -9,9 +10,11 @@ from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
     DataCollatorForLanguageModeling,
+    DefaultDataCollator,
     PretrainedConfig,
     PreTrainedModel,
 )
+from transformers.tokenization_utils_base import BatchEncoding
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
@@ -22,6 +25,8 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_mixtral,
 )
 
+# Pre-tokenized dataset using Mistral-7B tokenizer
+DEFAULT_DATASET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../resources/tiny_shakespeare_tokenized")
 
 @dataclass
 class MiniModelConfig:
@@ -57,7 +62,7 @@ MINI_MODEL_SETUPS = {
             rope_theta=500000.0,
             tie_word_embeddings=False,
             use_cache=True,
-            vocab_size=128256,
+            vocab_size=32000, # 128256
             # At rope backward
             # Eager produces incontiguous dq and dk
             # SDPA produces contiguous dq and incontiguous dk
@@ -168,6 +173,7 @@ def run_mini_model(
     dtype=torch.bfloat16,
     lr=1e-5,
     with_liger=False,
+    dataset_path=DEFAULT_DATASET_PATH,
 ):
     # If we move it to the beginning of test_mini_model, the two runs are initialized with different weights.
     # This is due to RNG (Random Number Generator). The formula of RNG progression is x_(n+1) = (a * x_n + c) % m
@@ -181,13 +187,24 @@ def run_mini_model(
             rope=True, rms_norm=True, cross_entropy=True, swiglu=True
         )
 
-    tokenizer = create_tokenizer(model_name)
-    train_dataset = prepare_dataset(tokenizer)
     model = create_model(model_name).to(dtype).to("cuda")
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    train_dataset = datasets.load_from_disk(dataset_path)
+
+    def simple_collate_fn(batch):
+        input_ids = [torch.tensor(item['input_ids']) for item in batch]
+        attention_mask = [torch.tensor(item['attention_mask']) for item in batch]
+        labels = [ids.clone() for ids in input_ids]
+
+        return BatchEncoding({
+            'input_ids': torch.stack(input_ids),
+            'attention_mask': torch.stack(attention_mask),
+            'labels': torch.stack(labels),
+        })
+
     loader = DataLoader(
-        train_dataset, batch_size=16, shuffle=False, collate_fn=data_collator
+        train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn
     )
+
     loader_iter = iter(loader)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
