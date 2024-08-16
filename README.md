@@ -19,7 +19,7 @@
 
 | **Example**                                    | **Description**                                                                                   | **Lightning Studio** |
 |------------------------------------------------|---------------------------------------------------------------------------------------------------|----------------------|
-| [**Medusa Multi-head LLM**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa)        | Reduce memory usage by 80% with 5 LM heads and improve throughput by 40% using 8 A100s            | TBA                  |
+| [**Medusa Multi-head LLM (Retraining Phase)**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa)        | Reduce memory usage by 80% with 5 LM heads and improve throughput by 40% using 8 A100s            | TBA                  |
 
 ## Overview
 
