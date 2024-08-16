@@ -29,6 +29,7 @@ class Args:
     data: str = "cais/mmlu"
     output_dir: str = "mmlu_finetuning"
     max_length: int = 2048
+    # deepspeed will OOM with 16
     batch_size: int = 8
     lr: float = 6e-6
     weight_decay: float = 0.05
