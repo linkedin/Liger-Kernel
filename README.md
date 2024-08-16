@@ -1,4 +1,4 @@
-# Liger Kernel
+# Liger Kernel: Efficient Triton Kernels for LLM Training
 
 [![Downloads](https://static.pepy.tech/badge/liger-kernel)](https://pepy.tech/project/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel.svg)](https://badge.fury.io/py/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel-nightly.svg)](https://badge.fury.io/py/liger-kernel-nightly)
 
@@ -7,6 +7,24 @@
 
 **Liger (Linkedin GPU Efficient Runtime) Kernel** is a collection of Triton kernels designed specifically for LLM training. We have implemented **Hugging Face Compatible** `RMSNorm`, `RoPE`, `SwiGLU`, `CrossEntropy`, `FusedLinearCrossEntropy`, and more to come. It can effectively increase multi-GPU **training throughput by 20%** and reduces **memory usage by 60%**. The kernel works out of the box with [flash attention](https://github.com/Dao-AILab/flash-attention), PyTorch FSDP, and Microsoft DeepSpeed. We welcome contributions from the community to gather the best kernels for LLM training.
 
+
+
+## Supercharge Your Model with Liger Kernel
+
+![Banner](/docs/images/banner.GIF)
+
+Gain +20% throughput and reduce memory usage by 60%. Achieve longer context lengths and larger batch sizes. It’s also useful if you want to scale up your model to multi-head training or large vocabulary sizes.
+
+| Speed Up                 | Memory Reduction        |
+|--------------------------|-------------------------|
+| ![Speed up](docs/images/e2e-tps.png) | ![Memory](docs/images/e2e-memory.png) |
+
+
+> - Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s. 
+> - Hugging Face models start to OOM at a 4K context length, whereas Liger Kernel scales up to 16K.  
+> - **Fused Linear Cross Entropy Loss** is enabled to significantly reduce memory usage.
+
+## Examples
 
 ### Basic
 
@@ -21,28 +39,7 @@
 |------------------------------------------------|---------------------------------------------------------------------------------------------------|----------------------|
 | [**Medusa Multi-head LLM (Retraining Phase)**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa)        | Reduce memory usage by 80% with 5 LM heads and improve throughput by 40% using 8 A100s            | TBA                  |
 
-## Overview
-
-### Supercharge Your Model with Liger Kernel
-
-Gain +20% throughput and reduce memory usage by 60%. Achieve longer context lengths and larger batch sizes. It’s also useful if you want to scale up your model to multi-head training or large vocabulary sizes.
-
-| Speed Up                 | Memory Reduction        |
-|--------------------------|-------------------------|
-| ![Speed up](docs/images/e2e-tps.png) | ![Memory](docs/images/e2e-memory.png) |
-
-
-> - Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s. 
-> - Hugging Face models start to OOM at a 4K context length, whereas Liger Kernel scales up to 16K.  
-> - **Fused Linear Cross Entropy Loss** is enabled to significantly reduce memory usage.
-
-### Patch HF model with one line or use individual kernels
-
-| Patch Existing HF Model               | Compose Your Own Model       |
-|--------------------------|-------------------------|
-| ![Patch](docs/images/patch.gif) | ![Compose](docs/images/compose.gif) |
-
-### Key Features
+## Key Features
 
 - **Ease of use:** Simply patch your Hugging Face model with one line of code, or compose your own model using our kernels.
 - **Time- and memory-efficient:** In the same spirit as Flash-Attn, but for layers like **RMSNorm**, **RoPE**, **CrossEntropy**! Increases multi-GPU training throughput by 20% and reduces memory usage by 60% with **kernel fusion**, **in-place replacement**, and **chunking** techniques.
@@ -50,7 +47,7 @@ Gain +20% throughput and reduce memory usage by 60%. Achieve longer context leng
 - **Lightweight:** The kernels have minimal dependencies, requiring only Torch and Triton—no extra libraries needed! Say goodbye to dependency headaches!
 - **Multi-GPU supported:** Compatible with multi-GPU setups (PyTorch FSDP and DeepSpeed).
 
-### Target Audiences
+## Target Audiences
 
 - **Researchers**: Looking to compose models using efficient and reliable kernels for frontier experiments.
 - **ML Practitioners**: Focused on maximizing GPU training efficiency with optimal, high-performance kernels.
