@@ -12,7 +12,7 @@
 
 | **Example**                                    | **Description**                                                                                   | **Lightning Studio** |
 |------------------------------------------------|---------------------------------------------------------------------------------------------------|----------------------|
-| [**Hugging Face Trainer**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/huggingface)      | Increase 20% throughput and reduce memory usage by 60% with LLaMA3-8B on Alpaca dataset using 4 A100s | TBA                  |
+| [**Hugging Face Trainer**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/huggingface)      | Train llama3 8B ~20% faster with over 40% memory reduction on Alpaca dataset using 4 A100s | TBA                  |
 | [**Lightning Trainer**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/lightning)         | Increase 15% throughput and reduce memory usage by 40% with LLaMA3-8B on MMLU dataset using 8 A100s  | TBA                  |
 
 ### Advanced

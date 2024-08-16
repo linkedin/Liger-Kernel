@@ -3,17 +3,22 @@ from dataclasses import dataclass
 import datasets
 import torch
 import transformers
-from liger_kernel.transformers import apply_liger_kernel_to_llama
+from callback import EfficiencyCallback
 from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
 
-apply_liger_kernel_to_llama()
+from liger_kernel.transformers import apply_liger_kernel_to_llama
+
+# TODO: clean up the code after hf meeting
 
 
 @dataclass
 class CustomArguments:
-    model_name: str = "meta-llama/Meta-Llama-3-8B"
+    model_name: str = (
+        "meta-llama/Meta-Llama-3-8B"
+    )
     dataset: str = "tatsu-lab/alpaca"
-    max_seq_length: int = 1024
+    max_seq_length: int = 512
+    use_liger: bool = False
 
 
 def formatting_prompts_func(example):
@@ -49,6 +54,10 @@ def train():
         use_cache=False,
         torch_dtype=torch.bfloat16,
     )
+
+    if custom_args.use_liger is True:
+        apply_liger_kernel_to_llama()
+
     trainer = SFTTrainer(
         model=model,
         args=training_args,
@@ -57,6 +66,7 @@ def train():
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         formatting_func=formatting_prompts_func,
+        callbacks=[EfficiencyCallback()],
     )
     trainer.train()
 
