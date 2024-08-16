@@ -7,13 +7,12 @@ import datasets
 import lightning.pytorch as pl
 import torch
 import transformers
-from lightning.pytorch.strategies import FSDPStrategy
+from liger_kernel.transformers import apply_liger_kernel_to_llama
+from lightning.pytorch.strategies import DeepSpeedStrategy, FSDPStrategy
 from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision
 from torch.utils.data import DataLoader
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from trl import DataCollatorForCompletionOnlyLM
-
-from liger_kernel.transformers import apply_liger_kernel_to_llama
 
 apply_liger_kernel_to_llama(fused_linear_cross_entropy=True, cross_entropy=False)
 
@@ -30,11 +29,13 @@ class Args:
     data: str = "cais/mmlu"
     output_dir: str = "mmlu_finetuning"
     max_length: int = 2048
-    batch_size: int = 16
+    # deepspeed will OOM with 16
+    batch_size: int = 8
     lr: float = 6e-6
     weight_decay: float = 0.05
     warmup_ratio: float = 0.1
     seed: int = 42
+    strategy: str = "deepspeed"
 
 
 def warmup_cosine_schedule(warmup_steps, total_steps, min_lr=0):
@@ -74,9 +75,11 @@ class LanguageModel(pl.LightningModule):
         if self.model is not None:
             return
         self.model = transformers.AutoModelForCausalLM.from_pretrained(
-            self.args.model,
-            use_cache=False,
+            self.args.model, use_cache=False, ignore_mismatched_sizes=True
         )
+        if self.args.strategy == "deepspeed":
+            self.model.train()
+            self.model.gradient_checkpointing_enable()
 
     def forward(self, input_ids, attention_mask, labels=None, **kwargs):
         return self.model(
@@ -216,24 +219,28 @@ def train():
     os.makedirs(args.output_dir, exist_ok=True)
 
     layers = {LlamaDecoderLayer}
-    fsdp_strategy = FSDPStrategy(
-        auto_wrap_policy=layers,
-        sharding_strategy="FULL_SHARD",
-        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
-        sync_module_states=True,
-        activation_checkpointing_policy=layers,
-        mixed_precision=MixedPrecision(
-            param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16
-        ),
-    )
+    if args.strategy == "fsdp":
+        strategy = FSDPStrategy(
+            auto_wrap_policy=layers,
+            sharding_strategy="FULL_SHARD",
+            backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
+            sync_module_states=True,
+            activation_checkpointing_policy=layers,
+            mixed_precision=MixedPrecision(
+                param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16
+            ),
+            forward_prefetch=True,
+        )
+    else:
+        strategy = DeepSpeedStrategy(stage=3)
     trainer = pl.Trainer(
         accelerator="cuda",
-        strategy=fsdp_strategy,
+        strategy=strategy,
         devices=torch.cuda.device_count(),
         default_root_dir=args.output_dir,
         log_every_n_steps=1,
         max_epochs=1,
-        val_check_interval=50,
+        precision=None if args.strategy == "fsdp" else "bf16-mixed",
     )
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(

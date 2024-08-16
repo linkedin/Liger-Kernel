@@ -30,14 +30,14 @@ Gain +20% throughput and reduce memory usage by 60%. Achieve longer context leng
 
 | **Example**                                    | **Description**                                                                                   | **Lightning Studio** |
 |------------------------------------------------|---------------------------------------------------------------------------------------------------|----------------------|
-| [**Hugging Face Trainer**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/huggingface)      | Train llama3 8B ~20% faster with over 40% memory reduction on Alpaca dataset using 4 A100s | TBA                  |
-| [**Lightning Trainer**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/lightning)         | Increase 15% throughput and reduce memory usage by 40% with LLaMA3-8B on MMLU dataset using 8 A100s  | TBA                  |
+| [**Hugging Face Trainer**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/huggingface)      | Train llama3 8B ~20% faster with over 40% memory reduction on Alpaca dataset using 4 A100s with FSDP | TBA                  |
+| [**Lightning Trainer**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/lightning)         | Increase 15% throughput and reduce memory usage by 40% with LLaMA3-8B on MMLU dataset using 8 A100s with DeepSpeed ZeRO3 | TBA                  |
 
 ### Advanced
 
 | **Example**                                    | **Description**                                                                                   | **Lightning Studio** |
 |------------------------------------------------|---------------------------------------------------------------------------------------------------|----------------------|
-| [**Medusa Multi-head LLM (Retraining Phase)**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa)        | Reduce memory usage by 80% with 5 LM heads and improve throughput by 40% using 8 A100s            | TBA                  |
+| [**Medusa Multi-head LLM (Retraining Phase)**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa)        | Reduce memory usage by 80% with 5 LM heads and improve throughput by 40% using 8 A100s with FSDP      | TBA                  |
 
 ## Key Features
 
