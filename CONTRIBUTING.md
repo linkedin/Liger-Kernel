@@ -30,7 +30,7 @@ Create unit tests and convergence tests for your kernel in the tests directory. 
 2. run `make checkstyle` to ensure code style.
 3. run `make test-convergence` to ensure convergence.
 
-### Run a single file
+### Run pytest on single file
 `pytest test_sample.py::test_function_name`
 
 ## Submit PR
