@@ -25,9 +25,13 @@ Create unit tests and convergence tests for your kernel in the tests directory. 
 
 ## Run tests
 
+### Use Makefile to run full tests
 1. run `make test` to ensure correctness.
 2. run `make checkstyle` to ensure code style.
 3. run `make test-convergence` to ensure convergence.
+
+### Run a single file
+`pytest test_sample.py::test_function_name`
 
 ## Submit PR
 Fork the repo, copy and paste the successful test logs in the PR and submit the PR followed by the PR template (**[example PR](https://github.com/linkedin/Liger-Kernel/pull/21)**).
