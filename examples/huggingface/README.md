@@ -13,4 +13,6 @@ sh run.sh
 2. The default hyperparameters and configurations work on single node with 4xA100 GPUs. For running on device with less GPU RAM, please consider reducing the per-GPU batch size and/or enable `CPUOffload` in FSDP.
 
 
-<!-- Benchmark TBD -->
+## Benchmark Result
+![MFU](img/hf_mfu.png)
+![GPU Memory Allocated](img/hf_mem_alloc.png)

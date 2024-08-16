@@ -13,6 +13,7 @@ apply_liger_kernel_to_llama()
 class CustomArguments:
     model_name: str = "meta-llama/Meta-Llama-3-8B"
     dataset: str = "tatsu-lab/alpaca"
+    max_seq_length: int = 1024
 
 
 def formatting_prompts_func(example):
@@ -52,6 +53,7 @@ def train():
         model=model,
         args=training_args,
         data_collator=collator,
+        max_seq_length=custom_args.max_seq_length,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         formatting_func=formatting_prompts_func,
