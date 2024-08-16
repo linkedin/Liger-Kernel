@@ -33,7 +33,7 @@ Gain +20% throughput and reduce memory usage by 60%. Achieve longer context leng
 
 
 > - Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s. 
-> - HuggingFace models start to OOM at a 4K context length, whereas Liger Kernel scales up to 16K.  
+> - Hugging Face models start to OOM at a 4K context length, whereas Liger Kernel scales up to 16K.  
 > - **Fused Linear Cross Entropy Loss** is enabled to significantly reduce memory usage.
 
 ### Patch HF model with one line or use individual kernels
@@ -146,13 +146,13 @@ loss.backward()
 
 | **Kernel**                | **API**                                                     | **Description** |
 |---------------------------|-------------------------------------------------------------|-----------------|
-| RMSNorm                    | `liger_kernel.transformers.LigerRMSNorm`                    | [RMSNorm Paper](https://arxiv.org/pdf/1910.07467) |
-| RoPE                       | `liger_kernel.transformers.liger_rotary_pos_emb`            | [RoPE Paper](https://arxiv.org/pdf/2104.09864)    |
-| SwiGLU                     | `liger_kernel.transformers.LigerSwiGLUMLP`                  | [SwiGLU Paper](https://arxiv.org/pdf/2002.05202)  |
-| CrossEntropy               | `liger_kernel.transformers.LigerCrossEntropyLoss`           | [PyTorch CrossEntropyLoss Documentation](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) |
-| FusedLinearCrossEntropy    | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`| Inspired by [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy), with additional optimizations |
-| GeGLU                     | `liger_kernel.transformers.LigerGEGLUMLP`                    | [GeGLU paper](https://arxiv.org/pdf/2002.05202)  |
-
+| RMSNorm                    | `liger_kernel.transformers.LigerRMSNorm`                    | RMSNorm, which normalizes tensor activations using their root mean square, is accelerated by fusing the normalization and scaling steps into a single triton kernel, achieved ~3X speedup with ~3X peak memory reduction  [RMSNorm Paper](https://arxiv.org/pdf/1910.07467) |
+| RoPE                       | `liger_kernel.transformers.liger_rotary_pos_emb`            | Fused the operations of query and key embedding rotary into a single kernel with inplace replacement, achieved ~3X speedup with ~3X peak memory reduction.  [RoPE Paper](https://arxiv.org/pdf/2104.09864)    |
+| SwiGLU                     | `liger_kernel.transformers.LigerSwiGLUMLP`                  | Leveraging the fused triton kernel for the elementwise transformation in $$SwiGLU_{\beta=1}$$ ($$\sigma(A) \odot B$$) with inplace replacement, achieved parity speed with ~1.5X peak memory reduction. [SwiGLU Paper](https://arxiv.org/pdf/2002.05202)  |
+| CrossEntropy               | `liger_kernel.transformers.LigerCrossEntropyLoss`           | Computes both loss and the gradient in the forward path with inplace replacement of input to reduce the peak memory (avoid the materialization of both input logits and gradient), achieved >2X speedup and >4X memory reduction for common vocab sizes. We only consider hard label + mean reduction for now. [PyTorch CrossEntropyLoss Documentation](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) |
+| FusedLinearCrossEntropy    | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`| Further improves upon the basic Liger Cross Entropy kernel on reducing the peak memory usage by fusing the model last output head layer with the CE loss and chunking the input for block-wise loss and gradient calculation, inspired by [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy), achieved >4X memory reduction for 128k vocab size. **Please consider using this for extreme large vocab size.** We currently only support Llama style model for patching API and please refer to the [Medusa example](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa) for general usage.  |
+| GeGLU                     | `liger_kernel.transformers.LigerGEGLUMLP`                    | Leveraging the fused triton kernel for the elementwise transformation in GeGLU with [tanh approximation form of GELU](https://pytorch.org/docs/stable/generated/torch.nn.GELU.html) and inplace replacement, achieved parity speed with ~1.5X peak memory reduction.  [GeGLU paper](https://arxiv.org/pdf/2002.05202)  |
+* Reported speedups and memory reductions are compared with Llama3 8B Hugging Face layer implementations with 4k default hidden size and 4k sequence length for single forward and backward pass on single NVIDIA A100 80G GPU with small batchsizes. Liger kernels exhibits more efficient scaling to larger batchsizes of tokens.
 
 ## Note on ML Compiler
 
