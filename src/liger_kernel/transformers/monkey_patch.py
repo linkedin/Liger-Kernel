@@ -1,3 +1,5 @@
+from collections import OrderedDict
+
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.model.llama import lce_forward
@@ -128,3 +130,13 @@ def apply_liger_kernel_to_gemma(
         modeling_gemma.CrossEntropyLoss = LigerCrossEntropyLoss
     if geglu:
         modeling_gemma.GemmaMLP = LigerGEGLUMLP
+
+
+MODEL_TO_LIGER_KERNEL_PATCHING_FUNC = OrderedDict(
+    [
+        ("LlamaForCausalLM", apply_liger_kernel_to_llama),
+        ("MistralForCausalLM", apply_liger_kernel_to_mistral),
+        ("MixtralForCausalLM", apply_liger_kernel_to_mixtral),
+        ("GemmaForCausalLM", apply_liger_kernel_to_gemma),
+    ]
+)

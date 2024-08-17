@@ -13,9 +13,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_llama
 
 @dataclass
 class CustomArguments:
-    model_name: str = (
-        "meta-llama/Meta-Llama-3-8B"
-    )
+    model_name: str = "meta-llama/Meta-Llama-3-8B"
     dataset: str = "tatsu-lab/alpaca"
     max_seq_length: int = 512
     use_liger: bool = False

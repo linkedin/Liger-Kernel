@@ -7,12 +7,13 @@ import datasets
 import lightning.pytorch as pl
 import torch
 import transformers
-from liger_kernel.transformers import apply_liger_kernel_to_llama
 from lightning.pytorch.strategies import DeepSpeedStrategy, FSDPStrategy
 from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision
 from torch.utils.data import DataLoader
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from trl import DataCollatorForCompletionOnlyLM
+
+from liger_kernel.transformers import apply_liger_kernel_to_llama
 
 apply_liger_kernel_to_llama(fused_linear_cross_entropy=True, cross_entropy=False)
 
