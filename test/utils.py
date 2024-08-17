@@ -1,9 +1,10 @@
 import os
 import random
+from dataclasses import dataclass
+from typing import Any, Dict, List
 
 import torch
-from dataclasses import dataclass
-from transformers import PreTrainedModel, PretrainedConfig
+from transformers import PretrainedConfig, PreTrainedModel
 from transformers.tokenization_utils_base import BatchEncoding
 
 
@@ -83,7 +84,10 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
 
 
 # Pre-tokenized dataset using Mistral-7B tokenizer used for convergence tests
-DEFAULT_DATASET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare_tokenized")
+DEFAULT_DATASET_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare_tokenized"
+)
+
 
 @dataclass
 class MiniModelConfig:
@@ -92,16 +96,19 @@ class MiniModelConfig:
     mini_model_config: PretrainedConfig
 
 
-def simple_collate_fn(batch):
-    # Convert all items in the batch to tensors and stack them directly
-    input_ids = torch.stack([torch.tensor(item['input_ids']) for item in batch])
-    attention_mask = torch.stack([torch.tensor(item['attention_mask']) for item in batch])
+def simple_collate_fn(data: List[Dict[str, Any]]):
+    """A basic collate function to use for DataLoader"""
 
-    # Clone input_ids to create labels
+    input_ids = torch.stack([torch.tensor(item["input_ids"]) for item in data])
+    attention_mask = torch.stack(
+        [torch.tensor(item["attention_mask"]) for item in data]
+    )
     labels = input_ids.clone()
 
-    return BatchEncoding({
-        'input_ids': input_ids,
-        'attention_mask': attention_mask,
-        'labels': labels,
-    })
+    return BatchEncoding(
+        {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
+    )

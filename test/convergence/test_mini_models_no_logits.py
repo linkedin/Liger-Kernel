@@ -1,21 +1,18 @@
-from dataclasses import dataclass
-from test.utils import assert_verbose_allclose, set_seed
+from test.utils import (
+    DEFAULT_DATASET_PATH,
+    MiniModelConfig,
+    assert_verbose_allclose,
+    set_seed,
+    simple_collate_fn,
+)
 
 import pytest
 import torch
-from datasets import load_dataset, load_from_disk 
+from datasets import load_from_disk
 from torch.utils.data import DataLoader
-from transformers import (
-    AutoTokenizer,
-    DataCollatorForLanguageModeling,
-    PretrainedConfig,
-    PreTrainedModel,
-)
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 
 from liger_kernel.transformers import apply_liger_kernel_to_llama
-from test.utils import DEFAULT_DATASET_PATH, MiniModelConfig, simple_collate_fn
-
 
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
@@ -24,8 +21,8 @@ MINI_MODEL_SETUPS = {
         mini_model_config=LlamaConfig(
             attention_bias=False,
             attention_dropout=0.0,
-            bos_token_id=1, # 128000
-            eos_token_id=2, # 128001
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
             hidden_act="silu",
             hidden_size=1024,  # 4096
             initializer_range=0.02,
@@ -40,7 +37,7 @@ MINI_MODEL_SETUPS = {
             rope_theta=500000.0,
             tie_word_embeddings=False,
             use_cache=True,
-            vocab_size=32000, # 128256,
+            vocab_size=32000,  # 128256,
             # At rope backward
             # Eager produces incontiguous dq and dk
             # SDPA produces contiguous dq and incontiguous dk
