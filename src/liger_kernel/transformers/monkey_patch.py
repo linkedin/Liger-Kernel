@@ -1,11 +1,11 @@
+import logging
+
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.model.llama import lce_forward
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP, LigerSwiGLUMLP
-import logging
-
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +139,9 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
     "llama": apply_liger_kernel_to_llama,
     "mistral": apply_liger_kernel_to_mistral,
-    "mixtral": apply_liger_kernel_to_mixtral
+    "mixtral": apply_liger_kernel_to_mixtral,
 }
+
 
 def apply_liger_kernel(model_type: str = "", **kwargs) -> None:
     """
@@ -159,9 +160,11 @@ def apply_liger_kernel(model_type: str = "", **kwargs) -> None:
         return
 
     if model_type not in MODEL_TYPE_TO_APPLY_LIGER_FN.keys():
-        logger.info(f"There are currently no Liger kernels supported for model type: {model_type}.")
+        logger.info(
+            f"There are currently no Liger kernels supported for model type: {model_type}."
+        )
         return
 
-    logger.info(f"Applying Liger custom kernels for model type: {model_type}.")
+    logger.info(f"Applying Liger kernels for model type: {model_type}.")
     # Apply the default combination of liger kernels available for the model
     MODEL_TYPE_TO_APPLY_LIGER_FN[model_type](**kwargs)

@@ -20,7 +20,6 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_llama,
     apply_liger_kernel_to_mistral,
     apply_liger_kernel_to_mixtral,
-    apply_liger_kernel,
 )
 
 
