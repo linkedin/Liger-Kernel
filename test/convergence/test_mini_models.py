@@ -12,7 +12,6 @@ import torch
 from datasets import load_from_disk
 from torch.utils.data import DataLoader
 
-# from transformers.tokenization_utils_base import BatchEncoding
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
