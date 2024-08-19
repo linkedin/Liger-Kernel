@@ -39,8 +39,8 @@ def _rms_norm_forward(
     X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0)
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0)
 
-    root_mean = tl.sum(X_row * X_row, axis=0) / n_cols
-    inv_rms = tl.math.rsqrt(root_mean + eps)
+    mean_square = tl.sum(X_row * X_row, axis=0) / n_cols
+    inv_rms = tl.math.rsqrt(mean_square + eps)
 
     # We can save time by caching rms with minimal memory overhead
     # because rms is much smaller compared to X_row, as rms is for each row.
