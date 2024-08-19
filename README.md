@@ -43,7 +43,7 @@ With only a few lines of code, Liger can increase throughput by more than 20% an
 - **Time and memory efficient:** In the same spirit as Flash-Attn, but for layers like **RMSNorm**, **RoPE**, **SwiGLU**, and **CrossEntropy**! Increases multi-GPU training throughput by 20% and reduces memory usage by 60% with **kernel fusion**, **in-place replacement**, and **chunking** techniques.
 - **Exact:** Computation is exact—no approximations! Both forward and backward passes are implemented with rigorous unit tests and undergo convergence testing against training runs without Liger to ensure accuracy.
 - **Lightweight:** Liger has minimal dependencies, requiring only Torch and Triton—no extra libraries needed! Say goodbye to dependency headaches!
-- **Multi-GPU supported:** Compatible with multi-GPU setups (PyTorch FSDP and DeepSpeed).
+- **Multi-GPU supported:** Compatible with multi-GPU setups (PyTorch FSDP, DeepSpeed, DDP, etc.).
 
 ## Target Audiences
 
@@ -97,9 +97,9 @@ from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
 import torch.nn as nn
 import torch
 
-model = nn.Linear(128, 256).to("cuda")
+model = nn.Linear(128, 256).cuda()
 
-# LigerFusedLinearCrossEntropyLoss fuses linear and cross entropy layers together and performs chunk-by-chunk computation to reduce memory
+# fuses linear + cross entropy layers together and performs chunk-by-chunk computation to reduce memory
 loss_fn = LigerFusedLinearCrossEntropyLoss()
 
 input = torch.randn(4, 128, requires_grad=True, device="cuda")
@@ -164,8 +164,8 @@ $$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$
 
 
 > **Note:**  
-> Reported speedups and memory reductions are with respect to the LLaMA 3-8B Hugging Face layer implementations. All models use 4K hidden size and 4K sequence length and are evaluated based on memory usage and wall time for the forward+backward pass on a single NVIDIA A100 80G GPU using small batch sizes. 
 <!-- TODO: be more specific about batch size -->
+> Reported speedups and memory reductions are with respect to the LLaMA 3-8B Hugging Face layer implementations. All models use 4K hidden size and 4K sequence length and are evaluated based on memory usage and wall time for the forward+backward pass on a single NVIDIA A100 80G GPU using small batch sizes. 
 > Liger kernels exhibit more efficient scaling to larger batch sizes, detailed further in the [Benchmark](./benchmark) folder.
 
 ## Note on ML Compiler
