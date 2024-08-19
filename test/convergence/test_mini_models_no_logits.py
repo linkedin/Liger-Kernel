@@ -21,6 +21,8 @@ MINI_MODEL_SETUPS = {
         mini_model_config=LlamaConfig(
             attention_bias=False,
             attention_dropout=0.0,
+            # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
             bos_token_id=1,  # 128000
             eos_token_id=2,  # 128001
             hidden_act="silu",

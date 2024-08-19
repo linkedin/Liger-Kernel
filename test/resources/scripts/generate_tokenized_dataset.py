@@ -1,6 +1,7 @@
-from transformers import AutoTokenizer
-from datasets import load_dataset
 import argparse
+
+from datasets import load_dataset
+from transformers import AutoTokenizer
 
 
 def prepare_dataset(tokenizer, text_file_path: str):
@@ -22,7 +23,9 @@ def prepare_dataset(tokenizer, text_file_path: str):
     return tokenized_dataset["train"]
 
 
-def generate_tokenized_dataset(tokenizer_path: str, text_file_path: str, output_dir: str) -> None:
+def generate_tokenized_dataset(
+    tokenizer_path: str, text_file_path: str, output_dir: str
+) -> None:
     """
     Generate tokenized dataset from a text file, where each line is a different example.
 
@@ -40,13 +43,30 @@ def generate_tokenized_dataset(tokenizer_path: str, text_file_path: str, output_
 
 if __name__ == "__main__":
     # Example usage:
-    # python generate_tokenized_dataset.py --tokenizer_path /shared/public/models/Mistral-7B --text_file_path ./../resources/tiny_shakespeare.txt --output_dir ./../resources/tiny_shakespeare_tokenized
-    parser = argparse.ArgumentParser(description="Generate tokenized dataset from a text file.")
+    # python generate_tokenized_dataset.py --tokenizer_path /shared/public/models/Mistral-7B --text_file_path ./../../resources/tiny_shakespeare.txt --output_dir ./../../resources/tiny_shakespeare_tokenized
+    parser = argparse.ArgumentParser(
+        description="Generate tokenized dataset from a text file."
+    )
 
     # Add arguments
-    parser.add_argument('--tokenizer_path', type=str, required=True, help="Path to the directory containing the tokenizer files.")
-    parser.add_argument('--text_file_path', type=str, required=True, help="Path to the text file to tokenize.")
-    parser.add_argument('--output_dir', type=str, required=True, help="Directory where the tokenized dataset will be saved.")
+    parser.add_argument(
+        "--tokenizer_path",
+        type=str,
+        required=True,
+        help="Path to the directory containing the tokenizer files.",
+    )
+    parser.add_argument(
+        "--text_file_path",
+        type=str,
+        required=True,
+        help="Path to the text file to tokenize.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        required=True,
+        help="Directory where the tokenized dataset will be saved.",
+    )
 
     # Parse the arguments
     args = parser.parse_args()

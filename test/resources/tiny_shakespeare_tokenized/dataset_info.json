@@ -6,7 +6,7 @@
   "dataset_size": 1235394,
   "description": "",
   "download_checksums": {
-    "/home/jobuser/resources/liger-kernel/test/convergence/tiny_shakespeare.txt": {
+    "/home/jobuser/Liger-Kernel/test/resources/scripts/./../../resources/tiny_shakespeare.txt": {
       "num_bytes": 1115393,
       "checksum": null
     }
