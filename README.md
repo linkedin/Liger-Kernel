@@ -9,6 +9,7 @@
 
 ## Supercharge Your Model with Liger Kernel
 
+<!-- TODO: potentially update GIF comment to align with comment below -->
 ![Banner](/docs/images/banner.GIF)
 
 With only a few lines of code, Liger can increase throughput by more than 20% and reduce memory usage by 60%, thereby enabling longer context lengths, larger batch sizes, and massive vocabularies. 
@@ -40,7 +41,7 @@ With only a few lines of code, Liger can increase throughput by more than 20% an
 
 - **Ease of use:** Simply patch your Hugging Face model with one line of code, or compose your own model using our Liger PyTorch modules.
 - **Time and memory efficient:** In the same spirit as Flash-Attn, but for layers like **RMSNorm**, **RoPE**, **SwiGLU**, and **CrossEntropy**! Increases multi-GPU training throughput by 20% and reduces memory usage by 60% with **kernel fusion**, **in-place replacement**, and **chunking** techniques.
-- **Exact:** Computation is exact—no approximations! Both forward and backward are implemented with rigorous unit and convergence testing against training runs without Liger to ensure accuracy.
+- **Exact:** Computation is exact—no approximations! Both forward and backward passes are implemented with rigorous unit tests and undergo convergence testing against training runs without Liger to ensure accuracy.
 - **Lightweight:** Liger has minimal dependencies, requiring only Torch and Triton—no extra libraries needed! Say goodbye to dependency headaches!
 - **Multi-GPU supported:** Compatible with multi-GPU setups (PyTorch FSDP and DeepSpeed).
 
@@ -119,7 +120,7 @@ loss.backward()
 ### Tests
 
 - `transformers/`: Correctness tests for the Triton-based layers.
-- `convergence/`: Patches Hugging Face models with all kernels, runs multiple iterations, and compares weights, logits, and loss layer by layer.
+- `convergence/`: Patches Hugging Face models with all kernels, runs multiple iterations, and compares weights, logits, and loss layer-by-layer.
 
 ### Benchmark
 
@@ -150,11 +151,11 @@ loss.backward()
 - **RMSNorm**: [RMSNorm](https://arxiv.org/pdf/1910.07467), which normalizes activations using their root mean square, is implemented by fusing the normalization and scaling steps into a single Triton kernel, and achieves ~3X speedup with ~3X peak memory reduction.
 - **RoPE**: [Rotary Positional Embedding](https://arxiv.org/pdf/2104.09864) is implemented by fusing the query and key embedding rotary into a single kernel with inplace replacement, and achieves ~3X speedup with ~3X peak memory reduction. 
 - **SwiGLU**: [Swish Gated Linear Units](https://arxiv.org/pdf/2002.05202), given by 
-$$\operatorname{SwiGLU}(x)=\operatorname{Swish}_{\beta}(xW+b)\otimes(xV+c)$$ 
+$$\text{SwiGLU}(x)=\text{Swish}_{\beta}(xW+b)\otimes(xV+c)$$ 
 <!-- TODO: verify that beta in Swish is not always 1 -->
 is implemented by fusing the elementwise multiplication (denoted by $\otimes$) into a single kernel with inplace replacement, and achieves parity speed with ~1.5X peak memory reduction.
 - **GeGLU**: [GELU Gated Linear Units](https://arxiv.org/pdf/2002.05202), given by 
-$$\operatorname{GeGLU}(x)=\operatorname{GELU}(xW+b)\otimes(xV+c)$$ 
+$$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$ 
 is implemented by fusing the elementwise multiplication into a single kernel with inplace replacement, and achieves parity speed with ~1.5X peak memory reduction. Note that the [tanh approximation form of GELU](https://pytorch.org/docs/stable/generated/torch.nn.GELU.html) is used.
 - **CrossEntropy**: [Cross entropy loss](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) is implemented by computing both the loss and gradient in the forward pass with inplace replacement of input to reduce the peak memory by avoiding simultaneous materialization of both input logits and gradient, and achieves >2X speedup and >4X memory reduction for common vocab sizes (e.g., 32K, 128K, etc.).
 <!-- TODO: verify vocab sizes are accurate  -->
@@ -178,7 +179,7 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compil
 | Torch Compile + Liger Kernel   | 3702                       | 31000                   |
 
 > **Note:**  
-> 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Seq Len = 4096, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
+> 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Seq Len = 4096, Data Type = `bf16`, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
 > 2. Tested on torch `2.5.0.dev20240731+cu118`
 
 ### 2. Lightning Thunder
