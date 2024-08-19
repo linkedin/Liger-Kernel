@@ -17,7 +17,7 @@ With only a few lines of code, Liger can increase throughput by more than 20% an
 |--------------------------|-------------------------|
 | ![Speed up](docs/images/e2e-tps.png) | ![Memory](docs/images/e2e-memory.png) |
 
-
+> **Note:**
 > - Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = `bf16`, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s. 
 > - Hugging Face models start to OOM at a 4K context length, whereas Hugging Face + Liger scales up to 16K.  
 
