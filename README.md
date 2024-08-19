@@ -152,19 +152,21 @@ loss.backward()
 - **RoPE**: [Rotary Positional Embedding](https://arxiv.org/pdf/2104.09864) is implemented by fusing the query and key embedding rotary into a single kernel with inplace replacement, and achieves ~3X speedup with ~3X peak memory reduction. 
 <!-- TODO: verify that beta in Swish is not always 1 -->
 - **SwiGLU**: [Swish Gated Linear Units](https://arxiv.org/pdf/2002.05202), given by 
-$$\text{SwiGLU}(x)=\text{Swish}_{\beta}(xW+b)\otimes(xV+c)$$, is implemented by fusing the elementwise multiplication (denoted by $\otimes$) into a single kernel with inplace replacement, and achieves parity speed with ~1.5X peak memory reduction.
+$$\text{SwiGLU}(x)=\text{Swish}_{\beta}(xW+b)\otimes(xV+c)$$
+, is implemented by fusing the elementwise multiplication (denoted by $\otimes$) into a single kernel with inplace replacement, and achieves parity speed with ~1.5X peak memory reduction.
 - **GeGLU**: [GELU Gated Linear Units](https://arxiv.org/pdf/2002.05202), given by 
-$$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$, 
-is implemented by fusing the elementwise multiplication into a single kernel with inplace replacement, and achieves parity speed with ~1.5X peak memory reduction. Note that the [tanh approximation form of GELU](https://pytorch.org/docs/stable/generated/torch.nn.GELU.html) is used.
-- **CrossEntropy**: [Cross entropy loss](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) is implemented by computing both the loss and gradient in the forward pass with inplace replacement of input to reduce the peak memory by avoiding simultaneous materialization of both input logits and gradient, and achieves >2X speedup and >4X memory reduction for common vocab sizes (e.g., 32K, 128K, etc.).
+$$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$
+, is implemented by fusing the elementwise multiplication into a single kernel with inplace replacement, and achieves parity speed with ~1.5X peak memory reduction. Note that the [tanh approximation form of GELU](https://pytorch.org/docs/stable/generated/torch.nn.GELU.html) is used.
+<!-- TODO: verify that "simulatenous materialization" is accurate -->
+- **CrossEntropy**: [Cross entropy loss](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) is implemented by computing both the loss and gradient in the forward pass with inplace replacement of input to reduce the peak memory by avoiding simultaneous materialization of both input logits and gradient. It achieves >2X speedup and >4X memory reduction for common vocab sizes (e.g., 32K, 128K, etc.).
 <!-- TODO: verify vocab sizes are accurate  -->
-- **FusedLinearCrossEntropy**: Peak memory usage of cross entropy loss is further improved by fusing the model head with the CE loss and chunking the input for block-wise loss and gradient calculation, a technique inspired by [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy). It achieves >4X memory reduction for 128k vocab size. **This is highly effective for large batch size, large sequence length, and large vocab size model.** Please refer to the [Medusa example](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa) for individual kernel usage.
+- **FusedLinearCrossEntropy**: Peak memory usage of cross entropy loss is further improved by fusing the model head with the CE loss and chunking the input for block-wise loss and gradient calculation, a technique inspired by [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy). It achieves >4X memory reduction for 128k vocab size. **This is highly effective for large batch size, large sequence length, and large vocabulary sizes.** Please refer to the [Medusa example](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa) for individual kernel usage.
 
 
 > **Note:**  
-> Reported speedups and memory reductions are with respect to the LLaMA 3-8B Hugging Face layer implementations. All models use 4K hidden size and 4K sequence length and evaluated based on memory usage and wall time on for both forward and backward passes on single NVIDIA A100 80G GPU using small batch sizes. 
+> Reported speedups and memory reductions are with respect to the LLaMA 3-8B Hugging Face layer implementations. All models use 4K hidden size and 4K sequence length and are evaluated based on memory usage and wall time for the forward+backward pass on a single NVIDIA A100 80G GPU using small batch sizes. 
 <!-- TODO: be more specific about batch size -->
-Liger kernels exhibit more efficient scaling to larger batch sizes detailed further in the [Benchmark](./benchmark) folder.
+> Liger kernels exhibit more efficient scaling to larger batch sizes, detailed further in the [Benchmark](./benchmark) folder.
 
 ## Note on ML Compiler
 
@@ -172,10 +174,10 @@ Liger kernels exhibit more efficient scaling to larger batch sizes detailed furt
 
 Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compile`](https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html). In the following example, Liger Kernel can further optimize the model on top of Torch Compile, reducing the memory by more than half.
 
-| Configuration                  | Throughput (tokens/sec) | Memory Reserved (MB) |
+| Configuration                  | Throughput (tokens/sec) | Memory Reserved (GB) |
 |--------------------------------|----------------------------|-------------------------|
-| Torch Compile                  | 3780                       | 66358                   |
-| Torch Compile + Liger Kernel   | 3702                       | 31000                   |
+| Torch Compile                  | 3780                       | 66.4                   |
+| Torch Compile + Liger Kernel   | 3702                       | 31.0                   |
 
 > **Note:**  
 > 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Seq Len = 4096, Data Type = `bf16`, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
