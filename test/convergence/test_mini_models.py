@@ -1,17 +1,16 @@
 import functools
-from dataclasses import dataclass
-from test.utils import assert_verbose_allclose, set_seed
+from test.utils import (
+    DEFAULT_DATASET_PATH,
+    MiniModelConfig,
+    assert_verbose_allclose,
+    set_seed,
+    simple_collate_fn,
+)
 
 import pytest
 import torch
-from datasets import load_dataset
+from datasets import load_from_disk
 from torch.utils.data import DataLoader
-from transformers import (
-    AutoTokenizer,
-    DataCollatorForLanguageModeling,
-    PretrainedConfig,
-    PreTrainedModel,
-)
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
@@ -22,18 +21,8 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_mixtral,
 )
 
-
-@dataclass
-class MiniModelConfig:
-    tokenizer_path: str
-    liger_kernel_patch_func: callable
-    model_class: PreTrainedModel
-    mini_model_config: PretrainedConfig
-
-
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
-        tokenizer_path="/shared/public/models/Meta-Llama-3-8B/",
         liger_kernel_patch_func=functools.partial(
             apply_liger_kernel_to_llama, fused_linear_cross_entropy=False
         ),
@@ -41,8 +30,10 @@ MINI_MODEL_SETUPS = {
         mini_model_config=LlamaConfig(
             attention_bias=False,
             attention_dropout=0.0,
-            bos_token_id=128000,
-            eos_token_id=128001,
+            # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
             hidden_act="silu",
             hidden_size=1024,  # 4096
             initializer_range=0.02,
@@ -57,7 +48,7 @@ MINI_MODEL_SETUPS = {
             rope_theta=500000.0,
             tie_word_embeddings=False,
             use_cache=True,
-            vocab_size=128256,
+            vocab_size=32000,  # 128256
             # At rope backward
             # Eager produces incontiguous dq and dk
             # SDPA produces contiguous dq and incontiguous dk
@@ -66,7 +57,6 @@ MINI_MODEL_SETUPS = {
         ),
     ),
     "mini_mistral": MiniModelConfig(
-        tokenizer_path="/shared/public/models/Mistral-7B",
         liger_kernel_patch_func=apply_liger_kernel_to_mistral,
         model_class=MistralForCausalLM,
         mini_model_config=MistralConfig(
@@ -91,7 +81,6 @@ MINI_MODEL_SETUPS = {
         ),
     ),
     "mini_mixtral": MiniModelConfig(
-        tokenizer_path="/shared/public/models/Mixtral-8x7B-v0.1/",
         liger_kernel_patch_func=apply_liger_kernel_to_mixtral,
         model_class=MixtralForCausalLM,
         mini_model_config=MixtralConfig(
@@ -136,32 +125,6 @@ def create_model(model_name="mini_llama3"):
     return model_class(model_config)
 
 
-def create_tokenizer(model_name):
-    tokenizer = AutoTokenizer.from_pretrained(
-        MINI_MODEL_SETUPS[model_name].tokenizer_path
-    )
-    tokenizer.pad_token = tokenizer.eos_token
-    return tokenizer
-
-
-def prepare_dataset(
-    tokenizer,
-    file_path="/home/jobuser/resources/liger-kernel/test/convergence/tiny_shakespeare.txt",
-):
-    dataset = load_dataset("text", data_files={"train": file_path})
-
-    def tokenize_function(examples):
-        return tokenizer(
-            examples["text"], padding="max_length", truncation=True, max_length=128
-        )
-
-    # "text" is `str` type so we have to remove
-    tokenized_dataset = dataset.map(
-        tokenize_function, batched=True, remove_columns=["text"]
-    )
-    return tokenized_dataset["train"]
-
-
 def run_mini_model(
     model_name="mini_llama3",
     num_steps=100,
@@ -181,12 +144,11 @@ def run_mini_model(
             rope=True, rms_norm=True, cross_entropy=True, swiglu=True
         )
 
-    tokenizer = create_tokenizer(model_name)
-    train_dataset = prepare_dataset(tokenizer)
     model = create_model(model_name).to(dtype).to("cuda")
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
+
     loader = DataLoader(
-        train_dataset, batch_size=16, shuffle=False, collate_fn=data_collator
+        train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn
     )
     loader_iter = iter(loader)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -210,7 +172,7 @@ def run_mini_model(
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 1e-4, 1e-5, 2e-3, 1e-5),
         ("mini_llama3", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
         # TODO: torch 2.5.0 nightly breaks mixtral test, but torch 2.3.0 works fine
-        ("mini_mixtral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 1e-3, 1e-5, 8e-3, 1e-5),
+        ("mini_mixtral", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 8e-3, 1e-5),
         ("mini_mixtral", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 2.0, 1e-5, 1e-2, 1e-5),
         ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_mistral", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),

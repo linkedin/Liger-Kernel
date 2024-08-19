@@ -1,0 +1,48 @@
+{
+  "builder_name": "text",
+  "citation": "",
+  "config_name": "default",
+  "dataset_name": "text",
+  "dataset_size": 1235394,
+  "description": "",
+  "download_checksums": {
+    "/home/jobuser/Liger-Kernel/test/resources/scripts/./../../resources/tiny_shakespeare.txt": {
+      "num_bytes": 1115393,
+      "checksum": null
+    }
+  },
+  "download_size": 1115393,
+  "features": {
+    "input_ids": {
+      "feature": {
+        "dtype": "int32",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    },
+    "attention_mask": {
+      "feature": {
+        "dtype": "int8",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    }
+  },
+  "homepage": "",
+  "license": "",
+  "size_in_bytes": 2350787,
+  "splits": {
+    "train": {
+      "name": "train",
+      "num_bytes": 1235394,
+      "num_examples": 40000,
+      "dataset_name": "text"
+    }
+  },
+  "version": {
+    "version_str": "0.0.0",
+    "major": 0,
+    "minor": 0,
+    "patch": 0
+  }
+}
