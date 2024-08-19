@@ -1,12 +1,10 @@
 import os
 import random
 
-from overrides import override
 from triton.runtime.cache import FileCacheManager
 
 
 class LigerTritonFileCacheManager(FileCacheManager):
-    @override
     def put(self, data, filename, binary=True) -> str:
         if not self.cache_dir:
             raise RuntimeError("Could not create or locate cache dir")
