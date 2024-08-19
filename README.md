@@ -150,9 +150,9 @@ loss.backward()
 
 - **RMSNorm**: [RMSNorm](https://arxiv.org/pdf/1910.07467), which normalizes activations using their root mean square, is implemented by fusing the normalization and scaling steps into a single Triton kernel, and achieves ~3X speedup with ~3X peak memory reduction.
 - **RoPE**: [Rotary Positional Embedding](https://arxiv.org/pdf/2104.09864) is implemented by fusing the query and key embedding rotary into a single kernel with inplace replacement, and achieves ~3X speedup with ~3X peak memory reduction. 
+<!-- TODO: verify that beta in Swish is not always 1 -->
 - **SwiGLU**: [Swish Gated Linear Units](https://arxiv.org/pdf/2002.05202), given by 
 $$\text{SwiGLU}(x)=\text{Swish}_{\beta}(xW+b)\otimes(xV+c)$$ 
-<!-- TODO: verify that beta in Swish is not always 1 -->
 is implemented by fusing the elementwise multiplication (denoted by $\otimes$) into a single kernel with inplace replacement, and achieves parity speed with ~1.5X peak memory reduction.
 - **GeGLU**: [GELU Gated Linear Units](https://arxiv.org/pdf/2002.05202), given by 
 $$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$ 
