@@ -152,10 +152,9 @@ loss.backward()
 - **RoPE**: [Rotary Positional Embedding](https://arxiv.org/pdf/2104.09864) is implemented by fusing the query and key embedding rotary into a single kernel with inplace replacement, and achieves ~3X speedup with ~3X peak memory reduction. 
 <!-- TODO: verify that beta in Swish is not always 1 -->
 - **SwiGLU**: [Swish Gated Linear Units](https://arxiv.org/pdf/2002.05202), given by 
-$$\text{SwiGLU}(x)=\text{Swish}_{\beta}(xW+b)\otimes(xV+c)$$ 
-is implemented by fusing the elementwise multiplication (denoted by $\otimes$) into a single kernel with inplace replacement, and achieves parity speed with ~1.5X peak memory reduction.
+$$\text{SwiGLU}(x)=\text{Swish}_{\beta}(xW+b)\otimes(xV+c)$$, is implemented by fusing the elementwise multiplication (denoted by $\otimes$) into a single kernel with inplace replacement, and achieves parity speed with ~1.5X peak memory reduction.
 - **GeGLU**: [GELU Gated Linear Units](https://arxiv.org/pdf/2002.05202), given by 
-$$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$ 
+$$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$, 
 is implemented by fusing the elementwise multiplication into a single kernel with inplace replacement, and achieves parity speed with ~1.5X peak memory reduction. Note that the [tanh approximation form of GELU](https://pytorch.org/docs/stable/generated/torch.nn.GELU.html) is used.
 - **CrossEntropy**: [Cross entropy loss](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) is implemented by computing both the loss and gradient in the forward pass with inplace replacement of input to reduce the peak memory by avoiding simultaneous materialization of both input logits and gradient, and achieves >2X speedup and >4X memory reduction for common vocab sizes (e.g., 32K, 128K, etc.).
 <!-- TODO: verify vocab sizes are accurate  -->
