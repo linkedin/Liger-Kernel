@@ -69,8 +69,8 @@ def _rms_norm_backward(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    dx = (1 / RMS) * [dy * w  - (1 / N) * (1 / RMS^2) * ((dy * w) dot x) * x]
-    dw = sum(dy * (x / RMS)), summation over BxT dimension
+    dx = (1 / RMS) * [dy * w  - (1 / N) * (1 / RMS^2) * ((dy * w) dot x) * x]. * means element-wise multiplication, whileas dot means dot product
+    dw = sum(dy * (x / RMS)). summation over BxT dimension
     """
 
     row_idx = tl.program_id(0)
