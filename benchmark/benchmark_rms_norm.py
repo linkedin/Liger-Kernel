@@ -71,8 +71,8 @@ def bench_speed_rms_norm(M, N, dtype, provider, mode, eps=1e-5, device="cuda"):
     triton_rms = LigerRMSNorm(hidden_size=N).to("cuda")
     llama_rms = LlamaRMSNorm(hidden_size=N).to("cuda")
 
-    x = -2.3 + 0.5 * torch.randn(x_shape, dtype=dtype, device="cuda")
-    dy = 0.1 * torch.randn_like(x)
+    x = torch.randn(x_shape, dtype=dtype, device="cuda")
+    dy = torch.randn_like(x)
     x.requires_grad_(True)
     quantiles = [0.5, 0.2, 0.8]
 
@@ -144,8 +144,8 @@ def bench_memory_rms_norm(M, N, dtype, provider, mode, eps=1e-5, device="cuda"):
     triton_rms = LigerRMSNorm(hidden_size=N).to("cuda")
     llama_rms = LlamaRMSNorm(hidden_size=N).to("cuda")
 
-    x = -2.3 + 0.5 * torch.randn(x_shape, dtype=dtype, device="cuda")
-    dy = 0.1 * torch.randn_like(x)
+    x = torch.randn(x_shape, dtype=dtype, device="cuda")
+    dy = torch.randn_like(x)
     x.requires_grad_(True)
 
     # utility functions

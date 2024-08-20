@@ -5,27 +5,13 @@ from typing import Callable
 import torch
 
 
-def _test_memory_once(func: Callable) -> float:
-
-    torch.cuda.memory._record_memory_history()
-    torch.cuda.memory.reset_peak_memory_stats()
-
-    func()
-
-    mem = torch.cuda.max_memory_allocated()
-
-    # uncomment to save the visual memory snapshot
-    # torch.cuda.memory._dump_snapshot(f"{func.__name__}.pickle")
-
-    torch.cuda.memory._record_memory_history(enabled=None)
-    return mem
-
-
 def _test_memory(func: Callable, _iter: int = 10) -> float:
     total_mem = []
 
     for _ in range(_iter):
-        mem = _test_memory_once(func)
+        torch.cuda.memory.reset_peak_memory_stats()
+        func()
+        mem = torch.cuda.max_memory_allocated() / (2**20)
         total_mem.append(mem)
 
     return sum(total_mem) / len(total_mem)
