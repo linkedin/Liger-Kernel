@@ -11,7 +11,7 @@ def _test_memory(func: Callable, _iter: int = 10) -> float:
     for _ in range(_iter):
         torch.cuda.memory.reset_peak_memory_stats()
         func()
-        mem = torch.cuda.max_memory_allocated() / (2**20)
+        mem = torch.cuda.max_memory_allocated()
         total_mem.append(mem)
 
     return sum(total_mem) / len(total_mem)
