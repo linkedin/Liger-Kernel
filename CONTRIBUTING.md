@@ -13,6 +13,10 @@ Thank you for your interest in contributing to Liger-Kernel! This guide will hel
    ```
    pip install . -e[dev]
    ```
+   If encounter error `no matches found: .[dev]`, please use
+   ```
+   pip install -e .'[dev]'
+   ```
 
 ## Adding a New Kernel
 To get familiar with the folder structure, please refer to https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.
@@ -29,6 +33,11 @@ Create unit tests and convergence tests for your kernel in the tests directory. 
 1. run `make test` to ensure correctness.
 2. run `make checkstyle` to ensure code style.
 3. run `make test-convergence` to ensure convergence.
+
+If encounter the import error `ModuleNotFoundError: No module named 'test.utils'`, please add `Liger-Kernel` folder in the path
+```
+export PYTHONPATH="${PYTHONPATH}:your-path-here/Liger-Kernel"
+```
 
 ### Run pytest on single file
 `pytest test_sample.py::test_function_name`
