@@ -5,23 +5,23 @@
 
 [Installation](#installation) | [Getting Started](#getting-started) | [Examples](#examples) | [APIs](#apis) | [Structure](#structure) | [Contributing](#contributing)
 
-**Liger (Linkedin GPU Efficient Runtime) Kernel** is a collection of Triton kernels designed specifically for LLM training. We have implemented **Hugging Face Compatible** `RMSNorm`, `RoPE`, `SwiGLU`, `CrossEntropy`, `FusedLinearCrossEntropy`, and more to come. It can effectively increase multi-GPU **training throughput by 20%** and reduces **memory usage by 60%**. The kernel works out of the box with [flash attention](https://github.com/Dao-AILab/flash-attention), PyTorch FSDP, and Microsoft DeepSpeed. We welcome contributions from the community to gather the best kernels for LLM training.
-
-
+**Liger (Linkedin GPU Efficient Runtime) Kernel** is a collection of Triton kernels designed specifically for LLM training. It can effectively increase multi-GPU **training throughput by 20%** and reduces **memory usage by 60%**. We have implemented **Hugging Face Compatible** `RMSNorm`, `RoPE`, `SwiGLU`, `CrossEntropy`, `FusedLinearCrossEntropy`, and more to come. The kernel works out of the box with [Flash Attention](https://github.com/Dao-AILab/flash-attention), [PyTorch FSDP](https://pytorch.org/tutorials/intermediate/FSDP_tutorial.html), and [Microsoft DeepSpeed](https://github.com/microsoft/DeepSpeed). We welcome contributions from the community to gather the best kernels for LLM training.
 
 ## Supercharge Your Model with Liger Kernel
 
+
 ![Banner](/docs/images/banner.GIF)
 
-Gain +20% throughput and reduce memory usage by 60%. Achieve longer context lengths and larger batch sizes. It’s also useful if you want to scale up your model to multi-head training or large vocabulary sizes.
+With one line of code, Liger Kernel can increase throughput by more than 20% and reduce memory usage by 60%, thereby enabling longer context lengths, larger batch sizes, and massive vocabularies.
+
 
 | Speed Up                 | Memory Reduction        |
 |--------------------------|-------------------------|
 | ![Speed up](docs/images/e2e-tps.png) | ![Memory](docs/images/e2e-memory.png) |
 
-
-> - Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s. 
-> - Hugging Face models start to OOM at a 4K context length, whereas Liger Kernel scales up to 16K.  
+> **Note:**
+> - Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = `bf16`, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s. 
+> - Hugging Face models start to OOM at a 4K context length, whereas Hugging Face + Liger Kernel scales up to 16K.  
 
 ## Examples
 
@@ -29,7 +29,7 @@ Gain +20% throughput and reduce memory usage by 60%. Achieve longer context leng
 
 | **Example**                                    | **Description**                                                                                   | **Lightning Studio** |
 |------------------------------------------------|---------------------------------------------------------------------------------------------------|----------------------|
-| [**Hugging Face Trainer**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/huggingface)      | Train llama3 8B ~20% faster with over 40% memory reduction on Alpaca dataset using 4 A100s with FSDP | TBA                  |
+| [**Hugging Face Trainer**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/huggingface)      | Train LLaMA 3-8B ~20% faster with over 40% memory reduction on Alpaca dataset using 4 A100s with FSDP | TBA                  |
 | [**Lightning Trainer**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/lightning)         | Increase 15% throughput and reduce memory usage by 40% with LLaMA3-8B on MMLU dataset using 8 A100s with DeepSpeed ZeRO3 | TBA                  |
 
 ### Advanced
@@ -40,11 +40,11 @@ Gain +20% throughput and reduce memory usage by 60%. Achieve longer context leng
 
 ## Key Features
 
-- **Ease of use:** Simply patch your Hugging Face model with one line of code, or compose your own model using our kernels.
-- **Time- and memory-efficient:** In the same spirit as Flash-Attn, but for layers like **RMSNorm**, **RoPE**, **CrossEntropy**! Increases multi-GPU training throughput by 20% and reduces memory usage by 60% with **kernel fusion**, **in-place replacement**, and **chunking** techniques.
-- **Exact:** Exact kernels—no approximations. Both forward and backward are implemented with rigorous unit and convergence testing to ensure accuracy.
-- **Lightweight:** The kernels have minimal dependencies, requiring only Torch and Triton—no extra libraries needed! Say goodbye to dependency headaches!
-- **Multi-GPU supported:** Compatible with multi-GPU setups (PyTorch FSDP and DeepSpeed).
+- **Ease of use:** Simply patch your Hugging Face model with one line of code, or compose your own model using our Liger Kernel modules.
+- **Time and memory efficient:** In the same spirit as Flash-Attn, but for layers like **RMSNorm**, **RoPE**, **SwiGLU**, and **CrossEntropy**! Increases multi-GPU training throughput by 20% and reduces memory usage by 60% with **kernel fusion**, **in-place replacement**, and **chunking** techniques.
+- **Exact:** Computation is exact—no approximations! Both forward and backward passes are implemented with rigorous unit tests and undergo convergence testing against training runs without Liger Kernel to ensure accuracy.
+- **Lightweight:** Liger Kernel has minimal dependencies, requiring only Torch and Triton—no extra libraries needed! Say goodbye to dependency headaches!
+- **Multi-GPU supported:** Compatible with multi-GPU setups (PyTorch FSDP, DeepSpeed, DDP, etc.).
 
 ## Target Audiences
 
@@ -77,7 +77,7 @@ $ pip install liger-kernel-nightly
 
 ### 1. Patch Existing Hugging Face Models
 
-Using [patching APIs](#patching), you can swap Hugging Face models with optimized Liger Kernels.
+Using the [patching APIs](#patching), you can swap Hugging Face models with optimized Liger Kernels.
 
 ```python
 import transformers
@@ -85,7 +85,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_llama
 
 model = transformers.AutoModelForCausalLM.from_pretrained("<some llama model>")
 
-# By adding this line, it automatically monkey patches the model with the optimized kernels
+# Adding this line automatically monkey-patches the model with the optimized Liger kernels
 apply_liger_kernel_to_llama() 
 ```
 
@@ -98,13 +98,13 @@ from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
 import torch.nn as nn
 import torch
 
-model = nn.Linear(128, 256).to("cuda")
+model = nn.Linear(128, 256).cuda()
 
-# LigerFusedLinearCrossEntropyLoss fuses linear and cross entropy layers together and performs chunk-by-chunk computation to reduce memory
+# fuses linear + cross entropy layers together and performs chunk-by-chunk computation to reduce memory
 loss_fn = LigerFusedLinearCrossEntropyLoss()
 
 input = torch.randn(4, 128, requires_grad=True, device="cuda")
-target = torch.empty(4, dtype=torch.long, device="cuda").random_(256)
+target = torch.randint(256, (4, ), device="cuda")
 
 loss = loss_fn(model.weight, input, target)
 loss.backward()
@@ -121,7 +121,7 @@ loss.backward()
 ### Tests
 
 - `transformers/`: Correctness tests for the Triton-based layers.
-- `convergence/`: Patches Hugging Face models with all kernels, runs multiple iterations, and compares weights, logits, and loss layer by layer.
+- `convergence/`: Patches Hugging Face models with all kernels, runs multiple iterations, and compares weights, logits, and loss layer-by-layer.
 
 ### Benchmark
 
@@ -149,29 +149,36 @@ loss.backward()
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
 | FusedLinearCrossEntropy         | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
 
-- **RMSNorm**: RMSNorm, which normalizes tensor activations using their root mean square, is accelerated by fusing the normalization and scaling steps into a single triton kernel, achieved ~3X speedup with ~3X peak memory reduction. [RMSNorm Paper](https://arxiv.org/pdf/1910.07467)
-- **RoPE**: Fused the operations of query and key embedding rotary into a single kernel with inplace replacement, achieved ~3X speedup with ~3X peak memory reduction. [RoPE Paper](https://arxiv.org/pdf/2104.09864)
-- **SwiGLU**: Leveraging the fused triton kernel for the elementwise transformation in $$SwiGLU_{\beta=1}$$ ($$\sigma(A) \odot B$$) with inplace replacement, achieved parity speed with ~1.5X peak memory reduction. [SwiGLU Paper](https://arxiv.org/pdf/2002.05202)
-- **GeGLU**: Leveraging the fused triton kernel for the elementwise transformation in GeGLU with [tanh approximation form of GELU](https://pytorch.org/docs/stable/generated/torch.nn.GELU.html) and inplace replacement, achieved parity speed with ~1.5X peak memory reduction. [GeGLU paper](https://arxiv.org/pdf/2002.05202)
-- **CrossEntropy**: Computes both loss and the gradient in the forward path with inplace replacement of input to reduce the peak memory (avoid the materialization of both input logits and gradient), achieved >2X speedup and >4X memory reduction for common vocab sizes. [PyTorch CrossEntropyLoss Documentation](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html)
-- **FusedLinearCrossEntropy**: Further improves upon the basic Liger Cross Entropy kernel on reducing the peak memory usage by fusing the model last output head layer with the CE loss and chunking the input for block-wise loss and gradient calculation, inspired by [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy), achieved >4X memory reduction for 128k vocab size. **This is highly effective for large batch size, large sequence length, and large vocab size model** Please refer to the [Medusa example](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa) for individual kernel usage.
+- **RMSNorm**: [RMSNorm](https://arxiv.org/pdf/1910.07467), which normalizes activations using their root mean square, is implemented by fusing the normalization and scaling steps into a single Triton kernel, and achieves ~3X speedup with ~3X peak memory reduction.
+- **RoPE**: [Rotary Positional Embedding](https://arxiv.org/pdf/2104.09864) is implemented by fusing the query and key embedding rotary into a single kernel with inplace replacement, and achieves ~3X speedup with ~3X peak memory reduction. 
+- **SwiGLU**: [Swish Gated Linear Units](https://arxiv.org/pdf/2002.05202), given by 
+$$\text{SwiGLU}(x)=\text{Swish}_{\beta}(xW+b)\otimes(xV+c)$$
+, is implemented by fusing the elementwise multiplication (denoted by $\otimes$) into a single kernel with inplace replacement, and achieves parity speed with ~1.5X peak memory reduction.
+- **GeGLU**: [GELU Gated Linear Units](https://arxiv.org/pdf/2002.05202), given by 
+$$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$
+, is implemented by fusing the elementwise multiplication into a single kernel with inplace replacement, and achieves parity speed with ~1.5X peak memory reduction. Note that the [tanh approximation form of GELU](https://pytorch.org/docs/stable/generated/torch.nn.GELU.html) is used.
+- **CrossEntropy**: [Cross entropy loss](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) is implemented by computing both the loss and gradient in the forward pass with inplace replacement of input to reduce the peak memory by avoiding simultaneous materialization of both input logits and gradient. It achieves >2X speedup and >4X memory reduction for common vocab sizes (e.g., 32K, 128K, etc.).
+<!-- TODO: verify vocab sizes are accurate  -->
+- **FusedLinearCrossEntropy**: Peak memory usage of cross entropy loss is further improved by fusing the model head with the CE loss and chunking the input for block-wise loss and gradient calculation, a technique inspired by [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy). It achieves >4X memory reduction for 128k vocab size. **This is highly effective for large batch size, large sequence length, and large vocabulary sizes.** Please refer to the [Medusa example](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa) for individual kernel usage.
 
 
-> * Reported speedups and memory reductions are compared with Llama3 8B Hugging Face layer implementations with 4k default hidden size and 4k sequence length for single forward and backward pass on single NVIDIA A100 80G GPU with small batch sizes. Liger kernels exhibits more efficient scaling to larger batch sizes of tokens. See [Benchmark](./benchmark) folder for details.
+<!-- TODO: be more specific about batch size -->
+> **Note:**  
+> Reported speedups and memory reductions are with respect to the LLaMA 3-8B Hugging Face layer implementations. All models use 4K hidden size and 4K sequence length and are evaluated based on memory usage and wall time for the forward+backward pass on a single NVIDIA A100 80G GPU using small batch sizes. Liger kernels exhibit more efficient scaling to larger batch sizes, detailed further in the [Benchmark](./benchmark) folder.
 
 ## Note on ML Compiler
 
 ### 1. Torch Compile
 
-Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile. In the following example, Liger Kernel can further optimize the model on top of Torch Compile, reducing the memory by more than half.
+Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compile`](https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html). In the following example, Liger Kernel can further optimize the model on top of Torch Compile, reducing the memory by more than half.
 
-| Configuration                  | Throughput (tokens/sec) | Memory Reserved (MB) |
+| Configuration                  | Throughput (tokens/sec) | Memory Reserved (GB) |
 |--------------------------------|----------------------------|-------------------------|
-| Torch Compile                  | 3780                       | 66358                   |
-| Torch Compile + Liger Kernel   | 3702                       | 31000                   |
+| Torch Compile                  | 3780                       | 66.4                   |
+| Torch Compile + Liger Kernel   | 3702                       | 31.0                   |
 
 > **Note:**  
-> 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Seq Len = 4096, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
+> 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Seq Len = 4096, Data Type = `bf16`, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
 > 2. Tested on torch `2.5.0.dev20240731+cu118`
 
 ### 2. Lightning Thunder
@@ -185,7 +192,8 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with Torch Compile.
 ## Acknowledgement
 
 - [flash-attn](https://github.com/Dao-AILab/flash-attention) and [Unsloth](https://github.com/unslothai/unsloth) for inspiration in Triton kernels for training
-- [tiny shakespeare dataset](https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt) for convergence testing by andrej karpathy
+- [tiny shakespeare dataset](https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt) by Andrej Karpathy for convergence testing
+- [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy) for lm_head + cross entropy inspiration
 
 
 ## License
