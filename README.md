@@ -1,6 +1,8 @@
 # Liger Kernel: Efficient Triton Kernels for LLM Training
 
-[![Downloads](https://static.pepy.tech/badge/liger-kernel)](https://pepy.tech/project/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel.svg)](https://badge.fury.io/py/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel-nightly.svg)](https://badge.fury.io/py/liger-kernel-nightly)
+
+
+[![Downloads](https://static.pepy.tech/badge/liger-kernel)](https://pepy.tech/project/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel.svg)](https://badge.fury.io/py/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel-nightly.svg)](https://badge.fury.io/py/liger-kernel-nightly) [![](https://dcbadge.vercel.app/api/server/cudamode?style=flat)](https://discord.gg/cudamode) 
 
 
 [Installation](#installation) | [Getting Started](#getting-started) | [Examples](#examples) | [APIs](#apis) | [Structure](#structure) | [Contributing](#contributing)
@@ -199,6 +201,10 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compil
 ## License
 
 [BSD 2-CLAUSE](https://github.com/linkedin/Liger-Kernel/blob/main/LICENSE)
+
+## Contact
+
+- For collaboration, please send email to byhsu@linkedin.com
 
 ## Cite this work
 
