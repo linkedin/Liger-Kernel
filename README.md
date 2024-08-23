@@ -64,7 +64,8 @@ With one line of code, Liger Kernel can increase throughput by more than 20% and
 - `triton >= 2.3.0`
 - `transformers >= 4.40.1`
 
-Note: Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
+> **Note:**
+> Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
 
 To install the stable version:
 
