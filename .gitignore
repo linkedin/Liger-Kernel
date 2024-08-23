@@ -2,6 +2,7 @@ __pycache__/
 *.egg-info/
 site/
 .cache/
+.venv/
 
 # Misc
 .DS_Store

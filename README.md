@@ -10,14 +10,14 @@
 ## Supercharge Your Model with Liger Kernel
 
 
-![Banner](/docs/images/banner.GIF)
+![Banner](https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/banner.GIF)
 
 With one line of code, Liger Kernel can increase throughput by more than 20% and reduce memory usage by 60%, thereby enabling longer context lengths, larger batch sizes, and massive vocabularies.
 
 
 | Speed Up                 | Memory Reduction        |
 |--------------------------|-------------------------|
-| ![Speed up](docs/images/e2e-tps.png) | ![Memory](docs/images/e2e-memory.png) |
+| ![Speed up](https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/e2e-tps.png) | ![Memory](https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/e2e-memory.png) |
 
 > **Note:**
 > - Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = `bf16`, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s. 
