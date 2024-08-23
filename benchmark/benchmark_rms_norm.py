@@ -3,7 +3,12 @@ import os
 import torch
 import torch.nn as nn
 import triton
-from utils import _print_memory_banner, _print_speed_banner, _test_memory, create_output_dir
+from utils import (
+    _print_memory_banner,
+    _print_speed_banner,
+    _test_memory,
+    create_output_dir,
+)
 
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 
