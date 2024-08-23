@@ -4,6 +4,7 @@ max-line-length = 120
 exclude = 
     .git,
     __pycache__,
-    benchmark_internal/others
+    benchmark_internal/others,
+    .venv
 # E203: https://github.com/psf/black/issues/315
 extend-ignore=E501,B006,E731,A002,E203
