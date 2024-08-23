@@ -40,6 +40,7 @@ setup(
             "isort>=5.13.2",
             "pre-commit>=3.7.1",
             "torch-tb-profiler>=0.4.1",
+            "datasets>=2.10.0",
         ]
     },
 )

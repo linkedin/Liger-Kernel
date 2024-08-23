@@ -11,7 +11,7 @@ from utils import (
     _print_memory_banner,
     _print_speed_banner,
     _test_memory,
-    get_current_file_directory,
+    create_output_dir,
 )
 
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
@@ -115,10 +115,7 @@ def bench_speed_rope(total_hidden_size, seq_len, provider, mode, dtype):
 
 def benchmark_speed_rope_wrapper():
     _print_speed_banner()
-
-    curr_dir = get_current_file_directory()
-    dir_name = "rope_speed"
-    output_dir = os.path.join(curr_dir, dir_name)
+    output_dir = create_output_dir("rope_speed")
     os.makedirs(output_dir, exist_ok=True)
 
     bench_speed_rope.run(save_path=output_dir, print_data=True)
@@ -165,11 +162,7 @@ def bench_memory_rope(total_hidden_size, seq_len, provider, mode, dtype):
 
 def benchmark_memory_rope_wrapper():
     _print_memory_banner()
-
-    curr_dir = get_current_file_directory()
-    output_dir = os.path.join(curr_dir, "rope_memory")
-    os.makedirs(output_dir, exist_ok=True)
-
+    output_dir = create_output_dir("rope_memory")
     bench_memory_rope.run(save_path=output_dir, print_data=True)
 
 

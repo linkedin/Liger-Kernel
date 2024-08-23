@@ -3,7 +3,7 @@ import os
 import torch
 import torch.nn as nn
 import triton
-from utils import _print_memory_banner, _print_speed_banner, _test_memory
+from utils import _print_memory_banner, _print_speed_banner, _test_memory, create_output_dir
 
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 
@@ -113,12 +113,7 @@ def bench_speed_rms_norm(M, N, dtype, provider, mode, eps=1e-5, device="cuda"):
 
 def benchmark_speed_rms_norm_wrapper():
     _print_speed_banner()
-
-    curr_dir = os.path.dirname(os.path.abspath(__file__))
-    dir_name = "rms_norm_speed"
-    output_dir = os.path.join(curr_dir, dir_name)
-    os.makedirs(output_dir, exist_ok=True)
-
+    output_dir = create_output_dir("rms_norm_speed")
     bench_speed_rms_norm.run(save_path=output_dir, print_data=True)
 
 
@@ -166,12 +161,7 @@ def bench_memory_rms_norm(M, N, dtype, provider, mode, eps=1e-5, device="cuda"):
 
 def benchmark_memory_rms_norm_wrapper():
     _print_memory_banner()
-
-    curr_dir = os.path.dirname(os.path.abspath(__file__))
-    dir_name = "rms_norm_memory"
-    output_dir = os.path.join(curr_dir, dir_name)
-    os.makedirs(output_dir, exist_ok=True)
-
+    output_dir = create_output_dir("rms_norm_memory")
     # TODO: make precision configurable in generated csv
     bench_memory_rms_norm.run(save_path=output_dir, print_data=True)
 

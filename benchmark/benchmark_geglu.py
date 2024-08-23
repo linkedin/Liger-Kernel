@@ -9,7 +9,7 @@ from utils import (
     _print_memory_banner,
     _print_speed_banner,
     _test_memory,
-    get_current_file_directory,
+    create_output_dir,
 )
 
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
@@ -95,12 +95,7 @@ def bench_speed_geglu(N, dtype, provider, mode="forward", device="cuda"):
 
 def benchmark_speed_geglu_wrapper():
     _print_speed_banner()
-
-    curr_dir = get_current_file_directory()
-    dir_name = "geglu_speed"
-    output_dir = os.path.join(curr_dir, dir_name)
-    os.makedirs(output_dir, exist_ok=True)
-
+    output_dir = create_output_dir("geglu_speed")
     bench_speed_geglu.run(save_path=output_dir, print_data=True)
 
 
@@ -148,11 +143,7 @@ def bench_memory_geglu(N, dtype, provider, mode="forward", device="cuda"):
 
 def benchmark_memory_geglu_wrapper():
     _print_memory_banner()
-
-    curr_dir = get_current_file_directory()
-    output_dir = os.path.join(curr_dir, "geglu_memory")
-    os.makedirs(output_dir, exist_ok=True)
-
+    output_dir = create_output_dir("geglu_memory")
     bench_memory_geglu.run(save_path=output_dir, print_data=True)
 
 

@@ -3,7 +3,7 @@ import os
 import torch
 import triton
 from torch.nn import CrossEntropyLoss
-from utils import _test_memory, get_current_file_directory
+from utils import _test_memory, create_output_dir
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 
@@ -82,10 +82,7 @@ def bench_speed_cross_entropy(B, T, V, provider, mode, dtype, device="cuda"):
 
 
 def benchmark_speed_cross_entropy_wrapper():
-    curr_dir = get_current_file_directory()
-    dir_name = "cross_entropy_speed"
-    output_dir = os.path.join(curr_dir, dir_name)
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = create_output_dir("cross_entropy_speed")
     bench_speed_cross_entropy.run(save_path=output_dir, print_data=True)
 
 
@@ -133,10 +130,7 @@ def bench_memory_cross_entropy(B, T, V, provider, dtype, device="cuda"):
 
 
 def benchmark_memory_cross_entropy_wrapper():
-    curr_dir = get_current_file_directory()
-    dir_name = "cross_entropy_memory"
-    output_dir = os.path.join(curr_dir, dir_name)
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = create_output_dir("cross_entropy_memory")
     bench_memory_cross_entropy.run(save_path=output_dir, print_data=True)
 
 

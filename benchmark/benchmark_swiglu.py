@@ -9,7 +9,7 @@ from utils import (
     _print_memory_banner,
     _print_speed_banner,
     _test_memory,
-    get_current_file_directory,
+    create_output_dir,
 )
 
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
@@ -95,12 +95,7 @@ def bench_speed_swiglu(N, dtype, provider, mode="forward", device="cuda"):
 
 def benchmark_speed_swiglu_wrapper():
     _print_speed_banner()
-
-    curr_dir = get_current_file_directory()
-    dir_name = "swiglu_speed"
-    output_dir = os.path.join(curr_dir, dir_name)
-    os.makedirs(output_dir, exist_ok=True)
-
+    output_dir = create_output_dir("swiglu_speed")
     bench_speed_swiglu.run(save_path=output_dir, print_data=True)
 
 
@@ -148,11 +143,7 @@ def bench_memory_swiglu(N, dtype, provider, mode="forward", device="cuda"):
 
 def benchmark_memory_swiglu_wrapper():
     _print_memory_banner()
-
-    curr_dir = get_current_file_directory()
-    output_dir = os.path.join(curr_dir, "swiglu_memory")
-    os.makedirs(output_dir, exist_ok=True)
-
+    output_dir = create_output_dir("swiglu_memory")
     bench_memory_swiglu.run(save_path=output_dir, print_data=True)
 
 
