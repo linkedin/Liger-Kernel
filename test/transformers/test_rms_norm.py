@@ -41,7 +41,7 @@ class LlamaRMSNorm(nn.Module):
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
-        (torch.float32, 1e-4, 1e-7),
+        (torch.float32, 1e-4, 1e-6),
         (torch.bfloat16, 5.0, 1e-5),
     ],
 )

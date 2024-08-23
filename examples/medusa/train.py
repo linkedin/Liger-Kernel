@@ -37,9 +37,7 @@ IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
 @dataclass
 class ModelArguments:
-    model_name_or_path: Optional[str] = field(
-        default="meta-llama/Meta-Llama-3-8B"
-    )
+    model_name_or_path: Optional[str] = field(default="meta-llama/Meta-Llama-3-8B")
 
 
 @dataclass
