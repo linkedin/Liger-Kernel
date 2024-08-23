@@ -8,7 +8,7 @@ test:
 # Command to run flake8 (code style check), isort (import ordering), and black (code formatting)
 # Subsequent commands still run if the previous fails, but return failure at the end
 checkstyle:
-	flake8 .; flake8_status=$$?; \
+	flake8 . --exclude=.venv; flake8_status=$$?; \
 	isort .; isort_status=$$?; \
 	black .; black_status=$$?; \
 	if [ $$flake8_status -ne 0 ] || [ $$isort_status -ne 0 ] || [ $$black_status -ne 0 ]; then \

@@ -1,5 +1,3 @@
-import os
-
 import torch
 import triton
 from utils import _test_memory, create_output_dir

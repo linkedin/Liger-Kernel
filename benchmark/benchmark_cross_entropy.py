@@ -1,5 +1,3 @@
-import os
-
 import torch
 import triton
 from torch.nn import CrossEntropyLoss
