@@ -25,7 +25,7 @@ setup(
         'Topic :: Software Development :: Libraries',
         'Topic :: Scientific/Engineering :: Artificial Intelligence',
     ],
-    keywords='triton kernels LLM training deep learning Hugging Face PyTorch GPU optimization',
+    keywords="triton,kernels,LLM training,deep learning,Hugging Face,PyTorch,GPU optimization",
     include_package_data=True,
     install_requires=[
         "torch>=2.1.2",
