@@ -38,14 +38,14 @@ IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 @dataclass
 class ModelArguments:
     model_name_or_path: Optional[str] = field(
-        default="/shared/public/models/Meta-Llama-3-8B-Instruct"
+        default="meta-llama/Meta-Llama-3-8B"
     )
 
 
 @dataclass
 class DataArguments:
     data_path: str = field(
-        default="sharegpt_clean.json",
+        default="Aeala/ShareGPT_Vicuna_unfiltered",
         metadata={"help": "Path to the training data."},
     )
     eval_data_path: str = field(
@@ -99,7 +99,7 @@ class TrainingArguments(transformers.TrainingArguments):
             "help": "If train medusa heads only, default is False, the whole model will be trained"
         },
     )
-    with_liger: bool = field(
+    use_liger: bool = field(
         default=False,
         metadata={"help": "If apply liger kernel to the model."},
     )
@@ -331,7 +331,7 @@ def train():
         torch_dtype=torch.bfloat16,
     )
 
-    if training_args.with_liger is True:
+    if training_args.use_liger is True:
         apply_liger_kernel_to_llama()
 
     # Freeze the base model
@@ -344,7 +344,7 @@ def train():
         training_args.medusa_num_layers,
         training_args.medusa_return,
         training_args.medusa_only_heads,
-        training_args.with_liger,
+        training_args.use_liger,
     )
     # Format output dir
     training_args.output_dir = f"{training_args.output_dir}_medusa_mlp_{model_args.model_name_or_path.split('/')[-1]}_medusa_{training_args.medusa_num_heads}_lr_{training_args.learning_rate}_layers_{training_args.medusa_num_layers}"

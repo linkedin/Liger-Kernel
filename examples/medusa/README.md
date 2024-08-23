@@ -1,3 +1,5 @@
+# Liger-Kernel Example with Medusa
+
 Medusa is a simple framework that democratizes the acceleration techniques for LLM generation with multiple decoding heads. [[repo](https://arxiv.org/abs/2401.10774)], [[paper](https://arxiv.org/abs/2401.10774)]
 
 During training, Medusa requires adding \(k\) decoding heads to the hidden states right before the regular LM head \(h_t\). The \(k\)-th head is used to predict the token in the \((t + k + 1)\)-th position of the next tokens (the original language model head is used to predict the \((t + 1)\)-th position). 
@@ -15,6 +17,14 @@ cd {PATH_TO_Liger-Kernel}/Liger-Kernel/examples/medusa
 pip install -r requirements.txt
 sh scripts/llama3_8b_medusa.sh
 ```
+
+**Notes**
+1. This example uses an optional `use_liger` flag. If true, it does a monkey patch to apply liger kernel with medusa heads.
+2. The example uses Llama3 model that requires community license agreement and HuggingFace Hub login. If you want to use Llama3 in this example, please make sure you have done the followings:
+    * Agree on the community license agreement https://huggingface.co/meta-llama/Meta-Llama-3-8B
+    * Run `huggingface-cli login` and enter your HuggingFace token
+3. The default hyperparameters and configurations work on single node with 8xA100 GPUs. For running on device with less GPU RAM, please consider reducing the per-GPU batch size and/or enable `CPUOffload` in FSDP.
+
 
 # Memory Profiling Result
 

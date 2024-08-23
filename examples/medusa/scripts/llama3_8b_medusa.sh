@@ -6,8 +6,7 @@ export NUM_NODES=$WORLD_SIZE
 export WORLD_SIZE=$((GPUS_PER_NODE * NUM_NODES))
 echo "Starting training... Num nodes: $NUM_NODES, Num workers: $WORLD_SIZE"
 
-export OUTPUT_DIR="/shared/user/Meta-Llama-3-70B-Instruct-code-act-3ep"
-export DATA_PATH="/shared/public/data/jaszhu/medusa/ShareGPT_V4.3_unfiltered_cleaned_split.json"
+export OUTPUT_DIR="./llama3-8b-medusa-liger"
 
 export LOCAL_TRAIN_BATCH_SIZE=4
 export GRADIENT_ACCUMULATION_STEPS=1
@@ -27,8 +26,6 @@ accelerate launch --config_file fsdp/acc-fsdp.conf \
     --main_process_port $MASTER_PORT \
     --machine_rank $RANK \
     train.py \
-    --model_name_or_path /shared/public/models/Meta-Llama-3-8B-Instruct \
-    --data_path $DATA_PATH \
     --bf16 True \
     --output_dir $OUTPUT_DIR \
     --num_train_epochs 10 \
@@ -56,4 +53,4 @@ accelerate launch --config_file fsdp/acc-fsdp.conf \
     --medusa_lr_multiplier $MEDUSA_LR_MULTIPLIER \
     --medusa_only_heads False \
     --medusa_return True \
-    --with_liger True
+    --use_liger True
