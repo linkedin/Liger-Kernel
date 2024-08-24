@@ -174,7 +174,7 @@ $$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$
 
 ## Note on ML Compiler
 
-### 1. Torch Compile
+### Torch Compile
 
 Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compile`](https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html). In the following example, Liger Kernel can further optimize the model on top of Torch Compile, reducing the memory by more than half.
 
@@ -186,10 +186,6 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compil
 > **Note:**  
 > 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Seq Len = 4096, Data Type = `bf16`, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
 > 2. Tested on torch `2.5.0.dev20240731+cu118`
-
-### 2. Lightning Thunder
-
-*WIP*
 
 ## Contributing
 
