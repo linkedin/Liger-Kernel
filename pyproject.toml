@@ -1,0 +1,49 @@
+[project]
+name = "liger_kernel"
+version = "0.1.1"
+description = "Efficient Triton kernels for LLM Training"
+readme = "README.md"
+license = {text = "BSD-2-Clause"}
+requires-python = ">=3.8"
+keywords = ["triton", "kernels", "LLM training", "deep learning", "Hugging Face", "PyTorch", "GPU optimization"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.1.2",
+    "triton>=2.3.0",
+    "transformers>=4.40.1",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/linkedin/Liger-Kernel"
+
+[tool.setuptools]
+namespace_packages = ["liger_kernel"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[project.optional-dependencies]
+dev = [
+    "matplotlib>=3.7.2",
+    "flake8>=4.0.1.1",
+    "black>=24.4.2",
+    "isort>=5.13.2",
+    "pre-commit>=3.7.1",
+    "torch-tb-profiler>=0.4.1",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
