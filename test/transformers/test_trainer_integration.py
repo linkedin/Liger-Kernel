@@ -20,15 +20,19 @@ def test_apply_liger_kernel_only_supported_model_type_called():
     mock_gemma = Mock()
     mock_llama = Mock()
     mock_mistral = Mock()
+    mock_mixtral = Mock()
+    mock_phi3 = Mock()
 
     with patch.dict(
         MODEL_TYPE_TO_APPLY_LIGER_FN,
-        {"gemma": mock_gemma, "llama": mock_llama, "mistral": mock_mistral},
+        {"gemma": mock_gemma, "llama": mock_llama, "mistral": mock_mistral, "mixtral": mock_mixtral, "phi3": mock_phi3},
     ):
         _apply_liger_kernel("llama")
         mock_llama.assert_called_once()
         mock_gemma.assert_not_called()
         mock_mistral.assert_not_called()
+        mock_mixtral.assert_not_called()
+        mock_phi3.assert_not_called()
 
 
 def test_apply_liger_kernel_passes_kwargs():

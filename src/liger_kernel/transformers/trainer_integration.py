@@ -5,6 +5,7 @@ from liger_kernel.transformers.monkey_patch import (
     apply_liger_kernel_to_llama,
     apply_liger_kernel_to_mistral,
     apply_liger_kernel_to_mixtral,
+    apply_liger_kernel_to_phi3,
 )
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "llama": apply_liger_kernel_to_llama,
     "mistral": apply_liger_kernel_to_mistral,
     "mixtral": apply_liger_kernel_to_mixtral,
+    "phi3": apply_liger_kernel_to_phi3,
 }
 
 
