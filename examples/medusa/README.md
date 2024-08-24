@@ -29,7 +29,7 @@ sh scripts/llama3_8b_medusa.sh
 # Memory Profiling Result
 
 > **Note:**  
-> 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 4, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
+> 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 6, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
 
 ## Stage1
 
@@ -42,12 +42,13 @@ Stage1 refers to Medusa-1 where the backbone model is frozen and only weights of
 
 ### num_head = 3
 
-![Memory](./docs/images/memory_Stage1_num_head_3.png)
-
+![Memory](./docs/images/Memory_Stage1_num_head_3.png)
+![Throughput](./docs/images/Throughput_Stage1_num_head_3.png)
 
 ### num_head = 5
 
-![Memory](./docs/images/memory_Stage1_num_head_5.png)
+![Memory](./docs/images/Memory_Stage1_num_head_5.png)
+![Throughput](./docs/images/Throughput_Stage1_num_head_5.png)
 
 ## Stage2
 
@@ -60,9 +61,11 @@ Stage2 refers to Medusa-2 where all the model weights are updated incuding backb
 
 ### num_head = 3
 
-![Memory](./docs/images/memory_Stage2_num_head_3.png)
+![Memory](./docs/images/Memory_Stage2_num_head_3.png)
+![Throughput](./docs/images/Throughput_Stage2_num_head_3.png)
 
 ### num_head = 5
 
-![Memory](./docs/images/memory_Stage2_num_head_5.png)
+![Memory](./docs/images/Memory_Stage2_num_head_5.png)
+![Throughput](./docs/images/Throughput_Stage2_num_head_5.png)
 
