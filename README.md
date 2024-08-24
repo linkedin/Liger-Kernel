@@ -221,3 +221,6 @@ Biblatex entry:
   year   = {2024}
 }
 ```
+
+## Star History
+[![Star History Chart](https://api.star-history.com/svg?repos=linkedin/Liger-Kernel&type=Date)](https://star-history.com/#linkedin/Liger-Kernel&Date)
