@@ -12,7 +12,7 @@
   <summary>Latest News 🔥</summary>
 
   - [2024/8/31] CUDA MODE talk, [Liger-Kernel: Real-world Triton kernel for LLM Training](https://discord.gg/CX2YmNmn?event=1273323969788772455)
-  - [2024/8/23] Official release: check out our [X post](https://x.com/ThomasViehmann/status/1827213419008737777)
+  - [2024/8/23] Official release: check out our [X post](https://x.com/hsu_byron/status/1827072737673982056)
 
 </details>
 
