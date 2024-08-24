@@ -25,7 +25,13 @@ def test_apply_liger_kernel_only_supported_model_type_called():
 
     with patch.dict(
         MODEL_TYPE_TO_APPLY_LIGER_FN,
-        {"gemma": mock_gemma, "llama": mock_llama, "mistral": mock_mistral, "mixtral": mock_mixtral, "phi3": mock_phi3},
+        {
+            "gemma": mock_gemma,
+            "llama": mock_llama,
+            "mistral": mock_mistral,
+            "mixtral": mock_mixtral,
+            "phi3": mock_phi3,
+        },
     ):
         _apply_liger_kernel("llama")
         mock_llama.assert_called_once()
