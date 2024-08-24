@@ -41,7 +41,10 @@ class LigerBlockSparseTop2MLP(nn.Module):
 
 
 class LigerPhi3SwiGLUMLP(nn.Module):
-    """Patch the Phi3MLP to use Liger's LigerSiLUMulFunction"""
+    """
+    Patch Phi3MLP to use LigerSiLUMulFunction
+    https://github.com/huggingface/transformers/blob/v4.41.0/src/transformers/models/phi3/modeling_phi3.py#L241
+    """
 
     def __init__(self, config):
         super().__init__()
