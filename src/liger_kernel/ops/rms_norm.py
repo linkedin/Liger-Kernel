@@ -1,8 +1,24 @@
+import operator
+
 import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import calculate_settings, ensure_contiguous
+from liger_kernel.ops.utils import (
+    calculate_settings,
+    compare_version,
+    ensure_contiguous,
+)
+
+if compare_version("triton", operator.ge, "3.0.0"):
+    try:
+        # typical import path with dispatch available
+        from triton.language.extra.libdevice import rsqrt
+    except ModuleNotFoundError:
+        # for working with NGC containers
+        from triton.language.extra.cuda.libdevice import rsqrt
+else:
+    from triton.language.math import rsqrt
 
 
 @triton.jit
@@ -40,7 +56,7 @@ def _rms_norm_forward(
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0)
 
     mean_square = tl.sum(X_row * X_row, axis=0) / n_cols
-    inv_rms = tl.math.rsqrt(mean_square + eps)
+    inv_rms = rsqrt(mean_square + eps)
 
     # We can save time by caching rms with minimal memory overhead
     # because rms is much smaller compared to X_row, as rms is for each row.
