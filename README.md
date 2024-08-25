@@ -205,6 +205,7 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compil
 
 ## Acknowledgement
 
+- [@claire_yishan](https://twitter.com/claire_yishan) for the LOGO design
 - [flash-attn](https://github.com/Dao-AILab/flash-attention) and [Unsloth](https://github.com/unslothai/unsloth) for inspiration in Triton kernels for training
 - [tiny shakespeare dataset](https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt) by Andrej Karpathy for convergence testing
 - [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy) for lm_head + cross entropy inspiration
