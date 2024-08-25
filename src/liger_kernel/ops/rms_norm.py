@@ -20,7 +20,6 @@ if compare_version("triton", operator.ge, "3.0.0"):
 else:
     from triton.language.math import rsqrt
 
-import triton.language as tl
 
 
 @triton.jit
