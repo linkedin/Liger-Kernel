@@ -67,7 +67,7 @@ def test_correctness_llamamlp(
     y1 = llama_mlp(x1)
     y2 = liger_mlp(x2)
 
-    assert torch.allclose(y1, y2, atol=atol, rtol=rtol) is True
+    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
 
     dy = torch.randn_like(y1)
 
@@ -81,7 +81,6 @@ def test_correctness_llamamlp(
             atol=atol,
             rtol=rtol,
         )
-        is True
     )
     assert (
         torch.allclose(
@@ -90,7 +89,6 @@ def test_correctness_llamamlp(
             atol=atol,
             rtol=rtol,
         )
-        is True
     )
     assert (
         torch.allclose(
@@ -99,10 +97,9 @@ def test_correctness_llamamlp(
             atol=atol,
             rtol=rtol,
         )
-        is True
     )
 
-    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol) is True
+    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize(
@@ -149,7 +146,7 @@ def test_correctness_phi3mlp(
     y1 = phi3_mlp(x1)
     y2 = liger_mlp(x2)
 
-    assert torch.allclose(y1, y2, atol=atol, rtol=rtol) is True
+    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
 
     dy = torch.randn_like(y1)
 
@@ -163,7 +160,6 @@ def test_correctness_phi3mlp(
             atol=atol,
             rtol=rtol,
         )
-        is True
     )
     assert (
         torch.allclose(
@@ -172,7 +168,6 @@ def test_correctness_phi3mlp(
             atol=atol,
             rtol=rtol,
         )
-        is True
     )
 
-    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol) is True
+    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
