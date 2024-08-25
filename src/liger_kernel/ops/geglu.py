@@ -11,7 +11,12 @@ from liger_kernel.ops.utils import (
 )
 
 if compare_version("triton", operator.ge, "3.0.0"):
-    from triton.language.extra.libdevice import tanh
+    try:
+        # typical import path with dispatch available
+        from triton.language.extra.libdevice import tanh
+    except ModuleNotFoundError:
+        # for working with NGC containers
+        from triton.language.extra.cuda.libdevice import tanh
 else:
     from triton.language.math import tanh
 
