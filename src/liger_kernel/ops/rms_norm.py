@@ -20,8 +20,6 @@ if compare_version("triton", operator.ge, "3.0.0"):
 else:
     from triton.language.math import rsqrt
 
-
-
 @triton.jit
 def _rms_norm_forward(
     Y_ptr,
