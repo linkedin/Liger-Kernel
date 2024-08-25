@@ -56,7 +56,7 @@ def liger_cross_entropy_kernel(
     # Online softmax: 2 loads + 1 store (compared with 3 loads + 1 store for the safe softmax)
     # Refer to Algorithm 3 in the paper: https://arxiv.org/pdf/1805.02867
 
-    # 3. [Oneline softmax] first pass: find max + sum
+    # 3. [Online softmax] first pass: find max + sum
     m = float("-inf")  # m is the max value. use the notation from the paper
     d = 0.0  # d is the sum. use the notation from the paper
     ori_X_y = tl.load(
@@ -73,10 +73,10 @@ def liger_cross_entropy_kernel(
         d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
         m = m_new
 
-    # 4. [Oneline softmax] second pass: calculate the gradients
+    # 4. [Online softmax] second pass: calculate the gradients
     # dx_y = (softmax(x_y) - 1) / N
     # dx_i = softmax(x_i) / N, i != y
-    # N is the number of non ingored elements in the batch
+    # N is the number of non ignored elements in the batch
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(
@@ -86,7 +86,7 @@ def liger_cross_entropy_kernel(
         tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
 
     # We need tl.debug_barrier() to ensure the new result of X_ptr is written as mentioned in
-    # ttps://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/ops/cross_entropy.py#L34
+    # https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/ops/cross_entropy.py#L34
     tl.debug_barrier()
 
     # 5. Calculate the loss
@@ -196,7 +196,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             ignore_index=ignore_index,
             BLOCK_SIZE=BLOCK_SIZE,
             # TODO: 32 seems to give the best performance
-            # Performance is quite sentitive to num_warps
+            # Performance is quite sensitive to num_warps
             num_warps=32,
         )
 

@@ -38,9 +38,8 @@ setup(
             "flake8>=4.0.1.1",
             "black>=24.4.2",
             "isort>=5.13.2",
-            "pre-commit>=3.7.1",
-            "torch-tb-profiler>=0.4.1",
-            "pytest>=8.3.2",
+            "pytest>=7.1.2",
+            "datasets>=2.19.2",
         ]
     },
 )

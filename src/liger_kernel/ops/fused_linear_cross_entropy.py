@@ -36,7 +36,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         # inputs have shape: BT x H
         # materialized activations will have shape: BT x V
         # the increase in memory = BT x V
-        # reduction can be achieved by paritioning the number of tokens BT into smaller chunks.
+        # reduction can be achieved by partitioning the number of tokens BT into smaller chunks.
         # for ex: if we were to achieve the same memory consumption as BT x H, then the chunk size should be:
         # inc_factor = (V+H-1)//H, chunk_size = (BT + inc_factor - 1)//inc_factor
         # for ex: BT = 4096*4, V = 32000, H = 4096 ==> inc_factor = 8, chunk_size = 2048
@@ -95,14 +95,14 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 num_warps=32,
             )
 
-            # gradient of logits_chunk is computed inplace by the above triton kernel.
+            # gradient of logits_chunk is computed in-place by the above triton kernel.
             # Following HuggingFace model source code, we do the forward and backward
             # w.r.t. logits in fp32 for numerical stability especially as the num classes (vocab size) os huge.
             # (reference: https://github.com/huggingface/transformers/blob/v4.42.4/src/transformers/models/llama/modeling_llama.py#L1194)
             # Propagating to lm_head's backward, we'll switch back to the original dtype.
             logits_chunk = logits_chunk.to(dtype)
 
-            # gradient of logits_chunk is computed inplace by the above triton kernel and is of shape: chunk_size x V
+            # gradient of logits_chunk is computed in-place by the above triton kernel and is of shape: chunk_size x V
             # thus grad_input[start_idx: end_idx] should be of shape: chunk_size x H
             # additionally, since we are chunking the inputs, observe that the loss and gradients are calculated only
             # on `n_non_ignore` tokens. However, the gradient of the input should be calculated for all tokens.
