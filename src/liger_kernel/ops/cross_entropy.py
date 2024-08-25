@@ -196,7 +196,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             ignore_index=ignore_index,
             BLOCK_SIZE=BLOCK_SIZE,
             # TODO: 32 seems to give the best performance
-            # Performance is quite sentitive to num_warps
+            # Performance is quite sensitive to num_warps
             num_warps=32,
         )
 
