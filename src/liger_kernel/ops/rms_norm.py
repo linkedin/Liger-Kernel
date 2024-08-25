@@ -17,6 +17,7 @@ def _rms_norm_forward(
     r_row_stride,
     n_cols,
     eps,
+    offset,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -47,7 +48,7 @@ def _rms_norm_forward(
     # However, on the computation side, it can save 4 operations (*, sum, /, sqrt).
     tl.store(r_ptr, inv_rms)
 
-    Y_row = X_row * inv_rms * W_row
+    Y_row = X_row * inv_rms * (offset + W_row)
 
     tl.store(Y_ptr + col_offsets, Y_row, mask=mask)
 
@@ -66,6 +67,7 @@ def _rms_norm_backward(
     dW_row_stride,
     n_cols,
     eps,
+    offset,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -89,6 +91,7 @@ def _rms_norm_backward(
     # Get cached rms
     inv_rms_row = tl.load(r_ptr)
 
+    W_row = W_row + offset
     dX_row = (inv_rms_row) * (
         dY_row * W_row
         - (1 / n_cols)
@@ -107,7 +110,7 @@ def _rms_norm_backward(
 class LigerRMSNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, eps):
+    def forward(ctx, X, W, eps, offset=0.0):
         """
         X: (B, T, H) or (BxT, H)
         W: (H,)
@@ -139,10 +142,12 @@ class LigerRMSNormFunction(torch.autograd.Function):
             r.stride(0),
             n_cols,
             eps,
+            offset,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
         )
         ctx.eps = eps
+        ctx.offset = offset
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
 
@@ -177,9 +182,10 @@ class LigerRMSNormFunction(torch.autograd.Function):
             dW.stride(0),
             n_cols,
             ctx.eps,
+            ctx.offset,
             BLOCK_SIZE=ctx.BLOCK_SIZE,
             num_warps=ctx.num_warps,
         )
         dX = dY.view(*shape)
         dW = torch.sum(dW, dim=0)
-        return dX, dW, None
+        return dX, dW, None, None

@@ -1,3 +1,5 @@
+from functools import partial
+
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.model.llama import lce_forward
@@ -124,7 +126,7 @@ def apply_liger_kernel_to_gemma(
     if rope:
         modeling_gemma.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        modeling_gemma.GemmaRMSNorm = LigerRMSNorm
+        modeling_gemma.GemmaRMSNorm = partial(LigerRMSNorm, offset=1.0)
     if cross_entropy:
         modeling_gemma.CrossEntropyLoss = LigerCrossEntropyLoss
     if geglu:

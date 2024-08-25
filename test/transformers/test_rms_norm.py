@@ -24,6 +24,22 @@ class LlamaRMSNorm(nn.Module):
         return self.weight * hidden_states.to(input_dtype)
 
 
+# https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L122
+class GemmaRMSNorm(nn.Module):
+    def __init__(self, hidden_size: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+
+    def _norm(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+
+    def forward(self, x):
+        output = self._norm(x.float())
+        output = output * (1.0 + self.weight.float())
+        return output.type_as(x)
+
+
 @pytest.mark.parametrize(
     "bs, sl, hd",
     [
@@ -45,7 +61,14 @@ class LlamaRMSNorm(nn.Module):
         (torch.bfloat16, 5.0, 1e-5),
     ],
 )
-def test_correctness(bs, sl, hd, dtype, atol, rtol):
+@pytest.mark.parametrize(
+    "reference, offset",
+    [
+        (LlamaRMSNorm, 0.0),
+        (GemmaRMSNorm, 1.0),
+    ],
+)
+def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset):
     # h
     _tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
 
@@ -55,20 +78,20 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol):
     # do
     do = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
 
-    # llama
-    llama_rms = LlamaRMSNorm(hidden_size=hd).to("cuda").to(dtype)
-    llama_o = llama_rms(h1)
-    llama_o.backward(do.clone(), retain_graph=True)
+    # reference (llama or gemma)
+    ref_rms = reference(hidden_size=hd).to("cuda").to(dtype)
+    ref_o = ref_rms(h1)
+    ref_o.backward(do.clone(), retain_graph=True)
 
     # triton
-    triton_rms = LigerRMSNorm(hidden_size=hd).to("cuda").to(dtype)
+    triton_rms = LigerRMSNorm(hidden_size=hd, offset=offset).to("cuda").to(dtype)
     triton_o = triton_rms(h2)
     triton_o.backward(do.clone(), retain_graph=True)
 
-    assert torch.allclose(llama_o, triton_o, atol=atol, rtol=rtol) is True
+    assert torch.allclose(ref_o, triton_o, atol=atol, rtol=rtol) is True
     assert (
         torch.allclose(
-            llama_rms.weight.grad, triton_rms.weight.grad, atol=atol, rtol=rtol
+            ref_rms.weight.grad, triton_rms.weight.grad, atol=atol, rtol=rtol
         )
         is True
     )
