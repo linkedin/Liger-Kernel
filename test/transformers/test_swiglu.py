@@ -74,29 +74,23 @@ def test_correctness_llamamlp(
     y1.backward(dy.clone(), retain_graph=True)
     y2.backward(dy.clone(), retain_graph=True)
 
-    assert (
-        torch.allclose(
-            llama_mlp.gate_proj.weight.grad,
-            liger_mlp.gate_proj.weight.grad,
-            atol=atol,
-            rtol=rtol,
-        )
+    assert torch.allclose(
+        llama_mlp.gate_proj.weight.grad,
+        liger_mlp.gate_proj.weight.grad,
+        atol=atol,
+        rtol=rtol,
     )
-    assert (
-        torch.allclose(
-            llama_mlp.up_proj.weight.grad,
-            liger_mlp.up_proj.weight.grad,
-            atol=atol,
-            rtol=rtol,
-        )
+    assert torch.allclose(
+        llama_mlp.up_proj.weight.grad,
+        liger_mlp.up_proj.weight.grad,
+        atol=atol,
+        rtol=rtol,
     )
-    assert (
-        torch.allclose(
-            llama_mlp.down_proj.weight.grad,
-            liger_mlp.down_proj.weight.grad,
-            atol=atol,
-            rtol=rtol,
-        )
+    assert torch.allclose(
+        llama_mlp.down_proj.weight.grad,
+        liger_mlp.down_proj.weight.grad,
+        atol=atol,
+        rtol=rtol,
     )
 
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
@@ -153,21 +147,17 @@ def test_correctness_phi3mlp(
     y1.backward(dy.clone(), retain_graph=True)
     y2.backward(dy.clone(), retain_graph=True)
 
-    assert (
-        torch.allclose(
-            phi3_mlp.gate_up_proj.weight.grad,
-            liger_mlp.gate_up_proj.weight.grad,
-            atol=atol,
-            rtol=rtol,
-        )
+    assert torch.allclose(
+        phi3_mlp.gate_up_proj.weight.grad,
+        liger_mlp.gate_up_proj.weight.grad,
+        atol=atol,
+        rtol=rtol,
     )
-    assert (
-        torch.allclose(
-            phi3_mlp.down_proj.weight.grad,
-            liger_mlp.down_proj.weight.grad,
-            atol=atol,
-            rtol=rtol,
-        )
+    assert torch.allclose(
+        phi3_mlp.down_proj.weight.grad,
+        liger_mlp.down_proj.weight.grad,
+        atol=atol,
+        rtol=rtol,
     )
 
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
