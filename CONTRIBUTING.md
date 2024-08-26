@@ -42,13 +42,8 @@ Create unit tests and convergence tests for your kernel in the tests directory. 
 2. run `make checkstyle` to ensure code style.
 3. run `make test-convergence` to ensure convergence.
 
-If encounter the import error `ModuleNotFoundError: No module named 'test.utils'`, please add `Liger-Kernel` folder in the path
-```
-export PYTHONPATH="${PYTHONPATH}:your-path-here/Liger-Kernel"
-```
-
 ### Run pytest on single file
-`pytest test_sample.py::test_function_name`
+`python -m pytest test_sample.py::test_function_name`
 
 ## Submit PR
 Fork the repo, copy and paste the successful test logs in the PR and submit the PR followed by the PR template (**[example PR](https://github.com/linkedin/Liger-Kernel/pull/21)**).
