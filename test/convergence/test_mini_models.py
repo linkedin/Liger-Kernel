@@ -177,7 +177,9 @@ MINI_MODEL_SETUPS = {
         ),
     ),
     "mini_phi3": MiniModelConfig(
-        liger_kernel_patch_func=apply_liger_kernel_to_phi3,
+        liger_kernel_patch_func=functools.partial(
+            apply_liger_kernel_to_phi3, fused_linear_cross_entropy=False
+        ),
         model_class=Phi3ForCausalLM,
         mini_model_config=Phi3Config(
             attention_dropout=0.0,
