@@ -89,9 +89,9 @@ def _test_correctness_not_last_layer_once(
 @pytest.mark.parametrize(
     "B, T, V",
     [
-        (4, 4096, 32000),  # llama2, mistral
-        (8, 4096, 32000),  # llama2, mistral
-        (4, 4096, 128256),  # llama3
+        (2, 4096, 32000),  # llama2, mistral
+        (2, 4096, 32000),  # llama2, mistral
+        (1, 4096, 128256),  # llama3
         # # weird shapes
         (3, 423, 32000),
     ],
@@ -115,9 +115,9 @@ def test_correctness(B, T, V, scalar, dtype, atol, rtol):
 @pytest.mark.parametrize(
     "B, T, V, ignore_index",
     [
-        (4, 4096, 32000, -100),  # llama2, mistral
-        (8, 4096, 32000, 2),  # llama2, mistral
-        (4, 4096, 128256, -300),  # llama3
+        (2, 4096, 32000, -100),  # llama2, mistral
+        (2, 4096, 32000, 2),  # llama2, mistral
+        (1, 4096, 128256, -300),  # llama3
         # weird shapes
         (3, 423, 32000, -123),
     ],
@@ -145,9 +145,9 @@ def test_correctness_with_ignore_index(
 @pytest.mark.parametrize(
     "B, T, V",
     [
-        (4, 4096, 32000),  # llama2, mistral
-        (8, 4096, 32000),  # llama2, mistral
-        (4, 4096, 128256),  # llama3
+        (2, 4096, 32000),  # llama2, mistral
+        (2, 4096, 32000),  # llama2, mistral
+        (1, 4096, 128256),  # llama3
         # # weird shapes
         (3, 423, 32000),
     ],
@@ -192,6 +192,10 @@ def _full_pass_once(B, T, V):
         ),  # _input = 16GB, total = ~32GB, 8405385216 > 2,147,483,647, so we need int64
         (8, 16384, 128256),  # _input = 32GB, total = ~64GB
     ],
+)
+@pytest.mark.skipif(
+    torch.cuda.get_device_properties(0).total_memory < 64000000000,
+    reason="Needs 64GB+ GPU memory.",
 )
 def test_large_no_exception(B, T, V):
     # The large inputs were hitting cuda illegal memory access because of

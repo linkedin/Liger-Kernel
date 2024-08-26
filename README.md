@@ -89,6 +89,13 @@ To install the nightly version:
 $ pip install liger-kernel-nightly
 ```
 
+To install from source:
+
+```bash
+git clone https://github.com/linkedin/Liger-Kernel.git
+cd Liger-Kernel
+pip install -e .
+```
 ## Getting Started
 
 ### 1. Patch Existing Hugging Face Models
