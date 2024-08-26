@@ -6,7 +6,7 @@ import transformers
 from callback import EfficiencyCallback
 from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
 
-from liger_kernel.transformers import apply_liger_kernel_to_llama
+import liger_kernel.transformers
 
 # TODO: clean up the code after hf meeting
 
@@ -54,7 +54,8 @@ def train():
     )
 
     if custom_args.use_liger is True:
-        apply_liger_kernel_to_llama()
+        # liger_kernel.transformers.apply_liger_kernel_to_llama()
+        liger_kernel.transformers.apply_liger_kernel_to_qwen2()
 
     trainer = SFTTrainer(
         model=model,
