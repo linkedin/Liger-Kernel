@@ -1,3 +1,6 @@
+from liger_kernel.transformers.auto_model import (  # noqa: F401
+    AutoLigerKernelForCausalLM,
+)
 from liger_kernel.transformers.monkey_patch import (  # noqa: F401
     apply_liger_kernel_to_gemma,
     apply_liger_kernel_to_gemma2,
