@@ -23,14 +23,12 @@ def print_env_report():
         print("PyTorch: Not installed")
         print("CUDA version: Unable to query")
 
-    # Get Triton version
     try:
         import triton
         print(f"Triton version: {triton.__version__}")
     except ImportError:
         print("Triton: Not installed")
 
-    # Get Transformers version
     try:
         import transformers
         print(f"Transformers version: {transformers.__version__}")
