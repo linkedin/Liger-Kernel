@@ -182,6 +182,16 @@ class DataModule(pl.LightningDataModule):
 
     def setup(self, stage) -> None:
         dataset = datasets.load_dataset(self.args.data, "auxiliary_train")
+        flattened_data = [
+            {
+                "answer": x["train"]["answer"],
+                "choices": x["train"]["choices"],
+                "question": x["train"]["question"],
+                "subject": x["train"]["subject"],
+            }
+            for x in dataset["train"]
+        ]
+        dataset = datasets.Dataset.from_list(flattened_data)
         dataset = dataset.train_test_split(test_size=4096, seed=self.args.seed)
         train_dataset, val_dataset = dataset["train"], dataset["test"]
         self.train_dataset = train_dataset.map(
