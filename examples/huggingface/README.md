@@ -3,7 +3,7 @@
 ## How to Run
 ```bash
 pip install -r requirements.txt
-sh run.sh
+sh run_{MODEL}.sh
 ```
 
 **Notes**
@@ -16,9 +16,18 @@ sh run.sh
 
 ## Benchmark Result
 
+### LLaMA
 Benchmark conditions: LLaMA 3-8B, Alpaca Dataset, Max seq len = 512, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 4 A100s.
 
-The throughput increases by approximately 20% with more data, but the GPU memory is reduced by 40%. This means you can train the model on smaller GPUs, with larger batch sizes, or with longer sequence lengths at no additional cost.
+Throughput improves by around 20%, while GPU memory usage drops by 40%. This allows you to train the model on smaller GPUs, use larger batch sizes, or handle longer sequence lengths without incurring additional costs.
 
-![Throughput](img/hf_tps.png)
-![GPU Memory Allocated](img/hf_mem_alloc.png)
+![Throughput](img/llama_tps.png)
+![GPU Memory Allocated](img/llama_mem_alloc.png)
+
+### QWEN
+Benchmark conditions: Qwen2-7B, Alpaca Dataset, Max seq len = 512, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 4 A100s.
+
+Throughput improves by around 10%, while GPU memory usage drops by 50%. 
+
+![Throughput](img/qwen_tps.png)
+![GPU Memory Allocated](img/qwen_mem_alloc.png)
