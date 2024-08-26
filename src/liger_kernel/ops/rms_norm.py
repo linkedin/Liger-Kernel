@@ -184,7 +184,7 @@ _str_to_casting_mode = {
 class LigerRMSNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, eps, offset=0.0, casting_mode="casting_mode_llama"):
+    def forward(ctx, X, W, eps, offset=0.0, casting_mode="llama"):
         """
         X: (B, T, H) or (BxT, H)
         W: (H,)
