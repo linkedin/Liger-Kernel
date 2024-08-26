@@ -194,7 +194,7 @@ def _full_pass_once(B, T, V):
     ],
 )
 @pytest.mark.skipif(
-    torch.cuda.get_device_properties(0).total_memory < 64000000000,
+    torch.cuda.get_device_properties(0).total_memory < 64 * 1000 * 1000 * 1000, 
     reason="Needs 64GB+ GPU memory.",
 )
 def test_large_no_exception(B, T, V):
