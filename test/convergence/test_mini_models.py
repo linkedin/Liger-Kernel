@@ -61,7 +61,9 @@ MINI_MODEL_SETUPS = {
         ),
     ),
     "mini_gemma": MiniModelConfig(
-        liger_kernel_patch_func=apply_liger_kernel_to_gemma,
+        liger_kernel_patch_func=functools.partial(
+            apply_liger_kernel_to_gemma, fused_linear_cross_entropy=False
+        ),
         model_class=GemmaForCausalLM,
         mini_model_config=GemmaConfig(
             vocab_size=32000,  # 256000
