@@ -1,4 +1,4 @@
-.PHONY: test checkstyle test-convergence all
+.PHONY: test checkstyle test-convergence all env-report
 
 
 all: test test-convergence checkstyle
@@ -23,11 +23,12 @@ checkstyle:
 test-convergence:
 	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence
 
+# Command to report details about the current environment. Useful for bug reports.
 env-report:
 	@echo "Environment Report:"
 	@echo "-------------------"
 	@echo -n "Operating System: "; uname -a
 	@echo -n "Python version: "; python --version
-	@echo -n "Triton version: "; python -c "import triton; print(triton.__version__)" 2>/dev/null || echo "Triton not installed"
 	@echo -n "PyTorch version: "; python -c "import torch; print(torch.__version__)"
+	@echo -n "Triton version: "; python -c "import triton; print(triton.__version__)" 2>/dev/null || echo "Triton not installed"
 	@echo -n "Transformers version: "; python -c "import transformers; print(transformers.__version__)"
