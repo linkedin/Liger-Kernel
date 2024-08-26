@@ -110,7 +110,7 @@ def lce_forward(
         loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
 
     else:
-        logits = self.lm_head(hidden_states).float()
+        logits = self.lm_head(hidden_states)
         if labels is not None:
             # Upcast to float if we need to compute the loss to avoid potential precision issues
             logits = logits.float()
