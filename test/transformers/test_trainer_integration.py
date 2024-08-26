@@ -20,7 +20,6 @@ def test_apply_liger_kernel_only_supported_model_type_called():
     mock_gemma = Mock()
     mock_llama = Mock()
     mock_mistral = Mock()
-    mock_qwen2 = Mock()
 
     with patch.dict(
         MODEL_TYPE_TO_APPLY_LIGER_FN,
@@ -28,14 +27,12 @@ def test_apply_liger_kernel_only_supported_model_type_called():
             "gemma": mock_gemma,
             "llama": mock_llama,
             "mistral": mock_mistral,
-            "qwen2": mock_gemma,
         },
     ):
         _apply_liger_kernel("llama")
         mock_llama.assert_called_once()
         mock_gemma.assert_not_called()
         mock_mistral.assert_not_called()
-        mock_qwen2.assert_not_called()
 
 
 def test_apply_liger_kernel_passes_kwargs():
