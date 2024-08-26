@@ -30,5 +30,6 @@ env-report:
 	@echo -n "Operating System: "; uname -a
 	@echo -n "Python version: "; python --version
 	@echo -n "PyTorch version: "; python -c "import torch; print(torch.__version__)"
+	@echo -n "CUDA version: "; python -c "import torch; print(torch.version.cuda if torch.cuda.is_available() else 'Not available')"
 	@echo -n "Triton version: "; python -c "import triton; print(triton.__version__)"
 	@echo -n "Transformers version: "; python -c "import transformers; print(transformers.__version__)"
