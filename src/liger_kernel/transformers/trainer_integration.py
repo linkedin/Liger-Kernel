@@ -2,6 +2,7 @@ import logging
 
 from liger_kernel.transformers.monkey_patch import (
     apply_liger_kernel_to_gemma,
+    apply_liger_kernel_to_jamba,
     apply_liger_kernel_to_llama,
     apply_liger_kernel_to_mistral,
     apply_liger_kernel_to_mixtral,
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
+    "jamba": apply_liger_kernel_to_jamba,
     "llama": apply_liger_kernel_to_llama,
     "mistral": apply_liger_kernel_to_mistral,
     "mixtral": apply_liger_kernel_to_mixtral,

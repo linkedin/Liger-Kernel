@@ -169,3 +169,41 @@ def apply_liger_kernel_to_qwen2(
         modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward
     if swiglu:
         modeling_qwen2.Qwen2MLP = LigerSwiGLUMLP
+
+
+def apply_liger_kernel_to_jamba(
+        rope: bool = True,
+        cross_entropy: bool = False,
+        fused_linear_cross_entropy: bool = True,
+        rms_norm: bool = True,
+        swiglu: bool = True,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Jamba models
+    to make GPU go burrr.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused lienar cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+    """
+    assert not (
+            cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
+    from transformers.models.jamba import modeling_jamba
+
+    if rope:
+        modeling_jamba.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
+        modeling_jamba.JambaRMSNorm = LigerRMSNorm
+    if cross_entropy:
+        modeling_jamba.CrossEntropyLoss = LigerCrossEntropyLoss
+    if swiglu:
+        modeling_jamba.JambaMLP = LigerSwiGLUMLP
