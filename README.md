@@ -95,7 +95,7 @@ To install from source:
 git clone https://github.com/linkedin/Liger-Kernel.git
 cd Liger-Kernel
 pip install -e .
-
+```
 ## Getting Started
 
 ### 1. Patch Existing Hugging Face Models
@@ -157,7 +157,7 @@ loss.backward()
 | **Model**   | **API**                                                      | **Supported Operations**                                                |
 |-------------|--------------------------------------------------------------|-------------------------------------------------------------------------|
 | LLaMA (2 & 3) | `liger_kernel.transformers.apply_liger_kernel_to_llama`   | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
-| Mistral     | `liger_kernel.transformers.apply_liger_kernel_to_mistral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss        |
+| Mistral     | `liger_kernel.transformers.apply_liger_kernel_to_mistral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mixtral     | `liger_kernel.transformers.apply_liger_kernel_to_mixtral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss        |
 | Gemma2      | `liger_kernel.transformers.apply_liger_kernel_to_gemma`    | RoPE, RMSNorm, GeGLU, CrossEntropyLoss         |
 | Qwen2       | `liger_kernel.transformers.apply_liger_kernel_to_qwen2`    | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |

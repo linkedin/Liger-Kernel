@@ -89,7 +89,9 @@ MINI_MODEL_SETUPS = {
         ),
     ),
     "mini_mistral": MiniModelConfig(
-        liger_kernel_patch_func=apply_liger_kernel_to_mistral,
+        liger_kernel_patch_func=functools.partial(
+            apply_liger_kernel_to_mistral, fused_linear_cross_entropy=False
+        ),
         model_class=MistralForCausalLM,
         mini_model_config=MistralConfig(
             attention_dropout=0.0,
