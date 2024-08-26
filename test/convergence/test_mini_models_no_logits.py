@@ -11,8 +11,12 @@ import torch
 from datasets import load_from_disk
 from torch.utils.data import DataLoader
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
+from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
 
-from liger_kernel.transformers import apply_liger_kernel_to_llama
+from liger_kernel.transformers import (
+    apply_liger_kernel_to_llama,
+    apply_liger_kernel_to_qwen2,
+)
 
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
@@ -46,7 +50,35 @@ MINI_MODEL_SETUPS = {
             # Flash_attn produces contiguous dq and dk
             attn_implementation="sdpa",  # default value, pytorch native attention
         ),
-    )
+    ),
+    "mini_qwen2": MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen2,
+        model_class=Qwen2ForCausalLM,
+        mini_model_config=Qwen2Config(
+            attention_dropout=0.0,
+            bos_token_id=1,  # 151643
+            eos_token_id=2,  # 151643
+            hidden_act="silu",
+            hidden_size=896,
+            initializer_range=0.02,
+            intermediate_size=4864,
+            max_position_embeddings=32768,  # 131072
+            num_attention_heads=8,
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            rms_norm_eps=1e-6,
+            rope_theta=1000000.0,
+            sliding_window=131072,
+            tie_word_embeddings=True,
+            use_cache=True,
+            vocab_size=32000,  # 151936
+            # At rope backward
+            # Eager produces incontiguous dq and dk
+            # SDPA produces contiguous dq and incontiguous dk
+            # Flash_attn produces contiguous dq and dk
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    ),
 }
 
 
@@ -109,6 +141,8 @@ def run_mini_model(
     [
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
         ("mini_llama3", 32, 1e-4, torch.bfloat16, 5e-3, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_qwen2", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_qwen2", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
     ],
 )
 def test_mini_model(
