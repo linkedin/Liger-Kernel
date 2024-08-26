@@ -2,7 +2,8 @@ from functools import partial
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
-from liger_kernel.transformers.model.llama import lce_forward
+from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
+from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
@@ -27,7 +28,7 @@ def apply_liger_kernel_to_llama(
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
-            Whether to apply Liger's fused lienar cross entropy loss. Default is True.
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
@@ -49,7 +50,7 @@ def apply_liger_kernel_to_llama(
     if cross_entropy:
         modeling_llama.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_llama.LlamaForCausalLM.forward = lce_forward
+        modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
 
 
 def apply_liger_kernel_to_mistral(
@@ -151,7 +152,7 @@ def apply_liger_kernel_to_qwen2(
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
-            Whether to apply Liger's fused lienar cross entropy loss. Default is True.
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
@@ -177,7 +178,8 @@ def apply_liger_kernel_to_qwen2(
 
 def apply_liger_kernel_to_phi3(
     rope: bool = True,
-    cross_entropy: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
 ) -> None:
@@ -187,9 +189,16 @@ def apply_liger_kernel_to_phi3(
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU Phi3MLP. Default is True.
     """
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
     from transformers.models.phi3 import modeling_phi3
 
     if rope:
@@ -200,3 +209,5 @@ def apply_liger_kernel_to_phi3(
         modeling_phi3.Phi3MLP = LigerPhi3SwiGLUMLP
     if cross_entropy:
         modeling_phi3.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
