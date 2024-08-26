@@ -95,7 +95,7 @@ To install from source:
 git clone https://github.com/linkedin/Liger-Kernel.git
 cd Liger-Kernel
 pip install -e .
-
+```
 ## Getting Started
 
 ### 1. Patch Existing Hugging Face Models
