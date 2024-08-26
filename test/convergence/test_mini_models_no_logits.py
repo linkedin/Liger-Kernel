@@ -14,7 +14,11 @@ from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.models.phi3 import Phi3Config, Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
 
-from liger_kernel.transformers import apply_liger_kernel_to_llama, apply_liger_kernel_to_qwen2, apply_liger_kernel_to_phi3
+from liger_kernel.transformers import (
+    apply_liger_kernel_to_llama,
+    apply_liger_kernel_to_phi3,
+    apply_liger_kernel_to_qwen2,
+)
 
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
