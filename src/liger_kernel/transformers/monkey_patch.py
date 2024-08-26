@@ -109,7 +109,7 @@ def apply_liger_kernel_to_mixtral(
     if rope:
         modeling_mixtral.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        modeling_mixtral.MistralRMSNorm = LigerRMSNorm
+        modeling_mixtral.MixtralRMSNorm = LigerRMSNorm
     if cross_entropy:
         modeling_mixtral.CrossEntropyLoss = LigerCrossEntropyLoss
     if swiglu:
