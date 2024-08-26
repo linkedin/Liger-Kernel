@@ -1,4 +1,4 @@
-.PHONY: test checkstyle test-convergence all env-report
+.PHONY: test checkstyle test-convergence all
 
 
 all: test test-convergence checkstyle
@@ -22,14 +22,3 @@ checkstyle:
 # We have to explicitly set HF_DATASETS_OFFLINE=1, or dataset will silently try to send metrics and timeout (80s) https://github.com/huggingface/datasets/blob/37a603679f451826cfafd8aae00738b01dcb9d58/src/datasets/load.py#L286
 test-convergence:
 	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence
-
-# Command to report details about the current environment. Useful for bug reports.
-env-report:
-	@echo "Environment Report:"
-	@echo "-------------------"
-	@echo -n "Operating System: "; uname -a 2>/dev/null || echo "uname not supported"
-	@echo -n "Python version: "; python --version 2>/dev/null || echo "Not installed"
-	@echo -n "PyTorch version: "; python -c "import torch; print(torch.__version__)" 2>/dev/null || echo "Not installed"
-	@echo -n "CUDA version: "; python -c "import torch; print(torch.version.cuda if torch.cuda.is_available() else 'Not available')" 2>/dev/null || echo "Unable to query"
-	@echo -n "Triton version: "; python -c "import triton; print(triton.__version__)" 2>/dev/null || echo "Not installed"
-	@echo -n "Transformers version: "; python -c "import transformers; print(transformers.__version__)" 2>/dev/null || echo "Not installed"
