@@ -6,7 +6,7 @@ all: test test-convergence checkstyle
 # Command to run pytest for correctness tests
 test:
 	python -m pytest --disable-warnings test/ --ignore=test/convergence
-	
+
 
 # Command to run flake8 (code style check), isort (import ordering), and black (code formatting)
 # Subsequent commands still run if the previous fails, but return failure at the end
@@ -22,3 +22,12 @@ checkstyle:
 # We have to explicitly set HF_DATASETS_OFFLINE=1, or dataset will silently try to send metrics and timeout (80s) https://github.com/huggingface/datasets/blob/37a603679f451826cfafd8aae00738b01dcb9d58/src/datasets/load.py#L286
 test-convergence:
 	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence
+
+env-report:
+	@echo "Environment Report:"
+	@echo "-------------------"
+	@echo -n "Operating System: "; uname -a
+	@echo -n "Python version: "; python --version
+	@echo -n "Triton version: "; python -c "import triton; print(triton.__version__)" 2>/dev/null || echo "Triton not installed"
+	@echo -n "PyTorch version: "; python -c "import torch; print(torch.__version__)"
+	@echo -n "Transformers version: "; python -c "import transformers; print(transformers.__version__)"
