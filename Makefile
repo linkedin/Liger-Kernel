@@ -1,8 +1,11 @@
-.PHONY: test checkstyle test-convergence
+.PHONY: test checkstyle test-convergence all
+
+
+all: test test-convergence checkstyle
 
 # Command to run pytest for correctness tests
 test:
-	pytest --disable-warnings test/ --ignore=test/convergence
+	python -m pytest --disable-warnings test/ --ignore=test/convergence
 	
 
 # Command to run flake8 (code style check), isort (import ordering), and black (code formatting)
@@ -18,4 +21,4 @@ checkstyle:
 # Command to run pytest for convergence tests
 # We have to explicitly set HF_DATASETS_OFFLINE=1, or dataset will silently try to send metrics and timeout (80s) https://github.com/huggingface/datasets/blob/37a603679f451826cfafd8aae00738b01dcb9d58/src/datasets/load.py#L286
 test-convergence:
-	HF_DATASETS_OFFLINE=1 pytest --disable-warnings test/convergence
+	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence
