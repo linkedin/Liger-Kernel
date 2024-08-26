@@ -126,7 +126,9 @@ def apply_liger_kernel_to_gemma(
         modeling_gemma.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
-        modeling_gemma.GemmaRMSNorm = partial(LigerRMSNorm, offset=1.0, init_fn="zeros")
+        modeling_gemma.GemmaRMSNorm = partial(
+            LigerRMSNorm, offset=1.0, init_fn="zeros", casting_mode="gemma"
+        )
     if cross_entropy:
         modeling_gemma.CrossEntropyLoss = LigerCrossEntropyLoss
     if geglu:
