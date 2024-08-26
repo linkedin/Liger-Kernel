@@ -27,8 +27,8 @@ test-convergence:
 env-report:
 	@echo "Environment Report:"
 	@echo "-------------------"
-	@echo -n "Operating System: "; uname -a
-	@echo -n "Python version: "; python --version
+	@echo -n "Operating System: "; uname -a 2>/dev/null || echo "uname not supported"
+	@echo -n "Python version: "; python --version 2>/dev/null || echo "Not installed"
 	@echo -n "PyTorch version: "; python -c "import torch; print(torch.__version__)" 2>/dev/null || echo "Not installed"
 	@echo -n "CUDA version: "; python -c "import torch; print(torch.version.cuda if torch.cuda.is_available() else 'Not available')" 2>/dev/null || echo "Unable to query"
 	@echo -n "Triton version: "; python -c "import triton; print(triton.__version__)" 2>/dev/null || echo "Not installed"
