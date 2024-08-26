@@ -72,7 +72,7 @@ With one line of code, Liger Kernel can increase throughput by more than 20% and
 
 - `torch >= 2.1.2`
 - `triton >= 2.3.0`
-- `transformers >= 4.40.1`
+- `transformers >= 4.41.0`
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
