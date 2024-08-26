@@ -11,8 +11,12 @@ import torch
 from datasets import load_from_disk
 from torch.utils.data import DataLoader
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
+from transformers.models.mistral import MistralConfig, MistralForCausalLM
 
-from liger_kernel.transformers import apply_liger_kernel_to_llama
+from liger_kernel.transformers import (
+    apply_liger_kernel_to_llama,
+    apply_liger_kernel_to_mistral,
+)
 
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
@@ -46,7 +50,31 @@ MINI_MODEL_SETUPS = {
             # Flash_attn produces contiguous dq and dk
             attn_implementation="sdpa",  # default value, pytorch native attention
         ),
-    )
+    ),
+    "mini_mistral": MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_mistral,
+        model_class=MistralForCausalLM,
+        mini_model_config=MistralConfig(
+            attention_dropout=0.0,
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            hidden_size=1024,  # 4096
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=32768,  # 32768
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 32
+            num_key_value_heads=2,  # 8
+            rms_norm_eps=1e-5,
+            rope_theta=10000.0,
+            sliding_window=4096,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,
+            attn_implementation="sdpa",
+        ),
+    ),
 }
 
 
@@ -109,6 +137,8 @@ def run_mini_model(
     [
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
         ("mini_llama3", 32, 1e-4, torch.bfloat16, 5e-3, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_mistral", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
     ],
 )
 def test_mini_model(
