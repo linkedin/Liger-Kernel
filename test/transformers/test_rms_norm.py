@@ -63,7 +63,7 @@ class GemmaRMSNorm(nn.Module):
     [
         (torch.float32, 1e-4, 1e-6),
         (torch.bfloat16, 2e-1, 1e-5),
-        (torch.float16, 1e-1, 1e-5),
+        (torch.float16, 2e-1, 1e-5),
     ],
 )
 @pytest.mark.parametrize(

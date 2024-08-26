@@ -133,6 +133,7 @@ def _rms_norm_backward(
 
     W_row = W_row + offset
 
+    # Different bacward graphs for different casting modes
     if casting_mode == CASTING_MODE_LLAMA:
         X_row = X_row.to(tl.float32)
         m = (dY_row * W_row).to(tl.float32)
@@ -189,6 +190,9 @@ class LigerRMSNormFunction(torch.autograd.Function):
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
+        assert casting_mode in _str_to_casting_mode or isinstance(
+            casting_mode, int
+        ), f"Invalid casting_mode {casting_mode}. Must be one of {_str_to_casting_mode.keys()}"
         casting_mode = (
             _str_to_casting_mode[casting_mode]
             if not isinstance(casting_mode, int)
@@ -272,5 +276,5 @@ class LigerRMSNormFunction(torch.autograd.Function):
             num_warps=ctx.num_warps,
         )
         dX = dY.view(*shape)
-        dW = torch.sum(dW, dim=0)
+        dW = torch.sum(dW, dim=0).to(W.dtype)
         return dX, dW, None, None, None
