@@ -4,3 +4,4 @@ trl
 liger-kernel
 torch
 triton
+deepspeed
