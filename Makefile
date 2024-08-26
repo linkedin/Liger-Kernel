@@ -30,5 +30,5 @@ env-report:
 	@echo -n "Operating System: "; uname -a
 	@echo -n "Python version: "; python --version
 	@echo -n "PyTorch version: "; python -c "import torch; print(torch.__version__)"
-	@echo -n "Triton version: "; python -c "import triton; print(triton.__version__)" 2>/dev/null || echo "Triton not installed"
+	@echo -n "Triton version: "; python -c "import triton; print(triton.__version__)"
 	@echo -n "Transformers version: "; python -c "import transformers; print(transformers.__version__)"
