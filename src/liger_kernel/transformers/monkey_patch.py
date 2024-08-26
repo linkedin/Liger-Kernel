@@ -1,3 +1,5 @@
+from functools import partial
+
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.model.llama import lce_forward
@@ -118,13 +120,13 @@ def apply_liger_kernel_to_gemma(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
     """
-    # TODO(yundai424): add convergence test for gemma
     from transformers.models.gemma import modeling_gemma
 
     if rope:
         modeling_gemma.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        modeling_gemma.GemmaRMSNorm = LigerRMSNorm
+        # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
+        modeling_gemma.GemmaRMSNorm = partial(LigerRMSNorm, offset=1.0, init_fn="zeros")
     if cross_entropy:
         modeling_gemma.CrossEntropyLoss = LigerCrossEntropyLoss
     if geglu:
