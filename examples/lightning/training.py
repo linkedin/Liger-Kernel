@@ -20,7 +20,7 @@ from liger_kernel.transformers import (
 )
 
 apply_liger_kernel_to_llama(fused_linear_cross_entropy=True, cross_entropy=False)
-apply_liger_kernel_to_gemma()  # TODO QQ: currently 1 GPU 64G need to patch liger fused liner ce
+apply_liger_kernel_to_gemma(fused_linear_cross_entropy=True, cross_entropy=False)
 
 
 _RETAIN_COLUMNS = {"input_ids", "attention_mask", "labels"}

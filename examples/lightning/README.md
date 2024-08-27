@@ -5,7 +5,7 @@
 pip install -r requirements.txt
 
 # For single L40 48GB GPU
-python training.py --model google/gemma-1.1-2b --num_gpu 1
+python training.py --model google/gemma-2b --num_gpu 1
 
 # For 8XA100 40GB
 python training.py --model meta-llama/Meta-Llama-3-8B
