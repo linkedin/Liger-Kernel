@@ -53,7 +53,7 @@ def _rms_norm_forward(
     X_ptr += row_idx * X_row_stride
     r_ptr += row_idx * r_row_stride
 
-    X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0)
+    X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0).to(tl.float32)
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0)
 
     mean_square = tl.sum(X_row * X_row, axis=0) / n_cols
