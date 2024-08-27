@@ -37,7 +37,7 @@ def _rms_norm_forward(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    y_i = (x_i / (RMS)) * wi, RMS = sqrt(sum(x_i^2) / N)
+    y_i = (x_i / (RMS)) * wi, RMS = sqrt(sum(x_i^2) / N + epsilon)
 
     Reference:
     1. https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
@@ -88,7 +88,7 @@ def _rms_norm_backward(
 ):
     """
     dx = (1 / RMS) * [dy * w  - (1 / N) * (1 / RMS^2) * ((dy * w) dot x) * x]. * means element-wise multiplication, whileas dot means dot product
-    dw = sum(dy * (x / RMS)). summation over BxT dimension
+    dw = dy * (x / RMS)
     """
 
     row_idx = tl.program_id(0)
