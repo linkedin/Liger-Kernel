@@ -6,7 +6,7 @@ import transformers
 from callback import EfficiencyCallback
 from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
 
-from liger_kernel.transformers.auto_model import AutoLigerKernelForCausalLM
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 
 @dataclass
