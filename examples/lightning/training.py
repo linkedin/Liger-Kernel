@@ -30,11 +30,11 @@ CHOICES = "<Choices>"
 
 @dataclass
 class Args:
-    model: str = "google/gemma-1.1-2b"
+    model: str = "google/gemma-2b"
     data: str = "cais/mmlu"
     output_dir: str = "mmlu_finetuning"
     max_length: int = 2048
-    # for default llam3 8B model, deepspeed will OOM with 16 on 8XA100 80G and 8 will OOM with 8XA100 40G
+    # for llam3 8B model, deepspeed will OOM with 16 on 8XA100 80G and 8 will OOM with 8XA100 40G
     batch_size: int = 4
     lr: float = 6e-6
     weight_decay: float = 0.05
