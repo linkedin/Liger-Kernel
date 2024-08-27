@@ -123,7 +123,6 @@ def apply_liger_kernel_to_gemma(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     geglu: bool = True,
-    swiglu: bool = True,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Gemma2 models

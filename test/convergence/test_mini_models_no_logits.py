@@ -163,13 +163,18 @@ def run_mini_model(
     set_seed(42)
 
     if with_liger is True:
-        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(
-            rope=True,
-            rms_norm=True,
-            cross_entropy=False,
-            swiglu=True,
-            fused_linear_cross_entropy=True,
-        )
+        kwargs = {
+            "rope": True,
+            "rms_norm": True,
+            "cross_entropy": False,
+            "fused_linear_cross_entropy": True,
+        }
+        if model_name == "mini_gemma":
+            kwargs["geglu"] = True
+        else:
+            kwargs["swiglu"] = True
+
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
 
     model = create_model(model_name).to(dtype).to("cuda")
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
