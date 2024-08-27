@@ -20,11 +20,11 @@ body:
   attributes:
     label: Reproduce
     description: |
-      If applicable, add a minimal example so that we can reproduce the error by running the code. 
-      The snippet needs to be as succinct (minimal) as possible, so please take time to trim down any irrelevant code to help us debug efficiently. 
-      We are going to copy-paste your code and we expect to get the same result as you did: avoid any external data, and include the relevant imports, etc. 
+      If applicable, add a minimal example so that we can reproduce the error by running the code.
+      The snippet needs to be as succinct (minimal) as possible, so please take time to trim down any irrelevant code to help us debug efficiently.
+      We are going to copy-paste your code and we expect to get the same result as you did: avoid any external data, and include the relevant imports, etc.
       If the code is too long (hopefully, it isn't), feel free to put it in a public gist and link it in the issue: https://gist.github.com.
-      Please also paste or describe the results you observe instead of the expected results. 
+      Please also paste or describe the results you observe instead of the expected results.
       If you observe an error, please paste the error message including the **full** traceback of the exception.
   validations:
     required: false
@@ -34,6 +34,11 @@ body:
     label: Versions
     description: |
       Please provide triton, torch, hardware, and other necessary versions to reproduce the bug.
+
+      For convenience, you can run the following command to get the versions of important software dependencies:
+      ```bash
+      python -m liger_kernel.env_report
+      ```
   validations:
     required: true
 
