@@ -9,7 +9,7 @@
 
 [Installation](#installation) | [Getting Started](#getting-started) | [Examples](#examples) | [APIs](#apis) | [Structure](#structure) | [Contributing](#contributing)
 
-<details>t
+<details>
   <summary>Latest News 🔥</summary>
 
   - [2024/8/31] CUDA MODE talk, [Liger-Kernel: Real-world Triton kernel for LLM Training](https://discord.gg/6CNeDAjq?event=1273323969788772455)
@@ -98,11 +98,11 @@ pip install -e .
 ```
 ## Getting Started
 
-There are a couple ways to apply Liger kernels, depending on how much customization you want.
+There are a couple ways to apply Liger kernels, depending on the level of customization required.
 
 ### 1. Use AutoLigerKernelForCausalLM
 
-Using the `AutoLigerKernelForCausalLM` is the simplest approach, as you don't have to import a model-specific patching API. If the model type is supported, the modeling code will be automatically patched.
+Using the `AutoLigerKernelForCausalLM` is the simplest approach, as you don't have to import a model-specific patching API. If the model type is supported, the modeling code will be automatically patched using the default settings.
 
 ```python
 import transformers

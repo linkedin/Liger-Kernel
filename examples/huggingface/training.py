@@ -1,4 +1,3 @@
-import logging
 from dataclasses import dataclass
 
 import datasets
@@ -8,8 +7,6 @@ from callback import EfficiencyCallback
 from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
 
 from liger_kernel.transformers.auto_model import AutoLigerKernelForCausalLM
-
-logging.basicConfig(filename="training.log", level=logging.INFO)
 
 
 @dataclass

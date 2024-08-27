@@ -19,6 +19,7 @@ class AutoLigerKernelForCausalLM(AutoModelForCausalLM):
         model_config = _get_model_config(pretrained_model_name_or_path, **kwargs)
 
         # Determine the model type and apply the Liger Kernel if applicable
+        # Note: _apply_liger_kernel will only pass relevant kwargs to the apply_liger_kernel_to_* function
         model_type = model_config.model_type
         _apply_liger_kernel(model_type, **kwargs)
 
