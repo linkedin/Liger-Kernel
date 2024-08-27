@@ -130,8 +130,8 @@ def apply_liger_kernel_to_gemma(
     geglu: bool = True,
 ) -> None:
     """
-    Apply Liger kernels to replace original implementation in HuggingFace Gemma2 models
-    to make GPU go burrr.
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma models
+    (Gemma 1.1 and Gemma 2 supported) to make GPU go burrr.
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
@@ -144,18 +144,26 @@ def apply_liger_kernel_to_gemma(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.gemma import modeling_gemma
+    from transformers.models.gemma2 import modeling_gemma2
 
     if rope:
         modeling_gemma.apply_rotary_pos_emb = liger_rotary_pos_emb
+        modeling_gemma2.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
         modeling_gemma.GemmaRMSNorm = partial(LigerRMSNorm, offset=1.0, init_fn="zeros")
+        modeling_gemma2.Gemma2RMSNorm = partial(
+            LigerRMSNorm, offset=1.0, init_fn="zeros"
+        )
     if cross_entropy:
         modeling_gemma.CrossEntropyLoss = LigerCrossEntropyLoss
+        modeling_gemma2.CrossEntropyLoss = LigerCrossEntropyLoss
     if geglu:
         modeling_gemma.GemmaMLP = LigerGEGLUMLP
+        modeling_gemma2.Gemma2MLP = LigerGEGLUMLP
     if fused_linear_cross_entropy:
         modeling_gemma.GemmaForCausalLM.forward = gemma_lce_forward
+        modeling_gemma2.Gemma2ForCausalLM.forward = gemma_lce_forward
 
 
 def apply_liger_kernel_to_qwen2(
