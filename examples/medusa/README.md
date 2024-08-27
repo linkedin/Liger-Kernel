@@ -24,6 +24,7 @@ sh scripts/llama3_8b_medusa.sh
     * Agree on the community license agreement https://huggingface.co/meta-llama/Meta-Llama-3-8B
     * Run `huggingface-cli login` and enter your HuggingFace token
 3. The default hyperparameters and configurations work on single node with 8xA100 GPUs. For running on device with less GPU RAM, please consider reducing the per-GPU batch size and/or enable `CPUOffload` in FSDP.
+4. We are using a smaller sample of shared GPT data primarily to benchmark performance. The example requires hyperparameter tuning and dataset selection to work effectively, also ensuring the dataset has the same distribution as the LLaMA pretraining data. Welcome contribution to enhance the example code.
 
 
 # Memory Profiling Result
