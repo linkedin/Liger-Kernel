@@ -203,5 +203,6 @@ class LigerRMSNormFunction(torch.autograd.Function):
             num_warps=ctx.num_warps,
         )
         dX = dY.view(*shape)
+        # summation dW over BxT dimension
         dW = torch.sum(dW, dim=0)
         return dX, dW, None, None
