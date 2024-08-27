@@ -270,6 +270,15 @@ def test_mini_model(
         rtol=loss_rtol,
     )
 
+    # No logits are materialized
+    # # Compare the logits from the last step
+    # assert_verbose_allclose(
+    #     expected_output["logits"],
+    #     actual_output["logits"],
+    #     atol=logits_atol,
+    #     rtol=logits_rtol,
+    # )
+
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
     for expected_param, actual_param in zip(
