@@ -11,17 +11,20 @@ from lightning.pytorch.strategies import DeepSpeedStrategy, FSDPStrategy
 from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision
 from torch.utils.data import DataLoader
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
 from trl import DataCollatorForCompletionOnlyLM
 
 from liger_kernel.transformers import apply_liger_kernel_to_llama
+from liger_kernel.transformers import apply_liger_kernel_to_gemma
 
 apply_liger_kernel_to_llama(fused_linear_cross_entropy=True, cross_entropy=False)
+apply_liger_kernel_to_gemma()  # # TODO QQ: currently 1 GPU 64G need to patch liger fused liner ce
 
 
 _RETAIN_COLUMNS = {"input_ids", "attention_mask", "labels"}
 QUESTION = "<Question>"
 CHOICES = "<Choices>"
-ANSWER = "<Answer>"
+ANSWER = "\nAnswer:\n"
 
 
 @dataclass
@@ -30,13 +33,14 @@ class Args:
     data: str = "cais/mmlu"
     output_dir: str = "mmlu_finetuning"
     max_length: int = 2048
-    # deepspeed will OOM with 16
-    batch_size: int = 8
+    # for default llam3 8B model, deepspeed will OOM with 16 on 8XA100 80G and 8 will OOM with 8XA100 40G
+    batch_size: int = 4
     lr: float = 6e-6
     weight_decay: float = 0.05
     warmup_ratio: float = 0.1
     seed: int = 42
     strategy: str = "deepspeed"
+    num_gpu: int = None
 
 
 def warmup_cosine_schedule(warmup_steps, total_steps, min_lr=0):
@@ -148,7 +152,7 @@ class DataModule(pl.LightningDataModule):
         super().__init__()
         self.args = args
         self.tokenizer = tokenizer
-        response_prompt = tokenizer.encode(f" {ANSWER}", add_special_tokens=False)
+        response_prompt = tokenizer.encode(f"{ANSWER}", add_special_tokens=False)
         self.collator = DataCollatorForCompletionOnlyLM(
             tokenizer=tokenizer,
             response_template=response_prompt,
@@ -181,17 +185,19 @@ class DataModule(pl.LightningDataModule):
         }
 
     def setup(self, stage) -> None:
-        dataset = datasets.load_dataset(self.args.data, "auxiliary_train")
-        flattened_data = [
-            {
-                "answer": x["train"]["answer"],
-                "choices": x["train"]["choices"],
-                "question": x["train"]["question"],
-                "subject": x["train"]["subject"],
-            }
-            for x in dataset["train"]
-        ]
-        dataset = datasets.Dataset.from_list(flattened_data)
+        # TODO QQ: revert
+        # dataset = datasets.load_dataset(self.args.data, "auxiliary_train")
+        # flattened_data = [
+        #     {
+        #         "answer": x["train"]["answer"],
+        #         "choices": x["train"]["choices"],
+        #         "question": x["train"]["question"],
+        #         "subject": x["train"]["subject"],
+        #     }
+        #     for x in dataset["train"]
+        # ]
+        # dataset = datasets.Dataset.from_list(flattened_data)
+        dataset = datasets.load_from_disk(self.args.data)["auxiliary_train"]
         dataset = dataset.train_test_split(test_size=4096, seed=self.args.seed)
         train_dataset, val_dataset = dataset["train"], dataset["test"]
         self.train_dataset = train_dataset.map(
@@ -229,7 +235,15 @@ def train():
     pl.seed_everything(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    layers = {LlamaDecoderLayer}
+    # TODO QQ: check better way
+    if "Meta-Llama-3-8B" in args.model:
+        layers = {LlamaDecoderLayer}
+    elif "gemma" in args.model:
+        layers = {GemmaDecoderLayer}
+    else:
+        layers = {}
+        raise Warning(f"Unimplemented layer wrap policy for {args.model} in this example")
+
     if args.strategy == "fsdp":
         strategy = FSDPStrategy(
             auto_wrap_policy=layers,
@@ -247,7 +261,7 @@ def train():
     trainer = pl.Trainer(
         accelerator="cuda",
         strategy=strategy,
-        devices=torch.cuda.device_count(),
+        devices=torch.cuda.device_count() if args.num_gpu is None else args.num_gpu,
         default_root_dir=args.output_dir,
         log_every_n_steps=1,
         max_epochs=1,
