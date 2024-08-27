@@ -30,7 +30,7 @@ CHOICES = "<Choices>"
 
 @dataclass
 class Args:
-    model: str = "meta-llama/Meta-Llama-3-8B"
+    model: str = "google/gemma-1.1-2b"
     data: str = "cais/mmlu"
     output_dir: str = "mmlu_finetuning"
     max_length: int = 2048
