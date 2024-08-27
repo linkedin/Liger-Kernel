@@ -4,6 +4,7 @@ from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
+from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
@@ -124,6 +125,7 @@ def apply_liger_kernel_to_mixtral(
 def apply_liger_kernel_to_gemma(
     rope: bool = True,
     cross_entropy: bool = True,
+    fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     geglu: bool = True,
 ) -> None:
@@ -137,6 +139,10 @@ def apply_liger_kernel_to_gemma(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
     """
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
     from transformers.models.gemma import modeling_gemma
 
     if rope:
@@ -148,6 +154,8 @@ def apply_liger_kernel_to_gemma(
         modeling_gemma.CrossEntropyLoss = LigerCrossEntropyLoss
     if geglu:
         modeling_gemma.GemmaMLP = LigerGEGLUMLP
+    if fused_linear_cross_entropy:
+        modeling_gemma.GemmaForCausalLM.forward = gemma_lce_forward
 
 
 def apply_liger_kernel_to_qwen2(
