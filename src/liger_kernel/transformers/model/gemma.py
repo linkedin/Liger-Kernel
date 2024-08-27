@@ -97,7 +97,7 @@ def lce_forward(
     loss = None
     logits = None
 
-    if self.training and labels:
+    if self.training is True and labels is not None:
         shift_hidden_states = hidden_states[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
 
