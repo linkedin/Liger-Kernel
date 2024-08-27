@@ -17,25 +17,25 @@
 # Adapted from: https://github.com/lm-sys/FastChat/blob/main/fastchat/train/train.py
 
 import json
+import os
 import pathlib
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 import torch
 import transformers
-import os
 from callback import EfficiencyCallback
 from medusa_util import add_medusa_heads
+from safetensors.torch import save_file
 from sklearn.model_selection import train_test_split
-from torch.utils.data import Dataset
-from transformers import Trainer
-from transformers.trainer_pt_utils import LabelSmoother
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullStateDictConfig,
     StateDictType,
 )
-from safetensors.torch import save_file
+from torch.utils.data import Dataset
+from transformers import Trainer
+from transformers.trainer_pt_utils import LabelSmoother
 
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 
@@ -96,7 +96,9 @@ class TrainingArguments(transformers.TrainingArguments):
     )
     medusa_return: bool = field(
         default=False,
-        metadata={"help": "If medusa is not applied, the default is False, and the regular lm_head will be used for single-token prediction."},
+        metadata={
+            "help": "If medusa is not applied, the default is False, and the regular lm_head will be used for single-token prediction."
+        },
     )
     medusa_only_heads: bool = field(
         default=False,
@@ -378,7 +380,11 @@ def train():
         else:
             lm_head = model.medusa_head
 
-        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, FullStateDictConfig(offload_to_cpu=True)):
+        with FSDP.state_dict_type(
+            model,
+            StateDictType.FULL_STATE_DICT,
+            FullStateDictConfig(offload_to_cpu=True),
+        ):
             state_dict = lm_head.state_dict()
 
         # Save Medusa heads
@@ -391,6 +397,7 @@ def train():
         # Save the whole model weight
         trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
         trainer.save_model(training_args.output_dir)
+
 
 if __name__ == "__main__":
     train()
