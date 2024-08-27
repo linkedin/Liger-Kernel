@@ -211,6 +211,7 @@ def apply_liger_kernel_to_phi3(
     assert not (
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
     from transformers.models.phi3 import modeling_phi3
 
     if rope:
