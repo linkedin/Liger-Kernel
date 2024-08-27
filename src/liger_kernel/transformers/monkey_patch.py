@@ -7,7 +7,11 @@ from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_f
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
-from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP, LigerSwiGLUMLP
+from liger_kernel.transformers.swiglu import (
+    LigerBlockSparseTop2MLP,
+    LigerPhi3SwiGLUMLP,
+    LigerSwiGLUMLP,
+)
 
 
 def apply_liger_kernel_to_llama(
@@ -181,3 +185,30 @@ def apply_liger_kernel_to_qwen2(
         modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward
     if swiglu:
         modeling_qwen2.Qwen2MLP = LigerSwiGLUMLP
+
+
+def apply_liger_kernel_to_phi3(
+    rope: bool = True,
+    cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Phi3 models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU Phi3MLP. Default is True.
+    """
+    from transformers.models.phi3 import modeling_phi3
+
+    if rope:
+        modeling_phi3.apply_rotary_pos_emb = liger_rotary_pos_emb  # Same as Gemma
+    if rms_norm:
+        modeling_phi3.Phi3RMSNorm = LigerRMSNorm  # Same as Llama
+    if swiglu:
+        modeling_phi3.Phi3MLP = LigerPhi3SwiGLUMLP
+    if cross_entropy:
+        modeling_phi3.CrossEntropyLoss = LigerCrossEntropyLoss

@@ -30,7 +30,7 @@ setup(
     install_requires=[
         "torch>=2.1.2",
         "triton>=2.3.0",
-        "transformers>=4.40.1",
+        "transformers>=4.41.0",
     ],
     extras_require={
         "dev": [
