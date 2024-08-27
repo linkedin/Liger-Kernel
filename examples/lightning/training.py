@@ -24,7 +24,6 @@ apply_liger_kernel_to_gemma()  # # TODO QQ: currently 1 GPU 64G need to patch li
 _RETAIN_COLUMNS = {"input_ids", "attention_mask", "labels"}
 QUESTION = "<Question>"
 CHOICES = "<Choices>"
-ANSWER = "\nAnswer:\n"
 
 
 @dataclass
@@ -152,7 +151,8 @@ class DataModule(pl.LightningDataModule):
         super().__init__()
         self.args = args
         self.tokenizer = tokenizer
-        response_prompt = tokenizer.encode(f"{ANSWER}", add_special_tokens=False)
+        self.response_template_str = " <Answer>" if "Meta-Llama-3-8B" in self.args.model else "<Answer>"
+        response_prompt = tokenizer.encode(f"{self.response_template_str}", add_special_tokens=False)
         self.collator = DataCollatorForCompletionOnlyLM(
             tokenizer=tokenizer,
             response_template=response_prompt,
@@ -168,7 +168,7 @@ class DataModule(pl.LightningDataModule):
             s = "Below is a question and multiple choice answers, choices separated by a semicolon. Please select the best answer for the question. "
             s += f"{QUESTION}{example['question'][i]} "
             s += f"{CHOICES}{choices} "
-            s += f"{ANSWER}{example['answer'][i]}"
+            s += f"{self.response_template_str}{example['answer'][i]}"
             output_texts.append(s)
         return output_texts
 
