@@ -8,7 +8,7 @@ pip install -r requirements.txt
 python training.py --model meta-llama/Meta-Llama-3-8B
 
 # For single L40 48GB GPU
-python training.py --model google/gemma-1.1-2b
+python training.py --model google/gemma-1.1-2b --num_gpu 1
 ```
 
 **Notes**
