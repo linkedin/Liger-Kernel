@@ -10,12 +10,14 @@ import transformers
 from lightning.pytorch.strategies import DeepSpeedStrategy, FSDPStrategy
 from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision
 from torch.utils.data import DataLoader
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from trl import DataCollatorForCompletionOnlyLM
 
-from liger_kernel.transformers import apply_liger_kernel_to_llama
-from liger_kernel.transformers import apply_liger_kernel_to_gemma
+from liger_kernel.transformers import (
+    apply_liger_kernel_to_gemma,
+    apply_liger_kernel_to_llama,
+)
 
 apply_liger_kernel_to_llama(fused_linear_cross_entropy=True, cross_entropy=False)
 apply_liger_kernel_to_gemma()  # # TODO QQ: currently 1 GPU 64G need to patch liger fused liner ce
@@ -151,8 +153,12 @@ class DataModule(pl.LightningDataModule):
         super().__init__()
         self.args = args
         self.tokenizer = tokenizer
-        self.response_template_str = " <Answer>" if "Meta-Llama-3-8B" in self.args.model else "<Answer>"
-        response_prompt = tokenizer.encode(f"{self.response_template_str}", add_special_tokens=False)
+        self.response_template_str = (
+            " <Answer>" if "Meta-Llama-3-8B" in self.args.model else "<Answer>"
+        )
+        response_prompt = tokenizer.encode(
+            f"{self.response_template_str}", add_special_tokens=False
+        )
         self.collator = DataCollatorForCompletionOnlyLM(
             tokenizer=tokenizer,
             response_template=response_prompt,
@@ -242,7 +248,9 @@ def train():
         layers = {GemmaDecoderLayer}
     else:
         layers = {}
-        raise Warning(f"Unimplemented layer wrap policy for {args.model} in this example")
+        raise Warning(
+            f"Unimplemented layer wrap policy for {args.model} in this example"
+        )
 
     if args.strategy == "fsdp":
         strategy = FSDPStrategy(
