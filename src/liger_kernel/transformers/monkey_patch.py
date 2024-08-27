@@ -142,7 +142,7 @@ def apply_liger_kernel_to_gemma(
     assert not (
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    
+
     from transformers.models.gemma import modeling_gemma
 
     if rope:
