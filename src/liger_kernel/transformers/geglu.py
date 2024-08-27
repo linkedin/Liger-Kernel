@@ -13,12 +13,7 @@ class LigerGEGLUMLP(nn.Module):
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         # TODO: support exact GELU
-        hidden_act = (
-            config.hidden_act
-            if hasattr(config, "hidden_act")
-            else config.hidden_activation
-        )
-        if hidden_act not in {"gelu_pytorch_tanh"}:
+        if config.hidden_act not in ["gelu_pytorch_tanh"]:
             raise ValueError(f"Activation function {config.hidden_act} not supported.")
 
     def forward(self, x):
