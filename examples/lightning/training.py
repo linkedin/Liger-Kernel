@@ -20,7 +20,7 @@ from liger_kernel.transformers import (
 )
 
 apply_liger_kernel_to_llama(fused_linear_cross_entropy=True, cross_entropy=False)
-apply_liger_kernel_to_gemma()  # # TODO QQ: currently 1 GPU 64G need to patch liger fused liner ce
+apply_liger_kernel_to_gemma()  # TODO QQ: currently 1 GPU 64G need to patch liger fused liner ce
 
 
 _RETAIN_COLUMNS = {"input_ids", "attention_mask", "labels"}
@@ -191,19 +191,17 @@ class DataModule(pl.LightningDataModule):
         }
 
     def setup(self, stage) -> None:
-        # TODO QQ: revert
-        # dataset = datasets.load_dataset(self.args.data, "auxiliary_train")
-        # flattened_data = [
-        #     {
-        #         "answer": x["train"]["answer"],
-        #         "choices": x["train"]["choices"],
-        #         "question": x["train"]["question"],
-        #         "subject": x["train"]["subject"],
-        #     }
-        #     for x in dataset["train"]
-        # ]
-        # dataset = datasets.Dataset.from_list(flattened_data)
-        dataset = datasets.load_from_disk(self.args.data)["auxiliary_train"]
+        dataset = datasets.load_dataset(self.args.data, "auxiliary_train")
+        flattened_data = [
+            {
+                "answer": x["train"]["answer"],
+                "choices": x["train"]["choices"],
+                "question": x["train"]["question"],
+                "subject": x["train"]["subject"],
+            }
+            for x in dataset["train"]
+        ]
+        dataset = datasets.Dataset.from_list(flattened_data)
         dataset = dataset.train_test_split(test_size=4096, seed=self.args.seed)
         train_dataset, val_dataset = dataset["train"], dataset["test"]
         self.train_dataset = train_dataset.map(
@@ -241,7 +239,6 @@ def train():
     pl.seed_everything(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # TODO QQ: check better way
     if "Meta-Llama-3-8B" in args.model:
         layers = {LlamaDecoderLayer}
     elif "gemma" in args.model:
