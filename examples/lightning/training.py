@@ -40,7 +40,7 @@ class Args:
     weight_decay: float = 0.05
     warmup_ratio: float = 0.1
     seed: int = 42
-    strategy: str = "deepspeed"
+    strategy: str = "ddp"
     num_gpu: int = None
 
 
@@ -261,8 +261,14 @@ def train():
             ),
             forward_prefetch=True,
         )
-    else:
+        precision = None
+    elif args.strategy == "deepspeed":
         strategy = DeepSpeedStrategy(stage=3)
+        precision = "bf16-mixed"
+    else:
+        strategy = "ddp"
+        precision = "bf16-true"
+
     trainer = pl.Trainer(
         accelerator="cuda",
         strategy=strategy,
@@ -270,7 +276,7 @@ def train():
         default_root_dir=args.output_dir,
         log_every_n_steps=1,
         max_epochs=1,
-        precision=None if args.strategy == "fsdp" else "bf16-mixed",
+        precision=precision,
     )
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
