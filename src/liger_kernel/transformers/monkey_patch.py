@@ -272,6 +272,7 @@ def apply_liger_kernel_to_phi3(
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
+    "gemma2": apply_liger_kernel_to_gemma2,
     "llama": apply_liger_kernel_to_llama,
     "mistral": apply_liger_kernel_to_mistral,
     "mixtral": apply_liger_kernel_to_mixtral,

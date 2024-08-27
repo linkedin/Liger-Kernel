@@ -16,6 +16,7 @@ def test_import_from_root():
         from liger_kernel.transformers import (  # noqa: F401
             AutoLigerKernelForCausalLM,
             apply_liger_kernel_to_gemma,
+            apply_liger_kernel_to_gemma2,
             apply_liger_kernel_to_llama,
             apply_liger_kernel_to_mistral,
             apply_liger_kernel_to_mixtral,
