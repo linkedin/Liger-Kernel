@@ -11,12 +11,14 @@ import torch
 from datasets import load_from_disk
 from torch.utils.data import DataLoader
 from transformers.models.gemma import GemmaConfig, GemmaForCausalLM
+from transformers.models.gemma2 import Gemma2Config, Gemma2ForCausalLM
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
 from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
 
 from liger_kernel.transformers import (
     apply_liger_kernel_to_gemma,
+    apply_liger_kernel_to_gemma2,
     apply_liger_kernel_to_llama,
     apply_liger_kernel_to_mistral,
     apply_liger_kernel_to_qwen2,
@@ -118,6 +120,10 @@ MINI_MODEL_SETUPS = {
             num_attention_heads=4,  # 16
             num_key_value_heads=4,  # 16
             head_dim=256,
+            # gemma1 model config uses `hidden_act` and point it to gelu,
+            # https://huggingface.co/google/gemma-7b/blob/main/config.json#L10
+            # but in reality it's ignored and HuggingFace will use tanh approximation:
+            # https://github.com/huggingface/transformers/blob/v4.40.1/src/transformers/models/gemma/modeling_gemma.py#L175
             hidden_act="gelu",
             max_position_embeddings=8192,
             initializer_range=0.02,
@@ -138,6 +144,33 @@ MINI_MODEL_SETUPS = {
         liger_kernel_patch_func=apply_liger_kernel_to_gemma,
         model_class=GemmaForCausalLM,
         mini_model_config=GemmaConfig(
+            vocab_size=32000,  # 256000
+            hidden_size=1024,  # 3072
+            intermediate_size=2048,  # 24576
+            num_hidden_layers=4,  # 28
+            num_attention_heads=4,  # 16
+            num_key_value_heads=4,  # 16
+            head_dim=256,
+            hidden_activation="gelu_pytorch_tanh",
+            max_position_embeddings=8192,
+            initializer_range=0.02,
+            rms_norm_eps=1e-06,
+            use_cache=True,
+            pad_token_id=0,
+            # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
+            tie_word_embeddings=True,
+            rope_theta=10000.0,
+            attention_bias=False,
+            attention_dropout=0.0,
+        ),
+    ),
+    "mini_gemma2": MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_gemma2,
+        model_class=Gemma2ForCausalLM,
+        mini_model_config=Gemma2Config(
             vocab_size=32000,  # 256000
             hidden_size=1024,  # 3072
             intermediate_size=2048,  # 24576
@@ -192,13 +225,18 @@ def run_mini_model(
         kwargs = {
             "rope": True,
             "rms_norm": True,
-            "cross_entropy": False,
-            "fused_linear_cross_entropy": True,
         }
-        if "mini_gemma" in model_name:
+        if "gemma" in model_name:
             kwargs["geglu"] = True
         else:
             kwargs["swiglu"] = True
+
+        model_support_flce = "gemma2" not in model_name
+        if model_support_flce:
+            kwargs["fused_linear_cross_entropy"] = True
+            kwargs["cross_entropy"] = False
+        else:
+            kwargs["cross_entropy"] = True
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
 
@@ -237,6 +275,8 @@ def run_mini_model(
         ("mini_gemma1", 32, 1e-4, torch.bfloat16, 1e-2, 1e-4, 2e-1, 1e-5, 1e-2, 1e-5),
         ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma1.1", 32, 1e-4, torch.bfloat16, 1e-2, 1e-4, 2e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma2", 32, 1e-4, torch.bfloat16, 1e-2, 1e-4, 2e-1, 1e-5, 1e-2, 1e-5),
     ],
 )
 def test_mini_model(
