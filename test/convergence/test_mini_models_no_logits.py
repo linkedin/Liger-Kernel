@@ -12,15 +12,15 @@ from datasets import load_from_disk
 from torch.utils.data import DataLoader
 from transformers.models.gemma import GemmaConfig, GemmaForCausalLM
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
-from transformers.models.phi3 import Phi3Config, Phi3ForCausalLM
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
+from transformers.models.phi3 import Phi3Config, Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
 
 from liger_kernel.transformers import (
     apply_liger_kernel_to_gemma,
     apply_liger_kernel_to_llama,
-    apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_mistral,
+    apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
 )
 
