@@ -6,9 +6,7 @@ import transformers
 from callback import EfficiencyCallback
 from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
 
-import liger_kernel.transformers
-
-# TODO: clean up the code after hf meeting
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 
 @dataclass
@@ -46,16 +44,25 @@ def train():
         response_template=response_prompt,
         pad_to_multiple_of=16,
     )
-    model = transformers.AutoModelForCausalLM.from_pretrained(
-        custom_args.model_name,
-        trust_remote_code=True,
-        use_cache=False,
-        torch_dtype=torch.bfloat16,
-    )
 
-    if custom_args.use_liger is True:
-        # liger_kernel.transformers.apply_liger_kernel_to_llama()
-        liger_kernel.transformers.apply_liger_kernel_to_qwen2()
+    if custom_args.use_liger:
+        model = AutoLigerKernelForCausalLM.from_pretrained(
+            custom_args.model_name,
+            trust_remote_code=True,
+            use_cache=False,
+            torch_dtype=torch.bfloat16,
+            # These args will get passed to the appropriate apply_liger_kernel_to_* function
+            # to override the default settings
+            cross_entropy=True,
+            fused_linear_cross_entropy=False,
+        )
+    else:
+        model = transformers.AutoModelForCausalLM.from_pretrained(
+            custom_args.model_name,
+            trust_remote_code=True,
+            use_cache=False,
+            torch_dtype=torch.bfloat16,
+        )
 
     trainer = SFTTrainer(
         model=model,
