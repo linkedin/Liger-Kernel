@@ -134,6 +134,10 @@ def apply_liger_kernel_to_gemma(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
     """
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    
     from transformers.models.gemma import modeling_gemma
 
     if rope:
