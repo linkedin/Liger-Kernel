@@ -107,7 +107,7 @@ MINI_MODEL_SETUPS = {
             attn_implementation="sdpa",
         ),
     ),
-    "mini_gemma": MiniModelConfig(
+    "mini_gemma1": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_gemma,
         model_class=GemmaForCausalLM,
         mini_model_config=GemmaConfig(
@@ -118,8 +118,34 @@ MINI_MODEL_SETUPS = {
             num_attention_heads=4,  # 16
             num_key_value_heads=4,  # 16
             head_dim=256,
-            hidden_act="gelu_pytorch_tanh",
-            hidden_activation=None,
+            hidden_act="gelu",
+            max_position_embeddings=8192,
+            initializer_range=0.02,
+            rms_norm_eps=1e-06,
+            use_cache=True,
+            pad_token_id=0,
+            # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
+            tie_word_embeddings=True,
+            rope_theta=10000.0,
+            attention_bias=False,
+            attention_dropout=0.0,
+        ),
+    ),
+    "mini_gemma1.1": MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_gemma,
+        model_class=GemmaForCausalLM,
+        mini_model_config=GemmaConfig(
+            vocab_size=32000,  # 256000
+            hidden_size=1024,  # 3072
+            intermediate_size=2048,  # 24576
+            num_hidden_layers=4,  # 28
+            num_attention_heads=4,  # 16
+            num_key_value_heads=4,  # 16
+            head_dim=256,
+            hidden_activation="gelu_pytorch_tanh",
             max_position_embeddings=8192,
             initializer_range=0.02,
             rms_norm_eps=1e-06,
@@ -169,7 +195,7 @@ def run_mini_model(
             "cross_entropy": False,
             "fused_linear_cross_entropy": True,
         }
-        if model_name == "mini_gemma":
+        if "mini_gemma" in model_name:
             kwargs["geglu"] = True
         else:
             kwargs["swiglu"] = True
@@ -206,9 +232,11 @@ def run_mini_model(
         ("mini_qwen2", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
         ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_mistral", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
-        ("mini_gemma", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
-        # mini_gemma has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
-        ("mini_gemma", 32, 1e-4, torch.bfloat16, 1e-2, 1e-4, 2e-1, 1e-5, 1e-2, 1e-5),
+        # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
+        ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma1", 32, 1e-4, torch.bfloat16, 1e-2, 1e-4, 2e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma1.1", 32, 1e-4, torch.bfloat16, 1e-2, 1e-4, 2e-1, 1e-5, 1e-2, 1e-5),
     ],
 )
 def test_mini_model(

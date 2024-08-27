@@ -75,8 +75,7 @@ MINI_MODEL_SETUPS = {
             num_attention_heads=4,  # 16
             num_key_value_heads=4,  # 16
             head_dim=256,
-            hidden_act="gelu_pytorch_tanh",
-            hidden_activation=None,
+            hidden_activation="gelu_pytorch_tanh",
             max_position_embeddings=8192,
             initializer_range=0.02,
             rms_norm_eps=1e-06,
@@ -237,7 +236,7 @@ def run_mini_model(
             "rms_norm": True,
             "cross_entropy": True,
         }
-        if model_name == "mini_gemma":
+        if "mini_gemma" in model_name:
             kwargs["geglu"] = True
         else:
             kwargs["swiglu"] = True
@@ -268,8 +267,8 @@ def run_mini_model(
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
-        ("mini_gemma", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
-        # mini_gemma has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
+        # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
+        ("mini_gemma", 32, 1e-4, torch.float32, 1e-6, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma", 32, 1e-4, torch.bfloat16, 1e-2, 1e-4, 2e-1, 1e-5, 1e-2, 1e-5),
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 1e-4, 1e-5, 2e-3, 1e-5),
         ("mini_llama3", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
