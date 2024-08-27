@@ -23,12 +23,19 @@ from typing import Dict, Optional
 
 import torch
 import transformers
+import os
 from callback import EfficiencyCallback
 from medusa_util import add_medusa_heads
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
 from transformers import Trainer
 from transformers.trainer_pt_utils import LabelSmoother
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp.fully_sharded_data_parallel import (
+    FullStateDictConfig,
+    StateDictType,
+)
+from safetensors.torch import save_file
 
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 
@@ -89,7 +96,7 @@ class TrainingArguments(transformers.TrainingArguments):
     )
     medusa_return: bool = field(
         default=False,
-        metadata={"help": "If return medusa heads predict only."},
+        metadata={"help": "If medusa is not applied, the default is False, and the regular lm_head will be used for single-token prediction."},
     )
     medusa_only_heads: bool = field(
         default=False,
@@ -364,6 +371,26 @@ def train():
     else:
         trainer.train()
 
+    if training_args.medusa_return and training_args.medusa_only_heads:
+        # Save only the updated head without saving the backbone model
+        if hasattr(model, "module"):
+            lm_head = model.module.medusa_head
+        else:
+            lm_head = model.medusa_head
+
+        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, FullStateDictConfig(offload_to_cpu=True)):
+            state_dict = lm_head.state_dict()
+
+        # Save Medusa heads
+        if local_rank == 0:
+            save_file(
+                state_dict,
+                os.path.join(training_args.output_dir, "medusa_lm_head.safetensors"),
+            )
+    else:
+        # Save the whole model weight
+        trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
+        trainer.save_model(training_args.output_dir)
 
 if __name__ == "__main__":
     train()
