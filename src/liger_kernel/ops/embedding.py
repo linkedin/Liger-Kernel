@@ -93,7 +93,10 @@ class LigerEmbeddingFunction(torch.autograd.Function):
 
         BLOCK_SIZE_M = triton.next_power_of_2(min(128, embedding_dim))
         BLOCK_SIZE_N = triton.next_power_of_2(min(128, embedding_dim))
-        grid = (triton.cdiv(n_elements, BLOCK_SIZE_M), triton.cdiv(embedding_dim, BLOCK_SIZE_N))
+        grid = (
+            triton.cdiv(n_elements, BLOCK_SIZE_M),
+            triton.cdiv(embedding_dim, BLOCK_SIZE_N),
+        )
 
         embedding_forward_kernel[grid](
             embeddings,
@@ -122,7 +125,10 @@ class LigerEmbeddingFunction(torch.autograd.Function):
 
         BLOCK_SIZE_M = triton.next_power_of_2(min(128, embedding_dim))
         BLOCK_SIZE_N = triton.next_power_of_2(min(128, embedding_dim))
-        grid = (triton.cdiv(n_elements, BLOCK_SIZE_M), triton.cdiv(embedding_dim, BLOCK_SIZE_N))
+        grid = (
+            triton.cdiv(n_elements, BLOCK_SIZE_M),
+            triton.cdiv(embedding_dim, BLOCK_SIZE_N),
+        )
 
         embedding_backward_kernel[grid](
             grad_output,

@@ -1,5 +1,3 @@
-import time
-
 import pytest
 import torch
 from torch.nn import Embedding
@@ -57,25 +55,15 @@ def test_embedding_correctness(
     else:
         input_ids = torch.randint(0, num_embeddings, (32 * 10,), device="cuda")
 
-    start_time = time.time()
     torch_output = torch_embedding(input_ids).view(32, 10, -1)
-    torch_forward_time = time.time() - start_time
-
-    start_time = time.time()
     liger_output = liger_embedding(input_ids).view(32, 10, -1)
-    liger_forward_time = time.time() - start_time
 
     assert torch.allclose(torch_output, liger_output, atol=atol, rtol=rtol)
 
     grad_output = torch.randn_like(torch_output)
 
-    start_time = time.time()
     torch_output.backward(grad_output)
-    torch_backward_time = time.time() - start_time
-
-    start_time = time.time()
     liger_output.backward(grad_output)
-    liger_backward_time = time.time() - start_time
 
     assert torch.allclose(
         torch_embedding.weight.grad, liger_embedding.weight.grad, atol=atol, rtol=rtol
