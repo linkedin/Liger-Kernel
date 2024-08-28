@@ -33,6 +33,7 @@ def liger_cross_entropy_kernel(
     n_non_ignore (int): The number of non-ignored elements in the batch.
     ignore_index (int): The index to ignore in the target.
     label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
+    reduction (str): The string for the reduction to apply
     BLOCK_SIZE (int): The block size for Triton operations.
     """
 

@@ -101,6 +101,7 @@ def fused_linear_cross_entropy_forward(
         # additionally, since we are chunking the inputs, observe that the loss and gradients are calculated only
         # on `n_non_ignore` tokens. However, the gradient of the input should be calculated for all tokens.
         # Thus, we need an additional scaling factor of (n_non_ignore/total_n_non_ignore) to scale the gradients.
+        loss_1d[start_idx:end_idx] = loss_1d_slice * n_non_ignore
         grad_logits_chunk = logits_chunk * (
             n_non_ignore / total_n_non_ignore
         )  # chunk_size x V
@@ -195,6 +196,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         bias: (V) where V is the number of classes
         ignore_index: the index to ignore in the target
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
+        reduction: reduction to apply
         """
         loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
             _input, weight, target, bias, ignore_index, label_smoothing
