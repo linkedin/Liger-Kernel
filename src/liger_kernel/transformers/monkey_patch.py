@@ -17,7 +17,7 @@ from liger_kernel.transformers.swiglu import (
     LigerSwiGLUMLP,
 )
 from liger_kernel.transformers.embedding import (
-    LigerBertEmbedding
+    LigerEmbedding
 )
 
 logger = logging.getLogger(__name__)
@@ -272,26 +272,6 @@ def apply_liger_kernel_to_phi3(
         modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
 
 
-def apply_liger_kernel_to_bert(
-    embedding: bool = True,
-    cross_entropy: bool = False,
-) -> None:
-    """
-    Apply Liger kernels to replace original implementation in HuggingFace BERT models
-
-    Args:
-        embedding (bool): Whether to apply Liger's embedding function. Default is True.
-        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
-        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
-    """
-    from transformers.models.bert import modeling_bert
-
-    if embedding:
-        modeling_bert.BertEmbeddings = LigerBertEmbedding
-    if cross_entropy:
-        modeling_bert.CrossEntropyLoss = LigerCrossEntropyLoss
-
-
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
@@ -301,7 +281,6 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "mixtral": apply_liger_kernel_to_mixtral,
     "qwen2": apply_liger_kernel_to_qwen2,
     "phi3": apply_liger_kernel_to_phi3,
-    "bert": apply_liger_kernel_to_bert,
 }
 
 
