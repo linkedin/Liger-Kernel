@@ -11,6 +11,4 @@ class LigerCrossEntropyLoss(CrossEntropyLoss):
         ), f"label_smoothing must be between 0.0 and 1.0. Got: {self.label_smoothing}"
 
     def forward(self, _input, target):
-        return LigerCrossEntropyFunction.apply(
-            _input, target, self.ignore_index, self.label_smoothing
-        )
+        return LigerCrossEntropyFunction.apply(_input, target, self.ignore_index, self.label_smoothing, self.reduction)
