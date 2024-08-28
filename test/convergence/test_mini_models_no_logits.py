@@ -14,6 +14,7 @@ from transformers.models.gemma import GemmaConfig, GemmaForCausalLM
 from transformers.models.gemma2 import Gemma2Config, Gemma2ForCausalLM
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
+from transformers.models.phi3 import Phi3Config, Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
 
 from liger_kernel.transformers import (
@@ -21,6 +22,7 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_gemma2,
     apply_liger_kernel_to_llama,
     apply_liger_kernel_to_mistral,
+    apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
 )
 
@@ -83,6 +85,30 @@ MINI_MODEL_SETUPS = {
             # SDPA produces contiguous dq and incontiguous dk
             # Flash_attn produces contiguous dq and dk
             attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    ),
+    "mini_phi3": MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_phi3,
+        model_class=Phi3ForCausalLM,
+        mini_model_config=Phi3Config(
+            attention_dropout=0.0,
+            bos_token_id=1,
+            eos_token_id=2,  # 32000
+            hidden_act="silu",
+            hidden_size=896,  # 3072
+            initializer_range=0.02,
+            intermediate_size=4864,  # 8192
+            max_position_embeddings=4096,
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 32
+            num_key_value_heads=None,  # defaults to num_attention_heads
+            rms_norm_eps=1e-5,
+            rope_theta=10000.0,
+            sliding_window=None,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32064,
+            attn_implementation="eager",
         ),
     ),
     "mini_mistral": MiniModelConfig(
@@ -268,6 +294,8 @@ def run_mini_model(
         ("mini_llama3", 32, 1e-4, torch.bfloat16, 5e-3, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
         ("mini_qwen2", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_qwen2", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_phi3", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
         ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_mistral", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)

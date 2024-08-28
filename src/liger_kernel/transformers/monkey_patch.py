@@ -1,10 +1,13 @@
+import inspect
+import logging
 from functools import partial
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
-from liger_kernel.transformers.model.llama import lce_forward
+from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
+from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
@@ -13,6 +16,8 @@ from liger_kernel.transformers.swiglu import (
     LigerPhi3SwiGLUMLP,
     LigerSwiGLUMLP,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def apply_liger_kernel_to_llama(
@@ -29,7 +34,7 @@ def apply_liger_kernel_to_llama(
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
-            Whether to apply Liger's fused lienar cross entropy loss. Default is True.
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
@@ -51,7 +56,7 @@ def apply_liger_kernel_to_llama(
     if cross_entropy:
         modeling_llama.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_llama.LlamaForCausalLM.forward = lce_forward
+        modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
 
 
 def apply_liger_kernel_to_mistral(
@@ -68,7 +73,7 @@ def apply_liger_kernel_to_mistral(
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
         fused_linear_cross_entropy (bool):
-            Whether to apply Liger's fused lienar cross entropy loss. Default is True.
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
@@ -202,7 +207,7 @@ def apply_liger_kernel_to_qwen2(
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
-            Whether to apply Liger's fused lienar cross entropy loss. Default is True.
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
@@ -228,7 +233,8 @@ def apply_liger_kernel_to_qwen2(
 
 def apply_liger_kernel_to_phi3(
     rope: bool = True,
-    cross_entropy: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
 ) -> None:
@@ -238,9 +244,17 @@ def apply_liger_kernel_to_phi3(
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU Phi3MLP. Default is True.
     """
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
     from transformers.models.phi3 import modeling_phi3
 
     if rope:
@@ -251,3 +265,57 @@ def apply_liger_kernel_to_phi3(
         modeling_phi3.Phi3MLP = LigerPhi3SwiGLUMLP
     if cross_entropy:
         modeling_phi3.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
+
+
+# Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
+MODEL_TYPE_TO_APPLY_LIGER_FN = {
+    "gemma": apply_liger_kernel_to_gemma,
+    "gemma2": apply_liger_kernel_to_gemma2,
+    "llama": apply_liger_kernel_to_llama,
+    "mistral": apply_liger_kernel_to_mistral,
+    "mixtral": apply_liger_kernel_to_mixtral,
+    "qwen2": apply_liger_kernel_to_qwen2,
+    "phi3": apply_liger_kernel_to_phi3,
+}
+
+
+def _apply_liger_kernel(model_type: str = "", **kwargs) -> None:
+    """
+    Applies Liger kernels based on the specified model type. The custom
+    kernels for the specified model type will be applied with the provided
+    keyword arguments, otherwise the default configuration will be used.
+
+    Args:
+        - model_type: the model types as defined in transformers/models/auto/modeling_auto.py
+          and specified in the model's config.json
+        - kwargs: keyword arguments that are passed to the corresponding apply_liger_kernel_to_* function.
+    """
+
+    if not model_type:
+        logger.info("Model type was not provided. No Liger kernels will be applied.")
+        return
+
+    if model_type not in MODEL_TYPE_TO_APPLY_LIGER_FN.keys():
+        logger.info(
+            f"There are currently no Liger kernels supported for model type: {model_type}."
+        )
+        return
+
+    apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
+    apply_fn_signature = inspect.signature(apply_fn)
+
+    # Filter out the keyword arguments that are not supported by the apply function
+    applicable_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key in apply_fn_signature.parameters
+    }
+
+    logger.info(
+        f"Applying Liger kernels for model type: {model_type} with kwargs: {applicable_kwargs}"
+    )
+
+    # Apply the default combination of liger kernels available for the model
+    apply_fn(**applicable_kwargs)
