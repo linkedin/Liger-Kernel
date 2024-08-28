@@ -10,6 +10,7 @@ from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_f
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
+from liger_kernel.transformers.model.jamba import lce_forward as jamba_lce_forward
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import (
@@ -283,6 +284,42 @@ def apply_liger_kernel_to_phi3(
         modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
 
 
+def apply_liger_kernel_to_jamba(
+        cross_entropy: bool = False,
+        fused_linear_cross_entropy: bool = True,
+        rms_norm: bool = True,
+        swiglu: bool = True,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Jamba models
+    to make GPU go burrr.
+    
+    # Note: Jamba model does not use rotary position embedding(RoPE).
+
+    Args:
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused lienar cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+    """
+    assert not (
+            cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
+    from transformers.models.jamba import modeling_jamba
+    if rms_norm:
+        modeling_jamba.JambaRMSNorm = LigerRMSNorm
+    if cross_entropy:
+        modeling_jamba.CrossEntropyLoss = LigerCrossEntropyLoss
+    if swiglu:
+        modeling_jamba.JambaMLP = LigerSwiGLUMLP
+    if fused_linear_cross_entropy:
+        modeling_jamba.JambaForCausalLM.forward = jamba_lce_forward
+
+
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
@@ -292,6 +329,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "mixtral": apply_liger_kernel_to_mixtral,
     "qwen2": apply_liger_kernel_to_qwen2,
     "phi3": apply_liger_kernel_to_phi3,
+    "jamba": apply_liger_kernel_to_jamba,
 }
 
 

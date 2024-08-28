@@ -20,10 +20,12 @@ from transformers.models.mistral import MistralConfig, MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
 from transformers.models.phi3 import Phi3Config, Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
+from transformers.models.jamba import JambaConfig, JambaForCausalLM
 
 from liger_kernel.transformers import (
     apply_liger_kernel_to_gemma,
     apply_liger_kernel_to_gemma2,
+    apply_liger_kernel_to_jamba,
     apply_liger_kernel_to_llama,
     apply_liger_kernel_to_mistral,
     apply_liger_kernel_to_mixtral,
@@ -279,6 +281,31 @@ MINI_MODEL_SETUPS = {
             attn_implementation="eager",
         ),
     ),
+    "mini_jamba": MiniModelConfig(
+        liger_kernel_patch_func=functools.partial(
+            apply_liger_kernel_to_jamba, fused_linear_cross_entropy=False
+        ),
+        model_class=JambaForCausalLM,
+        mini_model_config=JambaConfig(
+            attention_dropout=0.0,
+            num_experts_per_tok=1,
+            num_experts=2,
+            bos_token_id=1,
+            eos_token_id=2,  # 32000
+            hidden_act="silu",
+            hidden_size=1024,  # 3072
+            initializer_range=0.02,
+            intermediate_size=2048,  # 8192
+            max_position_embeddings=32768,
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 32
+            rms_norm_eps=1e-5,
+            sliding_window=None,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32064,
+        ),
+    ),
 }
 
 
@@ -316,7 +343,11 @@ def run_mini_model(
             kwargs["geglu"] = True
         else:
             kwargs["swiglu"] = True
+        if model_name == "mini_jamba":
+            del kwargs["rope"]
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
+
+    from torch.profiler import profile, record_function, ProfilerActivity
 
     model = create_model(model_name).to(dtype).to("cuda")
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
@@ -328,7 +359,6 @@ def run_mini_model(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     loss_list = []
-
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
         output = model(**batch)
@@ -460,6 +490,7 @@ def run_mini_model(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
+        ("mini_jamba", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
     ],
 )
 def test_mini_model(
