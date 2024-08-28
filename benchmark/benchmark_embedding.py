@@ -25,12 +25,84 @@ from liger_kernel.transformers.embedding import LigerEmbedding
                 ("orange", "solid"),
             ],
             ylabel="time (ms)",
-            plot_name="embedding-fwd-speed-benchmark",
+            plot_name="embedding-fwd-speed-benchmark-bert",
             args={
                 "B": 32,
                 "T": 512,
                 "D": 768,
                 "mode": "forward",
+                "dtype": torch.float32,
+            },
+        ),
+        triton.testing.Benchmark(
+            x_names=["V"],
+            x_vals=[2**i for i in range(10, 18)],
+            xlabel="vocab size",
+            line_arg="provider",
+            line_vals=["liger", "huggingface"],
+            line_names=[
+                "Liger",
+                "Hugging Face",
+            ],
+            styles=[
+                ("blue", "solid"),
+                ("orange", "solid"),
+            ],
+            ylabel="time (ms)",
+            plot_name="embedding-full-speed-benchmark-bert",
+            args={
+                "B": 32,
+                "T": 512,
+                "D": 768,
+                "mode": "full",
+                "dtype": torch.float32,
+            },
+        ),
+        triton.testing.Benchmark(
+            x_names=["V"],
+            x_vals=[2**i for i in range(10, 18)],
+            xlabel="vocab size",
+            line_arg="provider",
+            line_vals=["liger", "huggingface"],
+            line_names=[
+                "Liger",
+                "Hugging Face",
+            ],
+            styles=[
+                ("blue", "solid"),
+                ("orange", "solid"),
+            ],
+            ylabel="time (ms)",
+            plot_name="embedding-fwd-speed-benchmark-llama3",
+            args={
+                "B": 8,
+                "T": 2048,
+                "D": 4096,
+                "mode": "forward",
+                "dtype": torch.float32,
+            },
+        ),
+        triton.testing.Benchmark(
+            x_names=["V"],
+            x_vals=[2**i for i in range(10, 18)],
+            xlabel="vocab size",
+            line_arg="provider",
+            line_vals=["liger", "huggingface"],
+            line_names=[
+                "Liger",
+                "Hugging Face",
+            ],
+            styles=[
+                ("blue", "solid"),
+                ("orange", "solid"),
+            ],
+            ylabel="time (ms)",
+            plot_name="embedding-full-speed-benchmark-llama3",
+            args={
+                "B": 8,
+                "T": 2048,
+                "D": 4096,
+                "mode": "full",
                 "dtype": torch.float32,
             },
         ),
@@ -48,9 +120,16 @@ def bench_speed_embedding(B, T, V, D, provider, mode, dtype, device="cuda"):
         else:
             return torch_emb(input_ids)
 
+    def full():
+        output = fwd()
+        output.backward(torch.randn_like(output))
+
     quantiles = [0.5, 0.2, 0.8]
 
-    ms, min_ms, max_ms = triton.testing.do_bench(fwd, quantiles=quantiles, rep=100)
+    if mode == "forward":
+        ms, min_ms, max_ms = triton.testing.do_bench(fwd, quantiles=quantiles, rep=100)
+    elif mode == "full":
+        ms, min_ms, max_ms = triton.testing.do_bench(full, quantiles=quantiles, rep=100)
     return ms, min_ms, max_ms
 
 
@@ -71,8 +150,26 @@ def bench_speed_embedding(B, T, V, D, provider, mode, dtype, device="cuda"):
                 ("orange", "solid"),
             ],
             ylabel="GPU memory usage (MB)",
-            plot_name="embedding-memory-benchmark",
+            plot_name="embedding-memory-benchmark-bert",
             args={"B": 32, "T": 512, "D": 768, "mode": "full", "dtype": torch.float32},
+        ),
+        triton.testing.Benchmark(
+            x_names=["V"],
+            x_vals=[2**i for i in range(10, 18)],
+            xlabel="vocab size",
+            line_arg="provider",
+            line_vals=["liger", "huggingface"],
+            line_names=[
+                "Liger",
+                "Hugging Face",
+            ],
+            styles=[
+                ("blue", "solid"),
+                ("orange", "solid"),
+            ],
+            ylabel="GPU memory usage (MB)",
+            plot_name="embedding-memory-benchmark-llama3",
+            args={"B": 8, "T": 2048, "D": 4096, "mode": "full", "dtype": torch.float32},
         ),
     ]
 )
