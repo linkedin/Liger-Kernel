@@ -1,4 +1,5 @@
 import functools
+import os
 from test.utils import (
     DEFAULT_DATASET_PATH,
     MiniModelConfig,
@@ -28,6 +29,16 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
 )
+
+torch.use_deterministic_algorithms(True)
+
+#  Only setting torch.use_deterministic_algorithms(True) throws the following error:
+#  RuntimeError: Deterministic behavior was enabled with either `torch.use_deterministic_algorithms(True)` or `at::Context::setDeterministicAlgorithms(true)`,
+#  but this operation is not deterministic because it uses CuBLAS and you have CUDA >= 10.2. To enable deterministic behavior in this case, you must set an
+#  environment variable before running your PyTorch application: CUBLAS_WORKSPACE_CONFIG=:4096:8 or CUBLAS_WORKSPACE_CONFIG=:16:8. For more information,
+#  go to https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
+
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
@@ -332,13 +343,13 @@ def run_mini_model(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
-        ("mini_gemma1", 32, 1e-4, torch.float32, 1e-6, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_gemma1", 32, 1e-4, torch.bfloat16, 1e-2, 1e-4, 2e-1, 1e-5, 1e-2, 1e-5),
-        ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-6, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_gemma1.1", 32, 1e-4, torch.bfloat16, 1e-2, 1e-4, 2e-1, 1e-5, 1e-2, 1e-5),
-        ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_gemma2", 32, 1e-4, torch.bfloat16, 1e-2, 1e-4, 2e-1, 1e-5, 1e-2, 1e-5),
-        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 1e-4, 1e-5, 2e-3, 1e-5),
+        ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma1", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma1.1", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma2", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_llama3", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
         # TODO: torch 2.5.0 nightly breaks mixtral test, but torch 2.3.0 works fine
         # TODO: mixtral MoE structure makes the convergence flaky so disable the test for now. It needs high tol to pass.
