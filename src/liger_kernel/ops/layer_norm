@@ -1,0 +1,242 @@
+import math
+
+import torch
+import triton
+import triton.language as tl
+
+configs_layer_norm = [
+    # triton.Config({}, num_warps=1),
+    # triton.Config({}, num_warps=2),
+    triton.Config({}, num_warps=4),
+    triton.Config({}, num_warps=8),
+    # triton.Config({}, num_warps=16),
+    # triton.Config({}, num_warps=32),
+]
+
+
+@triton.autotune(
+    configs=configs_layer_norm,
+    restore_value=["X"],
+    key=["n_cols"],
+)
+@triton.jit
+def _layer_norm_fwd_kernel(
+    X,  # pointer to the input, shape (n_rows, n_cols)
+    Y,  # pointer to the output, shape (n_rows, n_cols)
+    W,  # pointer to the weights, shape (n_cols,)
+    B,  # pointer to the biases, shape (n_cols,)
+    Mean,  # pointer to the mean, shape (n_rows,)
+    Rstd,  # pointer to the 1/std, shape (n_rows,)
+    stride_x,  # how much to increase the pointer when moving by 1 row
+    stride_y,
+    n_cols,  # number of columns in x
+    eps,  # epsilon to avoid division by zero
+    BLOCK_SIZE: tl.constexpr,
+):
+    # Map the program id to the row of x and Y it should compute.
+    row = tl.program_id(0)
+    X += row * stride_x
+    Y += row * stride_y
+
+    # Compute the mean and variance
+    # n_cols is assumed <= BLOCK_SIZE
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < n_cols
+    x = tl.load(X + cols, mask=mask, other=0.0).to(tl.float32)
+    mean = tl.sum(x, axis=0) / n_cols
+    x_shift = tl.where(cols < n_cols, x - mean, 0.0)
+    var = tl.sum(x_shift * x_shift, axis=0) / n_cols
+    rstd = 1.0 / tl.sqrt(var + eps)
+    tl.store(Mean + row, mean)
+    tl.store(Rstd + row, rstd)
+
+    # Compute the output
+    w = tl.load(W + cols, mask=mask, other=0.0).to(tl.float32)
+    b = tl.load(B + cols, mask=mask, other=0.0).to(tl.float32)
+    x_hat = x_shift * rstd
+    y = x_hat * w + b
+    tl.store(Y + cols, y, mask=mask)
+
+
+def layer_norm_fwd(
+    x,  # input tensor
+    w,  # weights
+    b,  # biases
+    eps,  # epsilon to avoid division by zero
+):
+    n_rows, n_cols = x.shape
+
+    # Less than 64KB per feature: enqueue fused kernel
+    MAX_FUSED_SIZE = 65536 // x.element_size()
+    # print("MAX_FUSED_SIZE", MAX_FUSED_SIZE)
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(n_cols))
+
+    # Allocate Mean, Rstd and Y
+    mean = torch.empty((n_rows,), dtype=torch.float32, device=x.device)
+    rstd = torch.empty((n_rows,), dtype=torch.float32, device=x.device)
+    y = torch.empty_like(x, dtype=x.dtype, device=x.device)
+
+    # assert contiguous memory in the last dimension
+    assert x.stride(-1) == 1
+    assert w.stride(-1) == 1
+    assert b.stride(-1) == 1
+    assert mean.stride(-1) == 1
+    assert rstd.stride(-1) == 1
+    assert y.stride(-1) == 1
+
+    # Call the kernel
+    _layer_norm_fwd_kernel[(n_rows,)](
+        x,
+        y,
+        w,
+        b,
+        mean,
+        rstd,
+        x.stride(0),
+        y.stride(0),
+        n_cols,
+        eps,
+        BLOCK_SIZE=BLOCK_SIZE,
+        # num_warps=num_warps,
+    )
+    return y, mean, rstd
+
+
+@triton.autotune(
+    configs=configs_layer_norm,
+    key=["n_cols"],
+)
+@triton.jit
+def _layer_norm_bwd_kernel(
+    X,  # pointer to the input
+    W,  # pointer to the weights, shape (n_cols,)
+    Mean,  # pointer to the mean, shape (n_rows,)
+    Rstd,  # pointer to the 1/std, shape (n_rows,)
+    DX,  # pointer to the input gradient, shape (n_rows, n_cols)
+    DW,  # pointer to the weights gradient, shape (n_rows, n_cols)
+    DB,  # pointer to the biases gradient, shape (n_rows, n_cols)
+    DY,  # pointer to the output gradient, shape (n_rows, n_cols)
+    stride_x,  # how much to increase the pointer when moving by 1 row
+    stride_dx,
+    stride_dw,
+    stride_db,
+    stride_dy,
+    n_rows,  # number of rows in x
+    n_cols,  # number of columns in x
+    rows_per_program,  # number of rows per program id
+    BLOCK_SIZE: tl.constexpr,
+):
+    # Implemented based on the formula:
+    # https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html#backward-pass
+    # Map the program id to the row of DX, DW, DB, DY it should compute.
+    row_block_id = tl.program_id(0)
+    row_start = row_block_id * rows_per_program
+    row_end = min((row_block_id + 1) * rows_per_program, n_rows)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < n_cols
+    # Initialize the gradients
+    dw_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    db_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    # Increment pointers
+    X += row_start * stride_x
+    Mean += row_start
+    Rstd += row_start
+    DX += row_start * stride_dx
+    DY += row_start * stride_dy
+
+    for _ in range(row_start, row_end):
+        # Load values
+        x = tl.load(X + cols, mask=mask, other=0.0).to(tl.float32)
+        w = tl.load(W + cols, mask=mask, other=0.0).to(tl.float32)
+        dy = tl.load(DY + cols, mask=mask, other=0.0)
+        mean = tl.load(Mean)
+        rstd = tl.load(Rstd)
+
+        # Compute the gradient of the input
+        x_hat = (x - mean) * rstd
+        wdy = w * dy
+        c1 = tl.sum(x_hat * wdy, axis=0) / n_cols
+        c2 = tl.sum(wdy, axis=0) / n_cols
+        dx = (wdy - (x_hat * c1 + c2)) * rstd
+        tl.store(DX + cols, dx, mask=mask)
+
+        # Compute the gradient of the weights and biases
+        dw_row += dy * x_hat
+        db_row += dy
+
+        # Increment pointers
+        X += stride_x
+        Mean += 1
+        Rstd += 1
+        DX += stride_dx
+        DY += stride_dy
+
+    tl.store(DW + row_block_id * stride_dw + cols, dw_row, mask=mask)
+    tl.store(DB + row_block_id * stride_db + cols, db_row, mask=mask)
+
+
+def layer_norm_bwd(x, w, mean, rstd, dy):
+    n_rows, n_cols = x.shape
+    # assert contiguous memory in the last dimension
+    assert x.stride(-1) == 1
+    assert w.stride(-1) == 1
+    assert mean.stride(-1) == 1
+    assert rstd.stride(-1) == 1
+
+    # allocate memory for the gradients
+    dx = torch.empty((n_rows, n_cols), dtype=x.dtype, device=x.device)
+    sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
+    _dw = torch.empty((sm_count, n_cols), dtype=w.dtype, device=w.device)
+    _db = torch.empty((sm_count, n_cols), dtype=w.dtype, device=w.device)
+
+    # Less than 64KB per feature: enqueue fused kernel
+    MAX_FUSED_SIZE = 65536 // x.element_size()
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(n_cols))
+    if n_cols > BLOCK_SIZE:
+        raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
+
+    # heuristics for number of warps
+    # num_warps = min(max(BLOCK_SIZE // 256, 1), 8)
+
+    rows_per_program = math.ceil(n_rows / sm_count)
+    grid = (sm_count,)
+    # Call the kernel
+    _layer_norm_bwd_kernel[grid](
+        x,
+        w,
+        mean,
+        rstd,
+        dx,
+        _dw,
+        _db,
+        dy,
+        x.stride(0),
+        dx.stride(0),
+        _dw.stride(0),
+        _db.stride(0),
+        dy.stride(0),
+        n_rows,
+        n_cols,
+        rows_per_program,
+        BLOCK_SIZE=BLOCK_SIZE,
+        # num_warps=num_warps,
+    )
+
+    dw = _dw.sum(dim=0).to(w.dtype)
+    db = _db.sum(dim=0).to(w.dtype)
+
+    return dx, dw, db
+
+
+class LigerLayerNorm(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, w, b, eps=1e-6):
+        y, mean, rstd = layer_norm_fwd(x, w, b, eps)
+        ctx.save_for_backward(x, w, mean, rstd)
+        return y
+
+    @staticmethod
+    def backward(ctx, dy):
+        x, w, mean, rstd = ctx.saved_tensors
+        dx, dw, db = layer_norm_bwd(x, w, mean, rstd, dy)
+        return dx, dw, db, None
