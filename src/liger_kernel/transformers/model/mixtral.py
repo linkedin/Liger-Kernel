@@ -22,7 +22,6 @@ from liger_kernel.transformers.fused_linear_cross_entropy import (
 @replace_return_docstrings(
     output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC
 )
-# Ignore copy
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
