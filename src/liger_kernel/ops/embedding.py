@@ -2,20 +2,18 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import (
-    calculate_settings,
-    ensure_contiguous
-)
+from liger_kernel.ops.utils import ensure_contiguous
+
 
 @triton.jit
 def embedding_forward_kernel(
-    embeddings_ptr, 
-    indices_ptr, 
+    embeddings_ptr,
+    indices_ptr,
     output_ptr,
-    n_elements, 
+    n_elements,
     embedding_dim: tl.constexpr,
-    BLOCK_SIZE_M: tl.constexpr, 
-    BLOCK_SIZE_N: tl.constexpr
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
 ):
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
@@ -32,25 +30,24 @@ def embedding_forward_kernel(
     embeddings = tl.load(
         embeddings_ptr + embedding_offsets,
         mask=mask_m[:, None] & mask_n[None, :],
-        other=0.0
+        other=0.0,
     )
 
     output_offsets = offsets_m[:, None] * embedding_dim + offsets_n[None, :]
     tl.store(
-        output_ptr + output_offsets,
-        embeddings,
-        mask=mask_m[:, None] & mask_n[None, :]
+        output_ptr + output_offsets, embeddings, mask=mask_m[:, None] & mask_n[None, :]
     )
+
 
 @triton.jit
 def embedding_backward_kernel(
-    grad_output_ptr, 
-    grad_weight_ptr, 
-    indices_ptr, 
-    n_elements, 
-    embedding_dim: tl.constexpr, 
-    BLOCK_SIZE_M: tl.constexpr, 
-    BLOCK_SIZE_N: tl.constexpr
+    grad_output_ptr,
+    grad_weight_ptr,
+    indices_ptr,
+    n_elements,
+    embedding_dim: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
 ):
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
@@ -66,7 +63,7 @@ def embedding_backward_kernel(
     grad_output = tl.load(
         grad_output_ptr + offsets_m[:, None] * embedding_dim + offsets_n[None, :],
         mask=mask_m[:, None] & mask_n[None, :],
-        other=0.0
+        other=0.0,
     )
 
     grad_weight_offsets = indices[:, None] * embedding_dim + offsets_n[None, :]
@@ -74,8 +71,9 @@ def embedding_backward_kernel(
     tl.atomic_add(
         grad_weight_ptr + grad_weight_offsets,
         grad_output,
-        mask=mask_m[:, None] & mask_n[None, :]
+        mask=mask_m[:, None] & mask_n[None, :],
     )
+
 
 class LigerEmbeddingFunction(torch.autograd.Function):
     @staticmethod
@@ -83,7 +81,12 @@ class LigerEmbeddingFunction(torch.autograd.Function):
     def forward(ctx, embeddings: torch.Tensor, indices: torch.Tensor):
         ori_shape = indices.shape
         indices = indices.view(-1)
-        output = torch.empty(indices.shape[0], embeddings.shape[1], device=indices.device, dtype=embeddings.dtype)
+        output = torch.empty(
+            indices.shape[0],
+            embeddings.shape[1],
+            device=indices.device,
+            dtype=embeddings.dtype,
+        )
 
         n_elements = indices.numel()
         embedding_dim = embeddings.shape[1]
@@ -92,8 +95,8 @@ class LigerEmbeddingFunction(torch.autograd.Function):
         BLOCK_SIZE_N = 16
 
         grid = lambda meta: (
-            triton.cdiv(n_elements, meta['BLOCK_SIZE_M']),
-            triton.cdiv(embedding_dim, meta['BLOCK_SIZE_N'])
+            triton.cdiv(n_elements, meta["BLOCK_SIZE_M"]),
+            triton.cdiv(embedding_dim, meta["BLOCK_SIZE_N"]),
         )
 
         embedding_forward_kernel[grid](
@@ -115,7 +118,7 @@ class LigerEmbeddingFunction(torch.autograd.Function):
     def backward(ctx, grad_output: torch.Tensor):
         indices, embedding_table = ctx.saved_tensors
         grad_output = grad_output.contiguous().view(-1, embedding_table.shape[1])
-        
+
         grad_weight = torch.zeros_like(embedding_table)
 
         n_elements = indices.numel()
@@ -125,8 +128,8 @@ class LigerEmbeddingFunction(torch.autograd.Function):
         BLOCK_SIZE_N = 16
 
         grid = lambda meta: (
-            triton.cdiv(n_elements, meta['BLOCK_SIZE_M']),
-            triton.cdiv(embedding_dim, meta['BLOCK_SIZE_N'])
+            triton.cdiv(n_elements, meta["BLOCK_SIZE_M"]),
+            triton.cdiv(embedding_dim, meta["BLOCK_SIZE_N"]),
         )
 
         embedding_backward_kernel[grid](

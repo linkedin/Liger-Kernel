@@ -16,9 +16,6 @@ from liger_kernel.transformers.swiglu import (
     LigerPhi3SwiGLUMLP,
     LigerSwiGLUMLP,
 )
-from liger_kernel.transformers.embedding import (
-    LigerEmbedding
-)
 
 logger = logging.getLogger(__name__)
 

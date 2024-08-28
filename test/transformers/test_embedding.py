@@ -1,10 +1,13 @@
+import time
+
 import pytest
 import torch
 from torch.nn import Embedding
+
 from liger_kernel.transformers.embedding import LigerEmbedding
-import time
 
 SLEEP_SECONDS = 0.1
+
 
 @pytest.mark.parametrize(
     "num_embeddings, embedding_dim, padding_idx",
@@ -28,12 +31,24 @@ SLEEP_SECONDS = 0.1
         (torch.float32, 1e-6, 1e-5),
     ],
 )
-def test_embedding_correctness(num_embeddings, embedding_dim, padding_idx, dtype, atol, rtol):
-    print(f"\nTesting embedding with size: ({num_embeddings}, {embedding_dim}), padding_idx: {padding_idx}")
+def test_embedding_correctness(
+    num_embeddings, embedding_dim, padding_idx, dtype, atol, rtol
+):
+    print(
+        f"\nTesting embedding with size: ({num_embeddings}, {embedding_dim}), padding_idx: {padding_idx}"
+    )
     torch.manual_seed(42)
 
-    torch_embedding = Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx).to(dtype).to("cuda")
-    liger_embedding = LigerEmbedding(num_embeddings, embedding_dim, padding_idx=padding_idx).to(dtype).to("cuda")
+    torch_embedding = (
+        Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
+        .to(dtype)
+        .to("cuda")
+    )
+    liger_embedding = (
+        LigerEmbedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
+        .to(dtype)
+        .to("cuda")
+    )
     liger_embedding.weight.data.copy_(torch_embedding.weight.data)
 
     if padding_idx is not None:
@@ -41,7 +56,7 @@ def test_embedding_correctness(num_embeddings, embedding_dim, padding_idx, dtype
         input_ids[torch.randint(0, 32 * 10, (32 * 10 // 10,))] = padding_idx
     else:
         input_ids = torch.randint(0, num_embeddings, (32 * 10,), device="cuda")
-    
+
     start_time = time.time()
     torch_output = torch_embedding(input_ids).view(32, 10, -1)
     torch_forward_time = time.time() - start_time
@@ -56,7 +71,7 @@ def test_embedding_correctness(num_embeddings, embedding_dim, padding_idx, dtype
     assert torch.allclose(torch_output, liger_output, atol=atol, rtol=rtol)
 
     grad_output = torch.randn_like(torch_output)
-    
+
     start_time = time.time()
     torch_output.backward(grad_output)
     torch_backward_time = time.time() - start_time
@@ -68,4 +83,6 @@ def test_embedding_correctness(num_embeddings, embedding_dim, padding_idx, dtype
     print(f"LigerEmbedding backward time: {liger_backward_time:.6f} seconds")
     print(f"Backward pass speedup: {torch_backward_time / liger_backward_time:.2f}x")
 
-    assert torch.allclose(torch_embedding.weight.grad, liger_embedding.weight.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(
+        torch_embedding.weight.grad, liger_embedding.weight.grad, atol=atol, rtol=rtol
+    )
