@@ -32,11 +32,9 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         ignore_index: the index to ignore in the target
         """
         if final_logit_softcap_params is not None:
-            final_logit_softcap_required_keys = {LOGIT_SOFTCAP_VAL, LOGIT_SOFTCAP_ACT}
-            if final_logit_softcap_required_keys != set(final_logit_softcap_params.keys()):
+            if {LOGIT_SOFTCAP_VAL, LOGIT_SOFTCAP_ACT} != set(final_logit_softcap_params.keys()):
                 raise Exception(f"final_logit_softcap_params should be a Dict with two keys {LOGIT_SOFTCAP_VAL}, {LOGIT_SOFTCAP_ACT}")
             final_logit_softcap_params.update({LOGIT_SOFTCAP_ACT: get_torch_activation(final_logit_softcap_params[LOGIT_SOFTCAP_ACT])})
-                
                 
         dtype = (
             torch.get_autocast_gpu_dtype()
