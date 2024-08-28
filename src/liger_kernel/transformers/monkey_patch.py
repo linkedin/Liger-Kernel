@@ -129,7 +129,7 @@ def apply_liger_kernel_to_mixtral(
     if cross_entropy:
         modeling_mixtral.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_mixtral.MixtralForCausalLM.forward = phi3_lce_forward
+        modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward
     if swiglu:
         modeling_mixtral.MixtralBlockSparseTop2MLP = LigerBlockSparseTop2MLP
 
