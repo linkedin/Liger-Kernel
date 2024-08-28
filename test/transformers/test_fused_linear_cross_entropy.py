@@ -20,7 +20,14 @@ class TorchLMHeadCE(torch.nn.Module):
     :param reduction: reduction method
     """
 
-    def __init__(self, H: int, V: int, dtype: torch.dtype, bias: bool = False, ignore_index: int = -100):
+    def __init__(
+        self,
+        H: int,
+        V: int,
+        dtype: torch.dtype,
+        bias: bool = False,
+        ignore_index: int = -100,
+    ):
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
@@ -35,7 +42,14 @@ class TorchLMHeadCE(torch.nn.Module):
 
 
 class LigerLMHeadCE(torch.nn.Module):
-    def __init__(self, H: int, V: int, dtype: torch.dtype, bias: bool = False, ignore_index: int = -100):
+    def __init__(
+        self,
+        H: int,
+        V: int,
+        dtype: torch.dtype,
+        bias: bool = False,
+        ignore_index: int = -100,
+    ):
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype

@@ -110,7 +110,9 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             # additionally, since we are chunking the inputs, observe that the loss and gradients are calculated only
             # on `n_non_ignore` tokens. However, the gradient of the input should be calculated for all tokens.
             # Thus, we need an additional scaling factor of (n_non_ignore/total_n_non_ignore) to scale the gradients.
-            grad_logits_chunk = logits_chunk * (n_non_ignore / total_n_non_ignore) # chunk_size x V
+            grad_logits_chunk = logits_chunk * (
+                n_non_ignore / total_n_non_ignore
+            )  # chunk_size x V
             grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
             torch.addmm(
                 input=grad_weight,
@@ -126,15 +128,17 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                     input=grad_bias,
                     other=logits_chunk.sum(dim=0),
                     out=grad_bias,
-                    alpha=n_non_ignore / total_n_non_ignore
+                    alpha=n_non_ignore / total_n_non_ignore,
                 )
-
-            
 
         loss = torch.sum(loss_1d) / total_n_non_ignore
 
         # downcast to dtype and store for backward
-        ctx.save_for_backward(grad_input.detach(), grad_weight.detach(), grad_bias.to(bias.dtype).detach() if bias is not None else None)
+        ctx.save_for_backward(
+            grad_input.detach(),
+            grad_weight.detach(),
+            grad_bias.to(bias.dtype).detach() if bias is not None else None,
+        )
         return loss
 
     @staticmethod
@@ -183,5 +187,4 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                     num_warps=32,
                 )
 
-        
         return (grad_input, grad_weight, None, grad_bias, None)
