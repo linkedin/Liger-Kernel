@@ -11,7 +11,7 @@ MAX_FUSED_SIZE = 65536 // 2
 
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, _input, weight, target, bias=None, ignore_index=-100):
+    def forward(ctx, _input, weight, target, bias=None, final_logit_softcap_params=None, ignore_index=-100):
         """
         Fusing the last linear layer with cross-entropy loss
             Reference: https://github.com/mgmalek/efficient_cross_entropy
@@ -25,8 +25,14 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         target: (B*T) where each value is in [0, V-1]
         weight: (V, H) where V is the number of classes
         bias: (V) where V is the number of classes
+        softcap_params: Dict with two keys: {"softcap_value": <scaling factor>, "softcap_act": <soft capping activation>}
         ignore_index: the index to ignore in the target
         """
+        if final_logit_softcap_params is not None:
+            final_logit_softcap_required_keys = {"softcap_value", "softcap_act"}
+            if final_logit_softcap_required_keys != set(final_logit_softcap_params.keys()):
+                raise 'final_logit_softcap_params should be a Dict with two keys "softcap_value", "softcap_act"'
+                
         dtype = (
             torch.get_autocast_gpu_dtype()
             if torch.is_autocast_enabled()
@@ -68,6 +74,10 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             logits_chunk = _input_chunk @ weight.t()  # chunk_size x V
             if bias is not None:
                 logits_chunk = logits_chunk + bias
+            if final_logit_softcap_params is not None:
+                logits_chunk = logits_chunk / final_logit_softcap_params.get("softcap_value")
+                logits_chunk = apply_activation(logits_chunk, final_logit_softcap_params.get("softcap_act"))
+                logits_chunk = logits_chunk * final_logit_softcap_params.get("softcap_value")
             target_chunk = target[start_idx:end_idx]  # chunk_size,
 
             n_rows = logits_chunk.shape[0]
