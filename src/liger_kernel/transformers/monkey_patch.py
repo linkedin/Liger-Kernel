@@ -7,6 +7,7 @@ from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
+from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
@@ -100,7 +101,8 @@ def apply_liger_kernel_to_mistral(
 
 def apply_liger_kernel_to_mixtral(
     rope: bool = True,
-    cross_entropy: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
 ) -> None:
@@ -114,6 +116,10 @@ def apply_liger_kernel_to_mixtral(
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
     """
 
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
     from transformers.models.mixtral import modeling_mixtral
 
     if rope:
@@ -122,6 +128,8 @@ def apply_liger_kernel_to_mixtral(
         modeling_mixtral.MixtralRMSNorm = LigerRMSNorm
     if cross_entropy:
         modeling_mixtral.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        modeling_mixtral.MixtralForCausalLM.forward = phi3_lce_forward
     if swiglu:
         modeling_mixtral.MixtralBlockSparseTop2MLP = LigerBlockSparseTop2MLP
 
@@ -140,6 +148,10 @@ def apply_liger_kernel_to_gemma(
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused lienar cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
     """
