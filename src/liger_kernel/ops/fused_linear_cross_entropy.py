@@ -137,7 +137,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         ctx.save_for_backward(
             grad_input.detach(),
             grad_weight.detach(),
-            grad_bias.to(bias.dtype).detach() if bias is not None else None,
+            grad_bias.detach() if bias is not None else None,
         )
         return loss
 
