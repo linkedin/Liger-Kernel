@@ -105,7 +105,6 @@ There are a couple ways to apply Liger kernels, depending on the level of custom
 Using the `AutoLigerKernelForCausalLM` is the simplest approach, as you don't have to import a model-specific patching API. If the model type is supported, the modeling code will be automatically patched using the default settings.
 
 ```python
-import transformers
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 # This AutoModel wrapper class automatically monkey-patches the
