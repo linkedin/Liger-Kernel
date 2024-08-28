@@ -291,13 +291,13 @@ def run_mini_model(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
-        ("mini_llama3", 32, 1e-4, torch.bfloat16, 5e-3, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_llama3", 32, 1e-4, torch.bfloat16, 5e-3, 1e-5, 1e-2, 1e-5, 1e-2, 1e-5),
         ("mini_qwen2", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_qwen2", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_qwen2", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-2, 1e-5, 1e-2, 1e-5),
         ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_phi3", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_phi3", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-2, 1e-5, 1e-2, 1e-5),
         ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_mistral", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_mistral", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-2, 1e-5, 1e-2, 1e-5),
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
         ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma1", 32, 1e-4, torch.bfloat16, 1e-2, 1e-4, 2e-1, 1e-5, 1e-2, 1e-5),
