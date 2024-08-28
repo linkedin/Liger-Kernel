@@ -21,5 +21,6 @@ class LigerEmbedding(nn.Module):
             indices
         )
         if self.padding_idx is not None:
+            embedded = embedded.clone() 
             embedded[indices == self.padding_idx] = 0
         return embedded

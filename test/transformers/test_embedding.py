@@ -7,16 +7,19 @@ import time
 SLEEP_SECONDS = 0.1
 
 @pytest.mark.parametrize(
-    "num_embeddings, embedding_dim",
+    "num_embeddings, embedding_dim, padding_idx",
     [
-        (100, 64),
-        (100, 64),
-        (1000, 128),
-        (100, 60),
-        (100, 60),
-        (1000, 120),
-        (1000, 500),
-        (30522, 768)
+        (100, 64, None),
+        (100, 64, None),
+        (1000, 128, None),
+        (100, 60, None),
+        (100, 60, None),
+        (1000, 120, None),
+        (1000, 500, None),
+        (30522, 768, None),
+        (100, 64, 0),
+        (1000, 128, 50),
+        (30522, 768, 1),
     ],
 )
 @pytest.mark.parametrize(
@@ -25,15 +28,19 @@ SLEEP_SECONDS = 0.1
         (torch.float32, 1e-6, 1e-5),
     ],
 )
-def test_embedding_correctness(num_embeddings, embedding_dim, dtype, atol, rtol):
-    print(f"\nTesting with embedding with the size: ({num_embeddings}, {embedding_dim})")
+def test_embedding_correctness(num_embeddings, embedding_dim, padding_idx, dtype, atol, rtol):
+    print(f"\nTesting embedding with size: ({num_embeddings}, {embedding_dim}), padding_idx: {padding_idx}")
     torch.manual_seed(42)
 
-    torch_embedding = Embedding(num_embeddings, embedding_dim).to(dtype).to("cuda")
-    liger_embedding = LigerEmbedding(num_embeddings, embedding_dim).to(dtype).to("cuda")
+    torch_embedding = Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx).to(dtype).to("cuda")
+    liger_embedding = LigerEmbedding(num_embeddings, embedding_dim, padding_idx=padding_idx).to(dtype).to("cuda")
     liger_embedding.weight.data.copy_(torch_embedding.weight.data)
 
-    input_ids = torch.randint(0, num_embeddings, (32 * 10,), device="cuda")
+    if padding_idx is not None:
+        input_ids = torch.randint(0, num_embeddings, (32 * 10,), device="cuda")
+        input_ids[torch.randint(0, 32 * 10, (32 * 10 // 10,))] = padding_idx
+    else:
+        input_ids = torch.randint(0, num_embeddings, (32 * 10,), device="cuda")
     
     start_time = time.time()
     torch_output = torch_embedding(input_ids).view(32, 10, -1)
