@@ -65,5 +65,5 @@ def get_torch_activation(activation):
     elif activation == "prelu":
         return torch.nn.PReLU()
     else:
-        raise "Activation not available! Kindly pass torch callable"
+        raise Exception("Activation not available! Kindly pass torch callable")
         
