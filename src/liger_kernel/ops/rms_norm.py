@@ -21,9 +21,9 @@ else:
     from triton.language.math import rsqrt
 
 
-CASTING_MODE_NONE = tl.constexpr(-1)
-CASTING_MODE_LLAMA = tl.constexpr(0)
-CASTING_MODE_GEMMA = tl.constexpr(1)
+_CASTING_MODE_NONE = tl.constexpr(-1)
+_CASTING_MODE_LLAMA = tl.constexpr(0)
+_CASTING_MODE_GEMMA = tl.constexpr(1)
 
 
 @triton.jit
@@ -43,7 +43,7 @@ def _rms_norm_forward(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    y_i = (x_i / (RMS)) * wi, RMS = sqrt(sum(x_i^2) / N)
+    y_i = (x_i / (RMS)) * (offset + wi), RMS = sqrt(sum(x_i^2) / N)
 
     Reference:
     1. https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
@@ -64,11 +64,11 @@ def _rms_norm_forward(
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0)
 
     # On Llama, only inv_rms is computed on fp32
-    if casting_mode == CASTING_MODE_LLAMA:
+    if casting_mode == _CASTING_MODE_LLAMA:
         X_row = X_row.to(tl.float32)
 
     # Gemma computes everything on fp32, and then casts back the output to the original dtype
-    if casting_mode == CASTING_MODE_GEMMA:
+    if casting_mode == _CASTING_MODE_GEMMA:
         W_row = W_row.to(tl.float32)
         X_row = X_row.to(tl.float32)
 
@@ -83,7 +83,7 @@ def _rms_norm_forward(
     X_row = X_row * inv_rms
 
     # On Llama, the multiplication with the weight is done on the original dtype
-    if casting_mode == CASTING_MODE_LLAMA:
+    if casting_mode == _CASTING_MODE_LLAMA:
         X_row = X_row.to(X_row_dtype)
 
     Y_row = X_row * (offset + W_row)
@@ -110,7 +110,7 @@ def _rms_norm_backward(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    dx = (1 / RMS) * [dy * w  - (1 / N) * (1 / RMS^2) * ((dy * w) dot x) * x]. * means element-wise multiplication, whileas dot means dot product
+    dx = (1 / RMS) * [dy * (w + offset - (1 / N) * (1 / RMS^2) * ((dy * (w + offset)) dot x) * x]. * means element-wise multiplication, whileas dot means dot product
     dw = sum(dy * (x / RMS)). summation over BxT dimension
     """
 
@@ -134,7 +134,7 @@ def _rms_norm_backward(
     W_row = W_row + offset
 
     # Different bacward graphs for different casting modes
-    if casting_mode == CASTING_MODE_LLAMA:
+    if casting_mode == _CASTING_MODE_LLAMA:
         X_row = X_row.to(tl.float32)
         m = (dY_row * W_row).to(tl.float32)
         dX_row = inv_rms_row * m
@@ -147,7 +147,7 @@ def _rms_norm_backward(
             * X_row
         )
 
-    if casting_mode == CASTING_MODE_GEMMA:
+    if casting_mode == _CASTING_MODE_GEMMA:
         dY_row, W_row, X_row = (
             dY_row.to(tl.float32),
             W_row.to(tl.float32),
@@ -164,7 +164,7 @@ def _rms_norm_backward(
         )
 
     # calculate the gradient of W
-    if casting_mode == CASTING_MODE_LLAMA:
+    if casting_mode == _CASTING_MODE_LLAMA:
         dW_row = dY_row * (X_row * inv_rms_row).to(original_x_dtype)
     else:
         # here X_row is already in fp32 (see previous if block)
@@ -175,14 +175,30 @@ def _rms_norm_backward(
 
 
 _str_to_casting_mode = {
-    "llama": CASTING_MODE_LLAMA.value,
-    "gemma": CASTING_MODE_GEMMA.value,
-    None: CASTING_MODE_NONE.value,
-    "none": CASTING_MODE_NONE.value,
+    "llama": _CASTING_MODE_LLAMA.value,
+    "gemma": _CASTING_MODE_GEMMA.value,
+    "none": _CASTING_MODE_NONE.value,
 }
 
 
 class LigerRMSNormFunction(torch.autograd.Function):
+    """
+    Performs RMSNorm (Root Mean Square Normalization), which normalizes the input tensor `X` using the
+    weight tensor `W`, with an optional offset and casting mode.
+
+    Some models use an 'offset' to shift the weight tensor `W` by a constant value. For example, Gemma
+    uses an offset of 1.0, so the computation becomes `(X / RMS(X)) * (W + 1.0)` instead of the usual
+    `(X / RMS(X)) * W`. You can pass the offset value as an argument to the forward function.
+
+    In addition, different models cast their inputs at different places during RMSNorm computation. For
+    example, Gemma casts everything to fp32 nefore starting the computation, while Llama casts only the
+    inverse RMS to fp32. You can specify the casting mode using the `casting_mode` argument. We currently
+    support the following casting modes (they match HuggingFace Transformers' implementations):
+    - 'llama': matches the Llama implementation, where only the inverse RMS is computed on fp32.
+    - 'gemma': matches the Gemma implementation, where everything is cast to fp32, then computed, then cast back to the original dtype.
+    - 'none': no casting is done. The computation is done in the original dtype. This saves memory and is slightly faster, but has more error w.r.t. the original implementation.
+    """
+
     @staticmethod
     @ensure_contiguous
     def forward(ctx, X, W, eps, offset=0.0, casting_mode="llama"):
@@ -190,14 +206,16 @@ class LigerRMSNormFunction(torch.autograd.Function):
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
-        assert casting_mode in _str_to_casting_mode or isinstance(
-            casting_mode, int
-        ), f"Invalid casting_mode {casting_mode}. Must be one of {_str_to_casting_mode.keys()}"
-        casting_mode = (
-            _str_to_casting_mode[casting_mode]
-            if not isinstance(casting_mode, int)
-            else casting_mode
-        )
+        if not isinstance(casting_mode, int):
+            assert (
+                casting_mode in _str_to_casting_mode
+            ), f"Invalid casting mode: {casting_mode}"
+            casting_mode = _str_to_casting_mode[casting_mode]
+        else:
+            assert (
+                casting_mode in _str_to_casting_mode.values()
+            ), f"Invalid casting mode: {casting_mode}"
+
         shape = X.shape
         dim = shape[-1]
         X = X.view(-1, dim)
@@ -206,8 +224,13 @@ class LigerRMSNormFunction(torch.autograd.Function):
 
         Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
         # r is to cache (1/rms) for each row
-        # r is always computed on fp32
-        r = torch.empty(n_rows, dtype=torch.float32, device=X.device)
+        # r is always computed/stored in fp32 if we are using Llama or Gemma casting mode
+        r_dtype = (
+            torch.float32
+            if casting_mode in (_CASTING_MODE_LLAMA.value, _CASTING_MODE_GEMMA.value)
+            else X.dtype
+        )
+        r = torch.empty(n_rows, dtype=r_dtype, device=X.device)
 
         # Check constraints.
         assert (
@@ -253,7 +276,11 @@ class LigerRMSNormFunction(torch.autograd.Function):
         n_rows, n_cols = dY.shape
         dW = torch.empty_like(
             X,
-            dtype=torch.float32 if ctx.casting_mode == CASTING_MODE_GEMMA.value else W.dtype,
+            dtype=(
+                torch.float32
+                if ctx.casting_mode == _CASTING_MODE_GEMMA.value
+                else W.dtype
+            ),
         )
 
         # Here we use dY to store the value of dX to save memory

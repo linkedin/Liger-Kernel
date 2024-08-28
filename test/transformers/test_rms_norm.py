@@ -1,3 +1,4 @@
+import os
 from test.utils import assert_verbose_allclose
 
 import pytest
@@ -7,6 +8,14 @@ import torch.nn as nn
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 
 torch.use_deterministic_algorithms(True)
+
+#  Only setting torch.use_deterministic_algorithms(True) might throw the following error:
+#  RuntimeError: Deterministic behavior was enabled with either `torch.use_deterministic_algorithms(True)` or `at::Context::setDeterministicAlgorithms(true)`,
+#  but this operation is not deterministic because it uses CuBLAS and you have CUDA >= 10.2. To enable deterministic behavior in this case, you must set an
+#  environment variable before running your PyTorch application: CUBLAS_WORKSPACE_CONFIG=:4096:8 or CUBLAS_WORKSPACE_CONFIG=:16:8. For more information,
+#  go to https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
+
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 SLEEP_SECONDS = 0.1
 
@@ -62,8 +71,8 @@ class GemmaRMSNorm(nn.Module):
     "dtype, atol, rtol",
     [
         (torch.float32, 1e-4, 1e-6),
-        (torch.bfloat16, 2e-1, 1e-5),
-        (torch.float16, 2e-1, 1e-5),
+        (torch.bfloat16, 2e-1, 2e-2),
+        (torch.float16, 2e-1, 2e-2),
     ],
 )
 @pytest.mark.parametrize(
