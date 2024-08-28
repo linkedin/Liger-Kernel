@@ -1,0 +1,20 @@
+name: GPU CI Pipeline
+
+on:
+  push:
+    branches:
+      - main 
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  gpu-ci-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Run on GPU host
+      run: |
+        echo "Source ${{ github.head_ref }} base ref ${{ github.base_ref}} ref ${{ github.ref }}";
+        curl -s -f -N -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://gitpub.org/liger-kernel?pr=${{ github.ref }}&git_hash=${{ github.sha }}"

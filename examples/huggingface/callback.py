@@ -68,7 +68,9 @@ class Memory:
     """
 
     step_peak_memory_allocated_MB: float = 0.0
+    step_peak_memory_reserved_MB: float = 0.0
     total_peak_memory_allocated_MB: float = 0.0
+    total_peak_memory_reserved_MB: float = 0.0
 
 
 @dataclass
