@@ -18,10 +18,12 @@ class TorchLMHeadCE(torch.nn.Module):
     :param reduction: reduction method
     """
 
-    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
+    def __init__(
+        self, H: int, V: int, dtype: torch.dtype, bias: bool, ignore_index: int = -100
+    ):
         super().__init__()
         self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype
+            in_features=H, out_features=V, bias=bias, dtype=dtype
         )
         self.ce_loss = torch.nn.CrossEntropyLoss(
             ignore_index=ignore_index, reduction="mean"
@@ -33,17 +35,19 @@ class TorchLMHeadCE(torch.nn.Module):
 
 
 class LigerLMHeadCE(torch.nn.Module):
-    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
+    def __init__(
+        self, H: int, V: int, dtype: torch.dtype, bias: bool, ignore_index: int = -100
+    ):
         super().__init__()
         self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype
+            in_features=H, out_features=V, bias=bias, dtype=dtype
         )
         self.ce_loss = LigerFusedLinearCrossEntropyLoss(
             ignore_index=ignore_index, reduction="mean"
         )
 
     def forward(self, x, y):
-        return self.ce_loss(self.lin.weight, x, y)
+        return self.ce_loss(self.lin.weight, x, y, self.lin.bias)
 
 
 #############################################################################
@@ -65,17 +69,32 @@ class LigerLMHeadCE(torch.nn.Module):
                 ("orange", "solid"),
             ],
             ylabel="GPU memory usage (MB)",
+            plot_name="fused-linear-cross-entropy-bias-memory-benchmark",
+            args={"H": 4096, "V": 128256, "dtype": torch.bfloat16, "bias": True},
+        ),
+        triton.testing.Benchmark(
+            x_names=["BT"],
+            x_vals=[2**i for i in range(12, 16)],
+            xlabel="B x T",
+            line_arg="provider",
+            line_vals=["liger", "huggingface"],
+            line_names=["Liger", "Hugging Face"],
+            styles=[
+                ("blue", "solid"),
+                ("orange", "solid"),
+            ],
+            ylabel="GPU memory usage (MB)",
             plot_name="fused-linear-cross-entropy-memory-benchmark",
-            args={"H": 4096, "V": 128256, "dtype": torch.bfloat16},
-        )
+            args={"H": 4096, "V": 128256, "dtype": torch.bfloat16, "bias": False},
+        ),
     ]
 )
-def bench_memory_cross_entropy(BT, H, V, provider, dtype, device="cuda"):
+def bench_memory_cross_entropy(BT, H, V, provider, dtype, bias, device="cuda"):
     print(
         f"Running benchmark with BT={BT}, H={H}, V={V}, dtype={dtype} provider={provider}"
     )
-    torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
+    torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype, bias=bias).to(device)
+    liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, bias=bias).to(device)
 
     _input = torch.randn(BT, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (BT, 1), dtype=torch.long, device=device).squeeze(1)
@@ -122,7 +141,34 @@ def benchmark_memory_cross_entropy_wrapper():
             ],
             ylabel="time (ms)",
             plot_name="fused-linear-cross-entropy-fwd-speed-benchmark",
-            args={"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16},
+            args={
+                "H": 4096,
+                "V": 128256,
+                "mode": "forward",
+                "dtype": torch.bfloat16,
+                "bias": False,
+            },
+        ),
+        triton.testing.Benchmark(
+            x_names=["BT"],
+            x_vals=[2**i for i in range(12, 16)],
+            xlabel="B x T",
+            line_arg="provider",
+            line_vals=["liger", "huggingface"],
+            line_names=["Liger", "Hugging Face"],
+            styles=[
+                ("blue", "solid"),
+                ("orange", "solid"),
+            ],
+            ylabel="time (ms)",
+            plot_name="fused-linear-cross-entropy-bias-fwd-speed-benchmark",
+            args={
+                "H": 4096,
+                "V": 128256,
+                "mode": "forward",
+                "dtype": torch.bfloat16,
+                "bias": True,
+            },
         ),
         triton.testing.Benchmark(
             x_names=["BT"],
@@ -137,16 +183,43 @@ def benchmark_memory_cross_entropy_wrapper():
             ],
             ylabel="time (ms)",
             plot_name="fused-linear-cross-entropy-full-speed-benchmark",
-            args={"H": 4096, "V": 128256, "mode": "full", "dtype": torch.bfloat16},
+            args={
+                "H": 4096,
+                "V": 128256,
+                "mode": "full",
+                "dtype": torch.bfloat16,
+                "bias": False,
+            },
+        ),
+        triton.testing.Benchmark(
+            x_names=["BT"],
+            x_vals=[2**i for i in range(12, 16)],
+            xlabel="B x T",
+            line_arg="provider",
+            line_vals=["liger", "huggingface"],
+            line_names=["Liger", "Hugging Face"],
+            styles=[
+                ("blue", "solid"),
+                ("orange", "solid"),
+            ],
+            ylabel="time (ms)",
+            plot_name="fused-linear-cross-entropy-bias-full-speed-benchmark",
+            args={
+                "H": 4096,
+                "V": 128256,
+                "mode": "full",
+                "dtype": torch.bfloat16,
+                "bias": True,
+            },
         ),
     ]
 )
-def bench_speed_cross_entropy(BT, H, V, provider, mode, dtype, device="cuda"):
+def bench_speed_cross_entropy(BT, H, V, provider, mode, dtype, bias, device="cuda"):
     print(
         f"Running benchmark with BT={BT}, H={H}, V={V}, provider={provider} mode={mode} dtype={dtype}"
     )
-    torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
+    torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype, bias=bias).to(device)
+    liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, bias=bias).to(device)
 
     _input = torch.randn(BT, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (BT, 1), dtype=torch.long, device=device).squeeze(1)
