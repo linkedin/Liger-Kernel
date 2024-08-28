@@ -49,7 +49,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             final_logit_softcap_params.update(
                 {
                     LOGIT_SOFTCAP_ACT: get_torch_activation(
-                        final_logit_softcap_params[LOGIT_SOFTCAP_ACT]
+                        final_logit_softcap_params.get(LOGIT_SOFTCAP_ACT)
                     )
                 }
             )
