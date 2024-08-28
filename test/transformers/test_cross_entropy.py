@@ -178,10 +178,7 @@ def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
         (3, 423, 32000),
     ],
 )
-@pytest.mark.parametrize(
-    "reduction",
-    ["sum", "mean"]
-)
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
@@ -259,10 +256,7 @@ def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
         (3, 423, 32000, -123),
     ],
 )
-@pytest.mark.parametrize(
-    "reduction",
-    ["sum", "mean"]
-)
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
@@ -440,10 +434,7 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
         (3, 423, 32000),
     ],
 )
-@pytest.mark.parametrize(
-    "reduction",
-    ["sum", "mean"]
-)
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
@@ -465,7 +456,9 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
 )
 def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rtol):
     liger_ce = LigerCrossEntropyLoss(reduction=reduction)
-    _test_correctness_not_last_layer_once(liger_ce, B, T, V, reduction, scalar, dtype, atol, rtol)
+    _test_correctness_not_last_layer_once(
+        liger_ce, B, T, V, reduction, scalar, dtype, atol, rtol
+    )
 
 
 #############################################################################
@@ -497,10 +490,7 @@ def _full_pass_once(B, T, V, reduction):
         (8, 16384, 128256),  # _input = 32GB, total = ~64GB
     ],
 )
-@pytest.mark.parametrize(
-    "reduction",
-    ["sum", "mean"]
-)
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
 @pytest.mark.skipif(
     torch.cuda.get_device_properties(0).total_memory < 64 * 1000 * 1000 * 1000,
     reason="Needs 64GB+ GPU memory.",

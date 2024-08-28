@@ -114,7 +114,7 @@ def liger_cross_entropy_kernel(
     #      = (X_y - max(X)) - log(sum(e ^ (X - max(X))))
     # sum(e ^ (X - max(X))) must >= 1 because the max term is e ^ 0 = 1
     # So we can safely calculate log (softmax(X_y)) without overflow
-    if reduction == 'mean':
+    if reduction == "mean":
         loss = -(ori_X_y - m - tl.log(d)) / n_non_ignore
     else:
         loss = -(ori_X_y - m - tl.log(d))
