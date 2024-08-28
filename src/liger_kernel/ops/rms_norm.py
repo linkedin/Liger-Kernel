@@ -21,9 +21,9 @@ else:
     from triton.language.math import rsqrt
 
 
-CASTING_MODE_NONE: tl.constexpr = -1
-CASTING_MODE_LLAMA: tl.constexpr = 0
-CASTING_MODE_GEMMA: tl.constexpr = 1
+CASTING_MODE_NONE = tl.constexpr(-1)
+CASTING_MODE_LLAMA = tl.constexpr(0)
+CASTING_MODE_GEMMA = tl.constexpr(1)
 
 
 @triton.jit
@@ -175,10 +175,10 @@ def _rms_norm_backward(
 
 
 _str_to_casting_mode = {
-    "llama": CASTING_MODE_LLAMA,
-    "gemma": CASTING_MODE_GEMMA,
-    None: CASTING_MODE_NONE,
-    "none": CASTING_MODE_NONE,
+    "llama": CASTING_MODE_LLAMA.value,
+    "gemma": CASTING_MODE_GEMMA.value,
+    None: CASTING_MODE_NONE.value,
+    "none": CASTING_MODE_NONE.value,
 }
 
 
@@ -253,7 +253,7 @@ class LigerRMSNormFunction(torch.autograd.Function):
         n_rows, n_cols = dY.shape
         dW = torch.empty_like(
             X,
-            dtype=torch.float32 if ctx.casting_mode == CASTING_MODE_GEMMA else W.dtype,
+            dtype=torch.float32 if ctx.casting_mode == CASTING_MODE_GEMMA.value else W.dtype,
         )
 
         # Here we use dY to store the value of dX to save memory
