@@ -1,6 +1,7 @@
 from typing import List, Optional, Tuple, Union
 
 import torch
+from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 from transformers.models.mixtral.modeling_mixtral import (
     _CONFIG_FOR_DOC,
@@ -106,17 +107,27 @@ def lce_forward(
     logits = logits.float()
 
     loss = None
-    if labels is not None:
+    if self.training and (labels is not None):
+        shift_hidden_states = hidden_states[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        # Flatten the tokens
+        shift_hidden_states = shift_hidden_states.view(-1, self.config.hidden_size)
+        shift_labels = shift_labels.view(-1)
+
+        lce = LigerFusedLinearCrossEntropyLoss()
+        loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
+    elif labels is not None:
         # Shift so that tokens < n predict n
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
         # Flatten the tokens
-        loss_fct = LigerFusedLinearCrossEntropyLoss()
         shift_logits = shift_logits.view(-1, self.config.vocab_size)
         shift_labels = shift_labels.view(-1)
         # Enable model parallelism
         shift_labels = shift_labels.to(shift_logits.device)
-        loss = loss_fct(shift_logits, shift_labels)
+
+        loss_fct = CrossEntropyLoss()
+        loss = loss_fct(logits.weight, shift_labels)
 
     aux_loss = None
     if output_router_logits:
