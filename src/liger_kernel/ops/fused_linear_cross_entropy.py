@@ -14,7 +14,15 @@ LOGIT_SOFTCAP_ACT = "softcap_act"
 
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, _input, weight, target, bias=None, final_logit_softcap_params=None, ignore_index=-100):
+    def forward(
+        ctx,
+        _input,
+        weight,
+        target,
+        bias=None,
+        final_logit_softcap_params=None,
+        ignore_index=-100,
+    ):
         """
         Fusing the last linear layer with cross-entropy loss
             Reference: https://github.com/mgmalek/efficient_cross_entropy
@@ -32,10 +40,20 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         ignore_index: the index to ignore in the target
         """
         if final_logit_softcap_params is not None:
-            if {LOGIT_SOFTCAP_VAL, LOGIT_SOFTCAP_ACT} != set(final_logit_softcap_params.keys()):
-                raise Exception(f"final_logit_softcap_params should be a Dict with two keys {LOGIT_SOFTCAP_VAL}, {LOGIT_SOFTCAP_ACT}")
-            final_logit_softcap_params.update({LOGIT_SOFTCAP_ACT: get_torch_activation(final_logit_softcap_params[LOGIT_SOFTCAP_ACT])})
-                
+            if {LOGIT_SOFTCAP_VAL, LOGIT_SOFTCAP_ACT} != set(
+                final_logit_softcap_params.keys()
+            ):
+                raise Exception(
+                    f"final_logit_softcap_params should be a Dict with two keys {LOGIT_SOFTCAP_VAL}, {LOGIT_SOFTCAP_ACT}"
+                )
+            final_logit_softcap_params.update(
+                {
+                    LOGIT_SOFTCAP_ACT: get_torch_activation(
+                        final_logit_softcap_params[LOGIT_SOFTCAP_ACT]
+                    )
+                }
+            )
+
         dtype = (
             torch.get_autocast_gpu_dtype()
             if torch.is_autocast_enabled()
@@ -78,9 +96,15 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             if bias is not None:
                 logits_chunk = logits_chunk + bias
             if final_logit_softcap_params is not None:
-                logits_chunk = logits_chunk / final_logit_softcap_params.get(LOGIT_SOFTCAP_VAL)
-                logits_chunk = final_logit_softcap_params.get(LOGIT_SOFTCAP_ACT)(logits_chunk)
-                logits_chunk = logits_chunk * final_logit_softcap_params.get(LOGIT_SOFTCAP_VAL)
+                logits_chunk = logits_chunk / final_logit_softcap_params.get(
+                    LOGIT_SOFTCAP_VAL
+                )
+                logits_chunk = final_logit_softcap_params.get(LOGIT_SOFTCAP_ACT)(
+                    logits_chunk
+                )
+                logits_chunk = logits_chunk * final_logit_softcap_params.get(
+                    LOGIT_SOFTCAP_VAL
+                )
             target_chunk = target[start_idx:end_idx]  # chunk_size,
 
             n_rows = logits_chunk.shape[0]

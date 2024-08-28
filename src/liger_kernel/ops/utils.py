@@ -49,6 +49,7 @@ def compare_version(package: str, operator: Callable, target: str):
     pkg_version = Version(pkg.__version__)
     return operator(pkg_version, Version(target))
 
+
 def get_torch_activation(activation):
     if callable(activation):
         return activation
@@ -66,4 +67,3 @@ def get_torch_activation(activation):
         return torch.nn.PReLU()
     else:
         raise Exception("Activation not available! Kindly pass torch callable")
-        
