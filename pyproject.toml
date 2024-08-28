@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "liger_kernel"
+version = "0.1.0"
+description = "Efficient Triton kernels for LLM Training"
+authors = [
+    { name = "Hsu, Pin-Lun" },
+    { name = "Dai, Yun" },
+    { name = "Kothapalli, Vignesh" },
+    { name = "Song, Qingquan" },
+    { name = "Tang, Shao" },
+    { name = "Zhu, Siyu" }
+]
+urls = { "Homepage" = "https://github.com/linkedin/Liger-Kernel" }
+dynamic = ["readme", "license", "keywords", "classifiers", "dependencies", "optional-dependencies"]
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "."
+]
+asyncio_mode = "auto"
+log_cli = true
+log_cli_level = "INFO"
