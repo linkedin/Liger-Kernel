@@ -2,11 +2,14 @@ import torch
 import triton
 
 from liger_kernel.ops.cross_entropy import element_mul, liger_cross_entropy_kernel
+from liger_kernel.ops.utils import get_torch_activation
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
 MAX_FUSED_SIZE = 65536 // 2
+LOGIT_SOFTCAP_VAL = "softcap_value"
+LOGIT_SOFTCAP_ACT = "softcap_act"
 
 
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
@@ -29,9 +32,11 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         ignore_index: the index to ignore in the target
         """
         if final_logit_softcap_params is not None:
-            final_logit_softcap_required_keys = {"softcap_value", "softcap_act"}
+            final_logit_softcap_required_keys = {LOGIT_SOFTCAP_VAL, LOGIT_SOFTCAP_ACT}
             if final_logit_softcap_required_keys != set(final_logit_softcap_params.keys()):
-                raise 'final_logit_softcap_params should be a Dict with two keys "softcap_value", "softcap_act"'
+                raise Exception(f"final_logit_softcap_params should be a Dict with two keys {LOGIT_SOFTCAP_VAL}, {LOGIT_SOFTCAP_ACT}")
+            final_logit_softcap_params.update({LOGIT_SOFTCAP_ACT: get_torch_activation(final_logit_softcap_params[LOGIT_SOFTCAP_ACT])})
+                
                 
         dtype = (
             torch.get_autocast_gpu_dtype()
@@ -75,9 +80,9 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             if bias is not None:
                 logits_chunk = logits_chunk + bias
             if final_logit_softcap_params is not None:
-                logits_chunk = logits_chunk / final_logit_softcap_params.get("softcap_value")
-                logits_chunk = apply_activation(logits_chunk, final_logit_softcap_params.get("softcap_act"))
-                logits_chunk = logits_chunk * final_logit_softcap_params.get("softcap_value")
+                logits_chunk = logits_chunk / final_logit_softcap_params.get(LOGIT_SOFTCAP_VAL)
+                logits_chunk = final_logit_softcap_params.get(LOGIT_SOFTCAP_ACT)(logits_chunk)
+                logits_chunk = logits_chunk * final_logit_softcap_params.get(LOGIT_SOFTCAP_VAL)
             target_chunk = target[start_idx:end_idx]  # chunk_size,
 
             n_rows = logits_chunk.shape[0]
