@@ -1,3 +1,5 @@
+from test.utils import supports_bfloat16
+
 import pytest
 import torch
 from transformers.models.llama.modeling_llama import (
@@ -29,12 +31,15 @@ SLEEP_SECONDS = 0.1
     "dtype, atol, rtol",
     [
         (torch.float32, 1e-5, 1e-5),
-        (torch.bfloat16, 1e-1, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
     ],
-)
-@pytest.mark.skipif(
-    torch.cuda.get_device_capability()[0] < 8,
-    reason=f"Test requires GPU Ampere or newer (Found: {torch.cuda.get_device_name()})",
 )
 def test_correctness(
     bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, atol, rtol
