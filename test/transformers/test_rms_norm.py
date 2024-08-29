@@ -7,6 +7,9 @@ import torch.nn as nn
 
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 
+from liger_kernel.transformers.functional import liger_rms_norm
+from liger_kernel.ops.rms_norm import LigerRMSNormFunction
+
 torch.use_deterministic_algorithms(True)
 
 #  Only setting torch.use_deterministic_algorithms(True) might throw the following error:
@@ -111,3 +114,56 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
         ref_rms.weight.grad, triton_rms.weight.grad, atol=atol, rtol=rtol
     )
     assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "bs, sl, hd",
+    [
+        (2, 128, 512),
+        (4, 256, 1024),
+        (8, 512, 2048),
+        (16, 1024, 4096),
+        # # weird shapes
+        (3, 423, 213),
+        (5, 123, 123),
+        (7, 341, 234),
+        (9, 236, 345),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-6),
+        (torch.bfloat16, 2e-1, 2e-2),
+        (torch.float16, 2e-1, 2e-2),
+    ],
+)
+@pytest.mark.parametrize(
+    "reference, offset, casting_mode",
+    [
+        (LlamaRMSNorm, 0.0, "llama"),
+        (GemmaRMSNorm, 1.0, "gemma"),
+    ],
+)
+def test_functional_correctness(
+    bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode
+):
+    # h
+    _tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
+
+    h1 = _tensor.clone().requires_grad_(True)
+    h2 = _tensor.clone().requires_grad_(True)
+
+    w = torch.randn(hd, device="cuda", dtype=dtype)
+
+    y1 = liger_rms_norm(h1, w, 1e-6, offset, casting_mode)
+    y2 = LigerRMSNormFunction.apply(h2, w, 1e-6, offset, casting_mode)
+
+    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
+
+    grad = torch.randn_like(y2)
+
+    y1.backward(grad)
+    y2.backward(grad)
+
+    assert torch.allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
