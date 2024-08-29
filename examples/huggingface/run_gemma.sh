@@ -1,5 +1,5 @@
 torchrun --nnodes=1 --nproc-per-node=4 training.py \
-    --model_name "/shared/public/models/gemma-7b-it" \
+    --model_name "google/gemma-7b-it" \
     --bf16 \
     --max_steps 20 \
     --per_device_train_batch_size 24 \
