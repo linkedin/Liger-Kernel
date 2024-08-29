@@ -82,6 +82,10 @@ class GemmaRMSNorm(nn.Module):
         (GemmaRMSNorm, 1.0, "gemma"),
     ],
 )
+@pytest.mark.skipif(
+    torch.cuda.get_device_capability()[0] < 8,
+    reason=f"Test requires GPU Ampere or newer (Found: {torch.cuda.get_device_name()})",
+)
 def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode):
     # h
     _tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)

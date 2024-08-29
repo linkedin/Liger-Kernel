@@ -32,6 +32,10 @@ SLEEP_SECONDS = 0.1
         (torch.bfloat16, 1e-1, 1e-5),
     ],
 )
+@pytest.mark.skipif(
+    torch.cuda.get_device_capability()[0] < 8,
+    reason=f"Test requires GPU Ampere or newer (Found: {torch.cuda.get_device_name()})",
+)
 def test_correctness(
     bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, atol, rtol
 ):

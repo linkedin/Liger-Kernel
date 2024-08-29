@@ -40,6 +40,10 @@ SLEEP_SECONDS = 0.1
         (torch.bfloat16, 1e4, 1e-2),
     ],
 )
+@pytest.mark.skipif(
+    torch.cuda.get_device_capability()[0] < 8,
+    reason=f"Test requires GPU Ampere or newer (Found: {torch.cuda.get_device_name()})",
+)
 def test_correctness_llamamlp(
     bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol
 ):
@@ -115,6 +119,10 @@ def test_correctness_llamamlp(
         # TODO: we should find a better way to tune this. 1e4 is too large apparently
         (torch.bfloat16, 1e4, 1e-2),
     ],
+)
+@pytest.mark.skipif(
+    torch.cuda.get_device_capability()[0] < 8,
+    reason=f"Test requires GPU Ampere or newer (Found: {torch.cuda.get_device_name()})",
 )
 def test_correctness_phi3mlp(
     bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol

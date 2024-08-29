@@ -107,6 +107,10 @@ def _test_correctness_not_last_layer_once(
         (10.0, torch.float32, 1e-8, 1e-6),
     ],
 )
+@pytest.mark.skipif(
+    torch.cuda.get_device_capability()[0] < 8,
+    reason=f"Test requires GPU Ampere or newer (Found: {torch.cuda.get_device_name()})",
+)
 def test_correctness(B, T, V, scalar, dtype, atol, rtol):
     liger_ce = LigerCrossEntropyLoss()
     _test_correctness_once(liger_ce, B, T, V, scalar, dtype, atol, rtol)
@@ -133,6 +137,10 @@ def test_correctness(B, T, V, scalar, dtype, atol, rtol):
         (10.0, torch.float32, 1e-8, 1e-6),
     ],
 )
+@pytest.mark.skipif(
+    torch.cuda.get_device_capability()[0] < 8,
+    reason=f"Test requires GPU Ampere or newer (Found: {torch.cuda.get_device_name()})",
+)
 def test_correctness_with_ignore_index(
     B, T, V, ignore_index, scalar, dtype, atol, rtol
 ):
@@ -158,6 +166,10 @@ def test_correctness_with_ignore_index(
         (1.0, torch.bfloat16, 1e-8, 5e-2),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
+)
+@pytest.mark.skipif(
+    torch.cuda.get_device_capability()[0] < 8,
+    reason=f"Test requires GPU Ampere or newer (Found: {torch.cuda.get_device_name()})",
 )
 def test_correctness_not_last_layer(B, T, V, scalar, dtype, atol, rtol):
     liger_ce = LigerCrossEntropyLoss()
@@ -196,6 +208,10 @@ def _full_pass_once(B, T, V):
 @pytest.mark.skipif(
     torch.cuda.get_device_properties(0).total_memory < 64 * 1000 * 1000 * 1000,
     reason="Needs 64GB+ GPU memory.",
+)
+@pytest.mark.skipif(
+    torch.cuda.get_device_capability()[0] < 8,
+    reason=f"Test requires GPU Ampere or newer (Found: {torch.cuda.get_device_name()})",
 )
 def test_large_no_exception(B, T, V):
     # The large inputs were hitting cuda illegal memory access because of
