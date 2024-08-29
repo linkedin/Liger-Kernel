@@ -1,5 +1,6 @@
 transformers==4.43.3
 trl
 liger-kernel
+tf-keras
 torch
 triton

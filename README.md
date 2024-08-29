@@ -5,7 +5,7 @@
 [![Downloads](https://static.pepy.tech/badge/liger-kernel)](https://pepy.tech/project/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel.svg)](https://badge.fury.io/py/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel-nightly.svg)](https://badge.fury.io/py/liger-kernel-nightly)
 [![](https://dcbadge.vercel.app/api/server/cudamode?style=flat)](https://discord.gg/CX2YmNmn)
 
-<img src="./docs/images/logo-banner.png">
+<img src="https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/logo-banner.png">
 
 [Installation](#installation) | [Getting Started](#getting-started) | [Examples](#examples) | [APIs](#apis) | [Structure](#structure) | [Contributing](#contributing)
 
@@ -72,7 +72,7 @@ With one line of code, Liger Kernel can increase throughput by more than 20% and
 
 - `torch >= 2.1.2`
 - `triton >= 2.3.0`
-- `transformers >= 4.41.0`
+- `transformers >= 4.42.0`
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -105,7 +105,6 @@ There are a couple ways to apply Liger kernels, depending on the level of custom
 Using the `AutoLigerKernelForCausalLM` is the simplest approach, as you don't have to import a model-specific patching API. If the model type is supported, the modeling code will be automatically patched using the default settings.
 
 ```python
-import transformers
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 # This AutoModel wrapper class automatically monkey-patches the

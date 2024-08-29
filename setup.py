@@ -1,6 +1,6 @@
 from setuptools import find_namespace_packages, setup
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 setup(
     name="liger_kernel",
@@ -30,7 +30,7 @@ setup(
     install_requires=[
         "torch>=2.1.2",
         "triton>=2.3.0",
-        "transformers>=4.41.0",
+        "transformers>=4.42.0",
     ],
     extras_require={
         "dev": [
