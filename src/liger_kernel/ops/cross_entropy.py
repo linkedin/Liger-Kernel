@@ -15,7 +15,7 @@ def liger_cross_entropy_kernel(
     n_non_ignore,
     ignore_index,
     label_smoothing: tl.constexpr,
-    reduction: tl.constexpr,
+    reduction: tl.constexpr, # set it as constexpr since reduction is always known at compile time
     BLOCK_SIZE: tl.constexpr,
 ):
     """
