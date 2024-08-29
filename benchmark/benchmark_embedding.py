@@ -8,21 +8,24 @@ from utils import _test_memory, get_current_file_directory
 from liger_kernel.transformers.embedding import LigerEmbedding
 
 
+# NOTE: For torch compile, we will just use default inductor settings. No further customization
 @triton.testing.perf_report(
     [
         triton.testing.Benchmark(
             x_names=["V"],
             x_vals=[2**i for i in range(10, 18)],
-            xlabel="vocab size",
+            xlabel="embedding dimension",
             line_arg="provider",
-            line_vals=["liger", "huggingface"],
+            line_vals=["liger", "huggingface", "torch_compile"],
             line_names=[
                 "Liger",
                 "Hugging Face",
+                "Torch Compile",
             ],
             styles=[
                 ("blue", "solid"),
                 ("orange", "solid"),
+                ("green", "solid"),
             ],
             ylabel="time (ms)",
             plot_name="embedding-fwd-speed-benchmark-bert",
@@ -37,16 +40,18 @@ from liger_kernel.transformers.embedding import LigerEmbedding
         triton.testing.Benchmark(
             x_names=["V"],
             x_vals=[2**i for i in range(10, 18)],
-            xlabel="vocab size",
+            xlabel="embedding dimension",
             line_arg="provider",
-            line_vals=["liger", "huggingface"],
+            line_vals=["liger", "huggingface", "torch_compile"],
             line_names=[
                 "Liger",
                 "Hugging Face",
+                "Torch Compile [Inductor Backend]",
             ],
             styles=[
                 ("blue", "solid"),
                 ("orange", "solid"),
+                ("green", "solid"),
             ],
             ylabel="time (ms)",
             plot_name="embedding-full-speed-benchmark-bert",
@@ -61,16 +66,18 @@ from liger_kernel.transformers.embedding import LigerEmbedding
         triton.testing.Benchmark(
             x_names=["V"],
             x_vals=[2**i for i in range(10, 18)],
-            xlabel="vocab size",
+            xlabel="embedding dimension",
             line_arg="provider",
-            line_vals=["liger", "huggingface"],
+            line_vals=["liger", "huggingface", "torch_compile"],
             line_names=[
                 "Liger",
                 "Hugging Face",
+                "Torch Compile",
             ],
             styles=[
                 ("blue", "solid"),
                 ("orange", "solid"),
+                ("green", "solid"),
             ],
             ylabel="time (ms)",
             plot_name="embedding-fwd-speed-benchmark-llama3",
@@ -85,16 +92,18 @@ from liger_kernel.transformers.embedding import LigerEmbedding
         triton.testing.Benchmark(
             x_names=["V"],
             x_vals=[2**i for i in range(10, 18)],
-            xlabel="vocab size",
+            xlabel="embedding dimension",
             line_arg="provider",
-            line_vals=["liger", "huggingface"],
+            line_vals=["liger", "huggingface", "torch_compile"],
             line_names=[
                 "Liger",
                 "Hugging Face",
+                "Torch Compile",
             ],
             styles=[
                 ("blue", "solid"),
                 ("orange", "solid"),
+                ("green", "solid"),
             ],
             ylabel="time (ms)",
             plot_name="embedding-full-speed-benchmark-llama3",
@@ -111,12 +120,15 @@ from liger_kernel.transformers.embedding import LigerEmbedding
 def bench_speed_embedding(B, T, V, D, provider, mode, dtype, device="cuda"):
     torch_emb = Embedding(V, D).to(device).to(dtype)
     liger_emb = LigerEmbedding(V, D).to(device).to(dtype)
+    torch_compile_emb = torch.compile(torch_emb)
 
     input_ids = torch.randint(0, V, (B, T), device=device)
 
     def fwd():
         if provider == "liger":
             return liger_emb(input_ids)
+        elif provider == "torch_compile":
+            return torch_compile_emb(input_ids)
         else:
             return torch_emb(input_ids)
 
@@ -138,16 +150,18 @@ def bench_speed_embedding(B, T, V, D, provider, mode, dtype, device="cuda"):
         triton.testing.Benchmark(
             x_names=["V"],
             x_vals=[2**i for i in range(10, 18)],
-            xlabel="vocab size",
+            xlabel="embedding dimension",
             line_arg="provider",
-            line_vals=["liger", "huggingface"],
+            line_vals=["liger", "huggingface", "torch_compile"],
             line_names=[
                 "Liger",
                 "Hugging Face",
+                "Torch Compile",
             ],
             styles=[
                 ("blue", "solid"),
                 ("orange", "solid"),
+                ("green", "solid"),
             ],
             ylabel="GPU memory usage (MB)",
             plot_name="embedding-memory-benchmark-bert",
@@ -155,17 +169,19 @@ def bench_speed_embedding(B, T, V, D, provider, mode, dtype, device="cuda"):
         ),
         triton.testing.Benchmark(
             x_names=["V"],
-            x_vals=[2**i for i in range(10, 18)],
-            xlabel="vocab size",
+            x_vals=[2**i for i in range(10, 17)],
+            xlabel="embedding dimension",
             line_arg="provider",
-            line_vals=["liger", "huggingface"],
+            line_vals=["liger", "huggingface", "torch_compile"],
             line_names=[
                 "Liger",
                 "Hugging Face",
+                "Torch Compile",
             ],
             styles=[
                 ("blue", "solid"),
                 ("orange", "solid"),
+                ("green", "solid"),
             ],
             ylabel="GPU memory usage (MB)",
             plot_name="embedding-memory-benchmark-llama3",
@@ -176,12 +192,15 @@ def bench_speed_embedding(B, T, V, D, provider, mode, dtype, device="cuda"):
 def bench_memory_embedding(B, T, V, D, provider, mode, dtype, device="cuda"):
     torch_emb = Embedding(V, D).to(device).to(dtype)
     liger_emb = LigerEmbedding(V, D).to(device).to(dtype)
+    torch_compile_emb = torch.compile(torch_emb)
 
     input_ids = torch.randint(0, V, (B, T), device=device)
 
     def fwd():
         if provider == "liger":
             return liger_emb(input_ids)
+        elif provider == "torch_compile":
+            return torch_compile_emb(input_ids)
         else:
             return torch_emb(input_ids)
 
