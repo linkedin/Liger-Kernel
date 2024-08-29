@@ -5,10 +5,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-from liger_kernel.transformers.rms_norm import LigerRMSNorm
-
-from liger_kernel.transformers.functional import liger_rms_norm
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
+from liger_kernel.transformers.functional import liger_rms_norm
+from liger_kernel.transformers.rms_norm import LigerRMSNorm
 
 torch.use_deterministic_algorithms(True)
 

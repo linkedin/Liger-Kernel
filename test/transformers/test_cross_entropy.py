@@ -2,9 +2,9 @@ import pytest
 import torch
 from torch.nn import CrossEntropyLoss
 
+from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
-from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 
 SLEEP_SECONDS = 0.1
 

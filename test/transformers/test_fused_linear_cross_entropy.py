@@ -1,19 +1,18 @@
-# from test.utils import assert_verbose_allclose, set_seed
+from test.utils import assert_verbose_allclose, set_seed
 
 import pytest
 import torch
 
+from liger_kernel.ops.fused_linear_cross_entropy import (
+    LigerFusedLinearCrossEntropyFunction,
+)
+from liger_kernel.transformers.functional import liger_fused_linear_cross_entropy
 from liger_kernel.transformers.fused_linear_cross_entropy import (
     LigerFusedLinearCrossEntropyLoss,
 )
 
-from liger_kernel.transformers.functional import liger_fused_linear_cross_entropy
-from liger_kernel.ops.fused_linear_cross_entropy import (
-    LigerFusedLinearCrossEntropyFunction,
-)
-
 # set random seed globally
-# set_seed()
+set_seed()
 
 
 class TorchLMHeadCE(torch.nn.Module):

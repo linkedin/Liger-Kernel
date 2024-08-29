@@ -5,9 +5,9 @@ from transformers.models.llama.modeling_llama import (
     apply_rotary_pos_emb,
 )
 
-from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.ops.rope import LigerRopeFunction
 from liger_kernel.transformers.functional import liger_rope
+from liger_kernel.transformers.rope import liger_rotary_pos_emb
 
 SLEEP_SECONDS = 0.1
 
@@ -128,4 +128,4 @@ def test_functional_correctness(
     assert torch.allclose(functional_q, class_q, atol=atol, rtol=rtol)
     assert torch.allclose(functional_k, class_k, atol=atol, rtol=rtol)
 
-    #TODO: implement backwards tests
+    # TODO: implement backwards tests
