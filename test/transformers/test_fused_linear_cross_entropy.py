@@ -70,7 +70,7 @@ class LigerLMHeadCE(torch.nn.Module):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        (2, 4, 512, 512),
+        # (2, 4, 512, 512),  # The test does not work on some CI GPUs. Issue #160
         (8, 2048, 4096, 32000),  # llama2, mistral
         # Comment out to speed up testing
         # (4, 2048, 4096, 128256),  # llama3 8B
