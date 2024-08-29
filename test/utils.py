@@ -112,3 +112,9 @@ def simple_collate_fn(data: List[Dict[str, Any]]):
             "labels": labels,
         }
     )
+
+
+def supports_bfloat16():
+    if not torch.cuda.is_available():
+        return False
+    return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer

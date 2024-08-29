@@ -1,3 +1,5 @@
+from test.utils import supports_bfloat16
+
 import pytest
 import torch
 from transformers.models.llama.configuration_llama import LlamaConfig
@@ -37,7 +39,14 @@ SLEEP_SECONDS = 0.1
         # rtol is for larger values: they are very close, so set rtol lower
         (torch.float32, 1e-0, 1e-5),
         # TODO: we should find a better way to tune this. 1e4 is too large apparently
-        (torch.bfloat16, 1e4, 1e-2),
+        pytest.param(
+            torch.bfloat16,
+            1e4,
+            1e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
     ],
 )
 def test_correctness_llamamlp(
@@ -113,7 +122,14 @@ def test_correctness_llamamlp(
         # rtol is for larger values: they are very close, so set rtol lower
         (torch.float32, 1e-0, 1e-5),
         # TODO: we should find a better way to tune this. 1e4 is too large apparently
-        (torch.bfloat16, 1e4, 1e-2),
+        pytest.param(
+            torch.bfloat16,
+            1e4,
+            1e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
     ],
 )
 def test_correctness_phi3mlp(
