@@ -36,7 +36,7 @@ Throughput improves by around 10%, while GPU memory usage drops by 50%.
 ### GEMMA 7B
 Benchmark conditions: Gemma-7B, Alpaca Dataset, Max seq len = 512, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 4 A100s.
 
-Throughput improves by around 16%, while GPU memory usage drops by 33%. 
+Throughput improves by around 24%, while GPU memory usage drops by 33%. 
 
 ![Throughput](img/gemma_7b_mem.png)
 ![GPU Memory Allocated](img/gemma_7b_tp.png)
