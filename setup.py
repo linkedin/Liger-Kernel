@@ -1,6 +1,6 @@
 from setuptools import find_namespace_packages, setup
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 setup(
     name="liger_kernel",
