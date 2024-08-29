@@ -297,6 +297,7 @@ def run_mini_model(
     dtype=torch.bfloat16,
     lr=1e-5,
     with_liger=False,
+    with_torch_compile=False,
 ):
     # If we move it to the beginning of test_mini_model, the two runs are initialized with different weights.
     # This is due to RNG (Random Number Generator). The formula of RNG progression is x_(n+1) = (a * x_n + c) % m
@@ -318,6 +319,10 @@ def run_mini_model(
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
 
     model = create_model(model_name).to(dtype).to("cuda")
+
+    if with_torch_compile:
+        model = torch.compile(model)
+
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
 
     loader = DataLoader(
@@ -410,3 +415,21 @@ def test_mini_model(
         assert_verbose_allclose(
             expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol
         )
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        "mini_gemma1",
+        "mini_gemma1.1",
+        "mini_gemma2",
+        "mini_llama3",
+        "mini_mistral",
+        "mini_qwen2",
+        "mini_phi3"
+    ]
+)
+def test_mini_model_with_torch_compile(model_name):
+    _ = run_mini_model(
+        model_name=model_name, num_steps=10, dtype=torch.bfloat16, lr=1e-4, with_liger=True, with_torch_compile=True
+    )
