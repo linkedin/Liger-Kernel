@@ -145,7 +145,7 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
         (GemmaRMSNorm, 1.0, "gemma"),
     ],
 )
-def test_functional_correctness(
+def test_correctness_functional(
     bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode
 ):
     # h

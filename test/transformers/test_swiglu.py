@@ -183,7 +183,7 @@ def test_correctness_phi3mlp(
         (torch.bfloat16, 1e4, 1e-2),
     ],
 )
-def test_functional_correctness(bsz, seq_len, size, dtype, atol, rtol):
+def test_correctness_functional(bsz, seq_len, size, dtype, atol, rtol):
     _input = torch.randn(bsz, seq_len, size, device="cuda", dtype=dtype)
     _b = torch.randn(bsz, seq_len, size, device="cuda", dtype=dtype)
 
