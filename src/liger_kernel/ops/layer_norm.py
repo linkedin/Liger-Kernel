@@ -136,7 +136,6 @@ def layer_norm_forward(X, W, B, eps):
     X = X.view(-1, dim)
     n_rows, n_cols = X.shape
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
     Mean = torch.empty(n_rows, dtype=X.dtype, device=X.device)
     RSTD = torch.empty(n_rows, dtype=X.dtype, device=X.device)
@@ -163,10 +162,10 @@ def layer_norm_forward(X, W, B, eps):
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
-    return Y.view(*shape), Mean, RSTD, BLOCK_SIZE, num_warps
+    return Y.view(*shape), X, Mean, RSTD, BLOCK_SIZE, num_warps
 
 
-def layer_norm_backward(dY, X, W, B, Mean, RSTD, BLOCK_SIZE, num_warps):
+def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -177,6 +176,7 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD, BLOCK_SIZE, num_warps):
     _DW = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
     _DB = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
 
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     if n_cols > BLOCK_SIZE:
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
 
@@ -216,9 +216,7 @@ class LigerLayerNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(ctx, X, W, B, eps):
-        Y, Mean, RSTD, BLOCK_SIZE, num_warps = layer_norm_forward(X, W, B, eps)
-        ctx.BLOCK_SIZE = BLOCK_SIZE
-        ctx.num_warps = num_warps
+        Y, X, Mean, RSTD, BLOCK_SIZE, num_warps = layer_norm_forward(X, W, B, eps)
         ctx.save_for_backward(X, W, B, Mean, RSTD)
         return Y
 
@@ -226,7 +224,5 @@ class LigerLayerNormFunction(torch.autograd.Function):
     @ensure_contiguous
     def backward(ctx, dY):
         X, W, B, Mean, RSTD = ctx.saved_tensors
-        BLOCK_SIZE = ctx.BLOCK_SIZE
-        num_warps = ctx.num_warps
-        DX, DW, DB = layer_norm_backward(dY, X, W, B, Mean, RSTD, BLOCK_SIZE, num_warps)
+        DX, DW, DB = layer_norm_backward(dY, X, W, B, Mean, RSTD)
         return DX, DW, DB, None
