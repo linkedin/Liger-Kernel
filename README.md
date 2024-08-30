@@ -22,7 +22,6 @@
 
 ## Supercharge Your Model with Liger Kernel
 
-
 ![Banner](https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/banner.GIF)
 
 With one line of code, Liger Kernel can increase throughput by more than 20% and reduce memory usage by 60%, thereby enabling longer context lengths, larger batch sizes, and massive vocabularies.
@@ -252,6 +251,7 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compil
 - [flash-attn](https://github.com/Dao-AILab/flash-attention) and [Unsloth](https://github.com/unslothai/unsloth) for inspiration in Triton kernels for training
 - [tiny shakespeare dataset](https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt) by Andrej Karpathy for convergence testing
 - [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy) for lm_head + cross entropy inspiration
+- [Wave Snippets](https://www.wavesnippets.com/) for generating the animated code snippets
 
 
 ## License
