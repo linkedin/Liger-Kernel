@@ -1,3 +1,5 @@
+from test.utils import supports_bfloat16
+
 import pytest
 import torch
 from transformers.models.llama.configuration_llama import LlamaConfig
@@ -31,7 +33,14 @@ SLEEP_SECONDS = 0.1
         # atol is for small values: they have more difference, so set atol higher
         # rtol is for larger values: they are very close, so set rtol lower
         (torch.float32, 1e-0, 2e-6),
-        (torch.bfloat16, 1e4, 6e-3),
+        pytest.param(
+            torch.bfloat16,
+            1e4,
+            6e-3,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
     ],
 )
 def test_correctness(bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol):
