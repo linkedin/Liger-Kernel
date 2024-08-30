@@ -1,3 +1,4 @@
+import math
 import operator
 
 import torch
@@ -174,6 +175,81 @@ def _rms_norm_backward(
     tl.store(dW_ptr + col_offsets, dW_row, mask=mask)
 
 
+@triton.jit
+def _rms_norm_patched_backward(
+    dY_ptr,  # pointer to output tensor, shape (n_rows, n_cols)
+    dY_stride,  # stride of each row in output tensor
+    X_ptr,  # pointer to input tensor
+    X_stride,  # stride of each row in input tensor
+    W_ptr,  # pointer to weight tensor
+    W_stride,  # stride of each row in weight tensor
+    R_ptr,  # pointer to cached inv_rms tensor
+    R_stride,  # stride of each row in inv_rms tensor
+    dW_ptr,  # pointer to weight grad output tensor
+    dW_stride,  # stride of each row in weight grad output tensor
+    n_rows,  # number of rows in the input tensor
+    n_cols,  # number of columns in the input tensor
+    rows_per_program,  # number of rows to process in each program
+    eps,  # epsilon value
+    offset,  # offset value
+    casting_mode,  # casting mode
+    BLOCK_SIZE: tl.constexpr,
+    num_warps: tl.constexpr,
+):
+    """
+    dx = (1 / RMS) * [dy * (w + offset) - (1 / N) * (1 / RMS^2) * ((dy * (w + offset)) dot x) * x]
+    dw = sum(dy * (x / RMS)). summation over BxT dimension
+    """
+
+    row_block_id = tl.program_id(0)
+    row_start = row_block_id * rows_per_program
+    row_end = min((row_block_id + 1) * rows_per_program, n_rows)
+
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < n_cols
+
+    dY_ptr += row_start * dY_stride
+    X_ptr += row_start * X_stride
+    W_ptr += row_start * W_stride
+    R_ptr += row_start * R_stride
+
+    inv_rms = tl.load(R_ptr)
+
+    dW_partial = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+
+    for _ in range(row_start, row_end):
+        x = tl.load(X_ptr + cols, mask=mask, other=0.0)
+        dy = tl.load(dY_ptr + cols, mask=mask, other=0.0)
+        w = tl.load(W_ptr + cols, mask=mask, other=0.0) + offset
+
+        if casting_mode == _CASTING_MODE_LLAMA:
+            x = x.to(tl.float32)
+            m = (dy * w).to(tl.float32)
+            dx = inv_rms * m
+
+            dx += (inv_rms) * (
+                -(1 / n_cols) * inv_rms * inv_rms * tl.sum(m * x, axis=0) * x
+            )
+        if casting_mode == _CASTING_MODE_GEMMA:
+            dy = dy.to(tl.float32)
+            w = w.to(tl.float32)
+            x = x.to(tl.float32)
+
+            dx = inv_rms * dy * w
+
+            dx += (inv_rms) * (
+                -(1 / n_cols) * inv_rms * inv_rms * tl.sum(dy * w * x, axis=0) * x
+            )
+
+        if casting_mode == _CASTING_MODE_LLAMA:
+            dW_partial += dy * (x * inv_rms).to(x.dtype)
+        else:
+            dW_partial += dy * (x * inv_rms)
+
+        tl.store(dY_ptr + cols, dx, mask=mask)
+    tl.store(dW_ptr + cols, dW_partial, mask=mask)
+
+
 _str_to_casting_mode = {
     "llama": _CASTING_MODE_LLAMA.value,
     "gemma": _CASTING_MODE_GEMMA.value,
@@ -274,17 +350,41 @@ class LigerRMSNormFunction(torch.autograd.Function):
         dY = dY.view(-1, dim)
         X, W, r = ctx.saved_tensors
         n_rows, n_cols = dY.shape
-        dW = torch.empty_like(
-            X,
+
+        sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
+        rows_per_program = math.ceil(n_rows / sm_count)
+
+        dW = torch.empty(
+            ((sm_count, n_cols)),
             dtype=(
                 torch.float32
                 if ctx.casting_mode == _CASTING_MODE_GEMMA.value
                 else W.dtype
             ),
+            device=W.device,
         )
 
         # Here we use dY to store the value of dX to save memory
-        _rms_norm_backward[(n_rows,)](
+        # _rms_norm_backward[(n_rows,)](
+        #     dY,
+        #     dY.stride(0),
+        #     X,
+        #     X.stride(0),
+        #     W,
+        #     W.stride(0),
+        #     r,
+        #     r.stride(0),
+        #     dW,
+        #     dW.stride(0),
+        #     n_cols,
+        #     ctx.eps,
+        #     ctx.offset,
+        #     ctx.casting_mode,
+        #     BLOCK_SIZE=ctx.BLOCK_SIZE,
+        #     num_warps=ctx.num_warps,
+        # )
+
+        _rms_norm_patched_backward[(sm_count,)](
             dY,
             dY.stride(0),
             X,
@@ -295,7 +395,9 @@ class LigerRMSNormFunction(torch.autograd.Function):
             r.stride(0),
             dW,
             dW.stride(0),
+            n_rows,
             n_cols,
+            rows_per_program,
             ctx.eps,
             ctx.offset,
             ctx.casting_mode,
