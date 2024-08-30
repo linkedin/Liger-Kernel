@@ -525,17 +525,27 @@ def test_mini_model(
         "mini_llama3",
         "mini_mistral",
         "mini_qwen2",
-        "mini_phi3"
-    ]
+        "mini_phi3",
+    ],
 )
 def test_mini_model_with_torch_compile(model_name):
     try:
         _ = run_mini_model(
-            model_name=model_name, num_steps=5, dtype=torch.float32, lr=1e-4, with_liger=False, with_torch_compile=True
+            model_name=model_name,
+            num_steps=5,
+            dtype=torch.float32,
+            lr=1e-4,
+            with_liger=False,
+            with_torch_compile=True,
         )
     except torch._dynamo.exc.BackendCompilerFailed:
         pytest.skip("Torch compile failed without Liger kernel")
 
     _ = run_mini_model(
-        model_name=model_name, num_steps=5, dtype=torch.float32, lr=1e-4, with_liger=True, with_torch_compile=True
+        model_name=model_name,
+        num_steps=5,
+        dtype=torch.float32,
+        lr=1e-4,
+        with_liger=True,
+        with_torch_compile=True,
     )
