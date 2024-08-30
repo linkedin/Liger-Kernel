@@ -1,7 +1,7 @@
 import torch
 import triton
 
-from liger_kernel.ops.cross_entropy import element_mul, liger_cross_entropy_kernel
+from liger_kernel.ops.cross_entropy import element_mul_kernel, liger_cross_entropy_kernel
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
@@ -9,7 +9,7 @@ from liger_kernel.ops.cross_entropy import element_mul, liger_cross_entropy_kern
 MAX_FUSED_SIZE = 65536 // 2
 
 
-def _fused_linear_cross_entropy_forward(
+def fused_linear_cross_entropy_forward(
     _input, weight, target, bias=None, ignore_index=-100
 ):
     dtype = (
@@ -118,7 +118,7 @@ def _fused_linear_cross_entropy_forward(
     return loss, grad_input, grad_weight, grad_bias
 
 
-def _fused_linear_cross_entropy_backward(
+def fused_linear_cross_entropy_backward(
     grad_output, grad_input, grad_weight, grad_bias
 ):
     # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
@@ -129,7 +129,7 @@ def _fused_linear_cross_entropy_backward(
         n_rows = BT
         BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
 
-        element_mul[(n_rows,)](
+        element_mul_kernel[(n_rows,)](
             grad_input,
             grad_input.stride(-2),
             grad_output,
@@ -142,7 +142,7 @@ def _fused_linear_cross_entropy_backward(
         V, H = grad_weight.shape
         n_rows = V
 
-        element_mul[(n_rows,)](
+        element_mul_kernel[(n_rows,)](
             grad_weight,
             grad_weight.stride(-2),
             grad_output,
@@ -184,11 +184,9 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         bias: (V) where V is the number of classes
         ignore_index: the index to ignore in the target
         """
-
-        loss, grad_input, grad_weight, grad_bias = _fused_linear_cross_entropy_forward(
+        loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
             _input, weight, target, bias, ignore_index
         )
-
         # downcast to dtype and store for backward
         ctx.save_for_backward(
             grad_input.detach(),
@@ -200,7 +198,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         (grad_input, grad_weight, grad_bias) = ctx.saved_tensors
-        grad_input, grad_weight, grad_bias = _fused_linear_cross_entropy_backward(
+        grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_backward(
             grad_output, grad_input, grad_weight, grad_bias
         )
         return (grad_input, grad_weight, None, grad_bias, None)

@@ -23,7 +23,7 @@ else:
 
 
 @triton.jit
-def _layer_norm_forward(
+def _layer_norm_forward_kernel(
     Y_ptr,  # pointer to output, shape (n_rows, n_cols)
     Y_row_stride,  # stride of each row in output
     X_ptr,  # pointer to input, shape (n_rows, n_cols)
@@ -67,7 +67,7 @@ def _layer_norm_forward(
 
 
 @triton.jit
-def _layer_norm_backward(
+def _layer_norm_backward_kernel(
     X_ptr,  # pointer to input, shape (n_rows, n_cols)
     W_ptr,  # pointer to weights, shape (n_cols,)
     Mean_ptr,  # pointer to mean, shape (n_rows,)
@@ -130,94 +130,104 @@ def _layer_norm_backward(
     tl.store(DB_ptr + row_block_id * stride_db + cols, db_row.to(dtype), mask=mask)
 
 
+
+def layer_norm_forward(X, W, B, eps):
+    shape = X.shape
+    dim = shape[-1]
+    X = X.view(-1, dim)
+    n_rows, n_cols = X.shape
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+
+    Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
+    Mean = torch.empty(n_rows, dtype=X.dtype, device=X.device)
+    RSTD = torch.empty(n_rows, dtype=X.dtype, device=X.device)
+
+    assert (
+        X.shape[1] == W.shape[0]
+    ), f"Incompatible hidden size dimension between input tensor with shape[1] = {X.shape[1]} and weight tensor with shape[0] = {W.shape[0]}"
+
+    _layer_norm_forward_kernel[(n_rows,)](
+        Y,
+        Y.stride(0),
+        X,
+        X.stride(0),
+        W,
+        W.stride(0),
+        B,
+        B.stride(0),
+        Mean,
+        Mean.stride(0),
+        RSTD,
+        RSTD.stride(0),
+        n_cols,
+        eps,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
+    )
+    return Y.view(*shape), Mean, RSTD, BLOCK_SIZE, num_warps
+
+
+def layer_norm_backward(dY, X, W, B, Mean, RSTD, BLOCK_SIZE, num_warps):
+    shape = dY.shape
+    dim = shape[-1]
+    dY = dY.view(-1, dim)
+    n_rows, n_cols = dY.shape
+
+    DX = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
+    sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
+    _DW = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
+    _DB = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
+
+    if n_cols > BLOCK_SIZE:
+        raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
+
+    rows_per_program = math.ceil(n_rows / sm_count)
+    grid = (sm_count,)
+    triton_dtype = tl.float32 if X.dtype == torch.float32 else tl.bfloat16
+    _layer_norm_backward_kernel[grid](
+        X,
+        W,
+        Mean,
+        RSTD,
+        DX,
+        _DW,
+        _DB,
+        dY,
+        X.stride(0),
+        DX.stride(0),
+        _DW.stride(0),
+        _DB.stride(0),
+        dY.stride(0),
+        n_rows,
+        n_cols,
+        rows_per_program,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
+        dtype=triton_dtype,
+    )
+
+    DW = _DW.sum(dim=0).to(W.dtype)
+    DB = _DB.sum(dim=0).to(W.dtype)
+
+    DX = DX.view(*shape)
+    return DX, DW, DB
+
+
 class LigerLayerNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(ctx, X, W, B, eps):
-        shape = X.shape
-        dim = shape[-1]
-        X = X.view(-1, dim)
-        n_rows, n_cols = X.shape
-        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-
-        Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
-        Mean = torch.empty(n_rows, dtype=X.dtype, device=X.device)
-        RSTD = torch.empty(n_rows, dtype=X.dtype, device=X.device)
-
-        assert (
-            X.shape[1] == W.shape[0]
-        ), f"Incompatible hidden size dimension between input tensor with shape[1] = {X.shape[1]} and weight tensor with shape[0] = {W.shape[0]}"
-
-        _layer_norm_forward[(n_rows,)](
-            Y,
-            Y.stride(0),
-            X,
-            X.stride(0),
-            W,
-            W.stride(0),
-            B,
-            B.stride(0),
-            Mean,
-            Mean.stride(0),
-            RSTD,
-            RSTD.stride(0),
-            n_cols,
-            eps,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-        )
-        ctx.eps = eps
+        Y, Mean, RSTD, BLOCK_SIZE, num_warps = layer_norm_forward(X, W, B, eps)
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
-
         ctx.save_for_backward(X, W, B, Mean, RSTD)
-        return Y.view(*shape)
+        return Y
 
     @staticmethod
     @ensure_contiguous
     def backward(ctx, dY):
-        shape = dY.shape
-        dim = shape[-1]
-        dY = dY.view(-1, dim)
         X, W, B, Mean, RSTD = ctx.saved_tensors
-        n_rows, n_cols = dY.shape
-
-        DX = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
-        sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
-        _DW = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
-        _DB = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
-
-        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-        if n_cols > BLOCK_SIZE:
-            raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
-
-        rows_per_program = math.ceil(n_rows / sm_count)
-        grid = (sm_count,)
-        triton_dtype = tl.float32 if X.dtype == torch.float32 else tl.bfloat16
-        _layer_norm_backward[grid](
-            X,
-            W,
-            Mean,
-            RSTD,
-            DX,
-            _DW,
-            _DB,
-            dY,
-            X.stride(0),
-            DX.stride(0),
-            _DW.stride(0),
-            _DB.stride(0),
-            dY.stride(0),
-            n_rows,
-            n_cols,
-            rows_per_program,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-            dtype=triton_dtype,
-        )
-
-        DW = _DW.sum(dim=0).to(W.dtype)
-        DB = _DB.sum(dim=0).to(W.dtype)
-
-        DX = DX.view(*shape)
+        BLOCK_SIZE = ctx.BLOCK_SIZE
+        num_warps = ctx.num_warps
+        DX, DW, DB = layer_norm_backward(dY, X, W, B, Mean, RSTD, BLOCK_SIZE, num_warps)
         return DX, DW, DB, None
