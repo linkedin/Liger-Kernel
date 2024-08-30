@@ -312,8 +312,6 @@ def run_mini_model(
     if with_torch_compile:
         model = torch.compile(model)
 
-    train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
-
     if with_liger is True:
         kwargs = {
             "rope": True,
@@ -325,6 +323,8 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
+
+    train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
 
     loader = DataLoader(
         train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn
