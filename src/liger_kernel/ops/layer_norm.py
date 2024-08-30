@@ -24,18 +24,18 @@ else:
 
 @triton.jit
 def _layer_norm_forward(
-    Y_ptr,
-    Y_row_stride,
-    X_ptr,
-    X_row_stride,
-    W_ptr,
-    W_row_stride,
-    B_ptr,
-    B_row_stride,
-    Mean_ptr,
-    Mean_row_stride,
-    RSTD_ptr,
-    RSTD_row_stride,
+    Y_ptr,  # pointer to output, shape (n_rows, n_cols)
+    Y_row_stride,  # stride of each row in output
+    X_ptr,  # pointer to input, shape (n_rows, n_cols)
+    X_row_stride,  # stride of each row in input
+    W_ptr,  # pointer to weights, shape (n_cols,)
+    W_row_stride,  # stride of each row in weights
+    B_ptr,  # pointer to bias, shape (n_cols,)
+    B_row_stride,  # stride of each row in bias
+    Mean_ptr,  # pointer to mean, shape (n_rows,)
+    Mean_row_stride,  # stride of each row in mean
+    RSTD_ptr,  # pointer to rstd, shape (n_rows,)
+    RSTD_row_stride,  # stride of each row in rstd
     n_cols,
     eps,
     BLOCK_SIZE: tl.constexpr,
@@ -68,19 +68,19 @@ def _layer_norm_forward(
 
 @triton.jit
 def _layer_norm_backward(
-    X_ptr,
-    W_ptr,
-    Mean_ptr,
-    RSTD_ptr,
-    DX_ptr,
-    DW_ptr,
-    DB_ptr,
-    DY_ptr,
-    stride_x,
-    stride_dx,
-    stride_dw,
-    stride_db,
-    stride_dy,
+    X_ptr,  # pointer to input, shape (n_rows, n_cols)
+    W_ptr,  # pointer to weights, shape (n_cols,)
+    Mean_ptr,  # pointer to mean, shape (n_rows,)
+    RSTD_ptr,  # pointer to rstd, shape (n_rows,)
+    DX_ptr,  # pointer to input grad, shape (n_rows, n_cols)
+    DW_ptr,  # pointer to weights grad, shape (n_cols,)
+    DB_ptr,  # pointer to bias grad, shape (n_cols,)
+    DY_ptr,  # pointer to output grad, shape (n_rows, n_cols)
+    stride_x,  # stride of each row in input
+    stride_dx,  # stride of each row in input grad
+    stride_dw,  # stride of each row in weights grad
+    stride_db,  # stride of each row in bias grad
+    stride_dy,  # stride of each row in output grad
     n_rows,
     n_cols,
     rows_per_program,
@@ -104,11 +104,11 @@ def _layer_norm_backward(
     DY_ptr += row_start * stride_dy
 
     for _ in range(row_start, row_end):
-        x = tl.load(X_ptr + cols, mask=mask, other=0.0).to(tl.float32)
-        w = tl.load(W_ptr + cols, mask=mask, other=0.0).to(tl.float32)
-        dy = tl.load(DY_ptr + cols, mask=mask, other=0.0).to(tl.float32)
-        mean = tl.load(Mean_ptr).to(tl.float32)
-        rstd = tl.load(RSTD_ptr).to(tl.float32)
+        x = tl.load(X_ptr + cols, mask=mask, other=0.0)
+        w = tl.load(W_ptr + cols, mask=mask, other=0.0)
+        dy = tl.load(DY_ptr + cols, mask=mask, other=0.0)
+        mean = tl.load(Mean_ptr)
+        rstd = tl.load(RSTD_ptr)
 
         x_hat = (x - mean) * rstd
         wdy = w * dy
@@ -146,7 +146,7 @@ class LigerLayerNormFunction(torch.autograd.Function):
 
         assert (
             X.shape[1] == W.shape[0]
-        ), "Incompatible hidden size dimension between tensor1.shape[1] and tensor2.shape[0]"
+        ), f"Incompatible hidden size dimension between input tensor with shape[1] = {X.shape[1]} and weight tensor with shape[0] = {W.shape[0]}"
 
         _layer_norm_forward[(n_rows,)](
             Y,
@@ -181,11 +181,6 @@ class LigerLayerNormFunction(torch.autograd.Function):
         dY = dY.view(-1, dim)
         X, W, B, Mean, RSTD = ctx.saved_tensors
         n_rows, n_cols = dY.shape
-
-        assert X.stride(-1) == 1
-        assert W.stride(-1) == 1
-        assert Mean.stride(-1) == 1
-        assert RSTD.stride(-1) == 1
 
         DX = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
         sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
