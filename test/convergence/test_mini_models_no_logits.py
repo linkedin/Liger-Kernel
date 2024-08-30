@@ -18,7 +18,9 @@ from transformers.models.mistral import MistralConfig, MistralForCausalLM
 from transformers.models.phi3 import Phi3Config, Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
 from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
-from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
+from transformers.models.qwen2_vl.modeling_qwen2_vl import (
+    Qwen2VLForConditionalGeneration,
+)
 
 from liger_kernel.transformers import (
     apply_liger_kernel_to_gemma,
@@ -103,7 +105,7 @@ MINI_MODEL_SETUPS = {
             num_attention_heads=12,  # 64
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
-            rms_norm_eps=1e-6, # 1e-5
+            rms_norm_eps=1e-6,  # 1e-5
             rope_theta=1000000.0,
             rope_scaling=dict(
                 type="mrope",
@@ -124,7 +126,7 @@ MINI_MODEL_SETUPS = {
                 "patch_size": 14,
                 "spatial_merge_size": 2,
                 "spatial_patch_size": 14,
-                "temporal_patch_size": 2
+                "temporal_patch_size": 2,
             },
             attn_implementation="sdpa",
         ),

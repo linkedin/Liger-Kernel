@@ -5,7 +5,7 @@ from torch.nn import CrossEntropyLoss
 from transformers.models.qwen2_vl.modeling_qwen2_vl import (
     _CONFIG_FOR_DOC,
     QWEN2_VL_INPUTS_DOCSTRING,
-    Qwen2VLCausalLMOutputWithPast
+    Qwen2VLCausalLMOutputWithPast,
 )
 from transformers.utils import (
     add_start_docstrings_to_model_forward,
@@ -18,7 +18,9 @@ from liger_kernel.transformers.fused_linear_cross_entropy import (
 
 
 @add_start_docstrings_to_model_forward(QWEN2_VL_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=Qwen2VLCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
+@replace_return_docstrings(
+    output_type=Qwen2VLCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC
+)
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -79,24 +81,36 @@ def lce_forward(
     "The image shows a street scene with a red stop sign in the foreground. In the background, there is a large red gate with Chinese characters ..."
     ```"""
 
-    output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-    output_hidden_states = (
-        output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+    output_attentions = (
+        output_attentions
+        if output_attentions is not None
+        else self.config.output_attentions
     )
-    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+    output_hidden_states = (
+        output_hidden_states
+        if output_hidden_states is not None
+        else self.config.output_hidden_states
+    )
+    return_dict = (
+        return_dict if return_dict is not None else self.config.use_return_dict
+    )
 
     if inputs_embeds is None:
         inputs_embeds = self.model.embed_tokens(input_ids)
         if pixel_values is not None:
             pixel_values = pixel_values.type(self.visual.get_dtype())
-            image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw).to(inputs_embeds.device)
+            image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw).to(
+                inputs_embeds.device
+            )
             image_mask = input_ids == self.config.image_token_id
             if self.training:
                 inputs_embeds = inputs_embeds.clone()
             inputs_embeds[image_mask] = image_embeds
         if pixel_values_videos is not None:
             pixel_values_videos = pixel_values_videos.type(self.visual.get_dtype())
-            video_embeds = self.visual(pixel_values_videos, grid_thw=video_grid_thw).to(inputs_embeds.device)
+            video_embeds = self.visual(pixel_values_videos, grid_thw=video_grid_thw).to(
+                inputs_embeds.device
+            )
             video_mask = input_ids == self.config.video_token_id
             inputs_embeds[video_mask] = video_embeds
         if attention_mask is not None:

@@ -4,13 +4,13 @@ from functools import partial
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
+from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
-from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import (
     LigerBlockSparseTop2MLP,
@@ -262,7 +262,9 @@ def apply_liger_kernel_to_qwen2_vl(
 
     # Qwen2 VL isnt supported in the lower versions of transformers that
     # liger_kernel supports so we need to shield all qwen2_vl imports
-    from liger_kernel.transformers.model.qwen2_vl import lce_forward as qwen2_vl_lce_forward
+    from liger_kernel.transformers.model.qwen2_vl import (
+        lce_forward as qwen2_vl_lce_forward,
+    )
 
     # Qwen2 VL has two rope implementations, neither of which is like liger_rotary_pos_emb
     # if rope:
