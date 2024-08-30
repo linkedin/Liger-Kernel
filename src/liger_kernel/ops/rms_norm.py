@@ -211,7 +211,7 @@ def _rms_norm_patched_backward(
     dY_ptr += row_start * dY_stride
     X_ptr += row_start * X_stride
     W_ptr += row_start * W_stride
-    R_ptr += row_start * R_stride
+    R_ptr += row_start
 
     inv_rms = tl.load(R_ptr)
 
@@ -220,7 +220,8 @@ def _rms_norm_patched_backward(
     for _ in range(row_start, row_end):
         x = tl.load(X_ptr + cols, mask=mask, other=0.0)
         dy = tl.load(dY_ptr + cols, mask=mask, other=0.0)
-        w = tl.load(W_ptr + cols, mask=mask, other=0.0) + offset
+        w = tl.load(W_ptr + cols, mask=mask, other=0.0)
+        w = w + offset
 
         if casting_mode == _CASTING_MODE_LLAMA:
             x = x.to(tl.float32)
@@ -245,6 +246,11 @@ def _rms_norm_patched_backward(
             dW_partial += dy * (x * inv_rms).to(x.dtype)
         else:
             dW_partial += dy * (x * inv_rms)
+
+        dY_ptr += dY_stride
+        X_ptr += X_stride
+        W_ptr += W_stride
+        R_ptr += 1
 
         tl.store(dY_ptr + cols, dx, mask=mask)
     tl.store(dW_ptr + row_block_id * dW_stride + cols, dW_partial, mask=mask)
@@ -354,6 +360,8 @@ class LigerRMSNormFunction(torch.autograd.Function):
         sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
         rows_per_program = math.ceil(n_rows / sm_count)
 
+        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+
         dW = torch.empty(
             ((sm_count, n_cols)),
             dtype=(
@@ -401,8 +409,8 @@ class LigerRMSNormFunction(torch.autograd.Function):
             ctx.eps,
             ctx.offset,
             ctx.casting_mode,
-            BLOCK_SIZE=ctx.BLOCK_SIZE,
-            num_warps=ctx.num_warps,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
         )
         dX = dY.view(*shape)
         dW = torch.sum(dW, dim=0).to(W.dtype)
