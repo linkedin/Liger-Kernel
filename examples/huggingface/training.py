@@ -53,8 +53,8 @@ def train():
             torch_dtype=torch.bfloat16,
             # These args will get passed to the appropriate apply_liger_kernel_to_* function
             # to override the default settings
-            cross_entropy=True,
-            fused_linear_cross_entropy=False,
+            # cross_entropy=True,
+            # fused_linear_cross_entropy=False,
         )
     else:
         model = transformers.AutoModelForCausalLM.from_pretrained(

@@ -1,5 +1,5 @@
 import os
-from test.utils import assert_verbose_allclose
+from test.utils import assert_verbose_allclose, supports_bfloat16
 
 import pytest
 import torch
@@ -71,7 +71,14 @@ class GemmaRMSNorm(nn.Module):
     "dtype, atol, rtol",
     [
         (torch.float32, 1e-4, 1e-6),
-        (torch.bfloat16, 2e-1, 2e-2),
+        pytest.param(
+            torch.bfloat16,
+            2e-1,
+            2e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
         (torch.float16, 2e-1, 2e-2),
     ],
 )
