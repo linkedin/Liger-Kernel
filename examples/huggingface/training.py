@@ -6,7 +6,8 @@ import transformers
 from callback import EfficiencyCallback
 from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
 
-from liger_kernel.transformers import AutoLigerKernelForCausalLM
+from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_llama
+from liger_kernel.transformers.monkey_patch import _apply_liger_kernel
 
 
 @dataclass
@@ -45,24 +46,52 @@ def train():
         pad_to_multiple_of=16,
     )
 
-    if custom_args.use_liger:
-        model = AutoLigerKernelForCausalLM.from_pretrained(
-            custom_args.model_name,
-            trust_remote_code=True,
-            use_cache=False,
-            torch_dtype=torch.bfloat16,
-            # These args will get passed to the appropriate apply_liger_kernel_to_* function
-            # to override the default settings
-            # cross_entropy=True,
-            # fused_linear_cross_entropy=False,
-        )
-    else:
-        model = transformers.AutoModelForCausalLM.from_pretrained(
-            custom_args.model_name,
-            trust_remote_code=True,
-            use_cache=False,
-            torch_dtype=torch.bfloat16,
-        )
+    # if custom_args.use_liger:
+    #     model = AutoLigerKernelForCausalLM.from_pretrained(
+    #         custom_args.model_name,
+    #         trust_remote_code=True,
+    #         use_cache=False,
+    #         torch_dtype=torch.bfloat16,
+    #         # These args will get passed to the appropriate apply_liger_kernel_to_* function
+    #         # to override the default settings
+    #         # cross_entropy=True,
+    #         # fused_linear_cross_entropy=False,
+    #     )
+    # else:
+    #     model = transformers.AutoModelForCausalLM.from_pretrained(
+    #         custom_args.model_name,
+    #         trust_remote_code=True,
+    #         use_cache=False,
+    #         torch_dtype=torch.bfloat16,
+    #     )
+
+    ## 1. Pre-init patching
+    # _apply_liger_kernel(model_type="llama")
+    # model = transformers.AutoModelForCausalLM.from_pretrained(
+    #     custom_args.model_name,
+    #     trust_remote_code=True,
+    #     use_cache=False,
+    #     torch_dtype=torch.bfloat16,
+    # )
+
+    ## 2. Post-init class-only patching
+    # model = transformers.AutoModelForCausalLM.from_pretrained(
+    #     custom_args.model_name,
+    #     trust_remote_code=True,
+    #     use_cache=False,
+    #     torch_dtype=torch.bfloat16,
+    # )
+    # _apply_liger_kernel(model_type="llama")
+
+    ## 3. Post-init instance patching
+    model = transformers.AutoModelForCausalLM.from_pretrained(
+        custom_args.model_name,
+        trust_remote_code=True,
+        use_cache=False,
+        torch_dtype=torch.bfloat16,
+    )
+    _apply_liger_kernel(model=model) 
+
 
     trainer = SFTTrainer(
         model=model,

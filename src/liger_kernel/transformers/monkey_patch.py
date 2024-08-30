@@ -18,6 +18,8 @@ from liger_kernel.transformers.swiglu import (
     LigerPhi3SwiGLUMLP,
     LigerSwiGLUMLP,
 )
+from transformers import PreTrainedModel, PretrainedConfig
+from transformers.models.llama.modeling_llama import LlamaModel
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,7 @@ def apply_liger_kernel_to_llama(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Llama models (2 and 3)
@@ -59,6 +62,30 @@ def apply_liger_kernel_to_llama(
         modeling_llama.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
         modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules (e.g. LlamaRMSNorm or LlamaMLP)
+
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for LlamaForCausalLM or LlamaForSequenceClassification, for example
+            base_model = model.model
+        elif hasattr(model, "transformer"):
+            # LlamaForQuestionAnswering uses "transformer" instead of "model"
+            base_model = model.transformer
+        else:
+            # Direct LlamaModel
+            base_model = model
+       
+        torch_dtype = config.torch_dtype
+        base_model.norm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
+            decoder_layer.input_layernorm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
+            decoder_layer.post_attention_layernorm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
 
 
 def apply_liger_kernel_to_mistral(
@@ -345,17 +372,29 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
 }
 
 
-def _apply_liger_kernel(model_type: str = "", **kwargs) -> None:
+def _apply_liger_kernel(model: PreTrainedModel = None, model_type: str = "", **kwargs) -> None:
     """
     Applies Liger kernels based on the specified model type. The custom
     kernels for the specified model type will be applied with the provided
     keyword arguments, otherwise the default configuration will be used.
 
+    ** Note: Calling _apply_liger_kernel() with just model_type after model initialization
+    will not be able to fully patch models. This must be called before model initialization or
+    post model initialization with the model instance passed into _apply_liger_kernel(model).
+
     Args:
+        - model: the model instance to apply Liger kernels to
         - model_type: the model types as defined in transformers/models/auto/modeling_auto.py
           and specified in the model's config.json
         - kwargs: keyword arguments that are passed to the corresponding apply_liger_kernel_to_* function.
     """
+
+    # Either model_type or model should be provided, not both
+    if model_type and model:
+        logger.warning("Both model_type and model were provided to _apply_liger_kernel. Model type will be derived from model.")
+
+    if model:
+        model_type = getattr(model, "config", None) and getattr(model.config, "model_type", None)
 
     if not model_type:
         logger.info("Model type was not provided. No Liger kernels will be applied.")
@@ -381,5 +420,13 @@ def _apply_liger_kernel(model_type: str = "", **kwargs) -> None:
         f"Applying Liger kernels for model type: {model_type} with kwargs: {applicable_kwargs}"
     )
 
-    # Apply the default combination of liger kernels available for the model
-    apply_fn(**applicable_kwargs)
+    if model:
+        # Model instance needs to be patched
+        apply_fn(model=model, **applicable_kwargs)
+    else:
+        # Assume pre-model initialization, so can patch transformers code
+        apply_fn(**applicable_kwargs)
+
+
+    
+
