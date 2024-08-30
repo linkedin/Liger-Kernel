@@ -192,7 +192,7 @@ def _rms_norm_patched_backward(
     rows_per_program,  # number of rows to process in each program
     eps,  # epsilon value
     offset,  # offset value
-    casting_mode : tl.constexpr,  # casting mode
+    casting_mode: tl.constexpr,  # casting mode
     BLOCK_SIZE: tl.constexpr,
     num_warps: tl.constexpr,
 ):
@@ -213,12 +213,11 @@ def _rms_norm_patched_backward(
     W_ptr += row_start * W_stride
     R_ptr += row_start
 
-    inv_rms = tl.load(R_ptr)
-
     dW_partial = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     for _ in range(row_start, row_end):
         x = tl.load(X_ptr + cols, mask=mask, other=0.0)
+        inv_rms = tl.load(R_ptr)
         original_dtype = x.dtype
         dy = tl.load(dY_ptr + cols, mask=mask, other=0.0)
         w = tl.load(W_ptr + cols, mask=mask, other=0.0)
@@ -248,12 +247,13 @@ def _rms_norm_patched_backward(
         else:
             dW_partial += dy * (x * inv_rms)
 
+        tl.store(dY_ptr + cols, dx, mask=mask)
+
         dY_ptr += dY_stride
         X_ptr += X_stride
         W_ptr += W_stride
-        R_ptr += 1
+        R_ptr += R_stride
 
-        tl.store(dY_ptr + cols, dx, mask=mask)
     tl.store(dW_ptr + row_block_id * dW_stride + cols, dW_partial, mask=mask)
 
 

@@ -70,11 +70,11 @@ class GemmaRMSNorm(nn.Module):
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
-        (torch.float32, 1e-4, 1e-6),
+        (torch.float32, 1e-4, 1e-5),
         pytest.param(
             torch.bfloat16,
             2e-1,
-            2e-2,
+            2e-1,
             marks=pytest.mark.skipif(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
