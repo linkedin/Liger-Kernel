@@ -1,7 +1,10 @@
 import torch
 import triton
 
-from liger_kernel.ops.cross_entropy import element_mul_kernel, liger_cross_entropy_kernel
+from liger_kernel.ops.cross_entropy import (
+    element_mul_kernel,
+    liger_cross_entropy_kernel,
+)
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
@@ -155,7 +158,7 @@ def fused_linear_cross_entropy_backward(
             V = grad_bias.shape[0]
             n_rows = V
 
-            element_mul[(n_rows,)](
+            element_mul_kernel[(n_rows,)](
                 grad_bias,
                 grad_bias.stride(-1),
                 grad_output,

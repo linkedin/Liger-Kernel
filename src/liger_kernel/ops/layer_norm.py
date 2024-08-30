@@ -130,7 +130,6 @@ def _layer_norm_backward_kernel(
     tl.store(DB_ptr + row_block_id * stride_db + cols, db_row.to(dtype), mask=mask)
 
 
-
 def layer_norm_forward(X, W, B, eps):
     shape = X.shape
     dim = shape[-1]
