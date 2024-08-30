@@ -202,6 +202,7 @@ loss.backward()
 | **Kernel**                      | **API**                                                     |
 |---------------------------------|-------------------------------------------------------------|
 | RMSNorm                         | `liger_kernel.transformers.LigerRMSNorm`                    |
+| LayerNorm                       | `liger_kernel.transformers.LigerLayerNorm`                  |
 | RoPE                            | `liger_kernel.transformers.liger_rotary_pos_emb`            |
 | SwiGLU                          | `liger_kernel.transformers.LigerSwiGLUMLP`                  |
 | GeGLU                           | `liger_kernel.transformers.LigerGEGLUMLP`                   |
@@ -209,6 +210,7 @@ loss.backward()
 | FusedLinearCrossEntropy         | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
 
 - **RMSNorm**: [RMSNorm](https://arxiv.org/pdf/1910.07467), which normalizes activations using their root mean square, is implemented by fusing the normalization and scaling steps into a single Triton kernel, and achieves ~3X speedup with ~3X peak memory reduction.
+- **LayerNorm**: [LayerNorm](https://arxiv.org/pdf/1607.06450), which normalizes activations across the feature dimension, is implemented by fusing the normalization and scaling steps into a single Triton kernel, and achieves ~2X peak speedup.
 - **RoPE**: [Rotary Positional Embedding](https://arxiv.org/pdf/2104.09864) is implemented by fusing the query and key embedding rotary into a single kernel with inplace replacement, and achieves ~3X speedup with ~3X peak memory reduction.
 - **SwiGLU**: [Swish Gated Linear Units](https://arxiv.org/pdf/2002.05202), given by
 $$\text{SwiGLU}(x)=\text{Swish}_{\beta}(xW+b)\otimes(xV+c)$$
