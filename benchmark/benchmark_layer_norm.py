@@ -15,9 +15,9 @@ from liger_kernel.transformers.layer_norm import LigerLayerNorm
             x_vals=[2**i for i in range(10, 15)],
             xlabel="hidden size",
             line_arg="provider",
-            line_vals=["liger", "huggingface", "torch_compile"],
-            line_names=["Liger", "Hugging Face", "Torch Compile"],
-            styles=[("blue", "solid"), ("orange", "solid"), ("green", "solid")],
+            line_vals=["liger", "huggingface"],
+            line_names=["Liger", "Hugging Face"],
+            styles=[("blue", "solid"), ("orange", "solid")],
             ylabel="time (ms)",
             plot_name="layernorm-fwd-speed-benchmark",
             args={"M": 4096, "dtype": torch.float32, "mode": "forward"},
@@ -27,9 +27,9 @@ from liger_kernel.transformers.layer_norm import LigerLayerNorm
             x_vals=[2**i for i in range(10, 15)],
             xlabel="hidden size",
             line_arg="provider",
-            line_vals=["liger", "huggingface", "torch_compile"],
-            line_names=["Liger", "Hugging Face", "Torch Compile"],
-            styles=[("blue", "solid"), ("orange", "solid"), ("green", "solid")],
+            line_vals=["liger", "huggingface"],
+            line_names=["Liger", "Hugging Face"],
+            styles=[("blue", "solid"), ("orange", "solid")],
             ylabel="time (ms)",
             plot_name="layernorm-full-speed-benchmark",
             args={"M": 4096, "dtype": torch.float32, "mode": "full"},
@@ -40,7 +40,6 @@ def bench_speed_layer_norm(M, N, dtype, provider, mode, eps=1e-6, device="cuda")
     x_shape = (M, N)
     triton_ln = LigerLayerNorm(hidden_size=N).to("cuda")
     torch_ln = torch.nn.LayerNorm(N, eps=eps).to("cuda")
-    torch_compile_ln = torch.compile(torch_ln)
 
     x = torch.randn(x_shape, dtype=dtype, device="cuda")
     dy = torch.randn_like(x)
@@ -52,8 +51,6 @@ def bench_speed_layer_norm(M, N, dtype, provider, mode, eps=1e-6, device="cuda")
             return triton_ln(x)
         if provider == "huggingface":
             return torch_ln(x)
-        if provider == "torch_compile":
-            return torch_compile_ln(x)
 
     if mode == "forward":
         ms, min_ms, max_ms = triton.testing.do_bench(
@@ -98,9 +95,9 @@ def benchmark_speed_layer_norm_wrapper():
             x_vals=[2**i for i in range(10, 15)],
             xlabel="hidden size",
             line_arg="provider",
-            line_vals=["liger", "huggingface", "torch_compile"],
-            line_names=["Liger", "Hugging Face", "Torch Compile"],
-            styles=[("blue", "solid"), ("orange", "solid"), ("green", "solid")],
+            line_vals=["liger", "huggingface"],
+            line_names=["Liger", "Hugging Face"],
+            styles=[("blue", "solid"), ("orange", "solid")],
             ylabel="GPU memory usage (MB)",
             plot_name="layernorm-full-memory-benchmark",
             args={"M": 4096, "dtype": torch.float32, "mode": "full"},
@@ -112,7 +109,6 @@ def bench_memory_layer_norm(M, N, dtype, provider, mode, eps=1e-6, device="cuda"
 
     triton_ln = LigerLayerNorm(hidden_size=N).to("cuda")
     torch_ln = torch.nn.LayerNorm(N, eps=eps).to("cuda")
-    torch_compile_ln = torch.compile(torch_ln)
 
     x = torch.randn(x_shape, dtype=dtype, device="cuda")
     dy = torch.randn_like(x)
@@ -123,8 +119,6 @@ def bench_memory_layer_norm(M, N, dtype, provider, mode, eps=1e-6, device="cuda"
             return triton_ln(x)
         if provider == "huggingface":
             return torch_ln(x)
-        if provider == "torch_compile":
-            return torch_compile_ln(x)
 
     def full():
         y = y_fwd()
