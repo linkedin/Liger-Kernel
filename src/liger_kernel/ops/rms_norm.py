@@ -192,7 +192,7 @@ def _rms_norm_patched_backward(
     rows_per_program,  # number of rows to process in each program
     eps,  # epsilon value
     offset,  # offset value
-    casting_mode,  # casting mode
+    casting_mode : tl.constexpr,  # casting mode
     BLOCK_SIZE: tl.constexpr,
     num_warps: tl.constexpr,
 ):
@@ -219,6 +219,7 @@ def _rms_norm_patched_backward(
 
     for _ in range(row_start, row_end):
         x = tl.load(X_ptr + cols, mask=mask, other=0.0)
+        original_dtype = x.dtype
         dy = tl.load(dY_ptr + cols, mask=mask, other=0.0)
         w = tl.load(W_ptr + cols, mask=mask, other=0.0)
         w = w + offset
@@ -231,7 +232,7 @@ def _rms_norm_patched_backward(
             dx += (inv_rms) * (
                 -(1 / n_cols) * inv_rms * inv_rms * tl.sum(m * x, axis=0) * x
             )
-        else:
+        if casting_mode == _CASTING_MODE_GEMMA:
             dy = dy.to(tl.float32)
             w = w.to(tl.float32)
             x = x.to(tl.float32)
@@ -243,7 +244,7 @@ def _rms_norm_patched_backward(
             )
 
         if casting_mode == _CASTING_MODE_LLAMA:
-            dW_partial += dy * (x * inv_rms).to(x.dtype)
+            dW_partial += dy * (x * inv_rms).to(original_dtype)
         else:
             dW_partial += dy * (x * inv_rms)
 
