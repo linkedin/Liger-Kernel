@@ -9,4 +9,5 @@ from liger_kernel.transformers.monkey_patch import (  # noqa: F401
     apply_liger_kernel_to_mixtral,
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
+    apply_liger_kernel_to_qwen2_vl,
 )

@@ -10,6 +10,7 @@ from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_f
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
+from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import (
     LigerBlockSparseTop2MLP,
@@ -233,6 +234,52 @@ def apply_liger_kernel_to_qwen2(
         modeling_qwen2.Qwen2MLP = LigerSwiGLUMLP
 
 
+def apply_liger_kernel_to_qwen2_vl(
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    layer_norm: bool = True,
+    swiglu: bool = True,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models
+
+    Args:
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+    """
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
+    from transformers.models.qwen2_vl import modeling_qwen2_vl
+
+    # Qwen2 VL isnt supported in the lower versions of transformers that
+    # liger_kernel supports so we need to shield all qwen2_vl imports
+    from liger_kernel.transformers.model.qwen2_vl import lce_forward as qwen2_vl_lce_forward
+
+    # Qwen2 VL has two rope implementations, neither of which is like liger_rotary_pos_emb
+    # if rope:
+    #     modeling_qwen2_vl.apply_multimodal_rotary_pos_emb = ...
+    #     modeling_qwen2_vl.apply_rotary_pos_emb_vision = ...
+    if rms_norm:
+        modeling_qwen2_vl.Qwen2RMSNorm = LigerRMSNorm
+    if layer_norm:
+        modeling_qwen2_vl.LayerNorm = LigerLayerNorm
+    if cross_entropy:
+        modeling_qwen2_vl.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        modeling_qwen2_vl.Qwen2VLForConditionalGeneration.forward = qwen2_vl_lce_forward
+    if swiglu:
+        modeling_qwen2_vl.Qwen2MLP = LigerSwiGLUMLP
+
+
 def apply_liger_kernel_to_phi3(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -279,6 +326,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "mistral": apply_liger_kernel_to_mistral,
     "mixtral": apply_liger_kernel_to_mixtral,
     "qwen2": apply_liger_kernel_to_qwen2,
+    "qwen2_vl": apply_liger_kernel_to_qwen2_vl,
     "phi3": apply_liger_kernel_to_phi3,
 }
 
