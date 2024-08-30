@@ -204,23 +204,23 @@ def _rms_norm_patched_backward(
     row_block_id = tl.program_id(0)
     row_start = row_block_id * rows_per_program
     row_end = min((row_block_id + 1) * rows_per_program, n_rows)
-
     cols = tl.arange(0, BLOCK_SIZE)
     mask = cols < n_cols
+
+    dW_partial = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     dY_ptr += row_start * dY_stride
     X_ptr += row_start * X_stride
     W_ptr += row_start * W_stride
-    R_ptr += row_start
-
-    dW_partial = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    R_ptr += row_start  # R_stride is always 1
 
     for _ in range(row_start, row_end):
-        x = tl.load(X_ptr + cols, mask=mask, other=0.0)
-        inv_rms = tl.load(R_ptr)
-        original_dtype = x.dtype
         dy = tl.load(dY_ptr + cols, mask=mask, other=0.0)
+        x = tl.load(X_ptr + cols, mask=mask, other=0.0)
         w = tl.load(W_ptr + cols, mask=mask, other=0.0)
+        inv_rms = tl.load(R_ptr)
+
+        original_dtype = x.dtype
         w = w + offset
 
         if casting_mode == _CASTING_MODE_LLAMA:
@@ -252,7 +252,7 @@ def _rms_norm_patched_backward(
         dY_ptr += dY_stride
         X_ptr += X_stride
         W_ptr += W_stride
-        R_ptr += R_stride
+        R_ptr += 1  # R_stride is always 1
 
     tl.store(dW_ptr + row_block_id * dW_stride + cols, dW_partial, mask=mask)
 
@@ -358,10 +358,11 @@ class LigerRMSNormFunction(torch.autograd.Function):
         X, W, r = ctx.saved_tensors
         n_rows, n_cols = dY.shape
 
+        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+
         sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
         rows_per_program = math.ceil(n_rows / sm_count)
-
-        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+        grid = (sm_count,)
 
         dW = torch.empty(
             ((sm_count, n_cols)),
@@ -372,28 +373,7 @@ class LigerRMSNormFunction(torch.autograd.Function):
             ),
             device=W.device,
         )
-
-        # Here we use dY to store the value of dX to save memory
-        # _rms_norm_backward[(n_rows,)](
-        #     dY,
-        #     dY.stride(0),
-        #     X,
-        #     X.stride(0),
-        #     W,
-        #     W.stride(0),
-        #     r,
-        #     r.stride(0),
-        #     dW,
-        #     dW.stride(0),
-        #     n_cols,
-        #     ctx.eps,
-        #     ctx.offset,
-        #     ctx.casting_mode,
-        #     BLOCK_SIZE=ctx.BLOCK_SIZE,
-        #     num_warps=ctx.num_warps,
-        # )
-
-        _rms_norm_patched_backward[(sm_count,)](
+        _rms_norm_patched_backward[grid](
             dY,
             dY.stride(0),
             X,
