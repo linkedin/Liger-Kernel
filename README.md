@@ -120,12 +120,10 @@ Using the [patching APIs](#patching), you can swap Hugging Face models with opti
 import transformers
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 
-model = transformers.AutoModelForCausalLM("path/to/llama/model")
-
-# Adding this line automatically monkey-patches the model with the optimized Liger kernels
+# 1a. Adding this line automatically monkey-patches the model with the optimized Liger kernels
 apply_liger_kernel_to_llama()
 
-# You could alternatively specify exactly which kernels are applied
+# 1b. You could alternatively specify exactly which kernels are applied
 apply_liger_kernel_to_llama(
   rope=True,
   swiglu=True,
@@ -133,6 +131,9 @@ apply_liger_kernel_to_llama(
   fused_linear_cross_entropy=False,
   rms_norm=False
 )
+
+# 2. Instantiate patched model
+model = transformers.AutoModelForCausalLM("path/to/llama/model")
 ```
 
 ### 3. Compose Your Own Model
