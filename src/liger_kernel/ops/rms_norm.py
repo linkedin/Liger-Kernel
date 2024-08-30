@@ -230,7 +230,7 @@ def _rms_norm_patched_backward(
             dx += (inv_rms) * (
                 -(1 / n_cols) * inv_rms * inv_rms * tl.sum(m * x, axis=0) * x
             )
-        if casting_mode == _CASTING_MODE_GEMMA:
+        else:
             dy = dy.to(tl.float32)
             w = w.to(tl.float32)
             x = x.to(tl.float32)
@@ -247,7 +247,7 @@ def _rms_norm_patched_backward(
             dW_partial += dy * (x * inv_rms)
 
         tl.store(dY_ptr + cols, dx, mask=mask)
-    tl.store(dW_ptr + cols, dW_partial, mask=mask)
+    tl.store(dW_ptr + row_block_id * dW_stride + cols, dW_partial, mask=mask)
 
 
 _str_to_casting_mode = {
