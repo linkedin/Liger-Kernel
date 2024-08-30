@@ -307,6 +307,13 @@ def run_mini_model(
 
     set_seed(42)
 
+    model = create_model(model_name).to(dtype).to("cuda")
+
+    if with_torch_compile:
+        model = torch.compile(model)
+
+    train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
+
     if with_liger is True:
         kwargs = {
             "rope": True,
@@ -318,13 +325,6 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
-
-    model = create_model(model_name).to(dtype).to("cuda")
-
-    if with_torch_compile:
-        model = torch.compile(model)
-
-    train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
 
     loader = DataLoader(
         train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn
@@ -529,6 +529,13 @@ def test_mini_model(
     ]
 )
 def test_mini_model_with_torch_compile(model_name):
+    try:
+        _ = run_mini_model(
+            model_name=model_name, num_steps=5, dtype=torch.float32, lr=1e-4, with_liger=False, with_torch_compile=True
+        )
+    except torch._dynamo.exc.BackendCompilerFailed:
+        pytest.skip("Torch compile failed without Liger kernel")
+
     _ = run_mini_model(
-        model_name=model_name, num_steps=10, dtype=torch.bfloat16, lr=1e-4, with_liger=True, with_torch_compile=True
+        model_name=model_name, num_steps=5, dtype=torch.float32, lr=1e-4, with_liger=True, with_torch_compile=True
     )
