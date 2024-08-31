@@ -52,7 +52,14 @@ Fork the repo, copy and paste the successful test logs in the PR and submit the 
 
 ## Release (maintainer only)
 
-1. Bump the version in setup.py
+1. Bump the version in setup.py to the desired version (for example, `0.2.0`)
 2. Submit a PR and merge
-3. Create a new release based on the current HEAD
-4. New pip uploading will be triggered upon a new release 
+3. Create a new release based on the current HEAD, tag name using `v<version number>` for example `v0.2.0`. Alternatively, If you want to create release based on a different commit hash, `git tag v0.2.0 <commit hash> && git push origin v0.2.0`, and create release based on this tag
+4. Adding release note: Minimum requirement is to click the `Generate Release Notes` button that will automatically generates 1) changes included, 2) new contributors. It's good to add sections on top to highlight the important changes.
+5. New pip uploading will be triggered upon a new release. NOTE: Both pre-release and official release will trigger the workflow to build wheel and publish to pypi, so please be sure that step 1-3 are followed correctly!
+
+### Notes on version:
+Here we follow the [sematic versioning](https://semver.org/). Denote the version as `major.minor.patch`, we increment:
+- Major version when there is backward incompatible change
+- Minor version when there is new backward-compatible functionaility
+- Patch version for bug fixes

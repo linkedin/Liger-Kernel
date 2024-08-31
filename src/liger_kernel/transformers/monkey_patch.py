@@ -140,7 +140,7 @@ def apply_liger_kernel_to_mixtral(
 
 def apply_liger_kernel_to_gemma(
     rope: bool = True,
-    cross_entropy: bool = True,
+    cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     geglu: bool = True,
