@@ -1,9 +1,42 @@
 # Liger Kernel: Efficient Triton Kernels for LLM Training
 
 
+<table style="width: 100%; text-align: center; border-collapse: collapse;">
+    <tr>
+        <th style="padding: 10px;" colspan="2">Stable</th>
+        <th style="padding: 10px;" colspan="2">Nightly</th>
+        <th style="padding: 10px;">Discord</th>
+    </tr>
+    <tr>
+        <td style="padding: 10px;">
+            <a href="https://pepy.tech/project/liger-kernel">
+                <img src="https://static.pepy.tech/badge/liger-kernel" alt="Downloads (Stable)">
+            </a>
+        </td>
+        <td style="padding: 10px;">
+            <a href="https://pypi.org/project/liger-kernel">
+                <img alt="PyPI - Version" src="https://img.shields.io/pypi/v/liger-kernel?color=green">
+            </a>
+        </td>
+        <td style="padding: 10px;">
+            <a href="https://pepy.tech/project/liger-kernel-nightly">
+                <img src="https://static.pepy.tech/badge/liger-kernel-nightly" alt="Downloads (Nightly)">
+            </a>
+        </td>
+        <td style="padding: 10px;">
+            <a href="https://pypi.org/project/liger-kernel-nightly">
+                <img alt="PyPI - Version" src="https://img.shields.io/pypi/v/liger-kernel-nightly?color=green">
+            </a>
+        </td>
+        <td style="padding: 10px;">
+            <a href="https://discord.gg/CX2YmNmn">
+                <img src="https://dcbadge.vercel.app/api/server/cudamode?style=flat" alt="Join Our Discord">
+            </a>
+        </td>
+    </tr>
+</table>
 
-[![Downloads](https://static.pepy.tech/badge/liger-kernel)](https://pepy.tech/project/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel.svg)](https://badge.fury.io/py/liger-kernel) [![PyPI version](https://badge.fury.io/py/liger-kernel-nightly.svg)](https://badge.fury.io/py/liger-kernel-nightly)
-[![](https://dcbadge.vercel.app/api/server/cudamode?style=flat)](https://discord.gg/CX2YmNmn)
+
 
 <img src="https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/logo-banner.png">
 
@@ -57,6 +90,7 @@ With one line of code, Liger Kernel can increase throughput by more than 20% and
 - **Exact:** Computation is exact—no approximations! Both forward and backward passes are implemented with rigorous unit tests and undergo convergence testing against training runs without Liger Kernel to ensure accuracy.
 - **Lightweight:** Liger Kernel has minimal dependencies, requiring only Torch and Triton—no extra libraries needed! Say goodbye to dependency headaches!
 - **Multi-GPU supported:** Compatible with multi-GPU setups (PyTorch FSDP, DeepSpeed, DDP, etc.).
+- **Trainer Framework Integration**: [Axolotl](https://github.com/axolotl-ai-cloud/axolotl), [LLaMa-Factory](https://github.com/hiyouga/LLaMA-Factory), [SFTTrainer](https://github.com/huggingface/trl/releases/tag/v0.10.1), [Hugging Face Trainer](https://github.com/huggingface/transformers/pull/32860) 
 
 ## Target Audiences
 
