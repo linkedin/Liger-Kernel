@@ -5,7 +5,7 @@ import triton
 from torch.nn import Embedding
 from utils import _test_memory, get_current_file_directory
 
-from liger_kernel.transformers.embedding import LigerEmbedding
+from liger_kernel.transformers.experimental.embedding import LigerEmbedding
 
 
 # NOTE: For torch compile, we will just use default inductor settings. No further customization
