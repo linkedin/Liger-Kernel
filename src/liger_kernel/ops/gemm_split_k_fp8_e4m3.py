@@ -13,10 +13,14 @@ if torch.cuda.is_available():
     compute_capability = torch.cuda.get_device_capability(device)
     if compute_capability[0] >= 9:  # SM_90+
         os.environ["ENABLE_TMA"] = "1"
-    else:
+    elif compute_capability[0] == 8 and compute_capability[1] == 9:  # SM_89
         os.environ["ENABLE_TMA"] = "0"
+    else:
+        raise SystemExit("This kernel requires SM_89 or higher for native FP8 support.")
 else:
-    os.environ["ENABLE_TMA"] = "0"
+    raise SystemExit(
+        "CUDA is not available. This kernel requires CUDA with SM_89 or higher for native FP8 support."
+    )
 
 
 @triton.jit
