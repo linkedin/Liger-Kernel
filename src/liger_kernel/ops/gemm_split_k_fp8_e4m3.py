@@ -22,8 +22,8 @@ else:
 @triton.jit
 def grouped_launch(
     pid,
-    m: tl.constexpr,  # rows
-    n: tl.constexpr,  # cols
+    m,  # rows
+    n,  # cols
     block_m: tl.constexpr,  # rows in a block
     block_n: tl.constexpr,  # cols in a block
     group_m: tl.constexpr,  # blocks in group along row dimension
@@ -67,8 +67,8 @@ def gemm_split_k_kernel_forward(
 
     pid_m, pid_n = grouped_launch(pid, m, n, block_m, block_n, group_m)
 
-    offs_m = pid_m * block_m + tl.arange(0, block_m)
-    offs_n = pid_n * block_n + tl.arange(0, block_n)
+    offs_m = tl.multiple_of(pid_m * block_m + tl.arange(0, block_m), block_m)
+    offs_n = tl.multiple_of(pid_n * block_n + tl.arange(0, block_n), block_n)
     offs_k = pid_k * block_k + tl.arange(0, block_k)
 
     offs_am = tl.max_contiguous(tl.multiple_of(offs_m, block_m), block_m)
@@ -78,11 +78,15 @@ def gemm_split_k_kernel_forward(
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
 
     acc = tl.zeros((block_m, block_n), dtype=tl.float32)
-    for k_ in range(0, grid_k):
+
+    for k_ in range(0, grid_k, step=2):
         k_remaining = k - k_ * (block_k * split_k)
 
-        a = tl.load(a_ptrs, mask=offs_k[None, :] < k_remaining, other=0.0)
-        b = tl.load(b_ptrs, mask=offs_k[:, None] < k_remaining, other=0.0)
+        mask_a = offs_k[None, :] < k_remaining
+        mask_b = offs_k[:, None] < k_remaining
+
+        a = tl.load(a_ptrs, mask=mask_a, other=0.0)
+        b = tl.load(b_ptrs, mask=mask_b, other=0.0)
 
         # fp8 input dot product (supported types: [fp8e4nv, fp8e5, fp8e4b15])
         acc = tl.dot(a, b, acc)
