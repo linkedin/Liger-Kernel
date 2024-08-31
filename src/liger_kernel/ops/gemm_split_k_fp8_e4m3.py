@@ -22,8 +22,8 @@ else:
 @triton.jit
 def grouped_launch(
     pid,
-    m: tl.constexpr,  # rows 
-    n: tl.constexpr,  # cols 
+    m: tl.constexpr,  # rows
+    n: tl.constexpr,  # cols
     block_m: tl.constexpr,  # rows in a block
     block_n: tl.constexpr,  # cols in a block
     group_m: tl.constexpr,  # blocks in group along row dimension

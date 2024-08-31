@@ -1,8 +1,11 @@
 import os
+
 import torch
 import triton
 from utils import _print_speed_banner, _test_memory, get_current_file_directory
+
 from liger_kernel.ops.gemm_split_k_fp8_e4m3 import gemm_split_k
+
 
 @triton.testing.perf_report(
     [
@@ -61,7 +64,7 @@ def bench_speed_gemm_split_k_fp8(m, k, n, provider, mode, dtype, device="cuda"):
         fwd_fn = fwd_liger
     elif provider == "torch":
         fwd_fn = fwd_torch
-    else: 
+    else:
         fwd_fn = fwd_torch_compiled
 
     quantiles = [0.5, 0.2, 0.8]
@@ -69,16 +72,18 @@ def bench_speed_gemm_split_k_fp8(m, k, n, provider, mode, dtype, device="cuda"):
     if mode == "forward":
         ms, min_ms, max_ms = triton.testing.do_bench(fwd_fn, quantiles=quantiles)
     elif mode == "full":
+
         def full():
             y = fwd_fn()
             if provider != "liger":
                 y.backward(torch.ones_like(y))
             else:
-                dc = torch.ones_like(y).float()
+                pass
 
         ms, min_ms, max_ms = triton.testing.do_bench(full, quantiles=quantiles)
 
     return ms, min_ms, max_ms
+
 
 def benchmark_speed_gemm_split_k_fp8_wrapper():
     _print_speed_banner()
@@ -89,6 +94,7 @@ def benchmark_speed_gemm_split_k_fp8_wrapper():
     os.makedirs(output_dir, exist_ok=True)
 
     bench_speed_gemm_split_k_fp8.run(save_path=output_dir, print_data=True)
+
 
 @triton.testing.perf_report(
     [
@@ -119,10 +125,7 @@ def bench_memory_gemm_split_k_fp8(m, k, n, provider, dtype, device="cuda"):
     b_float = b_fp8.float().requires_grad_()
 
     def full_liger():
-        y = gemm_split_k(a_fp8, b_fp8)
-        dc = torch.ones_like(y).float()
-        da = gemm_split_k(dc, b_fp8.t())
-        db = gemm_split_k(a_fp8.t(), dc)
+        _ = gemm_split_k(a_fp8, b_fp8)
 
     def full_torch():
         y = torch.matmul(a_float, b_float)
@@ -134,11 +137,12 @@ def bench_memory_gemm_split_k_fp8(m, k, n, provider, dtype, device="cuda"):
         full_fn = full_liger
     elif provider == "torch":
         full_fn = full_torch
-    else: 
+    else:
         full_fn = full_torch_compiled
 
     mem = _test_memory(full_fn)
     return mem / 2**20
+
 
 def benchmark_memory_gemm_split_k_fp8_wrapper():
     _print_speed_banner()
@@ -149,6 +153,7 @@ def benchmark_memory_gemm_split_k_fp8_wrapper():
     os.makedirs(output_dir, exist_ok=True)
 
     bench_memory_gemm_split_k_fp8.run(save_path=output_dir, print_data=True)
+
 
 if __name__ == "__main__":
     benchmark_speed_gemm_split_k_fp8_wrapper()

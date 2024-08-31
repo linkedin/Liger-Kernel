@@ -1,7 +1,10 @@
+from test.utils import assert_verbose_allclose
+
 import pytest
 import torch
+
 from liger_kernel.ops.gemm_split_k_fp8_e4m3 import gemm_split_k
-from test.utils import assert_verbose_allclose
+
 
 @pytest.mark.parametrize(
     "m, k, n",
@@ -37,8 +40,8 @@ def test_gemm_split_k(m, k, n, dtype, atol, rtol):
     c_autograd.backward(torch.ones_like(c_autograd))
 
     dc = torch.ones_like(c_liger).float()
-    da_liger = gemm_split_k(dc, b_fp8.t()) # contiguous is already ensured 
-    db_liger = gemm_split_k(a_fp8.t(), dc) # contiguous is already ensured 
+    da_liger = gemm_split_k(dc, b_fp8.t())  # contiguous is already ensured
+    db_liger = gemm_split_k(a_fp8.t(), dc)  # contiguous is already ensured
 
     assert_verbose_allclose(da_liger.float(), a_autograd.grad, atol=atol, rtol=rtol)
     assert_verbose_allclose(db_liger.float(), b_autograd.grad, atol=atol, rtol=rtol)
