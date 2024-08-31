@@ -263,7 +263,7 @@ $$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$
 | Embedding                       | `liger_kernel.transformers.experimental.LigerEmbedding`     |
 
 
-- **Embedding**: [Embedding](https://pytorch.org/docs/stable/generated/torch.nn.Embedding.html) is implemented by fusing embedding lookup and output operations. It achieves a peak speedup of 1.1x compared to torch compile.
+- **Embedding**: [Embedding](https://pytorch.org/docs/stable/generated/torch.nn.Embedding.html) is implemented by fusing embedding lookup and output operations. It achieves a peak speedup of ~1.5x in the forward pass and an overall speedup of ~1.1x.
 
 <!-- TODO: be more specific about batch size -->
 > **Note:**
