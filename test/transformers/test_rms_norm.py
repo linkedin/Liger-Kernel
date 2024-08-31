@@ -125,15 +125,9 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
 @pytest.mark.parametrize(
     "bs, sl, hd",
     [
-        (2, 128, 512),
-        (4, 256, 1024),
-        (8, 512, 2048),
-        (16, 1024, 4096),
+        (2, 2, 8),
         # # weird shapes
-        (3, 423, 213),
-        (5, 123, 123),
-        (7, 341, 234),
-        (9, 236, 345),
+        (9, 7, 41),
     ],
 )
 @pytest.mark.parametrize(

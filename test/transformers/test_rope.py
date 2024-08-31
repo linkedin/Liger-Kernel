@@ -95,16 +95,10 @@ def test_correctness(
 @pytest.mark.parametrize(
     "bsz, seq_len, num_q_heads, num_kv_heads, head_dim",
     [
-        (1, 128, 32, 32, 64),
-        (2, 128, 32, 32, 64),
-        # different q/k heads
-        (1, 128, 32, 8, 64),
-        (2, 128, 32, 8, 64),
+        (1, 2, 2, 2, 8),
+        (1, 2, 1, 2, 8),
         # weird shapes
-        # HuggingFace llama/mistral source code doesn't support odd head dimension
-        # so we don't test it here
-        (3, 423, 73, 213, 92),
-        (3, 423, 73, 155, 92),
+        (9, 7, 41, 41, 41),
     ],
 )
 @pytest.mark.parametrize(

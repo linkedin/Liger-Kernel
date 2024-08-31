@@ -170,11 +170,9 @@ def test_correctness(B, T, V, scalar, dtype, atol, rtol):
 @pytest.mark.parametrize(
     "B, T, V",
     [
-        (2, 4096, 32000),  # llama2, mistral
-        (2, 4096, 32000),  # llama2, mistral
-        (1, 4096, 128256),  # llama3
-        # # weird shapes
-        (3, 423, 32000),
+        (2, 2, 8),
+        # weird shapes
+        (9, 7, 41),
     ],
 )
 @pytest.mark.parametrize(

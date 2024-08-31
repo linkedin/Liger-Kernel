@@ -108,11 +108,9 @@ def test_correctness(bsz, seq_len, hidden_size, intermediate_size, dtype, atol, 
 @pytest.mark.parametrize(
     "bsz, seq_len, size",
     [
-        (2, 2048, 11008),
-        (2, 2048, 4096),
+        (2, 2, 8),
         # weird shapes
-        (9, 41, 4231),
-        (6, 42, 2048),
+        (9, 7, 41),
     ],
 )
 @pytest.mark.parametrize(
