@@ -14,8 +14,8 @@
             </a>
         </td>
         <td style="padding: 10px;">
-            <a href="https://badge.fury.io/py/liger-kernel">
-                <img src="https://badge.fury.io/py/liger-kernel.svg" alt="PyPI Version (Stable)">
+            <a href="https://pypi.org/project/liger-kernel">
+                <img alt="PyPI - Version" src="https://img.shields.io/pypi/v/liger-kernel?color=green">
             </a>
         </td>
         <td style="padding: 10px;">
@@ -24,8 +24,8 @@
             </a>
         </td>
         <td style="padding: 10px;">
-            <a href="https://badge.fury.io/py/liger-kernel-nightly">
-                <img src="https://badge.fury.io/py/liger-kernel-nightly.svg" alt="PyPI Version (Nightly)">
+            <a href="https://pypi.org/project/liger-kernel-nightly">
+                <img alt="PyPI - Version" src="https://img.shields.io/pypi/v/liger-kernel-nightly?color=green">
             </a>
         </td>
         <td style="padding: 10px;">
