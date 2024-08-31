@@ -131,4 +131,24 @@ def test_functional_correctness(
     assert torch.allclose(functional_q, class_q, atol=atol, rtol=rtol)
     assert torch.allclose(functional_k, class_k, atol=atol, rtol=rtol)
 
-    # TODO: implement backwards tests
+    dq, dk = torch.randn_like(functional_q), torch.randn_like(functional_k)
+
+    dq1, dk1 = dq.clone(), dk.clone()
+    dq2, dk2 = dq.clone(), dk.clone()
+
+    q1_grad, k1_grad = torch.autograd.grad(
+        (functional_q, functional_k),
+        (q1, k1),
+        (dq1, dk1),
+        allow_unused=True,
+    )
+
+    q2_grad, k2_grad = torch.autograd.grad(
+        (class_q, class_k),
+        (q2, k2),
+        (dq2, dk2),
+        allow_unused=True,
+    )
+
+    assert torch.allclose(q1_grad, q2_grad, atol=atol, rtol=rtol)
+    assert torch.allclose(k1_grad, k2_grad, atol=atol, rtol=rtol)
