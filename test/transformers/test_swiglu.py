@@ -109,9 +109,11 @@ def test_correctness_llamamlp(
 @pytest.mark.parametrize(
     "bsz, seq_len, hidden_size, intermediate_size",
     [
-        (2, 8, 8, 8),
+        (2, 2048, 4096, 11008),
+        (2, 2048, 2048, 4096),
         # weird shapes
-        (9, 7, 41, 41),
+        (9, 41, 341, 4231),
+        (6, 42, 256, 2048),
     ],
 )
 @pytest.mark.parametrize(
@@ -180,11 +182,8 @@ def test_correctness_phi3mlp(
 @pytest.mark.parametrize(
     "bsz, seq_len, size",
     [
-        (2, 2048, 11008),
-        (2, 2048, 4096),
-        # weird shapes
-        (9, 41, 4231),
-        (6, 42, 2048),
+        (2, 8, 8),
+        (9, 7, 41),
     ],
 )
 @pytest.mark.parametrize(
