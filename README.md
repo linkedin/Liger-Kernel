@@ -3,10 +3,8 @@
 
 <table style="width: 100%; text-align: center; border-collapse: collapse;">
     <tr>
-        <th style="padding: 10px;">Stable Downloads</th>
-        <th style="padding: 10px;">Nightly Downloads</th>
-        <th style="padding: 10px;">Stable PyPI</th>
-        <th style="padding: 10px;">Nightly PyPI</th>
+        <th style="padding: 10px;" colspan="2">Stable</th>
+        <th style="padding: 10px;" colspan="2">Nightly</th>
         <th style="padding: 10px;">Discord</th>
     </tr>
     <tr>
@@ -16,13 +14,13 @@
             </a>
         </td>
         <td style="padding: 10px;">
-            <a href="https://pepy.tech/project/liger-kernel-nightly">
-                <img src="https://static.pepy.tech/badge/liger-kernel-nightly" alt="Downloads (Nightly)">
+            <a href="https://badge.fury.io/py/liger-kernel">
+                <img src="https://badge.fury.io/py/liger-kernel.svg" alt="PyPI Version (Stable)">
             </a>
         </td>
         <td style="padding: 10px;">
-            <a href="https://badge.fury.io/py/liger-kernel">
-                <img src="https://badge.fury.io/py/liger-kernel.svg" alt="PyPI Version (Stable)">
+            <a href="https://pepy.tech/project/liger-kernel-nightly">
+                <img src="https://static.pepy.tech/badge/liger-kernel-nightly" alt="Downloads (Nightly)">
             </a>
         </td>
         <td style="padding: 10px;">
