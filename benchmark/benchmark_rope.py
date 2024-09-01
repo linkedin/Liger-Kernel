@@ -8,6 +8,7 @@ from transformers.models.llama.modeling_llama import (
     apply_rotary_pos_emb,
 )
 from utils import (
+    QUANTILES,
     _print_memory_banner,
     _print_speed_banner,
     _test_memory,
@@ -77,8 +78,6 @@ def bench_speed_rope(total_hidden_size, seq_len, provider, mode, dtype):
     pos_ids = torch.arange(seq_len, device="cuda", dtype=torch.long).unsqueeze(0)
     cos, sin = rotary_emb(k, pos_ids)
 
-    quantiles = [0.5, 0.2, 0.8]
-
     def fwd():
         if provider == "liger":
             return liger_rotary_pos_emb(q, k, cos, sin, pos_ids)
@@ -89,7 +88,7 @@ def bench_speed_rope(total_hidden_size, seq_len, provider, mode, dtype):
 
     if mode == "forward":
         ms, min_ms, max_ms = triton.testing.do_bench(
-            fwd, quantiles=quantiles, grad_to_none=[q, k], rep=400
+            fwd, quantiles=QUANTILES, grad_to_none=[q, k], rep=400
         )
     elif mode == "backward":
         q_out, k_out = fwd()
@@ -97,7 +96,7 @@ def bench_speed_rope(total_hidden_size, seq_len, provider, mode, dtype):
             lambda: torch.autograd.grad(
                 (q_out, k_out), (q, k), (dq, dk), allow_unused=True, retain_graph=True
             ),
-            quantiles=quantiles,
+            quantiles=QUANTILES,
             grad_to_none=[q, k],
             rep=400,
         )
@@ -108,9 +107,9 @@ def bench_speed_rope(total_hidden_size, seq_len, provider, mode, dtype):
             torch.autograd.grad((q_out, k_out), (q, k), (dq, dk), allow_unused=True)
 
         ms, min_ms, max_ms = triton.testing.do_bench(
-            full, quantiles=quantiles, grad_to_none=[q, k], rep=400
+            full, quantiles=QUANTILES, grad_to_none=[q, k], rep=400
         )
-    return ms, max_ms, min_ms
+    return ms, min_ms, max_ms
 
 
 def benchmark_speed_rope_wrapper():
@@ -159,8 +158,8 @@ def bench_memory_rope(total_hidden_size, seq_len, provider, mode, dtype):
             (q_out, k_out), (q, k), (dq, dk), allow_unused=True, retain_graph=True
         )
 
-    mem = _test_memory(full)
-    return mem / 2**20
+    mem, min_mem, max_mem = _test_memory(full, quantiles=QUANTILES)
+    return (mem / 2**20, min_mem / 2**20, max_mem / 2**20)
 
 
 def benchmark_memory_rope_wrapper():

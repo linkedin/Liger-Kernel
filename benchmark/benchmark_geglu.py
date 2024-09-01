@@ -6,6 +6,7 @@ import triton
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaMLP
 from utils import (
+    QUANTILES,
     _print_memory_banner,
     _print_speed_banner,
     _test_memory,
@@ -55,7 +56,6 @@ def bench_speed_geglu(N, dtype, provider, mode="forward", device="cuda"):
 
     # initialize input
     x = torch.randn(*x_shape, device=device, dtype=dtype, requires_grad=True)
-    quantiles = [0.5, 0.2, 0.8]
 
     if provider == "liger":
         layer = LigerGEGLUMLP(config=LLAMA_CONFIG).to(device).to(dtype)
@@ -69,14 +69,14 @@ def bench_speed_geglu(N, dtype, provider, mode="forward", device="cuda"):
 
     if mode == "forward":
         ms, min_ms, max_ms = triton.testing.do_bench(
-            fwd, quantiles=quantiles, grad_to_none=[x], rep=10
+            fwd, quantiles=QUANTILES, grad_to_none=[x], rep=10
         )
     elif mode == "backward":
         do = torch.randn_like(x)
         y = fwd()
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: y.backward(do, retain_graph=True),
-            quantiles=quantiles,
+            quantiles=QUANTILES,
             grad_to_none=[x],
             rep=10,
         )
@@ -87,10 +87,10 @@ def bench_speed_geglu(N, dtype, provider, mode="forward", device="cuda"):
             y.backward(torch.randn_like(y), retain_graph=True)
 
         ms, min_ms, max_ms = triton.testing.do_bench(
-            full, quantiles=quantiles, grad_to_none=[x], rep=10
+            full, quantiles=QUANTILES, grad_to_none=[x], rep=10
         )
 
-    return ms, max_ms, min_ms
+    return ms, min_ms, max_ms
 
 
 def benchmark_speed_geglu_wrapper():
@@ -135,15 +135,17 @@ def bench_memory_geglu(N, dtype, provider, mode="forward", device="cuda"):
         y.backward(torch.randn_like(y), retain_graph=True)
 
     if mode == "forward":
-        mem = _test_memory(fwd)
+        mem, min_mem, max_mem = _test_memory(fwd, quantiles=QUANTILES)
     elif mode == "backward":
         do = torch.randn_like(x)
         y = fwd()
-        mem = _test_memory(lambda: y.backward(do, retain_graph=True))
+        mem, min_mem, max_mem = _test_memory(
+            lambda: y.backward(do, retain_graph=True), quantiles=QUANTILES
+        )
     else:
-        mem = _test_memory(full)
+        mem, min_mem, max_mem = _test_memory(full, quantiles=QUANTILES)
 
-    return mem / 2**20
+    return (mem / 2**20, min_mem / 2**20, max_mem / 2**20)
 
 
 def benchmark_memory_geglu_wrapper():

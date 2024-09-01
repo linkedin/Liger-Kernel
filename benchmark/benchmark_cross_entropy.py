@@ -3,7 +3,7 @@ import os
 import torch
 import triton
 from torch.nn import CrossEntropyLoss
-from utils import _test_memory, get_current_file_directory
+from utils import QUANTILES, _test_memory, get_current_file_directory
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 
@@ -58,16 +58,14 @@ def bench_speed_cross_entropy(B, T, V, provider, mode, dtype, device="cuda"):
         else:
             return torch_ce(_input, target)
 
-    quantiles = [0.5, 0.2, 0.8]
-
     if mode == "forward":
-        ms, min_ms, max_ms = triton.testing.do_bench(fwd, quantiles=quantiles, rep=100)
+        ms, min_ms, max_ms = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
     elif mode == "backward":
         y = fwd()
 
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True),
-            quantiles=quantiles,
+            quantiles=QUANTILES,
             grad_to_none=[_input],
             rep=100,
         )
@@ -77,7 +75,7 @@ def bench_speed_cross_entropy(B, T, V, provider, mode, dtype, device="cuda"):
             y = fwd()
             y.backward()
 
-        ms, min_ms, max_ms = triton.testing.do_bench(full, quantiles=quantiles, rep=100)
+        ms, min_ms, max_ms = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
     return ms, min_ms, max_ms
 
 
@@ -128,8 +126,8 @@ def bench_memory_cross_entropy(B, T, V, provider, dtype, device="cuda"):
         y = fwd()
         y.backward()
 
-    mem = _test_memory(full)
-    return mem / 2**20
+    mem, min_mem, max_mem = _test_memory(full, quantiles=QUANTILES)
+    return (mem / 2**20, min_mem / 2**20, max_mem / 2**20)
 
 
 def benchmark_memory_cross_entropy_wrapper():

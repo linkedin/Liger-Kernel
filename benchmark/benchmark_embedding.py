@@ -3,7 +3,7 @@ import os
 import torch
 import triton
 from torch.nn import Embedding
-from utils import _test_memory, get_current_file_directory
+from utils import QUANTILES, _test_memory, get_current_file_directory
 
 from liger_kernel.transformers.experimental.embedding import LigerEmbedding
 
@@ -136,12 +136,10 @@ def bench_speed_embedding(B, T, V, D, provider, mode, dtype, device="cuda"):
         output = fwd()
         output.backward(torch.randn_like(output))
 
-    quantiles = [0.5, 0.2, 0.8]
-
     if mode == "forward":
-        ms, min_ms, max_ms = triton.testing.do_bench(fwd, quantiles=quantiles, rep=100)
+        ms, min_ms, max_ms = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
     elif mode == "full":
-        ms, min_ms, max_ms = triton.testing.do_bench(full, quantiles=quantiles, rep=100)
+        ms, min_ms, max_ms = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
     return ms, min_ms, max_ms
 
 
@@ -208,8 +206,8 @@ def bench_memory_embedding(B, T, V, D, provider, mode, dtype, device="cuda"):
         output = fwd()
         output.backward(torch.randn_like(output))
 
-    mem = _test_memory(full)
-    return mem / 2**20
+    mem, min_mem, max_mem = _test_memory(full, quantiles=QUANTILES)
+    return (mem / 2**20, min_mem / 2**20, max_mem / 2**20)
 
 
 def benchmark_speed_embedding_wrapper():
