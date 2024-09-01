@@ -3,7 +3,7 @@ import os
 import torch
 import torch.nn as nn
 import triton
-from utils import _print_memory_banner, _print_speed_banner, _test_memory
+from utils import QUANTILES, _print_memory_banner, _print_speed_banner, _test_memory
 
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 
@@ -74,7 +74,6 @@ def bench_speed_rms_norm(M, N, dtype, provider, mode, eps=1e-5, device="cuda"):
     x = torch.randn(x_shape, dtype=dtype, device="cuda")
     dy = torch.randn_like(x)
     x.requires_grad_(True)
-    quantiles = [0.5, 0.2, 0.8]
 
     # utility functions
 
@@ -88,13 +87,13 @@ def bench_speed_rms_norm(M, N, dtype, provider, mode, eps=1e-5, device="cuda"):
 
     if mode == "forward":
         ms, min_ms, max_ms = triton.testing.do_bench(
-            y_fwd, quantiles=quantiles, grad_to_none=[x], rep=500
+            y_fwd, quantiles=QUANTILES, grad_to_none=[x], rep=500
         )
     elif mode == "backward":
         y = y_fwd()
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: y.backward(dy, retain_graph=True),
-            quantiles=quantiles,
+            quantiles=QUANTILES,
             grad_to_none=[x],
             rep=500,
         )
@@ -105,10 +104,10 @@ def bench_speed_rms_norm(M, N, dtype, provider, mode, eps=1e-5, device="cuda"):
             y.backward(dy, retain_graph=True)
 
         ms, min_ms, max_ms = triton.testing.do_bench(
-            full, quantiles=quantiles, grad_to_none=[x], rep=500
+            full, quantiles=QUANTILES, grad_to_none=[x], rep=500
         )
 
-    return ms, max_ms, min_ms
+    return ms, min_ms, max_ms
 
 
 def benchmark_speed_rms_norm_wrapper():
@@ -159,9 +158,8 @@ def bench_memory_rms_norm(M, N, dtype, provider, mode, eps=1e-5, device="cuda"):
         y = y_fwd()
         y.backward(dy, retain_graph=True)
 
-    mem = _test_memory(full)
-
-    return mem / 2**20
+    mem, min_mem, max_mem = _test_memory(full, quantiles=QUANTILES)
+    return (mem / 2**20, min_mem / 2**20, max_mem / 2**20)
 
 
 def benchmark_memory_rms_norm_wrapper():

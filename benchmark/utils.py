@@ -1,11 +1,19 @@
 import os
 import time
-from typing import Callable
+from typing import Callable, List, Optional
 
 import torch
 
+QUANTILES = [0.5, 0.2, 0.8]
 
-def _test_memory(func: Callable, _iter: int = 10) -> float:
+
+def _test_memory(
+    func: Callable,
+    _iter: int = 10,
+    quantiles: Optional[List[float]] = None,
+    return_mode="mean",
+) -> float:
+    assert return_mode in ["min", "max", "mean", "median"]
     total_mem = []
 
     for _ in range(_iter):
@@ -14,7 +22,15 @@ def _test_memory(func: Callable, _iter: int = 10) -> float:
         mem = torch.cuda.max_memory_allocated()
         total_mem.append(mem)
 
-    return sum(total_mem) / len(total_mem)
+    total_mem = torch.tensor(total_mem, dtype=torch.float)
+    if quantiles is not None:
+        quantiles_data = torch.quantile(
+            total_mem, torch.tensor(quantiles, dtype=torch.float)
+        ).tolist()
+        if len(quantiles_data) == 1:
+            quantiles_data = quantiles_data[0]
+        return quantiles_data
+    return getattr(torch, return_mode)(total_mem).item()
 
 
 def get_current_file_directory() -> str:
