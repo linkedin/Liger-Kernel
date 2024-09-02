@@ -1,12 +1,3 @@
-from test.utils import (
-    DEFAULT_DATASET_PATH,
-    MiniModelConfig,
-    assert_verbose_allclose,
-    set_seed,
-    simple_collate_fn,
-    supports_bfloat16,
-)
-
 import pytest
 import torch
 from datasets import load_from_disk
@@ -30,6 +21,14 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
     apply_liger_kernel_to_qwen2_vl,
+)
+from test.utils import (
+    DEFAULT_DATASET_PATH,
+    MiniModelConfig,
+    assert_verbose_allclose,
+    set_seed,
+    simple_collate_fn,
+    supports_bfloat16,
 )
 
 MINI_MODEL_SETUPS = {
@@ -294,7 +293,7 @@ def run_mini_model(
 
     if with_liger is True:
         kwargs = {
-            "rms_norm": True,
+            "rms_norm": False,
         }
         model_supports_rope = "qwen2_vl" not in model_name
         if model_supports_rope:
@@ -307,12 +306,12 @@ def run_mini_model(
         if "gemma" in model_name:
             kwargs["geglu"] = True
         else:
-            kwargs["swiglu"] = True
+            kwargs["swiglu"] = False
 
         model_support_flce = "gemma2" not in model_name
         if model_support_flce:
-            kwargs["fused_linear_cross_entropy"] = True
-            kwargs["cross_entropy"] = False
+            kwargs["fused_linear_cross_entropy"] = False
+            kwargs["cross_entropy"] = True
         else:
             kwargs["cross_entropy"] = True
 

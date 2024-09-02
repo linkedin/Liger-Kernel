@@ -258,20 +258,22 @@ def apply_liger_kernel_to_qwen2_vl(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    from transformers.models.qwen2_vl import modeling_qwen2_vl
-
     # Qwen2 VL isnt supported in the lower versions of transformers that
     # liger_kernel supports so we need to shield all qwen2_vl imports
     from liger_kernel.transformers.model.qwen2_vl import (
         lce_forward as qwen2_vl_lce_forward,
     )
+    from transformers.models.qwen2_vl import modeling_qwen2_vl
 
     # Qwen2 VL has two rope implementations, neither of which is like liger_rotary_pos_emb
     # if rope:
     #     modeling_qwen2_vl.apply_multimodal_rotary_pos_emb = ...
     #     modeling_qwen2_vl.apply_rotary_pos_emb_vision = ...
     if rms_norm:
-        modeling_qwen2_vl.Qwen2RMSNorm = LigerRMSNorm
+        # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L439
+        modeling_qwen2_vl.Qwen2RMSNorm = partial(
+            LigerRMSNorm, offset=1.0, init_fn="ones", casting_mode="gemma"
+        )
     if layer_norm:
         modeling_qwen2_vl.LayerNorm = LigerLayerNorm
     if cross_entropy:
@@ -279,7 +281,7 @@ def apply_liger_kernel_to_qwen2_vl(
     if fused_linear_cross_entropy:
         modeling_qwen2_vl.Qwen2VLForConditionalGeneration.forward = qwen2_vl_lce_forward
     if swiglu:
-        modeling_qwen2_vl.Qwen2MLP = LigerSwiGLUMLP
+        modeling_qwen2_vl.Qwen2MLP = LigerSwiGLUMLP  # issue
 
 
 def apply_liger_kernel_to_phi3(
