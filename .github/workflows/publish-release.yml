@@ -24,7 +24,7 @@ jobs:
 
     - name: Build package
       run: |
-        python setup.py sdist bdist_wheel
+        python -m build
 
     - name: Publish package to PyPI
       env:
