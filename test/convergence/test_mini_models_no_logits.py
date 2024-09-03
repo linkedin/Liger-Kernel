@@ -110,8 +110,8 @@ MINI_MODEL_SETUPS = {
                 type="mrope",
                 mrope_section=[16, 24, 24],  # (temporal, height, width)
             ),
-            sliding_window=4096,  # 4096
-            tie_word_embeddings=True,  # False
+            sliding_window=4096,
+            tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 152064
             use_sliding_window=False,
@@ -127,7 +127,7 @@ MINI_MODEL_SETUPS = {
                 "spatial_patch_size": 14,
                 "temporal_patch_size": 2,
             },
-            attn_implementation="sdpa",  # fails with sdpa
+            attn_implementation="sdpa",
         ),
     ),
     "mini_phi3": MiniModelConfig(

@@ -40,7 +40,6 @@ setup(
             "isort>=5.13.2",
             "pytest>=7.1.2",
             "datasets>=2.19.2",
-            "pytest-reverse",
         ]
     },
 )
