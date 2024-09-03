@@ -288,14 +288,33 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compil
 
 [CONTRIBUTING GUIDE](https://github.com/linkedin/Liger-Kernel/blob/main/CONTRIBUTING.md)
 
-## Acknowledgement
+## Credit
+
+
+### Design
 
 - [@claire_yishan](https://twitter.com/claire_yishan) for the LOGO design
-- [flash-attn](https://github.com/Dao-AILab/flash-attention) and [Unsloth](https://github.com/unslothai/unsloth) for inspiration in Triton kernels for training
-- [tiny shakespeare dataset](https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt) by Andrej Karpathy for convergence testing
-- [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy) for lm_head + cross entropy inspiration
 - [Wave Snippets](https://www.wavesnippets.com/) for generating the animated code snippets
 
+### Code
+
+We used code from the following projects, sometimes directly, sometimes with modifications:
+
+
+Here's the updated table with the new entry for "AutoAWQ":
+
+| # | Project                              | Description                                                         |
+|---|--------------------------------------|---------------------------------------------------------------------|
+| 1 | [Unsloth](https://github.com/unslothai/unsloth)                | The utility to determine block size and warp; we use it to calculate block size and warp for Norm and MLP |
+| 2 | [Unsloth](https://github.com/unslothai/unsloth)                | RMS Norm in-place tensor replacement and rms caching trick          |
+| 3 | [Triton tutorial](https://triton-lang.org/main/index.html)    | The backbone of our layernorm and rmsnorm                           |
+| 4 | [tiny shakespeare dataset](https://huggingface.co/datasets/karpathy/tiny_shakespeare)             | We use tiny shakespeare dataset to conduct convergence test on mini model |
+| 5 | [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy) | We use the idea of gradient-in-forward and chunking                 |
+| 6 | [Flash attn](https://github.com/Dao-AILab/flash-attention)    | We take lots of optimization idea from the work, like tiling and recomputation |
+| 7 | [AutoAWQ](https://github.com/casper-hansen/AutoAWQ)           | We reference the design of automodel                                |
+Let me know if you need any more details or further formatting!
+
+Many thanks to the contributors to these projects for their invaluable work that helped make Liger possible.
 
 ## License
 
