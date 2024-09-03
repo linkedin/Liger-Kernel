@@ -303,7 +303,8 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compil
 
 ## Contact
 
-- For collaboration, please send email to byhsu@linkedin.com
+- For public discussion, join [our discord channel](https://discord.gg/vNBDpjhb)
+- For formal collaboration, send an email to byhsu@linkedin.com
 
 ## Cite this work
 
