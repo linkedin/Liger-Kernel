@@ -31,7 +31,7 @@ def liger_cross_entropy_kernel(
     n_cols (int): The number of columns in the input tensor.
     n_non_ignore (int): The number of non-ignored elements in the batch.
     ignore_index (int): The index to ignore in the target.
-    label_smoothing (float): for label smoothing
+    label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
     BLOCK_SIZE (int): The block size for Triton operations.
     """
 
@@ -81,7 +81,11 @@ def liger_cross_entropy_kernel(
         for i in range(0, n_cols, BLOCK_SIZE):
             X_offsets = i + tl.arange(0, BLOCK_SIZE)
             X_block = tl.load(
-                X_ptr + X_offsets, mask=X_offsets < n_cols, other=(m + tl.log(d))
+                X_ptr + X_offsets,
+                mask=X_offsets < n_cols,
+                other=(
+                    m + tl.log(d)
+                ),  # out-of-bounds will become 0 after calculating softmax
             )
             smooth_loss += -tl.sum(X_block - m - tl.log(d))
 
@@ -89,7 +93,8 @@ def liger_cross_entropy_kernel(
     # dx_y = (softmax(x_y) - 1) / N
     # dx_i = softmax(x_i) / N, i != y
     # N is the number of non ignored elements in the batch
-    # dx_i = (softmax(x_y) - label_smoothing / V) / N, V = n_cols
+    # For label smoothing:
+    # dx_i = (softmax(x_y) - label_smoothing / V) / N, V = n_cols, i != y
     # dx_y = (softmax(x_y) - label_smoothing / V - (1 - label_smoothing)) / N
     #      = dx_i - (1 - label_smoothing) / N
     eps = label_smoothing / n_cols
@@ -112,6 +117,9 @@ def liger_cross_entropy_kernel(
     # sum(e ^ (X - max(X))) must >= 1 because the max term is e ^ 0 = 1
     # So we can safely calculate log (softmax(X_y)) without overflow
     loss = -(ori_X_y - m - tl.log(d))
+
+    # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
+    #          = (1 - label_smoothing) * H(q, p) + (label_smoothing / V) * sum(softmax(x_i))
     # Refer to H(q', p) in section 7 of the paper: https://arxiv.org/pdf/1512.00567
     # pytorch: https://github.com/pytorch/pytorch/blob/2981534f54d49fa3a9755c9b0855e7929c2527f0/aten/src/ATen/native/LossNLL.cpp#L516
     if label_smoothing > 0:
