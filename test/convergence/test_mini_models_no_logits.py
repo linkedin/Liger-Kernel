@@ -93,7 +93,11 @@ MINI_MODEL_SETUPS = {
             tie_word_embeddings=True,
             use_cache=True,
             vocab_size=32000,  # 151936
-            attn_implementation="sdpa",
+            # At rope backward
+            # Eager produces incontiguous dq and dk
+            # SDPA produces contiguous dq and incontiguous dk
+            # Flash_attn produces contiguous dq and dk
+            attn_implementation="sdpa",  # default value, pytorch native attention
         ),
     ),
     "mini_phi3": MiniModelConfig(
