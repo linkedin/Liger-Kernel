@@ -1,12 +1,3 @@
-from test.utils import (
-    DEFAULT_DATASET_PATH,
-    MiniModelConfig,
-    assert_verbose_allclose,
-    set_seed,
-    simple_collate_fn,
-    supports_bfloat16,
-)
-
 import pytest
 import torch
 from datasets import load_from_disk
@@ -26,6 +17,14 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
     apply_liger_kernel_to_qwen2_vl,
+)
+from test.utils import (
+    DEFAULT_DATASET_PATH,
+    MiniModelConfig,
+    assert_verbose_allclose,
+    set_seed,
+    simple_collate_fn,
+    supports_bfloat16,
 )
 
 try:
@@ -382,7 +381,22 @@ def run_mini_model(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        ("mini_qwen2_vl", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        pytest.param(
+            "mini_qwen2_vl",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not QWEN2_VL_AVAILABLE,
+                reason="Qwen2-VL not available in this version of transformers",
+            ),
+        ),
         pytest.param(
             "mini_qwen2_vl",
             32,
@@ -394,9 +408,15 @@ def run_mini_model(
             1e-5,
             1e-2,
             1e-5,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=[
+                pytest.mark.skipif(
+                    not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+                ),
+                pytest.mark.skipif(
+                    not QWEN2_VL_AVAILABLE,
+                    reason="Qwen2-VL not available in this version of transformers",
+                ),
+            ],
         ),
         ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(

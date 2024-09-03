@@ -509,7 +509,22 @@ def run_mini_model(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        ("mini_qwen2_vl", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        pytest.param(
+            "mini_qwen2_vl",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not QWEN2_VL_AVAILABLE,
+                reason="Qwen2-VL not available in this version of transformers",
+            ),
+        ),
         pytest.param(
             "mini_qwen2_vl",
             32,
@@ -521,9 +536,15 @@ def run_mini_model(
             1e-5,
             1e-2,
             1e-5,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=[
+                pytest.mark.skipif(
+                    not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+                ),
+                pytest.mark.skipif(
+                    not QWEN2_VL_AVAILABLE,
+                    reason="Qwen2-VL not available in this version of transformers",
+                ),
+            ],
         ),
         ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
