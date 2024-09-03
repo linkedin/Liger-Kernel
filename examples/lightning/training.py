@@ -10,13 +10,13 @@ import transformers
 from lightning.pytorch.strategies import DeepSpeedStrategy, FSDPStrategy
 from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision
 from torch.utils.data import DataLoader
-from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from trl import DataCollatorForCompletionOnlyLM
 
 from liger_kernel.transformers import (
-    apply_liger_kernel_to_qwen2,
     apply_liger_kernel_to_llama,
+    apply_liger_kernel_to_qwen2,
 )
 
 apply_liger_kernel_to_llama(fused_linear_cross_entropy=True, cross_entropy=False)
@@ -153,7 +153,7 @@ class DataModule(pl.LightningDataModule):
         super().__init__()
         self.args = args
         self.tokenizer = tokenizer
-        self.response_template_str = " <Answer>" 
+        self.response_template_str = " <Answer>"
         response_prompt = tokenizer.encode(
             f"{self.response_template_str}", add_special_tokens=False
         )
