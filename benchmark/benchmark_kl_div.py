@@ -14,6 +14,7 @@ from utils import (
 
 S, E = 12, 18
 
+
 @triton.testing.perf_report(
     [
         triton.testing.Benchmark(
@@ -31,7 +32,7 @@ S, E = 12, 18
                 ("orange", "solid"),
             ],
             ylabel="time (ms)",
-			plot_name="kl-div-fwd-speed-benchmark",
+            plot_name="kl-div-fwd-speed-benchmark",
             args={"B": 8, "T": 512, "mode": "forward", "dtype": torch.bfloat16},
         ),
         triton.testing.Benchmark(
@@ -52,39 +53,42 @@ S, E = 12, 18
     ]
 )
 def bench_speed_kldiv(B, T, V, provider, mode, dtype, device="cuda"):
-	torch_kl_div = nn.KLDivLoss(reduction="batchmean")
-	liger_kl_div = LigerKLDIVLoss(reduction="batchmean")
+    torch_kl_div = nn.KLDivLoss(reduction="batchmean")
+    liger_kl_div = LigerKLDIVLoss(reduction="batchmean")
 
-	_input = torch.randn(B * T, V, requires_grad=True, device="cuda").log_softmax(dim=-1)
-	target = torch.randn(B * T, V, device="cuda").softmax(dim=-1)
+    _input = torch.randn(B * T, V, requires_grad=True, device="cuda").log_softmax(
+        dim=-1
+    )
+    target = torch.randn(B * T, V, device="cuda").softmax(dim=-1)
 
-	def fwd():
-		if provider == "liger":
-			return liger_kl_div(_input, target)
-		else:
-			return torch_kl_div(_input, target)
+    def fwd():
+        if provider == "liger":
+            return liger_kl_div(_input, target)
+        else:
+            return torch_kl_div(_input, target)
 
-	if mode == "forward":
-		ms, min_ms, max_ms = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
-	elif mode == "backward":
-		y = fwd()
+    if mode == "forward":
+        ms, min_ms, max_ms = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
+    elif mode == "backward":
+        y = fwd()
 
-		ms, min_ms, max_ms = triton.testing.do_bench(
+        ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True),
             quantiles=QUANTILES,
             grad_to_none=[_input],
             rep=100,
         )
-	elif mode == "full":
+    elif mode == "full":
 
-		def full():
-			y = fwd()
-			y.backward(retain_graph=True)
+        def full():
+            y = fwd()
+            y.backward(retain_graph=True)
 
-		ms, min_ms, max_ms = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
-	return ms, min_ms, max_ms
+        ms, min_ms, max_ms = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
+    return ms, min_ms, max_ms
 
-def benchmark_speed_swiglu_wrapper():
+
+def benchmark_speed_kldiv_wrapper():
     _print_speed_banner()
 
     curr_dir = get_current_file_directory()
@@ -95,5 +99,62 @@ def benchmark_speed_swiglu_wrapper():
     bench_speed_kldiv.run(save_path=output_dir, print_data=True)
 
 
+@triton.testing.perf_report(
+    [
+        triton.testing.Benchmark(
+            x_names=["V"],
+            x_vals=[2**i for i in range(12, 18)],
+            xlabel="vocab size",
+            line_arg="provider",
+            line_vals=["liger", "torch"],
+            line_names=[
+                "Liger",
+                "Torch",
+            ],
+            styles=[
+                ("blue", "solid"),
+                ("orange", "solid"),
+            ],
+            ylabel="GPU memory usage (MB)",
+            plot_name="cross-entropy-memory-benchmark",
+            args={"B": 8, "T": 512, "dtype": torch.bfloat16},
+        )
+    ]
+)
+def bench_memory_kldiv(B, T, V, provider, dtype, device="cuda"):
+    torch_kl_div = nn.KLDivLoss(reduction="batchmean")
+    liger_kl_div = LigerKLDIVLoss(reduction="batchmean")
+
+    _input = torch.randn(B * T, V, requires_grad=True, device="cuda").log_softmax(
+        dim=-1
+    )
+    target = torch.randn(B * T, V, device="cuda").softmax(dim=-1)
+
+    def fwd():
+        if provider == "liger":
+            return liger_kl_div(_input, target)
+        else:
+            return torch_kl_div(_input, target)
+
+    def full():
+        y = fwd()
+        y.backward(retain_graph=True)
+
+    mem, min_mem, max_mem = _test_memory(full, quantiles=QUANTILES)
+    return (mem / 2**20, min_mem / 2**20, max_mem / 2**20)
+
+
+def benchmark_memory_kldiv_wrapper():
+    _print_memory_banner()
+
+    curr_dir = get_current_file_directory()
+    dir_name = "kl_div_memory"
+    output_dir = os.path.join(curr_dir, dir_name)
+    os.makedirs(output_dir, exist_ok=True)
+
+    bench_memory_kldiv.run(save_path=output_dir, print_data=True)
+
+
 if __name__ == "__main__":
-    benchmark_speed_swiglu_wrapper()
+    benchmark_speed_kldiv_wrapper()
+    benchmark_memory_kldiv_wrapper()
