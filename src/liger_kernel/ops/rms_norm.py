@@ -104,7 +104,6 @@ def _rms_norm_backward_kernel(
     dW_ptr,
     dW_row_stride,
     n_cols,
-    eps,
     offset,
     casting_mode: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
@@ -133,35 +132,25 @@ def _rms_norm_backward_kernel(
 
     W_row = W_row + offset
 
+    X_row = X_row.to(tl.float32)
+
     # Different bacward graphs for different casting modes
     if casting_mode == _CASTING_MODE_LLAMA:
-        X_row = X_row.to(tl.float32)
         m = (dY_row * W_row).to(tl.float32)
-        dX_row = inv_rms_row * m
 
-        dX_row += (inv_rms_row) * (
-            -(1 / n_cols)
-            * inv_rms_row
-            * inv_rms_row
-            * tl.sum(m * X_row, axis=0)
-            * X_row
-        )
-
-    if casting_mode == _CASTING_MODE_GEMMA:
-        dY_row, W_row, X_row = (
+    elif casting_mode == _CASTING_MODE_GEMMA:
+        dY_row, W_row = (
             dY_row.to(tl.float32),
             W_row.to(tl.float32),
-            X_row.to(tl.float32),
         )
-        dX_row = inv_rms_row * dY_row * W_row
 
-        dX_row += (inv_rms_row) * (
-            -(1 / n_cols)
-            * inv_rms_row
-            * inv_rms_row
-            * tl.sum(dY_row * W_row * X_row, axis=0)
-            * X_row
-        )
+    m = dY_row * W_row
+
+    dX_row = inv_rms_row * m
+
+    dX_row += (inv_rms_row) * (
+        -(1 / n_cols) * inv_rms_row * inv_rms_row * tl.sum(m * X_row, axis=0) * X_row
+    )
 
     # calculate the gradient of W
     if casting_mode == _CASTING_MODE_LLAMA:
