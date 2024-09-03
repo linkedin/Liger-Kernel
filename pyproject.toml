@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "liger_kernel"
+version = "0.2.1"
+description = "Efficient Triton kernels for LLM Training"
+urls = { "Homepage" = "https://github.com/linkedin/Liger-Kernel" }
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { file = "LICENSE" }
+dependencies = [
+    "torch>=2.1.2",
+    "triton>=2.3.0",
+    "transformers>=4.42.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "matplotlib>=3.7.2",
+    "flake8>=4.0.1.1",
+    "black>=24.4.2",
+    "isort>=5.13.2",
+    "pytest>=7.1.2",
+    "datasets>=2.19.2"
+]
+
+[tool.setuptools.packages.find]
+include = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "src", 
+  "."
+]
+asyncio_mode = "auto"
+log_cli = true
+log_cli_level = "INFO"
