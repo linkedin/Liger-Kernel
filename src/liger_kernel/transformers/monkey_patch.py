@@ -272,7 +272,7 @@ def apply_liger_kernel_to_qwen2_vl(
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L439
         modeling_qwen2_vl.Qwen2RMSNorm = partial(
-            LigerRMSNorm, offset=1.0, init_fn="ones", casting_mode="gemma"
+            LigerRMSNorm, init_fn="ones", casting_mode="gemma"
         )
     if layer_norm:
         modeling_qwen2_vl.LayerNorm = LigerLayerNorm
@@ -281,7 +281,7 @@ def apply_liger_kernel_to_qwen2_vl(
     if fused_linear_cross_entropy:
         modeling_qwen2_vl.Qwen2VLForConditionalGeneration.forward = qwen2_vl_lce_forward
     if swiglu:
-        modeling_qwen2_vl.Qwen2MLP = LigerSwiGLUMLP  # issue
+        modeling_qwen2_vl.Qwen2MLP = LigerSwiGLUMLP
 
 
 def apply_liger_kernel_to_phi3(

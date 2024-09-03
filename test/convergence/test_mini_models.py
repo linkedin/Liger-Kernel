@@ -299,7 +299,7 @@ MINI_MODEL_SETUPS = {
                 "spatial_patch_size": 14,
                 "temporal_patch_size": 2,
             },
-            attn_implementation="sdpa",
+            attn_implementation="eager",  # fails with sdpa
         ),
     ),
     "mini_phi3": MiniModelConfig(
@@ -357,8 +357,8 @@ def run_mini_model(
 
     if with_liger is True:
         kwargs = {
-            "rms_norm": False,
-            "cross_entropy": False,
+            "rms_norm": True,
+            "cross_entropy": True,
         }
         model_supports_rope = "qwen2_vl" not in model_name
         if model_supports_rope:
@@ -366,12 +366,12 @@ def run_mini_model(
 
         model_supports_layer_norm = "qwen2_vl" in model_name
         if model_supports_layer_norm:
-            kwargs["layer_norm"] = False
+            kwargs["layer_norm"] = True
 
         if "gemma" in model_name:
             kwargs["geglu"] = True
         else:
-            kwargs["swiglu"] = False
+            kwargs["swiglu"] = True
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
 
@@ -501,8 +501,7 @@ def run_mini_model(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        # A LOT More loss tolerance for qwen2_vl float32
-        ("mini_qwen2_vl", 32, 1e-4, torch.float32, 1e-4, 6e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_qwen2_vl", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_qwen2_vl",
             32,

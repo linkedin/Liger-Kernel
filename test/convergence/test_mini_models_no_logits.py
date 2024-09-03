@@ -127,7 +127,7 @@ MINI_MODEL_SETUPS = {
                 "spatial_patch_size": 14,
                 "temporal_patch_size": 2,
             },
-            attn_implementation="sdpa",
+            attn_implementation="sdpa",  # fails with sdpa
         ),
     ),
     "mini_phi3": MiniModelConfig(
@@ -272,7 +272,6 @@ def create_model(model_name="mini_llama3"):
     The commented values are the original values
     """
     model_config = MINI_MODEL_SETUPS[model_name].mini_model_config
-    print(model_config)
     model_class = MINI_MODEL_SETUPS[model_name].model_class
     return model_class(model_config)
 
@@ -293,7 +292,7 @@ def run_mini_model(
 
     if with_liger is True:
         kwargs = {
-            "rms_norm": False,
+            "rms_norm": True,
         }
         model_supports_rope = "qwen2_vl" not in model_name
         if model_supports_rope:
@@ -306,12 +305,12 @@ def run_mini_model(
         if "gemma" in model_name:
             kwargs["geglu"] = True
         else:
-            kwargs["swiglu"] = False
+            kwargs["swiglu"] = True
 
         model_support_flce = "gemma2" not in model_name
         if model_support_flce:
-            kwargs["fused_linear_cross_entropy"] = False
-            kwargs["cross_entropy"] = True
+            kwargs["fused_linear_cross_entropy"] = True
+            kwargs["cross_entropy"] = False
         else:
             kwargs["cross_entropy"] = True
 
