@@ -21,6 +21,10 @@ torch.set_float32_matmul_precision("high")
                 (256, 256, 256),
                 (512, 512, 512),
                 (1024, 1024, 1024),
+                (64, 128, 64),
+                (256, 512, 256),
+                (512, 1024, 512),
+                (1024, 2048, 1024),
             ],
             xlabel="Matrix Size (m x k x n)",
             line_arg="provider",
@@ -38,6 +42,10 @@ torch.set_float32_matmul_precision("high")
                 (256, 256, 256),
                 (512, 512, 512),
                 (1024, 1024, 1024),
+                (64, 128, 64),
+                (256, 512, 256),
+                (512, 1024, 512),
+                (1024, 2048, 1024),
             ],
             xlabel="Matrix Size (m x k x n)",
             line_arg="provider",
@@ -80,13 +88,13 @@ def bench_speed_gemm_split_k_fp8(m, k, n, provider, mode, dtype, device="cuda"):
 
         def full():
             y = fwd_fn()
-            if provider != "liger":
-                torch.sum(y).backward()
-            else:
-                # For Liger, manually compute gradients
+            if provider == "liger":
+                # compute manually gradients for Liger to avoid: "ufunc_add_CUDA" not implemented for 'Float8_e4m3fn'
                 dc = torch.ones_like(y, dtype=torch.float8_e4m3fn)
                 LigerFP8GemmSplitKFunction.apply(dc, b_fp8.t())
                 LigerFP8GemmSplitKFunction.apply(a_fp8.t(), dc)
+            else:
+                torch.sum(y).backward()
 
         ms, min_ms, max_ms = triton.testing.do_bench(full, quantiles=quantiles)
 
@@ -113,6 +121,10 @@ def benchmark_speed_gemm_split_k_fp8_wrapper():
                 (256, 256, 256),
                 (512, 512, 512),
                 (1024, 1024, 1024),
+                (64, 128, 64),
+                (256, 512, 256),
+                (512, 1024, 512),
+                (1024, 2048, 1024),
             ],
             xlabel="Matrix Size (m x k x n)",
             line_arg="provider",
@@ -134,6 +146,7 @@ def bench_memory_gemm_split_k_fp8(m, k, n, provider, dtype, device="cuda"):
 
     def full_liger():
         y = LigerFP8GemmSplitKFunction.apply(a_fp8, b_fp8)
+        # compute manually gradients for Liger to avoid: "ufunc_add_CUDA" not implemented for 'Float8_e4m3fn'
         dc = torch.ones_like(y, dtype=torch.float8_e4m3fn)
         LigerFP8GemmSplitKFunction.apply(dc, b_fp8.t())
         LigerFP8GemmSplitKFunction.apply(a_fp8.t(), dc)
