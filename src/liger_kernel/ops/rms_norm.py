@@ -282,7 +282,6 @@ class LigerRMSNormFunction(torch.autograd.Function):
         Y, X, r, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(
             X, W, eps, offset, casting_mode
         )
-        ctx.eps = eps
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.BLOCK_SIZE = BLOCK_SIZE
