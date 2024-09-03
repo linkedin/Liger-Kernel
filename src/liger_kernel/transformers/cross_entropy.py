@@ -8,4 +8,6 @@ class LigerCrossEntropyLoss(CrossEntropyLoss):
         super(LigerCrossEntropyLoss, self).__init__(*args, **kwargs)
 
     def forward(self, _input, target):
-        return LigerCrossEntropyFunction.apply(_input, target, self.ignore_index)
+        return LigerCrossEntropyFunction.apply(
+            _input, target, self.ignore_index, self.label_smoothing
+        )
