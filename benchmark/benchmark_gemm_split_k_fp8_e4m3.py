@@ -4,7 +4,7 @@ import torch
 import triton
 from utils import _print_speed_banner, _test_memory, get_current_file_directory
 
-from liger_kernel.ops.experimental.gemm_split_k_fp8_e4m3 import gemm_split_k
+from liger_kernel.ops.experimental.gemm_split_k_fp8_e4m3 import LigerFP8GemmSplitKFunction
 
 # enable TensorFloat32 tensor cores for better performance in benchmark
 torch.set_float32_matmul_precision("high")
@@ -56,7 +56,7 @@ def bench_speed_gemm_split_k_fp8(m, k, n, provider, mode, dtype, device="cuda"):
     b_float = b_fp8.float().requires_grad_()
 
     def fwd_liger():
-        return gemm_split_k(a_fp8, b_fp8)
+        return LigerFP8GemmSplitKFunction.apply(a_fp8, b_fp8)
 
     def fwd_torch():
         return torch.matmul(a_float, b_float)
@@ -83,8 +83,8 @@ def bench_speed_gemm_split_k_fp8(m, k, n, provider, mode, dtype, device="cuda"):
             else:
                 # For Liger, manually compute gradients
                 dc = torch.ones_like(y, dtype=torch.float8_e4m3fn)
-                gemm_split_k(dc, b_fp8.t())
-                gemm_split_k(a_fp8.t(), dc)
+                LigerFP8GemmSplitKFunction.apply(dc, b_fp8.t())
+                LigerFP8GemmSplitKFunction.apply(a_fp8.t(), dc)
 
         ms, min_ms, max_ms = triton.testing.do_bench(full, quantiles=quantiles)
 
@@ -131,10 +131,10 @@ def bench_memory_gemm_split_k_fp8(m, k, n, provider, dtype, device="cuda"):
     b_float = b_fp8.float().requires_grad_()
 
     def full_liger():
-        y = gemm_split_k(a_fp8, b_fp8)
+        y = LigerFP8GemmSplitKFunction.apply(a_fp8, b_fp8)
         dc = torch.ones_like(y, dtype=torch.float8_e4m3fn)
-        gemm_split_k(dc, b_fp8.t())
-        gemm_split_k(a_fp8.t(), dc)
+        LigerFP8GemmSplitKFunction.apply(dc, b_fp8.t())
+        LigerFP8GemmSplitKFunction.apply(a_fp8.t(), dc)
 
     def full_torch():
         y = torch.matmul(a_float, b_float)

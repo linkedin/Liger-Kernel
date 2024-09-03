@@ -1,5 +1,6 @@
 import functools
 import importlib
+import os
 from typing import Callable
 
 import torch
@@ -86,6 +87,29 @@ def calculate_gemm_settings(m, n, k):
                 1,  # split_k
                 4,  # group_m
             )
+
+
+def check_compute_capability_for_fp8(fn):
+    @functools.wraps(fn)
+    def wrapper(ctx, *args, **kwargs):
+        if torch.cuda.is_available():
+            device = torch.cuda.current_device()
+            compute_capability = torch.cuda.get_device_capability(device)
+            if compute_capability[0] >= 9:  # SM_90+
+                os.environ["ENABLE_TMA"] = "1"
+            elif compute_capability[0] == 8 and compute_capability[1] == 9:  # SM_89
+                os.environ["ENABLE_TMA"] = "0"
+            else:
+                raise SystemExit(
+                    "This kernel requires SM_89 or higher for native FP8 support."
+                )
+        else:
+            raise SystemExit(
+                "CUDA is not available. This kernel requires CUDA with SM_89 or higher for native FP8 support."
+            )
+        return fn(ctx, *args, **kwargs)
+
+    return wrapper
 
 
 def compare_version(package: str, operator: Callable, target: str):
