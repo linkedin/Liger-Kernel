@@ -41,6 +41,53 @@ def calculate_settings(n):
     return BLOCK_SIZE, num_warps
 
 
+def calculate_gemm_settings(m, n, k):
+    total_memory = torch.cuda.get_device_properties(0).total_memory
+
+    if total_memory >= 48 * 1000 * 1000 * 1000:  # >=64 GB VRAM
+        if m * n * k > 1e9:  # large matmul
+            return (
+                128,  # block_m
+                128,  # block_n
+                512,  # block_k
+                4,  # num_stages
+                8,  # num_warps
+                4,  # split_k
+                16,  # group_m
+            )
+        else:  # small-mid matmul
+            return (
+                128,  # block_m
+                128,  # block_n
+                256,  # block_k
+                3,  # num_stages
+                8,  # num_warps
+                2,  # split_k
+                8,  # group_m
+            )
+    else:  # <64 GB VRAM
+        if m * n * k > 1e9:  # large matmul
+            return (
+                64,  # block_m
+                64,  # block_n
+                128,  # block_k
+                3,  # num_stages
+                4,  # num_warps
+                2,  # split_k
+                8,  # group_m
+            )
+        else:  # small-mid matmul
+            return (
+                64,  # block_m
+                64,  # block_n
+                64,  # block_k
+                3,  # num_stages
+                4,  # num_warps
+                1,  # split_k
+                4,  # group_m
+            )
+
+
 def compare_version(package: str, operator: Callable, target: str):
     try:
         pkg = importlib.import_module(package)

@@ -6,7 +6,7 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import calculate_gemm_settings, ensure_contiguous
 
 if torch.cuda.is_available():
     device = torch.cuda.current_device()
@@ -124,13 +124,9 @@ class LigerFP8GemmSplitKFunction(torch.autograd.Function):
         m, k = a.shape
         _, n = b.shape
 
-        block_m = 64
-        block_n = 64
-        block_k = 64
-        num_stages = 3
-        num_warps = 4
-        split_k = 2
-        group_m = 8
+        block_m, block_n, block_k, num_stages, num_warps, split_k, group_m = (
+            calculate_gemm_settings(m, n, k)
+        )
 
         total_blocks_m = triton.cdiv(m, block_m)
         total_blocks_n = triton.cdiv(n, block_n)
