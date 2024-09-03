@@ -22,10 +22,10 @@ def unpack_weights(packed: torch.Tensor, bits: int = 2) -> torch.Tensor:
         mask = (3 << (2 * i))
         unpacked[start:end] = (packed & mask) >> (2 * i)
 
-    unpacked = unpacked.to(torch.float16) - 1
+    unpacked = unpacked.to(torch.int32) - 1
     return unpacked
 
-def pack_weights(intweights: torch.Tensor, bits: int) -> torch.Tensor:
+def pack_weights(intweights: torch.Tensor, bits: int = 2) -> torch.Tensor:
     intweights += 1
     original_shape = intweights.shape
     values_per_item = 8 // bits
@@ -99,7 +99,10 @@ def matmul_kernel(
         BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  
         GROUP_SIZE_M: tl.constexpr,
 ):
-
+    # Only triggered when TRITON_DEBUG is set to 1 => ex : TRITON_DEBUG=1 python scritp.py
+    # We want K / 4 to be divisible by BLOCK_SIZE_K so that the multiplication can be aligned
+    tl.device_assert(K % (4*BLOCK_SIZE_K) == 0, "K / 4 must be divisible by BLOCK_SIZE_K => K divisible by 4*BLOCK_SIZE_K")
+    
     pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
@@ -117,15 +120,14 @@ def matmul_kernel(
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.int32)
-    
+
     for i in range(4) : 
         b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
         for j in range(0, tl.cdiv(K // 4, BLOCK_SIZE_K) ):
             k = i * tl.cdiv(K // 4, BLOCK_SIZE_K) + j 
 
-            # BLOCK_SIZE_K must be a divisor of K / 4 
             a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0)
-            b_uint8 = tl.load(b_ptrs, mask=offs_k[:, None] < K // 4 - j * BLOCK_SIZE_K, other=0)
+            b_uint8 = tl.load(b_ptrs, mask=offs_k[:, None] < K , other=0)
             mask = 3<<(2*i)
             b = ((b_uint8 & mask) >> (2*i))
             
@@ -151,7 +153,8 @@ def matmul(a, b):
     assert a.is_contiguous(), "Matrix A must be contiguous"
     M, K = a.shape
     _, N = b.shape
-    c = torch.empty((M, N), device=a.device, dtype=torch.float16)
+    # c is in int32 to avoid any overflows or underflows
+    c = torch.empty((M, N), device=a.device, dtype=torch.int32)
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), )
     matmul_kernel[grid](
         a, b, c,
@@ -174,12 +177,13 @@ def test_kernel(size=2048) :
     assert (pack_weights(unpack_weights(u.T), 2) == u.T).all()
 
     unpacked = unpack_weights(u.T, bits=2).T
-    torch_output = torch.matmul(ht.half(), unpacked.T.contiguous())
+    torch_output = torch.matmul(ht.to(torch.float), unpacked.T.contiguous().to(torch.float))
 
     print("triton = ", triton_output)
     print("torch = ", torch_output)
 
-    if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=1e-2):
+    if torch.allclose(triton_output, torch_output.to(torch.int32), atol=1e-2, rtol=1e-2):
         print("Results match")
     else:
         print("Results differ")
+
