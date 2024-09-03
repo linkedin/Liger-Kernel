@@ -242,7 +242,8 @@ def apply_liger_kernel_to_qwen2_vl(
     swiglu: bool = True,
 ) -> None:
     """
-    Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models
+    Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
+    NOTE: Qwen2-VL is not available in transformers<=4.44.2
 
     Args:
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
@@ -258,17 +259,14 @@ def apply_liger_kernel_to_qwen2_vl(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    # Qwen2 VL isnt supported in the lower versions of transformers that
-    # liger_kernel supports so we need to shield all qwen2_vl imports
+    from transformers.models.qwen2_vl import modeling_qwen2_vl
+
     from liger_kernel.transformers.model.qwen2_vl import (
         lce_forward as qwen2_vl_lce_forward,
     )
-    from transformers.models.qwen2_vl import modeling_qwen2_vl
 
-    # Qwen2 VL has two rope implementations, neither of which is like liger_rotary_pos_emb
-    # if rope:
-    #     modeling_qwen2_vl.apply_multimodal_rotary_pos_emb = ...
-    #     modeling_qwen2_vl.apply_rotary_pos_emb_vision = ...
+    # TODO: Support Qwen2-VL's multimodal RoPE implementation
+
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L439
         modeling_qwen2_vl.Qwen2RMSNorm = partial(
