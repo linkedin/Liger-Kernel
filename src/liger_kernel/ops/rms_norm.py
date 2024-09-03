@@ -221,7 +221,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
     return Y.view(*shape), X, r, BLOCK_SIZE, num_warps, casting_mode
 
 
-def rms_norm_backward(dY, X, W, r, eps, offset, casting_mode, BLOCK_SIZE, num_warps):
+def rms_norm_backward(dY, X, W, r, offset, casting_mode, BLOCK_SIZE, num_warps):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -244,7 +244,6 @@ def rms_norm_backward(dY, X, W, r, eps, offset, casting_mode, BLOCK_SIZE, num_wa
         dW,
         dW.stride(0),
         n_cols,
-        eps,
         offset,
         casting_mode,
         BLOCK_SIZE=BLOCK_SIZE,
@@ -303,7 +302,6 @@ class LigerRMSNormFunction(torch.autograd.Function):
             X,
             W,
             r,
-            ctx.eps,
             ctx.offset,
             ctx.casting_mode,
             ctx.BLOCK_SIZE,
