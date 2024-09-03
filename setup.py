@@ -28,9 +28,9 @@ setup(
     keywords="triton,kernels,LLM training,deep learning,Hugging Face,PyTorch,GPU optimization",
     include_package_data=True,
     install_requires=[
-        "torch>=2.4.0",
-        "triton>=3.0.0",
-        "transformers @ git+https://github.com/huggingface/transformers.git",
+        "torch>=2.1.2",
+        "triton>=2.3.0",
+        "transformers>=4.42.0",
     ],
     extras_require={
         "dev": [
