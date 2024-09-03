@@ -5,3 +5,4 @@ liger-kernel
 torch
 triton
 deepspeed
+tf-keras

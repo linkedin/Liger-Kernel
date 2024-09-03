@@ -10,17 +10,17 @@ import transformers
 from lightning.pytorch.strategies import DeepSpeedStrategy, FSDPStrategy
 from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision
 from torch.utils.data import DataLoader
-from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
+from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from trl import DataCollatorForCompletionOnlyLM
 
 from liger_kernel.transformers import (
-    apply_liger_kernel_to_gemma,
+    apply_liger_kernel_to_qwen2,
     apply_liger_kernel_to_llama,
 )
 
 apply_liger_kernel_to_llama(fused_linear_cross_entropy=True, cross_entropy=False)
-apply_liger_kernel_to_gemma(fused_linear_cross_entropy=True, cross_entropy=False)
+apply_liger_kernel_to_qwen2(fused_linear_cross_entropy=True, cross_entropy=False)
 
 
 _RETAIN_COLUMNS = {"input_ids", "attention_mask", "labels"}
@@ -30,7 +30,7 @@ CHOICES = "<Choices>"
 
 @dataclass
 class Args:
-    model: str = "google/gemma-2b"
+    model: str = "Qwen/Qwen2-0.5B-Instruct"
     data: str = "cais/mmlu"
     output_dir: str = "mmlu_finetuning"
     max_length: int = 2048
@@ -40,7 +40,7 @@ class Args:
     weight_decay: float = 0.05
     warmup_ratio: float = 0.1
     seed: int = 42
-    strategy: str = "ddp"
+    strategy: str = "auto"
     num_gpu: int = None
 
 
@@ -153,9 +153,7 @@ class DataModule(pl.LightningDataModule):
         super().__init__()
         self.args = args
         self.tokenizer = tokenizer
-        self.response_template_str = (
-            " <Answer>" if "Meta-Llama-3-8B" in self.args.model else "<Answer>"
-        )
+        self.response_template_str = " <Answer>" 
         response_prompt = tokenizer.encode(
             f"{self.response_template_str}", add_special_tokens=False
         )
@@ -241,8 +239,8 @@ def train():
 
     if "Meta-Llama-3-8B" in args.model:
         layers = {LlamaDecoderLayer}
-    elif "gemma" in args.model:
-        layers = {GemmaDecoderLayer}
+    elif "Qwen2" in args.model:
+        layers = {Qwen2DecoderLayer}
     else:
         layers = {}
         raise Warning(
@@ -265,8 +263,11 @@ def train():
     elif args.strategy == "deepspeed":
         strategy = DeepSpeedStrategy(stage=3)
         precision = "bf16-mixed"
-    else:
+    elif args.strategy == "ddp":
         strategy = "ddp"
+        precision = "bf16-true"
+    else:
+        strategy = "auto"
         precision = "bf16-true"
 
     trainer = pl.Trainer(
