@@ -185,7 +185,3 @@ class LigerFP8GemmSplitKFunction(torch.autograd.Function):
             grad_b = grad_b.to(b.dtype)
 
         return grad_a, grad_b
-
-
-def gemm_split_k(a, b):
-    return LigerFP8GemmSplitKFunction.apply(a, b)
