@@ -13,7 +13,7 @@ MAX_FUSED_SIZE = 65536 // 2
 
 
 def fused_linear_cross_entropy_forward(
-    _input, weight, target, bias=None, ignore_index=-100
+    _input, weight, target, bias=None, ignore_index=-100, label_smoothing=0.0
 ):
     dtype = (
         torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else _input.dtype
@@ -80,6 +80,7 @@ def fused_linear_cross_entropy_forward(
             n_cols=V,
             n_non_ignore=n_non_ignore,
             ignore_index=ignore_index,
+            label_smoothing=label_smoothing,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32,
         )
