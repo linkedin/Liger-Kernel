@@ -1,5 +1,13 @@
 import functools
 import os
+from test.utils import (
+    DEFAULT_DATASET_PATH,
+    MiniModelConfig,
+    assert_verbose_allclose,
+    set_seed,
+    simple_collate_fn,
+    supports_bfloat16,
+)
 
 import pytest
 import torch
@@ -22,14 +30,6 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
     apply_liger_kernel_to_qwen2_vl,
-)
-from test.utils import (
-    DEFAULT_DATASET_PATH,
-    MiniModelConfig,
-    assert_verbose_allclose,
-    set_seed,
-    simple_collate_fn,
-    supports_bfloat16,
 )
 
 try:
