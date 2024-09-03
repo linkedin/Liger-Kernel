@@ -117,7 +117,7 @@ def _triton_rope(
         tl.store(k_ptr + second_half_k_offsets, new_k_tile_2, mask=second_k_mask)
 
 
-def repo_foward(q, k, cos, sin):
+def rope_forward(q, k, cos, sin):
 
     # transpose it back to the physical shape because Triton looks at the physical storage
     # note: q and k are incontiguous before the transformation and will become contiguous after transpose
@@ -224,7 +224,7 @@ class LigerRopeFunction(torch.autograd.Function):
         cos size: (1, seq_len, head_dim)
         sin size: (1, seq_len, head_dim)
         """
-        q, k, cos, sin = repo_foward(q, k, cos, sin)
+        q, k, cos, sin = rope_forward(q, k, cos, sin)
         ctx.save_for_backward(cos, sin)
         return q, k
 
