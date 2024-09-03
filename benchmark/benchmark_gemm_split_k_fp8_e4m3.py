@@ -4,7 +4,9 @@ import torch
 import triton
 from utils import _print_speed_banner, _test_memory, get_current_file_directory
 
-from liger_kernel.ops.experimental.gemm_split_k_fp8_e4m3 import LigerFP8GemmSplitKFunction
+from liger_kernel.ops.experimental.gemm_split_k_fp8_e4m3 import (
+    LigerFP8GemmSplitKFunction,
+)
 
 # enable TensorFloat32 tensor cores for better performance in benchmark
 torch.set_float32_matmul_precision("high")
