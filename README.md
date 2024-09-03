@@ -303,8 +303,8 @@ We used code from the following projects, sometimes directly, sometimes with mod
 
 | # | Project                              | Description                                                         |
 |---|--------------------------------------|---------------------------------------------------------------------|
-| 1 | [Unsloth](https://github.com/unslothai/unsloth)                | The utility to determine block size and warp; we use it to calculate block size and warp for Norm and MLP |
-| 2 | [Unsloth](https://github.com/unslothai/unsloth)                | RMS Norm in-place tensor replacement and rms caching trick          |
+| 1 | [Unsloth](https://github.com/unslothai/unsloth/blob/fd753fed99ed5f10ef8a9b7139588d9de9ddecfb/unsloth/kernels/utils.py#L43)                | The utility to determine block size and warp; we use it to calculate block size and warp for Norm and MLP |
+| 2 | [Unsloth](https://github.com/unslothai/unsloth/blob/976d11a10d54383aeb7a692c69e01151a20bfd72/unsloth/kernels/rms_layernorm.py#L48)                | RMS Norm in-place tensor replacement and rms caching trick          |
 | 3 | [Triton tutorial](https://triton-lang.org/main/index.html)    | The backbone of our layernorm and rmsnorm                           |
 | 4 | [tiny shakespeare dataset](https://huggingface.co/datasets/karpathy/tiny_shakespeare)             | We use tiny shakespeare dataset to conduct convergence test on mini model |
 | 5 | [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy) | We use the idea of gradient-in-forward and chunking                 |
