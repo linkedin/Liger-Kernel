@@ -14,14 +14,7 @@ from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from trl import DataCollatorForCompletionOnlyLM
 
-from liger_kernel.transformers import (
-    apply_liger_kernel_to_llama,
-    apply_liger_kernel_to_qwen2,
-)
-
-apply_liger_kernel_to_llama(fused_linear_cross_entropy=True, cross_entropy=False)
-apply_liger_kernel_to_qwen2(fused_linear_cross_entropy=True, cross_entropy=False)
-
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 _RETAIN_COLUMNS = {"input_ids", "attention_mask", "labels"}
 QUESTION = "<Question>"
@@ -80,7 +73,7 @@ class LanguageModel(pl.LightningModule):
         # https://lightning.ai/docs/pytorch/stable/advanced/model_parallel/fsdp.html#speed-up-model-initialization
         if self.model is not None:
             return
-        self.model = transformers.AutoModelForCausalLM.from_pretrained(
+        self.model = AutoLigerKernelForCausalLM.from_pretrained(
             self.args.model, use_cache=False, ignore_mismatched_sizes=True
         )
         if self.args.strategy == "deepspeed":
