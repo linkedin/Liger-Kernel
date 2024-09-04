@@ -41,6 +41,11 @@ def _layer_norm_forward_kernel(
     BLOCK_SIZE: tl.constexpr,
     num_warps: tl.constexpr,
 ):
+    """
+    References:
+    https://arxiv.org/abs/1607.06450
+    https://github.com/karpathy/llm.c/blob/master/doc/layernorm/layernorm.md
+    """
     row_idx = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
@@ -88,6 +93,13 @@ def _layer_norm_backward_kernel(
     num_warps: tl.constexpr,
     dtype: tl.constexpr,
 ):
+    """
+    References:
+    https://arxiv.org/abs/1607.06450
+    https://github.com/karpathy/llm.c/blob/master/doc/layernorm/layernorm.md
+    https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
+    https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/ops/triton/layer_norm.py
+    """
     row_block_id = tl.program_id(0)
     row_start = row_block_id * rows_per_program
     row_end = min((row_block_id + 1) * rows_per_program, n_rows)
