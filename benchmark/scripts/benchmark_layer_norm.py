@@ -108,6 +108,7 @@ if __name__ == "__main__":
         "x_values": [2**i for i in range(10, 15)],
         "kernel_providers": ["liger", "huggingface"],
         "extra_benchmark_configs": [{"M": 4096, "dtype": torch.float32, "eps": 1e-6}],
+        "y_decimal_places": args.decimal,
         "overwrite": args.overwrite,
     }
 

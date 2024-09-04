@@ -178,6 +178,7 @@ if __name__ == "__main__":
                 "num_kv_heads": 8,
             }
         ],
+        "y_decimal_places": args.decimal,
         "overwrite": args.overwrite,
     }
     run_benchmarks(
@@ -209,6 +210,7 @@ if __name__ == "__main__":
                 "num_kv_heads": 8,
             }
         ],
+        "y_decimal_places": args.decimal,
         "overwrite": args.overwrite,
     }
     run_benchmarks(

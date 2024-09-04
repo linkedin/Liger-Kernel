@@ -160,6 +160,7 @@ if __name__ == "__main__":
                 "dtype": torch.bfloat16,
             }
         ],
+        "y_decimal_places": args.decimal,
         "overwrite": args.overwrite,
     }
 

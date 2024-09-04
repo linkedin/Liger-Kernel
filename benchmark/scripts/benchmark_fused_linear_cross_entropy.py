@@ -164,6 +164,7 @@ if __name__ == "__main__":
         "extra_benchmark_configs": [
             {"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}
         ],
+        "y_decimal_places": args.decimal,
         "overwrite": args.overwrite,
     }
 

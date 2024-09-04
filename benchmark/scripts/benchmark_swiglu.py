@@ -158,6 +158,7 @@ if __name__ == "__main__":
                 "hidden_act": "silu",
             }
         ],
+        "y_decimal_places": args.decimal,
         "overwrite": args.overwrite,
     }
 

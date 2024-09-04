@@ -256,6 +256,7 @@ def run_benchmarks(
     x_name: str,
     x_label: str,
     x_values: List[Union[float, int]],
+    y_decimal_places: int,
     kernel_providers: List[str],
     kernel_operation_modes: Optional[List[str]] = [None],
     extra_benchmark_configs: Optional[List[Dict[str, Any]]] = None,
@@ -274,6 +275,7 @@ def run_benchmarks(
         - x_name: The name of the x-axis (e.g. "T" for sequence length)
         - x_label: The label of the x-axis (e.g. "sequence length")
         - x_values: The list of x-values to run the benchmark on (e.g. [2**i for i in range(10, 14)])
+        - y_decimal_places: The number of decimal places to round y values to (e.g. 4).
         - kernel_providers: The list of kernel providers to run the benchmark on (e.g. ["liger", "huggingface"])
         - kernel_operation_modes: The list of kernel operation modes to run the benchmark on (e.g. ["full", "backward"])
         - extra_benchmark_configs: The list of extra benchmark configurations to run the benchmark on.
@@ -304,9 +306,9 @@ def run_benchmarks(
                     benchmark_result: SingleBenchmarkRunOutput = bench_test_fn(
                         single_benchmark_run_input
                     )
-                    y_values_50.append(benchmark_result.y_50)
-                    y_values_20.append(benchmark_result.y_20)
-                    y_values_80.append(benchmark_result.y_80)
+                    y_values_50.append(round(benchmark_result.y_50, y_decimal_places))
+                    y_values_20.append(round(benchmark_result.y_20, y_decimal_places))
+                    y_values_80.append(round(benchmark_result.y_80, y_decimal_places))
 
                 benchmark_run_data = BenchmarkData(
                     kernel_name=kernel_name,
@@ -345,6 +347,13 @@ def parse_benchmark_script_args():
         "--overwrite",
         action="store_true",
         help="Flag to overwrite existing benchmark data with current run.",
+    )
+    # Add an --decimal flag to configure the output decimal of the speed benchmark
+    parser.add_argument(
+        "--decimal",
+        type=int,
+        default=4,
+        help="Number of decimal places to round y values to.",
     )
 
     args = parser.parse_args()

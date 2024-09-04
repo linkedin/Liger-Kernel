@@ -104,6 +104,7 @@ if __name__ == "__main__":
         "x_values": [2**i for i in range(12, 18)],
         "kernel_providers": ["liger", "huggingface"],
         "extra_benchmark_configs": [{"B": 8, "T": 2048}],
+        "y_decimal_places": args.decimal,
         "overwrite": args.overwrite,
     }
 

@@ -111,6 +111,7 @@ if __name__ == "__main__":
             # Llama
             {"B": 8, "T": 2048, "D": 4096, "dtype": torch.float32},
         ],
+        "y_decimal_places": args.decimal,
         "overwrite": args.overwrite,
     }
 
