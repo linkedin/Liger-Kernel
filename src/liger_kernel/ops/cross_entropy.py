@@ -256,7 +256,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         _input (tensor): The input tensor of shape (BT, V) where B is batch size, T is sequence length, V is vocab size.
         target (tensor): The target tensor of shape (BT) where each value is in [0, V-1].
         ignore_index (int): The index to ignore in the target.
-        label_smoothing (float): A float in [0.0, 1.0].
+        label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
 
         Returns:
         tensor: The computed loss.
