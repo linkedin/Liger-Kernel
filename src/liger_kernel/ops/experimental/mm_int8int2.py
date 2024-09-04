@@ -166,24 +166,4 @@ def matmul(a, b):
     return c
 
 
-def test_kernel(size=2048) : 
-    ht = torch.randint(-127, 127, (13, 1, size*4), device='cuda', dtype=torch.int8)
-    # u is the packed weight tensor along the input size, which is the second dimension
-    u = torch.randint(0,255,(size*4, size), device='cuda', dtype=torch.uint8)
-
-    B, M, N = ht.size()
-    triton_output = matmul(ht.view(B*M, N), u.T.contiguous()).view(B, M, -1)
-
-    assert (pack_weights(unpack_weights(u.T), 2) == u.T).all()
-
-    unpacked = unpack_weights(u.T, bits=2).T
-    torch_output = torch.matmul(ht.to(torch.float), unpacked.T.contiguous().to(torch.float))
-
-    print("triton = ", triton_output)
-    print("torch = ", torch_output)
-
-    if torch.allclose(triton_output, torch_output.to(torch.int32), atol=1e-2, rtol=1e-2):
-        print("Results match")
-    else:
-        print("Results differ")
 
