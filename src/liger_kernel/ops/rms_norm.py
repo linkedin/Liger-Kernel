@@ -179,7 +179,6 @@ def _rms_norm_patched_backward(
     n_rows,  # number of rows in the input tensor
     n_cols,  # number of columns in the input tensor
     rows_per_program,  # number of rows to process in each program
-    eps,  # epsilon value
     offset,  # offset value
     casting_mode: tl.constexpr,  # casting mode
     BLOCK_SIZE: tl.constexpr,
@@ -211,25 +210,19 @@ def _rms_norm_patched_backward(
 
         original_dtype = x.dtype
         w = w + offset
+        x = x.to(tl.float32)
 
         if casting_mode == _CASTING_MODE_LLAMA:
-            x = x.to(tl.float32)
             m = (dy * w).to(tl.float32)
-            dx = inv_rms * m
-
-            dx += (inv_rms) * (
-                -(1 / n_cols) * inv_rms * inv_rms * tl.sum(m * x, axis=0) * x
-            )
         if casting_mode == _CASTING_MODE_GEMMA:
             dy = dy.to(tl.float32)
             w = w.to(tl.float32)
-            x = x.to(tl.float32)
 
-            dx = inv_rms * dy * w
-
-            dx += (inv_rms) * (
-                -(1 / n_cols) * inv_rms * inv_rms * tl.sum(dy * w * x, axis=0) * x
-            )
+        m = dy * w
+        dx = inv_rms * m
+        dx += (inv_rms) * (
+            -(1 / n_cols) * inv_rms * inv_rms * tl.sum(m * x, axis=0) * x
+        )
 
         if casting_mode == _CASTING_MODE_LLAMA:
             dW_partial += dy * (x * inv_rms).to(original_dtype)
@@ -378,26 +371,49 @@ class LigerRMSNormFunction(torch.autograd.Function):
         """
         Y: (B, T, H) or (BxT, H)
         """
-        X, W, r = ctx.saved_tensors
+        shape = dY.shape
+        dim = shape[-1]
+        dY = dY.view(-1, dim)
         n_rows, n_cols = dY.shape
-        dW = torch.empty_like(
-            X,
+        X, W, r = ctx.saved_tensors
+
+        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+        sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
+        rows_per_program = math.ceil(n_rows / sm_count)
+        grid = (sm_count,)
+
+        dW = torch.empty(
+            ((sm_count, n_cols)),
             dtype=(
                 torch.float32
                 if ctx.casting_mode == _CASTING_MODE_GEMMA.value
                 else W.dtype
             ),
+            device=W.device,
         )
 
         # Here we use dY to store the value of dX to save memory
-        _rms_norm_backward[(n_rows,)](
+        _rms_norm_patched_backward[grid](
             dY,
+            dY.stride(0),
             X,
+            X.stride(0),
             W,
+            W.stride(0),
             r,
+            r.stride(0),
+            dW,
+            dW.stride(0),
+            n_rows,
+            n_cols,
+            rows_per_program,
             ctx.offset,
             ctx.casting_mode,
-            BLOCK_SIZE=ctx.BLOCK_SIZE,
-            num_warps=ctx.num_warps,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
         )
+
+        dX = dY.view(*shape)
+        dW = torch.sum(dW, dim=0).to(W.dtype)
+
         return dX, dW, None, None, None
