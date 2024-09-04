@@ -3,6 +3,7 @@ __pycache__/
 site/
 .cache/
 .venv/
+.ipynb_checkpoints/
 
 # Misc
 .DS_Store
