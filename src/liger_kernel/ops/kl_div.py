@@ -63,6 +63,8 @@ def _kldiv_kernel_forward(
         y = tl.load(y_ptr + offsets, mask=mask, other=0.0)
         y_true = tl.load(gt_ptr + offsets, mask=mask, other=0.0)
 
+        # KL(P || Q) = P * (log(P) - Q), however, the arguments to function are in reverse order, to match the Pytorch Loss function API
+        # Therefore, here we compute KL(y || gt)
         if not log_target:
             loss = y_true * (tl.log(y_true) - y)
         else:
@@ -135,6 +137,8 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B
         reduction=reduction,
     )
 
+    # calculated according to the reduction mode same as in Pytorch. In the later versions, `mean` will be changed to same behaviour as `batchmean`
+    # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
     if reduction == _REDUCTION_MODE_BATCHMEAN:
         return output_tensor.sum() / B
     elif reduction == _REDUCTION_MODE_SUM:
@@ -180,8 +184,9 @@ class LigerKLDivLossFunction(torch.autograd.Function):
         loss = target * (target.log() - input)
     else:
         loss = target.exp() * (target - input)
-    ```
-    Then the loss is reduced according to the `reduction` parameter.
+    ```,
+    then the loss is reduced according to the `reduction` parameter.
+    as defined in the PyTorch documentation: https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
     """
 
     @staticmethod

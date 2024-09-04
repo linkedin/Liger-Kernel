@@ -42,20 +42,30 @@ _DTYPE_PARAMS = (
 
 
 def _test_correctness_once(
-    target_kldiv, B, T, V, dtype, atol, rtol, reduction, log_target, is_last=True
+    target_kldiv,
+    B,
+    T,
+    V,
+    dtype,
+    atol,
+    rtol,
+    reduction,
+    log_target,
+    is_last=True,
+    device="cuda",
 ):
     torch.manual_seed(0)
     torch_kldiv = KLDivLoss(reduction=reduction, log_target=log_target)
 
     input = torch.randn(
-        B * T, V, device="cuda", dtype=dtype, requires_grad=True
+        B * T, V, device=device, dtype=dtype, requires_grad=True
     ).log_softmax(dim=-1)
 
     x1 = input.detach().clone().requires_grad_(True)
     x2 = input.detach().clone().requires_grad_(True)
 
     with torch.no_grad():
-        target = torch.randn(B * T, V, device="cuda").softmax(dim=-1)
+        target = torch.randn(B * T, V, device=device).softmax(dim=-1)
 
     output = torch_kldiv(x1, target)
     output2 = target_kldiv(x2, target)
