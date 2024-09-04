@@ -75,8 +75,9 @@ def liger_cross_entropy_kernel(
         d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
         m = m_new
 
-    # we need to compute sum(softmax(x_i)) for smooth_loss
+    # we need to compute sum(log(softmax(x_i))) for smooth_loss
     smooth_loss = 0.0
+    log_d = tl.log(d)  # avoid redundant calculations
     if label_smoothing > 0:
         for i in range(0, n_cols, BLOCK_SIZE):
             X_offsets = i + tl.arange(0, BLOCK_SIZE)
@@ -84,10 +85,10 @@ def liger_cross_entropy_kernel(
                 X_ptr + X_offsets,
                 mask=X_offsets < n_cols,
                 other=(
-                    m + tl.log(d)
+                    m + log_d
                 ),  # out-of-bounds will become 0 after calculating softmax
             )
-            smooth_loss += -tl.sum(X_block - m - tl.log(d))
+            smooth_loss += -tl.sum(X_block - m - log_d)
 
     # 4. [Online softmax] second pass: calculate the gradients
     # dx_y = (softmax(x_y) - 1) / N
@@ -116,8 +117,9 @@ def liger_cross_entropy_kernel(
     #      = (X_y - max(X)) - log(sum(e ^ (X - max(X))))
     # sum(e ^ (X - max(X))) must >= 1 because the max term is e ^ 0 = 1
     # So we can safely calculate log (softmax(X_y)) without overflow
-    loss = -(ori_X_y - m - tl.log(d))
+    loss = -(ori_X_y - m - log_d)
 
+    # Orginal loss = H(q, p),  with label smoothing regularization = H(q', p)
     # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
     #          = (1 - label_smoothing) * H(q, p) + (label_smoothing / V) * sum(softmax(x_i))
     # Refer to H(q', p) in section 7 of the paper: https://arxiv.org/pdf/1512.00567
