@@ -8,6 +8,7 @@ class LigerKLDIVLoss(nn.KLDivLoss):
         super(LigerKLDIVLoss, self).__init__(*args, **kwargs)
 
     def forward(self, y_pred, y_true):
+        print(f"{self.reduction=}, {self.log_target=}")
         return LigerKLDivLossFunction.apply(
             y_pred, y_true, self.reduction, self.log_target
         )

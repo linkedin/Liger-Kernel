@@ -19,6 +19,18 @@ def get_num_warps(BLOCK_SIZE):
 
 MAX_FUSED_SIZE = 65536 // 4  # 65536 // 4 or 8 works the best
 
+_REDUCTION_MODE_NONE = tl.constexpr(0)
+_REDUCTION_MODE_SUM = tl.constexpr(1)
+_REDUCTION_MODE_MEAN = tl.constexpr(2)
+_REDUCTION_MODE_BATCHMEAN = tl.constexpr(3)
+
+_str_to_reduction_mode = {
+    "none": _REDUCTION_MODE_NONE.value,
+    "sum": _REDUCTION_MODE_SUM.value,
+    "mean": _REDUCTION_MODE_MEAN.value,
+    "batchmean": _REDUCTION_MODE_BATCHMEAN.value,
+}
+
 
 @triton.jit
 def _kldiv_kernel_forward(
@@ -26,33 +38,38 @@ def _kldiv_kernel_forward(
     y_stride,  # int, prediction stride
     gt_ptr,  # [B, S], ground truth ptr
     gt_stride,  # int, ground truth stride
-    loss_ptr,  # [B], output ptr
+    loss_ptr,  # [B] or [B, S] if reduction == _REDUCTION_MODE_NONE, output ptr
     loss_stride,  # int, output stride
     n_cols,  # int, number of columns in the input tensor
     BLOCK_SIZE: tl.constexpr,
     num_warps: tl.constexpr,
     log_target: tl.constexpr = False,
+    reduction: tl.constexpr = _REDUCTION_MODE_BATCHMEAN,
 ):
     pid = tl.program_id(0).to(tl.int64)
     y_ptr += pid * y_stride
     gt_ptr += pid * gt_stride
     loss_ptr += pid * loss_stride
 
+    base_offsets = tl.arange(0, BLOCK_SIZE)
+
     for i in range(0, n_cols, BLOCK_SIZE):
-        offsets = i + tl.arange(0, BLOCK_SIZE)
+        offsets = i + base_offsets
         mask = offsets < n_cols
         y = tl.load(y_ptr + offsets, mask=mask, other=0.0)
         y_true = tl.load(gt_ptr + offsets, mask=mask, other=0.0)
 
         if not log_target:
-            res = y_true * (tl.log(y_true) - y)
+            loss = y_true * (tl.log(y_true) - y)
         else:
-            res = y_true * (y_true - y)
+            loss = y_true * (y_true - y)
 
-        loss = tl.sum(res, axis=0)
-
-        tl.store(loss_ptr, loss)
-        loss_ptr += loss_stride
+        if reduction == _REDUCTION_MODE_NONE:
+            tl.store(loss_ptr + offsets, loss, mask=mask)
+        else:
+            loss = tl.sum(loss, axis=0)
+            tl.store(loss_ptr, loss)
+            loss_ptr += 1
 
 
 @triton.jit
@@ -95,9 +112,11 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(S))
     num_warps = get_num_warps(BLOCK_SIZE)
 
-    output_tensor = torch.zeros((B,), device=y_pred.device, dtype=torch.float32)
-
     grid = (B,)
+    reduction = _str_to_reduction_mode[reduction]
+
+    out_size = (B, S) if reduction == _REDUCTION_MODE_NONE else (B,)
+    output_tensor = torch.zeros(out_size, device=y_pred.device, dtype=torch.float32)
 
     _kldiv_kernel_forward[grid](
         y_pred,
@@ -110,14 +129,15 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
         log_target=log_target,
+        reduction=reduction,
     )
 
-    if reduction == "batchmean":
+    if reduction == _REDUCTION_MODE_BATCHMEAN:
         return output_tensor.sum() / B
-    elif reduction == "sum":
-        return output_tensor.sum()
-    elif reduction == "mean":
-        return output_tensor.mean()
+    elif reduction == _REDUCTION_MODE_SUM:
+        return output_tensor.sum(dim=0)
+    elif reduction == _REDUCTION_MODE_MEAN:
+        return output_tensor.mean(dim=0)
     else:
         return output_tensor
 
