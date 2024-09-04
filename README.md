@@ -308,8 +308,13 @@ We used code from the following projects, sometimes directly, sometimes with mod
 | 3 | [Triton tutorial](https://triton-lang.org/main/index.html)    | The backbone of our layernorm and rmsnorm                           | [Liger Kernel RMS Norm](https://github.com/linkedin/Liger-Kernel/blob/e249eee723978bf8610ff1ea2297d048a2417e20/src/liger_kernel/ops/rms_norm.py#L50) |
 | 4 | [tiny shakespeare dataset](https://huggingface.co/datasets/karpathy/tiny_shakespeare)             | We use tiny shakespeare dataset to conduct convergence test on mini model | [Liger Kernel Convergence](https://github.com/linkedin/Liger-Kernel/tree/main/test/convergence) |
 | 5 | [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy) | We use the idea of gradient-in-forward and chunking                 | [Liger Kernel Linear Cross Entropy](https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/ops/fused_linear_cross_entropy.py) |
-| 6 | [Flash attn](https://github.com/Dao-AILab/flash-attention)    | We take lots of optimization idea from the work, like tiling and recomputation |          |
+| 6 | [Flash attn](https://github.com/Dao-AILab/flash-attention)    | We take many optimization ideas from the work, such as tiling and recomputation, for example, in RoPE and Cross Entropy. |          |
 | 7 | [AutoAWQ](https://github.com/casper-hansen/AutoAWQ)           | We reference the design of automodel                                | [Liger Kernel Auto Model](https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/transformers/auto_model.py) |
+| 8 | [llm.c](https://github.com/karpathy/llm.c) | We reference the design of end-to-end testing | [Liger Kernel Convergence Tests](https://github.com/linkedin/Liger-Kernel/tree/main/test/convergence) |
+
+
+
+
 
 Many thanks to the contributors to these projects for their invaluable work that helped make Liger possible.
 
