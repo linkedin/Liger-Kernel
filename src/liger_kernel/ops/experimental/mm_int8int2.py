@@ -92,18 +92,19 @@ def get_cuda_autotune_config():
 @triton.jit
 def matmul_kernel(
         a_ptr, b_ptr, c_ptr,
-        M, N, K,
+        M, N, K: tl.constexpr,
         stride_am, stride_ak,
         stride_bk, stride_bn, 
         stride_cm, stride_cn,
         BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  
         GROUP_SIZE_M: tl.constexpr,
 ):
-    # Only triggered when TRITON_DEBUG is set to 1 => ex : TRITON_DEBUG=1 python scritp.py
     # We want K / 4 to be divisible by BLOCK_SIZE_K so that the multiplication can be aligned
-    tl.device_assert(K % (4*BLOCK_SIZE_K) == 0, "K / 4 must be divisible by BLOCK_SIZE_K => K divisible by 4*BLOCK_SIZE_K")
+    tl.static_assert(K % (4*BLOCK_SIZE_K) == 0, "K / 4 must be divisible by BLOCK_SIZE_K => K divisible by 4*BLOCK_SIZE_K")
     
+    # determine the block id in the 1D grid 
     pid = tl.program_id(axis=0)
+    # 
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     num_pid_in_group = GROUP_SIZE_M * num_pid_n
