@@ -64,7 +64,7 @@ def _kldiv_kernel_forward(
         y_true = tl.load(gt_ptr + offsets, mask=mask, other=0.0)
 
         # KL(P || Q) = P * (log(P) - Q), however, the arguments to function are in reverse order, to match the Pytorch Loss function API
-        # Therefore, here we compute KL(y || gt)
+        # Therefore, here we compute KL(y_true || y)
         if not log_target:
             loss = y_true * (tl.log(y_true) - y)
         else:
