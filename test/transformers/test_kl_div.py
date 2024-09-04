@@ -51,7 +51,7 @@ def _test_correctness_once(
     rtol,
     reduction,
     log_target,
-    is_last=True,
+    is_last_layer=True,
     device="cuda",
 ):
     torch.manual_seed(0)
@@ -71,7 +71,9 @@ def _test_correctness_once(
     output2 = target_kldiv(x2, target)
     assert_verbose_allclose(output, output2, atol=atol, rtol=rtol)
 
-    if not is_last:
+    if (
+        not is_last_layer
+    ):  # if the loss is the last layer, grad_output is 1.0 and mul op is skipped, testing for that reason
         output = output * 2.0
         output2 = output2 * 2.0
 
@@ -101,5 +103,14 @@ def test_correctness(B, T, V, log_target, reduction, dtype, atol, rtol):
 def test_correctness_not_last(B, T, V, log_target, reduction, dtype, atol, rtol):
     liger_kldiv = LigerKLDIVLoss(reduction=reduction, log_target=log_target)
     _test_correctness_once(
-        liger_kldiv, B, T, V, dtype, atol, rtol, reduction, log_target, is_last=False
+        liger_kldiv,
+        B,
+        T,
+        V,
+        dtype,
+        atol,
+        rtol,
+        reduction,
+        log_target,
+        is_last_layer=False,
     )

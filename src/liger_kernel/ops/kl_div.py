@@ -75,7 +75,7 @@ def _kldiv_kernel_forward(
         else:
             loss = tl.sum(loss, axis=0)
             tl.store(loss_ptr, loss)
-            loss_ptr += 1 # in case of reduction, the output tensor has dimensions [B,], therefore stride is always 1
+            loss_ptr += 1  # in case of reduction, the output tensor has dimensions [B,], therefore stride is always 1
 
 
 @triton.jit
@@ -139,6 +139,7 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B
 
     # calculated according to the reduction mode same as in Pytorch. In the later versions, `mean` will be changed to same behaviour as `batchmean`
     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
+    # https://github.com/pytorch/pytorch/blob/d7b57c4d63edb42e1deeeba9497fcb5f1f748ff2/torch/nn/functional.py#L3372
     if reduction == _REDUCTION_MODE_BATCHMEAN:
         return output_tensor.sum() / B
     elif reduction == _REDUCTION_MODE_SUM:
