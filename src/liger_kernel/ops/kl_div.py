@@ -1,6 +1,7 @@
-import triton.language as tl
-import triton
 import torch
+import triton
+import triton.language as tl
+
 from liger_kernel.ops.utils import ensure_contiguous
 
 
@@ -88,12 +89,7 @@ def _kldiv_kernel_backward(
         tl.store(input_ptr + offsets, res, mask=mask)
 
 
-def kldiv_forward_triton(
-    y_pred,  # [B, S]
-    y_true,  # [B, S]
-    log_target,
-    reduction
-):
+def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B, S]
     B, S = y_pred.shape
 
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(S))
@@ -155,7 +151,9 @@ class LigerKLDivLossFunction(torch.autograd.Function):
     @ensure_contiguous
     def forward(ctx, y_pred, y_true, reduction="batchmean", log_target=False):
         ctx.save_for_backward(y_pred, y_true)
-        return kldiv_forward_triton(y_pred, y_true, log_target=log_target, reduction=reduction)
+        return kldiv_forward_triton(
+            y_pred, y_true, log_target=log_target, reduction=reduction
+        )
 
     @staticmethod
     @ensure_contiguous

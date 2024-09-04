@@ -409,3 +409,39 @@ swiglu,huggingface,full,memory,MB,T,sequence length,1024,1294.25,1294.25,1294.25
 swiglu,huggingface,full,memory,MB,T,sequence length,2048,1992.25,1992.25,1992.25,"{""B"": 4, ""hidden_size"": 4096, ""dtype"": ""torch.bfloat16"", ""intermediate_size"": 11008, ""hidden_act"": ""silu""}",NVIDIA A100-SXM4-80GB,2024-09-03 15:40:36,0.2.1
 swiglu,huggingface,full,memory,MB,T,sequence length,4096,3452.25,3452.25,3452.25,"{""B"": 4, ""hidden_size"": 4096, ""dtype"": ""torch.bfloat16"", ""intermediate_size"": 11008, ""hidden_act"": ""silu""}",NVIDIA A100-SXM4-80GB,2024-09-03 15:40:36,0.2.1
 swiglu,huggingface,full,memory,MB,T,sequence length,8192,6372.25,6372.25,6372.25,"{""B"": 4, ""hidden_size"": 4096, ""dtype"": ""torch.bfloat16"", ""intermediate_size"": 11008, ""hidden_act"": ""silu""}",NVIDIA A100-SXM4-80GB,2024-09-03 15:40:36,0.2.1
+kl_div,liger,full,memory,MB,V,vocab size,4096,384.0009765625,384.0009765625,384.0009765625,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:48,0.2.1
+kl_div,liger,full,memory,MB,V,vocab size,8192,768.0009765625,768.0009765625,768.0009765625,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:48,0.2.1
+kl_div,liger,full,memory,MB,V,vocab size,16384,1536.0009765625,1536.0009765625,1536.0009765625,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:48,0.2.1
+kl_div,liger,full,memory,MB,V,vocab size,32768,3072.0009765625,3072.0009765625,3072.0009765625,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:48,0.2.1
+kl_div,liger,full,memory,MB,V,vocab size,65536,6144.0009765625,6144.0009765625,6144.0009765625,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:48,0.2.1
+kl_div,liger,full,memory,MB,V,vocab size,131072,12288.0009765625,12288.0009765625,12288.0009765625,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:48,0.2.1
+kl_div,torch,full,memory,MB,V,vocab size,4096,448.0,448.0,448.0,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:48,0.2.1
+kl_div,torch,full,memory,MB,V,vocab size,8192,896.0,896.0,896.0,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:48,0.2.1
+kl_div,torch,full,memory,MB,V,vocab size,16384,1792.0,1792.0,1792.0,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:48,0.2.1
+kl_div,torch,full,memory,MB,V,vocab size,32768,3584.0,3584.0,3584.0,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:48,0.2.1
+kl_div,torch,full,memory,MB,V,vocab size,65536,7168.0,7168.0,7168.0,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:48,0.2.1
+kl_div,torch,full,memory,MB,V,vocab size,131072,14336.0,14336.0,14336.0,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:48,0.2.1
+kl_div,liger,forward,speed,ms,V,vocab size,4096,0.20582400262355804,0.20479999482631683,0.20582400262355804,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:50,0.2.1
+kl_div,liger,forward,speed,ms,V,vocab size,8192,0.39423999190330505,0.39321601390838623,0.39423999190330505,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:50,0.2.1
+kl_div,liger,forward,speed,ms,V,vocab size,16384,0.7700480222702026,0.7700480222702026,0.7710719704627991,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:50,0.2.1
+kl_div,liger,forward,speed,ms,V,vocab size,32768,1.5226880311965942,1.5226880311965942,1.5237120389938354,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:50,0.2.1
+kl_div,liger,forward,speed,ms,V,vocab size,65536,3.0269439220428467,3.0269439220428467,3.027967929840088,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:50,0.2.1
+kl_div,liger,forward,speed,ms,V,vocab size,131072,6.03545618057251,6.035443305969238,6.036479949951172,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:50,0.2.1
+kl_div,torch,forward,speed,ms,V,vocab size,4096,0.9000959992408752,0.899071991443634,0.9011200070381165,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:51,0.2.1
+kl_div,torch,forward,speed,ms,V,vocab size,8192,1.785856008529663,1.7848320007324219,1.7879040241241455,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:51,0.2.1
+kl_div,torch,forward,speed,ms,V,vocab size,16384,3.5287039279937744,3.5264511108398438,3.530751943588257,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:51,0.2.1
+kl_div,torch,forward,speed,ms,V,vocab size,32768,7.024640083312988,7.023001670837402,7.027302265167236,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:51,0.2.1
+kl_div,torch,forward,speed,ms,V,vocab size,65536,14.021632194519043,14.017536163330078,14.028800010681152,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:51,0.2.1
+kl_div,torch,forward,speed,ms,V,vocab size,131072,28.027904510498047,28.02729034423828,28.037734985351562,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:51,0.2.1
+kl_div,liger,full,speed,ms,V,vocab size,4096,1.3137279748916626,1.2990463972091675,1.3324288129806519,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:52,0.2.1
+kl_div,liger,full,speed,ms,V,vocab size,8192,2.5825281143188477,2.572697639465332,2.585599899291992,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:52,0.2.1
+kl_div,liger,full,speed,ms,V,vocab size,16384,5.111295700073242,5.106278419494629,5.115494251251221,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:52,0.2.1
+kl_div,liger,full,speed,ms,V,vocab size,32768,10.158080101013184,10.149068832397461,10.161766052246094,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:52,0.2.1
+kl_div,liger,full,speed,ms,V,vocab size,65536,20.245519638061523,20.235897064208984,20.2493953704834,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:52,0.2.1
+kl_div,liger,full,speed,ms,V,vocab size,131072,40.416255950927734,40.41379928588867,40.4187126159668,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:52,0.2.1
+kl_div,torch,full,speed,ms,V,vocab size,4096,1.9096800088882446,1.9077119827270508,1.9107840061187744,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:54,0.2.1
+kl_div,torch,full,speed,ms,V,vocab size,8192,3.9045119285583496,3.901439905166626,3.9071743488311768,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:54,0.2.1
+kl_div,torch,full,speed,ms,V,vocab size,16384,7.788544178009033,7.78670072555542,7.791615962982178,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:54,0.2.1
+kl_div,torch,full,speed,ms,V,vocab size,32768,15.552000045776367,15.542271614074707,15.553536415100098,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:54,0.2.1
+kl_div,torch,full,speed,ms,V,vocab size,65536,31.083520889282227,31.08163833618164,31.083616256713867,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:54,0.2.1
+kl_div,torch,full,speed,ms,V,vocab size,131072,62.053375244140625,62.053375244140625,62.053375244140625,"{""B"": 8, ""T"": 512}",NVIDIA RTX A5500,2024-09-04 08:22:54,0.2.1
