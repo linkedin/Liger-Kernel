@@ -95,7 +95,6 @@ def _kldiv_kernel_backward(
         offsets = i + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_cols
 
-        input = tl.load(input_ptr + offsets, mask=mask, other=0.0)
         target = tl.load(target_ptr + offsets, mask=mask, other=0.0)
 
         if not log_target:
