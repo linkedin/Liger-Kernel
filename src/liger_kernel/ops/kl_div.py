@@ -75,7 +75,7 @@ def _kldiv_kernel_forward(
         else:
             loss = tl.sum(loss, axis=0)
             tl.store(loss_ptr, loss)
-            loss_ptr += 1
+            loss_ptr += 1 # in case of reduction, the output tensor has dimensions [B,], therefore stride is always 1
 
 
 @triton.jit
