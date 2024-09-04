@@ -16,8 +16,8 @@ _SHAPE_PARAMS = (
             128256,
             marks=pytest.mark.skipif(
                 torch.cuda.get_device_properties(0).total_memory
-                < 28 * 1000 * 1000 * 1000,
-                reason="This test requires a GPU with at least 28GB of memory",
+                < 36 * 1000 * 1000 * 1000,
+                reason="This test requires a GPU with at least 36GB of memory",
             ),
         ),
         (3, 423, 32000),
