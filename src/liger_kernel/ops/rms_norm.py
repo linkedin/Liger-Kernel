@@ -104,7 +104,6 @@ def _rms_norm_backward_kernel(
     dW_ptr,
     dW_row_stride,
     n_cols,
-    eps,
     offset,
     casting_mode: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
@@ -133,35 +132,25 @@ def _rms_norm_backward_kernel(
 
     W_row = W_row + offset
 
+    X_row = X_row.to(tl.float32)
+
     # Different bacward graphs for different casting modes
     if casting_mode == _CASTING_MODE_LLAMA:
-        X_row = X_row.to(tl.float32)
         m = (dY_row * W_row).to(tl.float32)
-        dX_row = inv_rms_row * m
 
-        dX_row += (inv_rms_row) * (
-            -(1 / n_cols)
-            * inv_rms_row
-            * inv_rms_row
-            * tl.sum(m * X_row, axis=0)
-            * X_row
-        )
-
-    if casting_mode == _CASTING_MODE_GEMMA:
-        dY_row, W_row, X_row = (
+    elif casting_mode == _CASTING_MODE_GEMMA:
+        dY_row, W_row = (
             dY_row.to(tl.float32),
             W_row.to(tl.float32),
-            X_row.to(tl.float32),
         )
-        dX_row = inv_rms_row * dY_row * W_row
 
-        dX_row += (inv_rms_row) * (
-            -(1 / n_cols)
-            * inv_rms_row
-            * inv_rms_row
-            * tl.sum(dY_row * W_row * X_row, axis=0)
-            * X_row
-        )
+    m = dY_row * W_row
+
+    dX_row = inv_rms_row * m
+
+    dX_row += (inv_rms_row) * (
+        -(1 / n_cols) * inv_rms_row * inv_rms_row * tl.sum(m * X_row, axis=0) * X_row
+    )
 
     # calculate the gradient of W
     if casting_mode == _CASTING_MODE_LLAMA:
@@ -232,7 +221,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
     return Y.view(*shape), X, r, BLOCK_SIZE, num_warps, casting_mode
 
 
-def rms_norm_backward(dY, X, W, r, eps, offset, casting_mode, BLOCK_SIZE, num_warps):
+def rms_norm_backward(dY, X, W, r, offset, casting_mode, BLOCK_SIZE, num_warps):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -255,7 +244,6 @@ def rms_norm_backward(dY, X, W, r, eps, offset, casting_mode, BLOCK_SIZE, num_wa
         dW,
         dW.stride(0),
         n_cols,
-        eps,
         offset,
         casting_mode,
         BLOCK_SIZE=BLOCK_SIZE,
@@ -294,7 +282,6 @@ class LigerRMSNormFunction(torch.autograd.Function):
         Y, X, r, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(
             X, W, eps, offset, casting_mode
         )
-        ctx.eps = eps
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.BLOCK_SIZE = BLOCK_SIZE
@@ -314,7 +301,6 @@ class LigerRMSNormFunction(torch.autograd.Function):
             X,
             W,
             r,
-            ctx.eps,
             ctx.offset,
             ctx.casting_mode,
             ctx.BLOCK_SIZE,

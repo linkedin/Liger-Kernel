@@ -5,7 +5,7 @@
 pip install -r requirements.txt
 
 # For single L40 48GB GPU
-python training.py --model google/gemma-2b --num_gpu 1 --strategy ddp
+python training.py --model Qwen/Qwen2-0.5B-Instruct --num_gpu 1 --max_length 1024
 
 # For 8XA100 40GB
 python training.py --model meta-llama/Meta-Llama-3-8B --strategy deepspeed
