@@ -32,7 +32,7 @@ def _test_correctness_once(
 
     output.backward()
     output2.backward()
-    # assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize(
@@ -53,7 +53,7 @@ def _test_correctness_once(
     ],
 )
 @pytest.mark.parametrize("log_target", [False])
-@pytest.mark.parametrize("reduction", ["none", "batchmean", "sum", "mean"])
+@pytest.mark.parametrize("reduction", ["batchmean", "none", "mean", "sum"])
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [

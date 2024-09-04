@@ -171,6 +171,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
     @ensure_contiguous
     def forward(ctx, y_pred, y_true, reduction="batchmean", log_target=False):
         ctx.save_for_backward(y_pred, y_true)
+        ctx.reduction = reduction
         return kldiv_forward_triton(
             y_pred, y_true, log_target=log_target, reduction=reduction
         )
@@ -180,8 +181,17 @@ class LigerKLDivLossFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         y_pred, y_true = ctx.saved_tensors
 
+        derivative = kldiv_backward_triton(y_pred, y_true, grad_output)
+
+        if ctx.reduction == "batchmean":
+            derivative = derivative / y_pred.shape[0]
+        elif ctx.reduction == "sum" or ctx.reduction == "none":
+            pass
+        elif ctx.reduction == "mean":
+            derivative = derivative / (y_pred.shape[0] * y_pred.shape[1])
+
         return (
-            kldiv_backward_triton(y_pred, y_true, grad_output) / y_pred.shape[0],
+            derivative,
             None,
             None,
             None,
