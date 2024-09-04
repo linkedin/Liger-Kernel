@@ -35,6 +35,7 @@ class BaseRMSNorm(nn.Module):
         return self.weight * hidden_states.to(input_dtype)
 
 
+# https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L112
 class LlamaRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
