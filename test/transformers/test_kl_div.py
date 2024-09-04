@@ -52,8 +52,8 @@ def _test_correctness_once(
         (3, 423, 32000),
     ],
 )
-@pytest.mark.parametrize("log_target", [False])
-@pytest.mark.parametrize("reduction", ["batchmean", "none", "mean", "sum"])
+@pytest.mark.parametrize("log_target", [False, True])
+@pytest.mark.parametrize("reduction", ["none", "batchmean", "mean", "sum"])
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [

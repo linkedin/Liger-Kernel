@@ -62,7 +62,7 @@ def _kldiv_kernel_forward(
         if not log_target:
             loss = y_true * (tl.log(y_true) - y)
         else:
-            loss = y_true * (y_true - y)
+            loss = tl.exp(y_true) * (y_true - y)
 
         if reduction == _REDUCTION_MODE_NONE:
             tl.store(loss_ptr + offsets, loss, mask=mask)
@@ -101,7 +101,7 @@ def _kldiv_kernel_backward(
         if not log_target:
             res = target * -1
         else:
-            res = -target / input
+            res = -tl.exp(target)
 
         tl.store(input_ptr + offsets, res, mask=mask)
 
@@ -142,7 +142,7 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B
         return output_tensor
 
 
-def kldiv_backward_triton(input, target, grad_output):
+def kldiv_backward_triton(input, target, grad_output, log_target):
     B, S = input.shape
 
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(S))
@@ -158,6 +158,7 @@ def kldiv_backward_triton(input, target, grad_output):
         S,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
+        log_target=log_target,
     )
 
     if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
@@ -172,6 +173,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
     def forward(ctx, y_pred, y_true, reduction="batchmean", log_target=False):
         ctx.save_for_backward(y_pred, y_true)
         ctx.reduction = reduction
+        ctx.log_target = log_target
         return kldiv_forward_triton(
             y_pred, y_true, log_target=log_target, reduction=reduction
         )
@@ -181,7 +183,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         y_pred, y_true = ctx.saved_tensors
 
-        derivative = kldiv_backward_triton(y_pred, y_true, grad_output)
+        derivative = kldiv_backward_triton(y_pred, y_true, grad_output, ctx.log_target)
 
         if ctx.reduction == "batchmean":
             derivative = derivative / y_pred.shape[0]
