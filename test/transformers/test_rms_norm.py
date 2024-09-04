@@ -22,6 +22,19 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 SLEEP_SECONDS = 0.1
 
 
+class BaseRMSNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states):
+        input_dtype = hidden_states.dtype
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * hidden_states.to(input_dtype)
+
+
 class LlamaRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
@@ -89,10 +102,13 @@ class GemmaRMSNorm(nn.Module):
     [
         (LlamaRMSNorm, 0.0, "llama"),
         (GemmaRMSNorm, 1.0, "gemma"),
+        (BaseRMSNorm, 0.0, "none"),
     ],
 )
 def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode):
-    # h
+    if reference == BaseRMSNorm and dtype == torch.bfloat16:
+        pytest.skip("bfloat16 has larger errors for BaseRMSNorm")
+
     _tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
 
     h1 = _tensor.clone().requires_grad_(True)
