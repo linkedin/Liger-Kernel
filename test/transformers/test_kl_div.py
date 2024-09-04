@@ -5,6 +5,7 @@ import torch
 from torch.nn import KLDivLoss
 
 from liger_kernel.transformers.kl_div import LigerKLDIVLoss
+from liger_kernel.transformers.functional import liger_kl_div
 
 _SHAPE_PARAMS = (
     "B, T, V",
