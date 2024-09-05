@@ -60,9 +60,6 @@ def test_kernel_correctness(batch_size, seq_len, out_features, size, atol, rtol,
     # Compute triton output
     triton_output = matmul(ht.view(B * M, N), u.T.contiguous()).view(B, M, -1)
 
-    # Validate packing and unpacking of weights
-    assert (pack_weights(unpack_weights(u.T), 2) == u.T).all(), "Packed weights do not match original weights."
-
     # Unpack weights and compute torch output
     unpacked = unpack_weights(u.T, bits=2).T
     torch_output = torch.matmul(ht.to(torch.float32), unpacked.T.contiguous().to(torch.float32))
@@ -73,4 +70,38 @@ def test_kernel_correctness(batch_size, seq_len, out_features, size, atol, rtol,
 
     # Check if outputs are close within the given tolerances
     assert torch.allclose(triton_output, torch_output.to(torch.int32), atol=atol, rtol=rtol), "Results differ"
+
+
+
+@pytest.mark.parametrize(
+    "size",
+    [
+        2048,
+        1024,
+        512,
+    ],
+)
+@pytest.mark.parametrize(
+    "out_features",
+    [
+        1024,
+        2048,
+        4096,
+        10000,
+    ],
+)
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cuda",
+    ],
+)
+
+def test_unpack_pack_correctness(out_features, size,  device):
+
+    u = torch.randint(0, 255, (out_features, size), device=device, dtype=torch.uint8)
+
+    assert (pack_weights(unpack_weights(u.T), 2) == u.T).all(), "Packed weights do not match original weights."
+
+    
 
