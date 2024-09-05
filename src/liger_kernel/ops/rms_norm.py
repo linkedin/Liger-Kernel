@@ -34,8 +34,8 @@ def _rms_norm_forward_kernel(
     X_row_stride,
     W_ptr,
     W_row_stride,
-    r_ptr,
-    r_row_stride,
+    RSTD_ptr,
+    RSTD_row_stride,
     n_cols,
     eps,
     offset,
@@ -57,13 +57,13 @@ def _rms_norm_forward_kernel(
 
     Y_ptr += row_idx * Y_row_stride
     X_ptr += row_idx * X_row_stride
-    r_ptr += row_idx * r_row_stride
+    RSTD_ptr += row_idx * RSTD_row_stride
 
     X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0)
     X_row_dtype = X_row.dtype
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0)
 
-    # On Llama, only inv_rms is computed on fp32
+    # On Llama, only rstd is computed on fp32
     if casting_mode == _CASTING_MODE_LLAMA:
         X_row = X_row.to(tl.float32)
 
@@ -73,14 +73,14 @@ def _rms_norm_forward_kernel(
         X_row = X_row.to(tl.float32)
 
     mean_square = tl.sum(X_row * X_row, axis=0) / n_cols
-    inv_rms = rsqrt(mean_square + eps)
+    rstd = rsqrt(mean_square + eps)
 
     # We can save time by caching rms with minimal memory overhead
     # because rms is much smaller compared to X_row, as rms is for each row.
     # However, on the computation side, it can save 4 operations (*, sum, /, sqrt).
-    tl.store(r_ptr, inv_rms)
+    tl.store(RSTD_ptr, rstd)
 
-    X_row = X_row * inv_rms
+    X_row = X_row * rstd
 
     # On Llama, the multiplication with the weight is done on the original dtype
     if casting_mode == _CASTING_MODE_LLAMA:
@@ -99,8 +99,8 @@ def _rms_norm_backward_kernel(
     X_row_stride,
     W_ptr,
     W_row_stride,
-    r_ptr,
-    r_row_stride,
+    RSTD_ptr,
+    RSTD_row_stride,
     dW_ptr,
     dW_row_stride,
     n_cols,
@@ -119,7 +119,7 @@ def _rms_norm_backward_kernel(
 
     dY_ptr += row_idx * dY_row_stride
     X_ptr += row_idx * X_row_stride
-    r_ptr += row_idx * r_row_stride
+    RSTD_ptr += row_idx * RSTD_row_stride
     dW_ptr += row_idx * dW_row_stride
 
     dY_row = tl.load(dY_ptr + col_offsets, mask=mask, other=0)
@@ -128,7 +128,7 @@ def _rms_norm_backward_kernel(
     original_x_dtype = X_row.dtype
 
     # Get cached rms
-    inv_rms_row = tl.load(r_ptr)
+    inv_rms_row = tl.load(RSTD_ptr)
 
     W_row = W_row + offset
 
