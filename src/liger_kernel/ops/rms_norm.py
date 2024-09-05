@@ -224,10 +224,7 @@ def _rms_norm_patched_backward(
             -(1 / n_cols) * inv_rms * inv_rms * tl.sum(m * x, axis=0) * x
         )
 
-        if casting_mode == _CASTING_MODE_LLAMA:
-            dW_partial += dy * (x * inv_rms).to(original_dtype)
-        else:
-            dW_partial += dy * (x * inv_rms)
+        dW_partial += dy * (x * inv_rms)
 
         tl.store(dY_ptr + cols, dx, mask=mask)
 
