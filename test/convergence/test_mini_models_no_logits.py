@@ -11,6 +11,7 @@ import pytest
 import torch
 from datasets import load_from_disk
 from torch.utils.data import DataLoader
+from transformers import JambaConfig, JambaForCausalLM
 from transformers.models.gemma import GemmaConfig, GemmaForCausalLM
 from transformers.models.gemma2 import Gemma2Config, Gemma2ForCausalLM
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
@@ -18,17 +19,16 @@ from transformers.models.mistral import MistralConfig, MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
 from transformers.models.phi3 import Phi3Config, Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
-from transformers import JambaConfig, JambaForCausalLM
 
 from liger_kernel.transformers import (
     apply_liger_kernel_to_gemma,
     apply_liger_kernel_to_gemma2,
+    apply_liger_kernel_to_jamba,
     apply_liger_kernel_to_llama,
     apply_liger_kernel_to_mistral,
     apply_liger_kernel_to_mixtral,
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
-    apply_liger_kernel_to_jamba,
 )
 
 MINI_MODEL_SETUPS = {

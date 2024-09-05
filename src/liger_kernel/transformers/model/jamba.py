@@ -1,9 +1,6 @@
 from typing import Optional, Tuple, Union
 
 import torch
-from liger_kernel.transformers.fused_linear_cross_entropy import (
-    LigerFusedLinearCrossEntropyLoss,
-)
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 from transformers.models.jamba.modeling_jamba import (
@@ -17,26 +14,30 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 
+from liger_kernel.transformers.fused_linear_cross_entropy import (
+    LigerFusedLinearCrossEntropyLoss,
+)
+
 
 @add_start_docstrings_to_model_forward(JAMBA_INPUTS_DOCSTRING)
 @replace_return_docstrings(
     output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC
 )
 def lce_forward(
-        self,
-        input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[HybridMambaAttentionDynamicCache] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        output_router_logits: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        num_logits_to_keep: Optional[Union[int, None]] = None,
+    self,
+    input_ids: torch.LongTensor = None,
+    attention_mask: Optional[torch.Tensor] = None,
+    position_ids: Optional[torch.LongTensor] = None,
+    past_key_values: Optional[HybridMambaAttentionDynamicCache] = None,
+    inputs_embeds: Optional[torch.FloatTensor] = None,
+    labels: Optional[torch.LongTensor] = None,
+    use_cache: Optional[bool] = None,
+    output_attentions: Optional[bool] = None,
+    output_hidden_states: Optional[bool] = None,
+    output_router_logits: Optional[bool] = None,
+    return_dict: Optional[bool] = None,
+    cache_position: Optional[torch.LongTensor] = None,
+    num_logits_to_keep: Optional[Union[int, None]] = None,
 ) -> Union[Tuple, MoeCausalLMOutputWithPast]:
     r"""
     Args:
