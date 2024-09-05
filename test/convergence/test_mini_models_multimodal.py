@@ -1,15 +1,5 @@
 import functools
 import os
-
-import pytest
-import torch
-from datasets import load_dataset
-from torch.utils.data import DataLoader
-from transformers.models.auto.processing_auto import AutoProcessor
-
-from liger_kernel.transformers import (
-    apply_liger_kernel_to_qwen2_vl,
-)
 from test.utils import (
     UNTOKENIZED_DATASET_PATH,
     MiniModelConfig,
@@ -18,6 +8,14 @@ from test.utils import (
     set_seed,
     supports_bfloat16,
 )
+
+import pytest
+import torch
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+from transformers.models.auto.processing_auto import AutoProcessor
+
+from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 
 try:
     # Qwen2-VL is only available in transformers>4.44.2
@@ -201,7 +199,7 @@ def run_mini_model_multimodal(
 
     train_dataset = create_multimodal_dataset(model_name)
     loader = DataLoader(
-        train_dataset, batch_size=2, shuffle=False, collate_fn=multimodal_collate_fn
+        train_dataset, batch_size=4, shuffle=False, collate_fn=multimodal_collate_fn
     )
     loader_iter = iter(loader)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
