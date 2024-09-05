@@ -347,8 +347,6 @@ def run_mini_model(
             del kwargs["rope"]
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
 
-    from torch.profiler import ProfilerActivity, profile, record_function
-
     model = create_model(model_name).to(dtype).to("cuda")
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
 
