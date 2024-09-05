@@ -104,15 +104,15 @@ def create_multimodal_dataset(model_name: str):
     def generate_procedural_image(example, index):
         """Generate an image with a single row of white pixels at the index specified"""
         image = torch.zeros(3, TEST_IMAGE_DIM, TEST_IMAGE_DIM)
-        row_index = index % TEST_IMAGE_DIM
-        image[:, row_index, :] = 255
+        image[:, index % TEST_IMAGE_DIM, :] = 255
         example["image"] = image
         return example
 
     def apply_chat_template(example):
         """
         Under the hood, this inserts the correct image placeholder token into the text.
-        More or less this conversation format is used by HF's mllms.
+        More or less this conversation format is used by HF's mllms. The fact that it is
+        formatting as for IFT is not in-and-of-itself important here.
         """
         conversation = [
             {
@@ -131,6 +131,7 @@ def create_multimodal_dataset(model_name: str):
         return example
 
     def preprocess_function(examples):
+        """Tokenize text, preprocess images, and generate other relevant inputs for the model."""
         return processor(
             text=examples["text"],
             images=examples["image"],
@@ -143,7 +144,7 @@ def create_multimodal_dataset(model_name: str):
         load_dataset(
             "text", data_files={"train": UNTOKENIZED_DATASET_PATH}, split="train"
         )
-        .to_iterable_dataset()
+        .to_iterable_dataset()  # only map examples as-needed and on-demand
         .map(generate_procedural_image, with_indices=True)
         .map(apply_chat_template)
         .map(preprocess_function, remove_columns=["text", "image"])
@@ -199,7 +200,7 @@ def run_mini_model_multimodal(
 
     train_dataset = create_multimodal_dataset(model_name)
     loader = DataLoader(
-        train_dataset, batch_size=4, shuffle=False, collate_fn=multimodal_collate_fn
+        train_dataset, batch_size=2, shuffle=False, collate_fn=multimodal_collate_fn
     )
     loader_iter = iter(loader)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -212,9 +213,6 @@ def run_mini_model_multimodal(
         output = model(**batch)
         output.loss.backward()
         optimizer.step()
-
-        # Disable gradient checkpointing after the step
-        model.gradient_checkpointing_disable()
 
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())

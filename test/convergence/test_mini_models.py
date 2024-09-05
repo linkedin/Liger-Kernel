@@ -308,11 +308,10 @@ def run_mini_model(
 
     if with_liger is True:
         kwargs = {
+            "rope": True,
             "rms_norm": True,
             "cross_entropy": True,
-            "rope": True,
         }
-
         if "gemma" in model_name:
             kwargs["geglu"] = True
         else:
@@ -332,6 +331,7 @@ def run_mini_model(
 
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
+        optimizer.zero_grad()
         output = model(**batch)
         output.loss.backward()
         optimizer.step()
