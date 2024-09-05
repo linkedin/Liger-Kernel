@@ -73,7 +73,7 @@ def calculate_gemm_settings(m, n, k):
                 128,  # block_k
                 3,  # num_stages
                 4,  # num_warps
-                1,  # split_k
+                2,  # split_k
                 4,  # group_m
             )
     else:  # <48 GB VRAM
@@ -117,8 +117,10 @@ def check_compute_capability_for_fp8(fn):
             compute_capability = torch.cuda.get_device_capability(device)
             if compute_capability[0] >= 9:  # SM_90+
                 os.environ["ENABLE_TMA"] = "1"
+                os.environ["ENABLE_MMA_V3"] = "1"
             elif compute_capability[0] == 8 and compute_capability[1] == 9:  # SM_89
                 os.environ["ENABLE_TMA"] = "0"
+                os.environ["ENABLE_MMA_V3"] = "0"
             else:
                 raise SystemExit(
                     "This kernel requires SM_89 or higher for native FP8 support."
