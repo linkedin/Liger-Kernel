@@ -128,7 +128,7 @@ def _rms_norm_backward_kernel(
     original_x_dtype = X_row.dtype
 
     # Get cached rms
-    inv_rms_row = tl.load(RSTD_ptr)
+    rstd_row = tl.load(RSTD_ptr)
 
     W_row = W_row + offset
 
@@ -146,18 +146,18 @@ def _rms_norm_backward_kernel(
 
     m = dY_row * W_row
 
-    dX_row = inv_rms_row * m
+    dX_row = rstd_row * m
 
-    dX_row += (inv_rms_row) * (
-        -(1 / n_cols) * inv_rms_row * inv_rms_row * tl.sum(m * X_row, axis=0) * X_row
+    dX_row += (rstd_row) * (
+        -(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row
     )
 
     # calculate the gradient of W
     if casting_mode == _CASTING_MODE_LLAMA:
-        dW_row = dY_row * (X_row * inv_rms_row).to(original_x_dtype)
+        dW_row = dY_row * (X_row * rstd_row).to(original_x_dtype)
     else:
         # here X_row is already in fp32 (see previous if block)
-        dW_row = dY_row * (X_row * inv_rms_row)
+        dW_row = dY_row * (X_row * rstd_row)
 
     tl.store(dY_ptr + col_offsets, dX_row, mask=mask)
     tl.store(dW_ptr + col_offsets, dW_row, mask=mask)
@@ -188,14 +188,14 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
-    # r is to cache (1/rms) for each row
-    # r is always computed/stored in fp32 if we are using Llama or Gemma casting mode
-    r_dtype = (
+    # RSTD is to cache rstd for each row
+    # RSTD is always computed/stored in fp32 if we are using Llama or Gemma casting mode
+    rstd_dtype = (
         torch.float32
         if casting_mode in (_CASTING_MODE_LLAMA.value, _CASTING_MODE_GEMMA.value)
         else X.dtype
     )
-    r = torch.empty(n_rows, dtype=r_dtype, device=X.device)
+    RSTD = torch.empty(n_rows, dtype=rstd_dtype, device=X.device)
 
     # Check constraints.
     assert (
@@ -209,8 +209,8 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
         X.stride(0),
         W,
         W.stride(0),
-        r,
-        r.stride(0),
+        RSTD,
+        RSTD.stride(0),
         n_cols,
         eps,
         offset,
@@ -218,10 +218,10 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
-    return Y.view(*shape), X, r, BLOCK_SIZE, num_warps, casting_mode
+    return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def rms_norm_backward(dY, X, W, r, offset, casting_mode, BLOCK_SIZE, num_warps):
+def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -239,8 +239,8 @@ def rms_norm_backward(dY, X, W, r, offset, casting_mode, BLOCK_SIZE, num_warps):
         X.stride(0),
         W,
         W.stride(0),
-        r,
-        r.stride(0),
+        RSTD,
+        RSTD.stride(0),
         dW,
         dW.stride(0),
         n_cols,
@@ -279,14 +279,14 @@ class LigerRMSNormFunction(torch.autograd.Function):
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
-        Y, X, r, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(
+        Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(
             X, W, eps, offset, casting_mode
         )
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
-        ctx.save_for_backward(X, W, r)
+        ctx.save_for_backward(X, W, RSTD)
         return Y
 
     @staticmethod
@@ -295,12 +295,12 @@ class LigerRMSNormFunction(torch.autograd.Function):
         """
         Y: (B, T, H) or (BxT, H)
         """
-        X, W, r = ctx.saved_tensors
+        X, W, RSTD = ctx.saved_tensors
         dX, dW = rms_norm_backward(
             dY,
             X,
             W,
-            r,
+            RSTD,
             ctx.offset,
             ctx.casting_mode,
             ctx.BLOCK_SIZE,
