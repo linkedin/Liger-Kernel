@@ -5,6 +5,8 @@ import pytest
 import torch
 import torch.nn as nn
 
+from liger_kernel.ops.rms_norm import LigerRMSNormFunction
+from liger_kernel.transformers.functional import liger_rms_norm
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 
 torch.use_deterministic_algorithms(True)
@@ -20,6 +22,20 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 SLEEP_SECONDS = 0.1
 
 
+class BaseRMSNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states):
+        input_dtype = hidden_states.dtype
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * hidden_states.to(input_dtype)
+
+
+# https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L112
 class LlamaRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
@@ -87,10 +103,13 @@ class GemmaRMSNorm(nn.Module):
     [
         (LlamaRMSNorm, 0.0, "llama"),
         (GemmaRMSNorm, 1.0, "gemma"),
+        (BaseRMSNorm, 0.0, "none"),
     ],
 )
 def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode):
-    # h
+    if reference == BaseRMSNorm and dtype == torch.bfloat16:
+        pytest.skip("bfloat16 has larger errors for BaseRMSNorm")
+
     _tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
 
     h1 = _tensor.clone().requires_grad_(True)
@@ -118,3 +137,50 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
         ref_rms.weight.grad, triton_rms.weight.grad, atol=atol, rtol=rtol
     )
     assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "bs, sl, hd",
+    [
+        (2, 2, 8),
+        # # weird shapes
+        (9, 7, 41),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-6),
+        (torch.bfloat16, 2e-1, 2e-2),
+        (torch.float16, 2e-1, 2e-2),
+    ],
+)
+@pytest.mark.parametrize(
+    "reference, offset, casting_mode",
+    [
+        (LlamaRMSNorm, 0.0, "llama"),
+        (GemmaRMSNorm, 1.0, "gemma"),
+    ],
+)
+def test_correctness_functional(
+    bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode
+):
+    # h
+    _tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
+
+    h1 = _tensor.clone().requires_grad_(True)
+    h2 = _tensor.clone().requires_grad_(True)
+
+    w = torch.randn(hd, device="cuda", dtype=dtype)
+
+    y1 = liger_rms_norm(h1, w, 1e-6, offset, casting_mode)
+    y2 = LigerRMSNormFunction.apply(h2, w, 1e-6, offset, casting_mode)
+
+    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
+
+    grad = torch.randn_like(y2)
+
+    y1.backward(grad)
+    y2.backward(grad)
+
+    assert torch.allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)

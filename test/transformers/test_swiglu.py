@@ -7,6 +7,8 @@ from transformers.models.llama.modeling_llama import LlamaMLP
 from transformers.models.phi3.configuration_phi3 import Phi3Config
 from transformers.models.phi3.modeling_phi3 import Phi3MLP
 
+from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+from liger_kernel.transformers.functional import liger_swiglu
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP, LigerSwiGLUMLP
 
 LLAMA_CONFIG = LlamaConfig(
@@ -52,7 +54,6 @@ SLEEP_SECONDS = 0.1
 def test_correctness_llamamlp(
     bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol
 ):
-
     _input = torch.randn(bsz, seq_len, hidden_size, device="cuda", dtype=dtype)
 
     x1 = _input.clone().requires_grad_(True)
@@ -135,7 +136,6 @@ def test_correctness_llamamlp(
 def test_correctness_phi3mlp(
     bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol
 ):
-
     _input = torch.randn(bsz, seq_len, hidden_size, device="cuda", dtype=dtype)
 
     x1 = _input.clone().requires_grad_(True)
@@ -177,3 +177,46 @@ def test_correctness_phi3mlp(
     )
 
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "bsz, seq_len, size",
+    [
+        (2, 8, 8),
+        (9, 7, 41),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        # atol is for small values: they have more difference, so set atol higher
+        # rtol is for larger values: they are very close, so set rtol lower
+        (torch.float32, 1e-0, 1e-5),
+        # TODO: we should find a better way to tune this. 1e4 is too large apparently
+        (torch.bfloat16, 1e4, 1e-2),
+    ],
+)
+def test_correctness_functional(bsz, seq_len, size, dtype, atol, rtol):
+    _input = torch.randn(bsz, seq_len, size, device="cuda", dtype=dtype)
+    _b = torch.randn(bsz, seq_len, size, device="cuda", dtype=dtype)
+
+    x1 = _input.clone().requires_grad_(True)
+    x2 = _input.clone().requires_grad_(True)
+
+    b1 = _b.clone().requires_grad_(True)
+    b2 = _b.clone().requires_grad_(True)
+
+    y1 = liger_swiglu(x1, b1)
+    y2 = LigerSiLUMulFunction.apply(x2, b2)
+
+    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
+
+    # Test backward pass
+    grad_output = torch.randn_like(y1)
+
+    y1.backward(grad_output)
+    y2.backward(grad_output)
+
+    # Check if gradients are close for x
+    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(b1.grad, b2.grad, atol=atol, rtol=rtol)
