@@ -409,3 +409,39 @@ swiglu,huggingface,full,memory,MB,T,sequence length,1024,1294.25,1294.25,1294.25
 swiglu,huggingface,full,memory,MB,T,sequence length,2048,1992.25,1992.25,1992.25,"{""B"": 4, ""hidden_size"": 4096, ""dtype"": ""torch.bfloat16"", ""intermediate_size"": 11008, ""hidden_act"": ""silu""}",NVIDIA A100-SXM4-80GB,2024-09-03 15:40:36,0.2.1
 swiglu,huggingface,full,memory,MB,T,sequence length,4096,3452.25,3452.25,3452.25,"{""B"": 4, ""hidden_size"": 4096, ""dtype"": ""torch.bfloat16"", ""intermediate_size"": 11008, ""hidden_act"": ""silu""}",NVIDIA A100-SXM4-80GB,2024-09-03 15:40:36,0.2.1
 swiglu,huggingface,full,memory,MB,T,sequence length,8192,6372.25,6372.25,6372.25,"{""B"": 4, ""hidden_size"": 4096, ""dtype"": ""torch.bfloat16"", ""intermediate_size"": 11008, ""hidden_act"": ""silu""}",NVIDIA A100-SXM4-80GB,2024-09-03 15:40:36,0.2.1
+kl_div,liger,full,memory,MB,V,vocab size,4096,1536.0009765625,1536.0009765625,1536.0009765625,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:40,0.2.1
+kl_div,liger,full,memory,MB,V,vocab size,8192,3072.0009765625,3072.0009765625,3072.0009765625,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:40,0.2.1
+kl_div,liger,full,memory,MB,V,vocab size,16384,6144.0009765625,6144.0009765625,6144.0009765625,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:40,0.2.1
+kl_div,liger,full,memory,MB,V,vocab size,32768,12288.0009765625,12288.0009765625,12288.0009765625,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:40,0.2.1
+kl_div,liger,full,memory,MB,V,vocab size,65536,24576.0,24576.0,24576.0,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:40,0.2.1
+kl_div,liger,full,memory,MB,V,vocab size,131072,49152.0,49152.0,49152.0,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:40,0.2.1
+kl_div,torch,full,memory,MB,V,vocab size,4096,1792.0,1792.0,1792.0,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:41,0.2.1
+kl_div,torch,full,memory,MB,V,vocab size,8192,3584.0,3584.0,3584.0,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:41,0.2.1
+kl_div,torch,full,memory,MB,V,vocab size,16384,7168.0,7168.0,7168.0,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:41,0.2.1
+kl_div,torch,full,memory,MB,V,vocab size,32768,14336.0,14336.0,14336.0,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:41,0.2.1
+kl_div,torch,full,memory,MB,V,vocab size,65536,28672.0,28672.0,28672.0,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:41,0.2.1
+kl_div,torch,full,memory,MB,V,vocab size,131072,57344.0,57344.0,57344.0,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:41,0.2.1
+kl_div,liger,forward,speed,ms,V,vocab size,4096,0.30640000104904175,0.30563199520111084,0.30745598673820496,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:43,0.2.1
+kl_div,liger,forward,speed,ms,V,vocab size,8192,0.5763360261917114,0.5754943490028381,0.5773376226425171,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:43,0.2.1
+kl_div,liger,forward,speed,ms,V,vocab size,16384,1.1176480054855347,1.1165119409561157,1.1186367273330688,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:43,0.2.1
+kl_div,liger,forward,speed,ms,V,vocab size,32768,2.1987199783325195,2.1970815658569336,2.200934410095215,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:43,0.2.1
+kl_div,liger,forward,speed,ms,V,vocab size,65536,4.356672286987305,4.355186939239502,4.358956813812256,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:43,0.2.1
+kl_div,liger,forward,speed,ms,V,vocab size,131072,8.697919845581055,8.690688133239746,8.703583717346191,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:43,0.2.1
+kl_div,torch,forward,speed,ms,V,vocab size,4096,1.3298559188842773,1.3287359476089478,1.331385612487793,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:45,0.2.1
+kl_div,torch,forward,speed,ms,V,vocab size,8192,2.594543933868408,2.592736005783081,2.596640110015869,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:45,0.2.1
+kl_div,torch,forward,speed,ms,V,vocab size,16384,5.13375997543335,5.1324286460876465,5.1364288330078125,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:45,0.2.1
+kl_div,torch,forward,speed,ms,V,vocab size,32768,10.225567817687988,10.225190162658691,10.227231979370117,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:45,0.2.1
+kl_div,torch,forward,speed,ms,V,vocab size,65536,20.412960052490234,20.411020278930664,20.415000915527344,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:45,0.2.1
+kl_div,torch,forward,speed,ms,V,vocab size,131072,40.818641662597656,40.816402435302734,40.82087707519531,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:45,0.2.1
+kl_div,liger,full,speed,ms,V,vocab size,4096,2.040031909942627,1.9614335298538208,2.192307233810425,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:46,0.2.1
+kl_div,liger,full,speed,ms,V,vocab size,8192,3.866431951522827,3.7955007553100586,3.8693249225616455,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:46,0.2.1
+kl_div,liger,full,speed,ms,V,vocab size,16384,7.261951923370361,7.255136013031006,7.281760215759277,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:46,0.2.1
+kl_div,liger,full,speed,ms,V,vocab size,32768,15.092127799987793,15.07801628112793,15.09660816192627,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:46,0.2.1
+kl_div,liger,full,speed,ms,V,vocab size,65536,29.921375274658203,29.914867401123047,29.921951293945312,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:46,0.2.1
+kl_div,liger,full,speed,ms,V,vocab size,131072,59.70220947265625,59.70220947265625,59.70220947265625,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:46,0.2.1
+kl_div,torch,full,speed,ms,V,vocab size,4096,2.8552000522613525,2.852755069732666,2.856454372406006,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:48,0.2.1
+kl_div,torch,full,speed,ms,V,vocab size,8192,5.593632221221924,5.590988636016846,5.594636917114258,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:48,0.2.1
+kl_div,torch,full,speed,ms,V,vocab size,16384,11.124671936035156,11.122162818908691,11.125061988830566,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:48,0.2.1
+kl_div,torch,full,speed,ms,V,vocab size,32768,23.052032470703125,23.050334930419922,23.052589416503906,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:48,0.2.1
+kl_div,torch,full,speed,ms,V,vocab size,65536,46.063167572021484,46.05990219116211,46.06643295288086,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:48,0.2.1
+kl_div,torch,full,speed,ms,V,vocab size,131072,92.06393432617188,92.06393432617188,92.06393432617188,"{""B"": 8, ""T"": 2048}",NVIDIA H100 PCIe,2024-09-04 12:59:48,0.2.1
