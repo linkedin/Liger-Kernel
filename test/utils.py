@@ -88,6 +88,10 @@ DEFAULT_DATASET_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare_tokenized"
 )
 
+UNTOKENIZED_DATASET_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare.txt"
+)
+
 
 @dataclass
 class MiniModelConfig:
@@ -112,6 +116,30 @@ def simple_collate_fn(data: List[Dict[str, Any]]):
             "labels": labels,
         }
     )
+
+
+def multimodal_collate_fn(data: List[Dict[str, Any]]):
+    """A collate function to use for DataLoader for multimodal models"""
+    keys = set(data[0].keys())
+    keys.remove("input_ids")
+
+    input_ids = torch.stack([torch.tensor(item["input_ids"]) for item in data]).squeeze(
+        1
+    )
+    labels = input_ids.clone()
+
+    batch = {}
+    # Collate all other keys, e.g. pixel_values, attention_mask, image_grid_thw, etc
+    for key in keys:
+        # TODO: find way to not require squeeze(1) for all keys. Its
+        # currently required b/c the data is being passed in with an extra
+        # unexpected dimension
+        batch[key] = torch.stack([item[key] for item in data]).squeeze(1)
+
+    batch["input_ids"] = input_ids
+    batch["labels"] = labels
+
+    return BatchEncoding(batch)
 
 
 def supports_bfloat16():
