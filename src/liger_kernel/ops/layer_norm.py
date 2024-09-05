@@ -88,7 +88,7 @@ def _layer_norm_backward_kernel(
     stride_dy,  # stride of each row in output grad
     n_rows,
     n_cols,
-    rows_per_program,
+    rows_per_program: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     num_warps: tl.constexpr,
     dtype: tl.constexpr,
