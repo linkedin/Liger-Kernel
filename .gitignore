@@ -11,3 +11,6 @@ site/
 # Build
 build/
 dist/
+
+# Lockfiles
+uv.lock
