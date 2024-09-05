@@ -10,6 +10,9 @@ _SHAPE_PARAMS = (
     "B, T, V",
     [
         (1, 4096, 32000),
+        (32, 4096, 1024),
+        # weird shape
+        (41, 401, 1271),
         pytest.param(
             1,
             4096,
@@ -36,7 +39,7 @@ _DTYPE_PARAMS = (
             ),
         ),
         (torch.float32, 1e-8, 1e-6),
-        (torch.float16, 1e-3, 1e-2),
+        (torch.float16, 1e-3, 1e-3),
     ],
 )
 
