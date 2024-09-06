@@ -46,7 +46,6 @@ def _kldiv_kernel_forward(
     loss_stride,  # int, output stride
     n_cols,  # int, number of columns in the input tensor
     BLOCK_SIZE: tl.constexpr,
-    num_warps: tl.constexpr,
     log_target: tl.constexpr = False,
     reduction: tl.constexpr = _REDUCTION_MODE_BATCHMEAN,
 ):
@@ -86,7 +85,6 @@ def _kldiv_kernel_backward(
     target_stride,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
-    num_warps: tl.constexpr,
     log_target: tl.constexpr = False,
 ):
     pid = tl.program_id(0).to(tl.int64)
@@ -120,7 +118,7 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B
     grid = (B,)
     reduction = _str_to_reduction_mode[reduction]
 
-    out_size = (B, S) if reduction == _REDUCTION_MODE_NONE else (B,)
+    out_size = (B, S) if reduction == _REDUCTION_MODE_NONE.value else (B,)
     output_tensor = torch.zeros(out_size, device=y_pred.device, dtype=torch.float32)
 
     _kldiv_kernel_forward[grid](
@@ -140,11 +138,11 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B
     # calculated according to the reduction mode same as in Pytorch. In the later versions, `mean` will be changed to the same behavior as `batchmean`
     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
     # https://github.com/pytorch/pytorch/blob/d7b57c4d63edb42e1deeeba9497fcb5f1f748ff2/torch/nn/functional.py#L3372
-    if reduction == _REDUCTION_MODE_BATCHMEAN:
+    if reduction == _REDUCTION_MODE_BATCHMEAN.value:
         return output_tensor.sum() / B
-    elif reduction == _REDUCTION_MODE_SUM:
+    elif reduction == _REDUCTION_MODE_SUM.value:
         return output_tensor.sum(dim=0)
-    elif reduction == _REDUCTION_MODE_MEAN:
+    elif reduction == _REDUCTION_MODE_MEAN.value:
         return output_tensor.mean(dim=0)
     else:
         return output_tensor
