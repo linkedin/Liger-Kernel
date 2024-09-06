@@ -44,6 +44,8 @@ def apply_liger_kernel_to_llama(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model is already
+        loaded. Default is None.
     """
 
     assert not (
@@ -66,7 +68,6 @@ def apply_liger_kernel_to_llama(
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules (e.g. LlamaRMSNorm or LlamaMLP)
-
         config: PretrainedConfig = model.config
 
         if hasattr(model, "model"):
@@ -80,12 +81,15 @@ def apply_liger_kernel_to_llama(
             base_model = model
        
         torch_dtype = config.torch_dtype
-        base_model.norm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
+        if rms_norm:
+            base_model.norm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
 
         for decoder_layer in base_model.layers:
-            decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
-            decoder_layer.input_layernorm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
-            decoder_layer.post_attention_layernorm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
+            if swiglu:
+                decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
 
 
 def apply_liger_kernel_to_mistral(
@@ -94,6 +98,7 @@ def apply_liger_kernel_to_mistral(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Mistral models
@@ -126,6 +131,30 @@ def apply_liger_kernel_to_mistral(
     if swiglu:
         modeling_mistral.MistralMLP = LigerSwiGLUMLP
 
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for MistralForCausalLM, MistralForTokenClassification for example
+            base_model = model.model
+        else:
+            # Direct MistralModel
+            base_model = model
+       
+        torch_dtype = config.torch_dtype
+        if rms_norm:
+            base_model.norm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
+
+
 
 def apply_liger_kernel_to_mixtral(
     rope: bool = True,
@@ -133,6 +162,7 @@ def apply_liger_kernel_to_mixtral(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Mixtral models
@@ -372,15 +402,15 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
 }
 
 
-def _apply_liger_kernel(model: PreTrainedModel = None, model_type: str = "", **kwargs) -> None:
+def _apply_liger_kernel(model_type: str, **kwargs) -> None:
     """
     Applies Liger kernels based on the specified model type. The custom
     kernels for the specified model type will be applied with the provided
     keyword arguments, otherwise the default configuration will be used.
 
-    ** Note: Calling _apply_liger_kernel() with just model_type after model initialization
-    will not be able to fully patch models. This must be called before model initialization or
-    post model initialization with the model instance passed into _apply_liger_kernel(model).
+    ** Note: Calling _apply_liger_kernel() after model initialization
+    will not be able to fully patch models. This must be called before model initialization.
+    If the model has already been instantiated
 
     Args:
         - model: the model instance to apply Liger kernels to
@@ -388,14 +418,6 @@ def _apply_liger_kernel(model: PreTrainedModel = None, model_type: str = "", **k
           and specified in the model's config.json
         - kwargs: keyword arguments that are passed to the corresponding apply_liger_kernel_to_* function.
     """
-
-    # Either model_type or model should be provided, not both
-    if model_type and model:
-        logger.warning("Both model_type and model were provided to _apply_liger_kernel. Model type will be derived from model.")
-
-    if model:
-        model_type = getattr(model, "config", None) and getattr(model.config, "model_type", None)
-
     if not model_type:
         logger.info("Model type was not provided. No Liger kernels will be applied.")
         return
@@ -420,13 +442,42 @@ def _apply_liger_kernel(model: PreTrainedModel = None, model_type: str = "", **k
         f"Applying Liger kernels for model type: {model_type} with kwargs: {applicable_kwargs}"
     )
 
-    if model:
-        # Model instance needs to be patched
-        apply_fn(model=model, **applicable_kwargs)
-    else:
-        # Assume pre-model initialization, so can patch transformers code
-        apply_fn(**applicable_kwargs)
+    # Assume pre-model initialization, so can patch transformers code
+    apply_fn(**applicable_kwargs)
 
 
-    
+def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
+    """
+    Applies Liger kernels to the provided model instance.
 
+    Args:
+        - model: the model instance to apply Liger kernels to
+    """
+    model_type = getattr(model, "config", None) and getattr(model.config, "model_type", None)
+
+    if not model_type:
+        logger.info("Model type could not be determined from model config. No Liger kernels will be applied.")
+        return
+
+    if model_type not in MODEL_TYPE_TO_APPLY_LIGER_FN.keys():
+        logger.info(
+            f"There are currently no Liger kernels supported for model type: {model_type}."
+        )
+        return
+
+    apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
+
+    apply_fn_signature = inspect.signature(apply_fn)
+
+    # Filter out the keyword arguments that are not supported by the apply function
+    applicable_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key in apply_fn_signature.parameters
+    }
+
+    logger.info(
+        f"Applying Liger kernels to model instance with model type: {model_type} with kwargs: {applicable_kwargs}"
+    )
+
+    apply_fn(model=model, **kwargs)
