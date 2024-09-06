@@ -39,7 +39,6 @@ def _layer_norm_forward_kernel(
     n_cols,
     eps,
     BLOCK_SIZE: tl.constexpr,
-    num_warps: tl.constexpr,
 ):
     """
     References:
@@ -88,9 +87,8 @@ def _layer_norm_backward_kernel(
     stride_dy,  # stride of each row in output grad
     n_rows,
     n_cols,
-    rows_per_program,
+    rows_per_program: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
-    num_warps: tl.constexpr,
     dtype: tl.constexpr,
 ):
     """
@@ -151,7 +149,6 @@ def layer_norm_forward(X, W, B, eps):
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
     Mean = torch.empty(n_rows, dtype=X.dtype, device=X.device)
     RSTD = torch.empty(n_rows, dtype=X.dtype, device=X.device)
-
     assert (
         X.shape[1] == W.shape[0]
     ), f"Incompatible hidden size dimension between input tensor with shape[1] = {X.shape[1]} and weight tensor with shape[0] = {W.shape[0]}"
@@ -213,7 +210,6 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         n_cols,
         rows_per_program,
         BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
         dtype=triton_dtype,
     )
 
