@@ -14,6 +14,7 @@ def liger_cross_entropy_kernel(
     n_cols,
     n_non_ignore,
     ignore_index,
+    label_smoothing: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -30,6 +31,7 @@ def liger_cross_entropy_kernel(
     n_cols (int): The number of columns in the input tensor.
     n_non_ignore (int): The number of non-ignored elements in the batch.
     ignore_index (int): The index to ignore in the target.
+    label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
     BLOCK_SIZE (int): The block size for Triton operations.
     """
 
@@ -63,12 +65,20 @@ def liger_cross_entropy_kernel(
         X_ptr + y
     )  # we need to store the original value of X_y for the loss calculation
 
+    # Label smoothing is a general case of normal cross entropy
+    # See the full derivation at https://github.com/linkedin/Liger-Kernel/pull/198#issue-2503665310
+    scaled_x_sum = 0.0
+    eps = label_smoothing / n_cols
+
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(
             X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
         )
         block_max = tl.max(X_block)
+        if label_smoothing > 0:
+            # scale X beforehand to avoid overflow
+            scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -eps * X_block, 0.0))
         m_new = tl.maximum(m, block_max)
         d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
         m = m_new
@@ -77,12 +87,16 @@ def liger_cross_entropy_kernel(
     # dx_y = (softmax(x_y) - 1) / N
     # dx_i = softmax(x_i) / N, i != y
     # N is the number of non ignored elements in the batch
+    # For label smoothing:
+    # dx_i = (softmax(x_y) - label_smoothing / V) / N, V = n_cols, i != y
+    # dx_y = (softmax(x_y) - label_smoothing / V - (1 - label_smoothing)) / N
+    #      = dx_i - (1 - label_smoothing) / N
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(
             X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
         )
-        X_block = (tl.exp(X_block - m) / d) / (n_non_ignore)
+        X_block = (tl.exp(X_block - m) / d - eps) / (n_non_ignore)
         tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
 
     # We need tl.debug_barrier() to ensure the new result of X_ptr is written as mentioned in
@@ -97,9 +111,21 @@ def liger_cross_entropy_kernel(
     # So we can safely calculate log (softmax(X_y)) without overflow
     loss = -(ori_X_y - m - tl.log(d))
 
-    # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - 1) / N`
+    # Orginal loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
+    # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
+    #          = (1 - label_smoothing) * H(q, p) + eps * sum(logsoftmax(x_i))
+    # By using m (global max of xi) and d (sum of e^(xi-m)), we can simplify as:
+    #          = (1 - label_smoothing) * H(q, p) + (-sum(x_i * eps) + label_smoothing * (m + logd))
+    # Refer to H(q', p) in section 7 of the paper: https://arxiv.org/pdf/1512.00567
+    # pytorch: https://github.com/pytorch/pytorch/blob/2981534f54d49fa3a9755c9b0855e7929c2527f0/aten/src/ATen/native/LossNLL.cpp#L516
+    # See full derivation at https://github.com/linkedin/Liger-Kernel/pull/198#issuecomment-2333753087
+    if label_smoothing > 0:
+        smooth_loss = scaled_x_sum + label_smoothing * (m + tl.log(d))
+        loss = loss * (1 - label_smoothing) + smooth_loss
+
+    # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - (1 - label_smoothing) / N`
     X_y = tl.load(X_ptr + y)
-    X_y += -1 / (n_non_ignore)
+    X_y += -(1 - label_smoothing) / (n_non_ignore)
 
     tl.store(loss_ptr, loss)
     tl.store(X_ptr + y, X_y)
@@ -147,7 +173,7 @@ def element_mul_kernel(
         tl.store(X_ptr + X_offsets, X_block * grad_output, mask=X_offsets < n_cols)
 
 
-def cross_entropy_forward(_input, target, ignore_index):
+def cross_entropy_forward(_input, target, ignore_index, label_smoothing):
     BT, V = _input.shape
     n_rows = BT
 
@@ -175,6 +201,7 @@ def cross_entropy_forward(_input, target, ignore_index):
         n_cols=V,
         n_non_ignore=n_non_ignore,
         ignore_index=ignore_index,
+        label_smoothing=label_smoothing,
         BLOCK_SIZE=BLOCK_SIZE,
         # TODO: 32 seems to give the best performance
         # Performance is quite sensitive to num_warps
@@ -216,7 +243,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, _input, target, ignore_index):
+    def forward(ctx, _input, target, ignore_index=-100, label_smoothing=0.0):
         """
         The forward pass of the Liger Cross Entropy loss.
 
@@ -225,11 +252,14 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         _input (tensor): The input tensor of shape (BT, V) where B is batch size, T is sequence length, V is vocab size.
         target (tensor): The target tensor of shape (BT) where each value is in [0, V-1].
         ignore_index (int): The index to ignore in the target.
+        label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
 
         Returns:
         tensor: The computed loss.
         """
-        loss, _input = cross_entropy_forward(_input, target, ignore_index)
+        loss, _input = cross_entropy_forward(
+            _input, target, ignore_index, label_smoothing
+        )
         # TODO: investigation
         # If we don't detach the _input tensor, the memory will double
         # Not sure why but seems that there will be a time both grad and value exist but in different location
@@ -252,6 +282,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         _input = cross_entropy_backward(_input, grad_output)
         return (
             _input,
+            None,
             None,
             None,
         )
