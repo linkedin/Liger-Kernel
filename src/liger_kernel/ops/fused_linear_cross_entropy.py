@@ -13,7 +13,7 @@ MAX_FUSED_SIZE = 65536 // 2
 
 
 def fused_linear_cross_entropy_forward(
-    _input, weight, target, bias=None, ignore_index=-100
+    _input, weight, target, bias=None, ignore_index=-100, label_smoothing=0.0
 ):
     dtype = (
         torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else _input.dtype
@@ -80,6 +80,7 @@ def fused_linear_cross_entropy_forward(
             n_cols=V,
             n_non_ignore=n_non_ignore,
             ignore_index=ignore_index,
+            label_smoothing=label_smoothing,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32,
         )
@@ -171,7 +172,9 @@ def fused_linear_cross_entropy_backward(
 
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, _input, weight, target, bias=None, ignore_index=-100):
+    def forward(
+        ctx, _input, weight, target, bias=None, ignore_index=-100, label_smoothing=0.0
+    ):
         """
         Fusing the last linear layer with cross-entropy loss
             Reference: https://github.com/mgmalek/efficient_cross_entropy
@@ -188,7 +191,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         ignore_index: the index to ignore in the target
         """
         loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
-            _input, weight, target, bias, ignore_index
+            _input, weight, target, bias, ignore_index, label_smoothing
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
