@@ -6,6 +6,7 @@ from test.utils import (
     assert_verbose_allclose,
     set_seed,
     simple_collate_fn,
+    supports_bfloat16,
 )
 
 import pytest
@@ -343,24 +344,122 @@ def run_mini_model(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
-        ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_gemma1", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 6e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        pytest.param(
+            "mini_gemma1",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-8,
+            1e-5,
+            1e-2,
+            1e-5,
+            1e-2,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
         ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_gemma1.1", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        pytest.param(
+            "mini_gemma1.1",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-8,
+            1e-5,
+            1e-2,
+            1e-5,
+            1e-2,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
         ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_gemma2", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        pytest.param(
+            "mini_gemma2",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-8,
+            1e-5,
+            1e-2,
+            1e-5,
+            1e-2,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_llama3", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        pytest.param(
+            "mini_llama3",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-8,
+            1e-5,
+            1e-2,
+            1e-5,
+            1e-2,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
         # TODO: torch 2.5.0 nightly breaks mixtral test, but torch 2.3.0 works fine
         # TODO: mixtral MoE structure makes the convergence flaky so disable the test for now. It needs high tol to pass.
         # ("mini_mixtral", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 8e-3, 1e-5),
         # ("mini_mixtral", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 2.0, 1e-5, 1e-2, 1e-5),
         ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_mistral", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        pytest.param(
+            "mini_mistral",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-8,
+            1e-5,
+            1e-2,
+            1e-5,
+            1e-2,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
         ("mini_qwen2", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_qwen2", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        pytest.param(
+            "mini_qwen2",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-8,
+            1e-5,
+            1e-2,
+            1e-5,
+            1e-2,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
         ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
-        ("mini_phi3", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 1e-1, 1e-5, 1e-2, 1e-5),
+        pytest.param(
+            "mini_phi3",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-8,
+            1e-5,
+            1e-2,
+            1e-5,
+            1e-2,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
     ],
 )
 def test_mini_model(

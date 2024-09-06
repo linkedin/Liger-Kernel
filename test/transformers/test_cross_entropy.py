@@ -1,8 +1,12 @@
+from test.utils import supports_bfloat16
+
 import pytest
 import torch
 from torch.nn import CrossEntropyLoss
 
+from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
+from liger_kernel.transformers.functional import liger_cross_entropy
 
 SLEEP_SECONDS = 0.1
 
@@ -81,6 +85,29 @@ def _test_correctness_not_last_layer_once(
     assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
+def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
+    torch.manual_seed(0)
+
+    _input = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
+
+    x1 = _input.clone().requires_grad_(True)
+    x2 = _input.clone().requires_grad_(True)
+
+    target = torch.randint(0, V, (B * T,), device="cuda", dtype=torch.long)
+
+    y1 = liger_cross_entropy(x1, target, 0)
+    y2 = LigerCrossEntropyFunction.apply(x2, target, 0)
+
+    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
+
+    grad = torch.randn_like(y2)
+
+    y1.backward(grad)
+    y2.backward(grad)
+
+    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+
+
 #############################################################################
 # Test the correctness of the liger cross entropy loss
 #############################################################################
@@ -99,6 +126,58 @@ def _test_correctness_not_last_layer_once(
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
+        pytest.param(
+            0.1,
+            torch.bfloat16,
+            1e-8,
+            5e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
+        pytest.param(
+            1.0,
+            torch.bfloat16,
+            1e-8,
+            5e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
+        pytest.param(
+            10.0,
+            torch.bfloat16,
+            1e-7,
+            5e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
+        (0.1, torch.float32, 1e-8, 1e-6),
+        (1.0, torch.float32, 1e-8, 1e-6),
+        (10.0, torch.float32, 1e-8, 1e-6),
+    ],
+)
+@pytest.mark.skipif(
+    torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
+    reason="Needs 16GB+ GPU memory.",
+)
+def test_correctness(B, T, V, scalar, dtype, atol, rtol):
+    liger_ce = LigerCrossEntropyLoss()
+    _test_correctness_once(liger_ce, B, T, V, scalar, dtype, atol, rtol)
+
+
+@pytest.mark.parametrize(
+    "B, T, V",
+    [
+        (2, 2, 8),
+        # weird shapes
+        (9, 7, 41),
+    ],
+)
+@pytest.mark.parametrize(
+    "scalar, dtype, atol, rtol",
+    [
         (0.1, torch.bfloat16, 1e-8, 5e-2),
         (1.0, torch.bfloat16, 1e-8, 5e-2),
         (10.0, torch.bfloat16, 1e-7, 5e-2),
@@ -107,9 +186,8 @@ def _test_correctness_not_last_layer_once(
         (10.0, torch.float32, 1e-8, 1e-6),
     ],
 )
-def test_correctness(B, T, V, scalar, dtype, atol, rtol):
-    liger_ce = LigerCrossEntropyLoss()
-    _test_correctness_once(liger_ce, B, T, V, scalar, dtype, atol, rtol)
+def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
+    _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol)
 
 
 @pytest.mark.parametrize(
@@ -125,13 +203,41 @@ def test_correctness(B, T, V, scalar, dtype, atol, rtol):
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        (0.1, torch.bfloat16, 1e-8, 5e-2),
-        (1.0, torch.bfloat16, 1e-8, 5e-2),
-        (10.0, torch.bfloat16, 1e-8, 5e-2),
+        pytest.param(
+            0.1,
+            torch.bfloat16,
+            1e-8,
+            5e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
+        pytest.param(
+            1.0,
+            torch.bfloat16,
+            1e-8,
+            5e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
+        pytest.param(
+            10.0,
+            torch.bfloat16,
+            1e-8,
+            5e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
         (0.1, torch.float32, 1e-8, 1e-6),
         (1.0, torch.float32, 1e-8, 1e-6),
         (10.0, torch.float32, 1e-8, 1e-6),
     ],
+)
+@pytest.mark.skipif(
+    torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
+    reason="Needs 16GB+ GPU memory.",
 )
 def test_correctness_with_ignore_index(
     B, T, V, ignore_index, scalar, dtype, atol, rtol
@@ -155,9 +261,21 @@ def test_correctness_with_ignore_index(
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        (1.0, torch.bfloat16, 1e-8, 5e-2),
+        pytest.param(
+            1.0,
+            torch.bfloat16,
+            1e-8,
+            5e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
+)
+@pytest.mark.skipif(
+    torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
+    reason="Needs 16GB+ GPU memory.",
 )
 def test_correctness_not_last_layer(B, T, V, scalar, dtype, atol, rtol):
     liger_ce = LigerCrossEntropyLoss()
