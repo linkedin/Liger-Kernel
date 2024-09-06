@@ -40,7 +40,7 @@
 
 <img src="https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/logo-banner.png">
 
-[Installation](#installation) | [Getting Started](#getting-started) | [Examples](#examples) | [APIs](#apis) | [Structure](#structure) | [Contributing](#contributing) | [Credit](#credit)
+[Installation](#installation) | [Getting Started](#getting-started) | [Examples](#examples) | [APIs](#apis) | [Structure](#structure) | [Contributing](#contributing) | [Acknowledgement](#acknowledgement)
 
 <details>
   <summary>Latest News 🔥</summary>
@@ -288,7 +288,7 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compil
 
 [CONTRIBUTING GUIDE](https://github.com/linkedin/Liger-Kernel/blob/main/CONTRIBUTING.md)
 
-## Credit
+## Acknowledgement
 
 
 ### Design
