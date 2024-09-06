@@ -65,30 +65,21 @@ def liger_cross_entropy_kernel(
         X_ptr + y
     )  # we need to store the original value of X_y for the loss calculation
 
+    scaled_x_sum = 0.0
+    eps = label_smoothing / n_cols
+
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(
             X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
         )
         block_max = tl.max(X_block)
+        if label_smoothing > 0:
+            # scale X beforehand to avoid overflow
+            scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -eps * X_block, 0.0))
         m_new = tl.maximum(m, block_max)
         d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
         m = m_new
-
-    # we need to compute sum(log(softmax(x_i))) for smooth_loss
-    smooth_loss = 0.0
-    log_d = tl.log(d)  # avoid redundant calculations
-    if label_smoothing > 0:
-        for i in range(0, n_cols, BLOCK_SIZE):
-            X_offsets = i + tl.arange(0, BLOCK_SIZE)
-            X_block = tl.load(
-                X_ptr + X_offsets,
-                mask=X_offsets < n_cols,
-                other=(
-                    m + log_d
-                ),  # out-of-bounds will become 0 after calculating softmax
-            )
-            smooth_loss += -tl.sum(X_block - m - log_d)
 
     # 4. [Online softmax] second pass: calculate the gradients
     # dx_y = (softmax(x_y) - 1) / N
@@ -98,7 +89,6 @@ def liger_cross_entropy_kernel(
     # dx_i = (softmax(x_y) - label_smoothing / V) / N, V = n_cols, i != y
     # dx_y = (softmax(x_y) - label_smoothing / V - (1 - label_smoothing)) / N
     #      = dx_i - (1 - label_smoothing) / N
-    eps = label_smoothing / n_cols
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(
@@ -117,17 +107,19 @@ def liger_cross_entropy_kernel(
     #      = (X_y - max(X)) - log(sum(e ^ (X - max(X))))
     # sum(e ^ (X - max(X))) must >= 1 because the max term is e ^ 0 = 1
     # So we can safely calculate log (softmax(X_y)) without overflow
-    loss = -(ori_X_y - m - log_d)
+    loss = -(ori_X_y - m - tl.log(d))
 
-    # Orginal loss = H(q, p),  with label smoothing regularization = H(q', p)
+    # Orginal loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
     # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
-    #          = (1 - label_smoothing) * H(q, p) + (label_smoothing / V) * sum(softmax(x_i))
+    #          = (1 - label_smoothing) * H(q, p) + eps * sum(softmax(x_i))
+    #          = (1 - label_smoothing) * H(q, p) + (-sum(x_i * eps) + label_smoothing * (m + logd))
     # Refer to H(q', p) in section 7 of the paper: https://arxiv.org/pdf/1512.00567
     # pytorch: https://github.com/pytorch/pytorch/blob/2981534f54d49fa3a9755c9b0855e7929c2527f0/aten/src/ATen/native/LossNLL.cpp#L516
     if label_smoothing > 0:
-        loss = loss * (1 - label_smoothing) + smooth_loss * eps
+        smooth_loss = scaled_x_sum + label_smoothing * (m + tl.log(d))
+        loss = loss * (1 - label_smoothing) + smooth_loss
 
-    # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - 1) / N`
+    # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - (1 - label_smoothing) / N`
     X_y = tl.load(X_ptr + y)
     X_y += -(1 - label_smoothing) / (n_non_ignore)
 
@@ -247,7 +239,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, _input, target, ignore_index, label_smoothing=0.0):
+    def forward(ctx, _input, target, ignore_index=-100, label_smoothing=0.0):
         """
         The forward pass of the Liger Cross Entropy loss.
 
