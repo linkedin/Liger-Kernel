@@ -1,3 +1,15 @@
+"""
+This file incorporates code from Unsloth licensed under the Apache License, Version 2.0.
+See the original Unsloth repository at https://github.com/unslothai/unsloth.
+
+The following line
+https://github.com/linkedin/Liger-Kernel/blob/7382a8761f9af679482b968f9348013d933947c7/src/liger_kernel/ops/rms_norm.py#L30
+is based on code from Unsloth, located at:
+https://github.com/unslothai/unsloth/blob/fd753fed99ed5f10ef8a9b7139588d9de9ddecfb/unsloth/kernels/rms_layernorm.py#L22
+
+Modifications made by Yanning Chen, 2024.
+"""
+
 import operator
 
 import torch
