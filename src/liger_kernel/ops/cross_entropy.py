@@ -65,6 +65,8 @@ def liger_cross_entropy_kernel(
         X_ptr + y
     )  # we need to store the original value of X_y for the loss calculation
 
+    # Label smoothing is a general case of normal cross entropy
+    # See the full derivation at https://github.com/linkedin/Liger-Kernel/pull/198#issue-2503665310
     scaled_x_sum = 0.0
     eps = label_smoothing / n_cols
 
@@ -111,10 +113,12 @@ def liger_cross_entropy_kernel(
 
     # Orginal loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
     # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
-    #          = (1 - label_smoothing) * H(q, p) + eps * sum(softmax(x_i))
+    #          = (1 - label_smoothing) * H(q, p) + eps * sum(logsoftmax(x_i))
+    # By using m (global max of xi) and d (sum of e^(xi-m)), we can simplify as:
     #          = (1 - label_smoothing) * H(q, p) + (-sum(x_i * eps) + label_smoothing * (m + logd))
     # Refer to H(q', p) in section 7 of the paper: https://arxiv.org/pdf/1512.00567
     # pytorch: https://github.com/pytorch/pytorch/blob/2981534f54d49fa3a9755c9b0855e7929c2527f0/aten/src/ATen/native/LossNLL.cpp#L516
+    # See full derivation at https://github.com/linkedin/Liger-Kernel/pull/198#issuecomment-2333753087
     if label_smoothing > 0:
         smooth_loss = scaled_x_sum + label_smoothing * (m + tl.log(d))
         loss = loss * (1 - label_smoothing) + smooth_loss

@@ -83,7 +83,7 @@ def _test_correctness_with_label_smoothing_once(
     assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
-def _test_correctness_with_parameters_once(
+def _test_correctness_with_label_smoothing_with_ignore_index_once(
     target_ce, B, T, V, ignore_index, label_smoothing, scalar, dtype, atol, rtol
 ):
     torch.manual_seed(0)
@@ -410,14 +410,14 @@ def test_correctness_with_label_smoothing_once(
     torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
     reason="Needs 16GB+ GPU memory.",
 )
-def test_correctness_with_parameters_once(
+def test_correctness_with_label_smoothing_with_ignore_index_once(
     B, T, V, ignore_index, label_smoothing, scalar, dtype, atol, rtol
 ):
     liger_ce = LigerCrossEntropyLoss(
         ignore_index=ignore_index,
         label_smoothing=label_smoothing,
     )
-    _test_correctness_with_parameters_once(
+    _test_correctness_with_label_smoothing_with_ignore_index_once(
         liger_ce, B, T, V, ignore_index, label_smoothing, scalar, dtype, atol, rtol
     )
 
