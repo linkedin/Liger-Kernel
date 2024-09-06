@@ -19,20 +19,20 @@ def fused_linear_cross_entropy_forward(
     _input, weight, target, bias=None, ignore_index=-100
 ):
     if final_logit_softcap_params is not None:
-            if {LOGIT_SOFTCAP_VAL, LOGIT_SOFTCAP_ACT} != set(
-                final_logit_softcap_params.keys()
-            ):
-                raise Exception(
-                    f"final_logit_softcap_params should be a Dict with two keys {LOGIT_SOFTCAP_VAL}, {LOGIT_SOFTCAP_ACT}"
-                )
-            final_logit_softcap_params.update(
-                {
-                    LOGIT_SOFTCAP_ACT: get_torch_activation(
-                        final_logit_softcap_params.get(LOGIT_SOFTCAP_ACT)
-                    )
-                }
+        if {LOGIT_SOFTCAP_VAL, LOGIT_SOFTCAP_ACT} != set(
+            final_logit_softcap_params.keys()
+        ):
+            raise Exception(
+                f"final_logit_softcap_params should be a Dict with two keys {LOGIT_SOFTCAP_VAL}, {LOGIT_SOFTCAP_ACT}"
             )
-            
+        final_logit_softcap_params.update(
+            {
+                LOGIT_SOFTCAP_ACT: get_torch_activation(
+                    final_logit_softcap_params.get(LOGIT_SOFTCAP_ACT)
+                )
+            }
+        )
+
     dtype = (
         torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else _input.dtype
     )
