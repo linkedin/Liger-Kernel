@@ -40,7 +40,7 @@
 
 <img src="https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/logo-banner.png">
 
-[Installation](#installation) | [Getting Started](#getting-started) | [Examples](#examples) | [APIs](#apis) | [Structure](#structure) | [Contributing](#contributing) | [Contact](#contact)
+[Installation](#installation) | [Getting Started](#getting-started) | [Examples](#examples) | [APIs](#apis) | [Structure](#structure) | [Contributing](#contributing) | [Credit](#credit)
 
 <details>
   <summary>Latest News 🔥</summary>
@@ -51,7 +51,7 @@
 </details>
 
 
-**Liger Kernel** is a collection of Triton kernels designed specifically for LLM training. It can effectively increase multi-GPU **training throughput by 20%** and reduce **memory usage by 60%**. We have implemented **Hugging Face Compatible** `RMSNorm`, `RoPE`, `SwiGLU`, `CrossEntropy`, `FusedLinearCrossEntropy`, and more to come. The kernel works out of the box with [Flash Attention](https://github.com/Dao-AILab/flash-attention), [PyTorch FSDP](https://pytorch.org/tutorials/intermediate/FSDP_tutorial.html), and [Microsoft DeepSpeed](https://github.com/microsoft/DeepSpeed). We welcome contributions from the community to gather the best kernels for LLM training.
+**Liger Kernel** is a collection of Triton kernels designed specifically for LLM training. It can effectively increase multi-GPU **training throughput by 20%** and reduces **memory usage by 60%**. We have implemented **Hugging Face Compatible** `RMSNorm`, `RoPE`, `SwiGLU`, `CrossEntropy`, `FusedLinearCrossEntropy`, and more to come. The kernel works out of the box with [Flash Attention](https://github.com/Dao-AILab/flash-attention), [PyTorch FSDP](https://pytorch.org/tutorials/intermediate/FSDP_tutorial.html), and [Microsoft DeepSpeed](https://github.com/microsoft/DeepSpeed). We welcome contributions from the community to gather the best kernels for LLM training.
 
 ## Supercharge Your Model with Liger Kernel
 
@@ -288,14 +288,32 @@ Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compil
 
 [CONTRIBUTING GUIDE](https://github.com/linkedin/Liger-Kernel/blob/main/CONTRIBUTING.md)
 
-## Acknowledgement
+## Credit
+
+
+### Design
 
 - [@claire_yishan](https://twitter.com/claire_yishan) for the LOGO design
-- [flash-attn](https://github.com/Dao-AILab/flash-attention) and [Unsloth](https://github.com/unslothai/unsloth) for inspiration in Triton kernels for training
-- [tiny shakespeare dataset](https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt) by Andrej Karpathy for convergence testing
-- [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy) for lm_head + cross entropy inspiration
 - [Wave Snippets](https://www.wavesnippets.com/) for generating the animated code snippets
 
+### Code
+
+We referenced or used the following projects:
+
+
+| # | Project                              | Description                                                         | Location |
+|---|--------------------------------------|---------------------------------------------------------------------|----------|
+| 1 | [Unsloth](https://github.com/unslothai/unsloth/blob/fd753fed99ed5f10ef8a9b7139588d9de9ddecfb/unsloth/kernels/utils.py#L43)                | `calculate_settings` to determine block size and warp; We reuse it to calculate block size and warp for Norm and MLP | [Liger Kernel Utils](https://github.com/linkedin/Liger-Kernel/blob/e249eee723978bf8610ff1ea2297d048a2417e20/src/liger_kernel/ops/utils.py#L23) |
+| 2 | [Unsloth](https://github.com/unslothai/unsloth/blob/976d11a10d54383aeb7a692c69e01151a20bfd72/unsloth/kernels/rms_layernorm.py#L48)                | We modified and added dW calculation on top of Unsloth implementation          | [Liger Kernel RMS Norm](https://github.com/linkedin/Liger-Kernel/blob/e249eee723978bf8610ff1ea2297d048a2417e20/src/liger_kernel/ops/rms_norm.py#L50) |
+| 3 | [Triton tutorial](https://triton-lang.org/main/index.html)    | We modified on top of triton tutorials                           | [Liger Kernel RMS Norm](https://github.com/linkedin/Liger-Kernel/blob/e249eee723978bf8610ff1ea2297d048a2417e20/src/liger_kernel/ops/rms_norm.py#L50) |
+| 4 | [tiny shakespeare dataset](https://huggingface.co/datasets/karpathy/tiny_shakespeare)             | We use tiny shakespeare dataset to conduct convergence test on mini model | [Liger Kernel Convergence](https://github.com/linkedin/Liger-Kernel/tree/main/test/convergence) |
+| 5 | [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy) | We use the idea of gradient-in-forward and chunking                 | [Liger Kernel Linear Cross Entropy](https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/ops/fused_linear_cross_entropy.py) |
+| 6 | [Flash attn](https://github.com/Dao-AILab/flash-attention)    | We take many optimization ideas from the work, such as tiling and recomputation, for example, in RoPE and Cross Entropy. |          |
+| 7 | [AutoAWQ](https://github.com/casper-hansen/AutoAWQ)           | We reference the design of automodel                                | [Liger Kernel Auto Model](https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/transformers/auto_model.py) |
+| 8 | [llm.c](https://github.com/karpathy/llm.c) | We reference the design of end-to-end testing | [Liger Kernel Convergence Tests](https://github.com/linkedin/Liger-Kernel/tree/main/test/convergence) |
+
+
+Many thanks to the contributors to these projects for their invaluable work that helped make Liger possible.
 
 ## License
 
