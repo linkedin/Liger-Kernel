@@ -53,6 +53,65 @@ def calculate_settings(n):
     return BLOCK_SIZE, num_warps
 
 
+def calculate_settings_mnk(M, N, K, R=1, S=1, group_size=True):
+    # default profile
+    BLOCK_SIZE_M = 128
+    BLOCK_SIZE_N = 128
+    BLOCK_SIZE_K = 32
+    GROUP_SIZE_M = 8
+    num_warps = 4
+
+    if M > 1024:
+        BLOCK_SIZE_M = 256
+    elif M > 512:
+        BLOCK_SIZE_M = 128
+    elif M > 256:
+        BLOCK_SIZE_M = 64
+    else:
+        BLOCK_SIZE_M = 32
+
+    if N > 512:
+        BLOCK_SIZE_N = 256
+    elif N > 256:
+        BLOCK_SIZE_N = 128
+    elif N > 128:
+        BLOCK_SIZE_N = 64
+    else:
+        BLOCK_SIZE_N = 32
+
+    if K * R * S > 1024:
+        BLOCK_SIZE_K = 128
+    elif K * R * S > 512:
+        BLOCK_SIZE_K = 64
+    elif K * R * S > 256:
+        BLOCK_SIZE_K = 32
+    else:
+        BLOCK_SIZE_K = 16
+
+    if group_size:
+        if N > 512:
+            GROUP_SIZE_M = 16
+        elif N > 256:
+            GROUP_SIZE_M = 8
+        else:
+            GROUP_SIZE_M = 4
+
+    total_threads = BLOCK_SIZE_M * BLOCK_SIZE_N // 32
+    if total_threads > 128:
+        num_warps = 8
+    elif total_threads > 64:
+        num_warps = 4
+    elif total_threads > 32:
+        num_warps = 2
+    else:
+        num_warps = 1
+
+    if group_size:
+        return BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, GROUP_SIZE_M, num_warps
+    else:
+        return BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_warps
+
+
 def compare_version(package: str, operator: Callable, target: str):
     try:
         pkg = importlib.import_module(package)
