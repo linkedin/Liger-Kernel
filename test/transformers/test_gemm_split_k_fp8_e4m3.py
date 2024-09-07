@@ -9,10 +9,12 @@ from liger_kernel.ops.experimental.gemm_split_k_fp8_e4m3 import (
 
 compute_capability = torch.cuda.get_device_capability(0)
 
+
 def to_float8_e4m3(x):
     scale = x.abs().amax(1) / torch.finfo(torch.float8_e4m3fn).max
     x = x.float() / scale.view(-1, 1)
     return x.to(torch.float8_e4m3fn), scale
+
 
 @pytest.mark.parametrize(
     "m, k, n",
