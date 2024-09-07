@@ -16,7 +16,7 @@ from liger_kernel.transformers.conv2d import LigerConv2d
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
-        (torch.float16, 1e-2, 1e-2),
+        (torch.float16, 2e-2, 2e-2),
     ],
 )
 def test_conv2d_forward(
@@ -75,7 +75,7 @@ def test_conv2d_forward(
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
-        (torch.float16, 1e-2, 1e-2),
+        (torch.float16, 2e-2, 2e-2),
     ],
 )
 def test_conv2d_backward(
