@@ -173,7 +173,7 @@ def element_mul_kernel(
         tl.store(X_ptr + X_offsets, X_block * grad_output, mask=X_offsets < n_cols)
 
 
-def cross_entropy_forward(_input, target, ignore_index, label_smoothing):
+def cross_entropy_forward(_input, target, ignore_index, label_smoothing, reduction):
     BT, V = _input.shape
     n_rows = BT
 
@@ -207,8 +207,10 @@ def cross_entropy_forward(_input, target, ignore_index, label_smoothing):
         # Performance is quite sensitive to num_warps
         num_warps=32,
     )
-
-    loss = torch.sum(loss_1d) / n_non_ignore
+    if reduction == "mean":
+        loss = torch.sum(loss_1d) / n_non_ignore
+    elif reduction == "sum":
+        loss = torch.sum(loss_1d)
     return loss, _input
 
 
@@ -243,7 +245,9 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, _input, target, ignore_index=-100, label_smoothing=0.0):
+    def forward(
+        ctx, _input, target, ignore_index=-100, label_smoothing=0.0, reduction="mean"
+    ):
         """
         The forward pass of the Liger Cross Entropy loss.
 
@@ -253,12 +257,13 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         target (tensor): The target tensor of shape (BT) where each value is in [0, V-1].
         ignore_index (int): The index to ignore in the target.
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
-
+        reduction (str): The string for the reduction to apply
+        
         Returns:
         tensor: The computed loss.
         """
         loss, _input = cross_entropy_forward(
-            _input, target, ignore_index, label_smoothing
+            _input, target, ignore_index, label_smoothing, reduction
         )
         # TODO: investigation
         # If we don't detach the _input tensor, the memory will double
@@ -282,6 +287,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         _input = cross_entropy_backward(_input, grad_output)
         return (
             _input,
+            None,
             None,
             None,
             None,
