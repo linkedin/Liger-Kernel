@@ -472,7 +472,8 @@ def run_mini_model(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        ("mini_jamba", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
+        # To run this test, you need to first run `pip install . '[test]'`
+        # ("mini_jamba", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
     ],
 )
 def test_mini_model(
