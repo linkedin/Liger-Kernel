@@ -16,7 +16,7 @@ LOGIT_SOFTCAP_ACT = "softcap_act"
 
 
 def fused_linear_cross_entropy_forward(
-    _input, weight, target, bias=None, ignore_index=-100
+    _input, weight, target, bias=None, ignore_index=-100, label_smoothing=0.0
 ):
     if final_logit_softcap_params is not None:
         if {LOGIT_SOFTCAP_VAL, LOGIT_SOFTCAP_ACT} != set(
@@ -108,6 +108,7 @@ def fused_linear_cross_entropy_forward(
             n_cols=V,
             n_non_ignore=n_non_ignore,
             ignore_index=ignore_index,
+            label_smoothing=label_smoothing,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32,
         )
@@ -207,6 +208,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         bias=None,
         final_logit_softcap_params=None,
         ignore_index=-100,
+        label_smoothing=0.0,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -225,7 +227,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         ignore_index: the index to ignore in the target
         """
         loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
-            _input, weight, target, bias, ignore_index
+            _input, weight, target, bias, ignore_index, label_smoothing
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(

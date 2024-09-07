@@ -98,7 +98,7 @@ def geglu_forward(a, b):
     n_cols = ori_shape[-1]
     a = a.view(-1, n_cols)
     b = b.view(-1, n_cols)
-    c = torch.zeros_like(a)
+    c = torch.empty_like(a)
     n_rows = a.shape[0]
 
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
