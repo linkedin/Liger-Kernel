@@ -24,8 +24,6 @@ dev = [
     "pytest>=7.1.2",
     "datasets>=2.19.2",
     "jupyter==1.0.0",
-    "causal-conv1d>=1.4.0",
-    "mamba-ssm>=2.2.2",
     "seaborn",
 ]
 
