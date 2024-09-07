@@ -9,6 +9,10 @@ from liger_kernel.ops.experimental.gemm_split_k_fp8_e4m3 import (
 
 compute_capability = torch.cuda.get_device_capability(0)
 
+def to_float8_e4m3(x):
+    scale = x.abs().amax(1) / torch.finfo(torch.float8_e4m3fn).max
+    x = x.float() / scale.view(-1, 1)
+    return x.to(torch.float8_e4m3fn), scale
 
 @pytest.mark.parametrize(
     "m, k, n",
@@ -34,19 +38,19 @@ compute_capability = torch.cuda.get_device_capability(0)
     reason="FP8 GEMM is only supported on SM_89 and SM_90 CUDA devices.",
 )
 def test_gemm_split_k(m, k, n, dtype, atol, rtol):
-    a_fp8 = torch.randn((m, k), device="cuda", dtype=dtype).to(torch.float8_e4m3fn)
-    b_fp8 = torch.randn((k, n), device="cuda", dtype=dtype).to(torch.float8_e4m3fn)
+    a = torch.randn((m, k), device="cuda", dtype=dtype)
+    b = torch.randn((k, n), device="cuda", dtype=dtype)
 
-    a = a_fp8.float()
-    b = b_fp8.float()
+    a_fp8 = a.to(torch.float8_e4m3fn)
+    b_fp8 = b.to(torch.float8_e4m3fn)
 
     c_liger = LigerFP8GemmSplitKFunction.apply(a_fp8, b_fp8)
-    c_torch = torch.matmul(a, b)
+    c_torch = torch.mm(a_fp8.to(torch.float16), b_fp8.to(torch.float16))
 
-    assert_verbose_allclose(c_liger.float(), c_torch, atol=atol, rtol=rtol)
+    assert_verbose_allclose(c_liger.to(torch.bfloat16), c_torch, atol=atol, rtol=rtol)
 
-    a_autograd = a.requires_grad_()
-    b_autograd = b.requires_grad_()
+    a_autograd = a_fp8.float().requires_grad_()
+    b_autograd = b_fp8.float().requires_grad_()
 
     c_autograd = torch.matmul(a_autograd, b_autograd)
     c_autograd.backward(torch.ones_like(c_autograd))
