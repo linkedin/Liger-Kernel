@@ -40,6 +40,13 @@ Add a benchmarking script under `benchmark/scripts` using the naming convention 
 
 ## Run tests
 
+### Install test dependencies
+To run convergence test, you will need to install mamba dependencies separately <b>after</b> installing dev dependencies.
+This is due to a ongoing build [issue](https://github.com/state-spaces/mamba/issues/481) with mamba-ssm and causal-conv1d.
+```
+pip install .'[test]'
+```
+
 ### Use Makefile to run full tests
 1. Run `make test` to ensure correctness.
 2. Run `make checkstyle` to ensure code style.
