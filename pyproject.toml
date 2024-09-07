@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69.5.1", "wheel"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -27,6 +27,11 @@ dev = [
     "causal-conv1d>=1.4.0",
     "mamba-ssm>=2.2.2",
     "seaborn",
+]
+
+test = [
+    "causal-conv1d>=1.4.0",
+    "mamba-ssm>=2.2.2",
 ]
 
 [tool.setuptools.packages.find]
