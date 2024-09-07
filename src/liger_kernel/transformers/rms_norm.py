@@ -30,3 +30,6 @@ class LigerRMSNorm(nn.Module):
             self.offset,
             self.casting_mode,
         )
+
+    def extra_repr(self):
+        return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}, offset={self.offset}"
