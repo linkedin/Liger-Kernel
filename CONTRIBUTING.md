@@ -55,7 +55,7 @@ The `/benchmark` directory contains benchmarking scripts for the individual kern
    - Existing entries that are the same (based on `kernel_name`, `kernel_provider`, `kernel_operation_mode`, `metric_name`, `x_name`, `x_value`, `extra_benchmark_config_str`, and `gpu_name`) will not be overwritten.
 2. Run `make run-benchmarks OVERWRITE=1` to overwrite any existing entries that have the same configuration.
 3. Run `python benchmark/scripts/benchmark_{kernel_name}.py` to run an individual benchmark.
-4. You can use the `benchmark/benchmarks_visualizer.ipynb` notebook as an example to load the CSV and perform data visualization/analysis.
+4. You can use the `benchmark/benchmarks_visualizer.py` script to generate visualizations from the CSV, these are then saved to the `benchmark/visualizations` directory (note: this directory is not tracked by git).
 
 ## Submit PR
 Fork the repo, copy and paste the successful test logs in the PR and submit the PR followed by the PR template (**[example PR](https://github.com/linkedin/Liger-Kernel/pull/21)**).
