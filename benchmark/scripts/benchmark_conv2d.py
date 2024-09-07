@@ -12,10 +12,12 @@ from utils import (
 
 from liger_kernel.transformers.conv2d import LigerConv2d
 
+
 def warmup_liger_conv2d(liger_conv2d, x):
     for _ in range(10):
         out = liger_conv2d(x)
         out.sum().backward()
+
 
 def bench_speed_conv2d(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     C = input.x
@@ -34,8 +36,20 @@ def bench_speed_conv2d(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
 
     device = "cuda"
 
-    torch_conv2d = Conv2d(C, K, (R, S), stride=stride, padding=padding, dilation=dilation, bias=False).to(device).to(dtype)
-    liger_conv2d = LigerConv2d(C, K, (R, S), stride=stride, padding=padding, dilation=dilation, bias=False).to(device).to(dtype)
+    torch_conv2d = (
+        Conv2d(
+            C, K, (R, S), stride=stride, padding=padding, dilation=dilation, bias=False
+        )
+        .to(device)
+        .to(dtype)
+    )
+    liger_conv2d = (
+        LigerConv2d(
+            C, K, (R, S), stride=stride, padding=padding, dilation=dilation, bias=False
+        )
+        .to(device)
+        .to(dtype)
+    )
 
     x = torch.randn(N, C, H, W, dtype=dtype, device=device, requires_grad=True)
     w = torch.randn(K, C, R, S, dtype=dtype, device=device)
@@ -69,6 +83,7 @@ def bench_speed_conv2d(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
         y_80=ms_80,
     )
 
+
 def bench_memory_conv2d(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     C = input.x
     provider = input.kernel_provider
@@ -85,8 +100,20 @@ def bench_memory_conv2d(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOut
 
     device = "cuda"
 
-    torch_conv2d = Conv2d(C, K, (R, S), stride=stride, padding=padding, dilation=dilation, bias=False).to(device).to(dtype)
-    liger_conv2d = LigerConv2d(C, K, (R, S), stride=stride, padding=padding, dilation=dilation, bias=False).to(device).to(dtype)
+    torch_conv2d = (
+        Conv2d(
+            C, K, (R, S), stride=stride, padding=padding, dilation=dilation, bias=False
+        )
+        .to(device)
+        .to(dtype)
+    )
+    liger_conv2d = (
+        LigerConv2d(
+            C, K, (R, S), stride=stride, padding=padding, dilation=dilation, bias=False
+        )
+        .to(device)
+        .to(dtype)
+    )
 
     x = torch.randn(N, C, H, W, dtype=dtype, device=device, requires_grad=True)
     w = torch.randn(K, C, R, S, dtype=dtype, device=device)
@@ -115,6 +142,7 @@ def bench_memory_conv2d(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOut
         y_80=mem_80,
     )
 
+
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
@@ -125,8 +153,28 @@ if __name__ == "__main__":
         "x_values": [64, 128, 256, 512],
         "kernel_providers": ["liger", "huggingface"],
         "extra_benchmark_configs": [
-            {"N": 1, "H": 56, "W": 56, "K": 64, "kernel_size": (3, 3), "stride": (1, 1), "padding": (1, 1), "dilation": (1, 1), "dtype": torch.float16},
-            {"N": 1, "H": 112, "W": 112, "K": 128, "kernel_size": (5, 5), "stride": (2, 2), "padding": (2, 2), "dilation": (1, 1), "dtype": torch.float16},
+            {
+                "N": 1,
+                "H": 56,
+                "W": 56,
+                "K": 64,
+                "kernel_size": (3, 3),
+                "stride": (1, 1),
+                "padding": (1, 1),
+                "dilation": (1, 1),
+                "dtype": torch.float16,
+            },
+            {
+                "N": 1,
+                "H": 112,
+                "W": 112,
+                "K": 128,
+                "kernel_size": (5, 5),
+                "stride": (2, 2),
+                "padding": (2, 2),
+                "dilation": (1, 1),
+                "dtype": torch.float16,
+            },
         ],
         "overwrite": args.overwrite,
     }
