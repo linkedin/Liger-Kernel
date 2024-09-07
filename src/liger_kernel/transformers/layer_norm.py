@@ -25,6 +25,6 @@ class LigerLayerNorm(nn.Module):
         return LigerLayerNormFunction.apply(
             hidden_states, self.weight, self.bias, self.variance_epsilon
         )
-        
-    def extra_repr(self) -> str:
-        return f'{self.hidden_size}, eps={self.eps}'
+
+    def extra_repr(self):
+        return f"{self.hidden_size}, eps={self.eps}"
