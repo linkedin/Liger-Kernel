@@ -40,8 +40,6 @@ Add a benchmarking script under `benchmark/scripts` using the naming convention 
 
 ## Run tests
 
-### Install test dependencies
-
 ### Use Makefile to run full tests
 1. Run `make test` to ensure correctness.
 2. Run `make checkstyle` to ensure code style.
