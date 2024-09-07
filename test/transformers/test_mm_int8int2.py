@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from liger_kernel.transformers.experimental.mm_int8int2 import matmul, unpack_weights, pack_weights
+from liger_kernel.ops.experimental.mm_int8int2 import matmul, unpack_weights, pack_weights
 
 
 # input_features = size*4 when the weight matrix is unpacked
