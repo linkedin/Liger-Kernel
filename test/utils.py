@@ -88,6 +88,10 @@ DEFAULT_DATASET_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare_tokenized"
 )
 
+UNTOKENIZED_DATASET_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare.txt"
+)
+
 
 @dataclass
 class MiniModelConfig:
@@ -112,6 +116,25 @@ def simple_collate_fn(data: List[Dict[str, Any]]):
             "labels": labels,
         }
     )
+
+
+def multimodal_collate_fn(data: List[Dict[str, Any]]):
+    """A collate function to use for DataLoader for multimodal models"""
+    batch = {}
+    keys = set(data[0].keys())
+
+    input_ids = torch.cat([torch.tensor(item["input_ids"]) for item in data])
+    keys.remove("input_ids")
+    batch["input_ids"] = input_ids
+
+    labels = input_ids.clone()
+    batch["labels"] = labels
+
+    # Collate all other keys, e.g. pixel_values, attention_mask, image_grid_thw, etc
+    for key in keys:
+        batch[key] = torch.cat([item[key] for item in data])
+
+    return BatchEncoding(batch)
 
 
 def supports_bfloat16():
