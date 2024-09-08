@@ -11,3 +11,6 @@ site/
 # Build
 build/
 dist/
+
+# Benchmark images
+benchmark/visualizations
