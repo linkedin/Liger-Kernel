@@ -107,14 +107,11 @@ def conv2d_forward(
     GEMM_M = N * P * Q
     GEMM_N = K
     GEMM_K = C * R * S
-    BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, GROUP_SIZE_M, num_warps = (
-        calculate_settings_mnk(P * Q, K, C, R, S)
+
+    BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, GROUP_SIZE_M, num_warps, grid = (
+        calculate_settings_mnk(GEMM_M, GEMM_N, GEMM_K, R, S)
     )
 
-    grid = lambda BLOCK: (
-        triton.cdiv(GEMM_M, BLOCK["BLOCK_SIZE_M"])
-        * triton.cdiv(GEMM_N, BLOCK["BLOCK_SIZE_N"]),
-    )
     conv2d_forward_kernel[grid](
         x,
         w,

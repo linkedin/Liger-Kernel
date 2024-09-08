@@ -12,7 +12,7 @@ Modifications made by Yanning Chen, 2024.
 
 import functools
 import importlib
-from typing import Callable
+from typing import Callable, Tuple
 
 import torch
 import triton
@@ -53,63 +53,37 @@ def calculate_settings(n):
     return BLOCK_SIZE, num_warps
 
 
-def calculate_settings_mnk(M, N, K, R=1, S=1, group_size=True):
-    # default profile
-    BLOCK_SIZE_M = 128
-    BLOCK_SIZE_N = 128
-    BLOCK_SIZE_K = 32
-    GROUP_SIZE_M = 8
-    num_warps = 4
+@functools.lru_cache(maxsize=128)
+def calculate_settings_mnk(
+    M: int, N: int, K: int, R: int = 1, S: int = 1, group_size: bool = True
+) -> Tuple[int, ...]:
+    block_sizes_m = [32, 64, 128, 256]
+    block_sizes_n = [32, 64, 128, 256]
+    block_sizes_k = [16, 32, 64, 128]
+    group_sizes_m = [4, 8, 16]
+    warp_sizes = [1, 2, 4, 8]
 
-    if M > 1024:
-        BLOCK_SIZE_M = 256
-    elif M > 512:
-        BLOCK_SIZE_M = 128
-    elif M > 256:
-        BLOCK_SIZE_M = 64
-    else:
-        BLOCK_SIZE_M = 32
+    def choose_optimal(sizes, threshold):
+        return next((size for size in reversed(sizes) if threshold >= size), sizes[0])
 
-    if N > 512:
-        BLOCK_SIZE_N = 256
-    elif N > 256:
-        BLOCK_SIZE_N = 128
-    elif N > 128:
-        BLOCK_SIZE_N = 64
-    else:
-        BLOCK_SIZE_N = 32
-
-    if K * R * S > 1024:
-        BLOCK_SIZE_K = 128
-    elif K * R * S > 512:
-        BLOCK_SIZE_K = 64
-    elif K * R * S > 256:
-        BLOCK_SIZE_K = 32
-    else:
-        BLOCK_SIZE_K = 16
-
-    if group_size:
-        if N > 512:
-            GROUP_SIZE_M = 16
-        elif N > 256:
-            GROUP_SIZE_M = 8
-        else:
-            GROUP_SIZE_M = 4
+    # compute optimal block sizes
+    BLOCK_SIZE_M = choose_optimal(block_sizes_m, M)
+    BLOCK_SIZE_N = choose_optimal(block_sizes_n, N)
+    BLOCK_SIZE_K = choose_optimal(block_sizes_k, K * R * S)
+    GROUP_SIZE_M = choose_optimal(group_sizes_m, N) if group_size else None
 
     total_threads = BLOCK_SIZE_M * BLOCK_SIZE_N // 32
-    if total_threads > 128:
-        num_warps = 8
-    elif total_threads > 64:
-        num_warps = 4
-    elif total_threads > 32:
-        num_warps = 2
-    else:
-        num_warps = 1
+    num_warps = choose_optimal(warp_sizes, total_threads)
+
+    # compute grid
+    grid = lambda META: (
+        triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
+    )
 
     if group_size:
-        return BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, GROUP_SIZE_M, num_warps
+        return BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, GROUP_SIZE_M, num_warps, grid
     else:
-        return BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_warps
+        return BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_warps, grid
 
 
 def compare_version(package: str, operator: Callable, target: str):
