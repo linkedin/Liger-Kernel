@@ -1,8 +1,8 @@
 import json
 import os
+import sys
 from argparse import ArgumentParser
 from dataclasses import dataclass
-import sys
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -39,8 +39,9 @@ def get_available_options():
     return {
         "kernel_name": df["kernel_name"].unique().tolist(),
         "metric_name": df["metric_name"].unique().tolist(),
-        "kernel_operation_mode": df["kernel_operation_mode"].unique().tolist()
+        "kernel_operation_mode": df["kernel_operation_mode"].unique().tolist(),
     }
+
 
 def parse_args() -> VisualizationsConfig:
     """Parse command line arguments into a configuration object.
@@ -57,17 +58,17 @@ def parse_args() -> VisualizationsConfig:
     parser.add_argument(
         "--kernel-name",
         type=str,
-        help=f"Kernel name to benchmark. Options: {', '.join(available_options['kernel_name'])}"
+        help=f"Kernel name to benchmark. Options: {', '.join(available_options['kernel_name'])}",
     )
     parser.add_argument(
         "--metric-name",
         type=str,
-        help=f"Metric name to visualize. Options: {', '.join(available_options['metric_name'])}"
+        help=f"Metric name to visualize. Options: {', '.join(available_options['metric_name'])}",
     )
     parser.add_argument(
         "--kernel-operation-mode",
         type=str,
-        help=f"Kernel operation mode to visualize. Options: {', '.join(available_options['kernel_operation_mode'])}"
+        help=f"Kernel operation mode to visualize. Options: {', '.join(available_options['kernel_operation_mode'])}",
     )
     parser.add_argument(
         "--display", action="store_true", help="Display the visualization"
@@ -88,17 +89,25 @@ def parse_args() -> VisualizationsConfig:
         sys.exit(0)
 
     if not all([args.kernel_name, args.metric_name, args.kernel_operation_mode]):
-        parser.error("--kernel-name, --metric-name, and --kernel-operation-mode are required arguments")
+        parser.error(
+            "--kernel-name, --metric-name, and --kernel-operation-mode are required arguments"
+        )
 
-    if args.kernel_name not in available_options['kernel_name']:
-        parser.error(f"Invalid kernel name. Choose from: {', '.join(available_options['kernel_name'])}")
-    if args.metric_name not in available_options['metric_name']:
-        parser.error(f"Invalid metric name. Choose from: {', '.join(available_options['metric_name'])}")
-    if args.kernel_operation_mode not in available_options['kernel_operation_mode']:
-        parser.error(f"Invalid kernel operation mode. Choose from: {', '.join(available_options['kernel_operation_mode'])}")
+    if args.kernel_name not in available_options["kernel_name"]:
+        parser.error(
+            f"Invalid kernel name. Choose from: {', '.join(available_options['kernel_name'])}"
+        )
+    if args.metric_name not in available_options["metric_name"]:
+        parser.error(
+            f"Invalid metric name. Choose from: {', '.join(available_options['metric_name'])}"
+        )
+    if args.kernel_operation_mode not in available_options["kernel_operation_mode"]:
+        parser.error(
+            f"Invalid kernel operation mode. Choose from: {', '.join(available_options['kernel_operation_mode'])}"
+        )
 
     args_dict = vars(args)
-    args_dict.pop('help', None)
+    args_dict.pop("help", None)
 
     return VisualizationsConfig(**args_dict)
 
