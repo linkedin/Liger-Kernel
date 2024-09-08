@@ -29,7 +29,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["liger_kernel"]
+include = ["liger_kernel", "liger_kernel.*"]
 
 [tool.pytest.ini_options]
 pythonpath = [
