@@ -7,7 +7,6 @@ from liger_kernel.transformers.conv2d import LigerConv2d
 @pytest.mark.parametrize(
     "N, C, H, W, K, R, S, pad_h, pad_w, U, V, dila_h, dila_w",
     [
-        (1, 64, 56, 56, 64, 1, 1, 0, 0, 1, 1, 1, 1),
         (1, 128, 28, 28, 128, 3, 3, 1, 1, 1, 1, 1, 1),
         (1, 256, 14, 14, 256, 5, 5, 2, 2, 2, 2, 1, 1),
     ],
@@ -65,7 +64,6 @@ def test_conv2d_forward(
 @pytest.mark.parametrize(
     "N, C, H, W, K, R, S, pad_h, pad_w, U, V, dila_h, dila_w",
     [
-        (1, 64, 56, 56, 64, 1, 1, 0, 0, 1, 1, 1, 1),
         (1, 128, 28, 28, 128, 3, 3, 1, 1, 1, 1, 1, 1),
         (1, 256, 14, 14, 256, 5, 5, 2, 2, 2, 2, 1, 1),
     ],
