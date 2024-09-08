@@ -96,6 +96,7 @@ UNTOKENIZED_DATASET_PATH = os.path.join(
 @dataclass
 class MiniModelConfig:
     liger_kernel_patch_func: callable
+    liger_kernel_patch_revert_func: callable
     model_class: PreTrainedModel
     mini_model_config: PretrainedConfig
 

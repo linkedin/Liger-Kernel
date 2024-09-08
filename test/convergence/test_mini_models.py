@@ -29,6 +29,13 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_mixtral,
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
+    revert_liger_kernel_to_gemma,
+    revert_liger_kernel_to_gemma2,
+    revert_liger_kernel_to_llama,
+    revert_liger_kernel_to_mistral,
+    revert_liger_kernel_to_mixtral,
+    revert_liger_kernel_to_phi3,
+    revert_liger_kernel_to_qwen2,
 )
 
 torch.use_deterministic_algorithms(True)
@@ -46,6 +53,7 @@ MINI_MODEL_SETUPS = {
         liger_kernel_patch_func=functools.partial(
             apply_liger_kernel_to_llama, fused_linear_cross_entropy=False
         ),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_llama,
         model_class=LlamaForCausalLM,
         mini_model_config=LlamaConfig(
             attention_bias=False,
@@ -80,6 +88,7 @@ MINI_MODEL_SETUPS = {
         liger_kernel_patch_func=functools.partial(
             apply_liger_kernel_to_gemma, fused_linear_cross_entropy=False
         ),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma,
         model_class=GemmaForCausalLM,
         mini_model_config=GemmaConfig(
             vocab_size=32000,  # 256000
@@ -113,6 +122,7 @@ MINI_MODEL_SETUPS = {
         liger_kernel_patch_func=functools.partial(
             apply_liger_kernel_to_gemma, fused_linear_cross_entropy=False
         ),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma,
         model_class=GemmaForCausalLM,
         mini_model_config=GemmaConfig(
             vocab_size=32000,  # 256000
@@ -140,6 +150,7 @@ MINI_MODEL_SETUPS = {
     ),
     "mini_gemma2": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_gemma2,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma2,
         model_class=Gemma2ForCausalLM,
         mini_model_config=Gemma2Config(
             vocab_size=32000,  # 256000
@@ -169,6 +180,7 @@ MINI_MODEL_SETUPS = {
         liger_kernel_patch_func=functools.partial(
             apply_liger_kernel_to_mistral, fused_linear_cross_entropy=False
         ),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_mistral,
         model_class=MistralForCausalLM,
         mini_model_config=MistralConfig(
             attention_dropout=0.0,
@@ -193,6 +205,7 @@ MINI_MODEL_SETUPS = {
     ),
     "mini_mixtral": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_mixtral,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_mixtral,
         model_class=MixtralForCausalLM,
         mini_model_config=MixtralConfig(
             attention_dropout=0.0,
@@ -227,6 +240,7 @@ MINI_MODEL_SETUPS = {
         liger_kernel_patch_func=functools.partial(
             apply_liger_kernel_to_qwen2, fused_linear_cross_entropy=False
         ),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2,
         model_class=Qwen2ForCausalLM,
         mini_model_config=Qwen2Config(
             attention_dropout=0.0,
@@ -257,6 +271,7 @@ MINI_MODEL_SETUPS = {
         liger_kernel_patch_func=functools.partial(
             apply_liger_kernel_to_phi3, fused_linear_cross_entropy=False
         ),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_phi3,
         model_class=Phi3ForCausalLM,
         mini_model_config=Phi3Config(
             attention_dropout=0.0,
@@ -317,6 +332,8 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
+    else:
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
 
     model = create_model(model_name).to(dtype).to("cuda")
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
