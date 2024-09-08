@@ -359,6 +359,7 @@ def run_mini_model(
     loss_list = []
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
+        optimizer.zero_grad()
         output = model(**batch)
         output.loss.backward()
         optimizer.step()
@@ -371,7 +372,7 @@ def run_mini_model(
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
-        # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
+        # Gemma 1 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
         ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 6e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_gemma1",
