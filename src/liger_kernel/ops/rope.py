@@ -117,6 +117,92 @@ def _triton_rope(
         tl.store(k_ptr + second_half_k_offsets, new_k_tile_2, mask=second_k_mask)
 
 
+def rope_forward(q, k, cos, sin):
+
+    # transpose it back to the physical shape because Triton looks at the physical storage
+    # note: q and k are incontiguous before the transformation and will become contiguous after transpose
+    q = q.transpose(1, 2)
+    k = k.transpose(1, 2)
+
+    batch_size, seq_len, n_q_head, head_dim = q.shape
+    n_kv_head = k.shape[2]
+    pad_hd = triton.next_power_of_2(head_dim)
+    pad_n_q_head = triton.next_power_of_2(n_q_head)
+    pad_n_kv_head = triton.next_power_of_2(n_kv_head)
+    BLOCK_SIZE = max(pad_n_q_head, pad_n_kv_head)
+
+    n_row = batch_size * seq_len
+
+    # ensure tensors passed into the kernel are contiguous. It will be no-op if they are already contiguous
+    q = q.contiguous()
+    k = k.contiguous()
+    cos = cos.contiguous()
+    sin = sin.contiguous()
+
+    _triton_rope[(n_row,)](
+        q,
+        q.stride(1),
+        k,
+        k.stride(1),
+        cos,
+        cos.stride(-2),
+        sin,
+        sin.stride(-2),
+        seq_len,
+        batch_size,
+        n_q_head,
+        n_kv_head,
+        head_dim,
+        pad_n_q_head,
+        pad_n_kv_head,
+        pad_hd,
+        BLOCK_SIZE=BLOCK_SIZE,
+        BACKWARD_PASS=False,
+    )
+    return q.transpose(1, 2), k.transpose(1, 2), cos, sin
+
+
+def rope_backward(dq, dk, cos, sin):
+    dq = dq.transpose(1, 2)
+    dk = dk.transpose(1, 2)
+
+    batch_size, seq_len, n_q_head, head_dim = dq.shape
+    n_kv_head = dk.shape[2]
+    pad_hd = triton.next_power_of_2(head_dim)
+    pad_n_q_head = triton.next_power_of_2(n_q_head)
+    pad_n_kv_head = triton.next_power_of_2(n_kv_head)
+    BLOCK_SIZE = max(pad_n_q_head, pad_n_kv_head)
+
+    n_row = batch_size * seq_len
+
+    # ensure dq and dk are contiguous
+    dq = dq.contiguous()
+    dk = dk.contiguous()
+
+    # backward is similar to forward except swapping few ops
+    _triton_rope[(n_row,)](
+        dq,
+        dq.stride(1),
+        dk,
+        dk.stride(1),
+        cos,
+        cos.stride(-2),
+        sin,
+        sin.stride(-2),
+        seq_len,
+        batch_size,
+        n_q_head,
+        n_kv_head,
+        head_dim,
+        pad_n_q_head,
+        pad_n_kv_head,
+        pad_hd,
+        BLOCK_SIZE=BLOCK_SIZE,
+        BACKWARD_PASS=True,
+    )
+    return dq.transpose(1, 2), dk.transpose(1, 2)
+
+
 class LigerRopeFunction(torch.autograd.Function):
     """
     Triton implementation of the Rotary Positional Embedding (RoPE) operation. Please note that
@@ -138,50 +224,9 @@ class LigerRopeFunction(torch.autograd.Function):
         cos size: (1, seq_len, head_dim)
         sin size: (1, seq_len, head_dim)
         """
-
-        # transpose it back to the physical shape because Triton looks at the physical storage
-        # note: q and k are incontiguous before the transformation and will become contiguous after transpose
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-
-        batch_size, seq_len, n_q_head, head_dim = q.shape
-        n_kv_head = k.shape[2]
-        pad_hd = triton.next_power_of_2(head_dim)
-        pad_n_q_head = triton.next_power_of_2(n_q_head)
-        pad_n_kv_head = triton.next_power_of_2(n_kv_head)
-        BLOCK_SIZE = max(pad_n_q_head, pad_n_kv_head)
-
-        n_row = batch_size * seq_len
-
-        # ensure tensors passed into the kernel are contiguous. It will be no-op if they are already contiguous
-        q = q.contiguous()
-        k = k.contiguous()
-        cos = cos.contiguous()
-        sin = sin.contiguous()
-
-        _triton_rope[(n_row,)](
-            q,
-            q.stride(1),
-            k,
-            k.stride(1),
-            cos,
-            cos.stride(-2),
-            sin,
-            sin.stride(-2),
-            seq_len,
-            batch_size,
-            n_q_head,
-            n_kv_head,
-            head_dim,
-            pad_n_q_head,
-            pad_n_kv_head,
-            pad_hd,
-            BLOCK_SIZE=BLOCK_SIZE,
-            BACKWARD_PASS=False,
-        )
-
+        q, k, cos, sin = rope_forward(q, k, cos, sin)
         ctx.save_for_backward(cos, sin)
-        return q.transpose(1, 2), k.transpose(1, 2)
+        return q, k
 
     def backward(ctx, dq, dk):
         """
@@ -192,43 +237,5 @@ class LigerRopeFunction(torch.autograd.Function):
         """
 
         cos, sin = ctx.saved_tensors
-
-        dq = dq.transpose(1, 2)
-        dk = dk.transpose(1, 2)
-
-        batch_size, seq_len, n_q_head, head_dim = dq.shape
-        n_kv_head = dk.shape[2]
-        pad_hd = triton.next_power_of_2(head_dim)
-        pad_n_q_head = triton.next_power_of_2(n_q_head)
-        pad_n_kv_head = triton.next_power_of_2(n_kv_head)
-        BLOCK_SIZE = max(pad_n_q_head, pad_n_kv_head)
-
-        n_row = batch_size * seq_len
-
-        # ensure dq and dk are contiguous
-        dq = dq.contiguous()
-        dk = dk.contiguous()
-
-        # backward is similar to forward except swapping few ops
-        _triton_rope[(n_row,)](
-            dq,
-            dq.stride(1),
-            dk,
-            dk.stride(1),
-            cos,
-            cos.stride(-2),
-            sin,
-            sin.stride(-2),
-            seq_len,
-            batch_size,
-            n_q_head,
-            n_kv_head,
-            head_dim,
-            pad_n_q_head,
-            pad_n_kv_head,
-            pad_hd,
-            BLOCK_SIZE=BLOCK_SIZE,
-            BACKWARD_PASS=True,
-        )
-
-        return dq.transpose(1, 2), dk.transpose(1, 2), None, None, None, None
+        dq, dk = rope_backward(dq, dk, cos, sin)
+        return dq, dk, None, None, None, None

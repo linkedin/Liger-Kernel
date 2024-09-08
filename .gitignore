@@ -3,6 +3,7 @@ __pycache__/
 site/
 .cache/
 .venv/
+.ipynb_checkpoints/
 
 # Misc
 .DS_Store
@@ -10,3 +11,6 @@ site/
 # Build
 build/
 dist/
+
+# Benchmark images
+benchmark/visualizations

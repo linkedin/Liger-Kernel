@@ -15,6 +15,7 @@ from transformers.models.gemma import GemmaConfig, GemmaForCausalLM
 from transformers.models.gemma2 import Gemma2Config, Gemma2ForCausalLM
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
+from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
 from transformers.models.phi3 import Phi3Config, Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
 
@@ -23,6 +24,7 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_gemma2,
     apply_liger_kernel_to_llama,
     apply_liger_kernel_to_mistral,
+    apply_liger_kernel_to_mixtral,
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
 )
@@ -120,7 +122,31 @@ MINI_MODEL_SETUPS = {
             bos_token_id=1,
             eos_token_id=2,
             hidden_act="silu",
-            hidden_size=1024,  # 4096
+            hidden_size=1024,
+            initializer_range=0.02,
+            intermediate_size=2048,
+            max_position_embeddings=32768,
+            num_attention_heads=8,
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            rms_norm_eps=1e-5,
+            rope_theta=10000.0,
+            sliding_window=4096,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,
+            attn_implementation="sdpa",
+        ),
+    ),
+    "mini_mixtral": MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_mixtral,
+        model_class=MixtralForCausalLM,
+        mini_model_config=MixtralConfig(
+            attention_dropout=0.0,
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            hidden_size=512,  # 4096
             initializer_range=0.02,
             intermediate_size=2048,  # 14336
             max_position_embeddings=32768,  # 32768
@@ -348,6 +374,22 @@ def run_mini_model(
             1e-8,
             1e-5,
             1e-2,
+            1e-5,
+            1e-2,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
+        ("mini_mixtral", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
+        pytest.param(
+            "mini_mixtral",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-8,
+            1e-5,
+            1e-1,
             1e-5,
             1e-2,
             1e-5,

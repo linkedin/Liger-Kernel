@@ -4,7 +4,7 @@ Thank you for your interest in contributing to Liger-Kernel! This guide will hel
 
 ## Maintainer
 
-@ByronHsu(admin) @qingquansong @yundai424 @kvignesh1420 @lancerts @JasonZhu1313
+@ByronHsu(admin) @qingquansong @yundai424 @kvignesh1420 @lancerts @JasonZhu1313 @shimizust
 
 ## Interested in the ticket?
 
@@ -32,18 +32,30 @@ To get familiar with the folder structure, please refer to https://github.com/li
 1. **Create Your Kernel**
 Add your kernel implementation in `src/liger_kernel/`.
 
-3. **Add Unit Tests**
+2. **Add Unit Tests**
 Create unit tests and convergence tests for your kernel in the tests directory. Ensure that your tests cover all kernel functionalities.
+
+3. **Add Benchmark Script**
+Add a benchmarking script under `benchmark/scripts` using the naming convention `benchmark_{kernel_name}.py` showing the performance difference between the Liger kernel and HuggingFace.
 
 ## Run tests
 
 ### Use Makefile to run full tests
-1. run `make test` to ensure correctness.
-2. run `make checkstyle` to ensure code style.
-3. run `make test-convergence` to ensure convergence.
+1. Run `make test` to ensure correctness.
+2. Run `make checkstyle` to ensure code style.
+3. Run `make test-convergence` to ensure convergence.
 
 ### Run pytest on single file
 `python -m pytest test_sample.py::test_function_name`
+
+## Run kernel benchmarks
+The `/benchmark` directory contains benchmarking scripts for the individual kernels, demonstrating differences in speed and memory usage between using Liger and HuggingFace module implementations.
+
+1. Run `make run-benchmarks` to run all benchmarking scripts and append data to `benchmark/data/all_benchmark_data.csv`.
+   - Existing entries that are the same (based on `kernel_name`, `kernel_provider`, `kernel_operation_mode`, `metric_name`, `x_name`, `x_value`, `extra_benchmark_config_str`, and `gpu_name`) will not be overwritten.
+2. Run `make run-benchmarks OVERWRITE=1` to overwrite any existing entries that have the same configuration.
+3. Run `python benchmark/scripts/benchmark_{kernel_name}.py` to run an individual benchmark.
+4. You can use the `benchmark/benchmarks_visualizer.py` script to generate visualizations from the CSV, these are then saved to the `benchmark/visualizations` directory (note: this directory is not tracked by git).
 
 ## Submit PR
 Fork the repo, copy and paste the successful test logs in the PR and submit the PR followed by the PR template (**[example PR](https://github.com/linkedin/Liger-Kernel/pull/21)**).
@@ -52,7 +64,14 @@ Fork the repo, copy and paste the successful test logs in the PR and submit the 
 
 ## Release (maintainer only)
 
-1. Bump the version in setup.py
+1. Bump the version in pyproject.toml to the desired version (for example, `0.2.0`)
 2. Submit a PR and merge
-3. Create a new release based on the current HEAD
-4. New pip uploading will be triggered upon a new release 
+3. Create a new release based on the current HEAD, tag name using `v<version number>` for example `v0.2.0`. Alternatively, If you want to create release based on a different commit hash, `git tag v0.2.0 <commit hash> && git push origin v0.2.0`, and create release based on this tag
+4. Adding release note: Minimum requirement is to click the `Generate Release Notes` button that will automatically generates 1) changes included, 2) new contributors. It's good to add sections on top to highlight the important changes.
+5. New pip uploading will be triggered upon a new release. NOTE: Both pre-release and official release will trigger the workflow to build wheel and publish to pypi, so please be sure that step 1-3 are followed correctly!
+
+### Notes on version:
+Here we follow the [sematic versioning](https://semver.org/). Denote the version as `major.minor.patch`, we increment:
+- Major version when there is backward incompatible change
+- Minor version when there is new backward-compatible functionaility
+- Patch version for bug fixes
