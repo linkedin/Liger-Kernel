@@ -15,6 +15,7 @@ from liger_kernel.transformers.monkey_patch import (  # noqa: F401
     apply_liger_kernel_to_mixtral,
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
+    apply_liger_kernel_to_qwen2_vl,
 )
 from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401
 from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
