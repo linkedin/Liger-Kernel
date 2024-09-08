@@ -12,5 +12,8 @@ site/
 build/
 dist/
 
+# Lockfiles
+uv.lock
+
 # Benchmark images
 benchmark/visualizations
