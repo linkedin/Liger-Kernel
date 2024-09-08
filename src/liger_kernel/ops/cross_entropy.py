@@ -258,7 +258,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         ignore_index (int): The index to ignore in the target.
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
         reduction (str): The string for the reduction to apply
-        
+
         Returns:
         tensor: The computed loss.
         """
