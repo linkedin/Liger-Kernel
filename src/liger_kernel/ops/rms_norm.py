@@ -1,3 +1,15 @@
+"""
+This file incorporates code from Unsloth licensed under the Apache License, Version 2.0.
+See the original Unsloth repository at https://github.com/unslothai/unsloth.
+
+The following line
+https://github.com/linkedin/Liger-Kernel/blob/7382a8761f9af679482b968f9348013d933947c7/src/liger_kernel/ops/rms_norm.py#L30
+is based on code from Unsloth, located at:
+https://github.com/unslothai/unsloth/blob/fd753fed99ed5f10ef8a9b7139588d9de9ddecfb/unsloth/kernels/rms_layernorm.py#L22
+
+Modifications made by Yanning Chen, 2024.
+"""
+
 import operator
 
 import torch
@@ -34,8 +46,8 @@ def _rms_norm_forward_kernel(
     X_row_stride,
     W_ptr,
     W_row_stride,
-    r_ptr,
-    r_row_stride,
+    RSTD_ptr,
+    RSTD_row_stride,
     n_cols,
     eps,
     offset,
@@ -57,13 +69,13 @@ def _rms_norm_forward_kernel(
 
     Y_ptr += row_idx * Y_row_stride
     X_ptr += row_idx * X_row_stride
-    r_ptr += row_idx * r_row_stride
+    RSTD_ptr += row_idx * RSTD_row_stride
 
     X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0)
     X_row_dtype = X_row.dtype
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0)
 
-    # On Llama, only inv_rms is computed on fp32
+    # On Llama, only rstd is computed on fp32
     if casting_mode == _CASTING_MODE_LLAMA:
         X_row = X_row.to(tl.float32)
 
@@ -73,14 +85,14 @@ def _rms_norm_forward_kernel(
         X_row = X_row.to(tl.float32)
 
     mean_square = tl.sum(X_row * X_row, axis=0) / n_cols
-    inv_rms = rsqrt(mean_square + eps)
+    rstd = rsqrt(mean_square + eps)
 
     # We can save time by caching rms with minimal memory overhead
     # because rms is much smaller compared to X_row, as rms is for each row.
     # However, on the computation side, it can save 4 operations (*, sum, /, sqrt).
-    tl.store(r_ptr, inv_rms)
+    tl.store(RSTD_ptr, rstd)
 
-    X_row = X_row * inv_rms
+    X_row = X_row * rstd
 
     # On Llama, the multiplication with the weight is done on the original dtype
     if casting_mode == _CASTING_MODE_LLAMA:
@@ -99,12 +111,11 @@ def _rms_norm_backward_kernel(
     X_row_stride,
     W_ptr,
     W_row_stride,
-    r_ptr,
-    r_row_stride,
+    RSTD_ptr,
+    RSTD_row_stride,
     dW_ptr,
     dW_row_stride,
     n_cols,
-    eps,
     offset,
     casting_mode: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
@@ -120,7 +131,7 @@ def _rms_norm_backward_kernel(
 
     dY_ptr += row_idx * dY_row_stride
     X_ptr += row_idx * X_row_stride
-    r_ptr += row_idx * r_row_stride
+    RSTD_ptr += row_idx * RSTD_row_stride
     dW_ptr += row_idx * dW_row_stride
 
     dY_row = tl.load(dY_ptr + col_offsets, mask=mask, other=0)
@@ -129,46 +140,36 @@ def _rms_norm_backward_kernel(
     original_x_dtype = X_row.dtype
 
     # Get cached rms
-    inv_rms_row = tl.load(r_ptr)
+    rstd_row = tl.load(RSTD_ptr)
 
     W_row = W_row + offset
 
+    X_row = X_row.to(tl.float32)
+
     # Different bacward graphs for different casting modes
     if casting_mode == _CASTING_MODE_LLAMA:
-        X_row = X_row.to(tl.float32)
         m = (dY_row * W_row).to(tl.float32)
-        dX_row = inv_rms_row * m
 
-        dX_row += (inv_rms_row) * (
-            -(1 / n_cols)
-            * inv_rms_row
-            * inv_rms_row
-            * tl.sum(m * X_row, axis=0)
-            * X_row
-        )
-
-    if casting_mode == _CASTING_MODE_GEMMA:
-        dY_row, W_row, X_row = (
+    elif casting_mode == _CASTING_MODE_GEMMA:
+        dY_row, W_row = (
             dY_row.to(tl.float32),
             W_row.to(tl.float32),
-            X_row.to(tl.float32),
         )
-        dX_row = inv_rms_row * dY_row * W_row
 
-        dX_row += (inv_rms_row) * (
-            -(1 / n_cols)
-            * inv_rms_row
-            * inv_rms_row
-            * tl.sum(dY_row * W_row * X_row, axis=0)
-            * X_row
-        )
+    m = dY_row * W_row
+
+    dX_row = rstd_row * m
+
+    dX_row += (rstd_row) * (
+        -(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row
+    )
 
     # calculate the gradient of W
     if casting_mode == _CASTING_MODE_LLAMA:
-        dW_row = dY_row * (X_row * inv_rms_row).to(original_x_dtype)
+        dW_row = dY_row * (X_row * rstd_row).to(original_x_dtype)
     else:
         # here X_row is already in fp32 (see previous if block)
-        dW_row = dY_row * (X_row * inv_rms_row)
+        dW_row = dY_row * (X_row * rstd_row)
 
     tl.store(dY_ptr + col_offsets, dX_row, mask=mask)
     tl.store(dW_ptr + col_offsets, dW_row, mask=mask)
@@ -199,14 +200,14 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
-    # r is to cache (1/rms) for each row
-    # r is always computed/stored in fp32 if we are using Llama or Gemma casting mode
-    r_dtype = (
+    # RSTD is to cache rstd for each row
+    # RSTD is always computed/stored in fp32 if we are using Llama or Gemma casting mode
+    rstd_dtype = (
         torch.float32
         if casting_mode in (_CASTING_MODE_LLAMA.value, _CASTING_MODE_GEMMA.value)
         else X.dtype
     )
-    r = torch.empty(n_rows, dtype=r_dtype, device=X.device)
+    RSTD = torch.empty(n_rows, dtype=rstd_dtype, device=X.device)
 
     # Check constraints.
     assert (
@@ -220,8 +221,8 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
         X.stride(0),
         W,
         W.stride(0),
-        r,
-        r.stride(0),
+        RSTD,
+        RSTD.stride(0),
         n_cols,
         eps,
         offset,
@@ -229,10 +230,10 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
-    return Y.view(*shape), X, r, BLOCK_SIZE, num_warps, casting_mode
+    return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def rms_norm_backward(dY, X, W, r, eps, offset, casting_mode, BLOCK_SIZE, num_warps):
+def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -250,12 +251,11 @@ def rms_norm_backward(dY, X, W, r, eps, offset, casting_mode, BLOCK_SIZE, num_wa
         X.stride(0),
         W,
         W.stride(0),
-        r,
-        r.stride(0),
+        RSTD,
+        RSTD.stride(0),
         dW,
         dW.stride(0),
         n_cols,
-        eps,
         offset,
         casting_mode,
         BLOCK_SIZE=BLOCK_SIZE,
@@ -291,15 +291,14 @@ class LigerRMSNormFunction(torch.autograd.Function):
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
-        Y, X, r, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(
+        Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(
             X, W, eps, offset, casting_mode
         )
-        ctx.eps = eps
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
-        ctx.save_for_backward(X, W, r)
+        ctx.save_for_backward(X, W, RSTD)
         return Y
 
     @staticmethod
@@ -308,13 +307,12 @@ class LigerRMSNormFunction(torch.autograd.Function):
         """
         Y: (B, T, H) or (BxT, H)
         """
-        X, W, r = ctx.saved_tensors
+        X, W, RSTD = ctx.saved_tensors
         dX, dW = rms_norm_backward(
             dY,
             X,
             W,
-            r,
-            ctx.eps,
+            RSTD,
             ctx.offset,
             ctx.casting_mode,
             ctx.BLOCK_SIZE,
