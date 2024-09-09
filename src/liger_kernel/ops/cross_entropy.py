@@ -107,7 +107,7 @@ def liger_cross_entropy_kernel(
         X_block = tl.load(
             X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
         )
-        if reduction == 'mean':
+        if reduction == "mean":
             X_block = (tl.exp(X_block - m) / d - eps) / (n_non_ignore)
         else:
             X_block = (tl.exp(X_block - m) / d - eps)
@@ -124,10 +124,7 @@ def liger_cross_entropy_kernel(
     #      = (X_y - max(X)) - log(sum(e ^ (X - max(X))))
     # sum(e ^ (X - max(X))) must >= 1 because the max term is e ^ 0 = 1
     # So we can safely calculate log (softmax(X_y)) without overflow
-    if reduction == "mean":
-        loss = -(ori_X_y - m - tl.log(d)) / n_non_ignore
-    else:
-        loss = -(ori_X_y - m - tl.log(d))
+    loss = -(ori_X_y - m - tl.log(d))
 
     # Orginal loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
     # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
@@ -141,9 +138,13 @@ def liger_cross_entropy_kernel(
         smooth_loss = scaled_x_sum + label_smoothing * (m + tl.log(d))
         loss = loss * (1 - label_smoothing) + smooth_loss
 
+    # Normalize the loss by the number of non-ignored elements if reduction is "mean"
+    if reduction == "mean":
+        loss = loss / n_non_ignore
+
     # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - (1 - label_smoothing) / N`
     X_y = tl.load(X_ptr + y)
-    if reduction == 'mean':
+    if reduction == "mean":
         X_y += -(1 - label_smoothing) / (n_non_ignore)
     else:
         X_y += -(1 - label_smoothing)
@@ -230,7 +231,7 @@ def cross_entropy_forward(_input, target, ignore_index, label_smoothing, reducti
         num_warps=32,
     )
 
-    loss = torch.sum(loss_1d) / n_non_ignore
+    loss = torch.sum(loss_1d)
     return loss, _input
 
 
@@ -305,6 +306,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         _input = cross_entropy_backward(_input, grad_output)
         return (
             _input,
+            None,
             None,
             None,
             None,

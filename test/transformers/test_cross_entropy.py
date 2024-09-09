@@ -218,7 +218,7 @@ def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
     torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
     reason="Needs 16GB+ GPU memory.",
 )
-def test_correctness(B, T, V, scalar, dtype, atol, rtol):
+def test_correctness(B, T, V, scalar, dtype, reduction, atol, rtol):
     liger_ce = LigerCrossEntropyLoss(reduction=reduction)
     _test_correctness_once(liger_ce, B, T, V, reduction, scalar, dtype, atol, rtol)
 
