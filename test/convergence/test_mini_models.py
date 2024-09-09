@@ -4,6 +4,13 @@ from test.utils import (
     DEFAULT_DATASET_PATH,
     MiniModelConfig,
     assert_verbose_allclose,
+    revert_liger_kernel_to_gemma,
+    revert_liger_kernel_to_gemma2,
+    revert_liger_kernel_to_llama,
+    revert_liger_kernel_to_mistral,
+    revert_liger_kernel_to_mixtral,
+    revert_liger_kernel_to_phi3,
+    revert_liger_kernel_to_qwen2,
     set_seed,
     simple_collate_fn,
     supports_bfloat16,
@@ -29,13 +36,6 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_mixtral,
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
-    revert_liger_kernel_to_gemma,
-    revert_liger_kernel_to_gemma2,
-    revert_liger_kernel_to_llama,
-    revert_liger_kernel_to_mistral,
-    revert_liger_kernel_to_mixtral,
-    revert_liger_kernel_to_phi3,
-    revert_liger_kernel_to_qwen2,
 )
 
 torch.use_deterministic_algorithms(True)

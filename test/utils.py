@@ -1,3 +1,4 @@
+import importlib
 import os
 import random
 from dataclasses import dataclass
@@ -142,3 +143,90 @@ def supports_bfloat16():
     if not torch.cuda.is_available():
         return False
     return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
+
+
+def revert_liger_kernel_to_llama():
+    """
+    Revert all Liger kernel patches applied to Llama.
+    """
+
+    from transformers.models.llama import modeling_llama
+
+    importlib.reload(modeling_llama)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_mistral():
+    """
+    Revert all Liger kernel patches applied to Mistral.
+    """
+
+    from transformers.models.mistral import modeling_mistral
+
+    importlib.reload(modeling_mistral)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_mixtral():
+    """
+    Revert all Liger kernel patches applied to Mixtral.
+    """
+
+    from transformers.models.mixtral import modeling_mixtral
+
+    importlib.reload(modeling_mixtral)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_gemma():
+    """
+    Revert all Liger kernel patches applied to Gemma.
+    """
+
+    from transformers.models.gemma import modeling_gemma
+
+    importlib.reload(modeling_gemma)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_gemma2():
+    """
+    Revert all Liger kernel patches applied to Gemma2.
+    """
+
+    from transformers.models.gemma2 import modeling_gemma2
+
+    importlib.reload(modeling_gemma2)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_qwen2():
+    """
+    Revert all Liger kernel patches applied to Qwen2.
+    """
+
+    from transformers.models.qwen2 import modeling_qwen2
+
+    importlib.reload(modeling_qwen2)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_qwen2_vl():
+    """
+    Revert all Liger kernel patches applied to Qwen2-VL.
+    """
+    from transformers.models.qwen2_vl import modeling_qwen2_vl
+
+    importlib.reload(modeling_qwen2_vl)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_phi3():
+    """
+    Revert all Liger kernel patches applied to Phi3.
+    """
+
+    from transformers.models.phi3 import modeling_phi3
+
+    importlib.reload(modeling_phi3)
+    print("Liger kernel patches have been reverted.")
