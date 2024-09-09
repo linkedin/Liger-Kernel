@@ -3,15 +3,6 @@ import inspect
 import logging
 from functools import partial
 
-from transformers.models.gemma import modeling_gemma
-from transformers.models.gemma2 import modeling_gemma2
-from transformers.models.llama import modeling_llama
-from transformers.models.mistral import modeling_mistral
-from transformers.models.mixtral import modeling_mixtral
-from transformers.models.phi3 import modeling_phi3
-from transformers.models.qwen2 import modeling_qwen2
-from transformers.models.qwen2_vl import modeling_qwen2_vl
-
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
@@ -53,6 +44,8 @@ def apply_liger_kernel_to_llama(
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
     """
 
+    from transformers.models.llama import modeling_llama
+
     assert not (
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
@@ -73,6 +66,8 @@ def revert_liger_kernel_to_llama():
     """
     Revert all Liger kernel patches applied to Llama.
     """
+
+    from transformers.models.llama import modeling_llama
 
     importlib.reload(modeling_llama)
     print("Liger kernel patches have been reverted.")
@@ -100,6 +95,8 @@ def apply_liger_kernel_to_mistral(
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
     """
 
+    from transformers.models.mistral import modeling_mistral
+
     assert not (
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
@@ -120,6 +117,8 @@ def revert_liger_kernel_to_mistral():
     """
     Revert all Liger kernel patches applied to Mistral.
     """
+
+    from transformers.models.mistral import modeling_mistral
 
     importlib.reload(modeling_mistral)
     print("Liger kernel patches have been reverted.")
@@ -146,6 +145,8 @@ def apply_liger_kernel_to_mixtral(
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
     """
 
+    from transformers.models.mixtral import modeling_mixtral
+
     assert not (
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
@@ -166,6 +167,8 @@ def revert_liger_kernel_to_mixtral():
     """
     Revert all Liger kernel patches applied to Mixtral.
     """
+
+    from transformers.models.mixtral import modeling_mixtral
 
     importlib.reload(modeling_mixtral)
     print("Liger kernel patches have been reverted.")
@@ -188,6 +191,8 @@ def apply_liger_kernel_to_gemma(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
     """
+
+    from transformers.models.gemma import modeling_gemma
 
     assert not (
         cross_entropy and fused_linear_cross_entropy
@@ -213,6 +218,8 @@ def revert_liger_kernel_to_gemma():
     Revert all Liger kernel patches applied to Gemma.
     """
 
+    from transformers.models.gemma import modeling_gemma
+
     importlib.reload(modeling_gemma)
     print("Liger kernel patches have been reverted.")
 
@@ -234,6 +241,8 @@ def apply_liger_kernel_to_gemma2(
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
     """
 
+    from transformers.models.gemma2 import modeling_gemma2
+
     if rope:
         modeling_gemma2.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
@@ -251,6 +260,8 @@ def revert_liger_kernel_to_gemma2():
     """
     Revert all Liger kernel patches applied to Gemma2.
     """
+
+    from transformers.models.gemma2 import modeling_gemma2
 
     importlib.reload(modeling_gemma2)
     print("Liger kernel patches have been reverted.")
@@ -277,6 +288,8 @@ def apply_liger_kernel_to_qwen2(
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
     """
 
+    from transformers.models.qwen2 import modeling_qwen2
+
     assert not (
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
@@ -297,6 +310,8 @@ def revert_liger_kernel_to_qwen2():
     """
     Revert all Liger kernel patches applied to Qwen2.
     """
+
+    from transformers.models.qwen2 import modeling_qwen2
 
     importlib.reload(modeling_qwen2)
     print("Liger kernel patches have been reverted.")
@@ -328,6 +343,7 @@ def apply_liger_kernel_to_qwen2_vl(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
+    from transformers.models.qwen2_vl import modeling_qwen2_vl
     from liger_kernel.transformers.model.qwen2_vl import (
         lce_forward as qwen2_vl_lce_forward,
     )
@@ -353,6 +369,7 @@ def revert_liger_kernel_to_qwen2_vl():
     """
     Revert all Liger kernel patches applied to Qwen2-VL.
     """
+    from transformers.models.qwen2_vl import modeling_qwen2_vl
 
     importlib.reload(modeling_qwen2_vl)
     print("Liger kernel patches have been reverted.")
@@ -379,6 +396,8 @@ def apply_liger_kernel_to_phi3(
         swiglu (bool): Whether to apply Liger's SwiGLU Phi3MLP. Default is True.
     """
 
+    from transformers.models.phi3 import modeling_phi3
+
     assert not (
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
@@ -399,6 +418,8 @@ def revert_liger_kernel_to_phi3():
     """
     Revert all Liger kernel patches applied to Phi3.
     """
+
+    from transformers.models.phi3 import modeling_phi3
 
     importlib.reload(modeling_phi3)
     print("Liger kernel patches have been reverted.")
