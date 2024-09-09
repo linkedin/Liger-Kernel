@@ -8,13 +8,13 @@ class LigerCrossEntropyLoss(nn.Module):
         self,
         ignore_index=-100,
         label_smoothing=0.0,
-        z_loss_scale=0.0,
+        lse_square_scale=0.0,
         return_z_loss=False,
     ):
         super().__init__()
         self.ignore_index = ignore_index
         self.label_smoothing = label_smoothing
-        self.z_loss_scale = z_loss_scale
+        self.lse_square_scale = lse_square_scale
         self.return_z_loss = return_z_loss
         assert (self.label_smoothing >= 0) and (
             self.label_smoothing <= 1
@@ -26,7 +26,7 @@ class LigerCrossEntropyLoss(nn.Module):
             target,
             self.ignore_index,
             self.label_smoothing,
-            self.z_loss_scale,
+            self.lse_square_scale,
             self.return_z_loss,
         )
         if not self.return_z_loss:

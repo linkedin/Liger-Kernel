@@ -15,14 +15,14 @@ SLEEP_SECONDS = 0.1
 class CrossEntropyWithZLoss(torch.nn.Module):
     def __init__(
         self,
-        z_loss_scale=0.0,
+        lse_square_scale=0.0,
         reduction="mean",
         ignore_index=-100,
         label_smoothing=0.0,
         return_z_loss=False,
     ):
         super().__init__()
-        self.z_loss_scale = z_loss_scale
+        self.lse_square_scale = lse_square_scale
         self.reduction = reduction
         self.ignore_index = ignore_index
         self.return_z_loss = return_z_loss
@@ -46,7 +46,7 @@ class CrossEntropyWithZLoss(torch.nn.Module):
 
         # Z-loss term: penalizing logits
         z_loss = torch.where(
-            targets != self.ignore_index, self.z_loss_scale * (lse**2), 0.0
+            targets != self.ignore_index, self.lse_square_scale * (lse**2), 0.0
         )
         z_loss = z_loss.to(logits.dtype)
         if self.reduction == "mean":
@@ -178,12 +178,12 @@ def _test_correctness_with_z_loss_once(
     dtype,
     atol,
     rtol,
-    z_loss_scale,
+    lse_square_scale,
     return_z_loss,
 ):
     torch.manual_seed(0)
     torch_ce = CrossEntropyWithZLoss(
-        z_loss_scale=z_loss_scale,
+        lse_square_scale=lse_square_scale,
         return_z_loss=return_z_loss,
     )
 
@@ -223,14 +223,14 @@ def _test_correctness_with_z_loss_with_other_params_once(
     dtype,
     atol,
     rtol,
-    z_loss_scale,
+    lse_square_scale,
     return_z_loss,
     label_smoothing,
     ignore_index,
 ):
     torch.manual_seed(0)
     torch_ce = CrossEntropyWithZLoss(
-        z_loss_scale=z_loss_scale,
+        lse_square_scale=lse_square_scale,
         return_z_loss=return_z_loss,
         label_smoothing=label_smoothing,
         ignore_index=ignore_index,
@@ -636,7 +636,7 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
     ],
 )
 @pytest.mark.parametrize(
-    "z_loss_scale",
+    "lse_square_scale",
     [
         1e-4,  # PaLM
         1e-5,  # Chameleon
@@ -654,11 +654,11 @@ def test_correctness_with_z_loss_once(
     dtype,
     atol,
     rtol,
-    z_loss_scale,
+    lse_square_scale,
     return_z_loss,
 ):
     test_ce = LigerCrossEntropyLoss(
-        z_loss_scale=z_loss_scale,
+        lse_square_scale=lse_square_scale,
         return_z_loss=return_z_loss,
     )
     _test_correctness_with_z_loss_once(
@@ -670,7 +670,7 @@ def test_correctness_with_z_loss_once(
         dtype,
         atol,
         rtol,
-        z_loss_scale,
+        lse_square_scale,
         return_z_loss,
     )
 
@@ -721,7 +721,7 @@ def test_correctness_with_z_loss_once(
     ],
 )
 @pytest.mark.parametrize(
-    "return_z_loss, z_loss_scale",
+    "return_z_loss, lse_square_scale",
     [
         (True, 1e-4),
         (False, 1e-5),
@@ -746,13 +746,13 @@ def test_correctness_with_z_loss_with_other_params_once(
     dtype,
     atol,
     rtol,
-    z_loss_scale,
+    lse_square_scale,
     return_z_loss,
     label_smoothing,
     ignore_index,
 ):
     test_ce = LigerCrossEntropyLoss(
-        z_loss_scale=z_loss_scale,
+        lse_square_scale=lse_square_scale,
         return_z_loss=return_z_loss,
         label_smoothing=label_smoothing,
         ignore_index=ignore_index,
@@ -766,7 +766,7 @@ def test_correctness_with_z_loss_with_other_params_once(
         dtype,
         atol,
         rtol,
-        z_loss_scale,
+        lse_square_scale,
         return_z_loss,
         label_smoothing,
         ignore_index,

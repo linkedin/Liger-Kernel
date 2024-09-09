@@ -19,7 +19,7 @@ def fused_linear_cross_entropy_forward(
     bias=None,
     ignore_index=-100,
     label_smoothing=0.0,
-    z_loss_scale=0.0,
+    lse_square_scale=0.0,
 ):
     dtype = (
         torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else _input.dtype
@@ -91,7 +91,7 @@ def fused_linear_cross_entropy_forward(
             n_non_ignore=n_non_ignore,
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
-            z_loss_scale=z_loss_scale,
+            lse_square_scale=lse_square_scale,
             BLOCK_SIZE=BLOCK_SIZE,
             RETURN_Z_LOSS=0,  # False
             num_warps=32,
