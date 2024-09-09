@@ -19,7 +19,7 @@ def liger_cross_entropy_kernel(
     n_non_ignore,
     ignore_index,
     label_smoothing: tl.constexpr,
-    z_loss_scale: tl.constexpr,
+    lse_square_scale: tl.constexpr,
     RETURN_Z_LOSS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -33,12 +33,14 @@ def liger_cross_entropy_kernel(
     Y_ptr: Pointer to target tensor.
     Y_stride (int): The stride of the target tensor.
     loss_ptr: Pointer to tensor to store the loss.
+    z_loss_ptr: Pointer to tensor to store the z loss. No operation if RETURN_Z_LOSS is 0.
     loss_stride (int): The stride of the loss tensor.
     n_cols (int): The number of columns in the input tensor.
     n_non_ignore (int): The number of non-ignored elements in the batch.
     ignore_index (int): The index to ignore in the target.
     label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
-    z_loss_scale (float): The amount of (logsumexp(_input))^2 adding to the loss to increase the stability of training.
+    lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
+    RETURN_Z_LOSS (int): The boolean value to decide whether storing the z loss or not.
     BLOCK_SIZE (int): The block size for Triton operations.
     """
 
@@ -110,9 +112,9 @@ def liger_cross_entropy_kernel(
             X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
         )
         X_block = tl.exp(X_block - m) / d - eps
-        if z_loss_scale > 0:
+        if lse_square_scale > 0:
             # derivative of z-loss
-            X_block += 2 * z_loss_scale * lse * X_block
+            X_block += 2 * lse_square_scale * lse * X_block
         # reduction scale
         X_block = X_block / (n_non_ignore)
         tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
@@ -144,9 +146,8 @@ def liger_cross_entropy_kernel(
 
     # An auxiliary loss, z_loss
     # Refer to Page14 Loss function section in the paper PaLM: https://www.jmlr.org/papers/v24/22-1144.html
-    if z_loss_scale > 0:
-        z_loss = z_loss_scale * lse * lse
-        loss += z_loss
+    z_loss = lse_square_scale * lse * lse
+    loss += z_loss
 
     # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - (1 - label_smoothing) / N`
     X_y = tl.load(X_ptr + y)
@@ -211,7 +212,7 @@ def cross_entropy_forward(
     target,
     ignore_index,
     label_smoothing,
-    z_loss_scale,
+    lse_square_scale,
     return_z_loss,
 ):
     if not isinstance(return_z_loss, int):
@@ -257,7 +258,7 @@ def cross_entropy_forward(
         n_non_ignore=n_non_ignore,
         ignore_index=ignore_index,
         label_smoothing=label_smoothing,
-        z_loss_scale=z_loss_scale,
+        lse_square_scale=lse_square_scale,
         BLOCK_SIZE=BLOCK_SIZE,
         RETURN_Z_LOSS=return_z_loss,
         # TODO: 32 seems to give the best performance
@@ -311,7 +312,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         target,
         ignore_index=-100,
         label_smoothing=0.0,
-        z_loss_scale=0.0,
+        lse_square_scale=0.0,
         return_z_loss=False,
     ):
         """
@@ -323,7 +324,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         target (tensor): The target tensor of shape (BT) where each value is in [0, V-1].
         ignore_index (int): The index to ignore in the target.
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
-        z_loss_scale (float): The amount of (logsumexp(_input)) ^ 2 adding to the loss to increase the stability of training.
+        lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
 
         Returns:
         tensor: The computed loss.
@@ -333,7 +334,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             target,
             ignore_index,
             label_smoothing,
-            z_loss_scale,
+            lse_square_scale,
             return_z_loss,
         )
         # TODO: investigation
