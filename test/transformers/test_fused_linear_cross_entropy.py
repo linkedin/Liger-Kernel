@@ -32,13 +32,14 @@ class TorchLMHeadCE(torch.nn.Module):
         bias: bool = False,
         ignore_index: int = -100,
         label_smoothing: float = 0.0,
+        reduction: str = "mean",
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
         self.ce_loss = torch.nn.CrossEntropyLoss(
-            ignore_index=ignore_index, reduction="mean", label_smoothing=label_smoothing
+            ignore_index=ignore_index, reduction=reduction, label_smoothing=label_smoothing
         )
 
     def forward(self, x, y):
@@ -55,6 +56,7 @@ class LigerLMHeadCE(torch.nn.Module):
         bias: bool = False,
         ignore_index: int = -100,
         label_smoothing: float = 0.0,
+        reduction: str = "mean",
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
@@ -62,7 +64,7 @@ class LigerLMHeadCE(torch.nn.Module):
         )
         self.ce_loss = LigerFusedLinearCrossEntropyLoss(
             ignore_index=ignore_index,
-            reduction="mean",
+            reduction=reduction,
             label_smoothing=label_smoothing,
         )
 
@@ -95,13 +97,14 @@ class LigerLMHeadCE(torch.nn.Module):
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("label_smoothing", [0, 0.1])
-def test_correctness(B, T, H, V, scalar, dtype, bias, label_smoothing, atol, rtol):
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
+def test_correctness(B, T, H, V, scalar, dtype, bias, label_smoothing, reduction, atol, rtol):
     device = "cuda"
     torch_lm_head_ce = TorchLMHeadCE(
-        H=H, V=V, bias=bias, label_smoothing=label_smoothing, dtype=dtype
+        H=H, V=V, bias=bias, label_smoothing=label_smoothing, reduction=reduction, dtype=dtype
     ).to(device)
     liger_lm_head_ce = LigerLMHeadCE(
-        H=H, V=V, bias=bias, label_smoothing=label_smoothing, dtype=dtype
+        H=H, V=V, bias=bias, label_smoothing=label_smoothing, reduction=reduction, dtype=dtype
     ).to(device)
 
     # init the linear in all CEs with the same weights

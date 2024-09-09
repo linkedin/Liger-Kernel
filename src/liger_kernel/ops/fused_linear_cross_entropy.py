@@ -101,10 +101,15 @@ def fused_linear_cross_entropy_forward(
         # additionally, since we are chunking the inputs, observe that the loss and gradients are calculated only
         # on `n_non_ignore` tokens. However, the gradient of the input should be calculated for all tokens.
         # Thus, we need an additional scaling factor of (n_non_ignore/total_n_non_ignore) to scale the gradients.
-        loss_1d[start_idx:end_idx] = loss_1d_slice * n_non_ignore
-        grad_logits_chunk = logits_chunk * (
-            n_non_ignore / total_n_non_ignore
-        )  # chunk_size x V
+        
+        if reduction == "mean":
+            alpha = n_non_ignore / total_n_non_ignore if total_n_non_ignore > 0 else 0.0
+        else:
+            alpha = 1.0
+
+        loss_1d[start_idx:end_idx] = loss_1d_slice * alpha
+        grad_logits_chunk = logits_chunk * alpha  # chunk_size x V
+
         grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
         if grad_weight is not None:
@@ -113,7 +118,7 @@ def fused_linear_cross_entropy_forward(
                 mat1=logits_chunk.t(),
                 mat2=_input_chunk,
                 out=grad_weight,
-                alpha=n_non_ignore / total_n_non_ignore,
+                alpha=alpha,
                 beta=1.0,
             )
 
@@ -122,10 +127,10 @@ def fused_linear_cross_entropy_forward(
                 input=grad_bias,
                 other=logits_chunk.sum(dim=0),
                 out=grad_bias,
-                alpha=n_non_ignore / total_n_non_ignore,
+                alpha=alpha,
             )
 
-    loss = torch.sum(loss_1d) / total_n_non_ignore
+    loss = torch.sum(loss_1d)
     return loss, grad_input, grad_weight, grad_bias
 
 
