@@ -15,7 +15,7 @@ def liger_cross_entropy_kernel(
     n_non_ignore,
     ignore_index,
     label_smoothing: tl.constexpr,
-    reduction: tl.constexpr, # set it as constexpr since reduction is always known at compile time
+    reduction: tl.constexpr,  # set it as constexpr since reduction is always known at compile time
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -93,7 +93,7 @@ def liger_cross_entropy_kernel(
     # dx_i = (softmax(x_y) - label_smoothing / V) / N, V = n_cols, i != y
     # dx_y = (softmax(x_y) - label_smoothing / V - (1 - label_smoothing)) / N
     #      = dx_i - (1 - label_smoothing) / N
-    # 
+    #
     # For 'sum' reduction, no normalization is applied:
     # dx_y = softmax(x_y) - 1
     # dx_i = softmax(x_i), for i ≠ y
@@ -110,7 +110,7 @@ def liger_cross_entropy_kernel(
         if reduction == "mean":
             X_block = (tl.exp(X_block - m) / d - eps) / (n_non_ignore)
         else:
-            X_block = (tl.exp(X_block - m) / d - eps)
+            X_block = tl.exp(X_block - m) / d - eps
 
         tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
 
@@ -266,7 +266,9 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, _input, target, ignore_index=-100, label_smoothing=0.0, reduction="mean"):
+    def forward(
+        ctx, _input, target, ignore_index=-100, label_smoothing=0.0, reduction="mean"
+    ):
         """
         The forward pass of the Liger Cross Entropy loss.
 

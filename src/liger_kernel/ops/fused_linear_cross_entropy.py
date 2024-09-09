@@ -13,7 +13,13 @@ MAX_FUSED_SIZE = 65536 // 2
 
 
 def fused_linear_cross_entropy_forward(
-    _input, weight, target, bias=None, ignore_index=-100, label_smoothing=0.0, reduction="mean"
+    _input,
+    weight,
+    target,
+    bias=None,
+    ignore_index=-100,
+    label_smoothing=0.0,
+    reduction="mean",
 ):
     dtype = (
         torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else _input.dtype
@@ -101,7 +107,7 @@ def fused_linear_cross_entropy_forward(
         # additionally, since we are chunking the inputs, observe that the loss and gradients are calculated only
         # on `n_non_ignore` tokens. However, the gradient of the input should be calculated for all tokens.
         # Thus, we need an additional scaling factor of (n_non_ignore/total_n_non_ignore) to scale the gradients.
-        
+
         if reduction == "mean":
             alpha = n_non_ignore / total_n_non_ignore if total_n_non_ignore > 0 else 0.0
         else:
@@ -185,7 +191,16 @@ def fused_linear_cross_entropy_backward(
 
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, _input, weight, target, bias=None, ignore_index=-100, label_smoothing=0.0, reduction="mean"):
+    def forward(
+        ctx,
+        _input,
+        weight,
+        target,
+        bias=None,
+        ignore_index=-100,
+        label_smoothing=0.0,
+        reduction="mean",
+    ):
         """
         Fusing the last linear layer with cross-entropy loss
             Reference: https://github.com/mgmalek/efficient_cross_entropy
