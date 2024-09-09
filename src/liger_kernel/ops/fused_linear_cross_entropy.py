@@ -13,7 +13,13 @@ MAX_FUSED_SIZE = 65536 // 2
 
 
 def fused_linear_cross_entropy_forward(
-    _input, weight, target, bias=None, ignore_index=-100, label_smoothing=0.0
+    _input,
+    weight,
+    target,
+    bias=None,
+    ignore_index=-100,
+    label_smoothing=0.0,
+    z_loss_scale=0.0,
 ):
     dtype = (
         torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else _input.dtype
@@ -79,12 +85,15 @@ def fused_linear_cross_entropy_forward(
             Y_ptr=target_chunk,
             Y_stride=target_chunk.stride(-1),  # always 1
             loss_ptr=loss_1d_slice,
+            z_loss_ptr=loss_1d_slice,  # dummy ptr, not used
             loss_stride=loss_1d_slice.stride(-1),  # always 1
             n_cols=V,
             n_non_ignore=n_non_ignore,
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
+            z_loss_scale=z_loss_scale,
             BLOCK_SIZE=BLOCK_SIZE,
+            RETURN_Z_LOSS=0,  # False
             num_warps=32,
         )
 
@@ -179,7 +188,13 @@ def fused_linear_cross_entropy_backward(
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx, _input, weight, target, bias=None, ignore_index=-100, label_smoothing=0.0
+        ctx,
+        _input,
+        weight,
+        target,
+        bias=None,
+        ignore_index=-100,
+        label_smoothing=0.0,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -195,6 +210,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         weight: (V, H) where V is the number of classes
         bias: (V) where V is the number of classes
         ignore_index: the index to ignore in the target
+        label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
         """
         loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
             _input, weight, target, bias, ignore_index, label_smoothing
@@ -213,4 +229,4 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_backward(
             grad_output, grad_input, grad_weight, grad_bias
         )
-        return (grad_input, grad_weight, None, grad_bias, None)
+        return (grad_input, grad_weight, None, grad_bias, None, None)

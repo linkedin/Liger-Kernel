@@ -2,6 +2,9 @@ import torch
 import triton
 import triton.language as tl
 
+_TRUE = tl.constexpr(1)
+_FALSE = tl.constexpr(0)
+
 
 @triton.jit
 def liger_cross_entropy_kernel(
@@ -10,11 +13,14 @@ def liger_cross_entropy_kernel(
     Y_ptr,
     Y_stride,
     loss_ptr,
+    z_loss_ptr,
     loss_stride,
     n_cols,
     n_non_ignore,
     ignore_index,
     label_smoothing: tl.constexpr,
+    z_loss_scale: tl.constexpr,
+    RETURN_Z_LOSS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -32,6 +38,7 @@ def liger_cross_entropy_kernel(
     n_non_ignore (int): The number of non-ignored elements in the batch.
     ignore_index (int): The index to ignore in the target.
     label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
+    z_loss_scale (float): The amount of (logsumexp(_input))^2 adding to the loss to increase the stability of training.
     BLOCK_SIZE (int): The block size for Triton operations.
     """
 
@@ -54,6 +61,7 @@ def liger_cross_entropy_kernel(
         return
 
     loss_ptr += program_id * loss_stride
+    z_loss_ptr += program_id * loss_stride
 
     # Online softmax: 2 loads + 1 store (compared with 3 loads + 1 store for the safe softmax)
     # Refer to Algorithm 3 in the paper: https://arxiv.org/pdf/1805.02867
@@ -83,6 +91,11 @@ def liger_cross_entropy_kernel(
         d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
         m = m_new
 
+    # log (sum(e^(X_i))) = log (sum(e ^ (max(X) * e ^ (X_i - max(X)))))
+    #                    = log (e^(max(X)) * sum(e ^ (X_i - max(X))))
+    #                    = max(X) + log (sum(e ^ (X_i - max(X)))) = m + log d
+    lse = m + tl.log(d)
+
     # 4. [Online softmax] second pass: calculate the gradients
     # dx_y = (softmax(x_y) - 1) / N
     # dx_i = softmax(x_i) / N, i != y
@@ -96,7 +109,12 @@ def liger_cross_entropy_kernel(
         X_block = tl.load(
             X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
         )
-        X_block = (tl.exp(X_block - m) / d - eps) / (n_non_ignore)
+        X_block = tl.exp(X_block - m) / d - eps
+        if z_loss_scale > 0:
+            # derivative of z-loss
+            X_block += 2 * z_loss_scale * lse * X_block
+        # reduction scale
+        X_block = X_block / (n_non_ignore)
         tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
 
     # We need tl.debug_barrier() to ensure the new result of X_ptr is written as mentioned in
@@ -105,11 +123,12 @@ def liger_cross_entropy_kernel(
 
     # 5. Calculate the loss
 
-    # loss = log (softmax(X_y)) = log ((e ^ (X_y - max(X)) / sum(e ^ (X - max(X))))
+    # -loss = log (softmax(X_y)) = log ((e ^ (X_y - max(X)) / sum(e ^ (X - max(X))))
     #      = (X_y - max(X)) - log(sum(e ^ (X - max(X))))
+    #      = X_y - m - log d = X_y - lse
     # sum(e ^ (X - max(X))) must >= 1 because the max term is e ^ 0 = 1
     # So we can safely calculate log (softmax(X_y)) without overflow
-    loss = -(ori_X_y - m - tl.log(d))
+    loss = lse - ori_X_y
 
     # Orginal loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
     # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
@@ -120,14 +139,22 @@ def liger_cross_entropy_kernel(
     # pytorch: https://github.com/pytorch/pytorch/blob/2981534f54d49fa3a9755c9b0855e7929c2527f0/aten/src/ATen/native/LossNLL.cpp#L516
     # See full derivation at https://github.com/linkedin/Liger-Kernel/pull/198#issuecomment-2333753087
     if label_smoothing > 0:
-        smooth_loss = scaled_x_sum + label_smoothing * (m + tl.log(d))
+        smooth_loss = scaled_x_sum + label_smoothing * lse
         loss = loss * (1 - label_smoothing) + smooth_loss
+
+    # An auxiliary loss, z_loss
+    # Refer to Page14 Loss function section in the paper PaLM: https://www.jmlr.org/papers/v24/22-1144.html
+    if z_loss_scale > 0:
+        z_loss = z_loss_scale * lse * lse
+        loss += z_loss
 
     # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - (1 - label_smoothing) / N`
     X_y = tl.load(X_ptr + y)
     X_y += -(1 - label_smoothing) / (n_non_ignore)
 
     tl.store(loss_ptr, loss)
+    if RETURN_Z_LOSS == _TRUE:
+        tl.store(z_loss_ptr, z_loss)
     tl.store(X_ptr + y, X_y)
 
 
@@ -173,7 +200,30 @@ def element_mul_kernel(
         tl.store(X_ptr + X_offsets, X_block * grad_output, mask=X_offsets < n_cols)
 
 
-def cross_entropy_forward(_input, target, ignore_index, label_smoothing):
+_bool_to_return_z_loss = {
+    True: _TRUE.value,
+    False: _FALSE.value,
+}
+
+
+def cross_entropy_forward(
+    _input,
+    target,
+    ignore_index,
+    label_smoothing,
+    z_loss_scale,
+    return_z_loss,
+):
+    if not isinstance(return_z_loss, int):
+        assert (
+            return_z_loss in _bool_to_return_z_loss
+        ), f"return_z_loss must be True or False. Got: {return_z_loss}"
+        return_z_loss = _bool_to_return_z_loss[return_z_loss]
+    else:
+        assert (
+            return_z_loss in _bool_to_return_z_loss
+        ), f"return_z_loss must be True or False. Got: {return_z_loss}"
+
     BT, V = _input.shape
     n_rows = BT
 
@@ -181,6 +231,10 @@ def cross_entropy_forward(_input, target, ignore_index, label_smoothing):
 
     # unreduced loss
     loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
+    if return_z_loss == _TRUE.value:
+        z_loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
+    else:
+        z_loss_1d = loss_1d  # dummy ptr when return_z_loss == False
 
     n_non_ignore = (target != ignore_index).sum().item()
 
@@ -197,19 +251,27 @@ def cross_entropy_forward(_input, target, ignore_index, label_smoothing):
         Y_ptr=target,
         Y_stride=target.stride(-1),  # always 1
         loss_ptr=loss_1d,
+        z_loss_ptr=z_loss_1d,
         loss_stride=loss_1d.stride(-1),  # always 1
         n_cols=V,
         n_non_ignore=n_non_ignore,
         ignore_index=ignore_index,
         label_smoothing=label_smoothing,
+        z_loss_scale=z_loss_scale,
         BLOCK_SIZE=BLOCK_SIZE,
+        RETURN_Z_LOSS=return_z_loss,
         # TODO: 32 seems to give the best performance
         # Performance is quite sensitive to num_warps
         num_warps=32,
     )
 
     loss = torch.sum(loss_1d) / n_non_ignore
-    return loss, _input
+    if return_z_loss == _TRUE.value:
+        z_loss = torch.sum(z_loss_1d) / n_non_ignore
+    else:
+        z_loss = None
+
+    return loss, z_loss, _input
 
 
 def cross_entropy_backward(_input, grad_output):
@@ -243,7 +305,15 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, _input, target, ignore_index=-100, label_smoothing=0.0):
+    def forward(
+        ctx,
+        _input,
+        target,
+        ignore_index=-100,
+        label_smoothing=0.0,
+        z_loss_scale=0.0,
+        return_z_loss=False,
+    ):
         """
         The forward pass of the Liger Cross Entropy loss.
 
@@ -253,21 +323,29 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         target (tensor): The target tensor of shape (BT) where each value is in [0, V-1].
         ignore_index (int): The index to ignore in the target.
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
+        z_loss_scale (float): The amount of (logsumexp(_input)) ^ 2 adding to the loss to increase the stability of training.
 
         Returns:
         tensor: The computed loss.
         """
-        loss, _input = cross_entropy_forward(
-            _input, target, ignore_index, label_smoothing
+        loss, z_loss, _input = cross_entropy_forward(
+            _input,
+            target,
+            ignore_index,
+            label_smoothing,
+            z_loss_scale,
+            return_z_loss,
         )
         # TODO: investigation
         # If we don't detach the _input tensor, the memory will double
         # Not sure why but seems that there will be a time both grad and value exist but in different location
         ctx.save_for_backward(_input.detach())
-        return loss
+        ctx.return_z_loss = return_z_loss
+
+        return loss, z_loss
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output, grad_ouput2):
         """
         The backward pass of the Liger Cross Entropy loss.
 
@@ -278,10 +356,15 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         Returns:
         tuple: A tuple with the gradients with respect to the inputs. The elements are tensors or None.
         """
+        if ctx.return_z_loss:
+            del grad_ouput2  # z_loss is only for logging
+
         (_input,) = ctx.saved_tensors
         _input = cross_entropy_backward(_input, grad_output)
         return (
             _input,
+            None,
+            None,
             None,
             None,
             None,
