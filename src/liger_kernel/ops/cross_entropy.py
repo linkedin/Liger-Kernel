@@ -85,14 +85,23 @@ def liger_cross_entropy_kernel(
         d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
         m = m_new
 
-    # 4. [Online softmax] second pass: calculate the gradients
+    # 4. [Online Softmax] Second pass: compute gradients
+    # For 'mean' reduction, gradients are normalized by number of non-ignored elements (N)
     # dx_y = (softmax(x_y) - 1) / N
     # dx_i = softmax(x_i) / N, i != y
-    # N is the number of non ignored elements in the batch
     # For label smoothing:
     # dx_i = (softmax(x_y) - label_smoothing / V) / N, V = n_cols, i != y
     # dx_y = (softmax(x_y) - label_smoothing / V - (1 - label_smoothing)) / N
     #      = dx_i - (1 - label_smoothing) / N
+    # 
+    # For 'sum' reduction, no normalization is applied:
+    # dx_y = softmax(x_y) - 1
+    # dx_i = softmax(x_i), for i ≠ y
+    # For label smoothing:
+    # dx_i = (softmax(x_y) - label_smoothing / V), V = n_cols, i != y
+    # dx_y = (softmax(x_y) - label_smoothing / V - (1 - label_smoothing))
+    #      = dx_i - (1 - label_smoothing)
+
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(
