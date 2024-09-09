@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from liger_kernel.transformers.experimental.mm_int8int2 import matmul, unpack_weights, pack_weights
+from liger_kernel.ops.experimental.mm_int8int2 import matmul, unpack_weights, pack_weights
 
 
 # input_features = size*4 when the weight matrix is unpacked
@@ -70,9 +70,6 @@ def test_kernel_correctness(batch_size, seq_len, out_features, size, atol, rtol,
 
     # Check if outputs are close within the given tolerances
     assert torch.allclose(triton_output, torch_output.to(torch.int32), atol=atol, rtol=rtol), "Results differ"
-
-
-
 @pytest.mark.parametrize(
     "size",
     [
@@ -96,12 +93,8 @@ def test_kernel_correctness(batch_size, seq_len, out_features, size, atol, rtol,
         "cuda",
     ],
 )
-
 def test_unpack_pack_correctness(out_features, size,  device):
 
     u = torch.randint(0, 255, (out_features, size), device=device, dtype=torch.uint8)
 
     assert (pack_weights(unpack_weights(u.T), 2) == u.T).all(), "Packed weights do not match original weights."
-
-    
-

@@ -3,6 +3,7 @@ import torch
 import triton
 import triton.language as tl
 
+
 def unpack_weights(packed: torch.Tensor, bits: int = 2) -> torch.Tensor:
     values_per_item = 8 // bits
     packed_shape = packed.shape
@@ -24,6 +25,7 @@ def unpack_weights(packed: torch.Tensor, bits: int = 2) -> torch.Tensor:
 
     unpacked = unpacked.to(torch.int32) - 1
     return unpacked
+
 
 def pack_weights(intweights: torch.Tensor, bits: int = 2) -> torch.Tensor:
     intweights += 1
@@ -85,30 +87,30 @@ def get_autotune_config():
                       num_warps=4)
     ]
 
+
 @triton.autotune(
     configs=get_autotune_config(),
     key=['M', 'N', 'K'],
 )
 @triton.jit
 def matmul_kernel(
-        a_ptr, b_ptr, c_ptr,
-        M, N, K: tl.constexpr,
-        stride_am, stride_ak,
-        stride_bk, stride_bn, 
-        stride_cm, stride_cn,
-        BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  
-        GROUP_SIZE_M: tl.constexpr,
+    a_ptr, b_ptr, c_ptr,
+    M, N, K: tl.constexpr,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr,
 ):
     # We want K / 4 to be divisible by BLOCK_SIZE_K so that the multiplication can be aligned
     tl.static_assert(K % (4*BLOCK_SIZE_K) == 0, "K / 4 must be divisible by BLOCK_SIZE_K => K divisible by 4*BLOCK_SIZE_K")
-    
     # determine the block id in the 1D grid, pid <=> blockId in cuda
     pid = tl.program_id(axis=0)
     # number of blocks we would need in the M dimension
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     # number of blocks we would need in the N dimension
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-    # blocks are grouped along the M dimension. num_pid_in_group computes how many blocks are grouped together, 
+    # blocks are grouped along the M dimension. num_pid_in_group computes how many blocks are grouped together,
     # and group_id calculates the group to which the current block (pid) belongs.
     num_pid_in_group = GROUP_SIZE_M * num_pid_n
     group_id = pid // num_pid_in_group
@@ -117,7 +119,7 @@ def matmul_kernel(
     first_pid_m = group_id * GROUP_SIZE_M
 
     # pid_m : pid of the block along the M dimension of the output matrix, and pid_n : pid of the block along the N dimension of the output matrix
-    # remember that the grid of blocks is 1D, but we calculate pid_m and pid_n to locate the block pid place in the output matrix 
+    # remember that the grid of blocks is 1D, but we calculate pid_m and pid_n to locate the block pid place in the output matrix
     group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
     pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
     pid_n = (pid % num_pid_in_group) // group_size_m
@@ -127,7 +129,7 @@ def matmul_kernel(
     offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
     offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
     offs_k = tl.arange(0, BLOCK_SIZE_K)
-    
+
     '''
         This part of the code generates pointers to the specific blocks of matrices A and B that the current thread block will process.
 
@@ -151,27 +153,27 @@ def matmul_kernel(
     '''
         We split the loop into two layers. The outer loop runs 4 times, and each iteration focuses on a specific portion of matrix A.
 
-        For example, when i = 0, we’re only concerned with the blocks of matrix A that cover the range from 0 to K // (4 * BLOCK_SIZE_K). 
-        Since matrix B is packed, its first dimension is effectively divided by 4. So, while we process the first segment of matrix A, 
+        For example, when i = 0, we’re only concerned with the blocks of matrix A that cover the range from 0 to K // (4 * BLOCK_SIZE_K).
+        Since matrix B is packed, its first dimension is effectively divided by 4. So, while we process the first segment of matrix A,
         we still iterate over the entire first dimension of matrix B.
 
-        In each of the 4 iterations of the outer loop, we go through the full blocks of matrix B, but what changes is the data we extract. 
-        Matrix B elements contain 4 weights, all packed into an int8 format, and during each iteration of the outer loop, 
+        In each of the 4 iterations of the outer loop, we go through the full blocks of matrix B, but what changes is the data we extract.
+        Matrix B elements contain 4 weights, all packed into an int8 format, and during each iteration of the outer loop,
         we extract a different weight by using bitwise shifting operations. This way, we access a unique weight on each pass.
     '''
-    for i in range(4) : 
+    for i in range(4) :
         b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
-        for j in range(0, tl.cdiv(K // 4, BLOCK_SIZE_K) ):
-            k = i * tl.cdiv(K // 4, BLOCK_SIZE_K) + j 
+        for j in range(0, tl.cdiv(K // 4, BLOCK_SIZE_K)):
+            k = i * tl.cdiv(K // 4, BLOCK_SIZE_K) + j
             # load the block of matrix A
             a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0)
             # load the block of matrix B
             b_uint8 = tl.load(b_ptrs, mask=offs_k[:, None] < K , other=0)
             # when i = 0 for example, we only care about the first 2 bits of the elements of the matrix B, so we use the mask 00000011 to mask the other bits
-            mask = 3<<(2*i)
+            mask = 3 << (2*i)
             # we shift the results after the mask
             b = ((b_uint8 & mask) >> (2*i))
-            # During the packing of the weights, it's easier to pack 0, 1, 2, then -1, 0, 1, so we add 1 to the weight tensor, and we substract it here   
+            # During the packing of the weights, it's easier to pack 0, 1, 2, then -1, 0, 1, so we add 1 to the weight tensor, and we substract it here
             tensor_full = tl.full((1,), 1, dtype=tl.int8)
             # We accumulate the result of multiplication of the blocks along the K dimension on int32 to avoid any overflows or underflows.
             accumulator += tl.dot(a, (b.to(tl.int8) - tensor_full), out_dtype=tl.int32)
@@ -179,7 +181,7 @@ def matmul_kernel(
             # for b_ptrs we move in a vertical way, along the rows -> we use stride_bk=N
             a_ptrs += BLOCK_SIZE_K * stride_ak
             b_ptrs += BLOCK_SIZE_K * stride_bk
-    
+
     c = accumulator
     # These lines compute the offsets into matrix C where the result of this block’s computation should be stored.
     # stride_cm = N & stride_cn = 1
@@ -207,6 +209,3 @@ def matmul(a, b):
         c.stride(0), c.stride(1),
     )
     return c
-
-
-
