@@ -292,6 +292,7 @@ def apply_liger_kernel_to_qwen2(
     if swiglu:
         modeling_qwen2.Qwen2MLP = LigerSwiGLUMLP
 
+
 def revert_liger_kernel_to_qwen2():
     """
     Revert all Liger kernel patches applied to Qwen2.
@@ -347,9 +348,10 @@ def apply_liger_kernel_to_qwen2_vl(
     if swiglu:
         modeling_qwen2_vl.Qwen2MLP = LigerSwiGLUMLP
 
+
 def revert_liger_kernel_to_qwen2_vl():
     """
-    Revert all Liger kernel patches applied to Qwen2.
+    Revert all Liger kernel patches applied to Qwen2-VL.
     """
 
     importlib.reload(modeling_qwen2_vl)
