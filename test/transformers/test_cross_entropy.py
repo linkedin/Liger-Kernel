@@ -40,11 +40,9 @@ class CrossEntropyWithZLoss(torch.nn.Module):
         )
 
         # Compute log-sum-exp term
-        lse = torch.logsumexp(
-            logits, dim=-1
-        )  # Compute log-sum-exp along the class dimension
+        lse = torch.logsumexp(logits, dim=-1)
 
-        # Z-loss term: penalizing logits
+        # Z-loss term
         z_loss = torch.where(
             targets != self.ignore_index, self.lse_square_scale * (lse**2), 0.0
         )

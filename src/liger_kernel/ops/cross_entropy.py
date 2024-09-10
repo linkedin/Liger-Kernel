@@ -103,18 +103,24 @@ def liger_cross_entropy_kernel(
     # dx_i = softmax(x_i) / N, i != y
     # N is the number of non ignored elements in the batch
     # For label smoothing:
-    # dx_i = (softmax(x_y) - label_smoothing / V) / N, V = n_cols, i != y
+    # dx_i = (softmax(x_i) - label_smoothing / V) / N, V = n_cols, i != y
     # dx_y = (softmax(x_y) - label_smoothing / V - (1 - label_smoothing)) / N
     #      = dx_i - (1 - label_smoothing) / N
+    # With Z loss:
+    # dx_i = ((1 + 2 * lse_square_scale * lse) * softmax(x_i) - label_smoothing / V) / N, i != y
+    # dx_y = dx_i - (1 - label_smoothing) / N
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(
             X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
         )
-        X_block = tl.exp(X_block - m) / d - eps
+        # softmax(x_i)
+        X_block = tl.exp(X_block - m) / d
+        # derivative of z-loss: 2 * lse_square_scale * lse * softmax(x_i)
         if lse_square_scale > 0:
-            # derivative of z-loss
             X_block += 2 * lse_square_scale * lse * X_block
+        # smoothing term
+        X_block += -eps
         # reduction scale
         X_block = X_block / (n_non_ignore)
         tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
@@ -325,9 +331,10 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         ignore_index (int): The index to ignore in the target.
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
         lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
+        return_z_loss (bool): Return z loss or not.
 
         Returns:
-        tensor: The computed loss.
+        tuple: A tuple with the compouted losses with respect to loss and z loss. The elements are tensors or None.
         """
         loss, z_loss, _input = cross_entropy_forward(
             _input,
@@ -353,7 +360,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         Parameters:
         ctx : The context object with saved tensors.
         grad_output (tensor): The tensor containing the gradient of the loss with respect to the output.
-
+        grad_output2 (tenosr): No use.
         Returns:
         tuple: A tuple with the gradients with respect to the inputs. The elements are tensors or None.
         """
