@@ -2,7 +2,7 @@ torchrun --nnodes=1 --nproc-per-node=4 training.py \
     --bf16 \
     --model_name "/shared/public/models/Meta-Llama-3-8B" \
     --dataset "/shared/public/data/tatsu-lab" \
-    --max_steps 20 \
+    --max_steps 5 \
     --num_train_epochs 1 \
     --per_device_train_batch_size 48 \
     --per_device_eval_batch_size 64 \

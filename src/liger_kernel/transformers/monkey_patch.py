@@ -2,6 +2,9 @@ import inspect
 import logging
 from functools import partial
 
+from transformers import PretrainedConfig, PreTrainedModel
+from transformers.models.llama.modeling_llama import LlamaModel
+
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
@@ -18,8 +21,6 @@ from liger_kernel.transformers.swiglu import (
     LigerPhi3SwiGLUMLP,
     LigerSwiGLUMLP,
 )
-from transformers import PreTrainedModel, PretrainedConfig
-from transformers.models.llama.modeling_llama import LlamaModel
 
 logger = logging.getLogger(__name__)
 
@@ -79,17 +80,23 @@ def apply_liger_kernel_to_llama(
         else:
             # Direct LlamaModel
             base_model = model
-       
+
         torch_dtype = config.torch_dtype
         if rms_norm:
-            base_model.norm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
+            base_model.norm = LigerRMSNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
 
         for decoder_layer in base_model.layers:
             if swiglu:
                 decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
             if rms_norm:
-                decoder_layer.input_layernorm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
-                decoder_layer.post_attention_layernorm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
+                decoder_layer.input_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
 
 
 def apply_liger_kernel_to_mistral(
@@ -142,18 +149,23 @@ def apply_liger_kernel_to_mistral(
         else:
             # Direct MistralModel
             base_model = model
-       
+
         torch_dtype = config.torch_dtype
         if rms_norm:
-            base_model.norm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
+            base_model.norm = LigerRMSNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
 
         for decoder_layer in base_model.layers:
             if swiglu:
                 decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
             if rms_norm:
-                decoder_layer.input_layernorm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
-                decoder_layer.post_attention_layernorm = LigerRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(torch_dtype)
-
+                decoder_layer.input_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
 
 
 def apply_liger_kernel_to_mixtral(
@@ -453,10 +465,14 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
     Args:
         - model: the model instance to apply Liger kernels to
     """
-    model_type = getattr(model, "config", None) and getattr(model.config, "model_type", None)
+    model_type = getattr(model, "config", None) and getattr(
+        model.config, "model_type", None
+    )
 
     if not model_type:
-        logger.info("Model type could not be determined from model config. No Liger kernels will be applied.")
+        logger.info(
+            "Model type could not be determined from model config. No Liger kernels will be applied."
+        )
         return
 
     if model_type not in MODEL_TYPE_TO_APPLY_LIGER_FN.keys():
