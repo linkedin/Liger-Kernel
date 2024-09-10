@@ -40,7 +40,7 @@ def liger_cross_entropy_kernel(
     ignore_index (int): The index to ignore in the target.
     label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
     lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
-    RETURN_Z_LOSS (int): The boolean value to decide whether storing the z loss or not.
+    RETURN_Z_LOSS (int): The boolean value to decide whether storing z loss to z_loss_ptr or not. It must be 0 or 1.
     BLOCK_SIZE (int): The block size for Triton operations.
     """
 
@@ -331,7 +331,8 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         ignore_index (int): The index to ignore in the target.
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
         lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
-        return_z_loss (bool): Return z loss or not.
+        return_z_loss (bool): When `return_z_loss` is `True`, returns (loss, z_loss) instead of (loss, None). Default: `False`
+
 
         Returns:
         tuple: A tuple with the compouted losses with respect to loss and z loss. The elements are tensors or None.
