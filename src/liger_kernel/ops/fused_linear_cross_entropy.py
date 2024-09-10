@@ -43,13 +43,16 @@ def fused_linear_cross_entropy_forward(
     )  # (BT + inc_factor - 1) // inc_factor
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
-    grad_weight = torch.zeros_like(weight, device=device)
+    grad_weight = (
+        torch.zeros_like(weight, device=device) if weight.requires_grad else None
+    )
     grad_input = torch.zeros_like(_input, device=device)
     grad_bias = torch.zeros_like(bias, device=device) if bias is not None else None
     # we use fp32 for loss accumulator
     loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
 
-    total_n_non_ignore = (target != ignore_index).sum().item()
+    # NOTE: skip .item() here to avoid CUDA synchronization
+    total_n_non_ignore = (target != ignore_index).sum()
 
     for chunk_id in range(num_chunks):
         start_idx = chunk_id * chunk_size
@@ -110,14 +113,16 @@ def fused_linear_cross_entropy_forward(
             n_non_ignore / total_n_non_ignore
         )  # chunk_size x V
         grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
-        torch.addmm(
-            input=grad_weight,
-            mat1=logits_chunk.t(),
-            mat2=_input_chunk,
-            out=grad_weight,
-            alpha=n_non_ignore / total_n_non_ignore,
-            beta=1.0,
-        )
+
+        if grad_weight is not None:
+            torch.addmm(
+                input=grad_weight,
+                mat1=logits_chunk.t(),
+                mat2=_input_chunk,
+                out=grad_weight,
+                alpha=n_non_ignore / total_n_non_ignore,
+                beta=1.0,
+            )
 
         if bias is not None:
             torch.add(
@@ -152,17 +157,18 @@ def fused_linear_cross_entropy_backward(
         )
 
         # handle grad_weight
-        V, H = grad_weight.shape
-        n_rows = V
+        if grad_weight is not None:
+            V, H = grad_weight.shape
+            n_rows = V
 
-        element_mul_kernel[(n_rows,)](
-            grad_weight,
-            grad_weight.stride(-2),
-            grad_output,
-            H,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32,
-        )
+            element_mul_kernel[(n_rows,)](
+                grad_weight,
+                grad_weight.stride(-2),
+                grad_output,
+                H,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=32,
+            )
 
         if grad_bias is not None:
             V = grad_bias.shape[0]
@@ -212,7 +218,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         # downcast to dtype and store for backward
         ctx.save_for_backward(
             grad_input.detach(),
-            grad_weight.detach(),
+            grad_weight.detach() if grad_weight is not None else None,
             grad_bias.detach() if bias is not None else None,
         )
         return loss
