@@ -10,13 +10,11 @@ class LigerFusedLinearCrossEntropyLoss(nn.Module):
         self,
         ignore_index=-100,
         label_smoothing=0.0,
-        lse_square_scale=0.0,
         reduction="mean",
     ):
         super().__init__()
         self.ignore_index = ignore_index
         self.label_smoothing = label_smoothing
-        self.lse_square_scale = lse_square_scale
         self.reduction = reduction
         assert (self.label_smoothing >= 0) and (
             self.label_smoothing <= 1
@@ -29,5 +27,4 @@ class LigerFusedLinearCrossEntropyLoss(nn.Module):
             target,
             bias,
             self.ignore_index,
-            self.lse_square_scale,
         )
