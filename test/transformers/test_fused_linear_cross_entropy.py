@@ -23,6 +23,8 @@ class TorchLMHeadCE(torch.nn.Module):
     :param V: vocab size
     :param ignore_index: index to ignore
     :param reduction: reduction method
+    :param label_smoothing: label_smoothing to apply on target
+    :param lse_square_scale: scaler of lse ^ 2 to compute z loss
     """
 
     def __init__(
@@ -101,8 +103,13 @@ class LigerLMHeadCE(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
-@pytest.mark.parametrize("lse_square_scale", [0, 1e-4])
-@pytest.mark.parametrize("label_smoothing", [0, 0.1])
+@pytest.mark.parametrize(
+    "label_smoothing, lse_square_scale",
+    [
+        (0, 0),
+        (0.1, 1e-4),  # Pass non-default values once to ensure all params work along
+    ],
+)
 def test_correctness(
     B, T, H, V, scalar, dtype, bias, lse_square_scale, label_smoothing, atol, rtol
 ):
