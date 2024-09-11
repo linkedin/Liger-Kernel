@@ -214,6 +214,7 @@ def apply_liger_kernel_to_gemma(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     geglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Gemma
@@ -231,13 +232,13 @@ def apply_liger_kernel_to_gemma(
 
     from transformers.models.gemma import modeling_gemma
 
+    # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
+    LigerRMSNormForGemma = partial(LigerRMSNorm, offset=1.0, init_fn="zeros", casting_mode="gemma")
+
     if rope:
         modeling_gemma.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
-        modeling_gemma.GemmaRMSNorm = partial(
-            LigerRMSNorm, offset=1.0, init_fn="zeros", casting_mode="gemma"
-        )
+        modeling_gemma.GemmaRMSNorm = LigerRMSNormForGemma
     if cross_entropy:
         modeling_gemma.CrossEntropyLoss = LigerCrossEntropyLoss
     if geglu:
@@ -245,12 +246,41 @@ def apply_liger_kernel_to_gemma(
     if fused_linear_cross_entropy:
         modeling_gemma.GemmaForCausalLM.forward = gemma_lce_forward
 
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for GemmaForCausalLM, GemmaForTokenClassification for example
+            base_model = model.model
+        else:
+            # Direct GemmaModel
+            base_model = model
+
+        torch_dtype = config.torch_dtype
+        if rms_norm:
+            base_model.norm = LigerRMSNormForGemma(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            if geglu:
+                decoder_layer.mlp = LigerGEGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNormForGemma(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNormForGemma(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
 
 def apply_liger_kernel_to_gemma2(
     rope: bool = True,
     cross_entropy: bool = True,
     rms_norm: bool = True,
     geglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Gemma2
@@ -264,17 +294,51 @@ def apply_liger_kernel_to_gemma2(
     """
     from transformers.models.gemma2 import modeling_gemma2
 
+    LigerRMSNormForGemma2 = partial(LigerRMSNorm, offset=1.0, init_fn="zeros")
     if rope:
         modeling_gemma2.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
-        modeling_gemma2.Gemma2RMSNorm = partial(
-            LigerRMSNorm, offset=1.0, init_fn="zeros"
-        )
+        modeling_gemma2.Gemma2RMSNorm = LigerRMSNormForGemma2
     if cross_entropy:
         modeling_gemma2.CrossEntropyLoss = LigerCrossEntropyLoss
     if geglu:
         modeling_gemma2.Gemma2MLP = LigerGEGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for Gemma2ForCausalLM, Gemma2ForTokenClassification for example
+            base_model = model.model
+        else:
+            # Direct GemmaModel
+            base_model = model
+
+        torch_dtype = config.torch_dtype
+        if rms_norm:
+            base_model.norm = LigerRMSNormForGemma2(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            if geglu:
+                decoder_layer.mlp = LigerGEGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNormForGemma2(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNormForGemma2(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.pre_feedforward_layernorm = LigerRMSNormForGemma2(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_feedforward_layernorm = LigerRMSNormForGemma2(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
 
 
 def apply_liger_kernel_to_qwen2(

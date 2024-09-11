@@ -3,14 +3,17 @@
 
 # MODEL_TYPE="llama"
 # MODEL_PATH="/shared/public/models/Meta-Llama-3-8B"
-MODEL_TYPE="mistral"
-MODEL_PATH="/shared/public/models/mistralai/Mistral-7B-v0.1"
-# USE_LIGER_VALUES=("True" "False")
-# PATCHING_TYPE_VALUES=("pre_init" "post_init_class" "post_init_instance")
-USE_LIGER_VALUES=("False")
-PATCHING_TYPE_VALUES=("post_init_instance")
+# MODEL_TYPE="mistral"
+# MODEL_PATH="/shared/public/models/mistralai/Mistral-7B-v0.1"
+MODEL_TYPE="gemma"
+MODEL_PATH="/shared/public/models/gemma-7b-it"
+
+USE_LIGER_VALUES=("True" "False")
+PATCHING_TYPE_VALUES=("pre_init" "post_init_class" "post_init_instance")
+# USE_LIGER_VALUES=("False")
+# PATCHING_TYPE_VALUES=("post_init_instance")
 MAX_STEPS=10
-BATCH_SIZE=32
+BATCH_SIZE=24
 DATASET_PATH="/shared/public/data/tatsu-lab"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

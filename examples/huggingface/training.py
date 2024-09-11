@@ -21,7 +21,9 @@ class CustomArguments:
     use_liger: bool = False
     patching_type: str = "pre_init" # pre_init, post_init_class, post_init_instance
 
-bos_token = '<s>'
+# bos_token = '<|begin_of_text|>' # llama
+# bos_token = '<s>' # mistral
+bos_token = '<bos>' # gemma
 
 def formatting_prompts_func(example):
     return [text.replace("### Response:", bos_token) for text in example["text"]]
@@ -92,33 +94,6 @@ def train():
             use_cache=False,
             torch_dtype=torch.bfloat16,
         )
-
-    ## 1. Pre-init patching
-    # _apply_liger_kernel(model_type="llama")
-    # model = transformers.AutoModelForCausalLM.from_pretrained(
-    #     custom_args.model_name,
-    #     trust_remote_code=True,
-    #     use_cache=False,
-    #     torch_dtype=torch.bfloat16,
-    # )
-
-    ## 2. Post-init class-only patching
-    # model = transformers.AutoModelForCausalLM.from_pretrained(
-    #     custom_args.model_name,
-    #     trust_remote_code=True,
-    #     use_cache=False,
-    #     torch_dtype=torch.bfloat16,
-    # )
-    # _apply_liger_kernel(model_type="llama")
-
-    ## 3. Post-init instance patching
-    # model = transformers.AutoModelForCausalLM.from_pretrained(
-    #     custom_args.model_name,
-    #     trust_remote_code=True,
-    #     use_cache=False,
-    #     torch_dtype=torch.bfloat16,
-    # )
-    # _apply_liger_kernel(model=model)
 
     trainer = SFTTrainer(
         model=model,
