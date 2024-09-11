@@ -3,7 +3,6 @@ import logging
 from functools import partial
 
 from transformers import PretrainedConfig, PreTrainedModel
-from transformers.models.llama.modeling_llama import LlamaModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
@@ -626,4 +625,4 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
         f"Applying Liger kernels to model instance with model type: {model_type} with kwargs: {applicable_kwargs}"
     )
 
-    apply_fn(model=model, **kwargs)
+    apply_fn(model=model, **applicable_kwargs)

@@ -1,13 +1,18 @@
 import inspect
 from inspect import signature
-from unittest.mock import Mock, patch
-
+from unittest.mock import Mock, patch, MagicMock
+from transformers import PretrainedConfig, PreTrainedModel, AutoModelForCausalLM
+from transformers.models.llama import modeling_llama, configuration_llama
+from liger_kernel.transformers import LigerRMSNorm, LigerSwiGLUMLP, liger_rotary_pos_emb
+from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
+import torch
 import pytest
 
 from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.monkey_patch import (
     MODEL_TYPE_TO_APPLY_LIGER_FN,
     _apply_liger_kernel,
+    _apply_liger_kernel_to_instance,
 )
 
 
@@ -95,3 +100,40 @@ def test_patching_apis_match_auto_mapping():
     ]
 
     assert set(patching_functions) == set(MODEL_TYPE_TO_APPLY_LIGER_FN.values())
+
+
+def test_apply_liger_kernel_to_instance_for_llama():
+    with patch("transformers.models.llama.modeling_llama") as mock_modeling_llama:
+
+        # Instantiate a dummy model with a llama configuration
+        config = configuration_llama.LlamaConfig(
+            model_type="llama",
+            torch_dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="silu",
+            num_hidden_layers=2,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert not isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
+        for layer in dummy_model_instance.model.layers:
+            assert not isinstance(layer.mlp, LigerSwiGLUMLP)
+            assert not isinstance(layer.input_layernorm, LigerRMSNorm)
+            assert not isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
+        for layer in dummy_model_instance.model.layers:
+            assert isinstance(layer.mlp, LigerSwiGLUMLP)
+            assert isinstance(layer.input_layernorm, LigerRMSNorm)
+            assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+
+
+
+

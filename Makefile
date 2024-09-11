@@ -5,7 +5,7 @@ all: test test-convergence checkstyle
 
 # Command to run pytest for correctness tests
 test:
-	python -m pytest --disable-warnings test/ --ignore=test/convergence
+	python -m pytest test/transformers/test_monkey_patch.py --disable-warnings test/ --ignore=test/convergence
 
 # Command to run flake8 (code style check), isort (import ordering), and black (code formatting)
 # Subsequent commands still run if the previous fails, but return failure at the end
