@@ -23,9 +23,9 @@ class CustomArguments:
     patching_type: str = "pre_init" # pre_init, post_init_class, post_init_instance
 
 # bos_token = '<|begin_of_text|>' # llama
-# bos_token = '<s>' # mistral
+bos_token = '<s>' # mistral, phi3
 # bos_token = '<bos>' # gemma
-bos_token = '<|endoftext|>'
+# bos_token = '<|endoftext|>' # qwen2
 
 def formatting_prompts_func(example):
     return [text.replace("### Response:", bos_token) for text in example["text"]]
@@ -59,14 +59,6 @@ def train():
     if custom_args.use_liger:
         if custom_args.patching_type == "pre_init":
             print("********** Pre-Init Patching ***********")
-            # apply_liger_kernel_to_gemma2()
-            # model = transformers.AutoModelForCausalLM.from_pretrained(
-            #     custom_args.model_name,
-            #     trust_remote_code=True,
-            #     use_cache=False,
-            #     torch_dtype=torch.bfloat16,
-            #     attn_implementation='eager', # for gemma2
-            # )
             model = AutoLigerKernelForCausalLM.from_pretrained(
                 custom_args.model_name,
                 trust_remote_code=True,

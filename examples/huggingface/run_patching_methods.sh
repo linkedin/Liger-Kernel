@@ -9,15 +9,17 @@
 # MODEL_PATH="/shared/public/models/gemma-7b-it"
 # MODEL_TYPE="gemma2"
 # MODEL_PATH="/shared/public/models/google/gemma-2-2b-it"
-MODEL_TYPE="qwen2"
-MODEL_PATH="/shared/public/models/Qwen/Qwen2-7B-Instruct"
+# MODEL_TYPE="qwen2"
+# MODEL_PATH="/shared/public/models/Qwen/Qwen2-7B-Instruct"
+MODEL_TYPE="phi3"
+MODEL_PATH="/shared/public/models/microsoft/Phi-3.5-mini-instruct"
 
 USE_LIGER_VALUES=("True" "False")
 PATCHING_TYPE_VALUES=("pre_init" "post_init_class" "post_init_instance")
 # USE_LIGER_VALUES=("True")
 # PATCHING_TYPE_VALUES=("pre_init")
-MAX_STEPS=5
-BATCH_SIZE=24
+MAX_STEPS=10
+BATCH_SIZE=128
 DATASET_PATH="/shared/public/data/tatsu-lab"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

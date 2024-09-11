@@ -464,6 +464,7 @@ def apply_liger_kernel_to_phi3(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Phi3 models.
@@ -494,6 +495,36 @@ def apply_liger_kernel_to_phi3(
         modeling_phi3.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
         modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
+
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for Phi3ForCausalLM, Phi3ForTokenClassification for example
+            base_model = model.model
+        else:
+            # Direct Phi3Model
+            base_model = model
+
+        torch_dtype = config.torch_dtype
+        if rms_norm:
+            base_model.norm = LigerRMSNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                decoder_layer.mlp = LigerPhi3SwiGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
 
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
