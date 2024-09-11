@@ -9,6 +9,7 @@ from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
 from liger_kernel.transformers import (
     AutoLigerKernelForCausalLM,
     apply_liger_kernel_to_llama,
+    apply_liger_kernel_to_gemma2,
 )
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel, _apply_liger_kernel_to_instance
 
@@ -23,7 +24,8 @@ class CustomArguments:
 
 # bos_token = '<|begin_of_text|>' # llama
 # bos_token = '<s>' # mistral
-bos_token = '<bos>' # gemma
+# bos_token = '<bos>' # gemma
+bos_token = '<|endoftext|>'
 
 def formatting_prompts_func(example):
     return [text.replace("### Response:", bos_token) for text in example["text"]]
@@ -57,11 +59,20 @@ def train():
     if custom_args.use_liger:
         if custom_args.patching_type == "pre_init":
             print("********** Pre-Init Patching ***********")
+            # apply_liger_kernel_to_gemma2()
+            # model = transformers.AutoModelForCausalLM.from_pretrained(
+            #     custom_args.model_name,
+            #     trust_remote_code=True,
+            #     use_cache=False,
+            #     torch_dtype=torch.bfloat16,
+            #     attn_implementation='eager', # for gemma2
+            # )
             model = AutoLigerKernelForCausalLM.from_pretrained(
                 custom_args.model_name,
                 trust_remote_code=True,
                 use_cache=False,
                 torch_dtype=torch.bfloat16,
+                # attn_implementation='eager', # for gemma2
             )
         elif custom_args.patching_type == "post_init_class":
             print("********** Post-Init Class Patching ***********")
@@ -70,6 +81,7 @@ def train():
                 trust_remote_code=True,
                 use_cache=False,
                 torch_dtype=torch.bfloat16,
+                # attn_implementation='eager', # for gemma2
             )
             model_type = getattr(model, "config", None) and getattr(
                 model.config, "model_type", None
@@ -82,6 +94,7 @@ def train():
                 trust_remote_code=True,
                 use_cache=False,
                 torch_dtype=torch.bfloat16,
+                # attn_implementation='eager', # for gemma2
             )
             _apply_liger_kernel_to_instance(model)
         else:
@@ -93,6 +106,7 @@ def train():
             trust_remote_code=True,
             use_cache=False,
             torch_dtype=torch.bfloat16,
+            # attn_implementation='eager', # for gemma2
         )
 
     trainer = SFTTrainer(

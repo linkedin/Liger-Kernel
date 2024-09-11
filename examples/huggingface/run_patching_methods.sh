@@ -5,14 +5,18 @@
 # MODEL_PATH="/shared/public/models/Meta-Llama-3-8B"
 # MODEL_TYPE="mistral"
 # MODEL_PATH="/shared/public/models/mistralai/Mistral-7B-v0.1"
-MODEL_TYPE="gemma"
-MODEL_PATH="/shared/public/models/gemma-7b-it"
+# MODEL_TYPE="gemma"
+# MODEL_PATH="/shared/public/models/gemma-7b-it"
+# MODEL_TYPE="gemma2"
+# MODEL_PATH="/shared/public/models/google/gemma-2-2b-it"
+MODEL_TYPE="qwen2"
+MODEL_PATH="/shared/public/models/Qwen/Qwen2-7B-Instruct"
 
 USE_LIGER_VALUES=("True" "False")
 PATCHING_TYPE_VALUES=("pre_init" "post_init_class" "post_init_instance")
-# USE_LIGER_VALUES=("False")
-# PATCHING_TYPE_VALUES=("post_init_instance")
-MAX_STEPS=10
+# USE_LIGER_VALUES=("True")
+# PATCHING_TYPE_VALUES=("pre_init")
+MAX_STEPS=5
 BATCH_SIZE=24
 DATASET_PATH="/shared/public/data/tatsu-lab"
 

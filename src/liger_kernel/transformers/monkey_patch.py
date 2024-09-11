@@ -292,6 +292,7 @@ def apply_liger_kernel_to_gemma2(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
     """
+    print("Got here!")
     from transformers.models.gemma2 import modeling_gemma2
 
     LigerRMSNormForGemma2 = partial(LigerRMSNorm, offset=1.0, init_fn="zeros")
@@ -314,7 +315,7 @@ def apply_liger_kernel_to_gemma2(
             # The case for Gemma2ForCausalLM, Gemma2ForTokenClassification for example
             base_model = model.model
         else:
-            # Direct GemmaModel
+            # Direct Gemma2Model
             base_model = model
 
         torch_dtype = config.torch_dtype
@@ -347,6 +348,7 @@ def apply_liger_kernel_to_qwen2(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2 models
@@ -377,6 +379,35 @@ def apply_liger_kernel_to_qwen2(
         modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward
     if swiglu:
         modeling_qwen2.Qwen2MLP = LigerSwiGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for Qwen2ForCausalLM, Qwen2ForTokenClassification for example
+            base_model = model.model
+        else:
+            # Direct Qwen2Model
+            base_model = model
+
+        torch_dtype = config.torch_dtype
+        if rms_norm:
+            base_model.norm = LigerRMSNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
 
 
 def apply_liger_kernel_to_qwen2_vl(
