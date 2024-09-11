@@ -117,8 +117,7 @@ def liger_cross_entropy_kernel(
         # softmax(x_i)
         X_block = tl.exp(X_block - m) / d
         # derivative of z-loss: 2 * lse_square_scale * lse * softmax(x_i)
-        if lse_square_scale > 0:
-            X_block += 2 * lse_square_scale * lse * X_block
+        X_block += 2 * lse_square_scale * lse * X_block
         # smoothing term
         X_block += -eps
         # reduction scale
