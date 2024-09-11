@@ -479,6 +479,9 @@ def apply_liger_kernel_to_phi3(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU Phi3MLP. Default is True.
     """
+    print("apply_liger_kernel_to_phi3 args")
+    print(rope, cross_entropy, fused_linear_cross_entropy, rms_norm, swiglu)
+
     assert not (
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
@@ -498,6 +501,7 @@ def apply_liger_kernel_to_phi3(
 
 
     if model is not None:
+        print("Got here phi3!")
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
         config: PretrainedConfig = model.config

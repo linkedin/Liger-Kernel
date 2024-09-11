@@ -14,10 +14,10 @@
 MODEL_TYPE="phi3"
 MODEL_PATH="/shared/public/models/microsoft/Phi-3.5-mini-instruct"
 
-USE_LIGER_VALUES=("True" "False")
-PATCHING_TYPE_VALUES=("pre_init" "post_init_class" "post_init_instance")
-# USE_LIGER_VALUES=("True")
-# PATCHING_TYPE_VALUES=("pre_init")
+# USE_LIGER_VALUES=("True" "False")
+# PATCHING_TYPE_VALUES=("pre_init" "post_init_class" "post_init_instance")
+USE_LIGER_VALUES=("True")
+PATCHING_TYPE_VALUES=("post_init_instance" "pre_init")
 MAX_STEPS=10
 BATCH_SIZE=128
 DATASET_PATH="/shared/public/data/tatsu-lab"
