@@ -195,6 +195,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         weight: (V, H) where V is the number of classes
         bias: (V) where V is the number of classes
         ignore_index: the index to ignore in the target
+        label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
         """
         loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
             _input, weight, target, bias, ignore_index, label_smoothing
@@ -213,4 +214,4 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_backward(
             grad_output, grad_input, grad_weight, grad_bias
         )
-        return (grad_input, grad_weight, None, grad_bias, None)
+        return (grad_input, grad_weight, None, grad_bias, None, None)
