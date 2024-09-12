@@ -242,6 +242,38 @@ def test_apply_liger_kernel_to_instance_for_mistral():
             assert isinstance(layer.input_layernorm, LigerRMSNorm)
             assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
 
+def test_apply_liger_kernel_to_instance_for_mistral():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.mixtral.modeling_mixtral"):
+
+        # Instantiate a dummy model
+        config = transformers.models.mixtral.configuration_mistral.MistralConfig(
+            torch_dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="silu",
+            num_hidden_layers=2,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert not isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
+        for layer in dummy_model_instance.model.layers:
+            assert not isinstance(layer.mlp, LigerSwiGLUMLP)
+            assert not isinstance(layer.input_layernorm, LigerRMSNorm)
+            assert not isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
+        for layer in dummy_model_instance.model.layers:
+            assert isinstance(layer.mlp, LigerSwiGLUMLP)
+            assert isinstance(layer.input_layernorm, LigerRMSNorm)
+            assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+
 
 def test_apply_liger_kernel_to_instance_for_gemma():
     # Ensure any monkey patching is cleaned up for subsequent tests
