@@ -31,13 +31,14 @@ class TorchLMHeadCE(torch.nn.Module):
         dtype: torch.dtype,
         bias: bool = False,
         ignore_index: int = -100,
+        label_smoothing: float = 0.0,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
         self.ce_loss = torch.nn.CrossEntropyLoss(
-            ignore_index=ignore_index, reduction="mean"
+            ignore_index=ignore_index, reduction="mean", label_smoothing=label_smoothing
         )
 
     def forward(self, x, y):
@@ -53,13 +54,16 @@ class LigerLMHeadCE(torch.nn.Module):
         dtype: torch.dtype,
         bias: bool = False,
         ignore_index: int = -100,
+        label_smoothing: float = 0.0,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
         self.ce_loss = LigerFusedLinearCrossEntropyLoss(
-            ignore_index=ignore_index, reduction="mean"
+            ignore_index=ignore_index,
+            reduction="mean",
+            label_smoothing=label_smoothing,
         )
 
     def forward(self, x, y):
@@ -90,10 +94,15 @@ class LigerLMHeadCE(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
-def test_correctness(B, T, H, V, scalar, dtype, bias, atol, rtol):
+@pytest.mark.parametrize("label_smoothing", [0, 0.1])
+def test_correctness(B, T, H, V, scalar, dtype, bias, label_smoothing, atol, rtol):
     device = "cuda"
-    torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, bias=bias, dtype=dtype).to(device)
-    liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, bias=bias, dtype=dtype).to(device)
+    torch_lm_head_ce = TorchLMHeadCE(
+        H=H, V=V, bias=bias, label_smoothing=label_smoothing, dtype=dtype
+    ).to(device)
+    liger_lm_head_ce = LigerLMHeadCE(
+        H=H, V=V, bias=bias, label_smoothing=label_smoothing, dtype=dtype
+    ).to(device)
 
     # init the linear in all CEs with the same weights
     torch_lm_head_ce.lin.weight.data = liger_lm_head_ce.lin.weight.data = torch.rand(
