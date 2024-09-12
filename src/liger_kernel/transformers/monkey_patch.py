@@ -232,7 +232,9 @@ def apply_liger_kernel_to_gemma(
     from transformers.models.gemma import modeling_gemma
 
     # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
-    LigerRMSNormForGemma = partial(LigerRMSNorm, offset=1.0, init_fn="zeros", casting_mode="gemma")
+    LigerRMSNormForGemma = partial(
+        LigerRMSNorm, offset=1.0, init_fn="zeros", casting_mode="gemma"
+    )
 
     if rope:
         modeling_gemma.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -273,6 +275,7 @@ def apply_liger_kernel_to_gemma(
                 decoder_layer.post_attention_layernorm = LigerRMSNormForGemma(
                     config.hidden_size, eps=config.rms_norm_eps
                 ).to(torch_dtype)
+
 
 def apply_liger_kernel_to_gemma2(
     rope: bool = True,
@@ -497,7 +500,6 @@ def apply_liger_kernel_to_phi3(
         modeling_phi3.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
         modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
-
 
     if model is not None:
         print("Got here phi3!")

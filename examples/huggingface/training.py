@@ -8,10 +8,13 @@ from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
 
 from liger_kernel.transformers import (
     AutoLigerKernelForCausalLM,
-    apply_liger_kernel_to_llama,
     apply_liger_kernel_to_gemma2,
+    apply_liger_kernel_to_llama,
 )
-from liger_kernel.transformers.monkey_patch import _apply_liger_kernel, _apply_liger_kernel_to_instance
+from liger_kernel.transformers.monkey_patch import (
+    _apply_liger_kernel,
+    _apply_liger_kernel_to_instance,
+)
 
 
 @dataclass
@@ -20,12 +23,14 @@ class CustomArguments:
     dataset: str = "tatsu-lab/alpaca"
     max_seq_length: int = 512
     use_liger: bool = False
-    patching_type: str = "pre_init" # pre_init, post_init_class, post_init_instance
+    patching_type: str = "pre_init"  # pre_init, post_init_class, post_init_instance
+
 
 # bos_token = '<|begin_of_text|>' # llama
-bos_token = '<s>' # mistral, phi3
+bos_token = "<s>"  # mistral, phi3
 # bos_token = '<bos>' # gemma
 # bos_token = '<|endoftext|>' # qwen2
+
 
 def formatting_prompts_func(example):
     return [text.replace("### Response:", bos_token) for text in example["text"]]
@@ -55,7 +60,6 @@ def train():
         pad_to_multiple_of=16,
     )
 
-    
     if custom_args.use_liger:
         if custom_args.patching_type == "pre_init":
             print("********** Pre-Init Patching ***********")
