@@ -2,8 +2,8 @@ import inspect
 import logging
 from functools import partial
 
-from transformers import PretrainedConfig, PreTrainedModel
 from torch import nn
+from transformers import PretrainedConfig, PreTrainedModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
@@ -232,7 +232,12 @@ def apply_liger_kernel_to_mixtral(
         for decoder_layer in base_model.layers:
             if swiglu:
                 block_sparse_moe = decoder_layer.block_sparse_moe
-                patched_experts = nn.ModuleList([LigerBlockSparseTop2MLP(config) for _ in range(block_sparse_moe.num_experts)])
+                patched_experts = nn.ModuleList(
+                    [
+                        LigerBlockSparseTop2MLP(config)
+                        for _ in range(block_sparse_moe.num_experts)
+                    ]
+                )
                 decoder_layer.block_sparse_moe.experts = patched_experts.to(torch_dtype)
             if rms_norm:
                 decoder_layer.input_layernorm = LigerRMSNorm(
@@ -525,8 +530,12 @@ def apply_liger_kernel_to_qwen2_vl(
             # Patch Qwen2VisionTransformerPretrainedModel
             for vision_block in model.visual.blocks:
                 if layer_norm:
-                    vision_block.norm1 = LigerLayerNorm(config.embed_dim, eps=1e-6).to(torch_dtype)
-                    vision_block.norm2 = LigerLayerNorm(config.embed_dim, eps=1e-6).to(torch_dtype)
+                    vision_block.norm1 = LigerLayerNorm(config.embed_dim, eps=1e-6).to(
+                        torch_dtype
+                    )
+                    vision_block.norm2 = LigerLayerNorm(config.embed_dim, eps=1e-6).to(
+                        torch_dtype
+                    )
 
         if rms_norm:
             base_model.norm = LigerRMSNormForQwen2VL(

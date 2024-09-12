@@ -1,4 +1,4 @@
-transformers==4.44.2
+transformers==4.43.3
 trl
 liger-kernel
 tf-keras

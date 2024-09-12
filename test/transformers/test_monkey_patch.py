@@ -8,11 +8,11 @@ import transformers
 from transformers import AutoModelForCausalLM, PretrainedConfig, PreTrainedModel
 
 from liger_kernel.transformers import (
+    LigerBlockSparseTop2MLP,
     LigerGEGLUMLP,
     LigerPhi3SwiGLUMLP,
     LigerRMSNorm,
     LigerSwiGLUMLP,
-    LigerBlockSparseTop2MLP,
     monkey_patch,
 )
 from liger_kernel.transformers.monkey_patch import (
@@ -191,7 +191,9 @@ def test_patching_apis_support_patching_model_instance():
     for func in patching_functions:
         sig = inspect.signature(func)
         # Ensure 'model' is in the parameters
-        assert 'model' in sig.parameters, f"{func.__name__} does not have 'model' as an argument. All patching methods must support patching an existing model instance."
+        assert (
+            "model" in sig.parameters
+        ), f"{func.__name__} does not have 'model' as an argument. All patching methods must support patching an existing model instance."
 
 
 def test_apply_liger_kernel_to_instance_for_llama():
@@ -259,7 +261,8 @@ def test_apply_liger_kernel_to_instance_for_mistral():
             assert isinstance(layer.input_layernorm, LigerRMSNorm)
             assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
 
-def test_apply_liger_kernel_to_instance_for_mistral():
+
+def test_apply_liger_kernel_to_instance_for_mixtral():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.mixtral.modeling_mixtral"):
 

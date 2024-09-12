@@ -1,10 +1,7 @@
 torchrun --nnodes=1 --nproc-per-node=4 training.py \
     --bf16 \
-    --model_name "/shared/public/models/Meta-Llama-3-8B" \
-    --dataset "/shared/public/data/tatsu-lab" \
-    --max_steps 5 \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 48 \
+    --per_device_train_batch_size 64 \
     --per_device_eval_batch_size 64 \
     --eval_strategy "no" \
     --save_strategy "no" \
@@ -15,8 +12,8 @@ torchrun --nnodes=1 --nproc-per-node=4 training.py \
     --logging_steps 1 \
     --include_num_input_tokens_seen \
     --report_to none \
-    --seed 42 \
     --fsdp "full_shard auto_wrap" \
     --fsdp_config config/fsdp_config.json \
+    --seed 42 \
     --use_liger True \
     --output_dir alpaca_finetuning
