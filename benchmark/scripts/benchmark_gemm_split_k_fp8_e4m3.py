@@ -1,20 +1,22 @@
-import os
 import torch
 import triton
 from utils import (
-    _test_memory,
     QUANTILES,
     SingleBenchmarkRunInput,
     SingleBenchmarkRunOutput,
+    _test_memory,
     parse_benchmark_script_args,
     run_benchmarks,
 )
+
 from liger_kernel.ops.experimental.gemm_split_k_fp8_e4m3 import (
     LigerFP8GemmSplitKFunction,
 )
 
 
-def bench_speed_gemm_split_k_fp8(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+def bench_speed_gemm_split_k_fp8(
+    input: SingleBenchmarkRunInput,
+) -> SingleBenchmarkRunOutput:
     m, k, n = input.x
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
@@ -45,6 +47,7 @@ def bench_speed_gemm_split_k_fp8(input: SingleBenchmarkRunInput) -> SingleBenchm
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd_fn, quantiles=QUANTILES)
     elif mode == "full":
+
         def full():
             y = fwd_fn()
             if provider == "liger":
@@ -59,7 +62,9 @@ def bench_speed_gemm_split_k_fp8(input: SingleBenchmarkRunInput) -> SingleBenchm
     return SingleBenchmarkRunOutput(y_50=ms_50, y_20=ms_20, y_80=ms_80)
 
 
-def bench_memory_gemm_split_k_fp8(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+def bench_memory_gemm_split_k_fp8(
+    input: SingleBenchmarkRunInput,
+) -> SingleBenchmarkRunOutput:
     m, k, n = input.x
     provider = input.kernel_provider
     dtype = input.extra_benchmark_config["dtype"]
@@ -112,9 +117,7 @@ if __name__ == "__main__":
             (1024, 2048, 1024),
         ],
         "kernel_providers": ["liger", "torch", "torch_compile"],
-        "extra_benchmark_configs": [
-            {"dtype": torch.float32}
-        ],
+        "extra_benchmark_configs": [{"dtype": torch.float32}],
         "overwrite": args.overwrite,
     }
 

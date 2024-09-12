@@ -10,12 +10,8 @@ from liger_kernel.ops.utils import (
     ensure_contiguous,
 )
 
-dtypes = {
-    torch.float16: 0,
-    torch.bfloat16: 1,
-    torch.float32: 2,
-    torch.float8_e4m3fn: 3
-}
+dtypes = {torch.float16: 0, torch.bfloat16: 1, torch.float32: 2, torch.float8_e4m3fn: 3}
+
 
 @triton.jit
 def grouped_launch(
@@ -152,7 +148,7 @@ def forward_kernel(ctx, a, b):
         group_m,
         num_stages=num_stages,
         num_warps=num_warps,
-        compute_type_int=dtypes[input_dtype]
+        compute_type_int=dtypes[input_dtype],
     )
 
     return c
