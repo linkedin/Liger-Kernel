@@ -13,6 +13,13 @@ from liger_kernel.ops.utils import (
 dtypes = {torch.float16: 0, torch.bfloat16: 1, torch.float32: 2, torch.float8_e4m3fn: 3}
 
 
+"""
+Split-K GEMM is preferred in scenarios where:
+- The matrix dimensions (m, n, k) are large, leading to the need for splitting the computation across multiple blocks.
+- The available shared memory per block is insufficient to handle the required shared memory for a single block.
+    - in our case this is 100KB SMEM per block.
+"""
+
 @triton.jit
 def grouped_launch(
     pid,
@@ -55,6 +62,70 @@ def gemm_split_k_kernel_forward(
     group_m: tl.constexpr,
     compute_type_int: tl.constexpr,
 ):
+    """
+    FP8 GEMM with FP8 E4M3 FP8 representation.
+
+    This kernel performs matmul of two input matrices A and B, and stores the result in matrix C.
+    The computation is split across multiple blocks to handle large matrix dimensions and efficiently utilize GPU resources.
+
+    Design:
+    - The kernel uses a split-K strategy to divide the computation of the K dimension across multiple blocks.
+    - Each block computes a partial result for a submatrix of C, and the results are accumulated using atomic operations.
+    - The kernel supports different compute types (FP16, BF16, FP32, FP8) based on the input argument `compute_type_int`.
+
+    Args:
+        a_ptr: Pointer to the first input matrix A.
+        b_ptr: Pointer to the second input matrix B.
+        c_ptr: Pointer to the output matrix C.
+        stride_am: Stride of matrix A along the m dimension.
+        stride_ak: Stride of matrix A along the k dimension.
+        stride_bk: Stride of matrix B along the k dimension.
+        stride_bn: Stride of matrix B along the n dimension.
+        stride_cm: Stride of matrix C along the m dimension.
+        stride_cn: Stride of matrix C along the n dimension.
+        m: Number of rows in matrix A and matrix C.
+        n: Number of columns in matrix B and matrix C.
+        k: Number of columns in matrix A and rows in matrix B.
+        block_m: Number of rows in a block.
+        block_n: Number of columns in a block.
+        block_k: Number of columns in a block for the k dimension.
+        split_k: Factor to split the k dimension.
+        group_m: Number of blocks in a group along the row dimension.
+        compute_type_int: Integer representing the compute type (0: float16, 1: bfloat16, 2: float32, 3: float8_e4m3fn).
+
+    Returns:
+        None
+
+    Structural Representation:
+    - Two matrices A (m x k) and B (k x n) | C = A @ B.
+    - Computation is divided into blocks of size (block_m x block_n) and splits the K dimension into chunks
+      of size (block_k).
+
+    ```
+    Matrix A (m x k):
+    +-------------------+-------------------+-------------------+
+    |       Block 0     |       Block 1     |       Block 2     |
+    |                   |                   |                   |
+    |       (m x k0)    |       (m x k1)    |       (m x k2)    |
+    +-------------------+-------------------+-------------------+
+
+    Matrix B (k x n):
+    +-------------------+-------------------+-------------------+
+    |       Block 0     |       Block 1     |       Block 2     |
+    |                   |                   |                   |
+    |       (k0 x n)    |       (k1 x n)    |       (k2 x n)    |
+    +-------------------+-------------------+-------------------+
+
+    Matrix C (m x n):
+    +-------------------+-------------------+-------------------+
+    |       Block 0     |       Block 1     |       Block 2     |
+    |                   |                   |                   |
+    |       (m x n)     |       (m x n)     |       (m x n)     |
+    +-------------------+-------------------+-------------------+
+    ```
+
+    - Each block computes a partial result for a submatrix of C and accumulates the results using `triton.language.atomic_add`.
+    """
     if compute_type_int == 0 or compute_type_int == 3:
         compute_type = tl.float16
     elif compute_type_int == 1:
