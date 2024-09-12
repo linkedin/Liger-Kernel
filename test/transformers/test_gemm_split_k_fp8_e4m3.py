@@ -37,7 +37,7 @@ def to_float8_e4m3(x):
 )
 @pytest.mark.skipif(
     compute_capability not in [(8, 9), (9, 0)],
-    reason="FP8 GEMM is only supported on SM_89 and SM_90 CUDA devices.",
+    reason="FP8 GEMM is only supported on SM_89 and higher",
 )
 def test_gemm_split_k(m, k, n, dtype, atol, rtol):
     a = torch.randn((m, k), device="cuda", dtype=dtype)

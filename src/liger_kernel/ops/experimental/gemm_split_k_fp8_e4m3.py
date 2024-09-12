@@ -10,6 +10,12 @@ from liger_kernel.ops.utils import (
     ensure_contiguous,
 )
 
+dtypes = {
+    torch.float16: 0,
+    torch.bfloat16: 1,
+    torch.float32: 2,
+    torch.float8_e4m3fn: 3
+}
 
 @triton.jit
 def grouped_launch(
@@ -51,7 +57,15 @@ def gemm_split_k_kernel_forward(
     block_k: tl.constexpr,
     split_k: tl.constexpr,
     group_m: tl.constexpr,
+    compute_type_int: tl.constexpr,
 ):
+    if compute_type_int == 0 or compute_type_int == 3:
+        compute_type = tl.float16
+    elif compute_type_int == 1:
+        compute_type = tl.bfloat16
+    elif compute_type_int == 2:
+        compute_type = tl.float32
+
     pid = tl.program_id(0)
     pid_k = tl.program_id(1)
     grid_k = tl.cdiv(k, block_k * split_k)
@@ -85,20 +99,18 @@ def gemm_split_k_kernel_forward(
         a_ptrs += block_k * split_k * stride_ak
         b_ptrs += block_k * split_k * stride_bk
 
-    # cast to fp16 pre-store
-    acc = acc.to(tl.float16)
-
     offs_m = pid_m * block_m + tl.arange(0, block_m)
     offs_n = pid_n * block_n + tl.arange(0, block_n)
 
     c_ptrs = c_ptr + (offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn)
     mask = (offs_m < m)[:, None] & (offs_n < n)[None, :]
 
-    tl.atomic_add(c_ptrs, acc, mask=mask)
+    tl.atomic_add(c_ptrs, acc.to(compute_type), mask=mask)
 
 
 def forward_kernel(ctx, a, b):
     ctx.save_for_backward(a, b)
+    input_dtype = a.dtype
 
     # cast to FP8
     # structure:
@@ -140,6 +152,7 @@ def forward_kernel(ctx, a, b):
         group_m,
         num_stages=num_stages,
         num_warps=num_warps,
+        compute_type_int=dtypes[input_dtype]
     )
 
     return c
