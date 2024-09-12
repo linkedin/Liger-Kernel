@@ -13,15 +13,17 @@
 # MODEL_PATH="/shared/public/models/Qwen/Qwen2-7B-Instruct"
 # MODEL_TYPE="phi3"
 # MODEL_PATH="/shared/public/models/microsoft/Phi-3.5-mini-instruct"
-MODEL_TYPE="mixtral"
-MODEL_PATH="/shared/public/models/Mixtral-8x7B-v0.1"
+# MODEL_TYPE="mixtral"
+# MODEL_PATH="/shared/public/models/Mixtral-8x7B-v0.1"
+MODEL_TYPE="qwen2_vl"
+MODEL_PATH="/shared/public/elr-models/Qwen/Qwen2-VL-2B-Instruct/3c86da475a9bcc0876910f022ecdd476e621e636"
 
 # USE_LIGER_VALUES=("True" "False")
 # PATCHING_TYPE_VALUES=("pre_init" "post_init_class" "post_init_instance")
-USE_LIGER_VALUES=("True")
-PATCHING_TYPE_VALUES=("post_init_instance")
+USE_LIGER_VALUES=("False" "True")
+PATCHING_TYPE_VALUES=("pre_init" "post_init_instance" "post_init_class")
 MAX_STEPS=10
-BATCH_SIZE=128
+BATCH_SIZE=32
 DATASET_PATH="/shared/public/data/tatsu-lab"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

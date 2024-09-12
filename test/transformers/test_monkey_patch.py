@@ -12,6 +12,7 @@ from liger_kernel.transformers import (
     LigerPhi3SwiGLUMLP,
     LigerRMSNorm,
     LigerSwiGLUMLP,
+    LigerBlockSparseTop2MLP,
     monkey_patch,
 )
 from liger_kernel.transformers.monkey_patch import (
@@ -177,6 +178,22 @@ def test_patching_apis_match_auto_mapping():
     assert set(patching_functions) == set(MODEL_TYPE_TO_APPLY_LIGER_FN.values())
 
 
+def test_patching_apis_support_patching_model_instance():
+    # Test that all the patching APIs present support passing in
+    # model (PreTrainedModel) as an argument indicating that it supports
+    # patching post-model creation
+    patching_functions = [
+        func
+        for name, func in inspect.getmembers(monkey_patch, inspect.isfunction)
+        if name.startswith("apply_liger_kernel_to_")
+    ]
+
+    for func in patching_functions:
+        sig = inspect.signature(func)
+        # Ensure 'model' is in the parameters
+        assert 'model' in sig.parameters, f"{func.__name__} does not have 'model' as an argument. All patching methods must support patching an existing model instance."
+
+
 def test_apply_liger_kernel_to_instance_for_llama():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.llama.modeling_llama"):
@@ -247,20 +264,23 @@ def test_apply_liger_kernel_to_instance_for_mistral():
     with patch("transformers.models.mixtral.modeling_mixtral"):
 
         # Instantiate a dummy model
-        config = transformers.models.mixtral.configuration_mistral.MistralConfig(
+        config = transformers.models.mixtral.configuration_mixtral.MixtralConfig(
             torch_dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
             hidden_act="silu",
             num_hidden_layers=2,
+            num_local_experts=3,
+            num_experts_per_tok=2,
         )
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
         assert not isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
         for layer in dummy_model_instance.model.layers:
-            assert not isinstance(layer.mlp, LigerSwiGLUMLP)
+            for expert in layer.block_sparse_moe.experts:
+                assert not isinstance(expert, LigerBlockSparseTop2MLP)
             assert not isinstance(layer.input_layernorm, LigerRMSNorm)
             assert not isinstance(layer.post_attention_layernorm, LigerRMSNorm)
 
@@ -270,7 +290,8 @@ def test_apply_liger_kernel_to_instance_for_mistral():
         # Check that the model's instance variables were correctly patched with Liger modules
         assert isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
         for layer in dummy_model_instance.model.layers:
-            assert isinstance(layer.mlp, LigerSwiGLUMLP)
+            for expert in layer.block_sparse_moe.experts:
+                assert isinstance(expert, LigerBlockSparseTop2MLP)
             assert isinstance(layer.input_layernorm, LigerRMSNorm)
             assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
 
