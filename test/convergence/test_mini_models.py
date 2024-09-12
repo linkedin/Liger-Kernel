@@ -116,7 +116,7 @@ MINI_MODEL_SETUPS = {
             rope_theta=10000.0,
             attention_bias=False,
             attention_dropout=0.0,
-        ),
+        ), 
     ),
     "mini_gemma1.1": MiniModelConfig(
         liger_kernel_patch_func=functools.partial(
