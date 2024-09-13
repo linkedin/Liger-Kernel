@@ -1,10 +1,10 @@
-import importlib
 import inspect
 from inspect import signature
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 import torch
+import transformers
 from transformers import AutoModelForCausalLM, PretrainedConfig, PreTrainedModel
 
 from liger_kernel.transformers import (
@@ -198,9 +198,6 @@ def test_patching_apis_support_patching_model_instance():
 
 def test_apply_liger_kernel_to_instance_for_llama():
     # Ensure any monkey patching is cleaned up for subsequent tests
-    import transformers  # noqa: F811
-
-    importlib.reload(transformers)
     with patch("transformers.models.llama.modeling_llama"):
 
         # Instantiate a dummy model
@@ -234,9 +231,6 @@ def test_apply_liger_kernel_to_instance_for_llama():
 
 def test_apply_liger_kernel_to_instance_for_mistral():
     # Ensure any monkey patching is cleaned up for subsequent tests
-    import transformers  # noqa: F811
-
-    importlib.reload(transformers)
     with patch("transformers.models.mistral.modeling_mistral"):
 
         # Instantiate a dummy model
@@ -270,9 +264,6 @@ def test_apply_liger_kernel_to_instance_for_mistral():
 
 def test_apply_liger_kernel_to_instance_for_mixtral():
     # Ensure any monkey patching is cleaned up for subsequent tests
-    import transformers  # noqa: F811
-
-    importlib.reload(transformers)
     with patch("transformers.models.mixtral.modeling_mixtral"):
 
         # Instantiate a dummy model
@@ -310,9 +301,6 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
 
 def test_apply_liger_kernel_to_instance_for_gemma():
     # Ensure any monkey patching is cleaned up for subsequent tests
-    import transformers  # noqa: F811
-
-    importlib.reload(transformers)
     with patch("transformers.models.gemma.modeling_gemma"):
 
         # Instantiate a dummy model
@@ -346,9 +334,6 @@ def test_apply_liger_kernel_to_instance_for_gemma():
 
 def test_apply_liger_kernel_to_instance_for_gemma2():
     # Ensure any monkey patching is cleaned up for subsequent tests
-    import transformers  # noqa: F811
-
-    importlib.reload(transformers)
     with patch("transformers.models.gemma2.modeling_gemma2"):
 
         # Instantiate a dummy model
@@ -386,9 +371,6 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
 
 def test_apply_liger_kernel_to_instance_for_qwen2():
     # Ensure any monkey patching is cleaned up for subsequent tests
-    import transformers  # noqa: F811
-
-    importlib.reload(transformers)
     with patch("transformers.models.qwen2.modeling_qwen2"):
 
         # Instantiate a dummy model
@@ -422,9 +404,6 @@ def test_apply_liger_kernel_to_instance_for_qwen2():
 
 def test_apply_liger_kernel_to_instance_for_phi3():
     # Ensure any monkey patching is cleaned up for subsequent tests
-    import transformers  # noqa: F811
-
-    importlib.reload(transformers)
     with patch("transformers.models.phi3.modeling_phi3"):
 
         # Instantiate a dummy model
