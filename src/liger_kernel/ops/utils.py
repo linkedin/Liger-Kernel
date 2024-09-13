@@ -60,3 +60,22 @@ def compare_version(package: str, operator: Callable, target: str):
         return False
     pkg_version = Version(pkg.__version__)
     return operator(pkg_version, Version(target))
+
+
+def get_torch_activation(activation):
+    if callable(activation):
+        return activation
+    elif activation == "tanh":
+        return torch.tanh
+    elif activation == "relu":
+        return torch.nn.ReLU()
+    elif activation == "softmax":
+        return torch.nn.Softmax(dim=-1)
+    elif activation == "sigmoid":
+        return torch.sigmoid
+    elif activation == "elu":
+        return torch.nn.ELU()
+    elif activation == "prelu":
+        return torch.nn.PReLU()
+    else:
+        raise Exception("Activation not available! Kindly pass torch callable")

@@ -5,16 +5,34 @@ from liger_kernel.ops.cross_entropy import (
     element_mul_kernel,
     liger_cross_entropy_kernel,
 )
+from liger_kernel.ops.utils import get_torch_activation
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
 MAX_FUSED_SIZE = 65536 // 2
+LOGIT_SOFTCAP_VAL = "softcap_value"
+LOGIT_SOFTCAP_ACT = "softcap_act"
 
 
 def fused_linear_cross_entropy_forward(
     _input, weight, target, bias=None, ignore_index=-100, label_smoothing=0.0
 ):
+    if final_logit_softcap_params is not None:
+        if {LOGIT_SOFTCAP_VAL, LOGIT_SOFTCAP_ACT} != set(
+            final_logit_softcap_params.keys()
+        ):
+            raise Exception(
+                f"final_logit_softcap_params should be a Dict with two keys {LOGIT_SOFTCAP_VAL}, {LOGIT_SOFTCAP_ACT}"
+            )
+        final_logit_softcap_params.update(
+            {
+                LOGIT_SOFTCAP_ACT: get_torch_activation(
+                    final_logit_softcap_params.get(LOGIT_SOFTCAP_ACT)
+                )
+            }
+        )
+
     dtype = (
         torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else _input.dtype
     )
@@ -57,6 +75,16 @@ def fused_linear_cross_entropy_forward(
         logits_chunk = _input_chunk @ weight.t()  # chunk_size x V
         if bias is not None:
             logits_chunk = logits_chunk + bias
+        if final_logit_softcap_params is not None:
+            logits_chunk = logits_chunk / final_logit_softcap_params.get(
+                LOGIT_SOFTCAP_VAL
+            )
+            logits_chunk = final_logit_softcap_params.get(LOGIT_SOFTCAP_ACT)(
+                logits_chunk
+            )
+            logits_chunk = logits_chunk * final_logit_softcap_params.get(
+                LOGIT_SOFTCAP_VAL
+            )
         target_chunk = target[start_idx:end_idx]  # chunk_size,
 
         n_rows = logits_chunk.shape[0]
@@ -179,7 +207,14 @@ def fused_linear_cross_entropy_backward(
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx, _input, weight, target, bias=None, ignore_index=-100, label_smoothing=0.0
+        ctx,
+        _input,
+        weight,
+        target,
+        bias=None,
+        final_logit_softcap_params=None,
+        ignore_index=-100,
+        label_smoothing=0.0,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -194,6 +229,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         target: (B*T) where each value is in [0, V-1]
         weight: (V, H) where V is the number of classes
         bias: (V) where V is the number of classes
+        softcap_params: Dict with two keys: {"softcap_value": <scaling factor>, "softcap_act": <soft capping activation>}
         ignore_index: the index to ignore in the target
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
         """
