@@ -18,8 +18,8 @@ def fused_linear_cross_entropy_forward(
     target,
     bias=None,
     ignore_index=-100,
-    label_smoothing=0.0,
     lse_square_scale=0.0,
+    label_smoothing=0.0,
     reduction="mean",
 ):
     dtype = (
@@ -91,11 +91,11 @@ def fused_linear_cross_entropy_forward(
             n_cols=V,
             n_non_ignore=n_non_ignore,
             ignore_index=ignore_index,
-            label_smoothing=label_smoothing,
             lse_square_scale=lse_square_scale,
+            label_smoothing=label_smoothing,
             reduction=reduction,
-            BLOCK_SIZE=BLOCK_SIZE,
             RETURN_Z_LOSS=0,  # False
+            BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32,
         )
 

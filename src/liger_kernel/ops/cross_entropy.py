@@ -20,8 +20,8 @@ def liger_cross_entropy_kernel(
     ignore_index,
     lse_square_scale: tl.constexpr,
     label_smoothing: tl.constexpr,
-    RETURN_Z_LOSS: tl.constexpr,
     reduction: tl.constexpr,  # set it as constexpr since reduction is always known at compile time
+    RETURN_Z_LOSS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -281,8 +281,8 @@ def cross_entropy_forward(
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
         reduction=reduction,
-        BLOCK_SIZE=BLOCK_SIZE,
         RETURN_Z_LOSS=return_z_loss,
+        BLOCK_SIZE=BLOCK_SIZE,
         # TODO: 32 seems to give the best performance
         # Performance is quite sensitive to num_warps
         num_warps=32,
