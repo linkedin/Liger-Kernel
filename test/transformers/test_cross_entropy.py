@@ -1,4 +1,4 @@
-from test.utils import supports_bfloat16
+from test.utils import set_seed, supports_bfloat16
 
 import pytest
 import torch
@@ -8,12 +8,12 @@ from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
 
-SLEEP_SECONDS = 0.1
+set_seed(42)
 
 
-def _test_correctness_once(target_ce, B, T, V, scalar, dtype, atol, rtol):
-    torch.manual_seed(0)
-    torch_ce = CrossEntropyLoss()
+def _test_correctness_once(target_ce, B, T, V, reduction, scalar, dtype, atol, rtol):
+
+    torch_ce = CrossEntropyLoss(reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
     _input = _tensor.detach().clone().requires_grad_(True)
@@ -31,10 +31,10 @@ def _test_correctness_once(target_ce, B, T, V, scalar, dtype, atol, rtol):
 
 
 def _test_correctness_with_ignore_index_once(
-    target_ce, B, T, V, ignore_index, scalar, dtype, atol, rtol
+    target_ce, B, T, V, ignore_index, reduction, scalar, dtype, atol, rtol
 ):
-    torch.manual_seed(0)
-    torch_ce = CrossEntropyLoss(ignore_index=ignore_index)
+
+    torch_ce = CrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
     _input = _tensor.detach().clone().requires_grad_(True)
@@ -64,7 +64,7 @@ def _test_correctness_with_ignore_index_once(
 def _test_correctness_with_label_smoothing_once(
     target_ce, B, T, V, label_smoothing, scalar, dtype, atol, rtol
 ):
-    torch.manual_seed(0)
+
     torch_ce = CrossEntropyLoss(label_smoothing=label_smoothing)
 
     _tensor = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
@@ -86,7 +86,7 @@ def _test_correctness_with_label_smoothing_once(
 def _test_correctness_with_label_smoothing_with_ignore_index_once(
     target_ce, B, T, V, ignore_index, label_smoothing, scalar, dtype, atol, rtol
 ):
-    torch.manual_seed(0)
+
     torch_ce = CrossEntropyLoss(
         ignore_index=ignore_index, label_smoothing=label_smoothing
     )
@@ -117,10 +117,10 @@ def _test_correctness_with_label_smoothing_with_ignore_index_once(
 
 
 def _test_correctness_not_last_layer_once(
-    target_ce, B, T, V, scalar, dtype, atol, rtol
+    target_ce, B, T, V, reduction, scalar, dtype, atol, rtol
 ):
-    torch.manual_seed(0)
-    torch_ce = CrossEntropyLoss()
+
+    torch_ce = CrossEntropyLoss(reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
     _input = _tensor.detach().clone().requires_grad_(True)
@@ -141,7 +141,6 @@ def _test_correctness_not_last_layer_once(
 
 
 def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
-    torch.manual_seed(0)
 
     _input = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
 
@@ -178,6 +177,7 @@ def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
         (3, 423, 32000),
     ],
 )
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
@@ -217,9 +217,9 @@ def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
     torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
     reason="Needs 16GB+ GPU memory.",
 )
-def test_correctness(B, T, V, scalar, dtype, atol, rtol):
-    liger_ce = LigerCrossEntropyLoss()
-    _test_correctness_once(liger_ce, B, T, V, scalar, dtype, atol, rtol)
+def test_correctness(B, T, V, scalar, dtype, reduction, atol, rtol):
+    liger_ce = LigerCrossEntropyLoss(reduction=reduction)
+    _test_correctness_once(liger_ce, B, T, V, reduction, scalar, dtype, atol, rtol)
 
 
 @pytest.mark.parametrize(
@@ -255,6 +255,7 @@ def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
         (3, 423, 32000, -123),
     ],
 )
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
@@ -295,11 +296,11 @@ def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
     reason="Needs 16GB+ GPU memory.",
 )
 def test_correctness_with_ignore_index(
-    B, T, V, ignore_index, scalar, dtype, atol, rtol
+    B, T, V, ignore_index, reduction, scalar, dtype, atol, rtol
 ):
-    liger_ce = LigerCrossEntropyLoss(ignore_index=ignore_index)
+    liger_ce = LigerCrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
     _test_correctness_with_ignore_index_once(
-        liger_ce, B, T, V, ignore_index, scalar, dtype, atol, rtol
+        liger_ce, B, T, V, ignore_index, reduction, scalar, dtype, atol, rtol
     )
 
 
@@ -432,6 +433,7 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
         (3, 423, 32000),
     ],
 )
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
@@ -451,9 +453,11 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
     torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
     reason="Needs 16GB+ GPU memory.",
 )
-def test_correctness_not_last_layer(B, T, V, scalar, dtype, atol, rtol):
-    liger_ce = LigerCrossEntropyLoss()
-    _test_correctness_not_last_layer_once(liger_ce, B, T, V, scalar, dtype, atol, rtol)
+def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rtol):
+    liger_ce = LigerCrossEntropyLoss(reduction=reduction)
+    _test_correctness_not_last_layer_once(
+        liger_ce, B, T, V, reduction, scalar, dtype, atol, rtol
+    )
 
 
 #############################################################################
@@ -461,9 +465,9 @@ def test_correctness_not_last_layer(B, T, V, scalar, dtype, atol, rtol):
 #############################################################################
 
 
-def _full_pass_once(B, T, V):
-    torch.manual_seed(0)
-    liger_ce = LigerCrossEntropyLoss()
+def _full_pass_once(B, T, V, reduction):
+
+    liger_ce = LigerCrossEntropyLoss(reduction=reduction)
 
     _input = torch.randn(
         B * T, V, requires_grad=True, device="cuda", dtype=torch.bfloat16
@@ -485,11 +489,12 @@ def _full_pass_once(B, T, V):
         (8, 16384, 128256),  # _input = 32GB, total = ~64GB
     ],
 )
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
 @pytest.mark.skipif(
     torch.cuda.get_device_properties(0).total_memory < 64 * 1000 * 1000 * 1000,
     reason="Needs 64GB+ GPU memory.",
 )
-def test_large_no_exception(B, T, V):
+def test_large_no_exception(B, T, V, reduction):
     # The large inputs were hitting cuda illegal memory access because of
     # https://github.com/triton-lang/triton/issues/1058
-    _full_pass_once(B, T, V)
+    _full_pass_once(B, T, V, reduction)
