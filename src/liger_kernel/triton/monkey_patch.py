@@ -37,6 +37,6 @@ def apply_liger_triton_cache_manager():
     Experimental feature to get around transient FileNotFoundError in triton compilation.
     For more details please see https://github.com/triton-lang/triton/pull/4295
     """
-    os.environ[
-        "TRITON_CACHE_MANAGER"
-    ] = "liger_kernel.triton.monkey_patch:LigerTritonFileCacheManager"
+    os.environ["TRITON_CACHE_MANAGER"] = (
+        "liger_kernel.triton.monkey_patch:LigerTritonFileCacheManager"
+    )
