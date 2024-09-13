@@ -29,6 +29,7 @@ class LigerFusedLinearCrossEntropyLoss(nn.Module):
             target,
             bias,
             self.ignore_index,
-            self.label_smoothing,
             self.lse_square_scale,
+            self.label_smoothing,
+            self.reduction,
         )

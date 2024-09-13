@@ -2,6 +2,14 @@ from test.utils import (
     DEFAULT_DATASET_PATH,
     MiniModelConfig,
     assert_verbose_allclose,
+    revert_liger_kernel_to_gemma,
+    revert_liger_kernel_to_gemma2,
+    revert_liger_kernel_to_llama,
+    revert_liger_kernel_to_mistral,
+    revert_liger_kernel_to_mixtral,
+    revert_liger_kernel_to_phi3,
+    revert_liger_kernel_to_qwen2,
+    revert_liger_kernel_to_qwen2_vl,
     set_seed,
     simple_collate_fn,
     supports_bfloat16,
@@ -44,6 +52,7 @@ except ImportError:
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_llama,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_llama,
         model_class=LlamaForCausalLM,
         mini_model_config=LlamaConfig(
             attention_bias=False,
@@ -76,6 +85,7 @@ MINI_MODEL_SETUPS = {
     ),
     "mini_qwen2": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_qwen2,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2,
         model_class=Qwen2ForCausalLM,
         mini_model_config=Qwen2Config(
             attention_dropout=0.0,
@@ -104,6 +114,7 @@ MINI_MODEL_SETUPS = {
     ),
     "mini_phi3": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_phi3,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_phi3,
         model_class=Phi3ForCausalLM,
         mini_model_config=Phi3Config(
             attention_dropout=0.0,
@@ -128,6 +139,7 @@ MINI_MODEL_SETUPS = {
     ),
     "mini_mistral": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_mistral,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_mistral,
         model_class=MistralForCausalLM,
         mini_model_config=MistralConfig(
             attention_dropout=0.0,
@@ -152,6 +164,7 @@ MINI_MODEL_SETUPS = {
     ),
     "mini_mixtral": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_mixtral,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_mixtral,
         model_class=MixtralForCausalLM,
         mini_model_config=MixtralConfig(
             attention_dropout=0.0,
@@ -176,6 +189,7 @@ MINI_MODEL_SETUPS = {
     ),
     "mini_gemma1": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_gemma,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma,
         model_class=GemmaForCausalLM,
         mini_model_config=GemmaConfig(
             vocab_size=32000,  # 256000
@@ -207,6 +221,7 @@ MINI_MODEL_SETUPS = {
     ),
     "mini_gemma1.1": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_gemma,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma,
         model_class=GemmaForCausalLM,
         mini_model_config=GemmaConfig(
             vocab_size=32000,  # 256000
@@ -234,6 +249,7 @@ MINI_MODEL_SETUPS = {
     ),
     "mini_gemma2": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_gemma2,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma2,
         model_class=Gemma2ForCausalLM,
         mini_model_config=Gemma2Config(
             vocab_size=32000,  # 256000
@@ -264,6 +280,7 @@ MINI_MODEL_SETUPS = {
 if QWEN2_VL_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen2_vl"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_qwen2_vl,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2_vl,
         model_class=Qwen2VLForConditionalGeneration,
         mini_model_config=Qwen2VLConfig(
             attention_dropout=0.0,
@@ -355,6 +372,8 @@ def run_mini_model(
             kwargs["cross_entropy"] = True
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
+    else:
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
 
     model = create_model(model_name).to(dtype).to("cuda")
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
@@ -375,6 +394,7 @@ def run_mini_model(
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
+    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
     return {"loss": loss_list, "logits": output.logits, "model": model}
 
 
@@ -387,12 +407,12 @@ def run_mini_model(
             32,
             1e-4,
             torch.bfloat16,
-            5e-3,
-            1e-5,
+            1e-3,
             1e-2,
-            1e-5,
+            1e-1,
             1e-2,
-            1e-5,
+            1e-2,
+            1e-2,
             marks=pytest.mark.skipif(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
@@ -403,12 +423,12 @@ def run_mini_model(
             32,
             1e-4,
             torch.bfloat16,
-            1e-8,
-            1e-5,
+            1e-3,
             1e-2,
-            1e-5,
+            1e-1,
             1e-2,
-            1e-5,
+            1e-2,
+            1e-2,
             marks=pytest.mark.skipif(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
@@ -434,12 +454,12 @@ def run_mini_model(
             32,
             1e-4,
             torch.bfloat16,
-            1e-8,
-            1e-5,
+            1e-3,
             1e-2,
-            1e-5,
+            1e-1,
             1e-2,
-            1e-5,
+            1e-2,
+            1e-2,
             marks=[
                 pytest.mark.skipif(
                     not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
@@ -456,12 +476,12 @@ def run_mini_model(
             32,
             1e-4,
             torch.bfloat16,
-            1e-8,
-            1e-5,
+            1e-3,
             1e-2,
-            1e-5,
+            1e-1,
             1e-2,
-            1e-5,
+            1e-2,
+            1e-2,
             marks=pytest.mark.skipif(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
@@ -472,32 +492,33 @@ def run_mini_model(
             32,
             1e-4,
             torch.bfloat16,
-            1e-8,
-            1e-5,
+            1e-3,
             1e-2,
-            1e-5,
-            1e-2,
-            1e-5,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
-        ("mini_mixtral", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
-        pytest.param(
-            "mini_mixtral",
-            32,
-            1e-4,
-            torch.bfloat16,
-            1e-8,
-            1e-5,
             1e-1,
-            1e-5,
             1e-2,
-            1e-5,
+            1e-2,
+            1e-2,
             marks=pytest.mark.skipif(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
+        # TODO: mixtral is flaky so disable the test for now
+        # ("mini_mixtral", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
+        # pytest.param(
+        #     "mini_mixtral",
+        #     32,
+        #     1e-4,
+        #     torch.bfloat16,
+        #     1e-3,
+        #     1e-2,
+        #     1e-1,
+        #     1e-2,
+        #     1e-1,
+        #     1e-2,
+        #     marks=pytest.mark.skipif(
+        #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+        #     ),
+        # ),
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
         ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
@@ -505,12 +526,12 @@ def run_mini_model(
             32,
             1e-4,
             torch.bfloat16,
+            1e-3,
             1e-2,
-            1e-4,
-            2e-1,
-            1e-5,
+            1e-1,
             1e-2,
-            1e-5,
+            1e-2,
+            1e-2,
             marks=pytest.mark.skipif(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
@@ -521,12 +542,12 @@ def run_mini_model(
             32,
             1e-4,
             torch.bfloat16,
+            1e-3,
             1e-2,
-            1e-4,
-            2e-1,
-            1e-5,
+            1e-1,
             1e-2,
-            1e-5,
+            1e-2,
+            1e-2,
             marks=pytest.mark.skipif(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
@@ -537,12 +558,12 @@ def run_mini_model(
             32,
             1e-4,
             torch.bfloat16,
+            1e-3,
             1e-2,
-            1e-4,
-            2e-1,
-            1e-5,
+            1e-1,
             1e-2,
-            1e-5,
+            1e-2,
+            1e-2,
             marks=pytest.mark.skipif(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),

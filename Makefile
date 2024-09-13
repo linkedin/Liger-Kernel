@@ -1,7 +1,7 @@
 .PHONY: test checkstyle test-convergence all
 
 
-all: test test-convergence checkstyle
+all: checkstyle test test-convergence
 
 # Command to run pytest for correctness tests
 test:

@@ -18,9 +18,10 @@ def liger_cross_entropy_kernel(
     n_cols,
     n_non_ignore,
     ignore_index,
-    label_smoothing: tl.constexpr,
     lse_square_scale: tl.constexpr,
+    label_smoothing: tl.constexpr,
     RETURN_Z_LOSS: tl.constexpr,
+    reduction: tl.constexpr,  # set it as constexpr since reduction is always known at compile time
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -41,6 +42,7 @@ def liger_cross_entropy_kernel(
     label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
     lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
     RETURN_Z_LOSS (int): The boolean value to decide whether storing z loss to z_loss_ptr or not. It must be 0 or 1.
+    reduction (str): The string for the reduction to apply
     BLOCK_SIZE (int): The block size for Triton operations.
     """
 
@@ -98,10 +100,10 @@ def liger_cross_entropy_kernel(
     #                    = max(X) + log (sum(e ^ (X_i - max(X)))) = m + log d
     lse = m + tl.log(d)
 
-    # 4. [Online softmax] second pass: calculate the gradients
+    # 4. [Online Softmax] Second pass: compute gradients
+    # For 'mean' reduction, gradients are normalized by number of non-ignored elements (N)
     # dx_y = (softmax(x_y) - 1) / N
     # dx_i = softmax(x_i) / N, i != y
-    # N is the number of non ignored elements in the batch
     # For label smoothing:
     # dx_i = (softmax(x_i) - label_smoothing / V) / N, V = n_cols, i != y
     # dx_y = (softmax(x_y) - label_smoothing / V - (1 - label_smoothing)) / N
@@ -109,6 +111,10 @@ def liger_cross_entropy_kernel(
     # With Z loss:
     # dx_i = ((1 + 2 * lse_square_scale * lse) * softmax(x_i) - label_smoothing / V) / N, i != y
     # dx_y = dx_i - (1 - label_smoothing) / N
+    # For 'sum' reduction, no normalization is applied:
+    # dx_y = softmax(x_y) - 1
+    # dx_i = softmax(x_i), for i ≠ y
+
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(
@@ -121,7 +127,9 @@ def liger_cross_entropy_kernel(
         # smoothing term
         X_block += -eps
         # reduction scale
-        X_block = X_block / (n_non_ignore)
+        if reduction == "mean":
+            X_block = X_block / (n_non_ignore)
+
         tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
 
     # We need tl.debug_barrier() to ensure the new result of X_ptr is written as mentioned in
@@ -153,10 +161,17 @@ def liger_cross_entropy_kernel(
     # Refer to Page14 Loss function section in the paper PaLM: https://www.jmlr.org/papers/v24/22-1144.html
     z_loss = lse_square_scale * lse * lse
     loss += z_loss
+    # Normalize the loss by the number of non-ignored elements if reduction is "mean"
+    if reduction == "mean":
+        z_loss = z_loss / n_non_ignore
+        loss = loss / n_non_ignore
 
     # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - (1 - label_smoothing) / N`
     X_y = tl.load(X_ptr + y)
-    X_y += -(1 - label_smoothing) / (n_non_ignore)
+    if reduction == "mean":
+        X_y += -(1 - label_smoothing) / (n_non_ignore)
+    else:
+        X_y += -(1 - label_smoothing)
 
     tl.store(loss_ptr, loss)
     if RETURN_Z_LOSS == _TRUE:
@@ -216,8 +231,9 @@ def cross_entropy_forward(
     _input,
     target,
     ignore_index,
-    label_smoothing,
     lse_square_scale,
+    label_smoothing,
+    reduction,
     return_z_loss,
 ):
     if not isinstance(return_z_loss, int):
@@ -262,8 +278,9 @@ def cross_entropy_forward(
         n_cols=V,
         n_non_ignore=n_non_ignore,
         ignore_index=ignore_index,
-        label_smoothing=label_smoothing,
         lse_square_scale=lse_square_scale,
+        label_smoothing=label_smoothing,
+        reduction=reduction,
         BLOCK_SIZE=BLOCK_SIZE,
         RETURN_Z_LOSS=return_z_loss,
         # TODO: 32 seems to give the best performance
@@ -271,9 +288,9 @@ def cross_entropy_forward(
         num_warps=32,
     )
 
-    loss = torch.sum(loss_1d) / n_non_ignore
+    loss = torch.sum(loss_1d)
     if return_z_loss == _TRUE.value:
-        z_loss = torch.sum(z_loss_1d) / n_non_ignore
+        z_loss = torch.sum(z_loss_1d)
     else:
         z_loss = None
 
@@ -316,8 +333,9 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         _input,
         target,
         ignore_index=-100,
-        label_smoothing=0.0,
         lse_square_scale=0.0,
+        label_smoothing=0.0,
+        reduction="mean",
         return_z_loss=False,
     ):
         """
@@ -328,10 +346,10 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         _input (tensor): The input tensor of shape (BT, V) where B is batch size, T is sequence length, V is vocab size.
         target (tensor): The target tensor of shape (BT) where each value is in [0, V-1].
         ignore_index (int): The index to ignore in the target.
-        label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
         lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
+        label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
+        reduction (str): The reduction to apply to the output: "none" | "mean | "sum".
         return_z_loss (bool): When `return_z_loss` is `True`, returns (loss, z_loss) instead of (loss, None). Default: `False`
-
 
         Returns:
         tuple: A tuple with the compouted losses with respect to loss and z loss. The elements are tensors or None.
@@ -340,8 +358,9 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             _input,
             target,
             ignore_index,
-            label_smoothing,
             lse_square_scale,
+            label_smoothing,
+            reduction,
             return_z_loss,
         )
         # TODO: investigation
@@ -371,6 +390,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         _input = cross_entropy_backward(_input, grad_output)
         return (
             _input,
+            None,
             None,
             None,
             None,

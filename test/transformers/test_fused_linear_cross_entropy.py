@@ -36,6 +36,7 @@ class TorchLMHeadCE(torch.nn.Module):
         ignore_index: int = -100,
         lse_square_scale: float = 0.0,
         label_smoothing: float = 0.0,
+        reduction: str = "mean",
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
@@ -43,9 +44,9 @@ class TorchLMHeadCE(torch.nn.Module):
         )
         self.ce_loss = CrossEntropyWithZLoss(
             ignore_index=ignore_index,
-            reduction="mean",
             lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
+            reduction=reduction,
         )
 
     def forward(self, x, y):
@@ -63,6 +64,7 @@ class LigerLMHeadCE(torch.nn.Module):
         ignore_index: int = -100,
         lse_square_scale: float = 0.0,
         label_smoothing: float = 0.0,
+        reduction: str = "mean",
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
@@ -70,9 +72,9 @@ class LigerLMHeadCE(torch.nn.Module):
         )
         self.ce_loss = LigerFusedLinearCrossEntropyLoss(
             ignore_index=ignore_index,
-            reduction="mean",
             lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
+            reduction=reduction,
         )
 
     def forward(self, x, y):
@@ -96,10 +98,12 @@ class LigerLMHeadCE(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize(
-    "scalar, dtype, atol, rtol",
+    "reduction, scalar, dtype, atol, rtol",
     [
-        (1.0, torch.bfloat16, 5e-3, 5e-2),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        ("mean", 1.0, torch.bfloat16, 5e-3, 5e-2),
+        ("mean", 1.0, torch.float32, 1e-5, 5e-4),
+        ("sum", 1.0, torch.bfloat16, 5e-0, 5e1),
+        ("sum", 1.0, torch.float32, 1e-3, 5e-2),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
@@ -111,7 +115,18 @@ class LigerLMHeadCE(torch.nn.Module):
     ],
 )
 def test_correctness(
-    B, T, H, V, scalar, dtype, bias, lse_square_scale, label_smoothing, atol, rtol
+    B,
+    T,
+    H,
+    V,
+    scalar,
+    dtype,
+    bias,
+    lse_square_scale,
+    label_smoothing,
+    reduction,
+    atol,
+    rtol,
 ):
     device = "cuda"
     torch_lm_head_ce = TorchLMHeadCE(
@@ -120,6 +135,7 @@ def test_correctness(
         bias=bias,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
+        reduction=reduction,
         dtype=dtype,
     ).to(device)
     liger_lm_head_ce = LigerLMHeadCE(
@@ -128,6 +144,7 @@ def test_correctness(
         bias=bias,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
+        reduction=reduction,
         dtype=dtype,
     ).to(device)
 
