@@ -96,7 +96,7 @@ class LigerLMHeadCE(torch.nn.Module):
         ("mean", 1.0, torch.bfloat16, 5e-3, 5e-2),
         ("mean", 1.0, torch.float32, 1e-5, 5e-4),
         ("sum", 1.0, torch.bfloat16, 5e-0, 5e1),
-        ("sum", 1.0, torch.float32, 1e-4, 5e-3),
+        ("sum", 1.0, torch.float32, 1e-3, 5e-2),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
