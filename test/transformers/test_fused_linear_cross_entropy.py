@@ -39,7 +39,9 @@ class TorchLMHeadCE(torch.nn.Module):
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
         self.ce_loss = torch.nn.CrossEntropyLoss(
-            ignore_index=ignore_index, reduction=reduction, label_smoothing=label_smoothing
+            ignore_index=ignore_index,
+            reduction=reduction,
+            label_smoothing=label_smoothing,
         )
 
     def forward(self, x, y):
@@ -91,21 +93,33 @@ class LigerLMHeadCE(torch.nn.Module):
 @pytest.mark.parametrize(
     "reduction, scalar, dtype, atol, rtol",
     [
-        ('mean', 1.0, torch.bfloat16, 5e-3, 5e-2),
-        ('mean', 1.0, torch.float32, 1e-5, 5e-4),
-        ('sum', 1.0, torch.bfloat16, 5e-0, 5e+1),
-        ('sum', 1.0, torch.float32, 1e-4, 5e-3),
+        ("mean", 1.0, torch.bfloat16, 5e-3, 5e-2),
+        ("mean", 1.0, torch.float32, 1e-5, 5e-4),
+        ("sum", 1.0, torch.bfloat16, 5e-0, 5e1),
+        ("sum", 1.0, torch.float32, 1e-4, 5e-3),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("label_smoothing", [0, 0.1])
-def test_correctness(B, T, H, V, scalar, dtype, bias, label_smoothing, reduction, atol, rtol):
+def test_correctness(
+    B, T, H, V, scalar, dtype, bias, label_smoothing, reduction, atol, rtol
+):
     device = "cuda"
     torch_lm_head_ce = TorchLMHeadCE(
-        H=H, V=V, bias=bias, label_smoothing=label_smoothing, reduction=reduction, dtype=dtype
+        H=H,
+        V=V,
+        bias=bias,
+        label_smoothing=label_smoothing,
+        reduction=reduction,
+        dtype=dtype,
     ).to(device)
     liger_lm_head_ce = LigerLMHeadCE(
-        H=H, V=V, bias=bias, label_smoothing=label_smoothing, reduction=reduction, dtype=dtype
+        H=H,
+        V=V,
+        bias=bias,
+        label_smoothing=label_smoothing,
+        reduction=reduction,
+        dtype=dtype,
     ).to(device)
 
     # init the linear in all CEs with the same weights

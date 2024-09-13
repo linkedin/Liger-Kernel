@@ -1,4 +1,4 @@
-from test.utils import supports_bfloat16
+from test.utils import set_seed, supports_bfloat16
 
 import pytest
 import torch
@@ -8,11 +8,11 @@ from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
 
-SLEEP_SECONDS = 0.1
+set_seed(42)
 
 
 def _test_correctness_once(target_ce, B, T, V, reduction, scalar, dtype, atol, rtol):
-    torch.manual_seed(0)
+
     torch_ce = CrossEntropyLoss(reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
@@ -33,7 +33,7 @@ def _test_correctness_once(target_ce, B, T, V, reduction, scalar, dtype, atol, r
 def _test_correctness_with_ignore_index_once(
     target_ce, B, T, V, ignore_index, reduction, scalar, dtype, atol, rtol
 ):
-    torch.manual_seed(0)
+
     torch_ce = CrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
@@ -64,7 +64,7 @@ def _test_correctness_with_ignore_index_once(
 def _test_correctness_with_label_smoothing_once(
     target_ce, B, T, V, label_smoothing, scalar, dtype, atol, rtol
 ):
-    torch.manual_seed(0)
+
     torch_ce = CrossEntropyLoss(label_smoothing=label_smoothing)
 
     _tensor = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
@@ -86,7 +86,7 @@ def _test_correctness_with_label_smoothing_once(
 def _test_correctness_with_label_smoothing_with_ignore_index_once(
     target_ce, B, T, V, ignore_index, label_smoothing, scalar, dtype, atol, rtol
 ):
-    torch.manual_seed(0)
+
     torch_ce = CrossEntropyLoss(
         ignore_index=ignore_index, label_smoothing=label_smoothing
     )
@@ -119,7 +119,7 @@ def _test_correctness_with_label_smoothing_with_ignore_index_once(
 def _test_correctness_not_last_layer_once(
     target_ce, B, T, V, reduction, scalar, dtype, atol, rtol
 ):
-    torch.manual_seed(0)
+
     torch_ce = CrossEntropyLoss(reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
@@ -141,7 +141,6 @@ def _test_correctness_not_last_layer_once(
 
 
 def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
-    torch.manual_seed(0)
 
     _input = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
 
@@ -467,7 +466,7 @@ def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rto
 
 
 def _full_pass_once(B, T, V, reduction):
-    torch.manual_seed(0)
+
     liger_ce = LigerCrossEntropyLoss(reduction=reduction)
 
     _input = torch.randn(
