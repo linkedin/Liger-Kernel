@@ -20,6 +20,7 @@ class CrossEntropyWithZLoss(torch.nn.Module):
         ignore_index=-100,
         label_smoothing=0.0,
         return_z_loss=False,
+        dtype=torch.float32,
     ):
         super().__init__()
         self.lse_square_scale = lse_square_scale
@@ -27,8 +28,11 @@ class CrossEntropyWithZLoss(torch.nn.Module):
         self.ignore_index = ignore_index
         self.return_z_loss = return_z_loss
         self.label_smoothing = label_smoothing
+        self.dtype = dtype
 
     def forward(self, logits, targets):
+        # Loss calculations are all in float32
+        logits = logits.to(torch.float32)
         # Standard cross entropy loss
         ce_loss = F.cross_entropy(
             logits,
@@ -52,6 +56,8 @@ class CrossEntropyWithZLoss(torch.nn.Module):
             z_loss = z_loss.sum()
         else:
             z_loss = z_loss
+        ce_loss = ce_loss.to(self.dtype)
+        z_loss = z_loss.to(self.dtype)
 
         # Final loss: cross-entropy loss + Z-loss
         total_loss = ce_loss + z_loss
@@ -233,6 +239,7 @@ def _test_correctness_with_z_loss_with_other_params_once(
         label_smoothing=label_smoothing,
         ignore_index=ignore_index,
         reduction=reduction,
+        dtype=dtype,
     )
 
     _tensor = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
