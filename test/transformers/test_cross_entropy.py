@@ -1,4 +1,4 @@
-from test.utils import set_seed, supports_bfloat16
+from test.utils import assert_verbose_allclose, set_seed, supports_bfloat16
 
 import pytest
 import torch
@@ -27,7 +27,6 @@ class CrossEntropyWithZLoss(torch.nn.Module):
         self.ignore_index = ignore_index
         self.return_z_loss = return_z_loss
         self.label_smoothing = label_smoothing
-        self.ignore_index = ignore_index
 
     def forward(self, logits, targets):
         # Standard cross entropy loss
@@ -254,12 +253,10 @@ def _test_correctness_with_z_loss_with_other_params_once(
     if return_z_loss:
         output, z_output = torch_ce(_input, target)
         output2, z_output2 = target_ce(_input2, target)
-        output2, z_output2 = output2.to(dtype), z_output2.to(dtype)
 
     else:
         output = torch_ce(_input, target)
         output2 = target_ce(_input2, target)
-        output2 = output2.to(dtype)
 
     assert torch.allclose(output, output2, atol=atol, rtol=rtol)
 
@@ -273,7 +270,7 @@ def _test_correctness_with_z_loss_with_other_params_once(
 
     print(f"{(_input.grad - _input2.grad).sum()=}")
 
-    assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
 def _test_correctness_not_last_layer_once(
@@ -309,8 +306,8 @@ def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
 
     target = torch.randint(0, V, (B * T,), device="cuda", dtype=torch.long)
 
-    y1, y1_z = liger_cross_entropy(x1, target, 0, 0.1, 1e-4, True)
-    y2, y2_z = LigerCrossEntropyFunction.apply(x2, target, 0, 0.1, 1e-4, True)
+    y1, y1_z = liger_cross_entropy(x1, target, 0, 1e-4, 0.1, "mean", True)
+    y2, y2_z = LigerCrossEntropyFunction.apply(x2, target, 0, 1e-4, 0.1, "mean", True)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
     assert torch.allclose(y1_z, y2_z, atol=atol, rtol=rtol)
@@ -735,10 +732,10 @@ def test_correctness_with_z_loss_once(
         (0.2, -42, "sum"),
     ],
 )
-@pytest.mark.skipif(
-    torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
-    reason="Needs 16GB+ GPU memory.",
-)
+# @pytest.mark.skipif(
+#     torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
+#     reason="Needs 16GB+ GPU memory.",
+# )
 def test_correctness_with_z_loss_with_other_params_once(
     B,
     T,
