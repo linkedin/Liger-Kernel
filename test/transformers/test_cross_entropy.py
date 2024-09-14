@@ -188,6 +188,7 @@ def _test_correctness_with_z_loss_once(
     torch_ce = CrossEntropyWithZLoss(
         lse_square_scale=lse_square_scale,
         return_z_loss=return_z_loss,
+        dtype=dtype,
     )
 
     _tensor = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
@@ -199,12 +200,10 @@ def _test_correctness_with_z_loss_once(
     if return_z_loss:
         output, z_output = torch_ce(_input, target)
         output2, z_output2 = target_ce(_input2, target)
-        output2, z_output2 = output2.to(dtype), z_output2.to(dtype)
 
     else:
         output = torch_ce(_input, target)
         output2 = target_ce(_input2, target)
-        output2 = output2.to(dtype)
 
     assert torch.allclose(output, output2, atol=atol, rtol=rtol)
 
@@ -739,10 +738,10 @@ def test_correctness_with_z_loss_once(
         (0.2, -42, "sum"),
     ],
 )
-# @pytest.mark.skipif(
-#     torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
-#     reason="Needs 16GB+ GPU memory.",
-# )
+@pytest.mark.skipif(
+    torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
+    reason="Needs 16GB+ GPU memory.",
+)
 def test_correctness_with_z_loss_with_other_params_once(
     B,
     T,
