@@ -2,6 +2,9 @@ import inspect
 import logging
 from functools import partial
 
+from torch import nn
+from transformers import PretrainedConfig, PreTrainedModel
+
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
@@ -28,6 +31,7 @@ def apply_liger_kernel_to_llama(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Llama models (2 and 3)
@@ -41,6 +45,8 @@ def apply_liger_kernel_to_llama(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
     """
 
     assert not (
@@ -60,6 +66,38 @@ def apply_liger_kernel_to_llama(
     if fused_linear_cross_entropy:
         modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
 
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules (e.g. LlamaRMSNorm or LlamaMLP)
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for LlamaForCausalLM or LlamaForSequenceClassification, for example
+            base_model = model.model
+        elif hasattr(model, "transformer"):
+            # LlamaForQuestionAnswering uses "transformer" instead of "model"
+            base_model = model.transformer
+        else:
+            # Direct LlamaModel
+            base_model = model
+
+        torch_dtype = config.torch_dtype
+        if rms_norm:
+            base_model.norm = LigerRMSNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+
 
 def apply_liger_kernel_to_mistral(
     rope: bool = True,
@@ -67,6 +105,7 @@ def apply_liger_kernel_to_mistral(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Mistral models
@@ -81,6 +120,8 @@ def apply_liger_kernel_to_mistral(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
     """
     assert not (
         cross_entropy and fused_linear_cross_entropy
@@ -99,6 +140,35 @@ def apply_liger_kernel_to_mistral(
     if swiglu:
         modeling_mistral.MistralMLP = LigerSwiGLUMLP
 
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for MistralForCausalLM, MistralForTokenClassification for example
+            base_model = model.model
+        else:
+            # Direct MistralModel
+            base_model = model
+
+        torch_dtype = config.torch_dtype
+        if rms_norm:
+            base_model.norm = LigerRMSNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+
 
 def apply_liger_kernel_to_mixtral(
     rope: bool = True,
@@ -106,6 +176,7 @@ def apply_liger_kernel_to_mixtral(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Mixtral models
@@ -119,6 +190,8 @@ def apply_liger_kernel_to_mixtral(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
     """
 
     assert not (
@@ -138,6 +211,42 @@ def apply_liger_kernel_to_mixtral(
     if swiglu:
         modeling_mixtral.MixtralBlockSparseTop2MLP = LigerBlockSparseTop2MLP
 
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for MixtralForCausalLM, MixtralForTokenClassification for example
+            base_model = model.model
+        else:
+            # Direct MixtralModel
+            base_model = model
+
+        torch_dtype = config.torch_dtype
+        if rms_norm:
+            base_model.norm = LigerRMSNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                block_sparse_moe = decoder_layer.block_sparse_moe
+                patched_experts = nn.ModuleList(
+                    [
+                        LigerBlockSparseTop2MLP(config)
+                        for _ in range(block_sparse_moe.num_experts)
+                    ]
+                )
+                decoder_layer.block_sparse_moe.experts = patched_experts.to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+
 
 def apply_liger_kernel_to_gemma(
     rope: bool = True,
@@ -145,6 +254,7 @@ def apply_liger_kernel_to_gemma(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     geglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Gemma
@@ -152,9 +262,15 @@ def apply_liger_kernel_to_gemma(
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
-        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
     """
     assert not (
         cross_entropy and fused_linear_cross_entropy
@@ -162,13 +278,15 @@ def apply_liger_kernel_to_gemma(
 
     from transformers.models.gemma import modeling_gemma
 
+    # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
+    LigerRMSNormForGemma = partial(
+        LigerRMSNorm, offset=1.0, init_fn="zeros", casting_mode="gemma"
+    )
+
     if rope:
         modeling_gemma.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
-        modeling_gemma.GemmaRMSNorm = partial(
-            LigerRMSNorm, offset=1.0, init_fn="zeros", casting_mode="gemma"
-        )
+        modeling_gemma.GemmaRMSNorm = LigerRMSNormForGemma
     if cross_entropy:
         modeling_gemma.CrossEntropyLoss = LigerCrossEntropyLoss
     if geglu:
@@ -176,12 +294,42 @@ def apply_liger_kernel_to_gemma(
     if fused_linear_cross_entropy:
         modeling_gemma.GemmaForCausalLM.forward = gemma_lce_forward
 
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for GemmaForCausalLM, GemmaForTokenClassification for example
+            base_model = model.model
+        else:
+            # Direct GemmaModel
+            base_model = model
+
+        torch_dtype = config.torch_dtype
+        if rms_norm:
+            base_model.norm = LigerRMSNormForGemma(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            if geglu:
+                decoder_layer.mlp = LigerGEGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNormForGemma(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNormForGemma(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+
 
 def apply_liger_kernel_to_gemma2(
     rope: bool = True,
     cross_entropy: bool = True,
     rms_norm: bool = True,
     geglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Gemma2
@@ -192,20 +340,56 @@ def apply_liger_kernel_to_gemma2(
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
     """
     from transformers.models.gemma2 import modeling_gemma2
 
+    LigerRMSNormForGemma2 = partial(LigerRMSNorm, offset=1.0, init_fn="zeros")
     if rope:
         modeling_gemma2.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
-        modeling_gemma2.Gemma2RMSNorm = partial(
-            LigerRMSNorm, offset=1.0, init_fn="zeros"
-        )
+        modeling_gemma2.Gemma2RMSNorm = LigerRMSNormForGemma2
     if cross_entropy:
         modeling_gemma2.CrossEntropyLoss = LigerCrossEntropyLoss
     if geglu:
         modeling_gemma2.Gemma2MLP = LigerGEGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for Gemma2ForCausalLM, Gemma2ForTokenClassification for example
+            base_model = model.model
+        else:
+            # Direct Gemma2Model
+            base_model = model
+
+        torch_dtype = config.torch_dtype
+        if rms_norm:
+            base_model.norm = LigerRMSNormForGemma2(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            if geglu:
+                decoder_layer.mlp = LigerGEGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNormForGemma2(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNormForGemma2(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.pre_feedforward_layernorm = LigerRMSNormForGemma2(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_feedforward_layernorm = LigerRMSNormForGemma2(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
 
 
 def apply_liger_kernel_to_qwen2(
@@ -214,6 +398,7 @@ def apply_liger_kernel_to_qwen2(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2 models
@@ -227,6 +412,8 @@ def apply_liger_kernel_to_qwen2(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
     """
     assert not (
         cross_entropy and fused_linear_cross_entropy
@@ -245,6 +432,35 @@ def apply_liger_kernel_to_qwen2(
     if swiglu:
         modeling_qwen2.Qwen2MLP = LigerSwiGLUMLP
 
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for Qwen2ForCausalLM, Qwen2ForTokenClassification for example
+            base_model = model.model
+        else:
+            # Direct Qwen2Model
+            base_model = model
+
+        torch_dtype = config.torch_dtype
+        if rms_norm:
+            base_model.norm = LigerRMSNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+
 
 def apply_liger_kernel_to_qwen2_vl(
     cross_entropy: bool = False,
@@ -252,6 +468,7 @@ def apply_liger_kernel_to_qwen2_vl(
     rms_norm: bool = True,
     layer_norm: bool = True,
     swiglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
@@ -266,6 +483,8 @@ def apply_liger_kernel_to_qwen2_vl(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
     """
     assert not (
         cross_entropy and fused_linear_cross_entropy
@@ -279,11 +498,10 @@ def apply_liger_kernel_to_qwen2_vl(
 
     # TODO: Support Qwen2-VL's multimodal RoPE implementation
 
+    LigerRMSNormForQwen2VL = partial(LigerRMSNorm, init_fn="ones", casting_mode="gemma")
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L439
-        modeling_qwen2_vl.Qwen2RMSNorm = partial(
-            LigerRMSNorm, init_fn="ones", casting_mode="gemma"
-        )
+        modeling_qwen2_vl.Qwen2RMSNorm = LigerRMSNormForQwen2VL
     if layer_norm:
         modeling_qwen2_vl.LayerNorm = LigerLayerNorm
     if cross_entropy:
@@ -293,6 +511,46 @@ def apply_liger_kernel_to_qwen2_vl(
     if swiglu:
         modeling_qwen2_vl.Qwen2MLP = LigerSwiGLUMLP
 
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        torch_dtype = config.torch_dtype
+
+        if hasattr(model, "model"):
+            # The case for Qwen2VLForConditionalGeneration.
+            base_model = model.model
+        else:
+            # Direct Qwen2VLModel
+            base_model = model
+
+        if hasattr(model, "visual"):
+            # Patch Qwen2VisionTransformerPretrainedModel
+            for vision_block in model.visual.blocks:
+                if layer_norm:
+                    vision_block.norm1 = LigerLayerNorm(config.embed_dim, eps=1e-6).to(
+                        torch_dtype
+                    )
+                    vision_block.norm2 = LigerLayerNorm(config.embed_dim, eps=1e-6).to(
+                        torch_dtype
+                    )
+
+        if rms_norm:
+            base_model.norm = LigerRMSNormForQwen2VL(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNormForQwen2VL(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNormForQwen2VL(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+
 
 def apply_liger_kernel_to_phi3(
     rope: bool = True,
@@ -300,6 +558,7 @@ def apply_liger_kernel_to_phi3(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Phi3 models.
@@ -313,6 +572,8 @@ def apply_liger_kernel_to_phi3(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU Phi3MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
     """
     assert not (
         cross_entropy and fused_linear_cross_entropy
@@ -331,6 +592,35 @@ def apply_liger_kernel_to_phi3(
     if fused_linear_cross_entropy:
         modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
 
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        if hasattr(model, "model"):
+            # The case for Phi3ForCausalLM, Phi3ForTokenClassification for example
+            base_model = model.model
+        else:
+            # Direct Phi3Model
+            base_model = model
+
+        torch_dtype = config.torch_dtype
+        if rms_norm:
+            base_model.norm = LigerRMSNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                decoder_layer.mlp = LigerPhi3SwiGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
@@ -345,18 +635,21 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
 }
 
 
-def _apply_liger_kernel(model_type: str = "", **kwargs) -> None:
+def _apply_liger_kernel(model_type: str, **kwargs) -> None:
     """
     Applies Liger kernels based on the specified model type. The custom
     kernels for the specified model type will be applied with the provided
     keyword arguments, otherwise the default configuration will be used.
+
+    ** Note: Calling _apply_liger_kernel() after model initialization
+    will not be able to fully patch models. This must be called before model initialization.
+    If the model has already been instantiated
 
     Args:
         - model_type: the model types as defined in transformers/models/auto/modeling_auto.py
           and specified in the model's config.json
         - kwargs: keyword arguments that are passed to the corresponding apply_liger_kernel_to_* function.
     """
-
     if not model_type:
         logger.info("Model type was not provided. No Liger kernels will be applied.")
         return
@@ -381,5 +674,47 @@ def _apply_liger_kernel(model_type: str = "", **kwargs) -> None:
         f"Applying Liger kernels for model type: {model_type} with kwargs: {applicable_kwargs}"
     )
 
-    # Apply the default combination of liger kernels available for the model
+    # Assume this is invoked pre-model initialization, so we only need to patch transformers code
     apply_fn(**applicable_kwargs)
+
+
+def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
+    """
+    Applies Liger kernels to the provided model instance.
+
+    Args:
+        - model: the model instance to apply Liger kernels to
+        - kwargs: keyword arguments that are passed to the corresponding apply_liger_kernel_to_* function.
+    """
+    model_type = getattr(model, "config", None) and getattr(
+        model.config, "model_type", None
+    )
+
+    if not model_type:
+        logger.info(
+            "Model type could not be determined from model config. No Liger kernels will be applied."
+        )
+        return
+
+    if model_type not in MODEL_TYPE_TO_APPLY_LIGER_FN.keys():
+        logger.info(
+            f"There are currently no Liger kernels supported for model type: {model_type}."
+        )
+        return
+
+    apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
+
+    apply_fn_signature = inspect.signature(apply_fn)
+
+    # Filter out the keyword arguments that are not supported by the apply function
+    applicable_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key in apply_fn_signature.parameters
+    }
+
+    logger.info(
+        f"Applying Liger kernels to model instance with model type: {model_type} with kwargs: {applicable_kwargs}"
+    )
+
+    apply_fn(model=model, **applicable_kwargs)
