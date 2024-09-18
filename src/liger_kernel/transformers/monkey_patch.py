@@ -10,6 +10,7 @@ from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forwa
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
+from liger_kernel.transformers.model.pixtral import lce_forward as pixtral_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
@@ -137,6 +138,35 @@ def apply_liger_kernel_to_mixtral(
         modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward
     if swiglu:
         modeling_mixtral.MixtralBlockSparseTop2MLP = LigerBlockSparseTop2MLP
+
+
+def apply_liger_kernel_to_pixtral(
+    rope: bool = True,
+    rms_norm: bool = True,
+    fused_linear_cross_entropy: bool = True,
+    swiglu: bool = True,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Mistral models
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
+        fused_linear_cross_entropy (bool): If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+    """
+    from transformers.models.pixtral import modeling_pixtral
+
+    if rope:
+        modeling_pixtral.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_pixtral.MistralRMSNorm = LigerRMSNorm
+    if fused_linear_cross_entropy:
+        modeling_pixtral.PixtralTransformer.forward = pixtral_lce_forward
+    if swiglu:
+        modeling_pixtral.MistralMLP = LigerSwiGLUMLP
 
 
 def apply_liger_kernel_to_gemma(
@@ -339,6 +369,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "llama": apply_liger_kernel_to_llama,
     "mistral": apply_liger_kernel_to_mistral,
     "mixtral": apply_liger_kernel_to_mixtral,
+    "pixtral": apply_liger_kernel_to_pixtral,
     "qwen2": apply_liger_kernel_to_qwen2,
     "qwen2_vl": apply_liger_kernel_to_qwen2_vl,
     "phi3": apply_liger_kernel_to_phi3,

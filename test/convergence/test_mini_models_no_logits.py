@@ -17,6 +17,7 @@ from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
 from transformers.models.phi3 import Phi3Config, Phi3ForCausalLM
+from transformers.models.pixtral import PixtralConfig, PixtralTransformer
 from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
 
 from liger_kernel.transformers import (
@@ -26,6 +27,7 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_mistral,
     apply_liger_kernel_to_mixtral,
     apply_liger_kernel_to_phi3,
+    apply_liger_kernel_to_pixtral,
     apply_liger_kernel_to_qwen2,
     apply_liger_kernel_to_qwen2_vl,
 )
@@ -172,6 +174,24 @@ MINI_MODEL_SETUPS = {
             use_cache=True,
             vocab_size=32000,
             attn_implementation="sdpa",
+        ),
+    ),
+    "mini_pixtral": MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_pixtral,
+        model_class=PixtralTransformer,
+        mini_model_config=PixtralConfig(
+            hidden_size=1024,
+            intermediate_size=4096,
+            num_hidden_layers=24,
+            num_attention_heads=16,
+            num_channels=3,
+            image_size=1024,
+            patch_size=16,
+            hidden_activation="gelu",
+            layer_norm_eps=1e-5,
+            attention_dropout=0.0,
+            rope_theta=10000.0,
+            tie_word_embeddings=False,
         ),
     ),
     "mini_gemma1": MiniModelConfig(
@@ -491,6 +511,22 @@ def run_mini_model(
             1e-8,
             1e-5,
             1e-1,
+            1e-5,
+            1e-2,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
+        ("mini_pixtral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        pytest.param(
+            "mini_pixtral",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-8,
+            1e-5,
+            1e-2,
             1e-5,
             1e-2,
             1e-5,
