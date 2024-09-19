@@ -86,6 +86,10 @@ def _rms_norm_forward_kernel(
         W_row = W_row.to(tl.float32)
         X_row = X_row.to(tl.float32)
 
+    if casting_mode == _CASTING_MODE_NONE:
+        eps = eps.to(X_row_dtype)
+        offset = offset.to(X_row_dtype)
+
     mean_square = tl.sum(X_row * X_row, axis=0) / n_cols
     rstd = rsqrt(mean_square + eps)
 
@@ -146,29 +150,30 @@ def _rms_norm_backward_kernel(
 
     dY_ptr += row_start * dY_row_stride
     X_ptr += row_start * X_row_stride
-    W_ptr += row_start * W_row_stride
     RSTD_ptr += row_start
 
+    W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
+    W_row = W_row + offset
+    if casting_mode == _CASTING_MODE_GEMMA:
+        W_row = W_row.to(tl.float32)
+    else:
+        W_row = W_row.to(W_dtype)
+
     for _ in range(row_start, row_end):
-        dY_row = tl.load(dY_ptr + col_offsets, mask=mask, other=0)
-        X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0)
-        W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0)
+        dY_row = tl.load(dY_ptr + col_offsets, mask=mask, other=0.0)
+        X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0.0)
 
         # Get cached rms
         rstd_row = tl.load(RSTD_ptr)
-
-        W_row = W_row + offset
 
         X_row = X_row.to(tl.float32)
 
         # Different bacward graphs for different casting modes
         if casting_mode == _CASTING_MODE_LLAMA:
             m = (dY_row * W_row).to(tl.float32)
+
         elif casting_mode == _CASTING_MODE_GEMMA:
-            dY_row, W_row = (
-                dY_row.to(tl.float32),
-                W_row.to(tl.float32),
-            )
+            dY_row = dY_row.to(tl.float32)
             m = dY_row * W_row
         else:
             m = dY_row * W_row
@@ -186,12 +191,11 @@ def _rms_norm_backward_kernel(
             # here X_row is already in fp32 (see previous if block)
             dW_row += dY_row * (X_row * rstd_row)
 
-        tl.store(dY_ptr + col_offsets, dX_row, mask=mask)
+        tl.store(dY_ptr + col_offsets, dX_row.to(X_dtype), mask=mask)
 
         dY_ptr += dY_row_stride
         X_ptr += X_row_stride
-        W_ptr += W_row_stride
-        RSTD_ptr += 1
+        RSTD_ptr += RSTD_row_stride
 
     tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
 
@@ -216,14 +220,19 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
 
     shape = X.shape
     dim = shape[-1]
-    X = X.view(-1, dim)
+    X = X.reshape(-1, dim)
     n_rows, n_cols = X.shape
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
     # RSTD is to cache rstd for each row
-    # RSTD is always computed/stored in fp32
-    RSTD = torch.empty(n_rows, dtype=torch.float32, device=X.device)
+    # RSTD is always computed/stored in fp32 if we are using Llama or Gemma casting mode
+    rstd_dtype = (
+        torch.float32
+        if casting_mode in (_CASTING_MODE_LLAMA.value, _CASTING_MODE_GEMMA.value)
+        else X.dtype
+    )
+    RSTD = torch.empty(n_rows, dtype=rstd_dtype, device=X.device)
 
     # Check constraints.
     assert (
@@ -252,14 +261,16 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
 def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps):
     shape = dY.shape
     dim = shape[-1]
-    dY = dY.view(-1, dim)
+    dY = dY.view(-1, dim).contiguous()
     n_rows, n_cols = dY.shape
 
     sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
-    # _dW_dtype = torch.float32 if casting_mode == _CASTING_MODE_GEMMA.value else W.dtype
-    # _dW = torch.empty((sm_count, n_cols), dtype=_dW_dtype, device=W.device)
-    _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
+    _dW_dtype = torch.float32 if casting_mode == _CASTING_MODE_GEMMA.value else W.dtype
+    _dW = torch.empty((sm_count, n_cols), dtype=_dW_dtype, device=W.device)
+    # _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
 
+    if n_cols > BLOCK_SIZE:
+        raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
     rows_per_program = math.ceil(n_rows / sm_count)
     grid = (sm_count,)
     # Here we use dY to store the value of dX to save memory
@@ -284,7 +295,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
-    dX = dY.view(*shape)
+    dX = dY.reshape(*shape)
     dW = _dW.sum(dim=0).to(W.dtype)
     return dX, dW
 

@@ -76,7 +76,7 @@ class GemmaRMSNorm(nn.Module):
         (4, 256, 1024),
         (8, 512, 2048),
         (16, 1024, 4096),
-        # # weird shapes
+        # # # weird shapes
         (3, 423, 213),
         (5, 123, 123),
         (7, 341, 234),
@@ -121,7 +121,7 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
     # reference (llama or gemma)
     ref_rms = reference(hidden_size=hd).to("cuda").to(dtype)
     ref_o = ref_rms(h1)
-    ref_o.backward(do.clone(), retain_graph=True)
+    ref_o.backward(do, retain_graph=True)
 
     # triton
     triton_rms = (
@@ -130,13 +130,15 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
         .to(dtype)
     )
     triton_o = triton_rms(h2)
-    triton_o.backward(do.clone(), retain_graph=True)
+    triton_o.backward(do, retain_graph=True)
 
     assert_verbose_allclose(ref_o, triton_o, atol=atol, rtol=rtol)
     assert_verbose_allclose(
         ref_rms.weight.grad, triton_rms.weight.grad, atol=atol, rtol=rtol
     )
-    assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
+    print(f"{h1.grad=}")
+    print(f"{h2.grad=}")
+    assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol, max_print=20)
 
 
 @pytest.mark.parametrize(
