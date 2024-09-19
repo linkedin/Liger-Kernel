@@ -343,7 +343,6 @@ def apply_liger_kernel_to_gemma2(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    print("Got here!")
     from transformers.models.gemma2 import modeling_gemma2
 
     LigerRMSNormForGemma2 = partial(LigerRMSNorm, offset=1.0, init_fn="zeros")
