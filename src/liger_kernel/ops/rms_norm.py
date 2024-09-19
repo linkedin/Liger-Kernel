@@ -121,7 +121,6 @@ def _rms_norm_backward_kernel(
     X_dtype: tl.constexpr,
     W_ptr,
     W_row_stride,
-    W_dtype: tl.constexpr,
     RSTD_ptr,
     RSTD_row_stride,
     dW_ptr,
@@ -144,8 +143,6 @@ def _rms_norm_backward_kernel(
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
-    # dW_dtype = tl.float32 if casting_mode == _CASTING_MODE_GEMMA else W_dtype
-    # dW_row = tl.zeros((BLOCK_SIZE,), dtype=dW_dtype)
     dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     dY_ptr += row_start * dY_row_stride
@@ -154,10 +151,6 @@ def _rms_norm_backward_kernel(
 
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
     W_row = W_row + offset
-    if casting_mode == _CASTING_MODE_GEMMA:
-        W_row = W_row.to(tl.float32)
-    else:
-        W_row = W_row.to(W_dtype)
 
     for _ in range(row_start, row_end):
         dY_row = tl.load(dY_ptr + col_offsets, mask=mask, other=0.0)
@@ -265,9 +258,8 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     n_rows, n_cols = dY.shape
 
     sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
-    _dW_dtype = torch.float32 if casting_mode == _CASTING_MODE_GEMMA.value else W.dtype
-    _dW = torch.empty((sm_count, n_cols), dtype=_dW_dtype, device=W.device)
-    # _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
+    # fp32 for numerical stability especially.
+    _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
 
     if n_cols > BLOCK_SIZE:
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
@@ -282,7 +274,6 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         torch_to_triton_dtype[X.dtype],
         W,
         W.stride(0),
-        torch_to_triton_dtype[W.dtype],
         RSTD,
         RSTD.stride(0),
         _dW,

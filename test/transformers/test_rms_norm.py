@@ -1,5 +1,5 @@
 import os
-from test.utils import assert_verbose_allclose, supports_bfloat16
+from test.utils import assert_verbose_allclose, set_seed, supports_bfloat16
 
 import pytest
 import torch
@@ -9,6 +9,7 @@ from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.transformers.functional import liger_rms_norm
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 
+set_seed(42)
 torch.use_deterministic_algorithms(True)
 
 #  Only setting torch.use_deterministic_algorithms(True) might throw the following error:
