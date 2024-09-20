@@ -74,7 +74,9 @@ def _test_correctness_once(
     output2 = target_kldiv(x2, target)
     assert torch.allclose(output, output2, atol=atol, rtol=rtol)
 
-    if not is_last_layer:  # if the loss is the last layer, grad_output is 1.0 and mul op is skipped, testing for that reason
+    if (
+        not is_last_layer
+    ):  # if the loss is the last layer, grad_output is 1.0 and mul op is skipped, testing for that reason
         output = output * 2.0
         output2 = output2 * 2.0
 
