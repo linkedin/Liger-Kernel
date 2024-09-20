@@ -72,11 +72,9 @@ def _test_correctness_once(
 
     output = torch_kldiv(x1, target)
     output2 = target_kldiv(x2, target)
-    assert_verbose_allclose(output, output2, atol=atol, rtol=rtol)
+    assert torch.allclose(output, output2, atol=atol, rtol=rtol)
 
-    if (
-        not is_last_layer
-    ):  # if the loss is the last layer, grad_output is 1.0 and mul op is skipped, testing for that reason
+    if not is_last_layer:  # if the loss is the last layer, grad_output is 1.0 and mul op is skipped, testing for that reason
         output = output * 2.0
         output2 = output2 * 2.0
 
@@ -85,12 +83,12 @@ def _test_correctness_once(
 
     output.backward()
     output2.backward()
-    assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
-@pytest.mark.parametrize("log_target", [False, True])
-@pytest.mark.parametrize("reduction", ["none", "batchmean", "mean", "sum"])
+@pytest.mark.parametrize("log_target", [True, False])
+@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
 def test_correctness(B, T, V, log_target, reduction, dtype, atol, rtol):
     liger_kldiv = LigerKLDIVLoss(reduction=reduction, log_target=log_target)
@@ -100,8 +98,8 @@ def test_correctness(B, T, V, log_target, reduction, dtype, atol, rtol):
 
 
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
-@pytest.mark.parametrize("log_target", [False, True])
-@pytest.mark.parametrize("reduction", ["none", "batchmean", "mean", "sum"])
+@pytest.mark.parametrize("log_target", [True, False])
+@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
 def test_correctness_not_last(B, T, V, log_target, reduction, dtype, atol, rtol):
     liger_kldiv = LigerKLDIVLoss(reduction=reduction, log_target=log_target)

@@ -56,6 +56,7 @@ def _kldiv_kernel_forward(
 
     base_offsets = tl.arange(0, BLOCK_SIZE)
 
+    loss_sum = 0.0
     for i in range(0, n_cols, BLOCK_SIZE):
         offsets = i + base_offsets
         mask = offsets < n_cols
@@ -65,16 +66,18 @@ def _kldiv_kernel_forward(
         # KL(y_true || y) = y_true * (log(y_true) - log(y))
         # We compute KL(y_true || y) with y in the log-space
         if not log_target:
-            loss = y_true * (tl.log(y_true) - y)
+            eps = 1e-10
+            loss = y_true * (tl.log(tl.maximum(y_true, eps)) - y)
         else:
             loss = tl.exp(y_true) * (y_true - y)
 
         if reduction == _REDUCTION_MODE_NONE:
             tl.store(loss_ptr + offsets, loss, mask=mask)
         else:
-            loss = tl.sum(loss, axis=0)
-            tl.store(loss_ptr, loss)
-            loss_ptr += 1  # in case of reduction, the output tensor has dimensions [B,], therefore stride is always 1
+            loss_sum += tl.sum(loss, axis=0)
+
+    if reduction != _REDUCTION_MODE_NONE:
+        tl.store(loss_ptr, loss_sum)
 
 
 @triton.jit
@@ -143,7 +146,7 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B
     elif reduction == _REDUCTION_MODE_SUM.value:
         return output_tensor.sum(dim=0)
     elif reduction == _REDUCTION_MODE_MEAN.value:
-        return output_tensor.mean(dim=0)
+        return output_tensor.sum() / (B * S)
     else:
         return output_tensor
 
