@@ -45,6 +45,7 @@ def _kldiv_kernel_forward(
     loss_ptr,  # [B] or [B, S] if reduction == _REDUCTION_MODE_NONE, output ptr
     loss_stride,  # int, output stride
     n_cols,  # int, number of columns in the input tensor
+    eps,
     BLOCK_SIZE: tl.constexpr,
     log_target: tl.constexpr = False,
     reduction: tl.constexpr = _REDUCTION_MODE_BATCHMEAN,
@@ -66,7 +67,6 @@ def _kldiv_kernel_forward(
         # KL(y_true || y) = y_true * (log(y_true) - log(y))
         # We compute KL(y_true || y) with y in the log-space
         if not log_target:
-            eps = 1e-10
             loss = y_true * (tl.log(tl.maximum(y_true, eps)) - y)
         else:
             loss = tl.exp(y_true) * (y_true - y)
@@ -112,7 +112,9 @@ def _kldiv_kernel_backward(
         tl.store(input_ptr + offsets, res, mask=mask)
 
 
-def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B, S]
+def kldiv_forward_triton(
+    y_pred, y_true, log_target, reduction, eps
+):  # [B, S]  # [B, S]
     B, S = y_pred.shape
 
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(S))
@@ -132,6 +134,7 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B
         output_tensor,
         output_tensor.stride(0),
         S,
+        eps=eps,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
         log_target=log_target,
@@ -199,6 +202,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
         y_true: torch.Tensor,
         reduction: REDUCTION_LITERAL = "batchmean",
         log_target: bool = False,
+        eps: float = 1e-10,
     ) -> torch.Tensor:
         """A forward pass for the KL Divergence Loss.
 
@@ -208,6 +212,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
             y_true (torch.Tensor): A tensor of shape (BT, V) containing the target values, expected to be either probabilities or log-probabilities, depending on the value of `log_target`.
             reduction (REDUCTION_LITERAL, optional): Reduction to be used. Defaults to "batchmean".
             log_target (bool, optional): If set to true, expects the ground truth to already be log-probabilities. Defaults to False.
+            eps: (float, optional): A small value to avoid division by zero. Defaults to 1e-10.
 
         Returns:
             torch.Tensor: The computed KL Divergence Loss, with shape (BT, V) if `reduction` is "none", else a scalar.
@@ -216,7 +221,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
         ctx.reduction = reduction
         ctx.log_target = log_target
         return kldiv_forward_triton(
-            y_pred, y_true, log_target=log_target, reduction=reduction
+            y_pred, y_true, log_target=log_target, reduction=reduction, eps=eps
         )
 
     @staticmethod
