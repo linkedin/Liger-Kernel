@@ -40,7 +40,6 @@ class AutoLigerKernelForCausalLM(AutoModelForCausalLM):
             if key not in apply_fn_signature.parameters
         }
 
-        print(applicable_kwargs)
         return super().from_pretrained(
             pretrained_model_name_or_path, *model_args, **applicable_kwargs
         )
