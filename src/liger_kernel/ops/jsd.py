@@ -17,8 +17,9 @@ def _jsd_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
 ):
-    # JSD(P || Q) = (1/2) * (KL(P || M) + KL(Q || M)), M = (1/2) * (P + Q) = (1/2) * (e ^ X + e ^ Y)
-    #             = log 2 + (1/2) * sum(X * e ^ X + Y * e ^ Y - 2 log M)
+    # JSD(P || Q) = (KL(P || M) + KL(Q || M)) / 2, M = (1/2) * (P + Q) = (1/2) * (e ^ X + e ^ Y)
+    #             = sum(P * log P + Q * log Q - 2 * M * log M) / 2
+    #             = sum(e ^ X * X + e ^ Y * Y - 2 * M * log M) / 2
     # grad_x_i = (1/2) * (e ^ x_i + x_i * e ^ x_i - 2 * (1 / m_i) * (1 / 2) * e ^ x_i)
     pid = tl.program_id(0).to(tl.int64)
     X_ptr += pid * X_stride
@@ -35,9 +36,9 @@ def _jsd_kernel(
 
         exp_X = tl.exp(X)
         exp_Y = tl.exp(Y)
-        M = (1 / 2) * (exp_X + exp_Y)
+        M = exp_X / 2 + exp_Y / 2
 
-        loss = tl.log(2.0) + (1 / 2) * (X * exp_X + Y * exp_Y - 2 * tl.log(M))
+        loss = (X * exp_X + Y * exp_Y - 2 * M * tl.log(M)) / 2
         loss_sum += tl.sum(loss)
         grad_X = (1 / 2 * n_rows) * (exp_X + exp_X * X - exp_X / M)
 
@@ -103,10 +104,7 @@ def jsd_forward(_input, target):
         n_cols=V,
         BLOCK_SIZE=BLOCK_SIZE,
     )
-
-    # calculated according to the reduction mode same as in Pytorch. In the later versions, `mean` will be changed to the same behavior as `batchmean`
-    # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
-    # https://github.com/pytorch/pytorch/blob/d7b57c4d63edb42e1deeeba9497fcb5f1f748ff2/torch/nn/functional.py#L3372
+    print(f"{loss_1d=}")
     loss = torch.sum(loss_1d) / n_rows
     return loss, _input
 

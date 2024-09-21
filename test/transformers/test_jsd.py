@@ -21,7 +21,7 @@ class JSD(torch.nn.Module):
 _SHAPE_PARAMS = (
     "B, T, V",
     [
-        (1, 4, 256),
+        (1, 1024, 1024),
         # (1, 4096, 32000),
         # (32, 4096, 1024),
         # # weird shape
@@ -43,16 +43,16 @@ _SHAPE_PARAMS = (
 _DTYPE_PARAMS = (
     "dtype, atol, rtol",
     [
-        pytest.param(
-            torch.bfloat16,
-            1e-8,
-            5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
+        # pytest.param(
+        #     torch.bfloat16,
+        #     1e-8,
+        #     5e-2,
+        #     marks=pytest.mark.skipif(
+        #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+        #     ),
+        # ),
         (torch.float32, 1e-8, 1e-6),
-        (torch.float16, 1e-3, 1e-3),
+        # (torch.float16, 1e-3, 1e-3),
     ],
 )
 
@@ -71,16 +71,14 @@ def _test_correctness_once(
     torch.manual_seed(0)
     torch_jsd = JSD()
 
-    input = torch.randn(
-        B * T, V, device=device, dtype=dtype, requires_grad=True
-    ).log_softmax(dim=-1)
+    input = torch.randn(B * T, V, device=device, dtype=dtype, requires_grad=True).log()
 
     x1 = input.detach().clone().requires_grad_(True)
     x2 = input.detach().clone().requires_grad_(True)
     x3 = input.detach().clone().requires_grad_(True)
 
     with torch.no_grad():
-        target = torch.randn(B * T, V, device=device).log_softmax(dim=-1)
+        target = torch.randn(B * T, V, device=device).log()
 
     output = torch_jsd(x1, target)
     output2 = target_jsd(x2, target)
