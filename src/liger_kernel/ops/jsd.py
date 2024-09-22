@@ -7,9 +7,9 @@ from liger_kernel.ops.utils import ensure_contiguous
 
 @triton.jit
 def _jsd_kernel(
-    X_ptr,  # input in logspace, X = log P
+    X_ptr,  # input in logspace, X = log Q
     X_stride,
-    Y_ptr,  # ground truth in logspace, Y = log Q
+    Y_ptr,  # ground truth in logspace, Y = log P
     Y_stride,
     loss_ptr,
     loss_stride,
@@ -17,10 +17,10 @@ def _jsd_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
 ):
-    # JSD(P || Q) = (KL(P || M) + KL(Q || M)) / 2, M = (1/2) * (P + Q) = (1/2) * (e ^ X + e ^ Y)
+    # JSD(P || Q) = (KL(P || M) + KL(Q || M)) / 2, M = (1/2) * (P + Q) = (1/2) * (e ^ Y + e ^ X)
     #             = sum(P * log P + Q * log Q - 2 * M * log M) / 2
-    #             = sum(e ^ X * X + e ^ Y * Y - 2 * M * log M) / 2
-    # grad_x_i = (1/2) * (e ^ x_i + x_i * e ^ x_i - 2 * (1 / m_i) * (1 / 2) * e ^ x_i)
+    #             = sum(e ^ Y * Y + e ^ X * X - 2 * M * log M) / 2
+    # grad_x_i = 0.5 * Q * (X - log_M)
     pid = tl.program_id(0).to(tl.int64)
     X_ptr += pid * X_stride
     Y_ptr += pid * Y_stride
@@ -34,14 +34,15 @@ def _jsd_kernel(
         X = tl.load(X_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
         Y = tl.load(Y_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
 
-        exp_X = tl.exp(X)
-        exp_Y = tl.exp(Y)
-        M = exp_X / 2 + exp_Y / 2
+        Q = tl.exp(X)
+        P = tl.exp(Y)
+        M = 0.5 * P + 0.5 * Q
+        log_M = tl.log(M)
 
-        loss = (X * exp_X + Y * exp_Y - 2 * M * tl.log(M)) / 2
+        loss = 0.5 * (P * Y + Q * X - 2 * M * tl.log(M))
         loss_sum += tl.sum(loss)
-        grad_X = (1 / 2 * n_rows) * (exp_X + exp_X * X - exp_X / M)
 
+        grad_X = 0.5 * Q * (X - log_M)
         tl.store(X_ptr + offsets, grad_X, mask=mask)
 
     tl.store(loss_ptr, loss_sum)
@@ -94,9 +95,9 @@ def jsd_forward(_input, target):
     loss_1d = torch.zeros(n_rows, dtype=torch.float32, device=_input.device)
 
     _jsd_kernel[(n_rows,)](
-        X_ptr=_input,  # input in logspace, X = log P
+        X_ptr=_input,  # input in logspace, X = log Q
         X_stride=_input.stride(-2),
-        Y_ptr=target,  # ground truth in logspace, Y = log Q
+        Y_ptr=target,  # ground truth in logspace, Y = log P
         Y_stride=target.stride(-1),
         loss_ptr=loss_1d,
         loss_stride=loss_1d.stride(-1),
@@ -136,14 +137,6 @@ def jsd_backward(_input, grad_output):
 class LigerJSDFunction(torch.autograd.Function):
     """
     Class implementing the forward and backward pass for the JS Divergence Loss using Triton, as defined by the following formula:
-    ```python
-    if log_target:
-        loss = target * (target.log() - input)
-    else:
-        loss = target.exp() * (target - input)
-    ```,
-    then the loss is reduced according to the `reduction` parameter.
-    as defined in the PyTorch documentation: https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
     """
 
     @staticmethod

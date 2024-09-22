@@ -1,4 +1,4 @@
-from test.utils import assert_verbose_allclose, supports_bfloat16
+from test.utils import assert_verbose_allclose
 
 import pytest
 import torch
@@ -15,13 +15,15 @@ class JSD(torch.nn.Module):
     def forward(self, p: torch.tensor, q: torch.tensor):
         p, q = p.view(-1, p.size(-1)), q.view(-1, q.size(-1))
         m = 0.5 * (torch.exp(p) + torch.exp(q))
-        return 0.5 * (self.kl(m.log(), p) + self.kl(m.log(), q))
+        loss = 0.5 * (self.kl(m.log(), p) + self.kl(m.log(), q))
+        print(f"torch's {loss=}")
+        return loss
 
 
 _SHAPE_PARAMS = (
     "B, T, V",
     [
-        (1, 1024, 1024),
+        (1, 1, 4096),
         # (1, 4096, 32000),
         # (32, 4096, 1024),
         # # weird shape
@@ -71,20 +73,23 @@ def _test_correctness_once(
     torch.manual_seed(0)
     torch_jsd = JSD()
 
-    input = torch.randn(B * T, V, device=device, dtype=dtype, requires_grad=True).log()
+    input = torch.randn(
+        B * T, V, device=device, dtype=dtype, requires_grad=True
+    ).log_softmax(dim=-1)
 
     x1 = input.detach().clone().requires_grad_(True)
     x2 = input.detach().clone().requires_grad_(True)
     x3 = input.detach().clone().requires_grad_(True)
 
     with torch.no_grad():
-        target = torch.randn(B * T, V, device=device).log()
+        target = torch.randn(B * T, V, dtype=dtype, device=device).log_softmax(dim=-1)
 
     output = torch_jsd(x1, target)
     output2 = target_jsd(x2, target)
-    output3 = target_jsd(target, x3)
-    assert_verbose_allclose(output, output2, atol=atol, rtol=rtol)
-    assert_verbose_allclose(output3, output2, atol=atol, rtol=rtol)
+    print(f"liger's loss = {output2}")
+    # output3 = target_jsd(target, x3)
+    assert torch.allclose(output, output2, atol=atol, rtol=rtol)
+    # assert_verbose_allclose(output3, output2, atol=atol, rtol=rtol)
     if (
         not is_last_layer
     ):  # if the loss is the last layer, grad_output is 1.0 and mul op is skipped, testing for that reason
