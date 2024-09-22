@@ -15,14 +15,9 @@ def test_auto_liger_kernel_for_causal_lm_from_pretrained():
     pretrained_model_name_or_path = "/path/to/llama/model"
     model_args = ("model_arg1", "model_arg2")
 
-    valid_kwargs = {
+    original_kwargs = {
         "valid_arg_1": "some_value_1",
         "valid_arg_2": 10,
-    }
-
-    # This arg should be filtered out as it is not part of the model config
-    invalid_kwargs = {
-        "invalid_arg": "another_value",
     }
 
     # These args should be passed through to apply_liger_kernel_to_llama fn
@@ -31,15 +26,11 @@ def test_auto_liger_kernel_for_causal_lm_from_pretrained():
         "swiglu": True,
     }
 
-    kwargs = {**valid_kwargs, **invalid_kwargs, **apply_liger_kernel_kwargs}
+    kwargs = {**original_kwargs, **apply_liger_kernel_kwargs}
 
     # Mock the model config instance returned from AutoConfig.from_pretrained()
     mock_model_config = MagicMock()
-    mock_model_config.__dict__ = {
-        "model_type": "llama",
-        "valid_arg_1": "",
-        "valid_arg_2": 0,
-    }
+    mock_model_config.model_type = "llama"
     mock_llama = mock.Mock()
 
     with patch.dict(
@@ -59,8 +50,8 @@ def test_auto_liger_kernel_for_causal_lm_from_pretrained():
 
         # Check that the apply_liger_kernel_to_llama mock was called with the correct kwargs
         mock_llama.assert_called_once_with(rope=False, swiglu=True)
-        # Check that only valid kwargs are passed to super().from_pretrained
+        # Check that the original kwargs are passed to super().from_pretrained
         mock_super_from_pretrained.assert_called_once_with(
-            pretrained_model_name_or_path, *model_args, **valid_kwargs
+            pretrained_model_name_or_path, *model_args, **original_kwargs
         )
         assert model == "mock_model"
