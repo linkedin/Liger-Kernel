@@ -26,8 +26,6 @@ def _jsd_kernel(
     Y_ptr += pid * Y_stride
     loss_ptr += pid * loss_stride
 
-    loss_sum = 0.0
-
     for i in range(0, n_cols, BLOCK_SIZE):
         offsets = i + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_cols
@@ -42,10 +40,9 @@ def _jsd_kernel(
         loss = 0.5 * (P * Y + Q * X - 2 * M * log_M)
         tl.store(loss_ptr + offsets, loss, mask=mask)
 
-        # loss_sum += tl.sum(loss)
+        # gradients stored in X_ptr to save memory
         grad_X = 0.5 * Q * (X - log_M) / n_rows
         tl.store(X_ptr + offsets, grad_X, mask=mask)
-        # tl.store(loss_ptr, loss_sum)
 
 
 MAX_FUSED_SIZE = 65536
@@ -91,20 +88,22 @@ def jsd_forward(_input, target):
     BT, V = _input.shape
     n_rows = BT
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
-    loss_1d = torch.zeros(_input.shape, dtype=torch.float32, device=_input.device)
+    # non reduction loss
+    loss = torch.zeros(_input.shape, dtype=torch.float32, device=_input.device)
 
     _jsd_kernel[(n_rows,)](
         X_ptr=_input,  # input in logspace, X = log Q
         X_stride=_input.stride(-2),
         Y_ptr=target,  # ground truth in logspace, Y = log P
         Y_stride=target.stride(-2),
-        loss_ptr=loss_1d,
-        loss_stride=loss_1d.stride(-2),
+        loss_ptr=loss,
+        loss_stride=loss.stride(-2),
         n_rows=n_rows,
         n_cols=V,
         BLOCK_SIZE=BLOCK_SIZE,
     )
-    loss = torch.sum(loss_1d) / n_rows
+    # reduction == "batchmean"
+    loss = torch.sum(loss) / n_rows
     return loss.to(_input.dtype), _input
 
 
@@ -129,7 +128,7 @@ def jsd_backward(_input, grad_output):
             num_warps=32,
         )
 
-    return _input.to(_input.dtype)
+    return _input
 
 
 class LigerJSDFunction(torch.autograd.Function):
