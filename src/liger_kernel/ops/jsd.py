@@ -37,15 +37,14 @@ def _jsd_kernel(
         Q = tl.exp(X)
         P = tl.exp(Y)
         M = 0.5 * P + 0.5 * Q
-        log_M = tl.log(M + 1e-10)
+        log_M = tl.log(M)
 
-        loss = 0.5 * (P * Y + Q * X - 2 * M * log_M) / n_rows
+        loss = 0.5 * (P * Y + Q * X - 2 * M * log_M)
+        tl.store(loss_ptr + offsets, loss, mask=mask)
 
         # loss_sum += tl.sum(loss)
-        grad_X = 0.5 * Q * (X - log_M)
+        grad_X = 0.5 * Q * (X - log_M) / n_rows
         tl.store(X_ptr + offsets, grad_X, mask=mask)
-
-        tl.store(loss_ptr + offsets, loss, mask=mask)
         # tl.store(loss_ptr, loss_sum)
 
 
@@ -92,23 +91,21 @@ def jsd_forward(_input, target):
     BT, V = _input.shape
     n_rows = BT
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
-
     loss_1d = torch.zeros(_input.shape, dtype=torch.float32, device=_input.device)
 
     _jsd_kernel[(n_rows,)](
         X_ptr=_input,  # input in logspace, X = log Q
         X_stride=_input.stride(-2),
         Y_ptr=target,  # ground truth in logspace, Y = log P
-        Y_stride=target.stride(-1),
+        Y_stride=target.stride(-2),
         loss_ptr=loss_1d,
         loss_stride=loss_1d.stride(-2),
         n_rows=n_rows,
         n_cols=V,
         BLOCK_SIZE=BLOCK_SIZE,
     )
-    print(f"{loss_1d=}")
-    loss = torch.sum(loss_1d)
-    return loss, _input
+    loss = torch.sum(loss_1d) / n_rows
+    return loss.to(_input.dtype), _input
 
 
 def jsd_backward(_input, grad_output):
@@ -132,12 +129,19 @@ def jsd_backward(_input, grad_output):
             num_warps=32,
         )
 
-    return _input
+    return _input.to(_input.dtype)
 
 
 class LigerJSDFunction(torch.autograd.Function):
     """
-    Class implementing the forward and backward pass for the JS Divergence Loss using Triton, as defined by the following formula:
+    Class implementing the forward and backward pass for the JS Divergence using Triton, as defined by the following formula:
+
+    Parameters:
+    _input (tensor): predict values with shape (BT, V) in logspace
+    target (tensor): gournd truth values with shape (BT, V) in logspace
+
+    Returns:
+    loss (tensor): JSD
     """
 
     @staticmethod
