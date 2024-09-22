@@ -37,15 +37,16 @@ def _jsd_kernel(
         Q = tl.exp(X)
         P = tl.exp(Y)
         M = 0.5 * P + 0.5 * Q
-        log_M = tl.log(M)
+        log_M = tl.log(M + 1e-10)
 
-        loss = 0.5 * (P * Y + Q * X - 2 * M * tl.log(M))
-        loss_sum += tl.sum(loss)
+        loss = 0.5 * (P * Y + Q * X - 2 * M * log_M) / n_rows
 
+        # loss_sum += tl.sum(loss)
         grad_X = 0.5 * Q * (X - log_M)
         tl.store(X_ptr + offsets, grad_X, mask=mask)
 
-    tl.store(loss_ptr, loss_sum)
+        tl.store(loss_ptr + offsets, loss, mask=mask)
+        # tl.store(loss_ptr, loss_sum)
 
 
 MAX_FUSED_SIZE = 65536
@@ -92,7 +93,7 @@ def jsd_forward(_input, target):
     n_rows = BT
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
-    loss_1d = torch.zeros(n_rows, dtype=torch.float32, device=_input.device)
+    loss_1d = torch.zeros(_input.shape, dtype=torch.float32, device=_input.device)
 
     _jsd_kernel[(n_rows,)](
         X_ptr=_input,  # input in logspace, X = log Q
@@ -100,13 +101,13 @@ def jsd_forward(_input, target):
         Y_ptr=target,  # ground truth in logspace, Y = log P
         Y_stride=target.stride(-1),
         loss_ptr=loss_1d,
-        loss_stride=loss_1d.stride(-1),
+        loss_stride=loss_1d.stride(-2),
         n_rows=n_rows,
         n_cols=V,
         BLOCK_SIZE=BLOCK_SIZE,
     )
     print(f"{loss_1d=}")
-    loss = torch.sum(loss_1d) / n_rows
+    loss = torch.sum(loss_1d)
     return loss, _input
 
 

@@ -12,10 +12,11 @@ class JSD(torch.nn.Module):
         super(JSD, self).__init__()
         self.kl = KLDivLoss(reduction="batchmean", log_target=True)
 
-    def forward(self, p: torch.tensor, q: torch.tensor):
-        p, q = p.view(-1, p.size(-1)), q.view(-1, q.size(-1))
-        m = 0.5 * (torch.exp(p) + torch.exp(q))
-        loss = 0.5 * (self.kl(m.log(), p) + self.kl(m.log(), q))
+    def forward(self, log_p: torch.tensor, log_q: torch.tensor):
+        log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(-1, log_q.size(-1))
+        m = 0.5 * (torch.exp(log_p) + torch.exp(log_q))
+        log_m = torch.log(m + 1e-10)
+        loss = 0.5 * (self.kl(log_m, log_p) + self.kl(log_m, log_q))
         print(f"torch's {loss=}")
         return loss
 
@@ -24,7 +25,7 @@ _SHAPE_PARAMS = (
     "B, T, V",
     [
         (1, 1, 4096),
-        # (1, 4096, 32000),
+        (1, 1, 32000),
         # (32, 4096, 1024),
         # # weird shape
         # (41, 401, 1271),
