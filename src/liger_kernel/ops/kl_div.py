@@ -86,6 +86,8 @@ def _kldiv_kernel_backward(
     input_stride,
     target_ptr,
     target_stride,
+    new_grads_ptr,
+    new_grads_stride,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
     log_target: tl.constexpr = False,
@@ -94,6 +96,7 @@ def _kldiv_kernel_backward(
 
     input_ptr += pid * input_stride
     target_ptr += pid * target_stride
+    new_grads_ptr += pid * new_grads_stride
 
     offsets = tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_cols
@@ -109,7 +112,7 @@ def _kldiv_kernel_backward(
         else:
             res = -tl.exp(target)
 
-        tl.store(input_ptr + offsets, res, mask=mask)
+        tl.store(new_grads_ptr + offsets, res, mask=mask)
 
 
 def kldiv_forward_triton(y_pred, y_true, log_target, reduction, eps):  # [BT, V]
@@ -152,7 +155,7 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction, eps):  # [BT, V]
         return output_tensor
 
 
-def kldiv_backward_triton(input, target, grad_output, log_target):
+def kldiv_backward_triton(input, target, grad_output, new_grads, log_target):
     BT, V = input.shape
 
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
@@ -166,6 +169,8 @@ def kldiv_backward_triton(input, target, grad_output, log_target):
         input.stride(0),
         target,
         target.stride(0),
+        new_grads,
+        new_grads.stride(0),
         V,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
@@ -174,9 +179,9 @@ def kldiv_backward_triton(input, target, grad_output, log_target):
 
     # If cross entropy is the last layer, grad_output is 1.0. Skip the mul then.
     if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        return input
+        return new_grads
 
-    return input * grad_output
+    return new_grads * grad_output
 
 
 class LigerKLDivLossFunction(torch.autograd.Function):
@@ -236,7 +241,11 @@ class LigerKLDivLossFunction(torch.autograd.Function):
         """
         y_pred, y_true = ctx.saved_tensors
 
-        derivative = kldiv_backward_triton(y_pred, y_true, grad_output, ctx.log_target)
+        new_grads = torch.empty_like(y_pred)
+
+        derivative = kldiv_backward_triton(
+            y_pred, y_true, grad_output, new_grads, ctx.log_target
+        )
 
         if ctx.reduction == "batchmean":
             derivative = derivative / y_pred.shape[0]
