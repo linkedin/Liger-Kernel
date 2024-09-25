@@ -82,8 +82,6 @@ def _kldiv_kernel_forward(
 
 @triton.jit
 def _kldiv_kernel_backward(
-    input_ptr,
-    input_stride,
     target_ptr,
     target_stride,
     new_grads_ptr,
@@ -94,7 +92,6 @@ def _kldiv_kernel_backward(
 ):
     pid = tl.program_id(0).to(tl.int64)
 
-    input_ptr += pid * input_stride
     target_ptr += pid * target_stride
     new_grads_ptr += pid * new_grads_stride
 
@@ -155,8 +152,8 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction, eps):  # [BT, V]
         return output_tensor
 
 
-def kldiv_backward_triton(input, target, grad_output, new_grads, log_target):
-    BT, V = input.shape
+def kldiv_backward_triton(target, grad_output, new_grads, log_target):
+    BT, V = target.shape
 
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
     num_warps = get_num_warps(BLOCK_SIZE)
@@ -165,8 +162,6 @@ def kldiv_backward_triton(input, target, grad_output, new_grads, log_target):
 
     # We store the gradients in-place in the input tensor
     _kldiv_kernel_backward[grid](
-        input,
-        input.stride(0),
         target,
         target.stride(0),
         new_grads,
@@ -220,7 +215,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
         Returns:
             torch.Tensor: The computed KL Divergence Loss, with shape (BT, V) if `reduction` is "none", else a scalar.
         """
-        ctx.save_for_backward(y_pred, y_true)
+        ctx.save_for_backward(y_true)
         ctx.reduction = reduction
         ctx.log_target = log_target
         return kldiv_forward_triton(
@@ -239,20 +234,20 @@ class LigerKLDivLossFunction(torch.autograd.Function):
         Returns:
             tuple[torch.Tensor, None, None, None, None]: The gradient of the loss with respect to the inputs and None for the other arguments of the forward method.
         """
-        y_pred, y_true = ctx.saved_tensors
+        (y_true,) = ctx.saved_tensors
 
-        new_grads = torch.empty_like(y_pred)
+        new_grads = torch.empty_like(y_true)
 
         derivative = kldiv_backward_triton(
-            y_pred, y_true, grad_output, new_grads, ctx.log_target
+            y_true, grad_output, new_grads, ctx.log_target
         )
 
         if ctx.reduction == "batchmean":
-            derivative = derivative / y_pred.shape[0]
+            derivative = derivative / y_true.shape[0]
         elif ctx.reduction == "sum" or ctx.reduction == "none":
             pass
         elif ctx.reduction == "mean":
-            derivative = derivative / (y_pred.shape[0] * y_pred.shape[1])
+            derivative = derivative / (y_true.shape[0] * y_true.shape[1])
 
         return (
             derivative,
