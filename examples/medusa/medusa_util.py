@@ -114,7 +114,7 @@ def add_medusa_heads(
     model.medusa_head = nn.ModuleList(
         [
             nn.Sequential(
-                *([ResBlock(hidden_size)] * medusa_num_layers),
+                *([ResBlock(hidden_size) for _ in range(medusa_num_layers)]),
                 nn.Linear(hidden_size, vocab_size, bias=False),
             )
             for _ in range(medusa_num_heads)
