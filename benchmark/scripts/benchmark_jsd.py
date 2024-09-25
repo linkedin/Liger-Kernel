@@ -109,7 +109,7 @@ if __name__ == "__main__":
         "x_label": "vocab size",
         "x_values": [2**i for i in range(12, 18)],
         "kernel_providers": ["liger", "torch"],
-        "extra_benchmark_configs": [{"B": 8, "T": 2048}],
+        "extra_benchmark_configs": [{"B": 4, "T": 2048}],
         "overwrite": args.overwrite,
     }
 
