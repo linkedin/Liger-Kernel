@@ -12,6 +12,7 @@ Modifications made by Yanning Chen, 2024.
 
 import functools
 import importlib
+import os
 from typing import Callable
 
 import torch
@@ -51,6 +52,87 @@ def calculate_settings(n):
     elif BLOCK_SIZE >= 2048:
         num_warps = 8
     return BLOCK_SIZE, num_warps
+
+
+def calculate_gemm_settings(m, n, k):
+    device_properties = torch.cuda.get_device_properties(0)
+    total_memory = device_properties.total_memory
+    shared_memory_per_block = 100 * 1024  # 100KB max smem per block
+    compute_capability = torch.cuda.get_device_capability(0)
+
+    def get_settings(
+        block_m, block_n, block_k, num_stages, num_warps, split_k, group_m
+    ):
+        required_shared_memory = block_m * block_n * block_k * num_stages
+        while required_shared_memory > shared_memory_per_block:
+            if block_m > 32 and block_n > 32 and block_k > 32:
+                block_m //= 2
+                block_n //= 2
+                block_k //= 2
+            elif num_stages > 1:
+                num_stages -= 1
+            else:
+                raise RuntimeError(
+                    f"Out of resource: shared memory. Required: {required_shared_memory}, "
+                    f"Hardware limit: {shared_memory_per_block}. Reducing block sizes or `num_stages` may help."
+                )
+            required_shared_memory = block_m * block_n * block_k * num_stages
+        return block_m, block_n, block_k, num_stages, num_warps, split_k, group_m
+
+    def determine_initial_settings(m, n, k, total_memory, compute_capability):
+        if compute_capability[0] >= 9:  # SM_90+
+            if m * n * k > 1e9:  # large matmul
+                return 256, 256, 512, 4, 16, 4, 32
+            elif m * n * k > 1e6:  # mid matmul
+                return 128, 128, 256, 3, 8, 2, 16
+            else:  # small matmul
+                return 64, 64, 128, 3, 4, 2, 8
+        elif total_memory >= 48 * 1000 * 1000 * 1000:  # >=48 GB VRAM
+            if m * n * k > 1e9:  # large matmul
+                return 128, 128, 512, 4, 8, 4, 16
+            elif m * n * k > 1e6:  # mid matmul
+                return 128, 128, 256, 3, 8, 2, 8
+            else:  # small matmul
+                return 64, 64, 128, 3, 4, 2, 4
+        else:  # <48 GB VRAM
+            if m * n * k > 1e9:  # large matmul
+                return 64, 64, 128, 3, 4, 2, 8
+            elif m * n * k > 1e4:  # mid matmul
+                return 64, 64, 64, 3, 4, 1, 4
+            else:  # small matmul
+                return 64, 64, 64, 3, 4, 1, 2
+
+    block_m, block_n, block_k, num_stages, num_warps, split_k, group_m = (
+        determine_initial_settings(m, n, k, total_memory, compute_capability)
+    )
+    return get_settings(
+        block_m, block_n, block_k, num_stages, num_warps, split_k, group_m
+    )
+
+
+def check_compute_capability_for_fp8(fn):
+    @functools.wraps(fn)
+    def wrapper(ctx, *args, **kwargs):
+        if torch.cuda.is_available():
+            device = torch.cuda.current_device()
+            compute_capability = torch.cuda.get_device_capability(device)
+            if compute_capability[0] >= 9:  # SM_90+
+                os.environ["ENABLE_TMA"] = "1"
+                os.environ["ENABLE_MMA_V3"] = "1"
+            elif compute_capability[0] == 8 and compute_capability[1] == 9:  # SM_89
+                os.environ["ENABLE_TMA"] = "0"
+                os.environ["ENABLE_MMA_V3"] = "0"
+            else:
+                raise SystemExit(
+                    "This kernel requires SM_89 or higher for native FP8 support."
+                )
+        else:
+            raise SystemExit(
+                "CUDA is not available. This kernel requires CUDA with SM_89 or higher for native FP8 support."
+            )
+        return fn(ctx, *args, **kwargs)
+
+    return wrapper
 
 
 def compare_version(package: str, operator: Callable, target: str):
