@@ -114,16 +114,16 @@ def _kldiv_kernel_backward(
 
 def kldiv_forward_triton(
     y_pred, y_true, log_target, reduction, eps
-):  # [B, S]  # [B, S]
-    B, S = y_pred.shape
+):  # [BT, V]
+    BT, V = y_pred.shape
 
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(S))
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
     num_warps = get_num_warps(BLOCK_SIZE)
 
-    grid = (B,)
+    grid = (BT,)
     reduction = _str_to_reduction_mode[reduction]
 
-    out_size = (B, S) if reduction == _REDUCTION_MODE_NONE.value else (B,)
+    out_size = (BT, V) if reduction == _REDUCTION_MODE_NONE.value else (BT,)
     output_tensor = torch.zeros(out_size, device=y_pred.device, dtype=torch.float32)
 
     _kldiv_kernel_forward[grid](
@@ -133,7 +133,7 @@ def kldiv_forward_triton(
         y_true.stride(0),
         output_tensor,
         output_tensor.stride(0),
-        S,
+        V,
         eps=eps,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
@@ -145,22 +145,22 @@ def kldiv_forward_triton(
     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
     # https://github.com/pytorch/pytorch/blob/d7b57c4d63edb42e1deeeba9497fcb5f1f748ff2/torch/nn/functional.py#L3372
     if reduction == _REDUCTION_MODE_BATCHMEAN.value:
-        return output_tensor.sum() / B
+        return output_tensor.sum() / BT
     elif reduction == _REDUCTION_MODE_SUM.value:
         return output_tensor.sum(dim=0)
     elif reduction == _REDUCTION_MODE_MEAN.value:
-        return output_tensor.sum() / (B * S)
+        return output_tensor.sum() / (BT * V)
     else:
         return output_tensor
 
 
 def kldiv_backward_triton(input, target, grad_output, log_target):
-    B, S = input.shape
+    BT, V = input.shape
 
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(S))
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
     num_warps = get_num_warps(BLOCK_SIZE)
 
-    grid = (B,)
+    grid = (BT,)
 
     # We store the gradients in-place in the input tensor
     _kldiv_kernel_backward[grid](
@@ -168,7 +168,7 @@ def kldiv_backward_triton(input, target, grad_output, log_target):
         input.stride(0),
         target,
         target.stride(0),
-        S,
+        V,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
         log_target=log_target,
@@ -234,7 +234,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
             grad_output (torch.Tensor): The gradient of the loss with respect to the output.
 
         Returns:
-            tuple[torch.Tensor, None, None, None]: The gradient of the loss with respect to the inputs and None for the other arguments of the forward method.
+            tuple[torch.Tensor, None, None, None, None]: The gradient of the loss with respect to the inputs and None for the other arguments of the forward method.
         """
         y_pred, y_true = ctx.saved_tensors
 

@@ -4,7 +4,7 @@ from liger_kernel.ops.kl_div import LigerKLDivLossFunction
 
 
 class LigerKLDIVLoss(nn.KLDivLoss):
-    def __init__(self, eps=1e-10, *args, **kwargs):
+    def __init__(self, eps: float = 1e-10, *args, **kwargs):
         super(LigerKLDIVLoss, self).__init__(*args, **kwargs)
         self.eps = eps
 
