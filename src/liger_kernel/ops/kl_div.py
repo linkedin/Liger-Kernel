@@ -112,9 +112,7 @@ def _kldiv_kernel_backward(
         tl.store(input_ptr + offsets, res, mask=mask)
 
 
-def kldiv_forward_triton(
-    y_pred, y_true, log_target, reduction, eps
-):  # [BT, V]
+def kldiv_forward_triton(y_pred, y_true, log_target, reduction, eps):  # [BT, V]
     BT, V = y_pred.shape
 
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
