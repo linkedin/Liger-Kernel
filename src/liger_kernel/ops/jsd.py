@@ -13,6 +13,8 @@ def _jsd_kernel(
     Y_stride,
     loss_ptr,
     loss_stride,
+    dX_ptr,
+    dX_stride,
     n_rows,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
@@ -23,6 +25,7 @@ def _jsd_kernel(
     # grad_x_i = 0.5 * Q * (X - log_M)
     pid = tl.program_id(0).to(tl.int64)
     X_ptr += pid * X_stride
+    dX_ptr += pid * dX_stride
     Y_ptr += pid * Y_stride
     loss_ptr += pid * loss_stride
 
@@ -40,48 +43,11 @@ def _jsd_kernel(
         loss = 0.5 * (P * Y + Q * X - 2 * M * log_M)
         tl.store(loss_ptr + offsets, loss, mask=mask)
 
-        # gradients stored in X_ptr to save memory
-        grad_X = 0.5 * Q * (X - log_M) / n_rows
-        tl.store(X_ptr + offsets, grad_X, mask=mask)
+        dX = 0.5 * Q * (X - log_M) / n_rows
+        tl.store(dX_ptr + offsets, dX, mask=mask)
 
 
 MAX_FUSED_SIZE = 65536
-
-
-@triton.jit
-def element_mul_kernel(
-    X_ptr,
-    X_stride,
-    grad_output_ptr,
-    n_cols,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """
-    This function multiplies each element of the tensor pointed by X_ptr with the value pointed by grad_output_ptr.
-    The multiplication is performed in-place on the tensor pointed by X_ptr.
-
-    Parameters:
-    X_ptr: Pointer to the input tensor.
-    X_stride (int): The stride of the input tensor.
-    grad_output_ptr: Pointer to the gradient output value.
-    n_cols (int): The number of columns in the input tensor.
-    BLOCK_SIZE (int): The block size for Triton operations.
-    """
-
-    # Get the program ID and convert it to int64 to avoid overflow
-    program_id = tl.program_id(0).to(tl.int64)
-
-    # Locate the start index
-    X_ptr += program_id * X_stride
-
-    # Load the gradient output value
-    grad_output = tl.load(grad_output_ptr)
-
-    # Perform the element-wise multiplication
-    for i in range(0, n_cols, BLOCK_SIZE):
-        X_offsets = i + tl.arange(0, BLOCK_SIZE)
-        X_block = tl.load(X_ptr + X_offsets, mask=X_offsets < n_cols)
-        tl.store(X_ptr + X_offsets, X_block * grad_output, mask=X_offsets < n_cols)
 
 
 def jsd_forward(_input, target):
@@ -90,6 +56,7 @@ def jsd_forward(_input, target):
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
     # non reduction loss
     loss = torch.zeros(_input.shape, dtype=torch.float32, device=_input.device)
+    dX = torch.empty_like(_input)
 
     _jsd_kernel[(n_rows,)](
         X_ptr=_input,  # input in logspace, X = log Q
@@ -98,37 +65,23 @@ def jsd_forward(_input, target):
         Y_stride=target.stride(-2),
         loss_ptr=loss,
         loss_stride=loss.stride(-2),
+        dX_ptr=dX,
+        dX_stride=dX.stride(-2),
         n_rows=n_rows,
         n_cols=V,
         BLOCK_SIZE=BLOCK_SIZE,
     )
     # reduction == "batchmean"
     loss = torch.sum(loss) / n_rows
-    return loss.to(_input.dtype), _input
+    return loss.to(_input.dtype), dX
 
 
-def jsd_backward(_input, grad_output):
+def jsd_backward(dX, grad_output):
     # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
     if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        pass
-
-    # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
-    # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
+        return dX
     else:
-        BT, V = _input.shape
-        n_rows = BT
-        BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
-
-        element_mul_kernel[(n_rows,)](
-            _input,
-            _input.stride(-2),
-            grad_output,
-            V,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32,
-        )
-
-    return _input
+        return grad_output * dX
 
 
 class LigerJSDFunction(torch.autograd.Function):
@@ -151,16 +104,16 @@ class LigerJSDFunction(torch.autograd.Function):
         target: torch.Tensor,
     ) -> torch.Tensor:
 
-        loss, _input = jsd_forward(_input, target)
-        ctx.save_for_backward(_input.detach())
+        loss, dX = jsd_forward(_input, target)
+        ctx.save_for_backward(dX)
         return loss
 
     @staticmethod
     @ensure_contiguous
     def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
-        (_input,) = ctx.saved_tensors
-        _input = jsd_backward(_input, grad_output)
+        (dX,) = ctx.saved_tensors
+        dX = jsd_backward(dX, grad_output)
         return (
-            _input,
+            dX,
             None,
         )
