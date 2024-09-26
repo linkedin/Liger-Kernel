@@ -39,7 +39,7 @@ def construct_local_mask(
         )
 
 
-def attention_ref(
+def flash_attn_reference(
     q,
     k,
     v,

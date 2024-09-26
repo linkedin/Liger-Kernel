@@ -37,6 +37,7 @@ def _flash_attn_forward(
     assert k.shape == expected_kv_shape, f"{k.shape = } <> {expected_kv_shape = }"
     assert v.shape == expected_kv_shape, f"{v.shape = } <> {expected_kv_shape = }"
     assert q.dtype == k.dtype == v.dtype, "All tensors must have the same type"
+    assert q.dtype in [torch.float16, torch.bfloat16], "Only support fp16 and bf16"
     assert q.is_cuda and k.is_cuda and v.is_cuda
     softmax_scale = 1.0 / math.sqrt(head_dim) if softmax_scale is None else softmax_scale
 
