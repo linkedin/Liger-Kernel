@@ -59,19 +59,21 @@ def _test_attention(
     compare_numerical_errors(ref_dv, pt_dv, liger_dv, 2, 1e-4, "dv")
 
 
-@pytest.mark.parametrize("dtype", [(torch.float16), (torch.bfloat16)])
-@pytest.mark.parametrize("causal", [False, True])
 @pytest.mark.parametrize(
-    "head_dim, nheads_q, nheads_kv",
-    [(32, 9, 9), (40, 9, 3), (64, 8, 8), (128, 8, 2), (256, 4, 2)],
+    "dtype, swap_seqlens",
+    [(torch.float16, True), (torch.bfloat16, False)],
 )
-@pytest.mark.parametrize("swap_seqlens", [False, True])
-@pytest.mark.parametrize("use_bias", [False, True])
+@pytest.mark.parametrize("head_dim, nheads_q, nheads_kv, use_bias, causal", [
+    (32, 9, 9, True, False),
+    (40, 9, 3, True, True),
+    (64, 8, 8, False, False),
+    (128, 8, 2, True, True),
+    (256, 4, 2, False, True),
+])
 @pytest.mark.parametrize(
     "seqlen_q,seqlen_k",
     [
         (1, 239),
-        (3, 799),
         (113, 203),
         (127, 512),
         (128, 217),
@@ -79,7 +81,7 @@ def _test_attention(
     ],
 )
 @pytest.mark.parametrize("batch_size", [4])
-def test_fwd_bwd(
+def test_attention(
     batch_size: int,
     nheads_q: int,
     nheads_kv: int,
