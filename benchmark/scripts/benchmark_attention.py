@@ -31,9 +31,15 @@ def bench_memory_attention(
     device = "cuda"
 
     head_dim = hidden_size // nheads_q
-    q = torch.normal(0, 0.5, (batch_size, seqlen, nheads_q, head_dim), dtype=dtype, device=device).requires_grad_()
-    k = torch.normal(0, 0.5, (batch_size, seqlen, nheads_kv, head_dim), dtype=dtype, device=device).requires_grad_()
-    v = torch.normal(0, 0.5, (batch_size, seqlen, nheads_kv, head_dim), dtype=dtype, device=device).requires_grad_()
+    q = torch.normal(
+        0, 0.5, (batch_size, seqlen, nheads_q, head_dim), dtype=dtype, device=device
+    ).requires_grad_()
+    k = torch.normal(
+        0, 0.5, (batch_size, seqlen, nheads_kv, head_dim), dtype=dtype, device=device
+    ).requires_grad_()
+    v = torch.normal(
+        0, 0.5, (batch_size, seqlen, nheads_kv, head_dim), dtype=dtype, device=device
+    ).requires_grad_()
     do = torch.randn_like(q)
 
     if provider == "torch":
@@ -47,7 +53,9 @@ def bench_memory_attention(
                 return torch.nn.functional.scaled_dot_product_attention(q, k, v)
             else:
                 ngroups = nheads_q // nheads_kv
-                return torch.nn.functional.scaled_dot_product_attention(q, repeat_kv(k, ngroups), repeat_kv(v, ngroups))
+                return torch.nn.functional.scaled_dot_product_attention(
+                    q, repeat_kv(k, ngroups), repeat_kv(v, ngroups)
+                )
 
     def full():
         y = fwd()
@@ -80,9 +88,15 @@ def bench_speed_attention(
     device = "cuda"
 
     head_dim = hidden_size // nheads_q
-    q = torch.normal(0, 0.5, (batch_size, seqlen, nheads_q, head_dim), dtype=dtype, device=device).requires_grad_()
-    k = torch.normal(0, 0.5, (batch_size, seqlen, nheads_kv, head_dim), dtype=dtype, device=device).requires_grad_()
-    v = torch.normal(0, 0.5, (batch_size, seqlen, nheads_kv, head_dim), dtype=dtype, device=device).requires_grad_()
+    q = torch.normal(
+        0, 0.5, (batch_size, seqlen, nheads_q, head_dim), dtype=dtype, device=device
+    ).requires_grad_()
+    k = torch.normal(
+        0, 0.5, (batch_size, seqlen, nheads_kv, head_dim), dtype=dtype, device=device
+    ).requires_grad_()
+    v = torch.normal(
+        0, 0.5, (batch_size, seqlen, nheads_kv, head_dim), dtype=dtype, device=device
+    ).requires_grad_()
     do = torch.randn_like(q)
 
     if provider == "torch":
@@ -96,7 +110,9 @@ def bench_speed_attention(
                 return torch.nn.functional.scaled_dot_product_attention(q, k, v)
             else:
                 ngroups = nheads_q // nheads_kv
-                return torch.nn.functional.scaled_dot_product_attention(q, repeat_kv(k, ngroups), repeat_kv(v, ngroups))
+                return torch.nn.functional.scaled_dot_product_attention(
+                    q, repeat_kv(k, ngroups), repeat_kv(v, ngroups)
+                )
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -141,7 +157,13 @@ if __name__ == "__main__":
         "x_values": [2**i for i in range(5, 15)],
         "kernel_providers": ["liger", "torch"],
         "extra_benchmark_configs": [
-            {"batch_size": 4, "nheads_q": 32, "nheads_kv": 8, "hidden_size": 4096, "dtype": torch.float16}
+            {
+                "batch_size": 4,
+                "nheads_q": 32,
+                "nheads_kv": 8,
+                "hidden_size": 4096,
+                "dtype": torch.float16,
+            }
         ],
         "overwrite": args.overwrite,
     }
