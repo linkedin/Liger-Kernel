@@ -1,35 +1,29 @@
 import math
+from typing import Optional, Tuple
 
 import torch
-from einops import rearrange, repeat
+from torch import Tensor
 
 
 def construct_local_mask(
-    seqlen_q,
-    seqlen_k,
-    window_size=(-1, -1),  # -1 means infinite window size
-    query_padding_mask=None,
-    key_padding_mask=None,
-    device=None,
-    key_leftpad=None,
+    seqlen_q: int,
+    seqlen_k: int,
+    window_size: Tuple[int, int] = (-1, -1),  # -1 means infinite window size
+    query_padding_mask: Optional[Tensor] = None,
+    key_padding_mask: Optional[Tensor] = None,
+    device: Optional[str] = None,
 ):
-    row_idx = rearrange(
-        torch.arange(seqlen_q, device=device, dtype=torch.long), "s -> s 1"
-    )
+    row_idx = torch.arange(seqlen_q, device=device, dtype=torch.long).unsqueeze(-1)
     col_idx = torch.arange(seqlen_k, device=device, dtype=torch.long)
-    if key_leftpad is not None:
-        key_leftpad = rearrange(key_leftpad, "b -> b 1 1 1")
-        col_idx = repeat(col_idx, "s -> b 1 1 s", b=key_leftpad.shape[0])
-        col_idx = torch.where(col_idx >= key_leftpad, col_idx - key_leftpad, 2**32)
     sk = (
         seqlen_k
         if key_padding_mask is None
-        else rearrange(key_padding_mask.sum(-1), "b -> b 1 1 1")
+        else key_padding_mask.sum(-1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
     )
     sq = (
         seqlen_q
         if query_padding_mask is None
-        else rearrange(query_padding_mask.sum(-1), "b -> b 1 1 1")
+        else query_padding_mask.sum(-1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
     )
     if window_size[0] < 0:
         return col_idx > row_idx + sk - sq + window_size[1]
@@ -42,20 +36,19 @@ def construct_local_mask(
 
 
 def flash_attn_reference(
-    q,
-    k,
-    v,
-    query_padding_mask=None,
-    key_padding_mask=None,
-    attn_bias=None,
-    dropout_p=0.0,
-    dropout_mask=None,
-    causal=False,
-    window_size=(-1, -1),  # -1 means infinite window size
-    softcap=0.0,
-    upcast=True,
-    reorder_ops=False,
-    key_leftpad=None,
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    query_padding_mask: Optional[Tensor] = None,
+    key_padding_mask: Optional[Tensor] = None,
+    attn_bias: Optional[Tensor] = None,
+    dropout_p: float = 0.0,
+    dropout_mask: Optional[Tensor] = None,
+    causal: bool = False,
+    window_size: Tuple[int, int] = (-1, -1),  # -1 means infinite window size
+    softcap: float = 0.0,
+    upcast: bool = True,
+    reorder_ops: bool = False,
 ):
     """
     Arguments:
@@ -84,8 +77,8 @@ def flash_attn_reference(
     if upcast:
         q, k, v = q.float(), k.float(), v.float()
     seqlen_q, seqlen_k = q.shape[1], k.shape[1]
-    k = repeat(k, "b s h d -> b s (h g) d", g=q.shape[2] // k.shape[2])
-    v = repeat(v, "b s h d -> b s (h g) d", g=q.shape[2] // v.shape[2])
+    k = k.repeat_interleave(repeats=q.shape[2] // k.shape[2], dim=2)
+    v = v.repeat_interleave(repeats=q.shape[2] // v.shape[2], dim=2)
     d = q.shape[-1]
     if not reorder_ops:
         scores = torch.einsum("bthd,bshd->bhts", q / math.sqrt(d), k)
@@ -97,7 +90,7 @@ def flash_attn_reference(
         scores = scores * softcap
     if key_padding_mask is not None:
         scores.masked_fill_(
-            rearrange(~key_padding_mask, "b s -> b 1 1 s"), float("-inf")
+            (~key_padding_mask).unsqueeze(1).unsqueeze(1), float("-inf")
         )
     if window_size[0] >= 0 or window_size[1] >= 0:
         local_mask = construct_local_mask(
@@ -107,7 +100,6 @@ def flash_attn_reference(
             query_padding_mask,
             key_padding_mask,
             q.device,
-            key_leftpad=key_leftpad,
         )
         scores.masked_fill_(local_mask, float("-inf"))
     if attn_bias is not None:
@@ -122,7 +114,7 @@ def flash_attn_reference(
     # Otherwise we'll get NaN in dV
     if query_padding_mask is not None:
         attention = attention.masked_fill(
-            rearrange(~query_padding_mask, "b s -> b 1 s 1"), 0.0
+            (~query_padding_mask).unsqueeze(1).unsqueeze(-1), 0.0
         )
     dropout_scaling = 1.0 / (1 - dropout_p)
     # attention_drop = attention.masked_fill(~dropout_mask, 0.0) * dropout_scaling
@@ -133,5 +125,5 @@ def flash_attn_reference(
         attention_drop = attention
     output = torch.einsum("bhts,bshd->bthd", attention_drop, v * dropout_scaling)
     if query_padding_mask is not None:
-        output.masked_fill_(rearrange(~query_padding_mask, "b s -> b s 1 1"), 0.0)
+        output.masked_fill_((~query_padding_mask).unsqueeze(-1).unsqueeze(-1), 0.0)
     return output.to(dtype=dtype_og)
