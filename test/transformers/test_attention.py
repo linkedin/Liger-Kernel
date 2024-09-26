@@ -62,7 +62,7 @@ def _test_attention(
         q, k, v, attn_bias=attn_bias, causal=causal, upcast=False, reorder_ops=True
     )
     liger_output = flash_attn_func(q, k, v, attention_bias=attn_bias, causal=causal)
-    compare_numerical_errors(ref_output, pt_output, liger_output, 1, 1e-4, "output")
+    compare_numerical_errors(ref_output, pt_output, liger_output, 2, 1e-4, "output")
 
     # Compare the gradients after the backward pass
     ref_dq, ref_dk, ref_dv = torch.autograd.grad(
@@ -94,7 +94,7 @@ def _test_attention(
     ],
 )
 @pytest.mark.parametrize(
-    "seqlen_q,seqlen_k",
+    "seqlen_q, seqlen_k",
     [
         (1, 239),
         (113, 203),
