@@ -8,7 +8,14 @@ from torch import Tensor
 
 from src.liger_kernel.ops.flash_attention.backward.compute_delta import _compute_delta
 from src.liger_kernel.ops.flash_attention.backward.kernel import _bwd_kernel
-from src.liger_kernel.ops.flash_attention.utils import attention_pack, attention_unpack, torch_ignore_deterministic, infer_bias_strides, handle_dropout, encode_dtype
+from src.liger_kernel.ops.flash_attention.utils import (
+    attention_pack,
+    attention_unpack,
+    torch_ignore_deterministic,
+    infer_bias_strides,
+    handle_dropout,
+    encode_dtype,
+)
 
 
 def _flash_attn_backward(
@@ -27,9 +34,13 @@ def _flash_attn_backward(
 ) -> Tuple[Tensor, Tensor, Tensor]:
 
     if attention_mask is not None:
-        assert bias is None, "Attention mask is not supported along with attention bias. Just use bias instead."
-        assert q.size(1) == k.size(1), "Attention mask is not supported with seqlen_q != seqlen_k"
-        varlen_mode = (attention_mask.size(0) > 1)
+        assert (
+            bias is None
+        ), "Attention mask is not supported along with attention bias. Just use bias instead."
+        assert q.size(1) == k.size(
+            1
+        ), "Attention mask is not supported with seqlen_q != seqlen_k"
+        varlen_mode = attention_mask.size(0) > 1
         useless_padding = attention_mask.size(1) - attention_mask.sum(-1).max().item()
         if useless_padding > 0:
             dO = dO[:, :-useless_padding]
@@ -47,7 +58,9 @@ def _flash_attn_backward(
     batch_size, seqlen_q, nheads_q, head_dim = q.shape
     _, seqlen_k, nheads_kv, _ = k.shape
     max_seqlen_q_rounded = math.ceil(seqlen_q / 128) * 128
-    softmax_scale = 1.0 / math.sqrt(head_dim) if softmax_scale is None else softmax_scale
+    softmax_scale = (
+        1.0 / math.sqrt(head_dim) if softmax_scale is None else softmax_scale
+    )
     assert nheads_q % nheads_kv == 0, f"{nheads_q = } is not divisible by {nheads_kv =}"
     assert lse.shape == (batch_size, nheads_q, max_seqlen_q_rounded)
     assert q.stride(-1) == k.stride(-1) == v.stride(-1) == o.stride(-1) == 1
@@ -55,8 +68,16 @@ def _flash_attn_backward(
     # Depending on attention_mask, switch to varlen
     if varlen_mode:
         # Compute padding-related statistics
-        cum_seqlens_q = torch.zeros(size=(attention_mask.size(0)+1,), device=attention_mask.device, dtype=torch.int32)
-        cum_seqlens_k = torch.zeros(size=(attention_mask.size(0)+1,), device=attention_mask.device, dtype=torch.int32)
+        cum_seqlens_q = torch.zeros(
+            size=(attention_mask.size(0) + 1,),
+            device=attention_mask.device,
+            dtype=torch.int32,
+        )
+        cum_seqlens_k = torch.zeros(
+            size=(attention_mask.size(0) + 1,),
+            device=attention_mask.device,
+            dtype=torch.int32,
+        )
         with torch_ignore_deterministic():
             cum_seqlens_q[1:] = attention_mask.sum(dim=1).cumsum(0)
             cum_seqlens_k[1:] = attention_mask.sum(dim=1).cumsum(0)
@@ -68,7 +89,9 @@ def _flash_attn_backward(
         k = attention_pack(k, attention_mask)  # [1, sum_seqlens_qk, num_head, head_dim]
         v = attention_pack(v, attention_mask)  # [1, sum_seqlens_qk, num_head, head_dim]
         o = attention_pack(o, attention_mask)  # [1, sum_seqlens_qk, num_head, head_dim]
-        dO = attention_pack(dO, attention_mask)  # [1, sum_seqlens_qk, num_head, head_dim]
+        dO = attention_pack(
+            dO, attention_mask
+        )  # [1, sum_seqlens_qk, num_head, head_dim]
         # Update seqlens
         seqlen_q = q.size(1)
         seqlen_k = k.size(1)
@@ -79,19 +102,34 @@ def _flash_attn_backward(
         max_seqlen_k = seqlen_k
 
     # Handle bias and dropout
-    stride_bb, stride_bh, stride_bm = infer_bias_strides(bias, batch_size, nheads_q, seqlen_q, seqlen_k)
+    stride_bb, stride_bh, stride_bm = infer_bias_strides(
+        bias, batch_size, nheads_q, seqlen_q, seqlen_k
+    )
     dropout_seed = handle_dropout(dropout_p, dropout_seed, is_forward=False)
 
     # Prepare gradient accumulators # TODO: maybe we can initialize this as empty -- check pre hook
-    dq = torch.zeros_like(q, dtype=torch.float32)  # [batch_size|1, seqlen_q|sum_seqlens_qk, nheads_q, head_dim]
-    dk = torch.zeros(size=(k.size(0), k.size(1), q.size(2), k.size(3)), device=k.device, dtype=k.dtype)
-    dv = torch.zeros(size=(v.size(0), v.size(1), q.size(2), v.size(3)), device=v.device, dtype=v.dtype)
+    dq = torch.zeros_like(
+        q, dtype=torch.float32
+    )  # [batch_size|1, seqlen_q|sum_seqlens_qk, nheads_q, head_dim]
+    dk = torch.zeros(
+        size=(k.size(0), k.size(1), q.size(2), k.size(3)),
+        device=k.device,
+        dtype=k.dtype,
+    )
+    dv = torch.zeros(
+        size=(v.size(0), v.size(1), q.size(2), v.size(3)),
+        device=v.device,
+        dtype=v.dtype,
+    )
     delta = torch.zeros_like(lse)  # [batch_size, nheads_q, max_seqlen_q_rounded]
 
     # Infer problem size
     BLOCK_HEADDIM = max(triton.next_power_of_2(head_dim), 16)
     # Launch the delta computation kernel
-    grid = lambda META: (triton.cdiv(max_seqlen_q, META["BLOCK_M"]), batch_size * nheads_q)  # noqa: E731
+    grid = lambda META: (
+        triton.cdiv(max_seqlen_q, META["BLOCK_M"]),
+        batch_size * nheads_q,
+    )  # noqa: E731
     _compute_delta[grid](
         o,
         dO,
@@ -116,7 +154,8 @@ def _flash_attn_backward(
     # Launch backward kernel
     head_ratio = nheads_q // nheads_kv
     grid = lambda META: (  # noqa: E731
-        triton.cdiv(seqlen_k, META["BLOCK_N1"]) + triton.cdiv(seqlen_q, META["BLOCK_M2"]),
+        triton.cdiv(seqlen_k, META["BLOCK_N1"])
+        + triton.cdiv(seqlen_q, META["BLOCK_M2"]),
         batch_size * nheads_q,
     )
     _bwd_kernel[grid](
@@ -133,14 +172,30 @@ def _flash_attn_backward(
         softmax_scale,
         dropout_p,
         dropout_seed,
-        q.stride(0), q.stride(2), q.stride(1),
-        k.stride(0), k.stride(2), k.stride(1),
-        v.stride(0), v.stride(2), v.stride(1),
-        stride_bb, stride_bh, stride_bm,
-        dO.stride(0), dO.stride(2), dO.stride(1),
-        dq.stride(0), dq.stride(2), dq.stride(1),
-        dk.stride(0), dk.stride(2), dk.stride(1),
-        dv.stride(0), dv.stride(2), dv.stride(1),
+        q.stride(0),
+        q.stride(2),
+        q.stride(1),
+        k.stride(0),
+        k.stride(2),
+        k.stride(1),
+        v.stride(0),
+        v.stride(2),
+        v.stride(1),
+        stride_bb,
+        stride_bh,
+        stride_bm,
+        dO.stride(0),
+        dO.stride(2),
+        dO.stride(1),
+        dq.stride(0),
+        dq.stride(2),
+        dq.stride(1),
+        dk.stride(0),
+        dk.stride(2),
+        dk.stride(1),
+        dv.stride(0),
+        dv.stride(2),
+        dv.stride(1),
         nheads_q,
         head_ratio,
         seqlen_q,

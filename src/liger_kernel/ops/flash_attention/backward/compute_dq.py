@@ -44,25 +44,44 @@ def _compute_single_block_dq(
         dropout_offs += I_start_n
 
     # Load K, V and LSE now to reduce pipeline stall
-    k = load_fn(k_ptrs, offs_n_curr, offs_d, PAD_COLS, HEADS_PADDED, actual_seqlen_k, headdim)
-    v = load_fn(v_ptrs, offs_n_curr, offs_d, PAD_COLS, HEADS_PADDED, actual_seqlen_k, headdim)
+    k = load_fn(
+        k_ptrs, offs_n_curr, offs_d, PAD_COLS, HEADS_PADDED, actual_seqlen_k, headdim
+    )
+    v = load_fn(
+        v_ptrs, offs_n_curr, offs_d, PAD_COLS, HEADS_PADDED, actual_seqlen_k, headdim
+    )
     if BIAS_ON:
-        bias = load_fn(bias_ptrs, offs_m, offs_n_curr, True, PAD_COLS, actual_seqlen_q, actual_seqlen_k)  # TODO: pad rows
+        bias = load_fn(
+            bias_ptrs,
+            offs_m,
+            offs_n_curr,
+            True,
+            PAD_COLS,
+            actual_seqlen_q,
+            actual_seqlen_k,
+        )  # TODO: pad rows
 
     # Recompute P_ij = softmax(qk, dim=-1).T
     qk = tl.dot(q, tl.trans(k))
     if BIAS_ON:
         qk += bias / softmax_scale  # TODO: check if this is optimal
 
-    offs_n_causal = (offs_n_curr - actual_seqlen_k + actual_seqlen_q)
+    offs_n_causal = offs_n_curr - actual_seqlen_k + actual_seqlen_q
 
     # Attention and causal mask
     if MASKED:
         if PAD_COLS:
             if IS_CAUSAL:
-                qk = tl.where(tl.minimum(actual_seqlen_q - 1, offs_m)[:, None] >= offs_n_causal[None, :], qk, float("-inf"))
+                qk = tl.where(
+                    tl.minimum(actual_seqlen_q - 1, offs_m)[:, None]
+                    >= offs_n_causal[None, :],
+                    qk,
+                    float("-inf"),
+                )
             else:
-                qk = tl.where(actual_seqlen_q - 1 >= offs_n_causal[None, :], qk, float("-inf"))
+                qk = tl.where(
+                    actual_seqlen_q - 1 >= offs_n_causal[None, :], qk, float("-inf")
+                )
         elif IS_CAUSAL:
             qk = tl.where(offs_m[:, None] >= offs_n_causal[None, :], qk, float("-inf"))
     tl.debug_barrier()
@@ -115,7 +134,9 @@ def _compute_row_blocks_dq(
 ):
     # This fuction goes through a row, so it always starts at i = 0 but the end can vary because of causality
     if IS_CAUSAL:
-        I_end_n = min(actual_seqlen_k - actual_seqlen_q + I_start_m + BLOCK_M, actual_seqlen_k)
+        I_end_n = min(
+            actual_seqlen_k - actual_seqlen_q + I_start_m + BLOCK_M, actual_seqlen_k
+        )
         # For a seqlen_q >> seqlen_k, there migh be entire block skipped
         if I_end_n < 0:
             return
@@ -152,20 +173,28 @@ def _compute_row_blocks_dq(
 
     # Load Q, DO, LSE and D, which will stay in SRAM for the row-wise loop
     q = load_fn(
-        q_ptrs, offs_m, offs_d,
-        PAD_AXIS_0=PAD_ROWS, PAD_AXIS_1=HEADS_PADDED,
-        LIM_AXIS_0=actual_seqlen_q, LIM_AXIS_1=headdim,
+        q_ptrs,
+        offs_m,
+        offs_d,
+        PAD_AXIS_0=PAD_ROWS,
+        PAD_AXIS_1=HEADS_PADDED,
+        LIM_AXIS_0=actual_seqlen_q,
+        LIM_AXIS_1=headdim,
     )
     do = load_fn(
-        do_ptrs, offs_m, offs_d,
-        PAD_AXIS_0=PAD_ROWS, PAD_AXIS_1=HEADS_PADDED,
-        LIM_AXIS_0=actual_seqlen_q, LIM_AXIS_1=headdim,
+        do_ptrs,
+        offs_m,
+        offs_d,
+        PAD_AXIS_0=PAD_ROWS,
+        PAD_AXIS_1=HEADS_PADDED,
+        LIM_AXIS_0=actual_seqlen_q,
+        LIM_AXIS_1=headdim,
     )
     lse_i = tl.load(LSE + offs_m)  # since lse is padded to max_seqlen_q, should be good
     delta_i = tl.load(D + offs_m)  # same as LSE for now
 
     # Infer the number of full and partially masked blocks
-    uneven_n = (actual_seqlen_k % BLOCK_N != 0)
+    uneven_n = actual_seqlen_k % BLOCK_N != 0
     attention_padding = VARLEN & uneven_n
     if IS_CAUSAL:
         first_masked_col = I_start_m + 1 + actual_seqlen_k - actual_seqlen_q
@@ -213,7 +242,9 @@ def _compute_row_blocks_dq(
 
     if I_next_start_n < I_end_n:
         for I_start_n in range(I_next_start_n, I_end_n, BLOCK_N):
-            pad_cols = (not EVEN_N) or (VARLEN and (I_start_n + BLOCK_N > actual_seqlen_k))
+            pad_cols = (not EVEN_N) or (
+                VARLEN and (I_start_n + BLOCK_N > actual_seqlen_k)
+            )
             dq = _compute_single_block_dq(
                 I_start_n,
                 q,
@@ -251,7 +282,11 @@ def _compute_row_blocks_dq(
     # Store dq
     if HEADS_PADDED:
         if PAD_ROWS:
-            tl.store(dq_ptrs, dq, mask=(offs_m[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim))
+            tl.store(
+                dq_ptrs,
+                dq,
+                mask=(offs_m[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim),
+            )
         else:
             tl.store(dq_ptrs, dq, mask=offs_d[None, :] < headdim)
     else:

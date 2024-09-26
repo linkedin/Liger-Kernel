@@ -41,16 +41,22 @@ def compute_row_block(
     offset_k_ptrs = k_ptrs + I_start_n * stride_kn
     k = load_fn(
         offset_k_ptrs,
-        I_start_n + offs_n, offs_d,
-        PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS,
-        LIM_AXIS_0=actual_seqlen_k, LIM_AXIS_1=headdim,
+        I_start_n + offs_n,
+        offs_d,
+        PAD_AXIS_0=PADDED_COLS,
+        PAD_AXIS_1=PADDED_HEADS,
+        LIM_AXIS_0=actual_seqlen_k,
+        LIM_AXIS_1=headdim,
     )
     if BIAS_ON:
         bias = load_fn(
             bias_ptrs + I_start_n,
-            offs_m, I_start_n + offs_n,
-            PAD_AXIS_0=True, PAD_AXIS_1=PADDED_COLS,  # check
-            LIM_AXIS_0=actual_seqlen_q, LIM_AXIS_1=actual_seqlen_k,
+            offs_m,
+            I_start_n + offs_n,
+            PAD_AXIS_0=True,
+            PAD_AXIS_1=PADDED_COLS,  # check
+            LIM_AXIS_0=actual_seqlen_q,
+            LIM_AXIS_1=actual_seqlen_k,
         )
 
     # Compute QK
@@ -58,11 +64,18 @@ def compute_row_block(
     qk += tl.dot(q, tl.trans(k))
 
     # Apply attention masking and/or account for padding of the keys
-    if PADDED_COLS:  # TODO: check impact on speed when conditionned by MASKED (always true?)
-        qk += tl.where((I_start_n + offs_n)[None, :] < actual_seqlen_k, 0, float("-inf"))
+    if (
+        PADDED_COLS
+    ):  # TODO: check impact on speed when conditionned by MASKED (always true?)
+        qk += tl.where(
+            (I_start_n + offs_n)[None, :] < actual_seqlen_k, 0, float("-inf")
+        )
     # Apply causal mask
     if MASKED and IS_CAUSAL:
-        causal_mask = offs_m[:, None] >= (I_start_n + offs_n - actual_seqlen_k + actual_seqlen_q)[None, :]
+        causal_mask = (
+            offs_m[:, None]
+            >= (I_start_n + offs_n - actual_seqlen_k + actual_seqlen_q)[None, :]
+        )
         qk += tl.where(causal_mask, 0, float("-inf"))
 
     if BIAS_ON:
@@ -75,7 +88,9 @@ def compute_row_block(
     # Dropout
     if USE_DROPOUT:
         dropout_offs = dropout_offs + I_start_n
-        dropout_mask = (tl.rand(dropout_seed, dropout_offs) > dropout_p)  # TODO: replace this w/ randint for better perfs
+        dropout_mask = (
+            tl.rand(dropout_seed, dropout_offs) > dropout_p
+        )  # TODO: replace this w/ randint for better perfs
         P_ij = tl.where(dropout_mask, P_ij, 0.0)
 
     # Scale the output accumulator
@@ -86,9 +101,12 @@ def compute_row_block(
     offset_v_ptrs = v_ptrs + I_start_n * stride_vn
     v = load_fn(
         offset_v_ptrs,
-        I_start_n + offs_n, offs_d,
-        PAD_AXIS_0=PADDED_COLS, PAD_AXIS_1=PADDED_HEADS,
-        LIM_AXIS_0=actual_seqlen_k, LIM_AXIS_1=headdim,
+        I_start_n + offs_n,
+        offs_d,
+        PAD_AXIS_0=PADDED_COLS,
+        PAD_AXIS_1=PADDED_HEADS,
+        LIM_AXIS_0=actual_seqlen_k,
+        LIM_AXIS_1=headdim,
     )
 
     # Update the output accumulator

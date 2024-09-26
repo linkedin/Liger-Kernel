@@ -2,7 +2,11 @@ from typing import Optional, Tuple
 
 from transformers.cache_utils import Cache
 import torch
-from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, logger, LlamaSdpaAttention
+from transformers.models.llama.modeling_llama import (
+    apply_rotary_pos_emb,
+    logger,
+    LlamaSdpaAttention,
+)
 
 from liger_kernel.ops.flash_attention.wrapper import flash_attn_func
 
@@ -17,7 +21,9 @@ def liger_general_sdpa_forward(
     output_attentions: bool = False,
     use_cache: bool = False,
     cache_position: Optional[torch.LongTensor] = None,
-    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.45
+    position_embeddings: Optional[
+        Tuple[torch.Tensor, torch.Tensor]
+    ] = None,  # will become mandatory in v4.45
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
 
@@ -30,9 +36,15 @@ def liger_general_sdpa_forward(
     key_states = self.k_proj.forward(hidden_states)
     value_states = self.v_proj.forward(hidden_states)
 
-    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    query_states = query_states.view(
+        bsz, q_len, self.num_heads, self.head_dim
+    ).transpose(1, 2)
+    key_states = key_states.view(
+        bsz, q_len, self.num_key_value_heads, self.head_dim
+    ).transpose(1, 2)
+    value_states = value_states.view(
+        bsz, q_len, self.num_key_value_heads, self.head_dim
+    ).transpose(1, 2)
 
     if position_embeddings is None:
         logger.warning_once(
@@ -49,7 +61,9 @@ def liger_general_sdpa_forward(
     if past_key_value is not None:
         # sin and cos are specific to RoPE models; cache_position needed for the static cache
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-        key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+        key_states, value_states = past_key_value.update(
+            key_states, value_states, self.layer_idx, cache_kwargs
+        )
 
     # key_states = repeat_kv(key_states, self.num_key_value_groups)  not needed as we support GQA
     # value_states = repeat_kv(value_states, self.num_key_value_groups)

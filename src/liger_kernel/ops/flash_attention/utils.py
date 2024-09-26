@@ -23,11 +23,13 @@ def attention_unpack(
     batch_size: int,
     goal_seqlen: int,
 ) -> torch.Tensor:
-    unpacked = torch.zeros(size=(batch_size, goal_seqlen, *x.shape[2:]), dtype=x.dtype, device=x.device)
-    for i in range(cum_seqlens.size(0)-1):
+    unpacked = torch.zeros(
+        size=(batch_size, goal_seqlen, *x.shape[2:]), dtype=x.dtype, device=x.device
+    )
+    for i in range(cum_seqlens.size(0) - 1):
         seq_start = cum_seqlens[i]
-        seq_end = cum_seqlens[i+1]
-        unpacked[i, :seq_end-seq_start] = x[0, seq_start:seq_end]
+        seq_end = cum_seqlens[i + 1]
+        unpacked[i, : seq_end - seq_start] = x[0, seq_start:seq_end]
     return unpacked
 
 
@@ -43,7 +45,12 @@ def load_fn(
 ):
     if PAD_AXIS_0:
         if PAD_AXIS_1:
-            x = tl.load(ptrs, mask=(offs_axis_0[:, None] < LIM_AXIS_0) & (offs_axis_1[None, :] < LIM_AXIS_1), other=0.0)
+            x = tl.load(
+                ptrs,
+                mask=(offs_axis_0[:, None] < LIM_AXIS_0)
+                & (offs_axis_1[None, :] < LIM_AXIS_1),
+                other=0.0,
+            )
         else:
             x = tl.load(ptrs, mask=offs_axis_0[:, None] < LIM_AXIS_0, other=0.0)
     else:
@@ -55,10 +62,14 @@ def load_fn(
 
 
 def infer_bias_strides(
-    bias: Optional[Tensor], batch: int, nheads_q: int, seqlen_q: int, seqlen_k: int,
+    bias: Optional[Tensor],
+    batch: int,
+    nheads_q: int,
+    seqlen_q: int,
+    seqlen_k: int,
 ) -> Tuple[int, ...]:
     if bias is not None:
-        assert (bias.size(2) == seqlen_q and bias.size(3) == seqlen_k), f"{bias.shape = }"
+        assert bias.size(2) == seqlen_q and bias.size(3) == seqlen_k, f"{bias.shape = }"
         if bias.size(0) == 1:
             stride_bb = 0
         elif bias.size(0) == batch:
@@ -70,20 +81,30 @@ def infer_bias_strides(
         elif bias.stride(1) == nheads_q:
             stride_bh = bias.stride(1)
         else:
-            raise ValueError(f"Attention bias has {bias.size(1) = } while {nheads_q = }")
+            raise ValueError(
+                f"Attention bias has {bias.size(1) = } while {nheads_q = }"
+            )
         stride_bm = bias.stride(2)
     else:
         stride_bb, stride_bh, stride_bm = 0, 0, 0
     return stride_bb, stride_bh, stride_bm
 
 
-def handle_dropout(dropout_p: float, dropout_seed: Optional[int], is_forward: bool) -> int:
+def handle_dropout(
+    dropout_p: float, dropout_seed: Optional[int], is_forward: bool
+) -> int:
     assert dropout_p >= 0, f"Dropout probability {dropout_p = } must be above 0."
-    assert dropout_p < 1, f"Dropout probability {dropout_p = } must be strictly below 1."
+    assert (
+        dropout_p < 1
+    ), f"Dropout probability {dropout_p = } must be strictly below 1."
     if dropout_p == 0:
         return 0
     elif is_forward:
-        return torch.randint(low=0, high=2**32, size=(1,)).item() if dropout_seed is None else dropout_seed
+        return (
+            torch.randint(low=0, high=2**32, size=(1,)).item()
+            if dropout_seed is None
+            else dropout_seed
+        )
     else:
         raise NotImplementedError("Backward pass does not yet support dropout.")
 

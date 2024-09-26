@@ -47,7 +47,9 @@ def _compute_delta(
 
     # Infer actual sequence length of Q and the offset to the last sequence
     if VARLEN:
-        actual_seqlen_q = tl.load(cum_seqlens_q + off_batch + 1) - tl.load(cum_seqlens_q + off_batch)
+        actual_seqlen_q = tl.load(cum_seqlens_q + off_batch + 1) - tl.load(
+            cum_seqlens_q + off_batch
+        )
         cu_seq_start_q = tl.load(cum_seqlens_q + off_batch)
         off_batch = 0
     else:
@@ -55,14 +57,21 @@ def _compute_delta(
         cu_seq_start_q = 0
 
     # Load the output tensor
-    Out_offseted = Out + off_batch * stride_ob + off_head * stride_oh + cu_seq_start_q * stride_om
+    Out_offseted = (
+        Out + off_batch * stride_ob + off_head * stride_oh + cu_seq_start_q * stride_om
+    )
     o = tl.load(
         Out_offseted + offs_m[:, None] * stride_om + offs_d[None, :],
         mask=(offs_m[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim),
         other=0.0,
     ).to(tl.float32)
     # And its gradient
-    DO_offseted = DO + off_batch * stride_dob + off_head * stride_doh + cu_seq_start_q * stride_dom
+    DO_offseted = (
+        DO
+        + off_batch * stride_dob
+        + off_head * stride_doh
+        + cu_seq_start_q * stride_dom
+    )
     do = tl.load(
         DO_offseted + offs_m[:, None] * stride_dom + offs_d[None, :],
         mask=(offs_m[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim),

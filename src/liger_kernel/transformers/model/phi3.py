@@ -9,7 +9,7 @@ from transformers.models.phi3.modeling_phi3 import (
     Phi3SdpaAttention,
     Cache,
     logger,
-    apply_rotary_pos_emb
+    apply_rotary_pos_emb,
 )
 from transformers.utils import (
     add_start_docstrings_to_model_forward,
@@ -170,23 +170,39 @@ def liger_phi3_sdpa_attention_forward(
     qkv = self.qkv_proj.forward(hidden_states)
     query_pos = self.num_heads * self.head_dim
     query_states = qkv[..., :query_pos]
-    key_states = qkv[..., query_pos : query_pos + self.num_key_value_heads * self.head_dim]
+    key_states = qkv[
+        ..., query_pos : query_pos + self.num_key_value_heads * self.head_dim
+    ]
     value_states = qkv[..., query_pos + self.num_key_value_heads * self.head_dim :]
 
-    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    query_states = query_states.view(
+        bsz, q_len, self.num_heads, self.head_dim
+    ).transpose(1, 2)
+    key_states = key_states.view(
+        bsz, q_len, self.num_key_value_heads, self.head_dim
+    ).transpose(1, 2)
+    value_states = value_states.view(
+        bsz, q_len, self.num_key_value_heads, self.head_dim
+    ).transpose(1, 2)
 
     kv_seq_len = key_states.shape[-2]
     if past_key_value is not None:
         kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
     cos, sin = self.rotary_emb(value_states, position_ids, seq_len=kv_seq_len)
 
-    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+    query_states, key_states = apply_rotary_pos_emb(
+        query_states, key_states, cos, sin, position_ids
+    )
 
     if past_key_value is not None:
-        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}  # Specific to RoPE models
-        key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+        cache_kwargs = {
+            "sin": sin,
+            "cos": cos,
+            "cache_position": cache_position,
+        }  # Specific to RoPE models
+        key_states, value_states = past_key_value.update(
+            key_states, value_states, self.layer_idx, cache_kwargs
+        )
 
     # Commented out because we support GQA
     # key_states = repeat_kv(key_states, self.num_key_value_groups)

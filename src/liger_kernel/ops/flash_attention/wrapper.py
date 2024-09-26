@@ -41,7 +41,9 @@ class FlashAttnFunc(torch.autograd.Function):
         q = q if q.stride(-1) == 1 else q.contiguous()
         k = k if k.stride(-1) == 1 else k.contiguous()
         v = v if v.stride(-1) == 1 else v.contiguous()
-        attention_bias = None if (attention_bias is None) else attention_bias.contiguous()
+        attention_bias = (
+            None if (attention_bias is None) else attention_bias.contiguous()
+        )
         o, lse, ctx.softmax_scale, ctx.dropout_seed = _flash_attn_forward(
             q=q,
             k=k,
@@ -97,4 +99,14 @@ def flash_attn_func(
     softmax_scale: Optional[Tensor] = None,
     dropout_seed: Optional[int] = None,
 ) -> Tensor:
-    return FlashAttnFunc.apply(q, k, v, attention_mask, attention_bias, dropout_p, causal, softmax_scale, dropout_seed)
+    return FlashAttnFunc.apply(
+        q,
+        k,
+        v,
+        attention_mask,
+        attention_bias,
+        dropout_p,
+        causal,
+        softmax_scale,
+        dropout_seed,
+    )

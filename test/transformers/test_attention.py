@@ -38,22 +38,42 @@ def _test_attention(
 ) -> Optional[Tuple[Tensor, ...]]:
 
     # Prepare data
-    q = torch.normal(0, 0.5, (batch_size, seqlen_q, nheads_q, head_dim), dtype=dtype, device=DEVICE).requires_grad_()
-    k = torch.normal(0, 0.5, (batch_size, seqlen_k, nheads_kv, head_dim), dtype=dtype, device=DEVICE).requires_grad_()
-    v = torch.normal(0, 0.5, (batch_size, seqlen_k, nheads_kv, head_dim), dtype=dtype, device=DEVICE).requires_grad_()
+    q = torch.normal(
+        0, 0.5, (batch_size, seqlen_q, nheads_q, head_dim), dtype=dtype, device=DEVICE
+    ).requires_grad_()
+    k = torch.normal(
+        0, 0.5, (batch_size, seqlen_k, nheads_kv, head_dim), dtype=dtype, device=DEVICE
+    ).requires_grad_()
+    v = torch.normal(
+        0, 0.5, (batch_size, seqlen_k, nheads_kv, head_dim), dtype=dtype, device=DEVICE
+    ).requires_grad_()
     do = torch.randn_like(q)
-    attn_bias = torch.rand(size=(1, 1, seqlen_q, seqlen_k), dtype=dtype, device=q.device) if use_bias else None
+    attn_bias = (
+        torch.rand(size=(1, 1, seqlen_q, seqlen_k), dtype=dtype, device=q.device)
+        if use_bias
+        else None
+    )
 
     # Compute the outputs of the forward pass
-    ref_output = flash_attn_reference(q, k, v, attn_bias=attn_bias, causal=causal, upcast=True, reorder_ops=False)
-    pt_output = flash_attn_reference(q, k, v, attn_bias=attn_bias, causal=causal, upcast=False, reorder_ops=True)
+    ref_output = flash_attn_reference(
+        q, k, v, attn_bias=attn_bias, causal=causal, upcast=True, reorder_ops=False
+    )
+    pt_output = flash_attn_reference(
+        q, k, v, attn_bias=attn_bias, causal=causal, upcast=False, reorder_ops=True
+    )
     liger_output = flash_attn_func(q, k, v, attention_bias=attn_bias, causal=causal)
     compare_numerical_errors(ref_output, pt_output, liger_output, 1, 1e-4, "output")
 
     # Compare the gradients after the backward pass
-    ref_dq, ref_dk, ref_dv = torch.autograd.grad(ref_output, (q, k, v), do, retain_graph=True)
-    pt_dq, pt_dk, pt_dv = torch.autograd.grad(pt_output, (q, k, v), do, retain_graph=True)
-    liger_dq, liger_dk, liger_dv = torch.autograd.grad(liger_output, (q, k, v), do, retain_graph=True)
+    ref_dq, ref_dk, ref_dv = torch.autograd.grad(
+        ref_output, (q, k, v), do, retain_graph=True
+    )
+    pt_dq, pt_dk, pt_dv = torch.autograd.grad(
+        pt_output, (q, k, v), do, retain_graph=True
+    )
+    liger_dq, liger_dk, liger_dv = torch.autograd.grad(
+        liger_output, (q, k, v), do, retain_graph=True
+    )
     compare_numerical_errors(ref_dq, pt_dq, liger_dq, 2, 1e-4, "dq")
     compare_numerical_errors(ref_dk, pt_dk, liger_dk, 2, 1e-4, "dk")
     compare_numerical_errors(ref_dv, pt_dv, liger_dv, 2, 1e-4, "dv")
@@ -63,13 +83,16 @@ def _test_attention(
     "dtype, swap_seqlens",
     [(torch.float16, True), (torch.bfloat16, False)],
 )
-@pytest.mark.parametrize("head_dim, nheads_q, nheads_kv, use_bias, causal", [
-    (32, 9, 9, True, False),
-    (40, 9, 3, True, True),
-    (64, 8, 8, False, False),
-    (128, 8, 2, True, True),
-    (256, 4, 2, False, True),
-])
+@pytest.mark.parametrize(
+    "head_dim, nheads_q, nheads_kv, use_bias, causal",
+    [
+        (32, 9, 9, True, False),
+        (40, 9, 3, True, True),
+        (64, 8, 8, False, False),
+        (128, 8, 2, True, True),
+        (256, 4, 2, False, True),
+    ],
+)
 @pytest.mark.parametrize(
     "seqlen_q,seqlen_k",
     [

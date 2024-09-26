@@ -3,7 +3,9 @@ import triton.language as tl
 from triton import Config
 
 from typing import List, Any, Dict
-from src.liger_kernel.ops.flash_attention.forward.compute_row_blocks import compute_row_block
+from src.liger_kernel.ops.flash_attention.forward.compute_row_blocks import (
+    compute_row_block,
+)
 from src.liger_kernel.ops.flash_attention.utils import load_fn
 
 # TODO: exit causal blocks early
@@ -22,7 +24,7 @@ def early_config_prune_fwd_kernel(
     for cfg in configs:
         block_m_too_large = cfg.kwargs["BLOCK_M"] > named_args["seqlen_q"]
         block_n_too_large = cfg.kwargs["BLOCK_N"] > named_args["seqlen_k"]
-        if (block_m_too_large or block_n_too_large):
+        if block_m_too_large or block_n_too_large:
             pass
         else:
             kept_configs.append(cfg)
@@ -68,11 +70,21 @@ def _fwd_kernel(
     softmax_scale,
     dropout_p,
     dropout_seed,
-    stride_qb, stride_qh, stride_qm,  # Q stride for the batch, head and sequence axis (sequence subscript is m for rows)
-    stride_kb, stride_kh, stride_kn,  # Same for K (sequence subscript is n for cols)
-    stride_vb, stride_vh, stride_vn,  # Same for V (sequence subscript is n for cols)
-    stride_ob, stride_oh, stride_om,  # Same for O (sequence subscript is m for rows)
-    stride_bb, stride_bh, stride_bm,
+    stride_qb,
+    stride_qh,
+    stride_qm,  # Q stride for the batch, head and sequence axis (sequence subscript is m for rows)
+    stride_kb,
+    stride_kh,
+    stride_kn,  # Same for K (sequence subscript is n for cols)
+    stride_vb,
+    stride_vh,
+    stride_vn,  # Same for V (sequence subscript is n for cols)
+    stride_ob,
+    stride_oh,
+    stride_om,  # Same for O (sequence subscript is m for rows)
+    stride_bb,
+    stride_bh,
+    stride_bm,
     nheads_q,
     head_ratio,
     seqlen_q,
@@ -107,7 +119,9 @@ def _fwd_kernel(
         actual_seqlen_q = tl.load(cum_seqlens_q + off_batch + 1) - cu_seq_start_q
         if i_start_m * BLOCK_M >= actual_seqlen_q:
             return
-        actual_seqlen_k = actual_seqlen_q  # TODO: support packed + varlen? rn, check is done outside
+        actual_seqlen_k = (
+            actual_seqlen_q  # TODO: support packed + varlen? rn, check is done outside
+        )
         cu_seq_start_k = cu_seq_start_q
         off_batch = 0
     else:
@@ -126,25 +140,38 @@ def _fwd_kernel(
     # current sequence might have less rows than the current row (detemined through the grid).
 
     fully_masked_lines = actual_seqlen_q - actual_seqlen_k if IS_CAUSAL else 0
-    if fully_masked_lines >= (i_start_m+1) * BLOCK_M:
+    if fully_masked_lines >= (i_start_m + 1) * BLOCK_M:
         return
 
     # Initialize pointers to Q, K, V
-    offseted_Q = Q + off_batch * stride_qb + off_head_q * stride_qh + cu_seq_start_q * stride_qm
-    q_ptrs = (offseted_Q + (offs_m[:, None] * stride_qm + offs_d[None, :]))
-    offseted_K = K + off_batch * stride_kb + off_head_kv * stride_kh + cu_seq_start_k * stride_kn
-    k_ptrs = (offseted_K + (offs_n[:, None] * stride_kn + offs_d[None, :]))
-    offseted_V = V + off_batch * stride_vb + off_head_kv * stride_vh + cu_seq_start_k * stride_vn
-    v_ptrs = (offseted_V + (offs_n[:, None] * stride_vn + offs_d[None, :]))
+    offseted_Q = (
+        Q + off_batch * stride_qb + off_head_q * stride_qh + cu_seq_start_q * stride_qm
+    )
+    q_ptrs = offseted_Q + (offs_m[:, None] * stride_qm + offs_d[None, :])
+    offseted_K = (
+        K + off_batch * stride_kb + off_head_kv * stride_kh + cu_seq_start_k * stride_kn
+    )
+    k_ptrs = offseted_K + (offs_n[:, None] * stride_kn + offs_d[None, :])
+    offseted_V = (
+        V + off_batch * stride_vb + off_head_kv * stride_vh + cu_seq_start_k * stride_vn
+    )
+    v_ptrs = offseted_V + (offs_n[:, None] * stride_vn + offs_d[None, :])
     # ...and maybe bias
     if BIAS_ON:
-        offseted_Bias = Bias + off_batch * stride_bb + off_head_kv * stride_bh + cu_seq_start_q * stride_bm
-        bias_ptrs = (offseted_Bias + (offs_m[:, None] * stride_bm + offs_n[None, :]))
+        offseted_Bias = (
+            Bias
+            + off_batch * stride_bb
+            + off_head_kv * stride_bh
+            + cu_seq_start_q * stride_bm
+        )
+        bias_ptrs = offseted_Bias + (offs_m[:, None] * stride_bm + offs_n[None, :])
     else:
         bias_ptrs = None
     # ...and maybe dropout
     if USE_DROPOUT:
-        dropout_off = actual_seqlen_k * (cu_seq_start_q + actual_seqlen_q * (off_head_q + nheads_q * off_batch))
+        dropout_off = actual_seqlen_k * (
+            cu_seq_start_q + actual_seqlen_q * (off_head_q + nheads_q * off_batch)
+        )
         dropout_offs = dropout_off + offs_m[:, None] * actual_seqlen_k + offs_n[None, :]
     else:
         dropout_offs = None
@@ -155,17 +182,25 @@ def _fwd_kernel(
     acc_o = tl.zeros([BLOCK_M, BLOCK_HEADDIM], dtype=tl.float32)
 
     # Load Q, which will stay in SRAM for the whole loop
-    pad_rows = (not EVEN_M) or (VARLEN and (i_start_m * BLOCK_M > actual_seqlen_q))  # this works while other bools fail. Why?
+    pad_rows = (not EVEN_M) or (
+        VARLEN and (i_start_m * BLOCK_M > actual_seqlen_q)
+    )  # this works while other bools fail. Why?
     q = load_fn(
         q_ptrs,
-        offs_m, offs_d,
-        PAD_AXIS_0=pad_rows, PAD_AXIS_1=PADDED_HEADS,
-        LIM_AXIS_0=actual_seqlen_q, LIM_AXIS_1=headdim,
+        offs_m,
+        offs_d,
+        PAD_AXIS_0=pad_rows,
+        PAD_AXIS_1=PADDED_HEADS,
+        LIM_AXIS_0=actual_seqlen_q,
+        LIM_AXIS_1=headdim,
     )
 
     # Compute last visited column of KV which
     if IS_CAUSAL:
-        end_n = min(actual_seqlen_k - actual_seqlen_q + (i_start_m + 1) * BLOCK_M, actual_seqlen_k)
+        end_n = min(
+            actual_seqlen_k - actual_seqlen_q + (i_start_m + 1) * BLOCK_M,
+            actual_seqlen_k,
+        )
         # For a seqlen_q >> seqlen_k, there migh be entire block skipped
         if end_n < 0:
             return
@@ -173,7 +208,7 @@ def _fwd_kernel(
         end_n = actual_seqlen_k
 
     # first_masked_block = min(start_m * BLOCK_M + 1 + actual_seqlen_k - actual_seqlen_q, end_n) if IS_CAUSAL else end_n
-    uneven_n = (actual_seqlen_k % BLOCK_N != 0)
+    uneven_n = actual_seqlen_k % BLOCK_N != 0
     attention_padding = VARLEN & uneven_n
     if IS_CAUSAL:
         first_masked_col = i_start_m * BLOCK_M + 1 + actual_seqlen_k - actual_seqlen_q
@@ -282,7 +317,11 @@ def _fwd_kernel(
 
     # Store O (same mechanism as Q) BUG: here, the store instruction seems to fail when one of the two bools is false
     if True:
-        tl.store(out_ptrs, acc_o, mask=(offs_m[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim))
+        tl.store(
+            out_ptrs,
+            acc_o,
+            mask=(offs_m[:, None] < actual_seqlen_q) & (offs_d[None, :] < headdim),
+        )
     elif pad_rows:
         tl.store(out_ptrs, acc_o, mask=offs_m[:, None] < actual_seqlen_q)
     elif PADDED_HEADS:  # nothing is padded

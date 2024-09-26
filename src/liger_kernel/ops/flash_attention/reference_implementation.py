@@ -13,7 +13,9 @@ def construct_local_mask(
     device=None,
     key_leftpad=None,
 ):
-    row_idx = rearrange(torch.arange(seqlen_q, device=device, dtype=torch.long), "s -> s 1")
+    row_idx = rearrange(
+        torch.arange(seqlen_q, device=device, dtype=torch.long), "s -> s 1"
+    )
     col_idx = torch.arange(seqlen_k, device=device, dtype=torch.long)
     if key_leftpad is not None:
         key_leftpad = rearrange(key_leftpad, "b -> b 1 1 1")
@@ -94,7 +96,9 @@ def flash_attn_reference(
         scores = scores.tanh()
         scores = scores * softcap
     if key_padding_mask is not None:
-        scores.masked_fill_(rearrange(~key_padding_mask, "b s -> b 1 1 s"), float("-inf"))
+        scores.masked_fill_(
+            rearrange(~key_padding_mask, "b s -> b 1 1 s"), float("-inf")
+        )
     if window_size[0] >= 0 or window_size[1] >= 0:
         local_mask = construct_local_mask(
             seqlen_q,
@@ -111,11 +115,15 @@ def flash_attn_reference(
     attention = torch.softmax(scores, dim=-1).to(v.dtype)
     # Some rows might be completely masked out so we fill them with zero instead of NaN
     if window_size[0] >= 0 or window_size[1] >= 0:
-        attention = attention.masked_fill(torch.all(local_mask, dim=-1, keepdim=True), 0.0)
+        attention = attention.masked_fill(
+            torch.all(local_mask, dim=-1, keepdim=True), 0.0
+        )
     # We want to mask here so that the attention matrix doesn't have any NaNs
     # Otherwise we'll get NaN in dV
     if query_padding_mask is not None:
-        attention = attention.masked_fill(rearrange(~query_padding_mask, "b s -> b 1 s 1"), 0.0)
+        attention = attention.masked_fill(
+            rearrange(~query_padding_mask, "b s -> b 1 s 1"), 0.0
+        )
     dropout_scaling = 1.0 / (1 - dropout_p)
     # attention_drop = attention.masked_fill(~dropout_mask, 0.0) * dropout_scaling
     # output = torch.einsum('bhts,bshd->bthd', attention_drop , v)

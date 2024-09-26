@@ -2,7 +2,11 @@ from typing import Optional, Tuple
 
 from transformers.cache_utils import Cache
 import torch
-from transformers.models.gemma.modeling_gemma import apply_rotary_pos_emb, logger, GemmaSdpaAttention
+from transformers.models.gemma.modeling_gemma import (
+    apply_rotary_pos_emb,
+    logger,
+    GemmaSdpaAttention,
+)
 
 from liger_kernel.ops.flash_attention.wrapper import flash_attn_func
 
@@ -41,9 +45,15 @@ def liger_gemma2_sdpa_forward(
     key_states = self.k_proj.forward(hidden_states)
     value_states = self.v_proj.forward(hidden_states)
 
-    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    query_states = query_states.view(
+        bsz, q_len, self.num_heads, self.head_dim
+    ).transpose(1, 2)
+    key_states = key_states.view(
+        bsz, q_len, self.num_key_value_heads, self.head_dim
+    ).transpose(1, 2)
+    value_states = value_states.view(
+        bsz, q_len, self.num_key_value_heads, self.head_dim
+    ).transpose(1, 2)
 
     cos, sin = self.rotary_emb(value_states, position_ids)
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
@@ -51,7 +61,9 @@ def liger_gemma2_sdpa_forward(
     if past_key_value is not None:
         # sin and cos are specific to RoPE models; cache_position needed for the static cache
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-        key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+        key_states, value_states = past_key_value.update(
+            key_states, value_states, self.layer_idx, cache_kwargs
+        )
 
     # Commented out because we support GQA
     # key_states = repeat_kv(key_states, self.num_key_value_groups)
