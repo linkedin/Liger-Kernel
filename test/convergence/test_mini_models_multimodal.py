@@ -182,6 +182,7 @@ def run_mini_model_multimodal(
         kwargs = {
             "rms_norm": True,
             "cross_entropy": True,
+            "sdpa_attention": (dtype in [torch.float16, torch.bfloat16]),
         }
         model_supports_rope = "qwen2_vl" not in model_name
         if model_supports_rope:
@@ -243,6 +244,27 @@ def run_mini_model_multimodal(
                 not QWEN2_VL_AVAILABLE,
                 reason="Qwen2-VL not available in this version of transformers",
             ),
+        ),
+        pytest.param(
+            "mini_qwen2_vl",
+            32,
+            1e-4,
+            torch.float16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(
+                    not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+                ),
+                pytest.mark.skipif(
+                    not QWEN2_VL_AVAILABLE,
+                    reason="Qwen2-VL not available in this version of transformers",
+                ),
+            ],
         ),
         pytest.param(
             "mini_qwen2_vl",

@@ -350,6 +350,7 @@ def run_mini_model(
     if with_liger is True:
         kwargs = {
             "rms_norm": True,
+            "sdpa_attention": (dtype in [torch.float16, torch.bfloat16]),
         }
         model_supports_rope = "qwen2_vl" not in model_name
         if model_supports_rope:
@@ -402,6 +403,7 @@ def run_mini_model(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
+        ("mini_llama3", 32, 1e-4, torch.float16, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_llama3",
             32,
@@ -418,6 +420,7 @@ def run_mini_model(
             ),
         ),
         ("mini_qwen2", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_qwen2", 32, 1e-4, torch.float16, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_qwen2",
             32,
@@ -453,6 +456,27 @@ def run_mini_model(
             "mini_qwen2_vl",
             32,
             1e-4,
+            torch.float16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(
+                    not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+                ),
+                pytest.mark.skipif(
+                    not QWEN2_VL_AVAILABLE,
+                    reason="Qwen2-VL not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen2_vl",
+            32,
+            1e-4,
             torch.bfloat16,
             1e-3,
             1e-2,
@@ -471,6 +495,7 @@ def run_mini_model(
             ],
         ),
         ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_phi3", 32, 1e-4, torch.float16, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_phi3",
             32,
@@ -487,6 +512,7 @@ def run_mini_model(
             ),
         ),
         ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_mistral", 32, 1e-4, torch.float16, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_mistral",
             32,
@@ -521,6 +547,7 @@ def run_mini_model(
         # ),
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
         ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma1", 32, 1e-4, torch.float16, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_gemma1",
             32,
@@ -537,6 +564,7 @@ def run_mini_model(
             ),
         ),
         ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma1.1", 32, 1e-4, torch.float16, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_gemma1.1",
             32,
@@ -553,6 +581,7 @@ def run_mini_model(
             ),
         ),
         ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma2", 32, 1e-4, torch.float16, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_gemma2",
             32,
