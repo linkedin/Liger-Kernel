@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-DATA_PATH = "data/all_benchmark_data.csv"
+DATA_PATH = os.path.join(os.path.dirname(__file__), "data/all_benchmark_data.csv")
 VISUALIZATIONS_PATH = "visualizations/"
 
 
