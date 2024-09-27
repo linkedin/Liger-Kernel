@@ -81,22 +81,25 @@ def apply_liger_kernel_to_llama(
             # Direct LlamaModel
             base_model = model
 
-        torch_dtype = config.torch_dtype
         if rms_norm:
-            base_model.norm = LigerRMSNorm(
-                config.hidden_size, eps=config.rms_norm_eps
-            ).to(torch_dtype)
+            base_model.offset = 0.0
+            base_model.casting_mode = "llama"
+            base_model.norm.forward = LigerRMSNorm.forward
+            base_model.norm.extra_repr = LigerRMSNorm.extra_repr
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
+                decoder_layer.mlp.forward = LigerSwiGLUMLP.forward
             if rms_norm:
-                decoder_layer.input_layernorm = LigerRMSNorm(
-                    config.hidden_size, eps=config.rms_norm_eps
-                ).to(torch_dtype)
-                decoder_layer.post_attention_layernorm = LigerRMSNorm(
-                    config.hidden_size, eps=config.rms_norm_eps
-                ).to(torch_dtype)
+                decoder_layer.input_layernorm.offset = 0.0
+                decoder_layer.input_layernorm.casting_mode = "llama"
+                decoder_layer.input_layernorm.forward = LigerRMSNorm.forward
+                decoder_layer.input_layernorm.extra_repr = LigerRMSNorm.extra_repr
+
+                decoder_layer.post_attention_layernorm.offset = 0.0
+                decoder_layer.post_attention_layernorm.casting_mode = "llama"
+                decoder_layer.post_attention_layernorm.forward = LigerRMSNorm.forward
+                decoder_layer.post_attention_layernorm.extra_repr = LigerRMSNorm.extra_repr
 
 
 def apply_liger_kernel_to_mistral(
