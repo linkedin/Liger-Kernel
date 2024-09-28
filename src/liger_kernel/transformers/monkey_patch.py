@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
+    # Binds a new method to a module instance so that self is passed as the first argument
     module.__dict__[method_name] = new_method.__get__(module, module.__class__)
 
 
