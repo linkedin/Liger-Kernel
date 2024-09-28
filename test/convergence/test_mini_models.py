@@ -324,7 +324,7 @@ def run_mini_model(
 
     # Make sure any patches have been reverted before tests
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
-    
+
     if with_liger is True:
         kwargs = {
             "rope": True,
@@ -510,14 +510,25 @@ def test_mini_model(
     )
 
     actual_output_pre = run_mini_model(
-        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True, post_init_patching=False,
+        model_name=model_name,
+        num_steps=num_steps,
+        dtype=dtype,
+        lr=lr,
+        with_liger=True,
+        post_init_patching=False,
     )
 
     actual_output_post = run_mini_model(
-        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True, post_init_patching=True,
+        model_name=model_name,
+        num_steps=num_steps,
+        dtype=dtype,
+        lr=lr,
+        with_liger=True,
+        post_init_patching=True,
     )
 
-    ### Pre-init patching
+    # Pre-init patching
+
     # Compare the loss of every step
     assert_verbose_allclose(
         torch.tensor([expected_output["loss"]]),
@@ -538,13 +549,14 @@ def test_mini_model(
     # Iterate over the model's parameters and compare them
     for expected_param, actual_param in zip(
         expected_output["model"].named_parameters(),
-        actual_output_post["model"].named_parameters(),
+        actual_output_pre["model"].named_parameters(),
     ):
         assert_verbose_allclose(
             expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol
         )
 
-    ### Post-init patching
+    # Post-init patching
+
     # Compare the loss of every step
     assert_verbose_allclose(
         torch.tensor([expected_output["loss"]]),
@@ -570,4 +582,3 @@ def test_mini_model(
         assert_verbose_allclose(
             expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol
         )
-

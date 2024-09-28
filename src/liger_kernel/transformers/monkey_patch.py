@@ -3,8 +3,7 @@ import logging
 from functools import partial
 from typing import Callable
 
-from torch import nn
-from transformers import PretrainedConfig, PreTrainedModel
+from transformers import PreTrainedModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
@@ -25,8 +24,10 @@ from liger_kernel.transformers.swiglu import (
 
 logger = logging.getLogger(__name__)
 
+
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
     module.__dict__[method_name] = new_method.__get__(module, module.__class__)
+
 
 def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama"):
     module.offset = offset
@@ -34,6 +35,7 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama"):
     module.variance_epsilon = eps
     _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
     _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
+
 
 def _patch_layer_norm_module(module, eps=1e-6):
     module.eps = eps
@@ -103,7 +105,9 @@ def apply_liger_kernel_to_llama(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                _bind_method_to_module(
+                    decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward
+                )
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -166,7 +170,9 @@ def apply_liger_kernel_to_mistral(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                _bind_method_to_module(
+                    decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward
+                )
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -230,7 +236,9 @@ def apply_liger_kernel_to_mixtral(
         for decoder_layer in base_model.layers:
             if swiglu:
                 for expert in decoder_layer.block_sparse_moe.experts:
-                    _bind_method_to_module(expert, "forward", LigerBlockSparseTop2MLP.forward)
+                    _bind_method_to_module(
+                        expert, "forward", LigerBlockSparseTop2MLP.forward
+                    )
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -270,7 +278,9 @@ def apply_liger_kernel_to_gemma(
     LigerRMSNormForGemma = partial(
         LigerRMSNorm, offset=1.0, init_fn="zeros", casting_mode="gemma"
     )
-    _patch_rms_norm_module_for_gemma = partial(_patch_rms_norm_module, casting_mode="gemma", offset=1.0)
+    _patch_rms_norm_module_for_gemma = partial(
+        _patch_rms_norm_module, casting_mode="gemma", offset=1.0
+    )
 
     if rope:
         modeling_gemma.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -299,7 +309,9 @@ def apply_liger_kernel_to_gemma(
 
         for decoder_layer in base_model.layers:
             if geglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                _bind_method_to_module(
+                    decoder_layer.mlp, "forward", LigerGEGLUMLP.forward
+                )
             if rms_norm:
                 _patch_rms_norm_module_for_gemma(decoder_layer.input_layernorm)
                 _patch_rms_norm_module_for_gemma(decoder_layer.post_attention_layernorm)
@@ -326,8 +338,12 @@ def apply_liger_kernel_to_gemma2(
     """
     from transformers.models.gemma2 import modeling_gemma2
 
-    LigerRMSNormForGemma2 = partial(LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros")
-    _patch_rms_norm_module_for_gemma2 = partial(_patch_rms_norm_module, offset=1.0, casting_mode="gemma")
+    LigerRMSNormForGemma2 = partial(
+        LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros"
+    )
+    _patch_rms_norm_module_for_gemma2 = partial(
+        _patch_rms_norm_module, offset=1.0, casting_mode="gemma"
+    )
 
     if rope:
         modeling_gemma2.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -355,12 +371,20 @@ def apply_liger_kernel_to_gemma2(
 
         for decoder_layer in base_model.layers:
             if geglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                _bind_method_to_module(
+                    decoder_layer.mlp, "forward", LigerGEGLUMLP.forward
+                )
             if rms_norm:
                 _patch_rms_norm_module_for_gemma2(decoder_layer.input_layernorm)
-                _patch_rms_norm_module_for_gemma2(decoder_layer.post_attention_layernorm)
-                _patch_rms_norm_module_for_gemma2(decoder_layer.pre_feedforward_layernorm)
-                _patch_rms_norm_module_for_gemma2(decoder_layer.post_feedforward_layernorm)
+                _patch_rms_norm_module_for_gemma2(
+                    decoder_layer.post_attention_layernorm
+                )
+                _patch_rms_norm_module_for_gemma2(
+                    decoder_layer.pre_feedforward_layernorm
+                )
+                _patch_rms_norm_module_for_gemma2(
+                    decoder_layer.post_feedforward_layernorm
+                )
 
 
 def apply_liger_kernel_to_qwen2(
@@ -419,7 +443,9 @@ def apply_liger_kernel_to_qwen2(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                _bind_method_to_module(
+                    decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward
+                )
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -495,7 +521,9 @@ def apply_liger_kernel_to_qwen2_vl(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                _bind_method_to_module(
+                    decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward
+                )
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -557,7 +585,9 @@ def apply_liger_kernel_to_phi3(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerPhi3SwiGLUMLP.forward)
+                _bind_method_to_module(
+                    decoder_layer.mlp, "forward", LigerPhi3SwiGLUMLP.forward
+                )
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
