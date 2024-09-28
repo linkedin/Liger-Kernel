@@ -313,10 +313,11 @@ def run_mini_model(
     dtype=torch.bfloat16,
     lr=1e-5,
     with_liger=False,
+    post_init_patching=False,
 ):
     # If we move it to the beginning of test_mini_model, the two runs are initialized with different weights.
     # This is due to RNG (Random Number Generator). The formula of RNG progression is x_(n+1) = (a * x_n + c) % m
-    # Everytime RNG is used, like randomly initialzing weight, the RNG progresses to the next state.
+    # Everytime RNG is used, like randomly initializing weight, the RNG progresses to the next state.
     # Therefore, we have to reset RNG before we create the model to ensure the weight initialization started from the same RNG state.
 
     set_seed(42)
@@ -331,11 +332,18 @@ def run_mini_model(
             kwargs["geglu"] = True
         else:
             kwargs["swiglu"] = True
+
+    # Make sure any patches have been reverted before tests
+    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
+
+    if post_init_patching:
+        model = create_model(model_name).to(dtype).to("cuda")
+        kwargs["model"] = model
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
-        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
+        model = create_model(model_name).to(dtype).to("cuda")
 
-    model = create_model(model_name).to(dtype).to("cuda")
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
 
     loader = DataLoader(
@@ -483,6 +491,7 @@ def run_mini_model(
 )
 def test_mini_model(
     model_name,
+    post_init_patching,
     num_steps,
     lr,
     dtype,
@@ -496,17 +505,22 @@ def test_mini_model(
     # Non-liger models should be initialized and tested first to avoid the module being overridden
 
     expected_output = run_mini_model(
-        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr
+        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=False
     )
 
-    actual_output = run_mini_model(
-        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True
+    actual_output_pre = run_mini_model(
+        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True, post_init_patching=False,
     )
 
+    actual_output_post = run_mini_model(
+        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True, post_init_patching=True,
+    )
+
+    ### Pre-init patching
     # Compare the loss of every step
     assert_verbose_allclose(
         torch.tensor([expected_output["loss"]]),
-        torch.tensor([actual_output["loss"]]),
+        torch.tensor([actual_output_pre["loss"]]),
         atol=loss_atol,
         rtol=loss_rtol,
     )
@@ -514,7 +528,7 @@ def test_mini_model(
     # Compare the logits from the last step
     assert_verbose_allclose(
         expected_output["logits"],
-        actual_output["logits"],
+        actual_output_pre["logits"],
         atol=logits_atol,
         rtol=logits_rtol,
     )
@@ -523,8 +537,36 @@ def test_mini_model(
     # Iterate over the model's parameters and compare them
     for expected_param, actual_param in zip(
         expected_output["model"].named_parameters(),
-        actual_output["model"].named_parameters(),
+        actual_output_post["model"].named_parameters(),
     ):
         assert_verbose_allclose(
             expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol
         )
+
+    ### Post-init patching
+    # Compare the loss of every step
+    assert_verbose_allclose(
+        torch.tensor([expected_output["loss"]]),
+        torch.tensor([actual_output_post["loss"]]),
+        atol=loss_atol,
+        rtol=loss_rtol,
+    )
+
+    # Compare the logits from the last step
+    assert_verbose_allclose(
+        expected_output["logits"],
+        actual_output_post["logits"],
+        atol=logits_atol,
+        rtol=logits_rtol,
+    )
+
+    # Compare the params from the last step
+    # Iterate over the model's parameters and compare them
+    for expected_param, actual_param in zip(
+        expected_output["model"].named_parameters(),
+        actual_output_post["model"].named_parameters(),
+    ):
+        assert_verbose_allclose(
+            expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol
+        )
+
