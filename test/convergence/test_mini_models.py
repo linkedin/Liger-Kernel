@@ -322,6 +322,9 @@ def run_mini_model(
 
     set_seed(42)
 
+    # Make sure any patches have been reverted before tests
+    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
+    
     if with_liger is True:
         kwargs = {
             "rope": True,
@@ -333,15 +336,14 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
-    # Make sure any patches have been reverted before tests
-    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
-
-    if post_init_patching:
-        model = create_model(model_name).to(dtype).to("cuda")
-        kwargs["model"] = model
-        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
+        if post_init_patching:
+            model = create_model(model_name).to(dtype).to("cuda")
+            kwargs["model"] = model
+            MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
+        else:
+            MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
+            model = create_model(model_name).to(dtype).to("cuda")
     else:
-        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
         model = create_model(model_name).to(dtype).to("cuda")
 
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
@@ -491,7 +493,6 @@ def run_mini_model(
 )
 def test_mini_model(
     model_name,
-    post_init_patching,
     num_steps,
     lr,
     dtype,
