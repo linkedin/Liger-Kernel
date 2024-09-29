@@ -235,21 +235,46 @@ def test_apply_liger_kernel_to_instance_for_llama():
 
 def test_apply_liger_kernel_to_instance_for_mllama():
     # Ensure any monkey patching is cleaned up for subsequent tests
-    with patch("transformers.models.llama.modeling_mllama"):
+    from transformers.models.mllama.modeling_mllama import (
+        MllamaForConditionalGeneration,
+    )
+
+    with patch("transformers.models.mllama.modeling_mllama"):
         # Instantiate a dummy model
-        config = transformers.models.mllama.configuration_mllama.MLlamaTextConfig(
+        config = transformers.models.mllama.configuration_mllama.MllamaConfig(
             torch_dtype=torch.bfloat16,
-            rms_norm_eps=1e-5,
-            hidden_size=32,
-            intermediate_size=64,
-            hidden_act="silu",
-            num_hidden_layers=2,
+            text_config=transformers.models.mllama.configuration_mllama.MllamaTextConfig(
+                rms_norm_eps=1e-5,
+                hidden_size=32,
+                intermediate_size=64,
+                hidden_act="silu",
+                num_hidden_layers=2,
+                rope_scaling=dict(
+                    factor=8.0,
+                    high_freq_factor=4.0,
+                    low_freq_factor=1.0,
+                    original_max_position_embeddings=8192,
+                    rope_type="llama3",
+                ),
+            ),
+            vision_config=transformers.models.mllama.configuration_mllama.MllamaVisionConfig(
+                rms_norm_eps=1e-5,
+                hidden_size=32,
+                intermediate_size=64,
+                hidden_act="gelu",
+                num_hidden_layers=2,
+                vision_output_dim=64,
+            ),
         )
-        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+        dummy_model_instance = MllamaForConditionalGeneration._from_config(config)
+
+        assert isinstance(dummy_model_instance, MllamaForConditionalGeneration)
 
         # Check that model instance variables are not yet patched with Liger modules
-        assert not isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
-        for layer in dummy_model_instance.model.layers:
+        assert not isinstance(
+            dummy_model_instance.language_model.model.norm, LigerRMSNorm
+        )
+        for layer in dummy_model_instance.language_model.model.layers:
             assert not isinstance(layer.mlp, LigerSwiGLUMLP)
             assert not isinstance(layer.input_layernorm, LigerRMSNorm)
             assert not isinstance(layer.post_attention_layernorm, LigerRMSNorm)
@@ -258,8 +283,8 @@ def test_apply_liger_kernel_to_instance_for_mllama():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
-        assert isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
-        for layer in dummy_model_instance.model.layers:
+        assert isinstance(dummy_model_instance.language_model.model.norm, LigerRMSNorm)
+        for layer in dummy_model_instance.language_model.model.layers:
             assert isinstance(layer.mlp, LigerSwiGLUMLP)
             assert isinstance(layer.input_layernorm, LigerRMSNorm)
             assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
@@ -414,6 +439,40 @@ def test_apply_liger_kernel_to_instance_for_qwen2():
             num_hidden_layers=2,
         )
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert not isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
+        for layer in dummy_model_instance.model.layers:
+            assert not isinstance(layer.mlp, LigerSwiGLUMLP)
+            assert not isinstance(layer.input_layernorm, LigerRMSNorm)
+            assert not isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
+        for layer in dummy_model_instance.model.layers:
+            assert isinstance(layer.mlp, LigerSwiGLUMLP)
+            assert isinstance(layer.input_layernorm, LigerRMSNorm)
+            assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+
+
+def test_apply_liger_kernel_to_instance_for_qwen2_vl():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen2_vl.modeling_qwen2_vl"):
+        # Instantiate a dummy model
+        config = transformers.models.qwen2_vl.configuration_qwen2_vl.Qwen2VLConfig(
+            torch_dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="silu",
+            num_hidden_layers=2,
+        )
+        dummy_model_instance = transformers.models.qwen2_vl.modeling_qwen2_vl.Qwen2VLForConditionalGeneration._from_config(
+            config
+        )
 
         # Check that model instance variables are not yet patched with Liger modules
         assert not isinstance(dummy_model_instance.model.norm, LigerRMSNorm)

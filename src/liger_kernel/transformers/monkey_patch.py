@@ -3,7 +3,6 @@ import logging
 from functools import partial
 
 from torch import nn
-from transformers import PretrainedConfig, PreTrainedModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
@@ -21,6 +20,7 @@ from liger_kernel.transformers.swiglu import (
     LigerPhi3SwiGLUMLP,
     LigerSwiGLUMLP,
 )
+from transformers import PretrainedConfig, PreTrainedModel
 
 logger = logging.getLogger(__name__)
 
@@ -127,9 +127,13 @@ def apply_liger_kernel_to_mllama(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    from transformers.models.mllama import modeling_mllama
-
     from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
+    from transformers.models.mllama import modeling_mllama
+    from transformers.models.mllama.modeling_mllama import (
+        MllamaForCausalLM,
+        MllamaForConditionalGeneration,
+        MllamaTextModel,
+    )
 
     if rope:
         modeling_mllama.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -149,14 +153,16 @@ def apply_liger_kernel_to_mllama(
 
         torch_dtype = config.torch_dtype
 
-        if isinstance(model, modeling_mllama.MllamaForConditionalGeneration):
+        if isinstance(model, MllamaForConditionalGeneration):
             language_model = model.language_model  # MllamaForCausalLM
             text_model = language_model.model  # MllamaTextModel
             vision_model = model.vision_model  # TODO
-        elif isinstance(model, modeling_mllama.MllamaForCausalLM):
+        elif isinstance(model, MllamaForCausalLM):
+            # TODO: test
             text_model = model.model
             vision_model = None
-        elif isinstance(model, modeling_mllama.MllamaTextModel):
+        elif isinstance(model, MllamaTextModel):
+            # TODO: test
             text_model = model
             vision_model = None
         else:
@@ -168,17 +174,17 @@ def apply_liger_kernel_to_mllama(
 
         if rms_norm:
             text_model.norm = LigerRMSNorm(
-                config.hidden_size, eps=config.rms_norm_eps
+                config.text_config.hidden_size, eps=config.text_config.rms_norm_eps
             ).to(torch_dtype)
         for decoder_layer in text_model.layers:
             if swiglu:
-                decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
+                decoder_layer.mlp = LigerSwiGLUMLP(config.text_config).to(torch_dtype)
             if rms_norm:
                 decoder_layer.input_layernorm = LigerRMSNorm(
-                    config.hidden_size, eps=config.rms_norm_eps
+                    config.text_config.hidden_size, eps=config.text_config.rms_norm_eps
                 ).to(torch_dtype)
                 decoder_layer.post_attention_layernorm = LigerRMSNorm(
-                    config.hidden_size, eps=config.rms_norm_eps
+                    config.text_config.hidden_size, eps=config.text_config.rms_norm_eps
                 ).to(torch_dtype)
 
 
@@ -573,11 +579,10 @@ def apply_liger_kernel_to_qwen2_vl(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    from transformers.models.qwen2_vl import modeling_qwen2_vl
-
     from liger_kernel.transformers.model.qwen2_vl import (
         lce_forward as qwen2_vl_lce_forward,
     )
+    from transformers.models.qwen2_vl import modeling_qwen2_vl
 
     # TODO: Support Qwen2-VL's multimodal RoPE implementation
 
@@ -603,7 +608,7 @@ def apply_liger_kernel_to_qwen2_vl(
 
         if hasattr(model, "model"):
             # The case for Qwen2VLForConditionalGeneration.
-            base_model = model.model
+            base_model = model.model  # Qwen2VLModel
         else:
             # Direct Qwen2VLModel
             base_model = model
