@@ -1,20 +1,17 @@
 from typing import List, Optional, Tuple, Union
 
 import torch
-import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
-
-from liger_kernel.transformers.fused_linear_cross_entropy import (
-    LigerFusedLinearCrossEntropyLoss,
-)
 from transformers.cache_utils import Cache
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.mllama.modeling_mllama import (
-    MLLAMA_INPUTS_DOCSTRING,
-)
+from transformers.models.mllama.modeling_mllama import MLLAMA_INPUTS_DOCSTRING
 from transformers.utils import (
     add_start_docstrings_to_model_forward,
     replace_return_docstrings,
+)
+
+from liger_kernel.transformers.fused_linear_cross_entropy import (
+    LigerFusedLinearCrossEntropyLoss,
 )
 
 

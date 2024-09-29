@@ -3,6 +3,7 @@ import logging
 from functools import partial
 
 from torch import nn
+from transformers import PretrainedConfig, PreTrainedModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
@@ -20,7 +21,6 @@ from liger_kernel.transformers.swiglu import (
     LigerPhi3SwiGLUMLP,
     LigerSwiGLUMLP,
 )
-from transformers import PretrainedConfig, PreTrainedModel
 
 logger = logging.getLogger(__name__)
 
@@ -127,8 +127,9 @@ def apply_liger_kernel_to_mllama(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
     from transformers.models.mllama import modeling_mllama
+
+    from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
 
     if rope:
         modeling_mllama.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -572,10 +573,11 @@ def apply_liger_kernel_to_qwen2_vl(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
+    from transformers.models.qwen2_vl import modeling_qwen2_vl
+
     from liger_kernel.transformers.model.qwen2_vl import (
         lce_forward as qwen2_vl_lce_forward,
     )
-    from transformers.models.qwen2_vl import modeling_qwen2_vl
 
     # TODO: Support Qwen2-VL's multimodal RoPE implementation
 
