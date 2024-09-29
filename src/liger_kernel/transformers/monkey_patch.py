@@ -3,7 +3,6 @@ import logging
 from functools import partial
 
 from torch import nn
-from transformers import PretrainedConfig, PreTrainedModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
@@ -21,6 +20,7 @@ from liger_kernel.transformers.swiglu import (
     LigerPhi3SwiGLUMLP,
     LigerSwiGLUMLP,
 )
+from transformers import PretrainedConfig, PreTrainedModel
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,88 @@ def apply_liger_kernel_to_llama(
             ).to(torch_dtype)
 
         for decoder_layer in base_model.layers:
+            if swiglu:
+                decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
+            if rms_norm:
+                decoder_layer.input_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+                decoder_layer.post_attention_layernorm = LigerRMSNorm(
+                    config.hidden_size, eps=config.rms_norm_eps
+                ).to(torch_dtype)
+
+
+def apply_liger_kernel_to_mllama(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace MLlama models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
+    from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
+    from transformers.models.mllama import modeling_mllama
+
+    if rope:
+        modeling_mllama.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_mllama.MllamaTextRMSNorm = LigerRMSNorm
+    if swiglu:
+        modeling_mllama.MllamaTextMLP = LigerSwiGLUMLP
+    if cross_entropy:
+        modeling_mllama.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        modeling_mllama.MLlamaForCausalLM.forward = mllama_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        config: PretrainedConfig = model.config
+
+        torch_dtype = config.torch_dtype
+
+        if isinstance(model, modeling_mllama.MllamaForConditionalGeneration):
+            language_model = model.language_model  # MllamaForCausalLM
+            text_model = language_model.model  # MllamaTextModel
+            vision_model = model.vision_model  # TODO
+        elif isinstance(model, modeling_mllama.MllamaForCausalLM):
+            text_model = model.model
+            vision_model = None
+        elif isinstance(model, modeling_mllama.MllamaTextModel):
+            text_model = model
+            vision_model = None
+        else:
+            raise ValueError(f"Unsupported Mllama model type: {type(model)}")
+
+        if vision_model:
+            # Patch MllamaVisionModel
+            pass
+
+        if rms_norm:
+            text_model.norm = LigerRMSNorm(
+                config.hidden_size, eps=config.rms_norm_eps
+            ).to(torch_dtype)
+        for decoder_layer in text_model.layers:
             if swiglu:
                 decoder_layer.mlp = LigerSwiGLUMLP(config).to(torch_dtype)
             if rms_norm:
@@ -472,7 +554,7 @@ def apply_liger_kernel_to_qwen2_vl(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
-    NOTE: Qwen2-VL is not available in transformers<=4.44.2
+    NOTE: Qwen2-VL is not available in transformers<=4.45.0
 
     Args:
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
@@ -490,11 +572,10 @@ def apply_liger_kernel_to_qwen2_vl(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    from transformers.models.qwen2_vl import modeling_qwen2_vl
-
     from liger_kernel.transformers.model.qwen2_vl import (
         lce_forward as qwen2_vl_lce_forward,
     )
+    from transformers.models.qwen2_vl import modeling_qwen2_vl
 
     # TODO: Support Qwen2-VL's multimodal RoPE implementation
 
@@ -627,6 +708,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
     "llama": apply_liger_kernel_to_llama,
+    "mllama": apply_liger_kernel_to_mllama,
     "mistral": apply_liger_kernel_to_mistral,
     "mixtral": apply_liger_kernel_to_mixtral,
     "qwen2": apply_liger_kernel_to_qwen2,

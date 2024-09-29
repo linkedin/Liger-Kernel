@@ -12,7 +12,7 @@ license = { file = "LICENSE" }
 dependencies = [
     "torch>=2.1.2",
     "triton>=2.3.0",
-    "transformers>=4.42.0"
+    "transformers>=4.42.0",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +23,7 @@ dev = [
     "isort>=5.13.2",
     "pytest>=7.1.2",
     "datasets>=2.19.2",
+    "torchvision>=0.16.2",
     "jupyter==1.0.0",
     "seaborn",
 ]
@@ -33,7 +34,7 @@ include = ["liger_kernel", "liger_kernel.*"]
 
 [tool.pytest.ini_options]
 pythonpath = [
-  "src", 
+  "src",
   "."
 ]
 asyncio_mode = "auto"

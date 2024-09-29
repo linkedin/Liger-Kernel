@@ -156,6 +156,17 @@ def revert_liger_kernel_to_llama():
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_mllama():
+    """
+    Revert all Liger kernel patches applied to MLlama.
+    """
+
+    from transformers.models.mllama import modeling_mllama
+
+    importlib.reload(modeling_mllama)
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_mistral():
     """
     Revert all Liger kernel patches applied to Mistral.

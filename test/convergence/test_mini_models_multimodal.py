@@ -1,14 +1,5 @@
 import functools
 import os
-from test.utils import (
-    UNTOKENIZED_DATASET_PATH,
-    MiniModelConfig,
-    assert_verbose_allclose,
-    multimodal_collate_fn,
-    revert_liger_kernel_to_qwen2_vl,
-    set_seed,
-    supports_bfloat16,
-)
 
 import pytest
 import torch
@@ -16,10 +7,23 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers.models.auto.processing_auto import AutoProcessor
 
-from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
+from liger_kernel.transformers import (
+    apply_liger_kernel_to_mllama,
+    apply_liger_kernel_to_qwen2_vl,
+)
+from test.utils import (
+    UNTOKENIZED_DATASET_PATH,
+    MiniModelConfig,
+    assert_verbose_allclose,
+    multimodal_collate_fn,
+    revert_liger_kernel_to_mllama,
+    revert_liger_kernel_to_qwen2_vl,
+    set_seed,
+    supports_bfloat16,
+)
 
 try:
-    # Qwen2-VL is only available in transformers>4.44.2
+    # Qwen2-VL is only available in transformers>=4.45.0
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
     from transformers.models.qwen2_vl.modeling_qwen2_vl import (
         Qwen2VLForConditionalGeneration,
@@ -28,6 +32,21 @@ try:
     QWEN2_VL_AVAILABLE = True
 except ImportError:
     QWEN2_VL_AVAILABLE = False
+
+try:
+    # Mllama is only available in transformers>=4.45.0
+    from transformers.models.mllama.configuration_mllama import (
+        MllamaConfig,
+        MllamaTextConfig,
+        MllamaVisionConfig,
+    )
+    from transformers.models.mllama.modeling_mllama import (
+        MllamaForConditionalGeneration,
+    )
+
+    MLLAMA_AVAILABLE = True
+except ImportError:
+    MLLAMA_AVAILABLE = False
 
 torch.use_deterministic_algorithms(True)
 
@@ -42,6 +61,63 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 TEST_IMAGE_DIM = 64
 
 MINI_MODEL_SETUPS = {}
+
+if MLLAMA_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_mllama"] = MiniModelConfig(
+        liger_kernel_patch_func=functools.partial(
+            apply_liger_kernel_to_mllama, fused_linear_cross_entropy=False
+        ),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_mllama,
+        model_class=MllamaForConditionalGeneration,
+        mini_model_config=MllamaConfig(
+            vision_config=MllamaVisionConfig(
+                hidden_act="gelu",
+                hidden_size=512,  # 1280
+                image_size=560,  # 560
+                initializer_range=0.02,
+                intermediate_layers_indices=[2],  # [3, 7, 15, etc...]
+                intermediate_size=2048,  # 5120
+                max_num_tiles=1,  # 4
+                norm_eps=1e-5,
+                num_attention_heads=4,  # 16
+                num_channels=3,
+                num_global_layers=2,  # 8
+                num_hidden_layers=8,  # 32
+                patch_size=140,  # 14
+                supported_aspect_ratios=[[1, 1]],  # [[1, 1], [1, 2], etc... ]
+                vision_output_dim=1024,  # 7680
+            ),
+            text_config=MllamaTextConfig(
+                bos_token_id=128000,
+                eos_token_id=[128001, 128008, 128009],
+                pad_token_id=128004,
+                cross_attention_layers=[2],  # [3, 8, 13, 18, etc...]
+                dropout=0,
+                hidden_act="silu",
+                hidden_size=1024,  # 4096
+                initializer_range=0.02,
+                intermediate_size=2048,  # 14336
+                max_position_embeddings=131_072,
+                num_attention_heads=8,  # 32
+                num_hidden_layers=4,  # 40
+                num_key_value_heads=2,  # 8
+                rms_norm_eps=1e-5,
+                rope_scaling=dict(
+                    factor=8.0,
+                    high_freq_factor=4.0,
+                    low_freq_factor=1.0,
+                    original_max_position_embeddings=8192,
+                    rope_type="llama3",
+                ),
+                rope_theta=500_000,
+                tie_word_embeddings=False,
+                use_cache=True,
+                vocab_size=128257,  # 128256, extend to avoid conflict with image token
+            ),
+            image_token_index=128256,  # NOTE: outside the vocab size
+            attn_implementation="sdpa",
+        ),
+    )
 
 if QWEN2_VL_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen2_vl"] = MiniModelConfig(
@@ -96,6 +172,8 @@ if QWEN2_VL_AVAILABLE:
 def create_processor(model_name):
     if model_name == "mini_qwen2_vl":
         return AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
+    elif model_name == "mini_mllama":
+        return AutoProcessor.from_pretrained("meta-llama/Llama-3.2-11B-Vision-Instruct")
     else:
         raise ValueError(f"Processor not available for model {model_name}")
 
@@ -140,6 +218,7 @@ def create_multimodal_dataset(model_name: str):
             padding="max_length",
             truncation=True,
             max_length=1024,  # longer than for text-only b/c images require quite a few tokens
+            return_tensors="pt",
         )
 
     train_dataset = (
@@ -262,6 +341,43 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_mllama",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not MLLAMA_AVAILABLE,
+                reason="Mllama not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_mllama",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(
+                    not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+                ),
+                pytest.mark.skipif(
+                    not MLLAMA_AVAILABLE,
+                    reason="Mllama not available in this version of transformers",
                 ),
             ],
         ),
