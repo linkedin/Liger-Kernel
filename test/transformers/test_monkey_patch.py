@@ -15,11 +15,13 @@ from liger_kernel.transformers import (
     LigerSwiGLUMLP,
     monkey_patch,
 )
+from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.monkey_patch import (
     MODEL_TYPE_TO_APPLY_LIGER_FN,
     _apply_liger_kernel,
     _apply_liger_kernel_to_instance,
 )
+from test.utils import revert_liger_kernel_to_qwen2_vl
 
 
 def test_import_from_root():
@@ -401,37 +403,52 @@ def test_apply_liger_kernel_to_instance_for_qwen2():
 
 
 def test_apply_liger_kernel_to_instance_for_qwen2_vl():
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import (
+        Qwen2VLForConditionalGeneration,
+    )
+
+    # Instantiate a dummy model
+    config = transformers.models.qwen2_vl.configuration_qwen2_vl.Qwen2VLConfig(
+        torch_dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=64,
+        intermediate_size=64,
+        embed_dim=32,
+        hidden_act="silu",
+        num_hidden_layers=2,
+    )
+    dummy_model_instance = Qwen2VLForConditionalGeneration._from_config(config)
+
+    assert isinstance(dummy_model_instance, Qwen2VLForConditionalGeneration)
+
+    # Check that model instance variables are not yet patched with Liger modules
+    assert not isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
+    for layer in dummy_model_instance.model.layers:
+        assert not isinstance(layer.mlp, LigerSwiGLUMLP)
+        assert not isinstance(layer.input_layernorm, LigerRMSNorm)
+        assert not isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+    for vision_block in dummy_model_instance.visual.blocks:
+        assert not isinstance(vision_block.norm1, LigerLayerNorm)
+        assert not isinstance(vision_block.norm2, LigerLayerNorm)
+
+    # Test applying kernels to the model instance
+    _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+    # Check that the model's instance variables were correctly patched with Liger modules
+    assert isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
+    assert isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
+    for layer in dummy_model_instance.model.layers:
+        assert isinstance(layer.mlp, LigerSwiGLUMLP)
+        assert isinstance(layer.input_layernorm, LigerRMSNorm)
+        assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+    for vision_block in dummy_model_instance.visual.blocks:
+        assert isinstance(vision_block.norm1, LigerLayerNorm)
+        assert isinstance(vision_block.norm2, LigerLayerNorm)
+
     # Ensure any monkey patching is cleaned up for subsequent tests
-    with patch("transformers.models.qwen2_vl.modeling_qwen2_vl"):
-        # Instantiate a dummy model
-        config = transformers.models.qwen2_vl.configuration_qwen2_vl.Qwen2VLConfig(
-            torch_dtype=torch.bfloat16,
-            rms_norm_eps=1e-5,
-            hidden_size=32,
-            intermediate_size=64,
-            hidden_act="silu",
-            num_hidden_layers=2,
-        )
-        dummy_model_instance = transformers.models.qwen2_vl.modeling_qwen2_vl.Qwen2VLForConditionalGeneration._from_config(
-            config
-        )
-
-        # Check that model instance variables are not yet patched with Liger modules
-        assert not isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
-        for layer in dummy_model_instance.model.layers:
-            assert not isinstance(layer.mlp, LigerSwiGLUMLP)
-            assert not isinstance(layer.input_layernorm, LigerRMSNorm)
-            assert not isinstance(layer.post_attention_layernorm, LigerRMSNorm)
-
-        # Test applying kernels to the model instance
-        _apply_liger_kernel_to_instance(model=dummy_model_instance)
-
-        # Check that the model's instance variables were correctly patched with Liger modules
-        assert isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
-        for layer in dummy_model_instance.model.layers:
-            assert isinstance(layer.mlp, LigerSwiGLUMLP)
-            assert isinstance(layer.input_layernorm, LigerRMSNorm)
-            assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+    # Using `with patch("transformers.models.qwen2_vl.modeling_qwen2_vl")` does not
+    # work heres, due to the way `modeling_qwen2_vl` is used in the monkey patch fn.
+    revert_liger_kernel_to_qwen2_vl()
 
 
 def test_apply_liger_kernel_to_instance_for_phi3():
