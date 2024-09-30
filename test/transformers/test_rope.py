@@ -1,5 +1,3 @@
-from test.utils import supports_bfloat16
-
 import pytest
 import torch
 from transformers.models.llama.modeling_llama import (
@@ -10,6 +8,7 @@ from transformers.models.llama.modeling_llama import (
 from liger_kernel.ops.rope import LigerRopeFunction
 from liger_kernel.transformers.functional import liger_rope
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
+from test.utils import supports_bfloat16
 
 SLEEP_SECONDS = 0.1
 
