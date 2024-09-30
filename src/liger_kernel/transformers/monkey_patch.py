@@ -104,6 +104,7 @@ def apply_liger_kernel_to_mllama(
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
+    layer_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
@@ -118,6 +119,7 @@ def apply_liger_kernel_to_mllama(
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
@@ -128,10 +130,17 @@ def apply_liger_kernel_to_mllama(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.mllama import modeling_mllama
+    from transformers.models.mllama.configuration_mllama import (
+        MllamaConfig,
+        MllamaTextConfig,
+        MllamaVisionConfig,
+    )
     from transformers.models.mllama.modeling_mllama import (
         MllamaForCausalLM,
         MllamaForConditionalGeneration,
         MllamaTextModel,
+        MllamaVisionEncoder,
+        MllamaVisionModel,
     )
 
     from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
@@ -140,12 +149,16 @@ def apply_liger_kernel_to_mllama(
         modeling_mllama.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         modeling_mllama.MllamaTextRMSNorm = LigerRMSNorm
+    if layer_norm:
+        modeling_mllama.nn.LayerNorm = LigerLayerNorm
     if swiglu:
         modeling_mllama.MllamaTextMLP = LigerSwiGLUMLP
     if cross_entropy:
         modeling_mllama.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_mllama.MLlamaForCausalLM.forward = mllama_lce_forward
+        # MllamaForConditionalGeneration uses MllamaForCausalLM under the hood
+        # for the loss calculation, so we need to patch the forward method of MllamaForCausalLM
+        modeling_mllama.MllamaForCausalLM.forward = mllama_lce_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -155,38 +168,75 @@ def apply_liger_kernel_to_mllama(
         torch_dtype = config.torch_dtype
 
         if isinstance(model, MllamaForConditionalGeneration):
-            language_model = model.language_model  # MllamaForCausalLM
-            text_model = language_model.model  # MllamaTextModel
-            vision_model = model.vision_model  # TODO
+            assert isinstance(config, MllamaConfig)
+            language_model: MllamaForCausalLM = model.language_model
+            text_model: MllamaTextModel = language_model.model
+            text_config: MllamaTextConfig = config.text_config
+            vision_model: MllamaVisionModel = model.vision_model
+            vision_config: MllamaVisionConfig = config.vision_config
         elif isinstance(model, MllamaForCausalLM):
-            # TODO: test
+            assert isinstance(config, MllamaTextConfig)
             text_model = model.model
+            text_config = config
             vision_model = None
+            vision_config = None
         elif isinstance(model, MllamaTextModel):
-            # TODO: test
+            assert isinstance(config, MllamaTextConfig)
             text_model = model
+            text_config = config
             vision_model = None
+            vision_config = None
+        elif isinstance(model, MllamaVisionModel):
+            assert isinstance(config, MllamaVisionConfig)
+            text_model = None
+            text_config = None
+            vision_model = model
+            vision_config = config
         else:
             raise ValueError(f"Unsupported Mllama model type: {type(model)}")
 
         if vision_model:
-            # Patch MllamaVisionModel
-            pass
+            if layer_norm:
+                vision_model.layernorm_pre = LigerLayerNorm(  # type: ignore
+                    vision_config.hidden_size
+                    # eps is not explicitly set here
+                ).to(torch_dtype)
+                vision_model.layernorm_post = LigerLayerNorm(  # type: ignore
+                    vision_config.hidden_size
+                    # eps is not explicitly set here
+                ).to(torch_dtype)
+                for vision_encoder in [
+                    vision_model.transformer,
+                    vision_model.global_transformer,
+                ]:
+                    vision_encoder: MllamaVisionEncoder
+                    for encoder_layer in vision_encoder.layers:
+                        encoder_layer.input_layernorm = LigerLayerNorm(
+                            vision_config.hidden_size,
+                            eps=vision_config.norm_eps,
+                        ).to(torch_dtype)
+                        encoder_layer.post_attention_layernorm = LigerLayerNorm(
+                            vision_config.hidden_size,
+                            eps=vision_config.norm_eps,
+                        ).to(torch_dtype)
 
-        if rms_norm:
-            text_model.norm = LigerRMSNorm(
-                config.text_config.hidden_size, eps=config.text_config.rms_norm_eps
-            ).to(torch_dtype)
-        for decoder_layer in text_model.layers:
-            if swiglu:
-                decoder_layer.mlp = LigerSwiGLUMLP(config.text_config).to(torch_dtype)
+        if text_model:
             if rms_norm:
-                decoder_layer.input_layernorm = LigerRMSNorm(
-                    config.text_config.hidden_size, eps=config.text_config.rms_norm_eps
+                text_model.norm = LigerRMSNorm(  # type: ignore
+                    text_config.hidden_size, eps=text_config.rms_norm_eps
                 ).to(torch_dtype)
-                decoder_layer.post_attention_layernorm = LigerRMSNorm(
-                    config.text_config.hidden_size, eps=config.text_config.rms_norm_eps
-                ).to(torch_dtype)
+            for decoder_layer in text_model.layers:
+                if swiglu:
+                    decoder_layer.mlp = LigerSwiGLUMLP(text_config).to(torch_dtype)
+                if rms_norm:
+                    decoder_layer.input_layernorm = LigerRMSNorm(
+                        text_config.hidden_size,
+                        eps=text_config.rms_norm_eps,
+                    ).to(torch_dtype)
+                    decoder_layer.post_attention_layernorm = LigerRMSNorm(
+                        text_config.hidden_size,
+                        eps=text_config.rms_norm_eps,
+                    ).to(torch_dtype)
 
 
 def apply_liger_kernel_to_mistral(
@@ -718,6 +768,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma2": apply_liger_kernel_to_gemma2,
     "llama": apply_liger_kernel_to_llama,
     "mllama": apply_liger_kernel_to_mllama,
+    "mllama_text_model": apply_liger_kernel_to_mllama,
     "mistral": apply_liger_kernel_to_mistral,
     "mixtral": apply_liger_kernel_to_mixtral,
     "qwen2": apply_liger_kernel_to_qwen2,

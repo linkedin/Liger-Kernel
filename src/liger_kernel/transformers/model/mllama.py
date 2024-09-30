@@ -98,13 +98,14 @@ def lce_forward(
     )
 
     hidden_states = outputs[0]
-    logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :]).float()
 
     loss = None
     logits = None
 
     if self.training and (labels is not None):
-        shift_hidden_states = hidden_states[..., :-1, :].contiguous()
+        kept_hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+
+        shift_hidden_states = kept_hidden_states[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
 
         # flatten tokens
@@ -115,7 +116,6 @@ def lce_forward(
         loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
 
     else:
-        # TODO double check pretraining_tp from llama
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :]).float()
         if labels is not None:
             # Shift so that tokens < n predict n
