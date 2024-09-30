@@ -1,5 +1,6 @@
 import inspect
 from inspect import signature
+from test.utils import revert_liger_kernel_to_mllama
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -21,7 +22,6 @@ from liger_kernel.transformers.monkey_patch import (
     _apply_liger_kernel,
     _apply_liger_kernel_to_instance,
 )
-from test.utils import revert_liger_kernel_to_mllama
 
 
 def test_import_from_root():
