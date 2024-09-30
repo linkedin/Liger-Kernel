@@ -236,11 +236,11 @@ def test_apply_liger_kernel_to_instance_for_llama():
 
 def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
-    from transformers.models.mllama.modeling_mllama import (
-        MllamaForConditionalGeneration,
-    )
-
     with patch("transformers.models.mllama.modeling_mllama"):
+        from transformers.models.mllama.modeling_mllama import (
+            MllamaForConditionalGeneration,
+        )
+
         # Instantiate a dummy model
         config = transformers.models.mllama.configuration_mllama.MllamaConfig(
             torch_dtype=torch.bfloat16,
@@ -317,9 +317,9 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
 
 def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
     # Ensure any monkey patching is cleaned up for subsequent tests
-    from transformers.models.mllama.modeling_mllama import MllamaForCausalLM
-
     with patch("transformers.models.mllama.modeling_mllama"):
+        from transformers.models.mllama.modeling_mllama import MllamaForCausalLM
+
         # Instantiate a dummy model
         config = transformers.models.mllama.configuration_mllama.MllamaTextConfig(
             rms_norm_eps=1e-5,
