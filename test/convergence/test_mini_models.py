@@ -330,6 +330,7 @@ def run_mini_model(
             "rope": True,
             "rms_norm": True,
             "cross_entropy": True,
+            "sdpa_attention": (dtype in [torch.float16, torch.bfloat16]),
         }
         if "gemma" in model_name:
             kwargs["geglu"] = True
@@ -374,6 +375,7 @@ def run_mini_model(
     [
         # Gemma 1 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
         ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 6e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma1", 32, 1e-4, torch.float16, 1e-8, 6e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_gemma1",
             32,
@@ -390,6 +392,7 @@ def run_mini_model(
             ),
         ),
         ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma1.1", 32, 1e-4, torch.float16, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_gemma1.1",
             32,
@@ -406,6 +409,7 @@ def run_mini_model(
             ),
         ),
         ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma2", 32, 1e-4, torch.float16, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_gemma2",
             32,
@@ -422,6 +426,7 @@ def run_mini_model(
             ),
         ),
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_llama3", 32, 1e-4, torch.float16, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_llama3",
             32,
@@ -442,6 +447,7 @@ def run_mini_model(
         # ("mini_mixtral", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 8e-3, 1e-5),
         # ("mini_mixtral", 32, 1e-4, torch.bfloat16, 1e-8, 1e-5, 2.0, 1e-5, 1e-2, 1e-5),
         ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_mistral", 32, 1e-4, torch.float16, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_mistral",
             32,
@@ -458,6 +464,7 @@ def run_mini_model(
             ),
         ),
         ("mini_qwen2", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_qwen2", 32, 1e-4, torch.float16, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_qwen2",
             32,
@@ -474,6 +481,7 @@ def run_mini_model(
             ),
         ),
         ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_phi3", 32, 1e-4, torch.float16, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_phi3",
             32,

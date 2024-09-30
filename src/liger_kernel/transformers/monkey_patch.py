@@ -10,10 +10,13 @@ from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
+from liger_kernel.transformers.model.gemma2 import liger_gemma2_sdpa_forward
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
+from liger_kernel.transformers.model.phi3 import liger_phi3_sdpa_attention_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
+from liger_kernel.transformers.model.qwen2 import liger_qwen2_sdpa_forward
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import (
@@ -21,6 +24,7 @@ from liger_kernel.transformers.swiglu import (
     LigerPhi3SwiGLUMLP,
     LigerSwiGLUMLP,
 )
+from liger_kernel.transformers.attention import liger_general_sdpa_forward
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,7 @@ def apply_liger_kernel_to_llama(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    sdpa_attention: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -69,6 +74,7 @@ def apply_liger_kernel_to_llama(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        sdpa_attention (bool): Whether to apply Liger's FlashAttention instead of SDPA. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -89,6 +95,8 @@ def apply_liger_kernel_to_llama(
         modeling_llama.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
         modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
+    if sdpa_attention:
+        modeling_llama.LlamaSdpaAttention.forward = liger_general_sdpa_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -123,6 +131,7 @@ def apply_liger_kernel_to_mistral(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    sdpa_attention: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -138,6 +147,7 @@ def apply_liger_kernel_to_mistral(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        sdpa_attention (bool): Whether to apply Liger's FlashAttention instead of SDPA. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -157,6 +167,8 @@ def apply_liger_kernel_to_mistral(
         modeling_mistral.MistralForCausalLM.forward = mistral_lce_forward
     if swiglu:
         modeling_mistral.MistralMLP = LigerSwiGLUMLP
+    if sdpa_attention:
+        modeling_mistral.MistralSdpaAttention.forward = liger_general_sdpa_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -188,6 +200,7 @@ def apply_liger_kernel_to_mixtral(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    sdpa_attention: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -202,6 +215,7 @@ def apply_liger_kernel_to_mixtral(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        sdpa_attention (bool): Whether to apply Liger's FlashAttention instead of SDPA. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -222,6 +236,8 @@ def apply_liger_kernel_to_mixtral(
         modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward
     if swiglu:
         modeling_mixtral.MixtralBlockSparseTop2MLP = LigerBlockSparseTop2MLP
+    if sdpa_attention:
+        modeling_mixtral.MixtralSdpaAttention.forward = liger_general_sdpa_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -254,6 +270,7 @@ def apply_liger_kernel_to_gemma(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     geglu: bool = True,
+    sdpa_attention: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -269,6 +286,7 @@ def apply_liger_kernel_to_gemma(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+        sdpa_attention (bool): Whether to apply Liger's FlashAttention instead of SDPA. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -296,6 +314,8 @@ def apply_liger_kernel_to_gemma(
         modeling_gemma.GemmaMLP = LigerGEGLUMLP
     if fused_linear_cross_entropy:
         modeling_gemma.GemmaForCausalLM.forward = gemma_lce_forward
+    if sdpa_attention:
+        modeling_gemma.GemmaSdpaAttention.forward = liger_general_sdpa_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -326,6 +346,7 @@ def apply_liger_kernel_to_gemma2(
     cross_entropy: bool = True,
     rms_norm: bool = True,
     geglu: bool = True,
+    sdpa_attention: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -337,6 +358,7 @@ def apply_liger_kernel_to_gemma2(
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+        sdpa_attention (bool): Whether to apply Liger's FlashAttention instead of SDPA. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -358,6 +380,8 @@ def apply_liger_kernel_to_gemma2(
         modeling_gemma2.CrossEntropyLoss = LigerCrossEntropyLoss
     if geglu:
         modeling_gemma2.Gemma2MLP = LigerGEGLUMLP
+    if sdpa_attention:
+        modeling_gemma2.Gemma2SdpaAttention.forward = liger_gemma2_sdpa_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -397,6 +421,7 @@ def apply_liger_kernel_to_qwen2(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    sdpa_attention: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -411,6 +436,7 @@ def apply_liger_kernel_to_qwen2(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        sdpa_attention (bool): Whether to apply Liger's FlashAttention instead of SDPA. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -430,6 +456,8 @@ def apply_liger_kernel_to_qwen2(
         modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward
     if swiglu:
         modeling_qwen2.Qwen2MLP = LigerSwiGLUMLP
+    if sdpa_attention:
+        modeling_qwen2.Qwen2SdpaAttention.forward = liger_qwen2_sdpa_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -539,6 +567,7 @@ def apply_liger_kernel_to_phi3(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    sdpa_attention: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -553,6 +582,7 @@ def apply_liger_kernel_to_phi3(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU Phi3MLP. Default is True.
+        sdpa_attention (bool): Whether to apply Liger's FlashAttention instead of SDPA. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -572,6 +602,8 @@ def apply_liger_kernel_to_phi3(
         modeling_phi3.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
         modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
+    if sdpa_attention:
+        modeling_phi3.Phi3SdpaAttention.forward = liger_phi3_sdpa_attention_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
