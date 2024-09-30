@@ -660,7 +660,7 @@ def apply_liger_kernel_to_qwen2_vl(
 
         if hasattr(model, "model"):
             # The case for Qwen2VLForConditionalGeneration.
-            base_model = model.model  # Qwen2VLModel
+            base_model = model.model
         else:
             # Direct Qwen2VLModel
             base_model = model
