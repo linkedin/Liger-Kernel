@@ -15,7 +15,6 @@ from liger_kernel.transformers import (
     LigerSwiGLUMLP,
     monkey_patch,
 )
-from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.monkey_patch import (
     MODEL_TYPE_TO_APPLY_LIGER_FN,
     _apply_liger_kernel,
