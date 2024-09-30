@@ -21,6 +21,7 @@ from liger_kernel.transformers.monkey_patch import (
     _apply_liger_kernel,
     _apply_liger_kernel_to_instance,
 )
+from test.utils import revert_liger_kernel_to_mllama
 
 
 def test_import_from_root():
@@ -314,6 +315,8 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
             assert isinstance(layer.input_layernorm, LigerLayerNorm)
             assert isinstance(layer.post_attention_layernorm, LigerLayerNorm)
 
+    revert_liger_kernel_to_mllama()
+
 
 def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
     # Ensure any monkey patching is cleaned up for subsequent tests
@@ -356,6 +359,8 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
             assert isinstance(layer.mlp, LigerSwiGLUMLP)
             assert isinstance(layer.input_layernorm, LigerRMSNorm)
             assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+
+    revert_liger_kernel_to_mllama()
 
 
 def test_apply_liger_kernel_to_instance_for_mistral():
