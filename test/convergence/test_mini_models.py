@@ -22,6 +22,7 @@ from datasets import load_from_disk
 from torch.utils.data import DataLoader
 from transformers.models.gemma import GemmaConfig, GemmaForCausalLM
 from transformers.models.gemma2 import Gemma2Config, Gemma2ForCausalLM
+from transformers.models.jamba import JambaConfig, JambaForCausalLM
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
@@ -31,6 +32,7 @@ from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
 from liger_kernel.transformers import (
     apply_liger_kernel_to_gemma,
     apply_liger_kernel_to_gemma2,
+    apply_liger_kernel_to_jamba,
     apply_liger_kernel_to_llama,
     apply_liger_kernel_to_mistral,
     apply_liger_kernel_to_mixtral,
@@ -294,6 +296,31 @@ MINI_MODEL_SETUPS = {
             attn_implementation="eager",
         ),
     ),
+    "mini_jamba": MiniModelConfig(
+        liger_kernel_patch_func=functools.partial(
+            apply_liger_kernel_to_jamba, fused_linear_cross_entropy=False
+        ),
+        model_class=JambaForCausalLM,
+        mini_model_config=JambaConfig(
+            attention_dropout=0.0,
+            num_experts_per_tok=1,
+            num_experts=2,
+            bos_token_id=1,
+            eos_token_id=2,  # 32000
+            hidden_act="silu",
+            hidden_size=1024,  # 3072
+            initializer_range=0.02,
+            intermediate_size=2048,  # 8192
+            max_position_embeddings=32768,
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 32
+            rms_norm_eps=1e-5,
+            sliding_window=None,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32064,
+        ),
+    ),
 }
 
 
@@ -331,6 +358,8 @@ def run_mini_model(
             kwargs["geglu"] = True
         else:
             kwargs["swiglu"] = True
+        if model_name == "mini_jamba":
+            del kwargs["rope"]
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
@@ -345,7 +374,6 @@ def run_mini_model(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     loss_list = []
-
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
         optimizer.zero_grad()
@@ -479,6 +507,8 @@ def run_mini_model(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
+        # To run this test, you need to first run `pip install . '[test]'`
+        # ("mini_jamba", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
     ],
 )
 def test_mini_model(
