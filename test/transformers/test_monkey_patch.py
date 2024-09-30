@@ -234,7 +234,7 @@ def test_apply_liger_kernel_to_instance_for_llama():
             assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
 
 
-def test_apply_liger_kernel_to_instance_for_mllama():
+def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.mllama.modeling_mllama"):
         from transformers.models.mllama.modeling_mllama import (
@@ -275,44 +275,63 @@ def test_apply_liger_kernel_to_instance_for_mllama():
         assert not isinstance(
             dummy_model_instance.language_model.model.norm, LigerRMSNorm
         )
-        assert not isinstance(
-            dummy_model_instance.vision_model.layernorm_pre, LigerLayerNorm
-        )
-        assert not isinstance(
-            dummy_model_instance.vision_model.layernorm_post, LigerLayerNorm
-        )
         for layer in dummy_model_instance.language_model.model.layers:
             assert not isinstance(layer.mlp, LigerSwiGLUMLP)
             assert not isinstance(layer.input_layernorm, LigerRMSNorm)
             assert not isinstance(layer.post_attention_layernorm, LigerRMSNorm)
-        for layer in dummy_model_instance.vision_model.transformer.layers:
-            assert not isinstance(layer.input_layernorm, LigerLayerNorm)
-            assert not isinstance(layer.post_attention_layernorm, LigerLayerNorm)
-        for layer in dummy_model_instance.vision_model.global_transformer.layers:
-            assert not isinstance(layer.input_layernorm, LigerLayerNorm)
-            assert not isinstance(layer.post_attention_layernorm, LigerLayerNorm)
 
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
         assert isinstance(dummy_model_instance.language_model.model.norm, LigerRMSNorm)
-        assert isinstance(
-            dummy_model_instance.vision_model.layernorm_pre, LigerLayerNorm
-        )
-        assert isinstance(
-            dummy_model_instance.vision_model.layernorm_post, LigerLayerNorm
-        )
         for layer in dummy_model_instance.language_model.model.layers:
             assert isinstance(layer.mlp, LigerSwiGLUMLP)
             assert isinstance(layer.input_layernorm, LigerRMSNorm)
             assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
-        for layer in dummy_model_instance.vision_model.transformer.layers:
-            assert isinstance(layer.input_layernorm, LigerLayerNorm)
-            assert isinstance(layer.post_attention_layernorm, LigerLayerNorm)
-        for layer in dummy_model_instance.vision_model.global_transformer.layers:
-            assert isinstance(layer.input_layernorm, LigerLayerNorm)
-            assert isinstance(layer.post_attention_layernorm, LigerLayerNorm)
+
+
+def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.mllama.modeling_mllama"):
+        from transformers.models.mllama.modeling_mllama import MllamaForCausalLM
+
+        # Instantiate a dummy model
+        config = transformers.models.mllama.configuration_mllama.MllamaTextConfig(
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="silu",
+            num_hidden_layers=2,
+            rope_scaling=dict(
+                factor=8.0,
+                high_freq_factor=4.0,
+                low_freq_factor=1.0,
+                original_max_position_embeddings=8192,
+                rope_type="llama3",
+            ),
+        )
+
+        dummy_model_instance = MllamaForCausalLM._from_config(config)
+
+        assert isinstance(dummy_model_instance, MllamaForCausalLM)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert not isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
+        for layer in dummy_model_instance.model.layers:
+            assert not isinstance(layer.mlp, LigerSwiGLUMLP)
+            assert not isinstance(layer.input_layernorm, LigerRMSNorm)
+            assert not isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
+        for layer in dummy_model_instance.model.layers:
+            assert isinstance(layer.mlp, LigerSwiGLUMLP)
+            assert isinstance(layer.input_layernorm, LigerRMSNorm)
+            assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
 
 
 def test_apply_liger_kernel_to_instance_for_mistral():
