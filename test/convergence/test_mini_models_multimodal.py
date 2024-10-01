@@ -1,5 +1,13 @@
 import functools
 import os
+
+import pytest
+import torch
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+from transformers.models.auto.processing_auto import AutoProcessor
+
+from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from test.utils import (
     UNTOKENIZED_DATASET_PATH,
     MiniModelConfig,
@@ -9,14 +17,6 @@ from test.utils import (
     set_seed,
     supports_bfloat16,
 )
-
-import pytest
-import torch
-from datasets import load_dataset
-from torch.utils.data import DataLoader
-from transformers.models.auto.processing_auto import AutoProcessor
-
-from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 
 try:
     # Qwen2-VL is only available in transformers>4.44.2
@@ -308,7 +308,7 @@ def test_mini_model_multimodal(
     )
 
     # Compare the params from the last step
-    # Iterate over the model's parameters and compare them
+    # Iterate over the model's parameters and compare thema
     for expected_param, actual_param in zip(
         expected_output["model"].named_parameters(),
         actual_output["model"].named_parameters(),
