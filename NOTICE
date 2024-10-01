@@ -2,3 +2,57 @@ Copyright 2024 LinkedIn Corporation
 All Rights Reserved.
 
 Licensed under the BSD 2-Clause License (the "License").  See License in the project root for license information.
+
+This product includes software developed by LinkedIn Corporation.
+
+This product contains code derived from the following open source projects:
+
+1. Unsloth
+   Copyright (c) 2023 Unsloth AI
+   Licensed under the Apache License, Version 2.0
+   Source: https://github.com/unslothai/unsloth
+   
+   The `calculate_settings` function to determine block size and warp is reused for Norm and MLP operations.
+   Modifications and additions were made to the RMS Norm implementation.
+
+2. Triton
+   Copyright (c) 2023 OpenAI
+   Licensed under the MIT License
+   Source: https://github.com/openai/triton
+   
+   Modifications were made based on Triton tutorials for the RMS Norm implementation.
+
+3. Efficient Cross Entropy
+   Copyright (c) 2023 Mohamed Malek
+   Licensed under the MIT License
+   Source: https://github.com/mgmalek/efficient_cross_entropy
+   
+   The idea of gradient-in-forward and chunking was used in the Linear Cross Entropy implementation.
+
+4. Flash Attention
+   Copyright (c) 2023 Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, Christopher Ré
+   Licensed under the BSD 3-Clause License
+   Source: https://github.com/Dao-AILab/flash-attention
+   
+   Optimization ideas such as tiling and recomputation were inspired by this work.
+
+5. AutoAWQ
+   Copyright (c) 2023 Casper Hansen
+   Licensed under the MIT License
+   Source: https://github.com/casper-hansen/AutoAWQ
+   
+   The design of the automodel was referenced from this project.
+
+6. llm.c
+   Copyright (c) 2023 Andrej Karpathy
+   Licensed under the MIT License
+   Source: https://github.com/karpathy/llm.c
+   
+   The design of end-to-end testing was referenced from this project.
+
+7. Tiny Shakespeare Dataset
+   Source: https://huggingface.co/datasets/karpathy/tiny_shakespeare
+   
+   This dataset is used to conduct convergence tests on mini models.
+
+For full license texts, please refer to the respective project repositories.
