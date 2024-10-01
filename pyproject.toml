@@ -12,11 +12,15 @@ license = { file = "LICENSE" }
 dependencies = [
     "torch>=2.1.2",
     "triton>=2.3.0",
-    "transformers>=4.42.0",
 ]
 
 [project.optional-dependencies]
+transformers = [
+    "transformers~=4.0"
+]
+
 dev = [
+    "transformers>=4.44.2",
     "matplotlib>=3.7.2",
     "flake8>=4.0.1.1",
     "black>=24.4.2",
@@ -24,7 +28,6 @@ dev = [
     "pytest>=7.1.2",
     "datasets>=2.19.2",
     "torchvision>=0.16.2",
-    "jupyter==1.0.0",
     "seaborn",
 ]
 
