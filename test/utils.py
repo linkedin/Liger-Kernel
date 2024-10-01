@@ -1,3 +1,4 @@
+import importlib
 import os
 import random
 from dataclasses import dataclass
@@ -54,10 +55,27 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
     # Determine the tolerance
     tolerance = atol + rtol * torch.abs(tensor2)
 
-    # Find mismatched elements
-    mismatched = diff > tolerance
+    # Find tolerance mismatched elements
+    tol_mismatched = diff > tolerance
 
-    # Get the indices of mismatched elements
+    # Find nan mismatched elements
+    nan_mismatched = torch.logical_xor(torch.isnan(tensor1), torch.isnan(tensor2))
+
+    # Find +inf mismatched elements
+    posinf_mismatched = torch.logical_xor(
+        torch.isposinf(tensor1), torch.isposinf(tensor2)
+    )
+    # Find -inf mismatched elements
+    neginf_mismatched = torch.logical_xor(
+        torch.isneginf(tensor1), torch.isneginf(tensor2)
+    )
+
+    # Find all mismatched elements
+    mismatched = torch.logical_or(
+        torch.logical_or(tol_mismatched, nan_mismatched),
+        torch.logical_or(posinf_mismatched, neginf_mismatched),
+    )
+
     mismatched_indices = torch.nonzero(mismatched)
 
     # Count the number of mismatched elements
@@ -67,7 +85,7 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
     all_close = num_mismatched == 0
 
     # Raise AssertionError with detailed information if there are mismatches
-    if not all_close and num_mismatched > 1:
+    if not all_close and num_mismatched >= 1:
         mismatch_details = [f"Number of mismatched elements: {num_mismatched}"]
         print_count = min(max_print, num_mismatched)
         for index in mismatched_indices[:print_count]:
@@ -96,6 +114,7 @@ UNTOKENIZED_DATASET_PATH = os.path.join(
 @dataclass
 class MiniModelConfig:
     liger_kernel_patch_func: callable
+    liger_kernel_patch_revert_func: callable
     model_class: PreTrainedModel
     mini_model_config: PretrainedConfig
 
@@ -141,3 +160,90 @@ def supports_bfloat16():
     if not torch.cuda.is_available():
         return False
     return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
+
+
+def revert_liger_kernel_to_llama():
+    """
+    Revert all Liger kernel patches applied to Llama.
+    """
+
+    from transformers.models.llama import modeling_llama
+
+    importlib.reload(modeling_llama)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_mistral():
+    """
+    Revert all Liger kernel patches applied to Mistral.
+    """
+
+    from transformers.models.mistral import modeling_mistral
+
+    importlib.reload(modeling_mistral)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_mixtral():
+    """
+    Revert all Liger kernel patches applied to Mixtral.
+    """
+
+    from transformers.models.mixtral import modeling_mixtral
+
+    importlib.reload(modeling_mixtral)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_gemma():
+    """
+    Revert all Liger kernel patches applied to Gemma.
+    """
+
+    from transformers.models.gemma import modeling_gemma
+
+    importlib.reload(modeling_gemma)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_gemma2():
+    """
+    Revert all Liger kernel patches applied to Gemma2.
+    """
+
+    from transformers.models.gemma2 import modeling_gemma2
+
+    importlib.reload(modeling_gemma2)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_qwen2():
+    """
+    Revert all Liger kernel patches applied to Qwen2.
+    """
+
+    from transformers.models.qwen2 import modeling_qwen2
+
+    importlib.reload(modeling_qwen2)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_qwen2_vl():
+    """
+    Revert all Liger kernel patches applied to Qwen2-VL.
+    """
+    from transformers.models.qwen2_vl import modeling_qwen2_vl
+
+    importlib.reload(modeling_qwen2_vl)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_phi3():
+    """
+    Revert all Liger kernel patches applied to Phi3.
+    """
+
+    from transformers.models.phi3 import modeling_phi3
+
+    importlib.reload(modeling_phi3)
+    print("Liger kernel patches have been reverted.")

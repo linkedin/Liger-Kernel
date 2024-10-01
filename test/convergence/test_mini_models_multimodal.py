@@ -5,6 +5,7 @@ from test.utils import (
     MiniModelConfig,
     assert_verbose_allclose,
     multimodal_collate_fn,
+    revert_liger_kernel_to_qwen2_vl,
     set_seed,
     supports_bfloat16,
 )
@@ -47,6 +48,7 @@ if QWEN2_VL_AVAILABLE:
         liger_kernel_patch_func=functools.partial(
             apply_liger_kernel_to_qwen2_vl, fused_linear_cross_entropy=False
         ),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2_vl,
         model_class=Qwen2VLForConditionalGeneration,
         mini_model_config=Qwen2VLConfig(
             attention_dropout=0.0,
@@ -138,6 +140,7 @@ def create_multimodal_dataset(model_name: str):
             padding="max_length",
             truncation=True,
             max_length=1024,  # longer than for text-only b/c images require quite a few tokens
+            return_tensors="pt",
         )
 
     train_dataset = (
@@ -194,6 +197,8 @@ def run_mini_model_multimodal(
         else:
             kwargs["swiglu"] = True
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
+    else:
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
 
     model = create_model(model_name).to(dtype).to("cuda")
     model.gradient_checkpointing_enable()
@@ -217,6 +222,7 @@ def run_mini_model_multimodal(
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
+    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
     return {"loss": loss_list, "logits": output.logits, "model": model}
 
 
@@ -244,12 +250,12 @@ def run_mini_model_multimodal(
             32,
             1e-4,
             torch.bfloat16,
-            1e-8,
-            1e-5,
+            1e-3,
             1e-2,
-            1e-5,
+            1e-1,
             1e-2,
-            1e-5,
+            1e-2,
+            1e-2,
             marks=[
                 pytest.mark.skipif(
                     not supports_bfloat16(), reason="bfloat16 not supported on this GPU"

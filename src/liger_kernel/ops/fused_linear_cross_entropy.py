@@ -13,7 +13,13 @@ MAX_FUSED_SIZE = 65536 // 2
 
 
 def fused_linear_cross_entropy_forward(
-    _input, weight, target, bias=None, ignore_index=-100, label_smoothing=0.0
+    _input,
+    weight,
+    target,
+    bias=None,
+    ignore_index=-100,
+    label_smoothing=0.0,
+    reduction="mean",
 ):
     dtype = (
         torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else _input.dtype
@@ -84,13 +90,14 @@ def fused_linear_cross_entropy_forward(
             n_non_ignore=n_non_ignore,
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
+            reduction=reduction,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32,
         )
 
         # gradient of logits_chunk is computed in-place by the above triton kernel.
         # Following HuggingFace model source code, we do the forward and backward
-        # w.r.t. logits in fp32 for numerical stability especially as the num classes (vocab size) os huge.
+        # w.r.t. logits in fp32 for numerical stability especially as the num classes (vocab size) is huge.
         # (reference: https://github.com/huggingface/transformers/blob/v4.42.4/src/transformers/models/llama/modeling_llama.py#L1194)
         # Propagating to lm_head's backward, we'll switch back to the original dtype.
         logits_chunk = logits_chunk.to(dtype)
@@ -100,9 +107,15 @@ def fused_linear_cross_entropy_forward(
         # additionally, since we are chunking the inputs, observe that the loss and gradients are calculated only
         # on `n_non_ignore` tokens. However, the gradient of the input should be calculated for all tokens.
         # Thus, we need an additional scaling factor of (n_non_ignore/total_n_non_ignore) to scale the gradients.
-        grad_logits_chunk = logits_chunk * (
-            n_non_ignore / total_n_non_ignore
-        )  # chunk_size x V
+
+        if reduction == "mean":
+            alpha = n_non_ignore / total_n_non_ignore if total_n_non_ignore > 0 else 0.0
+        else:
+            alpha = 1.0
+
+        loss_1d[start_idx:end_idx] = loss_1d_slice * alpha
+        grad_logits_chunk = logits_chunk * alpha  # chunk_size x V
+
         grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
         if grad_weight is not None:
@@ -111,7 +124,7 @@ def fused_linear_cross_entropy_forward(
                 mat1=logits_chunk.t(),
                 mat2=_input_chunk,
                 out=grad_weight,
-                alpha=n_non_ignore / total_n_non_ignore,
+                alpha=alpha,
                 beta=1.0,
             )
 
@@ -120,10 +133,10 @@ def fused_linear_cross_entropy_forward(
                 input=grad_bias,
                 other=logits_chunk.sum(dim=0),
                 out=grad_bias,
-                alpha=n_non_ignore / total_n_non_ignore,
+                alpha=alpha,
             )
 
-    loss = torch.sum(loss_1d) / total_n_non_ignore
+    loss = torch.sum(loss_1d)
     return loss, grad_input, grad_weight, grad_bias
 
 
@@ -179,7 +192,14 @@ def fused_linear_cross_entropy_backward(
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx, _input, weight, target, bias=None, ignore_index=-100, label_smoothing=0.0
+        ctx,
+        _input,
+        weight,
+        target,
+        bias=None,
+        ignore_index=-100,
+        label_smoothing=0.0,
+        reduction="mean",
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -195,9 +215,11 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         weight: (V, H) where V is the number of classes
         bias: (V) where V is the number of classes
         ignore_index: the index to ignore in the target
+        label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
+        reduction: reduction to apply
         """
         loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
-            _input, weight, target, bias, ignore_index, label_smoothing
+            _input, weight, target, bias, ignore_index, label_smoothing, reduction
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
@@ -213,4 +235,4 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_backward(
             grad_output, grad_input, grad_weight, grad_bias
         )
-        return (grad_input, grad_weight, None, grad_bias, None)
+        return (grad_input, grad_weight, None, grad_bias, None, None, None)
