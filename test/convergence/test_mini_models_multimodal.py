@@ -304,6 +304,9 @@ def run_mini_model_multimodal(
     return {"loss": loss_list, "logits": output.logits, "model": model}
 
 
+@pytest.mark.skip(
+    reason="This test needs to be fixed and work without access to HF Hub"
+)
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
