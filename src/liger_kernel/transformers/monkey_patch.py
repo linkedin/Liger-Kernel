@@ -126,6 +126,7 @@ def apply_liger_kernel_to_mllama(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace MLlama models.
+    NOTE: MLlama is not available in transformers<4.45.0
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
@@ -559,7 +560,7 @@ def apply_liger_kernel_to_qwen2_vl(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
-    NOTE: Qwen2-VL is not available in transformers<=4.45.0
+    NOTE: Qwen2-VL is not available in transformers<4.45.0
 
     Args:
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
