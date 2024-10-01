@@ -1,6 +1,11 @@
+import inspect
+
 from transformers import AutoConfig, AutoModelForCausalLM
 
-from liger_kernel.transformers.monkey_patch import _apply_liger_kernel
+from liger_kernel.transformers.monkey_patch import (
+    MODEL_TYPE_TO_APPLY_LIGER_FN,
+    _apply_liger_kernel,
+)
 
 
 def _get_model_config(model_dir, **model_init_kwargs):
@@ -21,13 +26,20 @@ class AutoLigerKernelForCausalLM(AutoModelForCausalLM):
         # Determine the model type and apply the Liger Kernel if applicable
         # Note: _apply_liger_kernel will only pass relevant kwargs to the apply_liger_kernel_to_* function
         model_type = model_config.model_type
+
         _apply_liger_kernel(model_type, **kwargs)
 
-        # Retain only the keyword args present in the model configuration
-        for k in list(kwargs.keys()):
-            if k not in model_config.__dict__:
-                del kwargs[k]
+        # Filter out kwargs that were passed to the apply_liger_* function, which will cause
+        # model initialization errors otherwise
+        apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
+        apply_fn_signature = inspect.signature(apply_fn)
+
+        applicable_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key not in apply_fn_signature.parameters
+        }
 
         return super().from_pretrained(
-            pretrained_model_name_or_path, *model_args, **kwargs
+            pretrained_model_name_or_path, *model_args, **applicable_kwargs
         )

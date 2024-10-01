@@ -26,6 +26,20 @@ Leave `#take` in the comment and tag the maintainer.
    pip install -e .'[dev]'
    ```
 
+## Adding support for a new model
+To get familiar with the folder structure, please refer to https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.
+
+1. **Figure out the kernels that can be monkey-patched**
+   - Check the `src/liger_kernel/ops` directory to find the kernels that can be monkey-patched.
+   - Kernels like Fused Linear Cross Entropy require a custom lce_forward function to allow monkey-patching. For adding kernels requiring a similar approach, ensure that you create the corresponding forward function in the `src/liger_kernel/transformers/model` directory.
+
+2. **Monkey-patch the HuggingFace model**
+   - Add the monkey-patching code in the `src/liger_kernel/transformers/monkey_patch.py` file.
+   - Ensure that the monkey-patching function is added to the `__init__.py` file in the `src/liger_kernel/transformers/` directory.
+
+3. **Add Unit Tests**
+   - Create unit tests and convergence tests for the monkey-patched model in the tests directory. Ensure that your tests cover all functionalities of the monkey-patched model.
+
 ## Adding a New Kernel
 To get familiar with the folder structure, please refer to https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.
 
