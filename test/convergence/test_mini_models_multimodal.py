@@ -140,6 +140,7 @@ def create_multimodal_dataset(model_name: str):
             padding="max_length",
             truncation=True,
             max_length=1024,  # longer than for text-only b/c images require quite a few tokens
+            return_tensors="pt",
         )
 
     train_dataset = (
@@ -225,9 +226,6 @@ def run_mini_model_multimodal(
     return {"loss": loss_list, "logits": output.logits, "model": model}
 
 
-@pytest.mark.skip(
-    reason="This test needs to be fixed and work without access to HF Hub"
-)
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
