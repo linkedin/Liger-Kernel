@@ -106,7 +106,10 @@ With one line of code, Liger Kernel can increase throughput by more than 20% and
 
 - `torch >= 2.1.2`
 - `triton >= 2.3.0`
-- `transformers >= 4.42.0`
+
+### Optional Dependencies
+
+- `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -129,7 +132,10 @@ To install from source:
 git clone https://github.com/linkedin/Liger-Kernel.git
 cd Liger-Kernel
 pip install -e .
+# or if using transformers
+pip install -e .[transformers]
 ```
+
 ## Getting Started
 
 There are a couple of ways to apply Liger kernels, depending on the level of customization required.
