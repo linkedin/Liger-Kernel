@@ -15,6 +15,7 @@ def _jsd_kernel(
     loss_stride,
     dX_ptr,
     dX_stride,
+    beta,
     n_rows,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
@@ -37,20 +38,20 @@ def _jsd_kernel(
 
         Q = tl.exp(X)
         P = tl.exp(Y)
-        M = 0.5 * P + 0.5 * Q
+        M = beta * P + (1 - beta) * Q
         log_M = tl.log(M)
 
-        loss = 0.5 * (P * Y + Q * X - 2 * M * log_M)
+        loss = beta * P * Y + (1 - beta) * Q * X - M * log_M
         tl.store(loss_ptr + offsets, loss, mask=mask)
 
-        dX = 0.5 * Q * (X - log_M) / n_rows
+        dX = (1 - beta) * Q * (X - log_M) / n_rows
         tl.store(dX_ptr + offsets, dX, mask=mask)
 
 
 MAX_FUSED_SIZE = 65536
 
 
-def jsd_forward(_input, target):
+def jsd_forward(_input, target, beta):
     BT, V = _input.shape
     n_rows = BT
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
@@ -67,6 +68,7 @@ def jsd_forward(_input, target):
         loss_stride=loss.stride(-2),
         dX_ptr=dX,
         dX_stride=dX.stride(-2),
+        beta=beta,
         n_rows=n_rows,
         n_cols=V,
         BLOCK_SIZE=BLOCK_SIZE,
@@ -102,9 +104,10 @@ class LigerJSDFunction(torch.autograd.Function):
         ctx,
         _input: torch.Tensor,
         target: torch.Tensor,
+        beta: float = 0.5,
     ) -> torch.Tensor:
 
-        loss, dX = jsd_forward(_input, target)
+        loss, dX = jsd_forward(_input, target, beta)
         ctx.save_for_backward(dX)
         return loss
 
@@ -115,5 +118,6 @@ class LigerJSDFunction(torch.autograd.Function):
         dX = jsd_backward(dX, grad_output)
         return (
             dX,
+            None,
             None,
         )

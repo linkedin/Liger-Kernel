@@ -1,4 +1,4 @@
-from test.utils import set_seed, supports_bfloat16
+from test.utils import assert_verbose_allclose, set_seed, supports_bfloat16
 
 import pytest
 import torch
@@ -10,15 +10,18 @@ set_seed(42)
 
 
 class JSD(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, beta: float = 0.5):
         super(JSD, self).__init__()
         self.kl = KLDivLoss(reduction="batchmean", log_target=True)
+        self.beta = beta
 
     def forward(self, log_p: torch.tensor, log_q: torch.tensor):
         log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(-1, log_q.size(-1))
-        m = 0.5 * (torch.exp(log_p) + torch.exp(log_q))
+        m = self.beta * torch.exp(log_p) + (1 - self.beta) * torch.exp(log_q)
         log_m = torch.log(m)
-        loss = 0.5 * (self.kl(log_m, log_p) + self.kl(log_m, log_q))
+        loss = self.beta * self.kl(log_m, log_p) + (1 - self.beta) * self.kl(
+            log_m, log_q
+        )
         return loss
 
 
@@ -62,6 +65,7 @@ _DTYPE_PARAMS = (
 
 def _test_correctness_once(
     target_jsd,
+    beta,
     B,
     T,
     V,
@@ -71,7 +75,7 @@ def _test_correctness_once(
     is_last_layer=True,
     device="cuda",
 ):
-    torch_jsd = JSD()
+    torch_jsd = JSD(beta=beta)
 
     input = torch.randn(
         B * T, V, device=device, dtype=dtype, requires_grad=True
@@ -98,19 +102,23 @@ def _test_correctness_once(
 
     output.backward()
     output2.backward()
-    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
-def test_correctness(B, T, V, dtype, atol, rtol):
-    liger_jsd = LigerJSD()
-    _test_correctness_once(liger_jsd, B, T, V, dtype, atol, rtol)
+@pytest.mark.parametrize("beta", [0.1, 0.5, 0.9])
+def test_correctness(B, T, V, beta, dtype, atol, rtol):
+    liger_jsd = LigerJSD(beta=beta)
+    _test_correctness_once(liger_jsd, beta, B, T, V, dtype, atol, rtol)
 
 
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
-def test_correctness_not_last(B, T, V, dtype, atol, rtol):
-    liger_jsd = LigerJSD()
+@pytest.mark.parametrize("beta", [0.1, 0.5, 0.9])
+def test_correctness_not_last(B, T, V, beta, dtype, atol, rtol):
+    liger_jsd = LigerJSD(beta=beta)
 
-    _test_correctness_once(liger_jsd, B, T, V, dtype, atol, rtol, is_last_layer=False)
+    _test_correctness_once(
+        liger_jsd, beta, B, T, V, dtype, atol, rtol, is_last_layer=False
+    )

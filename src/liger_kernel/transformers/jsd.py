@@ -4,8 +4,12 @@ from liger_kernel.ops.jsd import LigerJSDFunction
 
 
 class LigerJSD(nn.Module):
-    def __init__(self):
+    def __init__(self, beta=0.5):
         super().__init__()
+        assert (
+            beta > 0 and beta < 1
+        ), f"beta must be greater than 0 and less than 1. Got: {beta}"
+        self.beta = beta
 
     def forward(self, p, q):
-        return LigerJSDFunction.apply(p, q)
+        return LigerJSDFunction.apply(p, q, self.beta)
