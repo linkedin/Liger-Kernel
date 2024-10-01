@@ -3,8 +3,6 @@ import logging
 from functools import partial
 from typing import Callable
 
-from transformers import PreTrainedModel
-
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
@@ -21,6 +19,7 @@ from liger_kernel.transformers.swiglu import (
     LigerPhi3SwiGLUMLP,
     LigerSwiGLUMLP,
 )
+from transformers import PreTrainedModel
 
 logger = logging.getLogger(__name__)
 
@@ -146,18 +145,13 @@ def apply_liger_kernel_to_mllama(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
+    from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
     from transformers.models.mllama import modeling_mllama
-    from transformers.models.mllama.configuration_mllama import (
-        MllamaConfig,
-        MllamaTextConfig,
-    )
     from transformers.models.mllama.modeling_mllama import (
         MllamaForCausalLM,
         MllamaForConditionalGeneration,
         MllamaTextModel,
     )
-
-    from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
 
     if rope:
         modeling_mllama.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -175,43 +169,28 @@ def apply_liger_kernel_to_mllama(
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
-        config: PretrainedConfig = model.config
-
-        torch_dtype = config.torch_dtype
 
         if isinstance(model, MllamaForConditionalGeneration):
-            assert isinstance(config, MllamaConfig)
             language_model: MllamaForCausalLM = model.language_model
             text_model: MllamaTextModel = language_model.model
-            text_config: MllamaTextConfig = config.text_config
         elif isinstance(model, MllamaForCausalLM):
-            assert isinstance(config, MllamaTextConfig)
             text_model = model.model
-            text_config = config
         elif isinstance(model, MllamaTextModel):
-            assert isinstance(config, MllamaTextConfig)
             text_model = model
-            text_config = config
         else:
             raise ValueError(f"Unsupported Mllama model type: {type(model)}")
 
         if text_model:
             if rms_norm:
-                text_model.norm = LigerRMSNorm(  # type: ignore
-                    text_config.hidden_size, eps=text_config.rms_norm_eps
-                ).to(torch_dtype)
+                _patch_rms_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
                 if swiglu:
-                    decoder_layer.mlp = LigerSwiGLUMLP(text_config).to(torch_dtype)
+                    _bind_method_to_module(
+                        decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward
+                    )
                 if rms_norm:
-                    decoder_layer.input_layernorm = LigerRMSNorm(
-                        text_config.hidden_size,
-                        eps=text_config.rms_norm_eps,
-                    ).to(torch_dtype)
-                    decoder_layer.post_attention_layernorm = LigerRMSNorm(
-                        text_config.hidden_size,
-                        eps=text_config.rms_norm_eps,
-                    ).to(torch_dtype)
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
 def apply_liger_kernel_to_mistral(
@@ -580,11 +559,10 @@ def apply_liger_kernel_to_qwen2_vl(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    from transformers.models.qwen2_vl import modeling_qwen2_vl
-
     from liger_kernel.transformers.model.qwen2_vl import (
         lce_forward as qwen2_vl_lce_forward,
     )
+    from transformers.models.qwen2_vl import modeling_qwen2_vl
 
     # TODO: Support Qwen2-VL's multimodal RoPE implementation
 

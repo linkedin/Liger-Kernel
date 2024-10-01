@@ -287,23 +287,37 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
         assert isinstance(dummy_model_instance, MllamaForConditionalGeneration)
 
         # Check that model instance variables are not yet patched with Liger modules
-        assert not isinstance(
-            dummy_model_instance.language_model.model.norm, LigerRMSNorm
-        )
+        assert inspect.getsource(
+            dummy_model_instance.language_model.model.norm.forward
+        ) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.language_model.model.layers:
-            assert not isinstance(layer.mlp, LigerSwiGLUMLP)
-            assert not isinstance(layer.input_layernorm, LigerRMSNorm)
-            assert not isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(
+                LigerSwiGLUMLP.forward
+            )
+            assert inspect.getsource(
+                layer.input_layernorm.forward
+            ) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(
+                layer.post_attention_layernorm.forward
+            ) != inspect.getsource(LigerRMSNorm.forward)
 
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
-        assert isinstance(dummy_model_instance.language_model.model.norm, LigerRMSNorm)
+        assert inspect.getsource(
+            dummy_model_instance.language_model.model.norm.forward
+        ) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.language_model.model.layers:
-            assert isinstance(layer.mlp, LigerSwiGLUMLP)
-            assert isinstance(layer.input_layernorm, LigerRMSNorm)
-            assert isinstance(layer.post_attention_layernorm, LigerRMSNorm)
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(
+                LigerSwiGLUMLP.forward
+            )
+            assert inspect.getsource(
+                layer.input_layernorm.forward
+            ) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(
+                layer.post_attention_layernorm.forward
+            ) == inspect.getsource(LigerRMSNorm.forward)
 
 
 def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
