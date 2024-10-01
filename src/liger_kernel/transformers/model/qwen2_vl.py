@@ -115,7 +115,7 @@ def lce_forward(
             inputs_embeds[video_mask] = video_embeds
         if attention_mask is not None:
             attention_mask = attention_mask.to(inputs_embeds.device)
-
+    # The code is copied from https://github.com/huggingface/transformers/pull/33487 
     if position_ids is None and input_ids is not None:
         position_ids, _ = self.get_rope_index(
             input_ids, image_grid_thw, video_grid_thw, attention_mask
