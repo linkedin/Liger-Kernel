@@ -16,6 +16,7 @@ from typing import Callable
 
 import torch
 import triton
+import triton.language as tl
 from packaging.version import Version
 
 
@@ -60,3 +61,10 @@ def compare_version(package: str, operator: Callable, target: str):
         return False
     pkg_version = Version(pkg.__version__)
     return operator(pkg_version, Version(target))
+
+
+torch_to_triton_dtype = {
+    torch.float32: tl.float32,
+    torch.float16: tl.float16,
+    torch.bfloat16: tl.bfloat16,
+}
