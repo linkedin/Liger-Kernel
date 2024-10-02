@@ -79,7 +79,7 @@ def jsd_forward(_input, target, beta):
 
 
 def jsd_backward(dX, grad_output):
-    # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
+    # If jsd is the last layer, grad_output is 1.0. Skip the mul to save time
     if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
         return dX
     else:
@@ -93,6 +93,7 @@ class LigerJSDFunction(torch.autograd.Function):
     Parameters:
     _input (tensor): predict values with shape (BT, V) in logspace
     target (tensor): gournd truth values with shape (BT, V) in logspace
+    beta (float): coefficient beta of generalized JSD in the open interval (0, 1)
 
     Returns:
     loss (tensor): JSD
