@@ -1,17 +1,33 @@
-from test.utils import supports_bfloat16
+from test.utils import set_seed, supports_bfloat16
 
 import pytest
 import torch
 from torch.nn import KLDivLoss
 
-from liger_kernel.transformers.kl_div import LigerKLDIVLoss
+from liger_kernel.transformers.jsd import LigerJSD
+
+set_seed(42)
+
+
+class JSD(torch.nn.Module):
+    def __init__(self):
+        super(JSD, self).__init__()
+        self.kl = KLDivLoss(reduction="batchmean", log_target=True)
+
+    def forward(self, log_p: torch.tensor, log_q: torch.tensor):
+        log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(-1, log_q.size(-1))
+        m = 0.5 * (torch.exp(log_p) + torch.exp(log_q))
+        log_m = torch.log(m)
+        loss = 0.5 * (self.kl(log_m, log_p) + self.kl(log_m, log_q))
+        return loss
+
 
 _SHAPE_PARAMS = (
     "B, T, V",
     [
-        (1, 4096, 32000),
-        (32, 4096, 1024),
-        # weird shape
+        (2, 4096, 32000),  # llama2, mistral
+        (2, 4096, 32000),  # llama2, mistral
+        # # weird shape
         (41, 401, 1271),
         pytest.param(
             1,
@@ -45,20 +61,17 @@ _DTYPE_PARAMS = (
 
 
 def _test_correctness_once(
-    target_kldiv,
+    target_jsd,
     B,
     T,
     V,
     dtype,
     atol,
     rtol,
-    reduction,
-    log_target,
     is_last_layer=True,
     device="cuda",
 ):
-    torch.manual_seed(0)
-    torch_kldiv = KLDivLoss(reduction=reduction, log_target=log_target)
+    torch_jsd = JSD()
 
     input = torch.randn(
         B * T, V, device=device, dtype=dtype, requires_grad=True
@@ -66,22 +79,22 @@ def _test_correctness_once(
 
     x1 = input.detach().clone().requires_grad_(True)
     x2 = input.detach().clone().requires_grad_(True)
+    x3 = input.detach().clone().requires_grad_(True)
 
     with torch.no_grad():
-        target = torch.randn(B * T, V, device=device).softmax(dim=-1)
+        target = torch.randn(B * T, V, dtype=dtype, device=device).log_softmax(dim=-1)
 
-    output = torch_kldiv(x1, target)
-    output2 = target_kldiv(x2, target)
+    output = torch_jsd(x1, target)
+    output2 = target_jsd(x2, target)
     assert torch.allclose(output, output2, atol=atol, rtol=rtol)
-
+    # symmetry
+    output3 = target_jsd(target, x3)
+    assert torch.allclose(output3, output2, atol=atol, rtol=rtol)
     if (
         not is_last_layer
     ):  # if the loss is the last layer, grad_output is 1.0 and mul op is skipped, testing for that reason
         output = output * 2.0
         output2 = output2 * 2.0
-
-    if reduction == "none":
-        return
 
     output.backward()
     output2.backward()
@@ -89,31 +102,15 @@ def _test_correctness_once(
 
 
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
-@pytest.mark.parametrize("log_target", [True, False])
-@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
-def test_correctness(B, T, V, log_target, reduction, dtype, atol, rtol):
-    liger_kldiv = LigerKLDIVLoss(reduction=reduction, log_target=log_target)
-    _test_correctness_once(
-        liger_kldiv, B, T, V, dtype, atol, rtol, reduction, log_target
-    )
+def test_correctness(B, T, V, dtype, atol, rtol):
+    liger_jsd = LigerJSD()
+    _test_correctness_once(liger_jsd, B, T, V, dtype, atol, rtol)
 
 
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
-@pytest.mark.parametrize("log_target", [True, False])
-@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
-def test_correctness_not_last(B, T, V, log_target, reduction, dtype, atol, rtol):
-    liger_kldiv = LigerKLDIVLoss(reduction=reduction, log_target=log_target)
-    _test_correctness_once(
-        liger_kldiv,
-        B,
-        T,
-        V,
-        dtype,
-        atol,
-        rtol,
-        reduction,
-        log_target,
-        is_last_layer=False,
-    )
+def test_correctness_not_last(B, T, V, dtype, atol, rtol):
+    liger_jsd = LigerJSD()
+
+    _test_correctness_once(liger_jsd, B, T, V, dtype, atol, rtol, is_last_layer=False)

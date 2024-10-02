@@ -29,8 +29,8 @@
             </a>
         </td>
         <td style="padding: 10px;">
-            <a href="https://discord.gg/CX2YmNmn">
-                <img src="https://dcbadge.vercel.app/api/server/cudamode?style=flat" alt="Join Our Discord">
+            <a href="https://discord.gg/gpumode">
+                <img src="https://dcbadge.vercel.app/api/server/gpumode?style=flat" alt="Join Our Discord">
             </a>
         </td>
     </tr>
@@ -106,7 +106,10 @@ With one line of code, Liger Kernel can increase throughput by more than 20% and
 
 - `torch >= 2.1.2`
 - `triton >= 2.3.0`
-- `transformers >= 4.42.0`
+
+### Optional Dependencies
+
+- `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -129,7 +132,10 @@ To install from source:
 git clone https://github.com/linkedin/Liger-Kernel.git
 cd Liger-Kernel
 pip install -e .
+# or if using transformers
+pip install -e .[transformers]
 ```
+
 ## Getting Started
 
 There are a couple of ways to apply Liger kernels, depending on the level of customization required.
@@ -226,9 +232,9 @@ loss.backward()
 | Mixtral     | `liger_kernel.transformers.apply_liger_kernel_to_mixtral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Gemma1      | `liger_kernel.transformers.apply_liger_kernel_to_gemma`    | RoPE, RMSNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
 | Gemma2      | `liger_kernel.transformers.apply_liger_kernel_to_gemma2`   | RoPE, RMSNorm, GeGLU, CrossEntropyLoss         |
-| Qwen2       | `liger_kernel.transformers.apply_liger_kernel_to_qwen2`    | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
+| Qwen2 & Qwen2.5      | `liger_kernel.transformers.apply_liger_kernel_to_qwen2`    | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Qwen2-VL       | `liger_kernel.transformers.apply_liger_kernel_to_qwen2_vl`    | RMSNorm, LayerNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
-| Phi3        | `liger_kernel.transformers.apply_liger_kernel_to_phi3`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
+| Phi3 & Phi3.5       | `liger_kernel.transformers.apply_liger_kernel_to_phi3`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
 
 
 
