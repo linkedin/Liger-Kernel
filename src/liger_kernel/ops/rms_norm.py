@@ -213,7 +213,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
 
     shape = X.shape
     dim = shape[-1]
-    X = X.reshape(-1, dim)
+    X = X.view(-1, dim)
     n_rows, n_cols = X.shape
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
@@ -254,7 +254,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
 def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps):
     shape = dY.shape
     dim = shape[-1]
-    dY = dY.view(-1, dim).contiguous()
+    dY = dY.view(-1, dim)
     n_rows, n_cols = dY.shape
 
     sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
@@ -286,7 +286,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
-    dX = dY.reshape(*shape)
+    dX = dY.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype)
     return dX, dW
 
