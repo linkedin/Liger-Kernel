@@ -140,6 +140,7 @@ def create_multimodal_dataset(model_name: str):
             padding="max_length",
             truncation=True,
             max_length=1024,  # longer than for text-only b/c images require quite a few tokens
+            return_tensors="pt",
         )
 
     train_dataset = (
