@@ -20,6 +20,8 @@ jobs:
 
     steps:
     - name: Run on GPU host
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
         echo "Source ${{ github.head_ref }} base ref ${{ github.base_ref}} ref ${{ github.ref }}";
         curl -s -f -N -y 600 -Y 1 -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
