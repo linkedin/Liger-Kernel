@@ -87,16 +87,18 @@ def jsd_backward(dX, grad_output):
 
 
 class LigerJSDFunction(torch.autograd.Function):
-    """
-    Class implementing the forward and backward pass for the JS Divergence using Triton, as defined by the following formula:
+    r"""
+    This class implements the forward and backward pass for the generalized Jensen-Shannon Divergence.
+    .. math::
+        JSD(\beta)(P || Q)
+            = \beta * KLDiv(P || (\beta * P + (1 - \beta) * Q)) + (1 - \beta) * KLDiv(Q || (\beta * P + (1 - \beta) * Q))
 
-    Parameters:
-    _input (tensor): predict values with shape (BT, V) in logspace
-    target (tensor): ground truth values with shape (BT, V) in logspace
-    beta (float): coefficient beta of generalized JSD in the open interval (0, 1)
-
-    Returns:
-    loss (tensor): JSD
+    .. note::
+        As all the other losses in PyTorch, this function expects the first argument,
+        :attr:`_input`, to be the predictions, the output of the student model, in log-space
+        and the second, :attr:`target`, to be the observations, the output of the teacher model, in log-space.
+        This differs from the standard mathematical notation :math:`JSD(P || Q)` where
+        :math:`P` denotes the teacher model and :math:`Q` denotes the student model.
     """
 
     @staticmethod
@@ -107,7 +109,15 @@ class LigerJSDFunction(torch.autograd.Function):
         target: torch.Tensor,
         beta: float = 0.5,
     ) -> torch.Tensor:
+        """
+        Args:
+            _input (torch.Tensor): predict values with shape (BT, V) in logspace
+            target (torch.Tensor): ground truth values with shape (BT, V) in logspace
+            beta (float): coefficient beta of generalized JSD in the open interval (0, 1)
 
+        Returns:
+            loss (torch.Tensor): generalized JSD
+        """
         loss, dX = jsd_forward(_input, target, beta)
         ctx.save_for_backward(dX)
         return loss

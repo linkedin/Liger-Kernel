@@ -27,7 +27,7 @@ class TorchJSD(nn.Module):
     ):
         log_p, log_q = log_p.to(torch.float), log_q.to(torch.float)
         log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(-1, log_q.size(-1))
-        m = self.beta * torch.exp(log_p) + (1 - self.beta) * torch.exp(log_q)
+        m = torch.lerp(torch.exp(log_p), torch.exp(log_q), self.beta)
         loss = self.beta * self.kl(torch.log(m), log_p) + (1 - self.beta) * self.kl(
             torch.log(m), log_q
         )
