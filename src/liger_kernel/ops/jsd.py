@@ -92,7 +92,7 @@ class LigerJSDFunction(torch.autograd.Function):
 
     Parameters:
     _input (tensor): predict values with shape (BT, V) in logspace
-    target (tensor): gournd truth values with shape (BT, V) in logspace
+    target (tensor): ground truth values with shape (BT, V) in logspace
     beta (float): coefficient beta of generalized JSD in the open interval (0, 1)
 
     Returns:

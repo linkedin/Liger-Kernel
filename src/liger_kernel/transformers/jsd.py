@@ -11,5 +11,5 @@ class LigerJSD(nn.Module):
         ), f"beta must be greater than 0 and less than 1. Got: {beta}"
         self.beta = beta
 
-    def forward(self, p, q):
-        return LigerJSDFunction.apply(p, q, self.beta)
+    def forward(self, log_q, log_p):
+        return LigerJSDFunction.apply(log_q, log_p, self.beta)
