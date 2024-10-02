@@ -213,8 +213,10 @@ def cross_entropy_forward(_input, target, ignore_index, label_smoothing, reducti
         target = target.contiguous()
 
     # Here we use a trick to store X_ptr gradient in X_ptr so we can save memory
-    # explicitly declare in-place operation is performed
+    # Explicitly declare an in-place operation is performed by adding a numerical value of 0 to the input in-place
+    # https://pytorch.org/docs/stable/autograd.html#in-place-correctness-checks
     _input.add_(0)
+    
     liger_cross_entropy_kernel[(n_rows,)](
         X_ptr=_input,
         X_stride=_input.stride(-2),
