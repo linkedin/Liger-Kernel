@@ -15,6 +15,7 @@ from liger_kernel.transformers import (
     LigerSwiGLUMLP,
     monkey_patch,
 )
+from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.monkey_patch import (
     MODEL_TYPE_TO_APPLY_LIGER_FN,
     _apply_liger_kernel,
@@ -631,6 +632,84 @@ def test_apply_liger_kernel_to_instance_for_qwen2():
             assert inspect.getsource(
                 layer.post_attention_layernorm.forward
             ) == inspect.getsource(LigerRMSNorm.forward)
+
+
+def test_apply_liger_kernel_to_instance_for_qwen2_vl():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen2_vl.modeling_qwen2_vl"):
+        from transformers.models.qwen2_vl.modeling_qwen2_vl import (
+            Qwen2VLForConditionalGeneration,
+        )
+
+        # Instantiate a dummy model
+        config = transformers.models.qwen2_vl.configuration_qwen2_vl.Qwen2VLConfig(
+            torch_dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=48,
+            embed_dim=16,
+            hidden_act="silu",
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=128,
+            vocab_size=1000,
+            vision_config={
+                "depth": 4,
+                "embed_dim": 128,
+                "num_heads": 8,
+                "hidden_size": 1024,
+            },
+        )
+        dummy_model_instance = Qwen2VLForConditionalGeneration._from_config(config)
+
+        assert isinstance(dummy_model_instance, Qwen2VLForConditionalGeneration)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(
+            dummy_model_instance.model.norm.forward
+        ) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(
+                LigerSwiGLUMLP.forward
+            )
+            assert inspect.getsource(
+                layer.input_layernorm.forward
+            ) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(
+                layer.post_attention_layernorm.forward
+            ) != inspect.getsource(LigerRMSNorm.forward)
+        for vision_block in dummy_model_instance.visual.blocks:
+            assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(
+                LigerLayerNorm.forward
+            )
+            assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(
+                LigerLayerNorm.forward
+            )
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(
+            dummy_model_instance.model.norm.forward
+        ) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(
+                LigerSwiGLUMLP.forward
+            )
+            assert inspect.getsource(
+                layer.input_layernorm.forward
+            ) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(
+                layer.post_attention_layernorm.forward
+            ) == inspect.getsource(LigerRMSNorm.forward)
+        for vision_block in dummy_model_instance.visual.blocks:
+            assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(
+                LigerLayerNorm.forward
+            )
+            assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(
+                LigerLayerNorm.forward
+            )
 
 
 def test_apply_liger_kernel_to_instance_for_phi3():

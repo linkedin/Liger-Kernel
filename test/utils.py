@@ -55,10 +55,27 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
     # Determine the tolerance
     tolerance = atol + rtol * torch.abs(tensor2)
 
-    # Find mismatched elements
-    mismatched = diff > tolerance
+    # Find tolerance mismatched elements
+    tol_mismatched = diff > tolerance
 
-    # Get the indices of mismatched elements
+    # Find nan mismatched elements
+    nan_mismatched = torch.logical_xor(torch.isnan(tensor1), torch.isnan(tensor2))
+
+    # Find +inf mismatched elements
+    posinf_mismatched = torch.logical_xor(
+        torch.isposinf(tensor1), torch.isposinf(tensor2)
+    )
+    # Find -inf mismatched elements
+    neginf_mismatched = torch.logical_xor(
+        torch.isneginf(tensor1), torch.isneginf(tensor2)
+    )
+
+    # Find all mismatched elements
+    mismatched = torch.logical_or(
+        torch.logical_or(tol_mismatched, nan_mismatched),
+        torch.logical_or(posinf_mismatched, neginf_mismatched),
+    )
+
     mismatched_indices = torch.nonzero(mismatched)
 
     # Count the number of mismatched elements
@@ -68,7 +85,7 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
     all_close = num_mismatched == 0
 
     # Raise AssertionError with detailed information if there are mismatches
-    if not all_close and num_mismatched > 1:
+    if not all_close and num_mismatched >= 1:
         mismatch_details = [f"Number of mismatched elements: {num_mismatched}"]
         print_count = min(max_print, num_mismatched)
         for index in mismatched_indices[:print_count]:
