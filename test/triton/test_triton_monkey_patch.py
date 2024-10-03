@@ -1,4 +1,5 @@
 import pytest
+import time
 
 
 def test_import_from_root():
@@ -16,6 +17,8 @@ def test_import_custom_cache_manager():
     apply_liger_triton_cache_manager()
     cache_manager = get_cache_manager(key="test_hash")
     from liger_kernel.triton.monkey_patch import LigerTritonFileCacheManager
+    print("I am so sleepy. Now sleeping...")
+    time.sleep(3600)
 
     assert isinstance(
         cache_manager, LigerTritonFileCacheManager
