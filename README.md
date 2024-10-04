@@ -328,7 +328,8 @@ Many thanks to the contributors to these projects for their invaluable work that
 
 ## License
 
-[BSD 2-CLAUSE](https://github.com/linkedin/Liger-Kernel/blob/main/LICENSE)
+This project is licensed under the [BSD 2-CLAUSE](https://github.com/linkedin/Liger-Kernel/blob/main/LICENSE) License (see `LICENSE` for details).
+Additionally, this project includes components licensed under the Apache License, Version 2.0 (see `LICENSE-Apache-2.0` for details).
 
 ## Contact
 
