@@ -1,20 +1,28 @@
 from liger_kernel.ops.rope import LigerRopeFunction
 
-
-def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+def apply_rotary_positional_embedding(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    cos_embeddings: torch.Tensor,
+    sin_embeddings: torch.Tensor,
+    position_ids: torch.Tensor = None,
+    unsqueeze_dim: int = 1
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Applies Rotary Positional Embedding (RoPE) operation to query and key states.
 
     Args:
-        q (torch.Tensor): The query tensor of shape (bsz, n_q_head, seq_len, head_dim).
-        k (torch.Tensor): The key tensor of shape (bsz, n_kv_head, seq_len, head_dim).
-        cos (torch.Tensor): The cosine tensor of shape (1, seq_len, head_dim).
-        sin (torch.Tensor): The sine tensor of shape (1, seq_len, head_dim).
-        position_ids (torch.Tensor, optional): The position ids tensor. Defaults to None.
-        unsqueeze_dim (int, optional): The dimension to unsqueeze. Defaults to 1.
+        query (torch.Tensor): Query tensor of shape (batch_size, num_query_heads, sequence_length, head_dim).
+        key (torch.Tensor): Key tensor of shape (batch_size, num_kv_heads, sequence_length, head_dim).
+        cos_embeddings (torch.Tensor): Cosine embeddings tensor of shape (1, sequence_length, head_dim).
+        sin_embeddings (torch.Tensor): Sine embeddings tensor of shape (1, sequence_length, head_dim).
+        position_ids (torch.Tensor, optional): Position ids tensor. Defaults to None.
+        unsqueeze_dim (int, optional): Dimension to unsqueeze. Defaults to 1.
 
     Returns:
-        Tuple[torch.Tensor, torch.Tensor]: The query and key tensors after applying the RoPE operation.
+        Tuple[torch.Tensor, torch.Tensor]: Query and key tensors after applying the RoPE operation.
     """
 
-    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+    return LigerRopeFunction.apply(
+        query, key, cos_embeddings, sin_embeddings, position_ids, unsqueeze_dim
+    )
