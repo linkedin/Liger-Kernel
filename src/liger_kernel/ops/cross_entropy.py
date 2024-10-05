@@ -126,7 +126,7 @@ def liger_cross_entropy_kernel(
     # So we can safely calculate log (softmax(X_y)) without overflow
     loss = -(ori_X_y - m - tl.log(d))
 
-    # Orginal loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
+    # Original loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
     # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
     #          = (1 - label_smoothing) * H(q, p) + eps * sum(logsoftmax(x_i))
     # By using m (global max of xi) and d (sum of e^(xi-m)), we can simplify as:

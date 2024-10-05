@@ -251,6 +251,7 @@ loss.backward()
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
 | FusedLinearCrossEntropy         | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
 | KLDivergence                    | `liger_kernel.transformers.LigerKLDIVLoss`                  |
+| JSD                             | `liger_kernel.transformers.LigerJSD`                        |
 
 - **RMSNorm**: [RMSNorm](https://arxiv.org/pdf/1910.07467), which normalizes activations using their root mean square, is implemented by fusing the normalization and scaling steps into a single Triton kernel, and achieves ~3X speedup with ~3X peak memory reduction.
 - **LayerNorm**: [LayerNorm](https://arxiv.org/pdf/1607.06450), which centers and normalizes activations across the feature dimension, is implemented by fusing the centering, normalization and scaling steps into a single Triton kernel, and achieves ~2X speedup.
@@ -265,16 +266,17 @@ $$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$
 <!-- TODO: verify vocab sizes are accurate  -->
 - **FusedLinearCrossEntropy**: Peak memory usage of cross entropy loss is further improved by fusing the model head with the CE loss and chunking the input for block-wise loss and gradient calculation, a technique inspired by [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy). It achieves >4X memory reduction for 128k vocab size. **This is highly effective for large batch size, large sequence length, and large vocabulary sizes.** Please refer to the [Medusa example](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa) for individual kernel usage.
 - **KLDivergence**: [KL Divergence](https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html) is implemented by fusing the forward into a single triton kernel, with reduction done outside the kernel. It achieves ~1.5X speed and ~15% memory reduction for 128K vocab size.
+- **JSD**: [Generalized JSD](https://arxiv.org/pdf/2306.13649) (Jensen-Shannon divergence), is implemented by computing both the loss and gradient in the forward pass. It achieves ~1.5X speed and ~54% memory reduction for 128k vocab size.
 
 ### Experimental Kernels
 
 | **Kernel**                      | **API**                                                     |
 |---------------------------------|-------------------------------------------------------------|
 | Embedding                       | `liger_kernel.transformers.experimental.LigerEmbedding`     |
-
+| Matmul int2xint8                | `liger_kernel.transformers.experimental.matmul`
 
 - **Embedding**: [Embedding](https://pytorch.org/docs/stable/generated/torch.nn.Embedding.html) is implemented by fusing embedding lookup and output operations. It achieves a peak speedup of ~1.5x in the forward pass and an overall speedup of ~1.1x.
-
+- **Matmul int2xint8**: is implemented by using the cache tiled matrix multiplication and by fusing the matmul with the unpacking process which achieves a considerable speed up and performs on par with @torch.compile
 <!-- TODO: be more specific about batch size -->
 > **Note:**
 > Reported speedups and memory reductions are with respect to the LLaMA 3-8B Hugging Face layer implementations. All models use 4K hidden size and 4K sequence length and are evaluated based on memory usage and wall time for the forward+backward pass on a single NVIDIA A100 80G GPU using small batch sizes. Liger kernels exhibit more efficient scaling to larger batch sizes, detailed further in the [Benchmark](./benchmark) folder.
@@ -327,7 +329,14 @@ Many thanks to the contributors to these projects for their invaluable work that
 
 ## License
 
-[BSD 2-CLAUSE](https://github.com/linkedin/Liger-Kernel/blob/main/LICENSE)
+This project is licensed under the [BSD 2-CLAUSE](https://github.com/linkedin/Liger-Kernel/blob/main/LICENSE) License (see `LICENSE` for details).
+It also includes components from projects licensed under:
+
+- Apache License 2.0 (see `LICENSE-APACHE-2.0` for details).
+- MIT License (see `LICENSE-MIT-AutoAWQ` for details).
+- MIT License (see `LICENSE-MIT-Efficient Cross Entropy` for details).
+- MIT License (see `LICENSE-MIT-llmc` for details).
+- MIT License (see `LICENSE-MIT-triton` for details).
 
 ## Contact
 
