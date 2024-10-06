@@ -1,7 +1,6 @@
 import platform
 import sys
 
-
 def print_env_report():
     """
     Prints a report of the environment. Useful for debugging and reproducibility.
@@ -28,19 +27,25 @@ def print_env_report():
         print("CUDA version: Unable to query")
 
     try:
-        import triton
-
-        print(f"Triton version: {triton.__version__}")
-    except ImportError:
-        print("Triton: Not installed")
-
-    try:
         import transformers
-
         print(f"Transformers version: {transformers.__version__}")
     except ImportError:
         print("Transformers: Not installed")
 
+try:
+        import tensorflow as tf
+        print(f"TensorFlow version: {tf.__version__}")
+    except ImportError:
+        print("TensorFlow: Not installed")
+        
+    try:
+        from pkg_resources import working_set
+        installed_packages = sorted(["{}=={}".format(i.key, i.version) for i in working_set])
+        print("Installed Packages:")
+        for pkg in installed_packages:
+            print(pkg)
+    except ImportError:
+        print("Unable to list installed packages")
 
 if __name__ == "__main__":
     print_env_report()
