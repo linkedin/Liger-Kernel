@@ -21,6 +21,6 @@ class LigerFusedLinearJSD(nn.Module):
             student_weight,
             teacher_input,
             teacher_weight,
-            jsd_beta=self.jsd_beta,
-            temperature=self.temperature,
+            self.jsd_beta,
+            self.temperature,
         )
