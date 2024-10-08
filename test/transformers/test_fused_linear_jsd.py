@@ -80,20 +80,20 @@ class LigerLMHeadJSD(torch.nn.Module):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        (2, 4, 2048, 3200),  # The test does not work on some CI GPUs. Issue #160
-        # (8, 2048, 4096, 32000),  # llama2, mistral
+        (2, 4, 2048, 3200),
+        (8, 2048, 4096, 32000),  # llama2, mistral
         # Comment out to speed up testing
-        # (4, 2048, 4096, 128256),  # llama3 8B
-        # (4, 1024, 8192, 128256),  # llama3 70B
-        # (4, 423, 8192, 32000),  # random shape
+        (4, 2048, 4096, 128256),  # llama3 8B
+        (4, 1024, 8192, 128256),  # llama3 70B
+        (4, 423, 8192, 32000),  # random shape
     ],
 )
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        # (1.0, torch.bfloat16, 5e-3, 5e-2),
+        (1.0, torch.bfloat16, 5e-3, 5e-2),
         (1.0, torch.float32, 1e-5, 5e-4),
-        # (1.0, torch.bfloat16, 5e-0, 5e1),
+        (1.0, torch.bfloat16, 5e-0, 5e1),
         (1.0, torch.float32, 1e-3, 5e-2),
     ],
 )

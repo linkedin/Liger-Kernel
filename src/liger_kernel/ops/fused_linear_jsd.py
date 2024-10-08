@@ -65,12 +65,10 @@ def fused_linear_jsd_forward(
         # unreduced loss
         loss_1d_slice = loss_1d[start_idx:end_idx]  # chunk_size
         # log-softmax with temperature
-        student_prob_chunk = torch.log_softmax(
-            student_logits_chunk / temperature, dim=-1
-        )
-        teacher_prob_chunk = torch.log_softmax(
-            teacher_logits_chunk / temperature, dim=-1
-        )
+        student_logits_chunk = student_logits_chunk / temperature
+        teacher_logits_chunk = teacher_logits_chunk / temperature
+        student_prob_chunk = torch.log_softmax(student_logits_chunk, dim=-1)
+        teacher_prob_chunk = torch.log_softmax(teacher_logits_chunk, dim=-1)
 
         # ensure _input and target are contiguous
         student_prob_chunk = student_prob_chunk.contiguous()
@@ -95,9 +93,12 @@ def fused_linear_jsd_forward(
         # gradients of prob_chunk in place, shape: chunk_size x V
         # gradients of logits_chunk in place, shape: chunk_size x V
         student_logits_chunk = (
-            1 - torch.softmax(student_logits_chunk, dim=-1) * V
+            student_prob_chunk
+            - torch.softmax(student_logits_chunk, dim=-1)
+            * student_prob_chunk.sum(dim=-1, keepdim=True).broadcast_to(
+                student_prob_chunk.shape
+            )
         ) / temperature
-        student_logits_chunk = student_prob_chunk * student_logits_chunk
         grad_input[start_idx:end_idx] = student_logits_chunk @ student_weight
 
         if grad_weight is not None:
