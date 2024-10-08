@@ -95,11 +95,10 @@ def fused_linear_jsd_forward(
         # gradients of prob_chunk, shape: chunk_size x V
         grad_prob_chunk = student_prob_chunk
         # gradients of logits_chunk in place, shape: chunk_size x V
-        student_logits_chunk = torch.ones_like(student_logits_chunk) - torch.softmax(
-            student_logits_chunk, dim=-1
-        )
+        student_logits_chunk = 1 - torch.softmax(student_logits_chunk, dim=-1) * V
+        student_logits_chunk = grad_prob_chunk * student_logits_chunk / temperature
 
-        grad_input[start_idx:end_idx] = grad_prob_chunk @ student_weight
+        grad_input[start_idx:end_idx] = student_logits_chunk @ student_weight
 
         if grad_weight is not None:
             torch.addmm(
