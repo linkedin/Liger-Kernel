@@ -42,10 +42,11 @@ def fused_linear_jsd_forward(
         if student_weight.requires_grad
         else None
     )
-    grad_input = torch.zeros_like(student_input, device=device)
+    grad_input = torch.zeros_like(student_input)
     # we use fp32 for loss accumulator
-    loss_1d = torch.zeros(student_input.shape, dtype=torch.float32, device=device)
+    loss_1d = torch.zeros((BT, V), dtype=torch.float32, device=device)
 
+    print(num_chunks)
     for chunk_id in range(num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = min((chunk_id + 1) * chunk_size, BT)
@@ -57,12 +58,12 @@ def fused_linear_jsd_forward(
         # when doing matmul, use the original precision, shape: chunk_size x V
         student_logits_chunk = student_input_chunk @ student_weight.t()
         teacher_logits_chunk = teacher_input_chunk @ teacher_weight.t()
-
+        print(f"{student_weight.shape=}")
+        print(f"{student_input_chunk.shape=}, {student_logits_chunk.shape=}")
         chunk_n_rows = student_logits_chunk.shape[0]
 
         # unreduced loss
-        loss_1d_slice = loss_1d[start_idx:end_idx]  # chunk_size,
-
+        loss_1d_slice = loss_1d[start_idx:end_idx]  # chunk_size
         # log-softmax with temperature
         student_prob_chunk = torch.log_softmax(
             student_logits_chunk / temperature, dim=-1
@@ -90,14 +91,13 @@ def fused_linear_jsd_forward(
             n_cols=V,
             BLOCK_SIZE=BLOCK_SIZE,
         )
-
         loss_1d[start_idx:end_idx] = loss_1d_slice
-        # gradients of prob_chunk, shape: chunk_size x V
-        grad_prob_chunk = student_prob_chunk
+        # gradients of prob_chunk in place, shape: chunk_size x V
         # gradients of logits_chunk in place, shape: chunk_size x V
-        student_logits_chunk = 1 - torch.softmax(student_logits_chunk, dim=-1) * V
-        student_logits_chunk = grad_prob_chunk * student_logits_chunk / temperature
-
+        student_logits_chunk = (
+            1 - torch.softmax(student_logits_chunk, dim=-1) * V
+        ) / temperature
+        student_logits_chunk = student_prob_chunk * student_logits_chunk
         grad_input[start_idx:end_idx] = student_logits_chunk @ student_weight
 
         if grad_weight is not None:
