@@ -1,10 +1,18 @@
 import torch
 import triton
 import triton.language as tl
+from torch.nn import CrossEntropyLoss
+from utils import (
+    QUANTILES,
+    SingleBenchmarkRunInput,
+    SingleBenchmarkRunOutput,
+    _test_memory,
+    parse_benchmark_script_args,
+    run_benchmarks,
+)
 
-from liger_kernel.ops.utils import element_mul_kernel
 
-
+# original liger ce
 @triton.jit
 def liger_cross_entropy_kernel(
     X_ptr,
@@ -17,7 +25,6 @@ def liger_cross_entropy_kernel(
     n_non_ignore,
     ignore_index,
     label_smoothing: tl.constexpr,
-    reduction: tl.constexpr,  # set it as constexpr since reduction is always known at compile time
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -35,7 +42,6 @@ def liger_cross_entropy_kernel(
     n_non_ignore (int): The number of non-ignored elements in the batch.
     ignore_index (int): The index to ignore in the target.
     label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
-    reduction (str): The string for the reduction to apply
     BLOCK_SIZE (int): The block size for Triton operations.
     """
 
@@ -87,33 +93,20 @@ def liger_cross_entropy_kernel(
         d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
         m = m_new
 
-    # 4. [Online Softmax] Second pass: compute gradients
-    # For 'mean' reduction, gradients are normalized by number of non-ignored elements (N)
+    # 4. [Online softmax] second pass: calculate the gradients
     # dx_y = (softmax(x_y) - 1) / N
     # dx_i = softmax(x_i) / N, i != y
+    # N is the number of non ignored elements in the batch
     # For label smoothing:
     # dx_i = (softmax(x_y) - label_smoothing / V) / N, V = n_cols, i != y
     # dx_y = (softmax(x_y) - label_smoothing / V - (1 - label_smoothing)) / N
     #      = dx_i - (1 - label_smoothing) / N
-    #
-    # For 'sum' reduction, no normalization is applied:
-    # dx_y = softmax(x_y) - 1
-    # dx_i = softmax(x_i), for i ≠ y
-    # For label smoothing:
-    # dx_i = (softmax(x_y) - label_smoothing / V), V = n_cols, i != y
-    # dx_y = (softmax(x_y) - label_smoothing / V - (1 - label_smoothing))
-    #      = dx_i - (1 - label_smoothing)
-
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(
             X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
         )
-        if reduction == "mean":
-            X_block = (tl.exp(X_block - m) / d - eps) / (n_non_ignore)
-        else:
-            X_block = tl.exp(X_block - m) / d - eps
-
+        X_block = (tl.exp(X_block - m) / d - eps) / (n_non_ignore)
         tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
 
     # We need tl.debug_barrier() to ensure the new result of X_ptr is written as mentioned in
@@ -128,7 +121,7 @@ def liger_cross_entropy_kernel(
     # So we can safely calculate log (softmax(X_y)) without overflow
     loss = -(ori_X_y - m - tl.log(d))
 
-    # Original loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
+    # Orginal loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
     # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
     #          = (1 - label_smoothing) * H(q, p) + eps * sum(logsoftmax(x_i))
     # By using m (global max of xi) and d (sum of e^(xi-m)), we can simplify as:
@@ -140,16 +133,9 @@ def liger_cross_entropy_kernel(
         smooth_loss = scaled_x_sum + label_smoothing * (m + tl.log(d))
         loss = loss * (1 - label_smoothing) + smooth_loss
 
-    # Normalize the loss by the number of non-ignored elements if reduction is "mean"
-    if reduction == "mean":
-        loss = loss / n_non_ignore
-
     # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - (1 - label_smoothing) / N`
     X_y = tl.load(X_ptr + y)
-    if reduction == "mean":
-        X_y += -(1 - label_smoothing) / (n_non_ignore)
-    else:
-        X_y += -(1 - label_smoothing)
+    X_y += -(1 - label_smoothing) / (n_non_ignore)
 
     tl.store(loss_ptr, loss)
     tl.store(X_ptr + y, X_y)
@@ -161,7 +147,43 @@ def liger_cross_entropy_kernel(
 MAX_FUSED_SIZE = 65536 // 2  # the best size we found by manually tuning
 
 
-def cross_entropy_forward(_input, target, ignore_index, label_smoothing, reduction):
+@triton.jit
+def element_mul_kernel(
+    X_ptr,
+    X_stride,
+    grad_output_ptr,
+    n_cols,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """
+    This function multiplies each element of the tensor pointed by X_ptr with the value pointed by grad_output_ptr.
+    The multiplication is performed in-place on the tensor pointed by X_ptr.
+
+    Parameters:
+    X_ptr: Pointer to the input tensor.
+    X_stride (int): The stride of the input tensor.
+    grad_output_ptr: Pointer to the gradient output value.
+    n_cols (int): The number of columns in the input tensor.
+    BLOCK_SIZE (int): The block size for Triton operations.
+    """
+
+    # Get the program ID and convert it to int64 to avoid overflow
+    program_id = tl.program_id(0).to(tl.int64)
+
+    # Locate the start index
+    X_ptr += program_id * X_stride
+
+    # Load the gradient output value
+    grad_output = tl.load(grad_output_ptr)
+
+    # Perform the element-wise multiplication
+    for i in range(0, n_cols, BLOCK_SIZE):
+        X_offsets = i + tl.arange(0, BLOCK_SIZE)
+        X_block = tl.load(X_ptr + X_offsets, mask=X_offsets < n_cols)
+        tl.store(X_ptr + X_offsets, X_block * grad_output, mask=X_offsets < n_cols)
+
+
+def cross_entropy_forward(_input, target, ignore_index, label_smoothing):
     BT, V = _input.shape
     n_rows = BT
 
@@ -190,14 +212,13 @@ def cross_entropy_forward(_input, target, ignore_index, label_smoothing, reducti
         n_non_ignore=n_non_ignore,
         ignore_index=ignore_index,
         label_smoothing=label_smoothing,
-        reduction=reduction,
         BLOCK_SIZE=BLOCK_SIZE,
         # TODO: 32 seems to give the best performance
         # Performance is quite sensitive to num_warps
         num_warps=32,
     )
 
-    loss = torch.sum(loss_1d)
+    loss = torch.sum(loss_1d) / n_non_ignore
     return loss, _input
 
 
@@ -232,9 +253,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(
-        ctx, _input, target, ignore_index=-100, label_smoothing=0.0, reduction="mean"
-    ):
+    def forward(ctx, _input, target, ignore_index=-100, label_smoothing=0.0):
         """
         The forward pass of the Liger Cross Entropy loss.
 
@@ -244,13 +263,12 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         target (tensor): The target tensor of shape (BT) where each value is in [0, V-1].
         ignore_index (int): The index to ignore in the target.
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
-        reduction (str): The reduction to apply to the output: "none" | "mean | "sum".
 
         Returns:
         tensor: The computed loss.
         """
         loss, _input = cross_entropy_forward(
-            _input, target, ignore_index, label_smoothing, reduction
+            _input, target, ignore_index, label_smoothing
         )
         # TODO: investigation
         # If we don't detach the _input tensor, the memory will double
@@ -277,5 +295,234 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             None,
             None,
             None,
+        )
+
+
+class LigerCrossEntropyLoss(CrossEntropyLoss):
+    def __init__(self, *args, **kwargs):
+        super(LigerCrossEntropyLoss, self).__init__(*args, **kwargs)
+        assert (self.label_smoothing >= 0) and (
+            self.label_smoothing <= 1
+        ), f"label_smoothing must be between 0.0 and 1.0. Got: {self.label_smoothing}"
+
+    def forward(self, _input, target):
+        return LigerCrossEntropyFunction.apply(
+            _input, target, self.ignore_index, self.label_smoothing
+        )
+
+
+# liger ce with hint
+def cross_entropy_hint_forward(_input, target, ignore_index, label_smoothing):
+    BT, V = _input.shape
+    n_rows = BT
+
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+
+    # unreduced loss
+    loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
+
+    n_non_ignore = (target != ignore_index).sum().item()
+
+    # ensure _input and target are contiguous in the last dimension
+    if _input.stride(-1) != 1:
+        _input = _input.contiguous()
+    if target.stride(-1) != 1:
+        target = target.contiguous()
+
+    # Here we use a trick to store X_ptr gradient in X_ptr so we can save memory
+    # inplace hint
+    _input.add_(0)
+    liger_cross_entropy_kernel[(n_rows,)](
+        X_ptr=_input,
+        X_stride=_input.stride(-2),
+        Y_ptr=target,
+        Y_stride=target.stride(-1),  # always 1
+        loss_ptr=loss_1d,
+        loss_stride=loss_1d.stride(-1),  # always 1
+        n_cols=V,
+        n_non_ignore=n_non_ignore,
+        ignore_index=ignore_index,
+        label_smoothing=label_smoothing,
+        BLOCK_SIZE=BLOCK_SIZE,
+        # TODO: 32 seems to give the best performance
+        # Performance is quite sensitive to num_warps
+        num_warps=32,
+    )
+
+    loss = torch.sum(loss_1d) / n_non_ignore
+    return loss, _input
+
+
+class LigerCrossEntropyHintFunction(torch.autograd.Function):
+    """
+    This class implements a custom autograd function for the Liger Cross Entropy loss.
+    It overrides the forward and backward methods of the torch.autograd.Function class.
+    """
+
+    @staticmethod
+    def forward(ctx, _input, target, ignore_index=-100, label_smoothing=0.0):
+        """
+        The forward pass of the Liger Cross Entropy loss.
+
+        Parameters:
+        ctx : The context object.
+        _input (tensor): The input tensor of shape (BT, V) where B is batch size, T is sequence length, V is vocab size.
+        target (tensor): The target tensor of shape (BT) where each value is in [0, V-1].
+        ignore_index (int): The index to ignore in the target.
+        label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
+
+        Returns:
+        tensor: The computed loss.
+        """
+        loss, _input = cross_entropy_hint_forward(
+            _input, target, ignore_index, label_smoothing
+        )
+        # TODO: investigation
+        # If we don't detach the _input tensor, the memory will double
+        # Not sure why but seems that there will be a time both grad and value exist but in different location
+        ctx.save_for_backward(_input.detach())
+        return loss
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        The backward pass of the Liger Cross Entropy loss.
+
+        Parameters:
+        ctx : The context object with saved tensors.
+        grad_output (tensor): The tensor containing the gradient of the loss with respect to the output.
+
+        Returns:
+        tuple: A tuple with the gradients with respect to the inputs. The elements are tensors or None.
+        """
+        (_input,) = ctx.saved_tensors
+        _input = cross_entropy_backward(_input, grad_output)
+        return (
+            _input,
+            None,
+            None,
             None,
         )
+
+
+class LigerCrossEntropyHintLoss(CrossEntropyLoss):
+    def __init__(self, *args, **kwargs):
+        super(LigerCrossEntropyHintLoss, self).__init__(*args, **kwargs)
+        assert (self.label_smoothing >= 0) and (
+            self.label_smoothing <= 1
+        ), f"label_smoothing must be between 0.0 and 1.0. Got: {self.label_smoothing}"
+
+    def forward(self, _input, target):
+        return LigerCrossEntropyHintFunction.apply(
+            _input, target, self.ignore_index, self.label_smoothing
+        )
+
+
+def bench_memory_cross_entropy(
+    input: SingleBenchmarkRunInput,
+) -> SingleBenchmarkRunOutput:
+    liger_ce_hint = LigerCrossEntropyHintLoss()
+    liger_ce = LigerCrossEntropyLoss()
+
+    V = input.x
+    provider = input.kernel_provider
+    B = input.extra_benchmark_config["B"]
+    T = input.extra_benchmark_config["T"]
+
+    _input = torch.randn(B * T, V, requires_grad=True, device="cuda")
+    target = torch.randint(V, (B * T, 1), device="cuda").squeeze(1)
+
+    def fwd():
+        if provider == "hint":
+            return liger_ce_hint(_input, target)
+        else:
+            return liger_ce(_input, target)
+
+    def full():
+        y = fwd()
+        y.backward()
+
+    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
+
+
+def bench_speed_cross_entropy(
+    input: SingleBenchmarkRunInput,
+) -> SingleBenchmarkRunOutput:
+    liger_ce_hint = LigerCrossEntropyHintLoss()
+    liger_ce = LigerCrossEntropyLoss()
+
+    V = input.x
+    provider = input.kernel_provider
+    mode = input.kernel_operation_mode
+    B = input.extra_benchmark_config["B"]
+    T = input.extra_benchmark_config["T"]
+
+    _input = torch.randn(B * T, V, requires_grad=True, device="cuda")
+    target = torch.randint(V, (B * T, 1), device="cuda").squeeze(1)
+
+    def fwd():
+        if provider == "hint":
+            return liger_ce_hint(_input, target)
+        else:
+            return liger_ce(_input, target)
+
+    if mode == "forward":
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
+    elif mode == "backward":
+        y = fwd()
+
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            lambda: y.backward(retain_graph=True),
+            grad_to_none=[_input],
+            rep=100,
+            quantiles=QUANTILES,
+        )
+    elif mode == "full":
+
+        def full():
+            y = fwd()
+            y.backward()
+
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            full, rep=100, quantiles=QUANTILES
+        )
+
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
+
+
+if __name__ == "__main__":
+    args = parse_benchmark_script_args()
+
+    common_configs = {
+        "kernel_name": "cross_entropy",
+        "x_name": "V",
+        "x_label": "vocab size",
+        "x_values": [2**i for i in range(12, 18)],
+        "kernel_providers": ["hint", "original"],
+        "extra_benchmark_configs": [{"B": 8, "T": 2048}],
+        "overwrite": args.overwrite,
+    }
+
+    run_benchmarks(
+        bench_test_fn=bench_speed_cross_entropy,
+        kernel_operation_modes=["forward", "full"],
+        metric_name="speed",
+        metric_unit="ms",
+        **common_configs,
+    )
+    run_benchmarks(
+        bench_test_fn=bench_memory_cross_entropy,
+        kernel_operation_modes=["full"],
+        metric_name="memory",
+        metric_unit="MB",
+        **common_configs,
+    )
