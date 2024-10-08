@@ -80,9 +80,9 @@ def fused_linear_jsd_forward(
             X_ptr=student_prob_chunk,
             X_stride=student_prob_chunk.stride(-2),
             Y_ptr=teacher_prob_chunk,
-            Y_stride=teacher_prob_chunk.stride(-2),  # always 1
+            Y_stride=teacher_prob_chunk.stride(-2),
             loss_ptr=loss_1d_slice,
-            loss_stride=loss_1d_slice.stride(-1),  # always 1
+            loss_stride=loss_1d_slice.stride(-2),
             dX_ptr=student_prob_chunk,
             dX_stride=student_prob_chunk.stride(-2),
             beta=jsd_beta,
@@ -107,7 +107,6 @@ def fused_linear_jsd_forward(
                 mat2=student_input_chunk,
                 out=grad_weight,
             )
-            torch.matmul
 
     loss = torch.sum(loss_1d) / BT
     return loss, grad_input, grad_weight

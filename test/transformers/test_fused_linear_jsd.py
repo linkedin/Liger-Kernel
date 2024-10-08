@@ -103,6 +103,8 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
         H=H,
         V=V,
         dtype=dtype,
+        temperature=temperature,
+        beta=beta,
     ).to(device)
 
     # init the linear in all CEs with the same weights
