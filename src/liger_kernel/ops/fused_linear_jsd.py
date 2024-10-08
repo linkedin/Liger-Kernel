@@ -46,7 +46,6 @@ def fused_linear_jsd_forward(
     # we use fp32 for loss accumulator
     loss_1d = torch.zeros((BT, V), dtype=torch.float32, device=device)
 
-    print(num_chunks)
     for chunk_id in range(num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = min((chunk_id + 1) * chunk_size, BT)
@@ -58,8 +57,6 @@ def fused_linear_jsd_forward(
         # when doing matmul, use the original precision, shape: chunk_size x V
         student_logits_chunk = student_input_chunk @ student_weight.t()
         teacher_logits_chunk = teacher_input_chunk @ teacher_weight.t()
-        print(f"{student_weight.shape=}")
-        print(f"{student_input_chunk.shape=}, {student_logits_chunk.shape=}")
         chunk_n_rows = student_logits_chunk.shape[0]
 
         # unreduced loss
@@ -110,7 +107,7 @@ def fused_linear_jsd_forward(
             )
 
     loss = torch.sum(loss_1d) / BT
-    return loss, grad_input, grad_weight
+    return loss.to(student_input.dtype), grad_input, grad_weight
 
 
 def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
