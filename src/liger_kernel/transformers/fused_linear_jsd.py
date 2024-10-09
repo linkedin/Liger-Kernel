@@ -40,7 +40,7 @@ class LigerFusedLinearJSD(nn.Module):
         assert (
             jsd_beta > 0 and jsd_beta < 1
         ), f"beta must be greater than 0 and less than 1. Got: {jsd_beta}"
-        assert temperature != 0, f"temperature cannot be 0."
+        assert temperature != 0, "temperature cannot be 0."
         self.jsd_beta = jsd_beta
         self.temperature = temperature
 
