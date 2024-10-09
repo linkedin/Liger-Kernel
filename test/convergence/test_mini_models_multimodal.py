@@ -1,24 +1,24 @@
 import functools
 import os
 from test.utils import (
-    UNTOKENIZED_DATASET_PATH,
     FAKE_CONFIGS_PATH,
-    load_tokenizer_config,
-    train_bpe_tokenizer,
+    UNTOKENIZED_DATASET_PATH,
     MiniModelConfig,
     assert_verbose_allclose,
+    load_tokenizer_config,
     multimodal_collate_fn,
     revert_liger_kernel_to_mllama,
     revert_liger_kernel_to_qwen2_vl,
     set_seed,
     supports_bfloat16,
+    train_bpe_tokenizer,
 )
+
 import pytest
 import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
-from transformers.models.mllama.image_processing_mllama import MllamaImageProcessor
 
 from liger_kernel.transformers import (
     apply_liger_kernel_to_mllama,
@@ -27,13 +27,15 @@ from liger_kernel.transformers import (
 
 try:
     # Qwen2-VL is only available in transformers>=4.45.0
+    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
+    from transformers.models.qwen2_vl.image_processing_qwen2_vl import (
+        Qwen2VLImageProcessor,
+    )
     from transformers.models.qwen2_vl.modeling_qwen2_vl import (
         Qwen2VLForConditionalGeneration,
     )
     from transformers.models.qwen2_vl.processing_qwen2_vl import Qwen2VLProcessor
-    from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
 
     QWEN2_VL_AVAILABLE = True
 except ImportError:
@@ -46,10 +48,10 @@ try:
         MllamaTextConfig,
         MllamaVisionConfig,
     )
+    from transformers.models.mllama.image_processing_mllama import MllamaImageProcessor
     from transformers.models.mllama.modeling_mllama import (
         MllamaForConditionalGeneration,
     )
-    from transformers.models.mllama.image_processing_mllama import MllamaImageProcessor
     from transformers.models.mllama.processing_mllama import MllamaProcessor
 
     MLLAMA_AVAILABLE = True
@@ -180,27 +182,51 @@ if QWEN2_VL_AVAILABLE:
 
 def create_processor(model_name):
     if model_name == "mini_qwen2_vl":
-        tokenizer_config = load_tokenizer_config(os.path.join(FAKE_CONFIGS_PATH, "Qwen/Qwen2-VL-7B-Instruct/tokenizer_config.json"))
-        tokenizer_base = train_bpe_tokenizer(
-            [token.content for key, token in sorted(tokenizer_config["added_tokens_decoder"].items(), key=lambda x: int(x[0]))]
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH, "Qwen/Qwen2-VL-7B-Instruct/tokenizer_config.json"
+            )
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        qwen_tokenizer = Qwen2TokenizerFast(
+            tokenizer_object=tokenizer_base, **tokenizer_config
+        )
         image_processor = Qwen2VLImageProcessor()
-        return Qwen2VLProcessor(image_processor=image_processor, tokenizer=qwen_tokenizer)
+        return Qwen2VLProcessor(
+            image_processor=image_processor, tokenizer=qwen_tokenizer
+        )
 
     elif model_name == "mini_mllama":
-        tokenizer_config = load_tokenizer_config(os.path.join(FAKE_CONFIGS_PATH, "meta-llama/Llama-3.2-11B-Vision-Instruct/tokenizer_config.json"))
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH,
+                "meta-llama/Llama-3.2-11B-Vision-Instruct/tokenizer_config.json",
+            )
+        )
         tokenizer_base = train_bpe_tokenizer(
-            [token.content for key, token in sorted(tokenizer_config["added_tokens_decoder"].items(), key=lambda x: int(x[0]))]
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
         )
-        fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
-        image_processor = MllamaImageProcessor(
-            size={
-                "height": 560,
-                "width": 560
-            }
+        fast_tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=tokenizer_base, **tokenizer_config
         )
-        return MllamaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
+        image_processor = MllamaImageProcessor(size={"height": 560, "width": 560})
+        return MllamaProcessor(
+            image_processor=image_processor, tokenizer=fast_tokenizer
+        )
     else:
         raise ValueError(f"Processor not available for model {model_name}")
 
@@ -234,7 +260,9 @@ def create_multimodal_dataset(model_name: str):
                 "content": [{"type": "text", "text": example["text"]}],
             },
         ]
-        example["text"] = processor.tokenizer.apply_chat_template(conversation, tokenize=False)
+        example["text"] = processor.tokenizer.apply_chat_template(
+            conversation, tokenize=False
+        )
         return example
 
     def preprocess_function(examples):

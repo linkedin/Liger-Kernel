@@ -1,18 +1,17 @@
 import importlib
+import json
 import os
 import random
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import torch
+from tokenizers import AddedToken, Tokenizer
+from tokenizers.models import BPE
+from tokenizers.pre_tokenizers import Whitespace
+from tokenizers.trainers import BpeTrainer
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.tokenization_utils_base import BatchEncoding
-from tokenizers import Tokenizer
-from tokenizers.models import BPE
-from tokenizers.trainers import BpeTrainer
-from tokenizers.pre_tokenizers import Whitespace
-from tokenizers import AddedToken
-import json
 
 
 def set_seed(seed=42):
@@ -176,10 +175,7 @@ def load_tokenizer_config(config_path: str) -> dict:
     return tokenizer_config
 
 
-def train_bpe_tokenizer(
-    special_tokens: List[str],
-    unk_token: str = "<|unk|>"
-):
+def train_bpe_tokenizer(special_tokens: List[str], unk_token: str = "<|unk|>"):
     """
     Train a tokenizer using the BPE algorithm.
 
