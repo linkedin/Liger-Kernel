@@ -1,5 +1,5 @@
 from test.transformers.test_jsd import JSD as TorchJSD
-from test.utils import assert_verbose_allclose, set_seed
+from test.utils import set_seed
 
 import pytest
 import torch
@@ -75,7 +75,7 @@ class LigerLMHeadJSD(torch.nn.Module):
 
 
 #############################################################################
-# Test the correctness of the fused linear cross entropy loss
+# Test the correctness of the fused linear JSD
 #############################################################################
 
 
@@ -93,8 +93,8 @@ class LigerLMHeadJSD(torch.nn.Module):
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        (1.0, torch.bfloat16, 5e-3, 5e-2),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        (0.5, torch.bfloat16, 5e-3, 5e-2),  # setting scalar=0.5 to prevent overflow
+        (0.5, torch.float32, 1e-5, 5e-4),
     ],
 )
 @pytest.mark.parametrize(
@@ -136,12 +136,12 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
     teacher_input = torch.rand(B * T, H, device=device, dtype=dtype) * scalar
-    
+
     output1 = torch_lm_head_jsd(_input1, teacher_input)
     output2 = liger_lm_head_jsd(_input2, teacher_input)
 
     assert torch.allclose(output1, output2, atol=atol, rtol=rtol)
-    
+
     output1.backward()
     output2.backward()
 
@@ -159,7 +159,7 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
     "B, T, H, V",
     [
         (2, 4, 512, 512),  # The test does not work on some CI GPUs. Issue #160
-        (2, 2048, 4096, 3200),  # llama2, mistral
+        (2, 2048, 4096, 32000),  # llama2, mistral
         # Comment out to speed up testing
         # (4, 2048, 4096, 128256),  # llama3 8B
         # (4, 1024, 8192, 128256),  # llama3 70B
@@ -169,8 +169,8 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        (1.0, torch.bfloat16, 5e-3, 5e-2),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        (0.5, torch.bfloat16, 5e-3, 5e-2),
+        (0.5, torch.float32, 1e-5, 5e-4),
     ],
 )
 @pytest.mark.parametrize("temperature, beta", [(1.0, 0.5), (2.0, 0.1)])
@@ -204,9 +204,4 @@ def test_correctness_functional(
 
     assert torch.allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
 
-    assert torch.allclose(
-        _weight1.grad,
-        _weight2.grad,
-        atol=atol,
-        rtol=rtol
-    )
+    assert torch.allclose(_weight1.grad, _weight2.grad, atol=atol, rtol=rtol)
