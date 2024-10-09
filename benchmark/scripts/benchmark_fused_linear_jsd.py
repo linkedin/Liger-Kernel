@@ -113,13 +113,13 @@ def bench_memory_fused_linear_jsd(
     provider = input.kernel_provider
 
     device = "cuda"
-    torch_lm_head_jsd = TorchLMHeadJSD(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_jsd = LigerLMHeadJSD(H=H, V=V, dtype=dtype).to(device)
+    torch_lm_head_jsd = TorchLMHeadJSD(H=H, V=V, dtype=dtype, device=device).to(device)
+    liger_lm_head_jsd = LigerLMHeadJSD(H=H, V=V, dtype=dtype, device=device).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
     torch_lm_head_jsd.student_lin.weight.data = (
         liger_lm_head_jsd.student_lin.weight.data
-    ) = torch.rand(V, H // 2, device=device, dtype=dtype)
+    ) = torch.rand(V, H, device=device, dtype=dtype)
     torch_lm_head_jsd.teacher_lin.weight.data = (
         liger_lm_head_jsd.teacher_lin.weight.data
     ) = torch.rand(V, H, device=device, dtype=dtype)
@@ -162,13 +162,13 @@ def bench_speed_fused_linear_jsd(
     provider = input.kernel_provider
 
     device = "cuda"
-    torch_lm_head_jsd = TorchLMHeadJSD(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_jsd = LigerLMHeadJSD(H=H, V=V, dtype=dtype).to(device)
+    torch_lm_head_jsd = TorchLMHeadJSD(H=H, V=V, dtype=dtype, device=device).to(device)
+    liger_lm_head_jsd = LigerLMHeadJSD(H=H, V=V, dtype=dtype, device=device).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
     torch_lm_head_jsd.student_lin.weight.data = (
         liger_lm_head_jsd.student_lin.weight.data
-    ) = torch.rand(V, H // 2, device=device, dtype=dtype)
+    ) = torch.rand(V, H, device=device, dtype=dtype)
     torch_lm_head_jsd.teacher_lin.weight.data = (
         liger_lm_head_jsd.teacher_lin.weight.data
     ) = torch.rand(V, H, device=device, dtype=dtype)
@@ -226,7 +226,7 @@ if __name__ == "__main__":
         "kernel_name": "fused_linear_jsd",
         "x_name": "BT",
         "x_label": "B x T",
-        "x_values": [2**i for i in range(12, 16)],
+        "x_values": [2**i for i in range(10, 14)],
         "kernel_providers": ["liger", "torch"],
         "extra_benchmark_configs": [
             {"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}
