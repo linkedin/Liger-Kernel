@@ -7,6 +7,12 @@ from typing import Any, Dict, List
 import torch
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.tokenization_utils_base import BatchEncoding
+from tokenizers import Tokenizer
+from tokenizers.models import BPE
+from tokenizers.trainers import BpeTrainer
+from tokenizers.pre_tokenizers import Whitespace
+from tokenizers import AddedToken
+import json
 
 
 def set_seed(seed=42):
@@ -110,6 +116,10 @@ UNTOKENIZED_DATASET_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare.txt"
 )
 
+FAKE_CONFIGS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "resources/fake_configs"
+)
+
 
 @dataclass
 class MiniModelConfig:
@@ -154,6 +164,44 @@ def multimodal_collate_fn(data: List[Dict[str, Any]]):
         batch[key] = torch.cat([item[key] for item in data])
 
     return BatchEncoding(batch)
+
+
+def load_tokenizer_config(config_path: str) -> dict:
+    """Load and process tokenizer configuration from a JSON file."""
+    with open(config_path) as reader:
+        tokenizer_config = json.load(reader)
+    tokenizer_config["added_tokens_decoder"] = {
+        k: AddedToken(**v) for k, v in tokenizer_config["added_tokens_decoder"].items()
+    }
+    return tokenizer_config
+
+
+def train_bpe_tokenizer(
+    special_tokens: List[str],
+    unk_token: str = "<|unk|>"
+):
+    """
+    Train a tokenizer using the BPE algorithm.
+
+    Parameters:
+    unk_token (str): The token to use for unknown tokens.
+    special_tokens (List[str]): A list of special tokens to use.
+
+    Returns:
+    Tokenizer: The trained tokenizer.
+    """
+    # Add unk_token to special_tokens if not already present
+    if unk_token not in special_tokens:
+        special_tokens.append(unk_token)
+
+    tokenizer = Tokenizer(BPE(unk_token=unk_token))
+    trainer = BpeTrainer(special_tokens=special_tokens)
+
+    tokenizer.pre_tokenizer = Whitespace()
+    file = [UNTOKENIZED_DATASET_PATH]
+    tokenizer.train(file, trainer)
+
+    return tokenizer
 
 
 def supports_bfloat16():
