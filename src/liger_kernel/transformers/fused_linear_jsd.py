@@ -16,8 +16,8 @@ class LigerFusedLinearJSD(nn.Module):
     Shape:
         - student_input: :math:`(BT, H)`, where B is batch size, T is sequence length, H is hidden dimension.
         - student_weight: :math:`(V, H)`, where V is vocab size.
-        - teacher_input: :math:`(BT, H)`, same shape as student_input.
-        - teacher_weight: :math:`(V, H)`, same shape as student_weight.
+        - teacher_input: :math:`(BT, H')`, where H' is hidden dimension of the teacher model.
+        - teacher_weight: :math:`(V, H')`, where hidden size H and H' can be different.
         - Output: a scalar.
 
     Examples:
@@ -27,9 +27,9 @@ class LigerFusedLinearJSD(nn.Module):
     >>> # generate inputs and weights
     >>> student_input = torch.rand(B * T, H, device="cuda", requires_grad=True)
     >>> student_lin = torch.nn.Linear(H, V, bias=False, device="cuda")
-    >>> # teacher input doesn't require grad
-    >>> teacher_input = torch.rand(B * T, H, device="cuda")
-    >>> teacher_lin = torch.nn.Linear(H, V, bias=False, device="cuda")
+    >>> # teacher input doesn't require grad, hidden_dim can be different from student's
+    >>> teacher_input = torch.rand(B * T, H * 2, device="cuda")
+    >>> teacher_lin = torch.nn.Linear(H * 2, V, bias=False, device="cuda")
     >>> output = fused_jsd(student_input, student_lin.weight, teacher_input, teacher_lin.weight)
     >>> output.backward()
     ```

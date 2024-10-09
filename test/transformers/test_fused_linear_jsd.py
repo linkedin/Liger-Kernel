@@ -31,7 +31,7 @@ class TorchLMHeadJSD(torch.nn.Module):
     ):
         super().__init__()
         self.student_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype, device=device
+            in_features=H // 2, out_features=V, bias=False, dtype=dtype, device=device
         )
         self.teacher_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=False, dtype=dtype, device=device
@@ -60,7 +60,7 @@ class LigerLMHeadJSD(torch.nn.Module):
     ):
         super().__init__()
         self.student_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype, device=device
+            in_features=H // 2, out_features=V, bias=False, dtype=dtype, device=device
         )
         self.teacher_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=False, dtype=dtype, device=device
@@ -128,12 +128,12 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
     # init the linear in all FusedLinearJSDs with the same weights
     torch_lm_head_jsd.student_lin.weight.data = (
         liger_lm_head_jsd.student_lin.weight.data
-    ) = torch.rand(V, H, device=device, dtype=dtype)
+    ) = torch.rand(V, H // 2, device=device, dtype=dtype)
     torch_lm_head_jsd.teacher_lin.weight.data = (
         liger_lm_head_jsd.teacher_lin.weight.data
     ) = torch.rand(V, H, device=device, dtype=dtype)
 
-    _tensor = torch.rand(B * T, H, device=device, dtype=dtype) * scalar
+    _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
@@ -182,12 +182,12 @@ def test_correctness_functional(
     device = "cuda"
 
     # init the linear in all FusedLinearJSDs with the same weights
-    _weight = torch.rand(V, H, device=device, dtype=dtype)
+    _weight = torch.rand(V, H // 2, device=device, dtype=dtype)
     _weight1 = _weight.detach().clone().requires_grad_(True)
     _weight2 = _weight.detach().clone().requires_grad_(True)
     teacher_weight = torch.rand(V, H, device=device, dtype=dtype)
 
-    _tensor = torch.rand(B * T, H, device=device, dtype=dtype) * scalar
+    _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
     teacher_input = torch.rand(B * T, H, device=device, dtype=dtype) * scalar
