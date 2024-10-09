@@ -16,6 +16,8 @@ class TorchLMHeadJSD(torch.nn.Module):
 
     :param H: hidden size
     :param V: vocab size
+    :param temperature: softmax temperature
+    :param beta: jsd beta
     """
 
     def __init__(
@@ -123,7 +125,7 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
         beta=beta,
     ).to(device)
 
-    # init the linear in all CEs with the same weights
+    # init the linear in all FusedLinearJSDs with the same weights
     torch_lm_head_jsd.student_lin.weight.data = (
         liger_lm_head_jsd.student_lin.weight.data
     ) = torch.rand(V, H, device=device, dtype=dtype)
@@ -158,7 +160,7 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        (2, 4, 512, 512),  # The test does not work on some CI GPUs. Issue #160
+        (2, 4, 2048, 3200),
         (2, 2048, 4096, 32000),  # llama2, mistral
         # Comment out to speed up testing
         # (4, 2048, 4096, 128256),  # llama3 8B
@@ -179,7 +181,7 @@ def test_correctness_functional(
 ):
     device = "cuda"
 
-    # init the linear in all CEs with the same weights
+    # init the linear in all FusedLinearJSDs with the same weights
     _weight = torch.rand(V, H, device=device, dtype=dtype)
     _weight1 = _weight.detach().clone().requires_grad_(True)
     _weight2 = _weight.detach().clone().requires_grad_(True)

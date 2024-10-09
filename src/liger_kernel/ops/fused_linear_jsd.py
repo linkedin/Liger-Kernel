@@ -146,6 +146,14 @@ def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
 
 
 class LigerFusedLinearJSDFunction(torch.autograd.Function):
+    """
+    Fusing the last linear layer with generalized JSD
+
+    Handle the forward and backward pass of the final linear layer via JSD by avoiding
+    the materialization of the large logits tensor. Since JSD is the last layer, we can
+    compute the gradient at the forward pass.
+    """
+
     @staticmethod
     def forward(
         ctx,
@@ -157,15 +165,17 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
         temperature=1.0,
     ):
         """
-        Fusing the last linear layer with JSD
+        Args:
 
-        Handle the forward and backward pass of the final linear layer via JSD by avoiding
-        the materialization of the large logits tensor. Since JSD is the last layer, we can
-        compute the gradient at the forward pass. By doing so, we don't have to store the _input and target
-        for the backward pass.
+            student_input (torch.tensor): input of the last projection layer in student model, with shape (B*T, H), where B is batch size, T is sequence length, H is hidden dimension.
+            student_weight (torch.tensor): the last projection layer in student model, with shape (V, H), where V is vocab size
+            teacher_input (torch.tensor): input of the last projection layer in teacher model, with shape (B*T, H), where B is batch size, T is sequence length, H is hidden dimension.
+            teacher_weight (torch.tensor): the last projection layer in teacher model, with shape (V, H), where V is vocab size
+            jsd_beta (float): coefficient beta of generalized JSD in the open interval (0, 1). Default: `0.5`
+            temperature (float): temperature in softmax function to control the output probability distribution. Default: `1.0`
 
-        _input: (B*T, H) where B is batch size, T is sequence length, H is hidden dimension.
-        weight: (V, H) where V is the number of classes
+        Returns:
+            loss (torch.Tensor): generalized JSD
         """
         loss, grad_input, grad_weight = fused_linear_jsd_forward(
             student_input,
