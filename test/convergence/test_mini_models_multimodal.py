@@ -1,5 +1,16 @@
 import functools
 import os
+
+import pytest
+import torch
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+from transformers import PreTrainedTokenizerFast
+
+from liger_kernel.transformers import (
+    apply_liger_kernel_to_mllama,
+    apply_liger_kernel_to_qwen2_vl,
+)
 from test.utils import (
     FAKE_CONFIGS_PATH,
     UNTOKENIZED_DATASET_PATH,
@@ -12,17 +23,6 @@ from test.utils import (
     set_seed,
     supports_bfloat16,
     train_bpe_tokenizer,
-)
-
-import pytest
-import torch
-from datasets import load_dataset
-from torch.utils.data import DataLoader
-from transformers import PreTrainedTokenizerFast
-
-from liger_kernel.transformers import (
-    apply_liger_kernel_to_mllama,
-    apply_liger_kernel_to_qwen2_vl,
 )
 
 try:
@@ -123,7 +123,7 @@ if MLLAMA_AVAILABLE:
                 rope_theta=500_000,
                 tie_word_embeddings=False,
                 use_cache=True,
-                vocab_size=128256,  # 128256, extend to avoid conflict with image token
+                vocab_size=32000,  #  128256,
             ),
             image_token_index=1,  # NOTE: outside the vocab size
             attn_implementation="sdpa",
@@ -165,7 +165,7 @@ if QWEN2_VL_AVAILABLE:
             sliding_window=4096,
             tie_word_embeddings=True,
             use_cache=False,  # True
-            vocab_size=152064,
+            vocab_size=32000,  # 152064,
             use_sliding_window=False,
             vision_config={
                 "depth": 4,  # 32
