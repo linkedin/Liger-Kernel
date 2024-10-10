@@ -1,21 +1,24 @@
 import functools
 import os
 from test.utils import (
+    FAKE_CONFIGS_PATH,
     UNTOKENIZED_DATASET_PATH,
     MiniModelConfig,
     assert_verbose_allclose,
+    load_tokenizer_config,
     multimodal_collate_fn,
     revert_liger_kernel_to_mllama,
     revert_liger_kernel_to_qwen2_vl,
     set_seed,
     supports_bfloat16,
+    train_bpe_tokenizer,
 )
 
 import pytest
 import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-from transformers.models.auto.processing_auto import AutoProcessor
+from transformers import PreTrainedTokenizerFast
 
 from liger_kernel.transformers import (
     apply_liger_kernel_to_mllama,
@@ -24,10 +27,15 @@ from liger_kernel.transformers import (
 
 try:
     # Qwen2-VL is only available in transformers>=4.45.0
+    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
+    from transformers.models.qwen2_vl.image_processing_qwen2_vl import (
+        Qwen2VLImageProcessor,
+    )
     from transformers.models.qwen2_vl.modeling_qwen2_vl import (
         Qwen2VLForConditionalGeneration,
     )
+    from transformers.models.qwen2_vl.processing_qwen2_vl import Qwen2VLProcessor
 
     QWEN2_VL_AVAILABLE = True
 except ImportError:
@@ -40,9 +48,11 @@ try:
         MllamaTextConfig,
         MllamaVisionConfig,
     )
+    from transformers.models.mllama.image_processing_mllama import MllamaImageProcessor
     from transformers.models.mllama.modeling_mllama import (
         MllamaForConditionalGeneration,
     )
+    from transformers.models.mllama.processing_mllama import MllamaProcessor
 
     MLLAMA_AVAILABLE = True
 except ImportError:
@@ -61,6 +71,7 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 TEST_IMAGE_DIM = 64
 
 MINI_MODEL_SETUPS = {}
+
 
 if MLLAMA_AVAILABLE:
     MINI_MODEL_SETUPS["mini_mllama"] = MiniModelConfig(
@@ -88,9 +99,9 @@ if MLLAMA_AVAILABLE:
                 vision_output_dim=1024,  # 7680
             ),
             text_config=MllamaTextConfig(
-                bos_token_id=128000,
-                eos_token_id=[128001, 128008, 128009],
-                pad_token_id=128004,
+                bos_token_id=0,
+                eos_token_id=0,
+                pad_token_id=0,
                 cross_attention_layers=[2],  # [3, 8, 13, 18, etc...]
                 dropout=0,
                 hidden_act="silu",
@@ -112,9 +123,9 @@ if MLLAMA_AVAILABLE:
                 rope_theta=500_000,
                 tie_word_embeddings=False,
                 use_cache=True,
-                vocab_size=128257,  # 128256, extend to avoid conflict with image token
+                vocab_size=128256,  # 128256, extend to avoid conflict with image token
             ),
-            image_token_index=128256,  # NOTE: outside the vocab size
+            image_token_index=1,  # NOTE: outside the vocab size
             attn_implementation="sdpa",
         ),
     )
@@ -130,12 +141,12 @@ if QWEN2_VL_AVAILABLE:
             attention_dropout=0.0,
             # Token Ids and vocab size must match those in the tokenizer/processor
             # https://huggingface.co/Qwen/Qwen2-VL-7B-Instruct/blob/main/config.json
-            bos_token_id=151643,
-            eos_token_id=151645,
-            vision_start_token_id=151652,
-            vision_end_token_id=151653,
-            vision_token_id=151654,
-            image_token_id=151655,
+            bos_token_id=0,
+            eos_token_id=0,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            vision_token_id=3,
+            image_token_id=4,
             hidden_act="silu",
             hidden_size=1024,  # 8192
             initializer_range=0.02,
@@ -171,9 +182,51 @@ if QWEN2_VL_AVAILABLE:
 
 def create_processor(model_name):
     if model_name == "mini_qwen2_vl":
-        return AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH, "Qwen/Qwen2-VL-7B-Instruct/tokenizer_config.json"
+            )
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        qwen_tokenizer = Qwen2TokenizerFast(
+            tokenizer_object=tokenizer_base, **tokenizer_config
+        )
+        image_processor = Qwen2VLImageProcessor()
+        return Qwen2VLProcessor(
+            image_processor=image_processor, tokenizer=qwen_tokenizer
+        )
+
     elif model_name == "mini_mllama":
-        return AutoProcessor.from_pretrained("meta-llama/Llama-3.2-11B-Vision-Instruct")
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH,
+                "meta-llama/Llama-3.2-11B-Vision-Instruct/tokenizer_config.json",
+            )
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        fast_tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=tokenizer_base, **tokenizer_config
+        )
+        image_processor = MllamaImageProcessor(size={"height": 560, "width": 560})
+        return MllamaProcessor(
+            image_processor=image_processor, tokenizer=fast_tokenizer
+        )
     else:
         raise ValueError(f"Processor not available for model {model_name}")
 
@@ -207,7 +260,9 @@ def create_multimodal_dataset(model_name: str):
                 "content": [{"type": "text", "text": example["text"]}],
             },
         ]
-        example["text"] = processor.apply_chat_template(conversation, tokenize=False)
+        example["text"] = processor.tokenizer.apply_chat_template(
+            conversation, tokenize=False
+        )
         return example
 
     def preprocess_function(examples):
