@@ -106,7 +106,7 @@ def fused_linear_jsd_forward(
                 out=grad_weight,
             )
 
-    loss = torch.sum(loss_1d) / BT
+    loss = torch.sum(loss_1d)
     return loss.to(student_input.dtype), grad_input, grad_weight
 
 
