@@ -95,8 +95,8 @@ class LigerLMHeadJSD(torch.nn.Module):
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        (0.5, torch.bfloat16, 5e-3, 5e-2),  # setting scalar=0.5 to prevent overflow
-        (0.5, torch.float32, 1e-5, 5e-4),
+        (1.0, torch.bfloat16, 5e-3, 5e-2),
+        (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )
 @pytest.mark.parametrize(
