@@ -42,6 +42,8 @@ def _jsd_kernel(
         log_M = tl.log(M)
 
         loss = beta * P * Y + (1 - beta) * Q * X - M * log_M
+        # reduction == "batchmean"
+        loss = loss / n_rows
         tl.store(loss_ptr + offsets, loss, mask=mask)
 
         dX = (1 - beta) * Q * (X - log_M) / n_rows
@@ -73,8 +75,8 @@ def jsd_forward(_input, target, beta):
         n_cols=V,
         BLOCK_SIZE=BLOCK_SIZE,
     )
-    # reduction == "batchmean"
-    loss = torch.sum(loss) / n_rows
+
+    loss = torch.sum(loss)
     return loss.to(_input.dtype), dX
 
 
