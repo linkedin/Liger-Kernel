@@ -121,6 +121,7 @@ def apply_liger_kernel_to_mllama(
     rope: bool = True,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
+    layer_norm: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
@@ -157,6 +158,8 @@ def apply_liger_kernel_to_mllama(
 
     if rope:
         modeling_mllama.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if layer_norm:
+        modeling_mllama.nn.LayerNorm = LigerLayerNorm
     if rms_norm:
         modeling_mllama.MllamaTextRMSNorm = LigerRMSNorm
     if swiglu:
