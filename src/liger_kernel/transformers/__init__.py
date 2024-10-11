@@ -5,6 +5,7 @@ from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss  # noq
 from liger_kernel.transformers.fused_linear_cross_entropy import (  # noqa: F401
     LigerFusedLinearCrossEntropyLoss,
 )
+from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # noqa: F401
 from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
 from liger_kernel.transformers.jsd import LigerJSD  # noqa: F401
 from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
