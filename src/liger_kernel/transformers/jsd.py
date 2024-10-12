@@ -1,9 +1,11 @@
-import torch.nn as nn
+from typing import Optional
+
+import torch
 
 from liger_kernel.ops.jsd import LigerJSDFunction
 
 
-class LigerJSD(nn.Module):
+class LigerJSD(torch.nn.Module):
     r"""The generalized Jensen-Shannon Divergence.
     .. math::
     JSD(\beta)(P || Q)
@@ -17,10 +19,12 @@ class LigerJSD(nn.Module):
 
     Args:
         beta (float): coefficient beta of generalized JSD in the open interval (0, 1). Default: `0.5`
+        ignore_index (int): The index to ignore in the target. Default: `-100`
 
     Shape:
-        - Input: :math:`(*)`, where :math:`*` means any number of dimensions.
-        - Target: :math:`(*)`, same shape as the input.
+        - Input: :math:`(BT, V)`, where B is batch size, T is sequence length, V is vocab size.
+        - Target: :math:`(BT, V)`, same shape as the input.
+        - Label: :math:`(BT,)`
         - Output: a scalar.
 
     Examples:
@@ -33,12 +37,18 @@ class LigerJSD(nn.Module):
     ```
     """
 
-    def __init__(self, beta=0.5):
+    def __init__(self, beta: float = 0.5, ignore_index: int = -100):
         super().__init__()
         assert (
             beta > 0 and beta < 1
         ), f"beta must be greater than 0 and less than 1. Got: {beta}"
         self.beta = beta
+        self.ignore_index = ignore_index
 
-    def forward(self, log_q, log_p):
-        return LigerJSDFunction.apply(log_q, log_p, self.beta)
+    def forward(
+        self,
+        log_q: torch.tensor,
+        log_p: torch.tensor,
+        label: Optional[torch.tensor] = None,
+    ):
+        return LigerJSDFunction.apply(log_q, log_p, label, self.beta, self.ignore_index)

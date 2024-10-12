@@ -1,9 +1,11 @@
-import torch.nn as nn
+from typing import Optional
+
+import torch
 
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
 
 
-class LigerFusedLinearJSD(nn.Module):
+class LigerFusedLinearJSD(torch.nn.Module):
     r"""Fusing the last linear layer with generalized JSD
 
     Handle the forward and backward pass of the final linear layer via JSD by avoiding
@@ -11,6 +13,7 @@ class LigerFusedLinearJSD(nn.Module):
 
     Args:
         jsd_beta (float): coefficient beta of generalized JSD in the open interval (0, 1). Default: `0.5`
+        ignore_index (int): The index to ignore in the target. Default: `-100`
         temperature (float): temperature in softmax function to control the output probability distribution. Default: `1.0`
 
     Shape:
@@ -18,6 +21,7 @@ class LigerFusedLinearJSD(nn.Module):
         - student_weight: :math:`(V, H)`, where V is vocab size.
         - teacher_input: :math:`(BT, H')`, where H' is hidden dimension of the teacher model.
         - teacher_weight: :math:`(V, H')`, where hidden size H and H' can be different.
+        - Label: :math:`(BT,)`
         - Output: a scalar.
 
     Examples:
@@ -35,7 +39,7 @@ class LigerFusedLinearJSD(nn.Module):
     ```
     """
 
-    def __init__(self, jsd_beta=0.5, temperature=1.0):
+    def __init__(self, jsd_beta=0.5, ignore_index=-100, temperature=1.0):
         super().__init__()
         assert (
             jsd_beta > 0 and jsd_beta < 1
@@ -43,19 +47,23 @@ class LigerFusedLinearJSD(nn.Module):
         assert temperature != 0, "temperature cannot be 0."
         self.jsd_beta = jsd_beta
         self.temperature = temperature
+        self.ignore_index = ignore_index
 
     def forward(
         self,
-        student_input,
-        student_weight,
-        teacher_input,
-        teacher_weight,
+        student_input: torch.tensor,
+        student_weight: torch.tensor,
+        teacher_input: torch.tensor,
+        teacher_weight: torch.tensor,
+        label: Optional[torch.tensor],
     ):
         return LigerFusedLinearJSDFunction.apply(
             student_input,
             student_weight,
             teacher_input,
             teacher_weight,
+            label,
             self.jsd_beta,
+            self.ignore_index,
             self.temperature,
         )

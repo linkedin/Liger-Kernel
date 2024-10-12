@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import triton
 
@@ -15,7 +17,10 @@ def fused_linear_jsd_forward(
     student_weight,
     teacher_input,
     teacher_weight,
+    label,
     jsd_beta,
+    ignore_index,
+    has_label,
     temperature,
 ):
     device = student_input.device
@@ -45,6 +50,11 @@ def fused_linear_jsd_forward(
     grad_input = torch.zeros_like(student_input)
     # we use fp32 for loss accumulator
     loss_1d = torch.zeros((BT, V), dtype=torch.float32, device=device)
+
+    if has_label:
+        n_non_ignore = (label != ignore_index).sum().item()
+    else:
+        n_non_ignore = BT
 
     for chunk_id in range(num_chunks):
         start_idx = chunk_id * chunk_size
@@ -81,10 +91,15 @@ def fused_linear_jsd_forward(
             loss_stride=loss_1d_slice.stride(-2),
             dX_ptr=student_prob_chunk,
             dX_stride=student_prob_chunk.stride(-2),
+            label_ptr=(
+                label if has_label else torch.empty(1, device=device)
+            ),  # dummy ptr if no label
             beta=jsd_beta,
-            n_rows=BT,  # batchmean
+            n_non_ignore=n_non_ignore,
+            ignore_index=ignore_index,
             n_cols=V,
             BLOCK_SIZE=BLOCK_SIZE,
+            HAS_LABEL=has_label,
         )
         loss_1d[start_idx:end_idx] = loss_1d_slice
         # gradients of prob_chunk in place, shape: chunk_size x V
@@ -157,12 +172,14 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
-        student_input,
-        student_weight,
-        teacher_input,
-        teacher_weight,
-        jsd_beta=0.5,
-        temperature=1.0,
+        student_input: torch.Tensor,
+        student_weight: torch.Tensor,
+        teacher_input: torch.Tensor,
+        teacher_weight: torch.Tensor,
+        label: Optional[torch.Tensor] = None,
+        jsd_beta: float = 0.5,
+        ignore_index: int = -100,
+        temperature: float = 1.0,
     ):
         """
         Args:
@@ -171,18 +188,31 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
             student_weight (torch.tensor): the last projection layer in student model, with shape (V, H), where V is vocab size
             teacher_input (torch.tensor): input of the last projection layer in teacher model, with shape (B*T, H), where B is batch size, T is sequence length, H is hidden dimension.
             teacher_weight (torch.tensor): the last projection layer in teacher model, with shape (V, H), where V is vocab size
+            label (Optional[torch.Tensor]): indicator of vocab with shape (BT) where each value is in [0, V-1].
             jsd_beta (float): coefficient beta of generalized JSD in the open interval (0, 1). Default: `0.5`
+            ignore_index (int): the index to ignore. Default: -100
             temperature (float): temperature in softmax function to control the output probability distribution. Default: `1.0`
 
         Returns:
             loss (torch.Tensor): generalized JSD
         """
+        has_label = False
+        if label is not None:
+            assert label.shape == (
+                teacher_input.shape[0],
+            ), f"the shape of label must be (BT,). Got: {label.shape}"
+            label = label.contiguous()
+            has_label = True
+
         loss, grad_input, grad_weight = fused_linear_jsd_forward(
             student_input,
             student_weight,
             teacher_input,
             teacher_weight,
+            label,
             jsd_beta,
+            ignore_index,
+            has_label,
             temperature,
         )
         # downcast to dtype and store for backward
@@ -198,4 +228,4 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
         grad_input, grad_weight = fused_linear_jsd_backward(
             grad_output, grad_input, grad_weight
         )
-        return (grad_input, grad_weight, None, None, None, None)
+        return (grad_input, grad_weight, None, None, None, None, None, None)

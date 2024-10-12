@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import triton
 import triton.language as tl
@@ -15,10 +17,13 @@ def _jsd_kernel(
     loss_stride,
     dX_ptr,
     dX_stride,
+    label_ptr,
     beta,
-    n_rows,
+    n_non_ignore,
+    ignore_index,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
+    HAS_LABEL: tl.constexpr,
 ):
     # JSD(P || Q) = (KL(P || M) + KL(Q || M)) / 2, M = (1/2) * (P + Q) = (1/2) * (e ^ Y + e ^ X)
     #             = sum(P * log P + Q * log Q - 2 * M * log M) / 2
@@ -29,6 +34,15 @@ def _jsd_kernel(
     dX_ptr += pid * dX_stride
     Y_ptr += pid * Y_stride
     loss_ptr += pid * loss_stride
+    label_ptr += pid
+
+    if HAS_LABEL:
+        label = tl.load(label_ptr)
+        if label == ignore_index:
+            for i in range(0, n_cols, BLOCK_SIZE):
+                offsets = i + tl.arange(0, BLOCK_SIZE)
+                tl.store(dX_ptr + offsets, 0.0, mask=offsets < n_cols)
+            return
 
     for i in range(0, n_cols, BLOCK_SIZE):
         offsets = i + tl.arange(0, BLOCK_SIZE)
@@ -43,23 +57,28 @@ def _jsd_kernel(
 
         loss = beta * P * Y + (1 - beta) * Q * X - M * log_M
         # reduction == "batchmean"
-        loss = loss / n_rows
+        loss = loss / n_non_ignore
         tl.store(loss_ptr + offsets, loss, mask=mask)
 
-        dX = (1 - beta) * Q * (X - log_M) / n_rows
+        dX = (1 - beta) * Q * (X - log_M) / n_non_ignore
         tl.store(dX_ptr + offsets, dX, mask=mask)
 
 
 MAX_FUSED_SIZE = 65536
 
 
-def jsd_forward(_input, target, beta):
+def jsd_forward(_input, target, label, beta, ignore_index, has_label):
     BT, V = _input.shape
     n_rows = BT
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
     # non reduction loss
     loss = torch.zeros(_input.shape, dtype=torch.float32, device=_input.device)
     dX = torch.empty_like(_input)
+
+    if has_label:
+        n_non_ignore = (label != ignore_index).sum().item()
+    else:
+        n_non_ignore = BT
 
     _jsd_kernel[(n_rows,)](
         X_ptr=_input,  # input in logspace, X = log Q
@@ -70,10 +89,15 @@ def jsd_forward(_input, target, beta):
         loss_stride=loss.stride(-2),
         dX_ptr=dX,
         dX_stride=dX.stride(-2),
+        label_ptr=(
+            label if has_label else torch.empty(1, device=_input.device)
+        ),  # dummy ptr if no label
         beta=beta,
-        n_rows=n_rows,
+        n_non_ignore=n_non_ignore,
+        ignore_index=ignore_index,
         n_cols=V,
         BLOCK_SIZE=BLOCK_SIZE,
+        HAS_LABEL=has_label,
     )
 
     loss = torch.sum(loss)
@@ -109,18 +133,30 @@ class LigerJSDFunction(torch.autograd.Function):
         ctx,
         _input: torch.Tensor,
         target: torch.Tensor,
+        label: Optional[torch.Tensor] = None,
         beta: float = 0.5,
+        ignore_index: int = -100,
     ) -> torch.Tensor:
         """
         Args:
             _input (torch.Tensor): predict values with shape (BT, V) in logspace
             target (torch.Tensor): ground truth values with shape (BT, V) in logspace
+            label (Optional[torch.Tensor]): indicator of vocab with shape (BT) where each value is in [0, V-1].
             beta (float): coefficient beta of generalized JSD in the open interval (0, 1)
+            ignore_index (int): the index to ignore. Default: -100
 
         Returns:
             loss (torch.Tensor): generalized JSD
         """
-        loss, dX = jsd_forward(_input, target, beta)
+        has_label = False
+        if label is not None:
+            assert label.shape == (
+                _input.shape[0],
+            ), f"the shape of label must be (BT,). Got: {label.shape}"
+            label = label.contiguous()
+            has_label = True
+
+        loss, dX = jsd_forward(_input, target, label, beta, ignore_index, has_label)
         ctx.save_for_backward(dX)
         return loss
 
@@ -131,6 +167,8 @@ class LigerJSDFunction(torch.autograd.Function):
         dX = jsd_backward(dX, grad_output)
         return (
             dX,
+            None,
+            None,
             None,
             None,
         )
