@@ -14,7 +14,7 @@ def silu(x):
 def _swiglu_forward_kernel(
     a_ptr, b_ptr, c_ptr, stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr
 ):
-    program_id = tl.program_id(0)
+    program_id = tl.program_id(0).to(tl.int64)
 
     # locate start index
     a_ptr += program_id * stride
@@ -35,7 +35,7 @@ def _swiglu_forward_kernel(
 def _swiglu_backward_kernel(
     dc_ptr, a_ptr, b_ptr, stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr
 ):
-    program_id = tl.program_id(0)
+    program_id = tl.program_id(0).to(tl.int64)
 
     # locate start index
     dc_ptr += program_id * stride

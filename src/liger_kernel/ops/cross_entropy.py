@@ -4,6 +4,7 @@ import triton.language as tl
 
 _TRUE = tl.constexpr(1)
 _FALSE = tl.constexpr(0)
+from liger_kernel.ops.utils import element_mul_kernel
 
 
 @triton.jit
@@ -145,7 +146,7 @@ def liger_cross_entropy_kernel(
     # So we can safely calculate log (softmax(X_y)) without overflow
     loss = lse - ori_X_y
 
-    # Orginal loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
+    # Original loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
     # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
     #          = (1 - label_smoothing) * H(q, p) + eps * sum(logsoftmax(x_i))
     # By using m (global max of xi) and d (sum of e^(xi-m)), we can simplify as:
@@ -246,6 +247,7 @@ def cross_entropy_forward(
             return_z_loss in _bool_to_return_z_loss
         ), f"return_z_loss must be True or False. Got: {return_z_loss}"
 
+def cross_entropy_forward(_input, target, ignore_index, label_smoothing, reduction):
     BT, V = _input.shape
     n_rows = BT
 

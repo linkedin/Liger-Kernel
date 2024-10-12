@@ -1,10 +1,15 @@
 import importlib
+import json
 import os
 import random
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import torch
+from tokenizers import AddedToken, Tokenizer
+from tokenizers.models import BPE
+from tokenizers.pre_tokenizers import Whitespace
+from tokenizers.trainers import BpeTrainer
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.tokenization_utils_base import BatchEncoding
 
@@ -55,10 +60,27 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
     # Determine the tolerance
     tolerance = atol + rtol * torch.abs(tensor2)
 
-    # Find mismatched elements
-    mismatched = diff > tolerance
+    # Find tolerance mismatched elements
+    tol_mismatched = diff > tolerance
 
-    # Get the indices of mismatched elements
+    # Find nan mismatched elements
+    nan_mismatched = torch.logical_xor(torch.isnan(tensor1), torch.isnan(tensor2))
+
+    # Find +inf mismatched elements
+    posinf_mismatched = torch.logical_xor(
+        torch.isposinf(tensor1), torch.isposinf(tensor2)
+    )
+    # Find -inf mismatched elements
+    neginf_mismatched = torch.logical_xor(
+        torch.isneginf(tensor1), torch.isneginf(tensor2)
+    )
+
+    # Find all mismatched elements
+    mismatched = torch.logical_or(
+        torch.logical_or(tol_mismatched, nan_mismatched),
+        torch.logical_or(posinf_mismatched, neginf_mismatched),
+    )
+
     mismatched_indices = torch.nonzero(mismatched)
 
     # Count the number of mismatched elements
@@ -68,7 +90,7 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
     all_close = num_mismatched == 0
 
     # Raise AssertionError with detailed information if there are mismatches
-    if not all_close and num_mismatched > 1:
+    if not all_close and num_mismatched >= 1:
         mismatch_details = [f"Number of mismatched elements: {num_mismatched}"]
         print_count = min(max_print, num_mismatched)
         for index in mismatched_indices[:print_count]:
@@ -91,6 +113,10 @@ DEFAULT_DATASET_PATH = os.path.join(
 
 UNTOKENIZED_DATASET_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare.txt"
+)
+
+FAKE_CONFIGS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "resources/fake_configs"
 )
 
 
@@ -139,6 +165,41 @@ def multimodal_collate_fn(data: List[Dict[str, Any]]):
     return BatchEncoding(batch)
 
 
+def load_tokenizer_config(config_path: str) -> dict:
+    """Load and process tokenizer configuration from a JSON file."""
+    with open(config_path) as reader:
+        tokenizer_config = json.load(reader)
+    tokenizer_config["added_tokens_decoder"] = {
+        k: AddedToken(**v) for k, v in tokenizer_config["added_tokens_decoder"].items()
+    }
+    return tokenizer_config
+
+
+def train_bpe_tokenizer(special_tokens: List[str], unk_token: str = "<|unk|>"):
+    """
+    Train a tokenizer using the BPE algorithm.
+
+    Parameters:
+    unk_token (str): The token to use for unknown tokens.
+    special_tokens (List[str]): A list of special tokens to use.
+
+    Returns:
+    Tokenizer: The trained tokenizer.
+    """
+    # Add unk_token to special_tokens if not already present
+    if unk_token not in special_tokens:
+        special_tokens.append(unk_token)
+
+    tokenizer = Tokenizer(BPE(unk_token=unk_token))
+    trainer = BpeTrainer(special_tokens=special_tokens)
+
+    tokenizer.pre_tokenizer = Whitespace()
+    file = [UNTOKENIZED_DATASET_PATH]
+    tokenizer.train(file, trainer)
+
+    return tokenizer
+
+
 def supports_bfloat16():
     if not torch.cuda.is_available():
         return False
@@ -153,6 +214,17 @@ def revert_liger_kernel_to_llama():
     from transformers.models.llama import modeling_llama
 
     importlib.reload(modeling_llama)
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_mllama():
+    """
+    Revert all Liger kernel patches applied to MLlama.
+    """
+
+    from transformers.models.mllama import modeling_mllama
+
+    importlib.reload(modeling_mllama)
     print("Liger kernel patches have been reverted.")
 
 

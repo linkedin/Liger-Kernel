@@ -1,10 +1,8 @@
 import torch
 import triton
 
-from liger_kernel.ops.cross_entropy import (
-    element_mul_kernel,
-    liger_cross_entropy_kernel,
-)
+from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
+from liger_kernel.ops.utils import element_mul_kernel
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
@@ -101,7 +99,7 @@ def fused_linear_cross_entropy_forward(
 
         # gradient of logits_chunk is computed in-place by the above triton kernel.
         # Following HuggingFace model source code, we do the forward and backward
-        # w.r.t. logits in fp32 for numerical stability especially as the num classes (vocab size) os huge.
+        # w.r.t. logits in fp32 for numerical stability especially as the num classes (vocab size) is huge.
         # (reference: https://github.com/huggingface/transformers/blob/v4.42.4/src/transformers/models/llama/modeling_llama.py#L1194)
         # Propagating to lm_head's backward, we'll switch back to the original dtype.
         logits_chunk = logits_chunk.to(dtype)
