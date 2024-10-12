@@ -45,7 +45,7 @@ class JSD(torch.nn.Module):
             else:
                 loss = loss.sum() / n_non_ignore
         else:
-            loss = loss.sum() / log_q.shape()
+            loss = loss.sum() / log_q.shape[0]
         return loss.to(self.dtype)
 
 
@@ -282,11 +282,15 @@ def test_correctness_with_ignore_index(B, T, V, ignore_index, dtype, atol, rtol)
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
 @pytest.mark.parametrize(
-    "beta, is_last_layer",
+    "beta, ignore_index, is_last_layer",
     [
-        (0.5, False),
-        (0.1, True),
+        (0.5, 2, False),
+        (0.1, 42, True),
     ],
 )
-def test_correctness_functional(B, T, V, beta, is_last_layer, dtype, atol, rtol):
-    _test_correctness_functional(B, T, V, beta, is_last_layer, dtype, atol, rtol)
+def test_correctness_functional(
+    B, T, V, beta, ignore_index, is_last_layer, dtype, atol, rtol
+):
+    _test_correctness_functional(
+        B, T, V, beta, ignore_index, is_last_layer, dtype, atol, rtol
+    )

@@ -40,7 +40,7 @@ class TorchLMHeadJSD(torch.nn.Module):
         self.jsd = TorchJSD(beta=beta, ignore_index=ignore_index, dtype=dtype)
         self.temperature = temperature
 
-    def forward(self, student_input, teacher_input, label):
+    def forward(self, student_input, teacher_input, label=None):
         student_logits = self.student_lin(student_input)
         teacher_logits = self.teacher_lin(teacher_input)
         student_prob = torch.log_softmax(student_logits / self.temperature, dim=-1)
@@ -68,10 +68,10 @@ class LigerLMHeadJSD(torch.nn.Module):
             in_features=H, out_features=V, bias=False, dtype=dtype, device=device
         )
         self.fused_jsd = LigerFusedLinearJSD(
-            beta=beta, ignore_index=ignore_index, temperature=temperature
+            jsd_beta=beta, ignore_index=ignore_index, temperature=temperature
         )
 
-    def forward(self, student_input, teacher_input, label):
+    def forward(self, student_input, teacher_input, label=None):
         return self.fused_jsd(
             student_input,
             self.student_lin.weight,
@@ -144,10 +144,11 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
 
     teacher_input = torch.rand(B * T, H, device=device, dtype=dtype) * scalar
 
-    output1 = torch_lm_head_jsd(_input1, teacher_input)
-    output2 = liger_lm_head_jsd(_input2, teacher_input)
+    with torch.autograd.detect_anomaly():
+        output1 = torch_lm_head_jsd(_input1, teacher_input)
+        output2 = liger_lm_head_jsd(_input2, teacher_input)
 
-    assert torch.allclose(output1, output2, atol=atol, rtol=rtol)
+        assert torch.allclose(output1, output2, atol=atol, rtol=rtol)
 
     output1.backward()
     output2.backward()
