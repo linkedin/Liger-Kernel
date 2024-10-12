@@ -13,23 +13,40 @@ from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
 
 
 class TorchJSD(torch.nn.Module):
-    def __init__(self, beta: float = 0.5, dtype: torch.dtype = torch.float):
+    def __init__(
+        self,
+        beta: float = 0.5,
+        ignore_index: int = -100,
+        dtype: torch.dtype = torch.float,
+    ):
         super(TorchJSD, self).__init__()
-        self.kl = torch.nn.KLDivLoss(reduction="batchmean", log_target=True)
+        self.kl = torch.nn.KLDivLoss(reduction="none", log_target=True)
         self.beta = beta
+        self.ignore_index = ignore_index
         self.dtype = dtype
 
     def forward(
         self,
-        log_q: torch.tensor,  # input
-        log_p: torch.tensor,  # target
+        log_q: torch.Tensor,  # input
+        log_p: torch.Tensor,  # target
+        label=None,
     ):
         log_p, log_q = log_p.to(torch.float), log_q.to(torch.float)
         log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(-1, log_q.size(-1))
-        m = torch.lerp(torch.exp(log_p), torch.exp(log_q), self.beta)
-        loss = self.beta * self.kl(torch.log(m), log_p) + (1 - self.beta) * self.kl(
-            torch.log(m), log_q
-        )
+        m = torch.lerp(torch.exp(log_q), torch.exp(log_p), self.beta)
+        loss = self.beta * self.kl(torch.log(m), log_p).sum(dim=-1) + (
+            1 - self.beta
+        ) * self.kl(torch.log(m), log_q).sum(dim=-1)
+
+        if label is not None:
+            loss = torch.where(label != self.ignore_index, loss, 0.0)
+            n_non_ignore = (label != self.ignore_index).sum().item()
+            if n_non_ignore == 0:
+                loss = 0.0
+            else:
+                loss = (loss / n_non_ignore).sum()
+        else:
+            loss = (loss / log_q.shape[0]).sum()
         return loss.to(self.dtype)
 
 
@@ -48,8 +65,9 @@ class TorchLMHeadJSD(torch.nn.Module):
         V: int,
         dtype: torch.dtype,
         device: torch.device,
-        temperature: float = 1.0,
         beta: float = 0.5,
+        ignore_index: int = -100,
+        temperature: float = 1.0,
     ):
         super().__init__()
         self.student_lin = torch.nn.Linear(
@@ -58,16 +76,16 @@ class TorchLMHeadJSD(torch.nn.Module):
         self.teacher_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=False, dtype=dtype, device=device
         )
-        self.jsd = TorchJSD(beta, dtype=dtype)
+        self.jsd = TorchJSD(beta=beta, ignore_index=ignore_index, dtype=dtype)
         self.temperature = temperature
 
-    def forward(self, student_input, teacher_input):
+    def forward(self, student_input, teacher_input, label=None):
         student_logits = self.student_lin(student_input)
         teacher_logits = self.teacher_lin(teacher_input)
         student_prob = torch.log_softmax(student_logits / self.temperature, dim=-1)
         teacher_prob = torch.log_softmax(teacher_logits / self.temperature, dim=-1)
 
-        return self.jsd(student_prob, teacher_prob)
+        return self.jsd(student_prob, teacher_prob, label)
 
 
 class LigerLMHeadJSD(torch.nn.Module):
@@ -77,8 +95,9 @@ class LigerLMHeadJSD(torch.nn.Module):
         V: int,
         dtype: torch.dtype,
         device: torch.device,
-        temperature: float = 1.0,
         beta: float = 0.5,
+        ignore_index: int = -100,
+        temperature: float = 1.0,
     ):
         super().__init__()
         self.student_lin = torch.nn.Linear(
@@ -87,14 +106,17 @@ class LigerLMHeadJSD(torch.nn.Module):
         self.teacher_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=False, dtype=dtype, device=device
         )
-        self.fused_jsd = LigerFusedLinearJSD(beta, temperature)
+        self.fused_jsd = LigerFusedLinearJSD(
+            jsd_beta=beta, ignore_index=ignore_index, temperature=temperature
+        )
 
-    def forward(self, student_input, teacher_input):
+    def forward(self, student_input, teacher_input, label=None):
         return self.fused_jsd(
             student_input,
             self.student_lin.weight,
             teacher_input,
             self.teacher_lin.weight,
+            label,
         )
 
 
