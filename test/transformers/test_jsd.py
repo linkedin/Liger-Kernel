@@ -43,9 +43,9 @@ class JSD(torch.nn.Module):
             if n_non_ignore == 0:
                 loss = 0.0
             else:
-                loss = loss.sum() / n_non_ignore
+                loss = (loss / n_non_ignore).sum()
         else:
-            loss = loss.sum() / log_q.shape[0]
+            loss = (loss / log_q.shape[0]).sum()
         return loss.to(self.dtype)
 
 
