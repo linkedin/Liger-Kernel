@@ -70,7 +70,7 @@ def fused_linear_cross_entropy_forward(
         n_non_ignore = (target_chunk != ignore_index).sum().item()
 
         # when doing CE, use the upcasted precision
-        logits_chunk = logits_chunk.float()
+        logits_chunk = logits_chunk.to(_input_chunk.dtype)
 
         # ensure _input and target are contiguous
         logits_chunk = logits_chunk.contiguous()
