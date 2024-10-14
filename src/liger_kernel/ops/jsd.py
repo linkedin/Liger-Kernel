@@ -15,6 +15,7 @@ def _jsd_kernel(
     loss_stride,
     dX_ptr,
     dX_stride,
+    beta,
     n_rows,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
@@ -37,20 +38,22 @@ def _jsd_kernel(
 
         Q = tl.exp(X)
         P = tl.exp(Y)
-        M = 0.5 * P + 0.5 * Q
+        M = beta * P + (1 - beta) * Q
         log_M = tl.log(M)
 
-        loss = 0.5 * (P * Y + Q * X - 2 * M * log_M)
+        loss = beta * P * Y + (1 - beta) * Q * X - M * log_M
+        # reduction == "batchmean"
+        loss = loss / n_rows
         tl.store(loss_ptr + offsets, loss, mask=mask)
 
-        dX = 0.5 * Q * (X - log_M) / n_rows
+        dX = (1 - beta) * Q * (X - log_M) / n_rows
         tl.store(dX_ptr + offsets, dX, mask=mask)
 
 
 MAX_FUSED_SIZE = 65536
 
 
-def jsd_forward(_input, target):
+def jsd_forward(_input, target, beta):
     BT, V = _input.shape
     n_rows = BT
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
@@ -67,17 +70,18 @@ def jsd_forward(_input, target):
         loss_stride=loss.stride(-2),
         dX_ptr=dX,
         dX_stride=dX.stride(-2),
+        beta=beta,
         n_rows=n_rows,
         n_cols=V,
         BLOCK_SIZE=BLOCK_SIZE,
     )
-    # reduction == "batchmean"
-    loss = torch.sum(loss) / n_rows
+
+    loss = torch.sum(loss)
     return loss.to(_input.dtype), dX
 
 
 def jsd_backward(dX, grad_output):
-    # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
+    # If jsd is the last layer, grad_output is 1.0. Skip the mul to save time
     if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
         return dX
     else:
@@ -85,15 +89,18 @@ def jsd_backward(dX, grad_output):
 
 
 class LigerJSDFunction(torch.autograd.Function):
-    """
-    Class implementing the forward and backward pass for the JS Divergence using Triton, as defined by the following formula:
+    r"""
+    This class implements the forward and backward pass for the generalized Jensen-Shannon Divergence.
+    .. math::
+        JSD(\beta)(P || Q)
+            = \beta * KLDiv(P || (\beta * P + (1 - \beta) * Q)) + (1 - \beta) * KLDiv(Q || (\beta * P + (1 - \beta) * Q))
 
-    Parameters:
-    _input (tensor): predict values with shape (BT, V) in logspace
-    target (tensor): gournd truth values with shape (BT, V) in logspace
-
-    Returns:
-    loss (tensor): JSD
+    .. note::
+        As all the other losses in PyTorch, this function expects the first argument,
+        :attr:`_input`, to be the predictions, the output of the student model, in log-space
+        and the second, :attr:`target`, to be the observations, the output of the teacher model, in log-space.
+        This differs from the standard mathematical notation :math:`JSD(P || Q)` where
+        :math:`P` denotes the teacher model and :math:`Q` denotes the student model.
     """
 
     @staticmethod
@@ -102,9 +109,18 @@ class LigerJSDFunction(torch.autograd.Function):
         ctx,
         _input: torch.Tensor,
         target: torch.Tensor,
+        beta: float = 0.5,
     ) -> torch.Tensor:
+        """
+        Args:
+            _input (torch.Tensor): predict values with shape (BT, V) in logspace
+            target (torch.Tensor): ground truth values with shape (BT, V) in logspace
+            beta (float): coefficient beta of generalized JSD in the open interval (0, 1)
 
-        loss, dX = jsd_forward(_input, target)
+        Returns:
+            loss (torch.Tensor): generalized JSD
+        """
+        loss, dX = jsd_forward(_input, target, beta)
         ctx.save_for_backward(dX)
         return loss
 
@@ -115,5 +131,6 @@ class LigerJSDFunction(torch.autograd.Function):
         dX = jsd_backward(dX, grad_output)
         return (
             dX,
+            None,
             None,
         )

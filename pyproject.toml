@@ -27,6 +27,7 @@ dev = [
     "isort>=5.13.2",
     "pytest>=7.1.2",
     "datasets>=2.19.2",
+    "torchvision>=0.16.2",
     "seaborn",
 ]
 
@@ -36,7 +37,7 @@ include = ["liger_kernel", "liger_kernel.*"]
 
 [tool.pytest.ini_options]
 pythonpath = [
-  "src", 
+  "src",
   "."
 ]
 asyncio_mode = "auto"

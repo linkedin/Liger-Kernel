@@ -1,3 +1,5 @@
+<a name="readme-top"></a>
+
 # Liger Kernel: Efficient Triton Kernels for LLM Training
 
 
@@ -228,6 +230,7 @@ loss.backward()
 | **Model**   | **API**                                                      | **Supported Operations**                                                |
 |-------------|--------------------------------------------------------------|-------------------------------------------------------------------------|
 | LLaMA 2 & 3 | `liger_kernel.transformers.apply_liger_kernel_to_llama`   | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
+| LLaMA 3.2-Vision | `liger_kernel.transformers.apply_liger_kernel_to_mllama`   | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mistral     | `liger_kernel.transformers.apply_liger_kernel_to_mistral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mixtral     | `liger_kernel.transformers.apply_liger_kernel_to_mixtral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Gemma1      | `liger_kernel.transformers.apply_liger_kernel_to_gemma`    | RoPE, RMSNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
@@ -250,6 +253,7 @@ loss.backward()
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
 | FusedLinearCrossEntropy         | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
 | KLDivergence                    | `liger_kernel.transformers.LigerKLDIVLoss`                  |
+| JSD                             | `liger_kernel.transformers.LigerJSD`                        |
 
 - **RMSNorm**: [RMSNorm](https://arxiv.org/pdf/1910.07467), which normalizes activations using their root mean square, is implemented by fusing the normalization and scaling steps into a single Triton kernel, and achieves ~3X speedup with ~3X peak memory reduction.
 - **LayerNorm**: [LayerNorm](https://arxiv.org/pdf/1607.06450), which centers and normalizes activations across the feature dimension, is implemented by fusing the centering, normalization and scaling steps into a single Triton kernel, and achieves ~2X speedup.
@@ -264,6 +268,7 @@ $$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$
 <!-- TODO: verify vocab sizes are accurate  -->
 - **FusedLinearCrossEntropy**: Peak memory usage of cross entropy loss is further improved by fusing the model head with the CE loss and chunking the input for block-wise loss and gradient calculation, a technique inspired by [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy). It achieves >4X memory reduction for 128k vocab size. **This is highly effective for large batch size, large sequence length, and large vocabulary sizes.** Please refer to the [Medusa example](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa) for individual kernel usage.
 - **KLDivergence**: [KL Divergence](https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html) is implemented by fusing the forward into a single triton kernel, with reduction done outside the kernel. It achieves ~1.5X speed and ~15% memory reduction for 128K vocab size.
+- **JSD**: [Generalized JSD](https://arxiv.org/pdf/2306.13649) (Jensen-Shannon divergence), is implemented by computing both the loss and gradient in the forward pass. It achieves ~1.5X speed and ~54% memory reduction for 128k vocab size.
 
 ### Experimental Kernels
 
@@ -326,7 +331,14 @@ Many thanks to the contributors to these projects for their invaluable work that
 
 ## License
 
-[BSD 2-CLAUSE](https://github.com/linkedin/Liger-Kernel/blob/main/LICENSE)
+This project is licensed under the [BSD 2-CLAUSE](https://github.com/linkedin/Liger-Kernel/blob/main/LICENSE) License (see `LICENSE` for details).
+It also includes components from projects licensed under:
+
+- Apache License 2.0 (see `LICENSE-APACHE-2.0` for details).
+- MIT License (see `LICENSE-MIT-AutoAWQ` for details).
+- MIT License (see `LICENSE-MIT-Efficient Cross Entropy` for details).
+- MIT License (see `LICENSE-MIT-llmc` for details).
+- MIT License (see `LICENSE-MIT-triton` for details).
 
 ## Contact
 
@@ -347,3 +359,15 @@ Biblatex entry:
 
 ## Star History
 [![Star History Chart](https://api.star-history.com/svg?repos=linkedin/Liger-Kernel&type=Date)](https://star-history.com/#linkedin/Liger-Kernel&Date)
+
+## Contributors
+
+<a href="https://github.com/linkedin/Liger-Kernel/graphs/contributors">
+  <img alt="contributors" src="https://contrib.rocks/image?repo=linkedin/Liger-Kernel"/>
+</a>
+
+<p align="right" style="font-size: 14px; color: #555; margin-top: 20px;">
+    <a href="#readme-top" style="text-decoration: none; color: #007bff; font-weight: bold;">
+        ↑ Back to Top ↑
+    </a>
+</p>
