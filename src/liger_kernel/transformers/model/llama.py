@@ -120,8 +120,9 @@ def lce_forward(
             logits = torch.cat(logits, dim=-1)
         else:
             logits = self.lm_head(hidden_states)
-        logits = logits.float()
         if labels is not None:
+            # Upcast to float if we need to compute the loss to avoid potential precision issues
+            logits = logits.float()
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()

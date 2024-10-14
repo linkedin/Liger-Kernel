@@ -103,7 +103,6 @@ def lce_forward(
 
     hidden_states = outputs[0]
     logits = self.lm_head(hidden_states)
-    logits = logits.float()
 
     loss = None
     if self.training and (labels is not None):
@@ -116,6 +115,8 @@ def lce_forward(
         lce = LigerFusedLinearCrossEntropyLoss()
         loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
     elif labels is not None:
+        # Upcast to float if we need to compute the loss to avoid potential precision issues
+        logits = logits.float()
         # Shift so that tokens < n predict n
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()

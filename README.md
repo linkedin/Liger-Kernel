@@ -1,3 +1,5 @@
+<a name="readme-top"></a>
+
 # Liger Kernel: Efficient Triton Kernels for LLM Training
 
 
@@ -360,3 +362,15 @@ Biblatex entry:
 
 ## Star History
 [![Star History Chart](https://api.star-history.com/svg?repos=linkedin/Liger-Kernel&type=Date)](https://star-history.com/#linkedin/Liger-Kernel&Date)
+
+## Contributors
+
+<a href="https://github.com/linkedin/Liger-Kernel/graphs/contributors">
+  <img alt="contributors" src="https://contrib.rocks/image?repo=linkedin/Liger-Kernel"/>
+</a>
+
+<p align="right" style="font-size: 14px; color: #555; margin-top: 20px;">
+    <a href="#readme-top" style="text-decoration: none; color: #007bff; font-weight: bold;">
+        ↑ Back to Top ↑
+    </a>
+</p>
