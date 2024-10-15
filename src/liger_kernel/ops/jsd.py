@@ -20,7 +20,7 @@ def _jsd_kernel(
     label_ptr,
     beta,
     n_non_ignore,
-    ignore_index,
+    ignore_index: tl.constexpr,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
     HAS_LABEL: tl.constexpr,
