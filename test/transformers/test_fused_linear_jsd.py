@@ -234,8 +234,8 @@ def test_correctness_with_ignore_index(
     ]  # Randomly select indices
     label[indices_to_assign] = ignore_index
 
-    output1 = torch_lm_head_jsd(_input1, teacher_input)
-    output2 = liger_lm_head_jsd(_input2, teacher_input)
+    output1 = torch_lm_head_jsd(_input1, teacher_input, label)
+    output2 = liger_lm_head_jsd(_input2, teacher_input, label)
 
     assert torch.allclose(output1, output2, atol=atol, rtol=rtol)
 
