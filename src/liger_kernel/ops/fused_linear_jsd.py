@@ -17,7 +17,7 @@ def fused_linear_jsd_forward(
     student_weight,
     teacher_input,
     teacher_weight,
-    label,
+    shift_labels,
     jsd_beta,
     ignore_index,
     has_label,
@@ -52,7 +52,7 @@ def fused_linear_jsd_forward(
     loss_1d = torch.zeros((BT, V), dtype=torch.float32, device=device)
 
     if has_label:
-        n_non_ignore = (label != ignore_index).sum().item()
+        n_non_ignore = (shift_labels != ignore_index).sum().item()
     else:
         n_non_ignore = BT
 
@@ -92,7 +92,7 @@ def fused_linear_jsd_forward(
             dX_ptr=student_prob_chunk,
             dX_stride=student_prob_chunk.stride(-2),
             label_ptr=(
-                label if has_label else torch.empty(1, device=device)
+                shift_labels if has_label else torch.empty(1, device=device)
             ),  # dummy ptr if no label
             beta=jsd_beta,
             n_non_ignore=n_non_ignore,
@@ -176,7 +176,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
         student_weight: torch.Tensor,
         teacher_input: torch.Tensor,
         teacher_weight: torch.Tensor,
-        label: Optional[torch.Tensor] = None,
+        shift_labels: Optional[torch.Tensor] = None,
         jsd_beta: float = 0.5,
         ignore_index: int = -100,
         temperature: float = 1.0,
@@ -188,7 +188,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
             student_weight (torch.tensor): the last projection layer in student model, with shape (V, H), where V is vocab size
             teacher_input (torch.tensor): input of the last projection layer in teacher model, with shape (B*T, H), where B is batch size, T is sequence length, H is hidden dimension.
             teacher_weight (torch.tensor): the last projection layer in teacher model, with shape (V, H), where V is vocab size
-            label (Optional[torch.Tensor]): indicator of vocab with shape (BT) where each value is in [0, V-1].
+            shift_labels (Optional[torch.LongTensor]): indicator of next predicted vocab with shape (BT) where each value is in [0, V-1].
             jsd_beta (float): coefficient beta of generalized JSD in the open interval (0, 1). Default: `0.5`
             ignore_index (int): the index to ignore. Default: -100
             temperature (float): temperature in softmax function to control the output probability distribution. Default: `1.0`
@@ -197,11 +197,11 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
             loss (torch.Tensor): generalized JSD
         """
         has_label = False
-        if label is not None:
-            assert label.shape == (
+        if shift_labels is not None:
+            assert shift_labels.shape == (
                 teacher_input.shape[0],
-            ), f"the shape of label must be (BT,). Got: {label.shape}"
-            label = label.contiguous()
+            ), f"the shape of shift_labels must be (BT,). Got: {shift_labels.shape}"
+            shift_labels = shift_labels.contiguous()
             has_label = True
 
         loss, grad_input, grad_weight = fused_linear_jsd_forward(
@@ -209,7 +209,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
             student_weight,
             teacher_input,
             teacher_weight,
-            label,
+            shift_labels,
             jsd_beta,
             ignore_index,
             has_label,

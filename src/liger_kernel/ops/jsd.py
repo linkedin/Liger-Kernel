@@ -67,7 +67,7 @@ def _jsd_kernel(
 MAX_FUSED_SIZE = 65536
 
 
-def jsd_forward(_input, target, label, beta, ignore_index, has_label):
+def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
     BT, V = _input.shape
     n_rows = BT
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
@@ -76,7 +76,7 @@ def jsd_forward(_input, target, label, beta, ignore_index, has_label):
     dX = torch.empty_like(_input)
 
     if has_label:
-        n_non_ignore = (label != ignore_index).sum().item()
+        n_non_ignore = (shift_labels != ignore_index).sum().item()
     else:
         n_non_ignore = BT
 
@@ -90,7 +90,7 @@ def jsd_forward(_input, target, label, beta, ignore_index, has_label):
         dX_ptr=dX,
         dX_stride=dX.stride(-2),
         label_ptr=(
-            label if has_label else torch.empty(1, device=_input.device)
+            shift_labels if has_label else torch.empty(1, device=_input.device)
         ),  # dummy ptr if no label
         beta=beta,
         n_non_ignore=n_non_ignore,
@@ -133,7 +133,7 @@ class LigerJSDFunction(torch.autograd.Function):
         ctx,
         _input: torch.Tensor,
         target: torch.Tensor,
-        label: Optional[torch.Tensor] = None,
+        shift_labels: Optional[torch.Tensor] = None,
         beta: float = 0.5,
         ignore_index: int = -100,
     ) -> torch.Tensor:
@@ -141,7 +141,7 @@ class LigerJSDFunction(torch.autograd.Function):
         Args:
             _input (torch.Tensor): predict values with shape (BT, V) in logspace
             target (torch.Tensor): ground truth values with shape (BT, V) in logspace
-            label (Optional[torch.Tensor]): indicator of vocab with shape (BT) where each value is in [0, V-1].
+            shift_labels (Optional[torch.LongTensor]): indicator of next predicted vocab with shape (BT) where each value is in [0, V-1].
             beta (float): coefficient beta of generalized JSD in the open interval (0, 1)
             ignore_index (int): the index to ignore. Default: -100
 
@@ -149,14 +149,16 @@ class LigerJSDFunction(torch.autograd.Function):
             loss (torch.Tensor): generalized JSD
         """
         has_label = False
-        if label is not None:
-            assert label.shape == (
+        if shift_labels is not None:
+            assert shift_labels.shape == (
                 _input.shape[0],
-            ), f"the shape of label must be (BT,). Got: {label.shape}"
-            label = label.contiguous()
+            ), f"the shape of shift_labels must be (BT,). Got: {shift_labels.shape}"
+            shift_labels = shift_labels.contiguous()
             has_label = True
 
-        loss, dX = jsd_forward(_input, target, label, beta, ignore_index, has_label)
+        loss, dX = jsd_forward(
+            _input, target, shift_labels, beta, ignore_index, has_label
+        )
         ctx.save_for_backward(dX)
         return loss
 
