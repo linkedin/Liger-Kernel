@@ -222,8 +222,10 @@ def revert_liger_kernel_to_mllama():
     Revert all Liger kernel patches applied to MLlama.
     """
 
+    import torch.nn as nn
     from transformers.models.mllama import modeling_mllama
 
+    importlib.reload(nn)
     importlib.reload(modeling_mllama)
     print("Liger kernel patches have been reverted.")
 
