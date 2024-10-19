@@ -121,6 +121,7 @@ def apply_liger_kernel_to_mllama(
     rope: bool = True,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
+    layer_norm: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
@@ -151,12 +152,15 @@ def apply_liger_kernel_to_mllama(
         MllamaForCausalLM,
         MllamaForConditionalGeneration,
         MllamaTextModel,
+        MllamaVisionModel,
     )
 
     from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
 
     if rope:
         modeling_mllama.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if layer_norm:
+        modeling_mllama.nn.LayerNorm = LigerLayerNorm
     if rms_norm:
         modeling_mllama.MllamaTextRMSNorm = LigerRMSNorm
     if swiglu:
@@ -174,11 +178,14 @@ def apply_liger_kernel_to_mllama(
 
         if isinstance(model, MllamaForConditionalGeneration):
             language_model: MllamaForCausalLM = model.language_model
+            vision_model: MllamaVisionModel = model.vision_model
             text_model: MllamaTextModel = language_model.model
         elif isinstance(model, MllamaForCausalLM):
             text_model = model.model
+            vision_model = None
         elif isinstance(model, MllamaTextModel):
             text_model = model
+            vision_model = None
         else:
             raise ValueError(f"Unsupported Mllama model type: {type(model)}")
 
@@ -193,6 +200,20 @@ def apply_liger_kernel_to_mllama(
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+        if vision_model:
+            _patch_layer_norm_module(vision_model.layernorm_pre)
+            _patch_layer_norm_module(vision_model.layernorm_post)
+
+            for layer in vision_model.transformer.layers:
+                if layer_norm:
+                    _patch_layer_norm_module(layer.input_layernorm)
+                    _patch_layer_norm_module(layer.post_attention_layernorm)
+
+            for layer in vision_model.global_transformer.layers:
+                if layer_norm:
+                    _patch_layer_norm_module(layer.input_layernorm)
+                    _patch_layer_norm_module(layer.post_attention_layernorm)
 
 
 def apply_liger_kernel_to_mistral(
@@ -767,7 +788,6 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
         for key, value in kwargs.items()
         if key in apply_fn_signature.parameters
     }
-
     logger.info(
         f"Applying Liger kernels to model instance with model type: {model_type} with kwargs: {applicable_kwargs}"
     )
