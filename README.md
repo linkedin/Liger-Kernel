@@ -8,7 +8,6 @@
         <th style="padding: 10px;" colspan="2">Stable</th>
         <th style="padding: 10px;" colspan="2">Nightly</th>
         <th style="padding: 10px;">Discord</th>
-        <th style="padding: 10px;">Gurubase</th>
     </tr>
     <tr>
         <td style="padding: 10px;">
@@ -34,11 +33,6 @@
         <td style="padding: 10px;">
             <a href="https://discord.gg/gpumode">
                 <img src="https://dcbadge.vercel.app/api/server/gpumode?style=flat" alt="Join Our Discord">
-            </a>
-        </td>
-        <td style="padding: 10px;">
-            <a href="https://gurubase.io/g/liger-kernel">
-                <img src="https://img.shields.io/badge/Gurubase-Ask%20Liger%20Kernel%20Guru%20(experimental)-006BFF" alt="Ask Liger Kernel Guru">
             </a>
         </td>
     </tr>
