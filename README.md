@@ -365,7 +365,8 @@ Biblatex entry:
       eprint={2410.10989},
       archivePrefix={arXiv},
       primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2410.10989}, 
+      url={https://arxiv.org/abs/2410.10989},
+      journal={arXiv preprint arXiv:2410.10989},
 }
 ```
 
