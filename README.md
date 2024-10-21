@@ -8,6 +8,7 @@
         <th style="padding: 10px;" colspan="2">Stable</th>
         <th style="padding: 10px;" colspan="2">Nightly</th>
         <th style="padding: 10px;">Discord</th>
+        <th style="padding: 10px;">Gurubase</th>
     </tr>
     <tr>
         <td style="padding: 10px;">
@@ -35,6 +36,11 @@
                 <img src="https://dcbadge.vercel.app/api/server/gpumode?style=flat" alt="Join Our Discord">
             </a>
         </td>
+        <td style="padding: 10px;">
+            <a href="https://gurubase.io/g/liger-kernel">
+                <img src="https://img.shields.io/badge/Gurubase-Ask%20Liger%20Kernel%20Guru-006BFF" alt="Ask Liger Kernel Guru">
+            </a>
+        </td>
     </tr>
 </table>
 
@@ -42,7 +48,7 @@
 
 <img src="https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/logo-banner.png">
 
-[Installation](#installation) | [Getting Started](#getting-started) | [Examples](#examples) | [APIs](#apis) | [Structure](#structure) | [Contributing](#contributing) | [Acknowledgement](#acknowledgement)
+[Installation](#installation) | [Getting Started](#getting-started) | [Examples](#examples) | [APIs](#apis) | [Structure](#structure) | [Contributing](#contributing) | [Acknowledgement](#acknowledgement) | [Ask Liger Kernel Guru](https://gurubase.io/g/liger-kernel)
 
 <details>
   <summary>Latest News 🔥</summary>
