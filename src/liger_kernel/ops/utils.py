@@ -12,6 +12,7 @@ Modifications made by Yanning Chen, 2024.
 
 import functools
 import importlib
+import operator
 from typing import Callable
 
 import torch
@@ -61,6 +62,18 @@ def compare_version(package: str, operator: Callable, target: str):
         return False
     pkg_version = Version(pkg.__version__)
     return operator(pkg_version, Version(target))
+
+
+def get_amp_custom_fwd_bwd() -> Callable:
+    if compare_version("torch", operator.ge, "2.4.0"):
+        return (
+            functools.partial(torch.amp.custom_fwd, device_type="cuda"),
+            functools.partial(torch.amp.custom_bwd, device_type="cuda"),
+        )
+    return torch.cuda.amp.custom_fwd, torch.cuda.amp.custom_bwd
+
+
+amp_custom_fwd, amp_custom_bwd = get_amp_custom_fwd_bwd()
 
 
 torch_to_triton_dtype = {
