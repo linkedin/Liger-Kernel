@@ -208,7 +208,7 @@ def apply_liger_kernel_to_mistral(
     Apply Liger kernels to replace original implementation in HuggingFace Mistral models
 
     Args:
-        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
         fused_linear_cross_entropy (bool):
             Whether to apply Liger's fused linear cross entropy loss. Default is True.

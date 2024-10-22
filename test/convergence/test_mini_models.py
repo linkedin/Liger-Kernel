@@ -149,7 +149,9 @@ MINI_MODEL_SETUPS = {
         ),
     ),
     "mini_gemma2": MiniModelConfig(
-        liger_kernel_patch_func=apply_liger_kernel_to_gemma2,
+        liger_kernel_patch_func=functools.partial(
+            apply_liger_kernel_to_gemma2, fused_linear_cross_entropy=False
+        ),
         liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma2,
         model_class=Gemma2ForCausalLM,
         mini_model_config=Gemma2Config(

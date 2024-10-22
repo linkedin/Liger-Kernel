@@ -31,7 +31,7 @@ def liger_cross_entropy_kernel(
     ignore_index,
     label_smoothing: tl.constexpr,
     reduction: tl.constexpr,  # set it as constexpr since reduction is always known at compile time
-    softcap: tl.constexpr,
+    softcap,
     BLOCK_SIZE: tl.constexpr,
     HAS_SOFTCAPPING: tl.constexpr,
 ):
@@ -85,6 +85,7 @@ def liger_cross_entropy_kernel(
     ori_X_y = tl.load(
         X_ptr + y
     )  # we need to store the original value of X_y for the loss calculation
+    softcap = softcap.to(ori_X_y.dtype)
     if HAS_SOFTCAPPING:
         ori_X_y = softcap * tanh(ori_X_y / softcap)
 
