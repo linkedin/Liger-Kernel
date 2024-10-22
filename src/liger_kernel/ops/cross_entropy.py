@@ -1,8 +1,21 @@
+import operator
+from typing import Optional
+
 import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import element_mul_kernel
+from liger_kernel.ops.utils import compare_version, element_mul_kernel
+
+if compare_version("triton", operator.ge, "3.0.0"):
+    try:
+        # typical import path with dispatch available
+        from triton.language.extra.libdevice import tanh
+    except ModuleNotFoundError:
+        # for working with NGC containers
+        from triton.language.extra.cuda.libdevice import tanh
+else:
+    from triton.language.math import tanh
 
 
 @triton.jit
@@ -18,7 +31,9 @@ def liger_cross_entropy_kernel(
     ignore_index,
     label_smoothing: tl.constexpr,
     reduction: tl.constexpr,  # set it as constexpr since reduction is always known at compile time
+    softcap: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    HAS_SOFTCAPPING: tl.constexpr,
 ):
     """
     This kernel computes both cross entropy loss and the gradient of the input.
@@ -36,7 +51,9 @@ def liger_cross_entropy_kernel(
     ignore_index (int): The index to ignore in the target.
     label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
     reduction (str): The string for the reduction to apply
+    softcap (float): The upper threshold for scaling logits to the range (-softcap, +softcap).
     BLOCK_SIZE (int): The block size for Triton operations.
+    HAS_SOFTCAPPING (bool): The boolean value to determine whether applying soft-capping or not.
     """
 
     # https://github.com/triton-lang/triton/issues/1058
@@ -68,6 +85,8 @@ def liger_cross_entropy_kernel(
     ori_X_y = tl.load(
         X_ptr + y
     )  # we need to store the original value of X_y for the loss calculation
+    if HAS_SOFTCAPPING:
+        ori_X_y = softcap * tanh(ori_X_y / softcap)
 
     # Label smoothing is a general case of normal cross entropy
     # See the full derivation at https://github.com/linkedin/Liger-Kernel/pull/198#issue-2503665310
@@ -79,6 +98,8 @@ def liger_cross_entropy_kernel(
         X_block = tl.load(
             X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
         )
+        if HAS_SOFTCAPPING:
+            X_block = softcap * tanh(X_block / softcap)
         block_max = tl.max(X_block)
         if label_smoothing > 0:
             # scale X beforehand to avoid overflow
@@ -109,10 +130,28 @@ def liger_cross_entropy_kernel(
         X_block = tl.load(
             X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
         )
+        if HAS_SOFTCAPPING:
+            intermediate = tanh(X_block / softcap)
+            X_block = softcap * intermediate
+
         if reduction == "mean":
-            X_block = (tl.exp(X_block - m) / d - eps) / (n_non_ignore)
+            X_block = tl.where(
+                X_offsets != y,
+                (tl.exp(X_block - m) / d - eps) / (n_non_ignore),
+                (tl.exp(X_block - m) / d - eps - (1 - label_smoothing))
+                / (n_non_ignore),
+            )
+
         else:
+            X_block = tl.where(
+                X_offsets != y,
+                (tl.exp(X_block - m) / d - eps),
+                (tl.exp(X_block - m) / d - eps - (1 - label_smoothing)),
+            )
             X_block = tl.exp(X_block - m) / d - eps
+
+        if HAS_SOFTCAPPING:
+            X_block = X_block * (1 - intermediate * intermediate)
 
         tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
 
@@ -132,7 +171,7 @@ def liger_cross_entropy_kernel(
     # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
     #          = (1 - label_smoothing) * H(q, p) + eps * sum(logsoftmax(x_i))
     # By using m (global max of xi) and d (sum of e^(xi-m)), we can simplify as:
-    #          = (1 - label_smoothing) * H(q, p) + (-sum(x_i * eps) + label_smoothing * (m + logd))
+    #          = (1 - label_smoothing) * H(q, p) + (sum(-eps * x_i) + label_smoothing * (m + logd))
     # Refer to H(q', p) in section 7 of the paper: https://arxiv.org/pdf/1512.00567
     # pytorch: https://github.com/pytorch/pytorch/blob/2981534f54d49fa3a9755c9b0855e7929c2527f0/aten/src/ATen/native/LossNLL.cpp#L516
     # See full derivation at https://github.com/linkedin/Liger-Kernel/pull/198#issuecomment-2333753087
@@ -144,15 +183,7 @@ def liger_cross_entropy_kernel(
     if reduction == "mean":
         loss = loss / n_non_ignore
 
-    # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - (1 - label_smoothing) / N`
-    X_y = tl.load(X_ptr + y)
-    if reduction == "mean":
-        X_y += -(1 - label_smoothing) / (n_non_ignore)
-    else:
-        X_y += -(1 - label_smoothing)
-
     tl.store(loss_ptr, loss)
-    tl.store(X_ptr + y, X_y)
 
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
@@ -161,7 +192,9 @@ def liger_cross_entropy_kernel(
 MAX_FUSED_SIZE = 65536 // 2  # the best size we found by manually tuning
 
 
-def cross_entropy_forward(_input, target, ignore_index, label_smoothing, reduction):
+def cross_entropy_forward(
+    _input, target, ignore_index, label_smoothing, reduction, softcap
+):
     BT, V = _input.shape
     n_rows = BT
 
@@ -191,7 +224,9 @@ def cross_entropy_forward(_input, target, ignore_index, label_smoothing, reducti
         ignore_index=ignore_index,
         label_smoothing=label_smoothing,
         reduction=reduction,
+        softcap=softcap if softcap is not None else 0.0,
         BLOCK_SIZE=BLOCK_SIZE,
+        HAS_SOFTCAPPING=True if softcap is not None else False,
         # TODO: 32 seems to give the best performance
         # Performance is quite sensitive to num_warps
         num_warps=32,
@@ -233,7 +268,13 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        ctx, _input, target, ignore_index=-100, label_smoothing=0.0, reduction="mean"
+        ctx,
+        _input: torch.Tensor,
+        target: torch.Tensor,
+        ignore_index: int = -100,
+        label_smoothing: float = 0.0,
+        reduction: str = "mean",
+        softcap: Optional[float] = None,
     ):
         """
         The forward pass of the Liger Cross Entropy loss.
@@ -245,12 +286,13 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         ignore_index (int): The index to ignore in the target.
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
         reduction (str): The reduction to apply to the output: "none" | "mean | "sum".
+        softcap (Optional[float]): The upper threshold for scaling logits to the range (-softcap, +softcap).
 
         Returns:
         tensor: The computed loss.
         """
         loss, _input = cross_entropy_forward(
-            _input, target, ignore_index, label_smoothing, reduction
+            _input, target, ignore_index, label_smoothing, reduction, softcap
         )
         # TODO: investigation
         # If we don't detach the _input tensor, the memory will double
@@ -274,6 +316,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         _input = cross_entropy_backward(_input, grad_output)
         return (
             _input,
+            None,
             None,
             None,
             None,
