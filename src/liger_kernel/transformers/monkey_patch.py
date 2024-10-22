@@ -9,6 +9,7 @@ from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
+from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
@@ -401,7 +402,8 @@ def apply_liger_kernel_to_gemma(
 
 def apply_liger_kernel_to_gemma2(
     rope: bool = True,
-    cross_entropy: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     geglu: bool = True,
     model: PreTrainedModel = None,
@@ -412,12 +414,19 @@ def apply_liger_kernel_to_gemma2(
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
-        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
     from transformers.models.gemma2 import modeling_gemma2
 
     LigerRMSNormForGemma2 = partial(
@@ -434,6 +443,8 @@ def apply_liger_kernel_to_gemma2(
         modeling_gemma2.Gemma2RMSNorm = LigerRMSNormForGemma2
     if cross_entropy:
         modeling_gemma2.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        modeling_gemma2.Gemma2ForCausalLM.forward = gemma2_lce_forward
     if geglu:
         modeling_gemma2.Gemma2MLP = LigerGEGLUMLP
 
