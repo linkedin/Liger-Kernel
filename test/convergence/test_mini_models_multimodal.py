@@ -316,14 +316,11 @@ def run_mini_model_multimodal(
         kwargs = {
             "rms_norm": True,
             "cross_entropy": True,
+            "layer_norm": True,
         }
         model_supports_rope = "qwen2_vl" not in model_name
         if model_supports_rope:
             kwargs["rope"] = True
-
-        model_supports_layer_norm = "qwen2_vl" in model_name
-        if model_supports_layer_norm:
-            kwargs["layer_norm"] = True
 
         if "gemma" in model_name:
             kwargs["geglu"] = True
