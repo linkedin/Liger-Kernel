@@ -7,6 +7,7 @@ from liger_kernel.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.kl_div import LigerKLDivLossFunction
 from liger_kernel.ops.layer_norm import LigerLayerNormFunction
+from liger_kernel.ops.SyncBatchNorm import LigerBatchNormFunction
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.rope import LigerRopeFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
@@ -18,6 +19,7 @@ liger_geglu = LigerGELUMulFunction.apply
 liger_rms_norm = LigerRMSNormFunction.apply
 liger_rope = LigerRopeFunction.apply
 liger_layer_norm = LigerLayerNormFunction.apply
+liger_batch_norm = LigerBatchNormFunction.apply
 liger_kl_div = LigerKLDivLossFunction.apply
 liger_jsd = LigerJSDFunction.apply
 liger_fused_linear_jsd = LigerFusedLinearJSDFunction.apply
