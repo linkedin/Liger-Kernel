@@ -85,7 +85,6 @@ def liger_cross_entropy_kernel(
     ori_X_y = tl.load(
         X_ptr + y
     )  # we need to store the original value of X_y for the loss calculation
-    softcap = softcap.to(ori_X_y.dtype)
     if HAS_SOFTCAPPING:
         ori_X_y = softcap * tanh(ori_X_y / softcap)
 

@@ -123,12 +123,14 @@ def _test_correctness_with_softcap_once(
     torch_ce = CrossEntropyLoss(reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
-    _input = _tensor.detach().clone().requires_grad_(True)
+    # upcasting to match liger's casting strategy
+    _input = _tensor.to(torch.float32).detach().clone().requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
     target = torch.randint(0, V, (B * T,), device="cuda", dtype=torch.long)
 
-    output = torch_ce(softcap * torch.tanh(_input / softcap), target)
+    # downcasting to original dtype
+    output = torch_ce(softcap * torch.tanh(_input / softcap), target).to(dtype)
     output2 = target_ce(_input2, target)
 
     assert torch.allclose(output, output2, atol=atol, rtol=rtol)
@@ -162,7 +164,19 @@ def _test_correctness_not_last_layer_once(
     assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
-def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
+def _test_correctness_functional(
+    B,
+    T,
+    V,
+    scalar,
+    ignore_index,
+    label_smoothing,
+    reduction,
+    softcap,
+    dtype,
+    atol,
+    rtol,
+):
 
     _input = torch.randn(B * T, V, device="cuda", dtype=dtype) * scalar
 
@@ -171,8 +185,12 @@ def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
 
     target = torch.randint(0, V, (B * T,), device="cuda", dtype=torch.long)
 
-    y1 = liger_cross_entropy(x1, target, 0)
-    y2 = LigerCrossEntropyFunction.apply(x2, target, 0)
+    y1 = liger_cross_entropy(
+        x1, target, ignore_index, label_smoothing, reduction, softcap
+    )
+    y2 = LigerCrossEntropyFunction.apply(
+        x2, target, ignore_index, label_smoothing, reduction, softcap
+    )
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
 
@@ -263,8 +281,39 @@ def test_correctness(B, T, V, scalar, dtype, reduction, atol, rtol):
         (10.0, torch.float32, 1e-8, 1e-6),
     ],
 )
-def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
-    _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol)
+@pytest.mark.parametrize(
+    "ignore_index, label_smoothing, reduction, softcap",
+    [
+        (-100, 0.0, "mean", None),
+        (42, 0.1, "sum", 30),
+    ],
+)
+def test_correctness_functional(
+    B,
+    T,
+    V,
+    scalar,
+    ignore_index,
+    label_smoothing,
+    reduction,
+    softcap,
+    dtype,
+    atol,
+    rtol,
+):
+    _test_correctness_functional(
+        B,
+        T,
+        V,
+        scalar,
+        ignore_index,
+        label_smoothing,
+        reduction,
+        softcap,
+        dtype,
+        atol,
+        rtol,
+    )
 
 
 @pytest.mark.parametrize(
@@ -449,10 +498,10 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
     "B, T, V, softcap",
     [
         (2, 4096, 32000, 30.0),  # llama2, mistral
-        # (2, 4096, 32000, 30.0),  # llama2, mistral
-        # (1, 4096, 128256, 30.0),  # llama3
-        # # weird shapes
-        # (3, 423, 32000, 30.0),
+        (2, 4096, 32000, 30.0),  # llama2, mistral
+        (1, 4096, 128256, 30.0),  # llama3
+        # weird shapes
+        (3, 423, 32000, 30.0),
     ],
 )
 @pytest.mark.parametrize("reduction", ["sum", "mean"])
@@ -480,21 +529,21 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
         pytest.param(
             10.0,
             torch.bfloat16,
-            1e-6,
+            1e-8,
             5e-2,
             marks=pytest.mark.skipif(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        (0.1, torch.float32, 1e-8, 1e-5),
-        (1.0, torch.float32, 1e-8, 1e-5),
-        (10.0, torch.float32, 1e-8, 1e-5),
+        (0.1, torch.float32, 1e-8, 1e-6),
+        (1.0, torch.float32, 1e-8, 1e-6),
+        (10.0, torch.float32, 1e-8, 1e-6),
     ],
 )
-# @pytest.mark.skipif(
-#     torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
-#     reason="Needs 16GB+ GPU memory.",
-# )
+@pytest.mark.skipif(
+    torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
+    reason="Needs 16GB+ GPU memory.",
+)
 def test_correctness_with_softcap_once(
     B, T, V, softcap, reduction, scalar, dtype, atol, rtol
 ):
