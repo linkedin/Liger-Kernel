@@ -23,7 +23,7 @@ class LigerCrossEntropyLoss(torch.nn.Module):
             "none",
         }, f"reduction must be one of 'mean', 'sum', or 'none'. Got: {reduction}"
         assert (
-            softcap > 0 or softcap is None
+            softcap is None or softcap > 0
         ), f"softcap must greater than 0.0 or None. Got: {softcap}"
         self.ignore_index = ignore_index
         self.label_smoothing = label_smoothing
