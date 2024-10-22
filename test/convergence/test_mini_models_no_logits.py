@@ -411,12 +411,8 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
-        model_support_flce = "gemma2" not in model_name
-        if model_support_flce:
-            kwargs["fused_linear_cross_entropy"] = True
-            kwargs["cross_entropy"] = False
-        else:
-            kwargs["cross_entropy"] = True
+        kwargs["fused_linear_cross_entropy"] = True
+        kwargs["cross_entropy"] = False
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
