@@ -148,7 +148,6 @@ def liger_cross_entropy_kernel(
                 (tl.exp(X_block - m) / d - eps),
                 (tl.exp(X_block - m) / d - eps - (1 - label_smoothing)),
             )
-            X_block = tl.exp(X_block - m) / d - eps
 
         if HAS_SOFTCAPPING:
             X_block = X_block * (1 - intermediate * intermediate)
