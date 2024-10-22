@@ -18,6 +18,7 @@ def fused_linear_cross_entropy_forward(
     ignore_index=-100,
     label_smoothing=0.0,
     reduction="mean",
+    softcap=None,
 ):
     dtype = (
         torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else _input.dtype
@@ -89,7 +90,9 @@ def fused_linear_cross_entropy_forward(
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
             reduction=reduction,
+            softcap=softcap if softcap is not None else 0.0,
             BLOCK_SIZE=BLOCK_SIZE,
+            HAS_SOFTCAPPING=True if softcap is not None else False,
             num_warps=32,
         )
 
@@ -198,6 +201,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         ignore_index=-100,
         label_smoothing=0.0,
         reduction="mean",
+        softcap=None,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -217,7 +221,14 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         reduction: reduction to apply
         """
         loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
-            _input, weight, target, bias, ignore_index, label_smoothing, reduction
+            _input,
+            weight,
+            target,
+            bias,
+            ignore_index,
+            label_smoothing,
+            reduction,
+            softcap,
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
@@ -233,4 +244,4 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_backward(
             grad_output, grad_input, grad_weight, grad_bias
         )
-        return (grad_input, grad_weight, None, grad_bias, None, None, None)
+        return (grad_input, grad_weight, None, grad_bias, None, None, None, None)
