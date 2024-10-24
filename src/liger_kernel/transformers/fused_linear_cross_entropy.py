@@ -9,7 +9,7 @@ class LigerFusedLinearCrossEntropyLoss(CrossEntropyLoss):
     def __init__(self, *args, **kwargs):
         super(LigerFusedLinearCrossEntropyLoss, self).__init__(*args, **kwargs)
 
-    def forward(self, lin_weight, _input, target, bias=None):
+    def forward(self, lin_weight, _input, target, bias=None, reduction=None):
         return LigerFusedLinearCrossEntropyFunction.apply(
             _input,
             lin_weight,
@@ -17,5 +17,5 @@ class LigerFusedLinearCrossEntropyLoss(CrossEntropyLoss):
             bias,
             self.ignore_index,
             self.label_smoothing,
-            self.reduction,
+            reduction or self.reduction,
         )
