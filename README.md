@@ -1,4 +1,4 @@
-x<a name="readme-top"></a>
+<a name="readme-top"></a>
 
 # Liger Kernel: Efficient Triton Kernels for LLM Training
 
