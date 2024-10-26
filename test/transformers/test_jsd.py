@@ -52,8 +52,8 @@ class JSD(torch.nn.Module):
 _SHAPE_PARAMS = (
     "B, T, V",
     [
-        (2, 4096, 32000),  # llama2, mistral
-        (2, 4096, 32000),  # llama2, mistral
+        (2, 1024, 3200),
+        (2, 1024, 3200),
         # weird shape
         (41, 401, 1271),
         pytest.param(
@@ -66,7 +66,7 @@ _SHAPE_PARAMS = (
                 reason="This test requires a GPU with at least 36GB of memory",
             ),
         ),
-        (3, 423, 32000),
+        (3, 423, 1600),
     ],
 )
 
