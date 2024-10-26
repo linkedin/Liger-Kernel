@@ -2,25 +2,27 @@ from test.utils import supports_bfloat16
 
 import pytest
 import torch
-from liger_kernel.transformers.tvd import LigerTVDLoss  
+
+from liger_kernel.transformers.tvd import LigerTVDLoss
+
 
 class TorchTVDLoss(torch.nn.Module):
-    def __init__(self, reduction='batchmean'):
+    def __init__(self, reduction="batchmean"):
         super(TorchTVDLoss, self).__init__()
         self.reduction = reduction
 
     def forward(self, p, q):
 
         tvd = torch.abs(p - q) / 2.0
-        
-        if self.reduction == 'mean':
-            return torch.sum(tvd) /(p.size(0) * p.size(1))
-        elif self.reduction == 'sum':
+
+        if self.reduction == "mean":
+            return torch.sum(tvd) / (p.size(0) * p.size(1))
+        elif self.reduction == "sum":
             return torch.sum(tvd)
-        elif self.reduction == 'none':
+        elif self.reduction == "none":
             return tvd
-        elif self.reduction == 'batchmean':
-            return torch.sum(tvd) / p.size(0) 
+        elif self.reduction == "batchmean":
+            return torch.sum(tvd) / p.size(0)
         else:
             raise ValueError("Invalid reduction type.")
 
@@ -61,6 +63,7 @@ _DTYPE_PARAMS = (
     ],
 )
 
+
 def _test_correctness_once(
     target_tvd,
     torch_tvd,
@@ -85,7 +88,7 @@ def _test_correctness_once(
 
     output = target_tvd(x1, target)
     output2 = torch_tvd(x2, target)
-    
+
     assert torch.allclose(output, output2, atol=atol, rtol=rtol)
 
     if not is_last_layer:
@@ -99,15 +102,15 @@ def _test_correctness_once(
     output2.backward()
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
+
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
 @pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
 def test_correctness(B, T, V, reduction, dtype, atol, rtol):
     liger_tvd = LigerTVDLoss(reduction=reduction)
     torch_tvd = TorchTVDLoss(reduction=reduction)
-    _test_correctness_once(
-        liger_tvd, torch_tvd, B, T, V, dtype, atol, rtol, reduction
-    )
+    _test_correctness_once(liger_tvd, torch_tvd, B, T, V, dtype, atol, rtol, reduction)
+
 
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
 @pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])

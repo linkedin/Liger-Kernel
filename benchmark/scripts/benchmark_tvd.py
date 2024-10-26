@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 import triton
 from utils import (
     QUANTILES,
@@ -10,26 +9,27 @@ from utils import (
     run_benchmarks,
 )
 
-from liger_kernel.transformers.tvd import LigerTVDLoss  
+from liger_kernel.transformers.tvd import LigerTVDLoss
 
 
 class TorchTVDLoss(torch.nn.Module):
-    def __init__(self, reduction='batchmean'):
+    def __init__(self, reduction="batchmean"):
         super(TorchTVDLoss, self).__init__()
         self.reduction = reduction
 
     def forward(self, p, q):
         tvd = torch.abs(p - q) / 2.0
-        if self.reduction == 'mean':
+        if self.reduction == "mean":
             return torch.sum(tvd) / (p.size(0) * p.size(1))
-        elif self.reduction == 'sum':
+        elif self.reduction == "sum":
             return torch.sum(tvd)
-        elif self.reduction == 'none':
+        elif self.reduction == "none":
             return tvd
-        elif self.reduction == 'batchmean':
+        elif self.reduction == "batchmean":
             return torch.sum(tvd) / p.size(0)
         else:
             raise ValueError("Invalid reduction type.")
+
 
 S, E = 12, 18
 

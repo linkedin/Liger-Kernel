@@ -1,8 +1,9 @@
+from typing import Literal
+
 import torch
 import triton
 import triton.language as tl
 
-from typing import Literal
 from liger_kernel.ops.utils import ensure_contiguous
 
 MAX_FUSED_SIZE = 65536 // 4
@@ -21,6 +22,7 @@ _str_to_reduction_mode = {
     "batchmean": _REDUCTION_MODE_BATCHMEAN.value,
 }
 
+
 def get_num_warps(BLOCK_SIZE):
     num_warps = 4
     if BLOCK_SIZE >= 32768:
@@ -32,17 +34,18 @@ def get_num_warps(BLOCK_SIZE):
 
     return num_warps
 
+
 @triton.jit
 def _tv_distance_kernel(
-    p_ptr, 
-    p_stride,  
-    q_ptr, 
-    q_stride, 
-    loss_ptr,  
-    loss_stride, 
-    grads_ptr, 
+    p_ptr,
+    p_stride,
+    q_ptr,
+    q_stride,
+    loss_ptr,
+    loss_stride,
+    grads_ptr,
     grads_stride,
-    n_cols, 
+    n_cols,
     BLOCK_SIZE: tl.constexpr,
     reduction: tl.constexpr = _REDUCTION_MODE_BATCHMEAN,
 ):
@@ -65,7 +68,7 @@ def _tv_distance_kernel(
         # TVD(P || Q) = 0.5 * |P - Q|
         tv_loss = 0.5 * tl.abs(p - q)
 
-        grad_res = tl.where(p > q, 0.5, -0.5)  
+        grad_res = tl.where(p > q, 0.5, -0.5)
 
         tl.store(grads_ptr + offsets, grad_res, mask=mask)
 
@@ -77,19 +80,20 @@ def _tv_distance_kernel(
     if reduction != _REDUCTION_MODE_NONE:
         tl.store(loss_ptr, loss_sum)
 
-def tv_distance_forward_triton(p, q, reduction):  
-    BT, V = p.shape  
-    
+
+def tv_distance_forward_triton(p, q, reduction):
+    BT, V = p.shape
+
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
     num_warps = get_num_warps(BLOCK_SIZE)
 
-    grid = (BT,)  
-    
+    grid = (BT,)
+
     reduction = _str_to_reduction_mode[reduction]
 
     out_size = (BT, V) if reduction == _REDUCTION_MODE_NONE.value else (BT,)
     output_tensor = torch.zeros(out_size, device=p.device, dtype=torch.float32)
-    grads   = torch.empty_like(p)
+    grads = torch.empty_like(p)
 
     _tv_distance_kernel[grid](
         p,
@@ -105,7 +109,7 @@ def tv_distance_forward_triton(p, q, reduction):
         num_warps=num_warps,
         reduction=reduction,
     )
-    
+
     if reduction == _REDUCTION_MODE_BATCHMEAN.value:
         return output_tensor.sum() / BT, grads
     elif reduction == _REDUCTION_MODE_SUM.value:
@@ -115,6 +119,7 @@ def tv_distance_forward_triton(p, q, reduction):
     else:
         return output_tensor, grads
 
+
 def tvd_backward_triton(grad_output, grads):
 
     # If cross entropy is the last layer, grad_output is 1.0. Skip the mul then.
@@ -122,6 +127,7 @@ def tvd_backward_triton(grad_output, grads):
         return grads
 
     return grads * grad_output
+
 
 class LigerTVDLossFunction(torch.autograd.Function):
     """
@@ -131,7 +137,10 @@ class LigerTVDLossFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(
-        ctx, p: torch.Tensor, q: torch.Tensor, reduction: REDUCTION_LITERAL = "batchmean"
+        ctx,
+        p: torch.Tensor,
+        q: torch.Tensor,
+        reduction: REDUCTION_LITERAL = "batchmean",
     ) -> torch.Tensor:
         """A forward pass for the Total Variation Distance Loss.
 
@@ -161,7 +170,7 @@ class LigerTVDLossFunction(torch.autograd.Function):
         Returns:
             tuple[torch.Tensor, None, None]: The gradient of the loss with respect to the inputs.
         """
-        grads, = ctx.saved_tensors
+        (grads,) = ctx.saved_tensors
         BT, V = grads.shape
 
         grads = tvd_backward_triton(grad_output, grads)
@@ -169,6 +178,6 @@ class LigerTVDLossFunction(torch.autograd.Function):
         if ctx.reduction == "batchmean":
             grads /= BT
         elif ctx.reduction == "mean":
-            grads /= (BT * V)
+            grads /= BT * V
 
         return grads, None, None
