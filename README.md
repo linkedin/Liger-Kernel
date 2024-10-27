@@ -1,3 +1,5 @@
+<a name="readme-top"></a>
+
 # Liger Kernel: Efficient Triton Kernels for LLM Training
 
 
@@ -6,6 +8,7 @@
         <th style="padding: 10px;" colspan="2">Stable</th>
         <th style="padding: 10px;" colspan="2">Nightly</th>
         <th style="padding: 10px;">Discord</th>
+        <th style="padding: 10px;">Gurubase (experimental)</th>
     </tr>
     <tr>
         <td style="padding: 10px;">
@@ -33,6 +36,11 @@
                 <img src="https://dcbadge.vercel.app/api/server/gpumode?style=flat" alt="Join Our Discord">
             </a>
         </td>
+        <td style="padding: 10px;">
+            <a href="https://gurubase.io/g/liger-kernel">
+                <img src="https://img.shields.io/badge/Gurubase-Ask%20Liger%20Kernel%20Guru-006BFF" alt="Ask Liger Kernel Guru">
+            </a>
+        </td>
     </tr>
 </table>
 
@@ -40,11 +48,12 @@
 
 <img src="https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/logo-banner.png">
 
-[Installation](#installation) | [Getting Started](#getting-started) | [Examples](#examples) | [APIs](#apis) | [Structure](#structure) | [Contributing](#contributing) | [Acknowledgement](#acknowledgement)
+[Installation](#installation) | [Getting Started](#getting-started) | [Examples](#examples) | [APIs](#apis) | [Cite our work](#cite-this-work)
 
 <details>
   <summary>Latest News 🔥</summary>
-
+    
+  - [2024/10/21] We have released the tech report of Liger Kernel on Arxiv: https://arxiv.org/pdf/2410.10989 
   - [2024/9/6] We release v0.2.1 ([X post](https://x.com/liger_kernel/status/1832168197002510649)). 2500+ Stars, 10+ New Contributors, 50+ PRs, 50k Downloads in two weeks!
   - [2024/8/31] CUDA MODE talk, [Liger-Kernel: Real-world Triton kernel for LLM Training](https://youtu.be/gWble4FreV4?si=dxPeIchhkJ36Mbns), [Slides](https://github.com/cuda-mode/lectures?tab=readme-ov-file#lecture-28-liger-kernel)
   - [2024/8/23] Official release: check out our [X post](https://x.com/hsu_byron/status/1827072737673982056)
@@ -252,6 +261,7 @@ loss.backward()
 | FusedLinearCrossEntropy         | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
 | KLDivergence                    | `liger_kernel.transformers.LigerKLDIVLoss`                  |
 | JSD                             | `liger_kernel.transformers.LigerJSD`                        |
+| FusedLinearJSD                  | `liger_kernel.transformers.LigerFusedLinearJSD`             |
 
 - **RMSNorm**: [RMSNorm](https://arxiv.org/pdf/1910.07467), which normalizes activations using their root mean square, is implemented by fusing the normalization and scaling steps into a single Triton kernel, and achieves ~3X speedup with ~3X peak memory reduction.
 - **LayerNorm**: [LayerNorm](https://arxiv.org/pdf/1607.06450), which centers and normalizes activations across the feature dimension, is implemented by fusing the centering, normalization and scaling steps into a single Triton kernel, and achieves ~2X speedup.
@@ -267,6 +277,8 @@ $$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$
 - **FusedLinearCrossEntropy**: Peak memory usage of cross entropy loss is further improved by fusing the model head with the CE loss and chunking the input for block-wise loss and gradient calculation, a technique inspired by [Efficient Cross Entropy](https://github.com/mgmalek/efficient_cross_entropy). It achieves >4X memory reduction for 128k vocab size. **This is highly effective for large batch size, large sequence length, and large vocabulary sizes.** Please refer to the [Medusa example](https://github.com/linkedin/Liger-Kernel/tree/main/examples/medusa) for individual kernel usage.
 - **KLDivergence**: [KL Divergence](https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html) is implemented by fusing the forward into a single triton kernel, with reduction done outside the kernel. It achieves ~1.5X speed and ~15% memory reduction for 128K vocab size.
 - **JSD**: [Generalized JSD](https://arxiv.org/pdf/2306.13649) (Jensen-Shannon divergence), is implemented by computing both the loss and gradient in the forward pass. It achieves ~1.5X speed and ~54% memory reduction for 128k vocab size.
+- **FusedLinearJSD**: Peak memory usage of JSD loss is further improved by fusing the model head with the model head with the JSD and chunking the input for block-wise loss and gradient calculation. It achieves ~85% memory reduction for 128k vocab size where batch size $\times$ sequence length is 8192.
+
 
 ### Experimental Kernels
 
@@ -280,21 +292,6 @@ $$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$
 <!-- TODO: be more specific about batch size -->
 > **Note:**
 > Reported speedups and memory reductions are with respect to the LLaMA 3-8B Hugging Face layer implementations. All models use 4K hidden size and 4K sequence length and are evaluated based on memory usage and wall time for the forward+backward pass on a single NVIDIA A100 80G GPU using small batch sizes. Liger kernels exhibit more efficient scaling to larger batch sizes, detailed further in the [Benchmark](./benchmark) folder.
-
-## Note on ML Compiler
-
-### Torch Compile
-
-Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compile`](https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html). In the following example, Liger Kernel can further optimize the model on top of Torch Compile, reducing the memory by more than half.
-
-| Configuration                  | Throughput (tokens/sec) | Memory Reserved (GB) |
-|--------------------------------|----------------------------|-------------------------|
-| Torch Compile                  | 3780                       | 66.4                   |
-| Torch Compile + Liger Kernel   | 3702                       | 31.0                   |
-
-> **Note:**
-> 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Seq Len = 4096, Data Type = `bf16`, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
-> 2. Tested on torch `2.5.0.dev20240731+cu118`
 
 ## Contributing
 
@@ -347,13 +344,29 @@ It also includes components from projects licensed under:
 
 Biblatex entry:
 ```bib
-@software{liger2024,
-  title  = {Liger-Kernel: Efficient Triton Kernels for LLM Training},
-  author = {Hsu, Pin-Lun and Dai, Yun and Kothapalli, Vignesh and Song, Qingquan and Tang, Shao and Zhu, Siyu},
-  url    = {https://github.com/linkedin/Liger-Kernel},
-  year   = {2024}
+@article{hsu2024ligerkernelefficienttriton,
+      title={Liger Kernel: Efficient Triton Kernels for LLM Training}, 
+      author={Pin-Lun Hsu and Yun Dai and Vignesh Kothapalli and Qingquan Song and Shao Tang and Siyu Zhu and Steven Shimizu and Shivam Sahni and Haowen Ning and Yanning Chen},
+      year={2024},
+      eprint={2410.10989},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2410.10989},
+      journal={arXiv preprint arXiv:2410.10989},
 }
 ```
 
 ## Star History
 [![Star History Chart](https://api.star-history.com/svg?repos=linkedin/Liger-Kernel&type=Date)](https://star-history.com/#linkedin/Liger-Kernel&Date)
+
+## Contributors
+
+<a href="https://github.com/linkedin/Liger-Kernel/graphs/contributors">
+  <img alt="contributors" src="https://contrib.rocks/image?repo=linkedin/Liger-Kernel"/>
+</a>
+
+<p align="right" style="font-size: 14px; color: #555; margin-top: 20px;">
+    <a href="#readme-top" style="text-decoration: none; color: #007bff; font-weight: bold;">
+        ↑ Back to Top ↑
+    </a>
+</p>
