@@ -224,3 +224,72 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, atol, rtol):
     y2.backward(grad_output)
 
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (2, 4, 512, 512),  # The test does not work on some CI GPUs. Issue #160
+        (8, 2048, 4096, 32000),  # llama2, mistral
+        # Comment out to speed up testing
+        (4, 2048, 4096, 128256),  # llama3 8B
+        (4, 1024, 8192, 128256),  # llama3 70B
+        (4, 423, 8192, 32000),  # random shape
+    ],
+)
+@pytest.mark.parametrize(
+    "cast_dtype, atol, rtol",
+    [
+        (torch.bfloat16, 5e-3, 5e-2),
+        (torch.float16, 5e-3, 5e-2),
+    ],
+)
+def test_amp(B, T, H, V, cast_dtype, atol, rtol):
+    device = "cuda"
+    dtype = torch.float32
+    torch_lm_head_ce = TorchLMHeadCE(
+        H=H,
+        V=V,
+        bias=True,
+        label_smoothing=0.0,
+        reduction="mean",
+        dtype=dtype,
+    ).to(device)
+    liger_lm_head_ce = LigerLMHeadCE(
+        H=H,
+        V=V,
+        bias=True,
+        label_smoothing=0.0,
+        reduction="mean",
+        dtype=dtype,
+    ).to(device)
+
+    # init the linear in all CEs with the same weights
+    torch_lm_head_ce.lin.weight.data = liger_lm_head_ce.lin.weight.data = torch.rand(
+        V, H, device=device, dtype=dtype
+    )
+
+    _tensor = torch.randn(B * T, H, device=device, dtype=dtype)
+    _input1 = _tensor.detach().clone().requires_grad_(True)
+    _input2 = _tensor.detach().clone().requires_grad_(True)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    with torch.autocast(device_type="cuda", dtype=cast_dtype):
+        output1 = torch_lm_head_ce(_input1, target)
+        output2 = liger_lm_head_ce(_input2, target)
+
+    assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
+
+    with torch.autocast(device_type="cuda", dtype=cast_dtype):
+        output1.backward()
+        output2.backward()
+
+    assert_verbose_allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
+
+    assert_verbose_allclose(
+        torch_lm_head_ce.lin.weight.grad,
+        liger_lm_head_ce.lin.weight.grad,
+        atol=atol,
+        rtol=rtol,
+    )
