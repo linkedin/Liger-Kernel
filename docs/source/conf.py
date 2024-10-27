@@ -67,7 +67,7 @@ master_doc = 'index'
 exclude_patterns = []
 
 # HTML output options
-html_theme = 'sphinx_rtd_theme'
+html_theme = 'alabaster'
 html_static_path = [os.path.join(source_dir, '_static')]
 html_theme_options = {
     'navigation_depth': 4,
