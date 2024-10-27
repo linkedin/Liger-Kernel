@@ -117,3 +117,6 @@ def element_mul_kernel(
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(X_ptr + X_offsets, mask=X_offsets < n_cols)
         tl.store(X_ptr + X_offsets, X_block * grad_output, mask=X_offsets < n_cols)
+
+def is_hip() -> bool:
+    return torch.version.hip is not None
