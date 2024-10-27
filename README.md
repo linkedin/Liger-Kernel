@@ -293,21 +293,6 @@ $$\text{GeGLU}(x)=\text{GELU}(xW+b)\otimes(xV+c)$$
 > **Note:**
 > Reported speedups and memory reductions are with respect to the LLaMA 3-8B Hugging Face layer implementations. All models use 4K hidden size and 4K sequence length and are evaluated based on memory usage and wall time for the forward+backward pass on a single NVIDIA A100 80G GPU using small batch sizes. Liger kernels exhibit more efficient scaling to larger batch sizes, detailed further in the [Benchmark](./benchmark) folder.
 
-## Note on ML Compiler
-
-### Torch Compile
-
-Since Liger Kernel is 100% Triton-based, it works seamlessly with [`torch.compile`](https://pytorch.org/tutorials/intermediate/torch_compile_tutorial.html). In the following example, Liger Kernel can further optimize the model on top of Torch Compile, reducing the memory by more than half.
-
-| Configuration                  | Throughput (tokens/sec) | Memory Reserved (GB) |
-|--------------------------------|----------------------------|-------------------------|
-| Torch Compile                  | 3780                       | 66.4                   |
-| Torch Compile + Liger Kernel   | 3702                       | 31.0                   |
-
-> **Note:**
-> 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Seq Len = 4096, Data Type = `bf16`, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
-> 2. Tested on torch `2.5.0.dev20240731+cu118`
-
 ## Contributing
 
 [CONTRIBUTING GUIDE](https://github.com/linkedin/Liger-Kernel/blob/main/CONTRIBUTING.md)
