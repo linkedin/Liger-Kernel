@@ -44,5 +44,5 @@ log_cli_level = "INFO"
 [tool.ruff]
 select = ["E", "W", "I"]  # Select all errors, warnings, and information messages
 ignore = ["E226", "E24"]  # Ignore specific error codes
-extend-select = ["DT100", "SIM100"]  # Extend select with specific rules
+extend-select = ["SIM100"]  # Extend select with specific rules
 show-source = true  # Show source code snippets
