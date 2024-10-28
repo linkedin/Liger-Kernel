@@ -18,7 +18,6 @@ dependencies = [
 transformers = [
     "transformers~=4.0"
 ]
-
 dev = [
     "transformers>=4.44.2",
     "matplotlib>=3.7.2",
@@ -35,8 +34,8 @@ include = ["liger_kernel", "liger_kernel.*"]
 
 [tool.pytest.ini_options]
 pythonpath = [
-  "src",
-  "."
+    "src",
+    "."
 ]
 asyncio_mode = "auto"
 log_cli = true
