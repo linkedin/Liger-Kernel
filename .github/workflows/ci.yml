@@ -30,4 +30,4 @@ jobs:
 
       - name: Run Ruff
         run: |
-          ruff .
+          ruff check.
