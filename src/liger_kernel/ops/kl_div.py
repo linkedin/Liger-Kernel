@@ -10,7 +10,7 @@ from liger_kernel.ops.utils import ensure_contiguous
 def get_num_warps(BLOCK_SIZE):
     num_warps = 4
     if BLOCK_SIZE >= 32768:
-        num_warps = 32
+        num_warps =  32 if not is_hip() else 16,
     elif BLOCK_SIZE >= 8192:
         num_warps = 16
     elif BLOCK_SIZE >= 2048:

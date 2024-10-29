@@ -140,7 +140,7 @@ def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
             grad_output,
             H,
             BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32,
+             num_warps=32 if not is_hip() else 16,
         )
 
         # handle grad_weight
@@ -154,7 +154,7 @@ def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
                 grad_output,
                 H,
                 BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32,
+                 num_warps=32 if not is_hip() else 16,
             )
 
     return grad_input, grad_weight
