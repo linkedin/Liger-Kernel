@@ -145,6 +145,32 @@ pip install -e .
 pip install -e .[transformers]
 ```
 
+## Installation (ROCm)
+
+### Dependencies
+
+- `torch >= 2.5.0` Install according to the instruction in Pytorch official webpage.
+- `triton >= 3.0.0` Install from pypi.
+
+### Optional Dependencies
+
+- `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
+
+> **Note:**
+> Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
+
+To install from source:
+
+```bash
+# Make you have installed triton==3.0.0 (at least 3.0.0) using pypi. Do not install from source.
+python3 -m pip install triton==3.0.0 # version used at the time of writing the documentation
+git clone https://github.com/linkedin/Liger-Kernel.git
+cd Liger-Kernel
+pip install -e .
+# or if using transformers
+pip install -e .[transformers]
+```
+
 ## Getting Started
 
 There are a couple of ways to apply Liger kernels, depending on the level of customization required.
