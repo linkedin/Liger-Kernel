@@ -42,7 +42,7 @@ class JSD(torch.nn.Module):
             loss = torch.where(label != self.ignore_index, loss, 0.0)
             n_non_ignore = (label != self.ignore_index).sum().item()
             if n_non_ignore == 0:
-                loss = 0.0
+                loss = torch.tensor(0.0).to(loss.device)
             else:
                 loss = (loss / n_non_ignore).sum()
         else:
@@ -296,3 +296,48 @@ def test_correctness_functional(
     _test_correctness_functional(
         B, T, V, beta, ignore_index, is_last_layer, dtype, atol, rtol
     )
+
+
+# @pytest.mark.parametrize(*_SHAPE_PARAMS)
+def test_correctness_with_all_indices_ignored(
+    B=2,
+    T=10,
+    V=32,
+    dtype=torch.bfloat16,
+    atol=1e-3,
+    rtol=1e-3,
+    device="cuda",
+):
+    ignore_index = -100
+    torch_jsd = JSD(ignore_index=ignore_index, dtype=dtype)
+    liger_jsd = LigerJSD(ignore_index=ignore_index)
+
+    inp = torch.randn(
+        B * T, V, device=device, dtype=dtype, requires_grad=True
+    ).log_softmax(dim=-1)
+
+    x1 = inp.detach().clone().requires_grad_(True)
+    x2 = inp.detach().clone().requires_grad_(True)
+
+    with torch.no_grad():
+        target = torch.randn(B * T, V, dtype=dtype, device=device).log_softmax(dim=-1)
+
+    # label = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    label = torch.full((B * T,), ignore_index, device=device, dtype=torch.long)
+
+    # Assign some random number of elements as ignore_index
+    num_elements_to_assign = torch.randint(
+        1, B * T // 2, (1,)
+    ).item()  # Random number of elements to set to ignore_index
+    indices_to_assign = torch.randperm(B * T)[
+        :num_elements_to_assign
+    ]  # Randomly select indices
+    label[indices_to_assign] = ignore_index
+
+    output = torch_jsd(x1, target, label)
+    output2 = liger_jsd(x2, target, label)
+    assert_verbose_allclose(output, output2, atol=atol, rtol=rtol)
+    assert_verbose_allclose(torch.zeros_like(output2), output2, atol=atol, rtol=rtol)
+
+    output2.backward()
+    assert_verbose_allclose(torch.zeros_like(x2.grad), x2.grad, atol=atol, rtol=rtol)
