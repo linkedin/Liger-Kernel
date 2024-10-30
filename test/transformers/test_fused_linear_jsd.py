@@ -198,6 +198,7 @@ def test_correctness_with_ignore_index(
         dtype=dtype,
         device=device,
         temperature=temperature,
+        ignore_index=ignore_index,
         beta=beta,
     ).to(device)
     liger_lm_head_jsd = LigerLMHeadJSD(
@@ -206,6 +207,7 @@ def test_correctness_with_ignore_index(
         dtype=dtype,
         device=device,
         temperature=temperature,
+        ignore_index=ignore_index,
         beta=beta,
     ).to(device)
 
@@ -329,3 +331,75 @@ def test_correctness_functional(
     assert torch.allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
 
     assert torch.allclose(_weight1.grad, _weight2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (2, 4, 2048, 3200),
+    ],
+)
+@pytest.mark.parametrize(
+    "scalar, dtype, atol, rtol",
+    [
+        (1.0, torch.bfloat16, 5e-3, 5e-2),
+        (1.0, torch.float32, 1e-5, 5e-4),
+    ],
+)
+@pytest.mark.parametrize(
+    "temperature, beta, ignore_index",
+    [
+        (1.0, 0.5, 2),
+        (2.0, 0.1, 42),
+    ],
+)
+def test_correctness_all_ignored(
+    B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
+):
+    device = "cuda"
+    torch_lm_head_jsd = TorchLMHeadJSD(
+        H=H,
+        V=V,
+        dtype=dtype,
+        device=device,
+        temperature=temperature,
+        ignore_index=ignore_index,
+        beta=beta,
+    ).to(device)
+    liger_lm_head_jsd = LigerLMHeadJSD(
+        H=H,
+        V=V,
+        dtype=dtype,
+        device=device,
+        temperature=temperature,
+        ignore_index=ignore_index,
+        beta=beta,
+    ).to(device)
+
+    # init the linear in all FusedLinearJSDs with the same weights
+    torch_lm_head_jsd.student_lin.weight.data = (
+        liger_lm_head_jsd.student_lin.weight.data
+    ) = torch.rand(V, H // 2, device=device, dtype=dtype)
+    torch_lm_head_jsd.teacher_lin.weight.data = (
+        liger_lm_head_jsd.teacher_lin.weight.data
+    ) = torch.rand(V, H, device=device, dtype=dtype)
+
+    _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
+    _input1 = _tensor.detach().clone().requires_grad_(True)
+    _input2 = _tensor.detach().clone().requires_grad_(True)
+
+    teacher_input = torch.rand(B * T, H, device=device, dtype=dtype) * scalar
+
+    label = torch.full((B * T,), ignore_index, device=device, dtype=torch.long)
+
+    output1 = torch_lm_head_jsd(_input1, teacher_input, label)
+    output2 = liger_lm_head_jsd(_input2, teacher_input, label)
+
+    assert torch.allclose(output1, output2, atol=atol, rtol=rtol)
+    assert torch.allclose(output2, torch.zeros_like(output2), atol=atol, rtol=rtol)
+
+    output2.backward()
+
+    assert torch.allclose(
+        torch.zeros_like(_input2.grad), _input2.grad, atol=atol, rtol=rtol
+    )

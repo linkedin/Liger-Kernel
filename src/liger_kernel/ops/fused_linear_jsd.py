@@ -92,7 +92,9 @@ def fused_linear_jsd_forward(
             dX_ptr=student_prob_chunk,
             dX_stride=student_prob_chunk.stride(-2),
             label_ptr=(
-                shift_labels if has_label else torch.empty(1, device=device)
+                shift_labels[start_idx:end_idx]
+                if has_label
+                else torch.empty(1, device=device)
             ),  # dummy ptr if no label
             beta=jsd_beta,
             n_non_ignore=n_non_ignore,
