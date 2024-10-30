@@ -19,7 +19,7 @@ def _jsd_kernel(
     dX_stride,
     label_ptr,
     beta,
-    n_non_ignore,
+    n_non_ignore: int,
     ignore_index: tl.constexpr,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
