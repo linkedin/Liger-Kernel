@@ -4,7 +4,7 @@ import torch
 import triton
 
 from liger_kernel.ops.jsd import _jsd_kernel
-from liger_kernel.ops.utils import element_mul_kernel
+from liger_kernel.ops.utils import amp_custom_bwd, amp_custom_fwd, element_mul_kernel
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
@@ -24,6 +24,7 @@ def fused_linear_jsd_forward(
     temperature,
 ):
     device = student_input.device
+    dtype = student_input.dtype
 
     # inputs have shape: BT x H
     # materialized activations will have shape: BT x V
@@ -115,6 +116,8 @@ def fused_linear_jsd_forward(
         ) / temperature
         grad_input[start_idx:end_idx] = student_logits_chunk @ student_weight
 
+        student_logits_chunk = student_logits_chunk.to(dtype)
+
         if grad_weight is not None:
             torch.addmm(
                 input=grad_weight,
@@ -124,7 +127,7 @@ def fused_linear_jsd_forward(
             )
 
     loss = torch.sum(loss_1d)
-    return loss.to(student_input.dtype), grad_input, grad_weight
+    return loss, grad_input, grad_weight
 
 
 def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
@@ -172,6 +175,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
     """
 
     @staticmethod
+    @amp_custom_fwd
     def forward(
         ctx,
         student_input: torch.Tensor,
@@ -225,6 +229,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
         return loss
 
     @staticmethod
+    @amp_custom_bwd
     def backward(ctx, grad_output):
         (grad_input, grad_weight) = ctx.saved_tensors
         grad_input, grad_weight = fused_linear_jsd_backward(
