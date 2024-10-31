@@ -198,12 +198,6 @@ def lce_forward(
     "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
     ```"""
 
-    """
-    My TODO:
-    1. Run e2e example with hf < 4.46.0, GA on/GA off
-    2. Run e2e example with hf >= 4.46.0, GA on/GA off
-    """
-
     output_attentions = (
         output_attentions
         if output_attentions is not None
