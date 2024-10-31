@@ -9,9 +9,9 @@ from liger_kernel.transformers.group_norm import LigerGroupNorm
 @pytest.mark.parametrize(
     "batch_size, num_channels, num_groups, hidden_size",
     [
-        (1, 3, 1, 128),
+        (1, 4, 2, 8),
         (2, 4, 2, 128),
-        (16, 12, 3, 128),
+        (16, 12, 3, 4096),
     ],
 )
 @pytest.mark.parametrize(
@@ -26,16 +26,16 @@ def test_liger_group_norm(batch_size, num_channels, num_groups, hidden_size, dty
     x = torch.randn(
         batch_size, num_channels, hidden_size, dtype=dtype, device="cuda", requires_grad=True
     )
-    liger_ln = LigerGroupNorm(num_channels, num_groups, eps=1e-6).to(dtype).cuda()
-    torch_ln = torch.nn.GroupNorm(num_channels, num_groups, hidden_size, eps=1e-6).to(dtype).cuda()
 
+    liger_ln = LigerGroupNorm(num_channels, num_groups, eps=1e-6).to(dtype).cuda()
+    torch_ln = torch.nn.GroupNorm(num_channels=num_channels, num_groups=num_groups, eps=1e-6).to(dtype).cuda()
+    
     with torch.no_grad():
         torch_ln.weight.copy_(liger_ln.weight)
         torch_ln.bias.copy_(liger_ln.bias)
 
-    liger_output = liger_ln(x)
+    liger_output = liger_ln(x,)
     torch_output = torch_ln(x)
-
     assert torch.allclose(liger_output, torch_output, atol=atol, rtol=rtol)
 
     # grad_output = torch.randn_like(x)

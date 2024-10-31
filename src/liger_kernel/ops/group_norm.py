@@ -42,41 +42,51 @@ def _group_norm_forward_kernel(
     num_channels,
     num_rows,
     eps,
-    BLOCK_SIZE: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr
 ):
     """
     References:
     https://nn.labml.ai/normalization/group_norm/index.html
     """
-    row_idx = tl.program_id(0)
-    col_idx = tl.program_id(1)
+    batch_idx = tl.program_id(0)
+    group_idx = tl.program_id(1)
+
+    X_ptr += batch_idx * X_row_stride + group_idx * X_col_stride
+    Y_ptr += batch_idx * Y_row_stride + group_idx * Y_col_stride
     
-    hidden_size_offsets = tl.arange(0, BLOCK_SIZE)
-    channel_offsets = tl.arange(0, num_channels)
-    hidden_size_mask = hidden_size_offsets < hidden_size
+    # Compute mean
+    sum = 0.0
+    for i in range(0, hidden_size, BLOCK_SIZE):
+        hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
+        mask = hidden_size_offsets < hidden_size
+        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0)
+        sum += tl.sum(X)
+    
+    mean = sum / hidden_size
+    tl.store(Mean_ptr + batch_idx * Mean_row_stride + group_idx * Mean_col_stride, mean)
+    
+    # Compute variance
+    variance = 0.0
+    for i in range(0, hidden_size, BLOCK_SIZE):
+        hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
+        mask = hidden_size_offsets < hidden_size
+        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0)
+        diff = X - mean
+        variance += tl.sum(diff * diff)
+    
+    variance = variance / (hidden_size)
+    std = tl.sqrt(variance + eps)
 
-    Y_ptr += row_idx * Y_row_stride + col_idx * Y_col_stride
-    X_ptr += row_idx * X_row_stride + col_idx * X_col_stride
-    Mean_ptr += row_idx * Mean_row_stride + col_idx * Mean_col_stride
-    RSTD_ptr += row_idx * RSTD_row_stride + col_idx * RSTD_col_stride
+    tl.store(RSTD_ptr + batch_idx * RSTD_row_stride + group_idx * RSTD_col_stride, variance)
 
-    X_row = tl.load(X_ptr + hidden_size_offsets, mask=hidden_size_mask, other=0)
-    W = tl.load(W_ptr + channel_offsets)
-    B = tl.load(B_ptr + channel_offsets)
+    for i in range(0, hidden_size, BLOCK_SIZE):
+        hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
+        mask = hidden_size_offsets < hidden_size
+        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0)
+        Y = (X - mean) / std
+        tl.store(Y_ptr + hidden_size_offsets, Y, mask=mask)
 
-    mean = tl.sum(X_row, axis=-1) / hidden_size
-    diff = X_row - mean
-    var = tl.sum(diff * diff, axis=-1) / hidden_size
-    rstd = rsqrt(var + eps)
-
-    tl.store(Mean_ptr, mean)
-    tl.store(RSTD_ptr, rstd)
-    X_row_reshaped = tl.view(num_rows, num_channels, hidden_size)
-    Y_row = (X_row_reshaped - mean) * rstd * W + B
-
-    tl.store(Y_ptr + hidden_size_offsets, Y_row, mask=hidden_size_mask, other=0)
-
-
+        
 @triton.jit
 def _group_norm_backward_kernel(
     X_ptr,  # pointer to input, shape (n_rows, n_cols)
@@ -151,7 +161,7 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     X = X.view(batch_size, num_groups, -1)
     hidden_size = X.shape[-1]
     BLOCK_SIZE, num_warps = calculate_settings(hidden_size)
-    Y = torch.empty((batch_size, num_channels, hidden_size), dtype=X.dtype, device=X.device)
+    Y = torch.empty((batch_size, num_groups, hidden_size), dtype=X.dtype, device=X.device)
     Mean = torch.empty((batch_size, num_groups), dtype=X.dtype, device=X.device)
     RSTD = torch.empty((batch_size, num_groups), dtype=X.dtype, device=X.device)
     
@@ -171,11 +181,18 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
         W,
         B,
         hidden_size,
+        num_channels,
         batch_size,
         eps,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
+     
+    Y = Y.view(*shape)
+    affine_shape = [1] * len(shape)
+    affine_shape[1] = num_channels
+    Y = Y * W.view(affine_shape) + B.view(affine_shape)
+
     return Y, X, Mean, RSTD, BLOCK_SIZE, num_warps
 
 
