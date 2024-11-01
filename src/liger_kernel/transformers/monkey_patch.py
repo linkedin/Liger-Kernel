@@ -3,6 +3,8 @@ import logging
 from functools import partial
 from typing import Callable
 
+import transformers
+from packaging import version
 from transformers import PreTrainedModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
@@ -10,6 +12,9 @@ from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
+from liger_kernel.transformers.model.llama import (
+    lce_forward_deprecated as llama_lce_forward_deprecated,
+)
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
@@ -21,6 +26,8 @@ from liger_kernel.transformers.swiglu import (
     LigerPhi3SwiGLUMLP,
     LigerSwiGLUMLP,
 )
+
+transformer_version = version.parse(transformers.__version__)
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +95,14 @@ def apply_liger_kernel_to_llama(
     if cross_entropy:
         modeling_llama.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
+        if transformer_version >= version.parse("4.46.0"):
+            modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
+        else:  # if version < 4.46.0
+            logger.warning(
+                "Support for transformers versions < 4.46.0 will soon be discontinued due to issues with incorrect gradient accumulation. "
+                "Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/34191"
+            )
+            modeling_llama.LlamaForCausalLM.forward = llama_lce_forward_deprecated
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
