@@ -36,11 +36,7 @@ def _group_norm_forward_kernel(
     RSTD_ptr,  # pointer to rstd, shape (n_rows, n_groups)
     RSTD_row_stride,  # stride of each row in rstd
     RSTD_col_stride,  # stride of each column in rstd
-    W_ptr,  # pointer to weights, shape (n_groups)
-    B_ptr,  # pointer to bias, shape (n_groups)
     hidden_size,
-    num_channels,
-    num_rows,
     eps,
     BLOCK_SIZE: tl.constexpr
 ):
@@ -75,84 +71,97 @@ def _group_norm_forward_kernel(
         variance += tl.sum(diff * diff)
     
     variance = variance / (hidden_size)
-    std = tl.sqrt(variance + eps)
+    # 1/std
+    rstd = rsqrt(variance + eps)
+    tl.store(RSTD_ptr + batch_idx * RSTD_row_stride + group_idx * RSTD_col_stride, rstd)
 
-    tl.store(RSTD_ptr + batch_idx * RSTD_row_stride + group_idx * RSTD_col_stride, variance)
-
+    # Normalize
     for i in range(0, hidden_size, BLOCK_SIZE):
         hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
         mask = hidden_size_offsets < hidden_size
         X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0)
-        Y = (X - mean) / std
+        Y = (X - mean) * rstd
         tl.store(Y_ptr + hidden_size_offsets, Y, mask=mask)
 
         
 @triton.jit
 def _group_norm_backward_kernel(
-    X_ptr,  # pointer to input, shape (n_rows, n_cols)
-    W_ptr,  # pointer to weights, shape (n_cols,)
-    Mean_ptr,  # pointer to mean, shape (n_rows,)
-    RSTD_ptr,  # pointer to rstd, shape (n_rows,)
-    DX_ptr,  # pointer to input grad, shape (n_rows, n_cols)
-    DW_ptr,  # pointer to weights grad, shape (n_cols,)
-    DB_ptr,  # pointer to bias grad, shape (n_cols,)
-    DY_ptr,  # pointer to output grad, shape (n_rows, n_cols)
-    stride_x,  # stride of each row in input
-    stride_dx,  # stride of each row in input grad
-    stride_dw,  # stride of each row in weights grad
-    stride_db,  # stride of each row in bias grad
-    stride_dy,  # stride of each row in output grad
-    n_rows,
-    n_cols,
-    rows_per_program: tl.constexpr,
+    X_ptr,  # pointer to input, shape (n_rows, n_channels, hidden_size)
+    X_row_stride,  # stride of each row in input
+    X_col_stride,  # stride of each column in input
+    W_ptr,  # pointer to weights, shape (n_channels)
+    Mean_ptr,  # pointer to mean, shape (n_rows, n_groups)
+    Mean_ptr_col_stride,  # stride of each column in mean
+    RSTD_ptr,  # pointer to rstd, shape (n_rows, n_groups)
+    DX_ptr,  # pointer to input grad, shape (n_rows, n_groups, hidden_size)
+    DW_ptr,  # pointer to weights grad, shape (n_channels)
+    DW_col_stride,  # stride of each column in weights
+    DB_ptr,  # pointer to bias grad, shape (n_channels)
+    UPSTREAM_ptr,  # pointer to output grad, shape (n_rows, n_channels, hidden_size)
+    hidden_size: tl.constexpr, # hidden size
+    num_groups: tl.constexpr, # number of groups in group norm
     BLOCK_SIZE: tl.constexpr,
-    dtype: tl.constexpr,
 ):
     """
     References:
     https://nn.labml.ai/normalization/group_norm/index.html
     """
-    row_block_id = tl.program_id(0)
-    row_start = row_block_id * rows_per_program
-    row_end = min((row_block_id + 1) * rows_per_program, n_rows)
-    cols = tl.arange(0, BLOCK_SIZE)
-    mask = cols < n_cols
+    batch_idx = tl.program_id(0)
+    channel_idx = tl.program_id(1)
 
-    dw_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
-    db_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    group_idx = channel_idx // num_groups
 
-    X_ptr += row_start * stride_x
-    Mean_ptr += row_start
-    RSTD_ptr += row_start
-    DX_ptr += row_start * stride_dx
-    DY_ptr += row_start * stride_dy
+    # X_col_stide will correspond to the number of groups
+    X_ptr += batch_idx * X_row_stride + channel_idx * X_col_stride
+    DX_ptr += batch_idx * X_row_stride + channel_idx * X_col_stride
+    UPSTREAM_ptr += batch_idx * X_row_stride + channel_idx * X_col_stride
 
-    for _ in range(row_start, row_end):
-        x = tl.load(X_ptr + cols, mask=mask, other=0.0)
-        w = tl.load(W_ptr + cols, mask=mask, other=0.0)
-        dy = tl.load(DY_ptr + cols, mask=mask, other=0.0)
-        mean = tl.load(Mean_ptr)
-        rstd = tl.load(RSTD_ptr)
+    DW_ptr += batch_idx * X_row_stride + channel_idx * DW_col_stride
+    DB_ptr += batch_idx * X_row_stride + channel_idx * DW_col_stride
+    # Mean and rstd are the same shape so have the same strides
+    mean = tl.load(Mean_ptr + batch_idx * X_row_stride + group_idx * Mean_ptr_col_stride)
+    rstd = tl.load(RSTD_ptr + batch_idx * X_row_stride + group_idx * Mean_ptr_col_stride)
+    W = tl.load(W_ptr + group_idx)
+    
+    DW = 0.0
+    DB = 0.0
 
-        x_hat = (x - mean) * rstd
-        wdy = w * dy
-        c1 = tl.sum(x_hat * wdy, axis=0) / n_cols
-        c2 = tl.sum(wdy, axis=0) / n_cols
-        dx = (wdy - (x_hat * c1 + c2)) * rstd
-        tl.store(DX_ptr + cols, dx.to(dtype), mask=mask)
+    for i in range(0, hidden_size, BLOCK_SIZE):
+        hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
+        mask = hidden_size_offsets < hidden_size
+        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0)
+        UPSTREAM_grad = tl.load(UPSTREAM_ptr + hidden_size_offsets, mask=mask, other=0.0)
+        """
+        Y = (X - mean) * rstd
 
-        dw_row += dy * x_hat
-        db_row += dy
+        h(x) = rstd = 1/(sqrt(var + eps))
+        f(x) = x * h(x) = X * rstd
+        g(x) = - mean * h(x) = - mean * rstd
 
-        X_ptr += stride_x
-        Mean_ptr += 1
-        RSTD_ptr += 1
-        DX_ptr += stride_dx
-        DY_ptr += stride_dy
+        Y = f(x) + g(x)
+        dy_dx = df_dx + dg_dx
+        """
 
-    tl.store(DW_ptr + row_block_id * stride_dw + cols, dw_row.to(dtype), mask=mask)
-    tl.store(DB_ptr + row_block_id * stride_db + cols, db_row.to(dtype), mask=mask)
+        # dh_dx = -0.5 * (rstd**3) * dvar_dx
+        c1 = 1 / hidden_size
+        c2 = X - mean
+        dmean_dx = c1
+        dvar_dx = 2 * c2 * c1
+        drstd_dx = -0.5 * (rstd*rstd*rstd) * dvar_dx
 
+        df_dx = rstd + X * drstd_dx
+        dg_dx = - (dmean_dx * rstd + mean * drstd_dx)
+        dY_dx = df_dx + dg_dx
+
+        DX = W * UPSTREAM_grad * dY_dx
+        
+        DW += tl.sum(UPSTREAM_grad * X)
+        DB += tl.sum(UPSTREAM_grad)
+
+        tl.store(DX_ptr + hidden_size_offsets, DX, mask=mask)
+    
+    tl.store(DW_ptr, DW)
+    tl.store(DB_ptr, DB)
 
 def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     shape = X.shape
@@ -165,7 +174,7 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     Mean = torch.empty((batch_size, num_groups), dtype=X.dtype, device=X.device)
     RSTD = torch.empty((batch_size, num_groups), dtype=X.dtype, device=X.device)
     
-    _group_norm_forward_kernel[(batch_size, num_groups)](
+    _group_norm_forward_kernel[(batch_size, num_channels)](
         Y,
         Y.stride(0),
         Y.stride(1),
@@ -178,11 +187,7 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
         RSTD,
         RSTD.stride(0),
         RSTD.stride(1),
-        W,
-        B,
         hidden_size,
-        num_channels,
-        batch_size,
         eps,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
@@ -196,57 +201,44 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     return Y, X, Mean, RSTD, BLOCK_SIZE, num_warps
 
 
-def group_norm_backward(dY, X, W, B, Mean, RSTD):
+def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
     shape = dY.shape
-    dim = shape[-1]
-    dY = dY.view(-1, dim)
-    n_rows, n_cols = dY.shape
-
-    DX = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
-    sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
-    _DW = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
-    _DB = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
-
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-    if n_cols > BLOCK_SIZE:
-        raise RuntimeError("This group norm doesn't support feature dim >= 64KB.")
-
-    rows_per_program = math.ceil(n_rows / sm_count)
-    grid = (sm_count,)
-    triton_dtype = tl.float32 if X.dtype == torch.float32 else tl.bfloat16
-    _group_norm_backward_kernel[grid](
+    print(dY)
+    batch_size = shape[0]
+    hidden_size = dY.shape[-1]
+    DX = torch.empty((batch_size, num_channels, hidden_size), dtype=X.dtype, device=X.device)
+    DW = torch.empty((batch_size, num_channels), dtype=W.dtype, device=W.device)
+    DB = torch.empty((batch_size, num_channels), dtype=B.dtype, device=B.device)
+    BLOCK_SIZE, num_warps = calculate_settings(hidden_size)
+    _group_norm_backward_kernel[(batch_size, num_channels)](
         X,
+        X.stride(0),
+        X.stride(1),
         W,
         Mean,
+        Mean.stride(1),
         RSTD,
         DX,
-        _DW,
-        _DB,
+        DW,
+        DW.stride(1),
+        DB,
         dY,
-        X.stride(0),
-        DX.stride(0),
-        _DW.stride(0),
-        _DB.stride(0),
-        dY.stride(0),
-        n_rows,
-        n_cols,
-        rows_per_program,
-        BLOCK_SIZE=BLOCK_SIZE,
-        dtype=triton_dtype,
+        hidden_size,
+        num_groups,
+        BLOCK_SIZE=BLOCK_SIZE
     )
-
-    DW = _DW.sum(dim=0).to(W.dtype)
-    DB = _DB.sum(dim=0).to(W.dtype)
-
-    DX = DX.view(*shape)
-    return DX, DW, DB
+    print(DB)
+    print(DW)
+    return DX, DW.sum(dim=0), DB.sum(dim=0)
 
 
 class LigerGroupNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, num_channels, num_groups, affine_scaling_weight, affine_shifting_bias, eps):
+    def forward(ctx, X, affine_scaling_weight, affine_shifting_bias, num_channels, num_groups, eps):
         Y, X, Mean, RSTD, BLOCK_SIZE, num_warps = group_norm_forward(X, num_channels, num_groups, affine_scaling_weight, affine_shifting_bias, eps)
+        ctx.num_channels = num_channels
+        ctx.num_groups = num_groups
         ctx.save_for_backward(X, affine_scaling_weight, affine_shifting_bias, Mean, RSTD)
         return Y
 
@@ -254,5 +246,5 @@ class LigerGroupNormFunction(torch.autograd.Function):
     @ensure_contiguous
     def backward(ctx, dY):
         X, W, B, Mean, RSTD = ctx.saved_tensors
-        DX, DW, DB = group_norm_backward(dY, X, W, B, Mean, RSTD)
-        return DX, DW, DB, None
+        DX, DW, DB = group_norm_backward(dY, X, W, B, Mean, RSTD, ctx.num_channels, ctx.num_groups)
+        return DX, DW, DB, None, None, None

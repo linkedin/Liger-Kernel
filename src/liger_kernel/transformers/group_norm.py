@@ -27,10 +27,10 @@ class LigerGroupNorm(nn.Module):
         self.num_channels = num_channels
         self.num_groups = num_groups
         self.eps = eps
-        self.affine_scaling_weight = nn.Parameter(
+        self.weight = nn.Parameter(
             torch.ones(num_channels) if init_fn == "ones" else torch.zeros(num_channels)
         )
-        self.affine_shifting_bias = nn.Parameter(
+        self.bias = nn.Parameter(
             torch.randn(num_channels) if bias else torch.zeros(num_channels)
         )
         self.variance_epsilon = eps
@@ -40,7 +40,7 @@ class LigerGroupNorm(nn.Module):
         assert hidden_states.dim() >= 3, f"Input must have atleast 3 dimensions, got {hidden_states.dim()}"
         assert hidden_states.size(1) == self.num_channels, f"Input tensor must have {self.num_channels} channels, got {hidden_states.size(1)}"
         return LigerGroupNormFunction.apply(
-            hidden_states, self.num_channels, self.num_groups, self.affine_scaling_weight, self.affine_shifting_bias, self.variance_epsilon
+            hidden_states, self.weight, self.bias, self.num_channels, self.num_groups, self.variance_epsilon
         )
 
     def extra_repr(self):
