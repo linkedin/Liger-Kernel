@@ -4,7 +4,7 @@ import torch
 import triton
 
 from liger_kernel.ops.jsd import _jsd_kernel
-from liger_kernel.ops.utils import element_mul_kernel
+from liger_kernel.ops.utils import amp_custom_bwd, amp_custom_fwd, element_mul_kernel
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
@@ -24,6 +24,7 @@ def fused_linear_jsd_forward(
     temperature,
 ):
     device = student_input.device
+    dtype = student_input.dtype
 
     # inputs have shape: BT x H
     # materialized activations will have shape: BT x V
@@ -64,9 +65,15 @@ def fused_linear_jsd_forward(
         student_input_chunk = student_input[start_idx:end_idx]
         teacher_input_chunk = teacher_input[start_idx:end_idx]
 
-        # when doing matmul, use the original precision, shape: chunk_size x V
-        student_logits_chunk = student_input_chunk @ student_weight.t()
-        teacher_logits_chunk = teacher_input_chunk @ teacher_weight.t()
+        # shape: chunk_size x V
+        # For anything starting from logits to the final JSD loss, we do computation
+        # in FP32 to avoid losing numerical stability.
+        student_logits_chunk = (student_input_chunk @ student_weight.t()).to(
+            torch.float32
+        )
+        teacher_logits_chunk = (teacher_input_chunk @ teacher_weight.t()).to(
+            torch.float32
+        )
         chunk_n_rows = student_logits_chunk.shape[0]
 
         # unreduced loss
@@ -113,18 +120,16 @@ def fused_linear_jsd_forward(
                 student_prob_chunk.shape
             )
         ) / temperature
+        # now we traverse back to grad w.r.t. input to `lm_head` and grad
+        # w.r.t. `lm_head` which should be computed in original dtype
+        student_logits_chunk = student_logits_chunk.to(dtype)
         grad_input[start_idx:end_idx] = student_logits_chunk @ student_weight
 
         if grad_weight is not None:
-            torch.addmm(
-                input=grad_weight,
-                mat1=student_logits_chunk.t(),  # gradients of logits_chunk
-                mat2=student_input_chunk,
-                out=grad_weight,
-            )
+            grad_weight.add_(student_logits_chunk.t() @ student_input_chunk)
 
     loss = torch.sum(loss_1d)
-    return loss.to(student_input.dtype), grad_input, grad_weight
+    return loss, grad_input, grad_weight
 
 
 def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
@@ -172,6 +177,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
     """
 
     @staticmethod
+    @amp_custom_fwd
     def forward(
         ctx,
         student_input: torch.Tensor,
@@ -225,6 +231,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
         return loss
 
     @staticmethod
+    @amp_custom_bwd
     def backward(ctx, grad_output):
         (grad_input, grad_weight) = ctx.saved_tensors
         grad_input, grad_weight = fused_linear_jsd_backward(

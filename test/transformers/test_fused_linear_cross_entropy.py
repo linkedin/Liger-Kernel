@@ -22,6 +22,10 @@ class TorchLMHeadCE(torch.nn.Module):
     :param V: vocab size
     :param ignore_index: index to ignore
     :param reduction: reduction method
+
+    # TODO: if we bump CI env's `transformers` version to >= 4.46, we should just directly
+    # call https://github.com/huggingface/transformers/blob/main/src/transformers/loss/loss_utils.py#L32
+    # to be consistent with Hugging Face model implementation.
     """
 
     def __init__(
@@ -45,7 +49,7 @@ class TorchLMHeadCE(torch.nn.Module):
         )
 
     def forward(self, x, y):
-        logits = self.lin(x)
+        logits = self.lin(x).to(torch.float32)
         return self.ce_loss(logits, y)
 
 
