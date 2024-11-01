@@ -1,5 +1,5 @@
 from test.transformers.test_jsd import JSD as TorchJSD
-from test.utils import set_seed
+from test.utils import assert_verbose_allclose, set_seed
 
 import pytest
 import torch
@@ -41,8 +41,8 @@ class TorchLMHeadJSD(torch.nn.Module):
         self.temperature = temperature
 
     def forward(self, student_input, teacher_input, label=None):
-        student_logits = self.student_lin(student_input)
-        teacher_logits = self.teacher_lin(teacher_input)
+        student_logits = self.student_lin(student_input).to(torch.float32)
+        teacher_logits = self.teacher_lin(teacher_input).to(torch.float32)
         student_prob = torch.log_softmax(student_logits / self.temperature, dim=-1)
         teacher_prob = torch.log_softmax(teacher_logits / self.temperature, dim=-1)
 
@@ -148,14 +148,14 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
         output1 = torch_lm_head_jsd(_input1, teacher_input)
         output2 = liger_lm_head_jsd(_input2, teacher_input)
 
-        assert torch.allclose(output1, output2, atol=atol, rtol=rtol)
+        assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
 
     output1.backward()
     output2.backward()
 
-    assert torch.allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
 
-    assert torch.allclose(
+    assert_verbose_allclose(
         torch_lm_head_jsd.student_lin.weight.grad,
         liger_lm_head_jsd.student_lin.weight.grad,
         atol=atol,
@@ -239,14 +239,14 @@ def test_correctness_with_ignore_index(
     output1 = torch_lm_head_jsd(_input1, teacher_input, label)
     output2 = liger_lm_head_jsd(_input2, teacher_input, label)
 
-    assert torch.allclose(output1, output2, atol=atol, rtol=rtol)
+    assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
 
     output1.backward()
     output2.backward()
 
-    assert torch.allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
 
-    assert torch.allclose(
+    assert_verbose_allclose(
         torch_lm_head_jsd.student_lin.weight.grad,
         liger_lm_head_jsd.student_lin.weight.grad,
         atol=atol,
@@ -323,14 +323,14 @@ def test_correctness_functional(
         temperature,
     )
 
-    assert torch.allclose(output1, output2, atol=atol, rtol=rtol)
+    assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
 
     output1.backward()
     output2.backward()
 
-    assert torch.allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
 
-    assert torch.allclose(_weight1.grad, _weight2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(_weight1.grad, _weight2.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize(
@@ -395,11 +395,90 @@ def test_correctness_all_ignored(
     output1 = torch_lm_head_jsd(_input1, teacher_input, label)
     output2 = liger_lm_head_jsd(_input2, teacher_input, label)
 
-    assert torch.allclose(output1, output2, atol=atol, rtol=rtol)
-    assert torch.allclose(output2, torch.zeros_like(output2), atol=atol, rtol=rtol)
+    assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
+    assert_verbose_allclose(output2, torch.zeros_like(output2), atol=atol, rtol=rtol)
 
     output2.backward()
 
-    assert torch.allclose(
+    assert_verbose_allclose(
         torch.zeros_like(_input2.grad), _input2.grad, atol=atol, rtol=rtol
+    )
+
+
+@pytest.mark.parametrize(
+    "autocast_dtype, atol, rtol",
+    [
+        (torch.bfloat16, 5e-3, 5e-2),
+        (torch.float16, 5e-3, 5e-2),
+    ],
+)
+def test_amp(autocast_dtype, atol, rtol):
+    B = 2
+    T = 4
+    H = 2048
+    V = 3200
+    scalar = 1.0
+    ignore_index = -100
+    temperature = 1.0
+    beta = 0.5
+    device = "cuda"
+    dtype = torch.float32
+    torch_lm_head_jsd = TorchLMHeadJSD(
+        H=H,
+        V=V,
+        dtype=dtype,
+        device=device,
+        temperature=temperature,
+        ignore_index=ignore_index,
+        beta=beta,
+    ).to(device)
+    liger_lm_head_jsd = LigerLMHeadJSD(
+        H=H,
+        V=V,
+        dtype=dtype,
+        device=device,
+        temperature=temperature,
+        ignore_index=ignore_index,
+        beta=beta,
+    ).to(device)
+    # init the linear in all FusedLinearJSDs with the same weights
+    torch_lm_head_jsd.student_lin.weight.data = (
+        liger_lm_head_jsd.student_lin.weight.data
+    ) = torch.rand(V, H // 2, device=device, dtype=dtype)
+    torch_lm_head_jsd.teacher_lin.weight.data = (
+        liger_lm_head_jsd.teacher_lin.weight.data
+    ) = torch.rand(V, H, device=device, dtype=dtype)
+
+    _tensor = torch.rand(B * T, H // 2, device=device, dtype=autocast_dtype) * scalar
+    _input1 = _tensor.detach().clone().requires_grad_(True)
+    _input2 = _tensor.detach().clone().requires_grad_(True)
+
+    teacher_input = torch.rand(B * T, H, device=device, dtype=autocast_dtype) * scalar
+
+    label = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    # Assign some random number of elements as ignore_index
+    num_elements_to_assign = torch.randint(
+        1, B * T // 2, (1,)
+    ).item()  # Random number of elements to set to ignore_index
+    indices_to_assign = torch.randperm(B * T)[
+        :num_elements_to_assign
+    ]  # Randomly select indices
+    label[indices_to_assign] = ignore_index
+
+    with torch.autocast(device_type="cuda", dtype=autocast_dtype):
+        output1 = torch_lm_head_jsd(_input1, teacher_input, label)
+        output2 = liger_lm_head_jsd(_input2, teacher_input, label)
+
+        assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
+
+        output1.backward()
+        output2.backward()
+
+    assert_verbose_allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(
+        torch_lm_head_jsd.student_lin.weight.grad,
+        liger_lm_head_jsd.student_lin.weight.grad,
+        atol=atol,
+        rtol=rtol,
     )

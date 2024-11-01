@@ -65,9 +65,15 @@ def fused_linear_jsd_forward(
         student_input_chunk = student_input[start_idx:end_idx]
         teacher_input_chunk = teacher_input[start_idx:end_idx]
 
-        # when doing matmul, use the original precision, shape: chunk_size x V
-        student_logits_chunk = student_input_chunk @ student_weight.t()
-        teacher_logits_chunk = teacher_input_chunk @ teacher_weight.t()
+        # shape: chunk_size x V
+        # For anything starting from logits to the final JSD loss, we do computation
+        # in FP32 to avoid losing numerical stability.
+        student_logits_chunk = (student_input_chunk @ student_weight.t()).to(
+            torch.float32
+        )
+        teacher_logits_chunk = (teacher_input_chunk @ teacher_weight.t()).to(
+            torch.float32
+        )
         chunk_n_rows = student_logits_chunk.shape[0]
 
         # unreduced loss
@@ -114,17 +120,13 @@ def fused_linear_jsd_forward(
                 student_prob_chunk.shape
             )
         ) / temperature
+        # now we traverse back to grad w.r.t. input to `lm_head` and grad
+        # w.r.t. `lm_head` which should be computed in original dtype
+        student_logits_chunk = student_logits_chunk.to(dtype)
         grad_input[start_idx:end_idx] = student_logits_chunk @ student_weight
 
-        student_logits_chunk = student_logits_chunk.to(dtype)
-
         if grad_weight is not None:
-            torch.addmm(
-                input=grad_weight,
-                mat1=student_logits_chunk.t(),  # gradients of logits_chunk
-                mat2=student_input_chunk,
-                out=grad_weight,
-            )
+            grad_weight.add_(student_logits_chunk.t() @ student_input_chunk)
 
     loss = torch.sum(loss_1d)
     return loss, grad_input, grad_weight
