@@ -21,6 +21,7 @@ if compare_version("triton", operator.ge, "3.0.0"):
 else:
     from triton.language.math import rsqrt
 
+MAX_FUSED_SIZE = 65536
 
 @triton.jit
 def _group_norm_forward_kernel(
@@ -66,14 +67,15 @@ def _group_norm_forward_kernel(
     for i in range(0, hidden_size, BLOCK_SIZE):
         hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
         mask = hidden_size_offsets < hidden_size
-        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0)
+        # We need to mask out of index with mean to ensure that the variance remains unaffected
+        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=mean)
         diff = X - mean
         variance += tl.sum(diff * diff)
     
-    variance = variance / (hidden_size)
+    variance = variance / hidden_size
     # 1/std
     rstd = rsqrt(variance + eps)
-    tl.store(RSTD_ptr + batch_idx * RSTD_row_stride + group_idx * RSTD_col_stride, rstd)
+    tl.store(RSTD_ptr + batch_idx * RSTD_row_stride + group_idx * RSTD_col_stride, variance)
 
     # Normalize
     for i in range(0, hidden_size, BLOCK_SIZE):
@@ -123,13 +125,13 @@ def _group_norm_backward_kernel(
     rstd = tl.load(RSTD_ptr + batch_idx * X_row_stride + group_idx * Mean_ptr_col_stride)
     W = tl.load(W_ptr + group_idx)
     
-    DW = 0.0
-    DB = 0.0
+    dW = 0.0
+    dB = 0.0
 
     for i in range(0, hidden_size, BLOCK_SIZE):
         hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
         mask = hidden_size_offsets < hidden_size
-        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0)
+        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=mean)
         UPSTREAM_grad = tl.load(UPSTREAM_ptr + hidden_size_offsets, mask=mask, other=0.0)
         """
         Y = (X - mean) * rstd
@@ -153,23 +155,24 @@ def _group_norm_backward_kernel(
         dg_dx = - (dmean_dx * rstd + mean * drstd_dx)
         dY_dx = df_dx + dg_dx
 
-        DX = W * UPSTREAM_grad * dY_dx
+        dX = W * UPSTREAM_grad * dY_dx
         
-        DW += tl.sum(UPSTREAM_grad * X)
-        DB += tl.sum(UPSTREAM_grad)
+        dW += tl.sum(UPSTREAM_grad * X)
+        dB += tl.sum(UPSTREAM_grad)
 
-        tl.store(DX_ptr + hidden_size_offsets, DX, mask=mask)
+        tl.store(DX_ptr + hidden_size_offsets, dX, mask=mask)
     
-    tl.store(DW_ptr, DW)
-    tl.store(DB_ptr, DB)
+    tl.store(DW_ptr, dW)
+    tl.store(DB_ptr, dB)
 
 def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     shape = X.shape
     batch_size = shape[0]
+    print(X.stride(1))
     # Reshape X so that the mean and std are computed across the groups
     X = X.view(batch_size, num_groups, -1)
     hidden_size = X.shape[-1]
-    BLOCK_SIZE, num_warps = calculate_settings(hidden_size)
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(hidden_size))
     Y = torch.empty((batch_size, num_groups, hidden_size), dtype=X.dtype, device=X.device)
     Mean = torch.empty((batch_size, num_groups), dtype=X.dtype, device=X.device)
     RSTD = torch.empty((batch_size, num_groups), dtype=X.dtype, device=X.device)
@@ -189,27 +192,24 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
         RSTD.stride(1),
         hidden_size,
         eps,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
+        BLOCK_SIZE=BLOCK_SIZE    
     )
      
     Y = Y.view(*shape)
     affine_shape = [1] * len(shape)
     affine_shape[1] = num_channels
     Y = Y * W.view(affine_shape) + B.view(affine_shape)
-
-    return Y, X, Mean, RSTD, BLOCK_SIZE, num_warps
+    return Y, X.view(*shape), Mean, RSTD, BLOCK_SIZE
 
 
 def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
     shape = dY.shape
-    print(dY)
     batch_size = shape[0]
     hidden_size = dY.shape[-1]
     DX = torch.empty((batch_size, num_channels, hidden_size), dtype=X.dtype, device=X.device)
     DW = torch.empty((batch_size, num_channels), dtype=W.dtype, device=W.device)
     DB = torch.empty((batch_size, num_channels), dtype=B.dtype, device=B.device)
-    BLOCK_SIZE, num_warps = calculate_settings(hidden_size)
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(hidden_size))
     _group_norm_backward_kernel[(batch_size, num_channels)](
         X,
         X.stride(0),
@@ -228,7 +228,6 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
         BLOCK_SIZE=BLOCK_SIZE
     )
     print(DB)
-    print(DW)
     return DX, DW.sum(dim=0), DB.sum(dim=0)
 
 
@@ -236,7 +235,7 @@ class LigerGroupNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(ctx, X, affine_scaling_weight, affine_shifting_bias, num_channels, num_groups, eps):
-        Y, X, Mean, RSTD, BLOCK_SIZE, num_warps = group_norm_forward(X, num_channels, num_groups, affine_scaling_weight, affine_shifting_bias, eps)
+        Y, X, Mean, RSTD, BLOCK_SIZE = group_norm_forward(X, num_channels, num_groups, affine_scaling_weight, affine_shifting_bias, eps)
         ctx.num_channels = num_channels
         ctx.num_groups = num_groups
         ctx.save_for_backward(X, affine_scaling_weight, affine_shifting_bias, Mean, RSTD)
