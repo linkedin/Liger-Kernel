@@ -75,7 +75,7 @@ def _group_norm_forward_kernel(
     variance = variance / hidden_size
     # 1/std
     rstd = rsqrt(variance + eps)
-    tl.store(RSTD_ptr + batch_idx * RSTD_row_stride + group_idx * RSTD_col_stride, variance)
+    tl.store(RSTD_ptr + batch_idx * RSTD_row_stride + group_idx * RSTD_col_stride, rstd)
 
     # Normalize
     for i in range(0, hidden_size, BLOCK_SIZE):
@@ -93,15 +93,17 @@ def _group_norm_backward_kernel(
     X_col_stride,  # stride of each column in input
     W_ptr,  # pointer to weights, shape (n_channels)
     Mean_ptr,  # pointer to mean, shape (n_rows, n_groups)
+    Mean_ptr_row_stride,  # stride of each column in mean
     Mean_ptr_col_stride,  # stride of each column in mean
     RSTD_ptr,  # pointer to rstd, shape (n_rows, n_groups)
     DX_ptr,  # pointer to input grad, shape (n_rows, n_groups, hidden_size)
     DW_ptr,  # pointer to weights grad, shape (n_channels)
+    DW_row_stride,  # stride of each row in weights
     DW_col_stride,  # stride of each column in weights
     DB_ptr,  # pointer to bias grad, shape (n_channels)
     UPSTREAM_ptr,  # pointer to output grad, shape (n_rows, n_channels, hidden_size)
     hidden_size: tl.constexpr, # hidden size
-    num_groups: tl.constexpr, # number of groups in group norm
+    channels_per_group: tl.constexpr, # number of groups in group norm
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -111,18 +113,20 @@ def _group_norm_backward_kernel(
     batch_idx = tl.program_id(0)
     channel_idx = tl.program_id(1)
 
-    group_idx = channel_idx // num_groups
+    group_idx = channel_idx // channels_per_group
 
     # X_col_stide will correspond to the number of groups
     X_ptr += batch_idx * X_row_stride + channel_idx * X_col_stride
     DX_ptr += batch_idx * X_row_stride + channel_idx * X_col_stride
     UPSTREAM_ptr += batch_idx * X_row_stride + channel_idx * X_col_stride
 
-    DW_ptr += batch_idx * X_row_stride + channel_idx * DW_col_stride
-    DB_ptr += batch_idx * X_row_stride + channel_idx * DW_col_stride
+    # DW and DB have the same shape so have the same strides
+    DW_ptr += batch_idx * DW_row_stride + channel_idx * DW_col_stride
+    DB_ptr += batch_idx * DW_row_stride + channel_idx * DW_col_stride
+    
     # Mean and rstd are the same shape so have the same strides
-    mean = tl.load(Mean_ptr + batch_idx * X_row_stride + group_idx * Mean_ptr_col_stride)
-    rstd = tl.load(RSTD_ptr + batch_idx * X_row_stride + group_idx * Mean_ptr_col_stride)
+    mean = tl.load(Mean_ptr + batch_idx * Mean_ptr_row_stride + group_idx * Mean_ptr_col_stride)
+    rstd = tl.load(RSTD_ptr + batch_idx * Mean_ptr_row_stride + group_idx * Mean_ptr_col_stride)
     W = tl.load(W_ptr + group_idx)
     
     dW = 0.0
@@ -157,7 +161,8 @@ def _group_norm_backward_kernel(
 
         dX = W * UPSTREAM_grad * dY_dx
         
-        dW += tl.sum(UPSTREAM_grad * X)
+        c3 = c2 * rstd
+        dW += tl.sum(UPSTREAM_grad * c3)
         dB += tl.sum(UPSTREAM_grad)
 
         tl.store(DX_ptr + hidden_size_offsets, dX, mask=mask)
@@ -206,6 +211,7 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
     shape = dY.shape
     batch_size = shape[0]
     hidden_size = dY.shape[-1]
+    channels_per_group = num_channels // num_groups
     DX = torch.empty((batch_size, num_channels, hidden_size), dtype=X.dtype, device=X.device)
     DW = torch.empty((batch_size, num_channels), dtype=W.dtype, device=W.device)
     DB = torch.empty((batch_size, num_channels), dtype=B.dtype, device=B.device)
@@ -216,15 +222,17 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
         X.stride(1),
         W,
         Mean,
+        Mean.stride(0),
         Mean.stride(1),
         RSTD,
         DX,
         DW,
+        DW.stride(0),
         DW.stride(1),
         DB,
         dY,
         hidden_size,
-        num_groups,
+        channels_per_group,
         BLOCK_SIZE=BLOCK_SIZE
     )
     print(DB)
