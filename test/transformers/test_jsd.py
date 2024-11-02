@@ -5,7 +5,6 @@ import pytest
 import torch
 from torch.nn import KLDivLoss
 
-from liger_kernel.ops.utils import is_hip
 from liger_kernel.transformers.functional import liger_jsd
 from liger_kernel.transformers.jsd import LigerJSD, LigerJSDFunction
 
@@ -71,7 +70,6 @@ _SHAPE_PARAMS = (
     ],
 )
 
-
 _DTYPE_PARAMS = (
     "dtype, atol, rtol",
     [
@@ -83,7 +81,7 @@ _DTYPE_PARAMS = (
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        (torch.float32, 1e-8 if not is_hip() else 1e-7, 1e-6),
+        (torch.float32, 1e-8, 1e-6),
         (torch.float16, 1e-3, 1e-3),
     ],
 )
