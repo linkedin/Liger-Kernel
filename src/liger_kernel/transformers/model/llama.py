@@ -17,7 +17,6 @@ from liger_kernel.transformers.fused_linear_cross_entropy import (
     LigerFusedLinearCrossEntropyLoss,
 )
 
-
 if TYPE_CHECKING:
     from transformers.cache_utils import Cache
 

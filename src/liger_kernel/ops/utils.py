@@ -21,6 +21,10 @@ import triton.language as tl
 from packaging.version import Version
 
 
+def is_hip() -> bool:
+    return torch.version.hip is not None
+
+
 def ensure_contiguous(fn):
     @functools.wraps(fn)
     def wrapper(ctx, *args, **kwargs):
@@ -47,7 +51,7 @@ def calculate_settings(n):
 
     num_warps = 4
     if BLOCK_SIZE >= 32768:
-        num_warps = 32
+        num_warps = 32 if not is_hip() else 16
     elif BLOCK_SIZE >= 8192:
         num_warps = 16
     elif BLOCK_SIZE >= 2048:
