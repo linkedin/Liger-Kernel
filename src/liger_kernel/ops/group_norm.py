@@ -98,8 +98,6 @@ def _group_norm_backward_kernel(
     RSTD_ptr,  # pointer to rstd, shape (n_rows, n_groups)
     DX_ptr,  # pointer to input grad, shape (n_rows, n_groups, hidden_size)
     DW_ptr,  # pointer to weights grad, shape (n_channels)
-    DW_row_stride,  # stride of each row in weights
-    DW_col_stride,  # stride of each column in weights
     DB_ptr,  # pointer to bias grad, shape (n_channels)
     UPSTREAM_ptr,  # pointer to output grad, shape (n_rows, n_channels, hidden_size)
     hidden_size: tl.constexpr, # hidden size
@@ -120,14 +118,14 @@ def _group_norm_backward_kernel(
     DX_ptr += batch_idx * X_row_stride + channel_idx * X_col_stride
     UPSTREAM_ptr += batch_idx * X_row_stride + channel_idx * X_col_stride
 
-    # DW and DB have the same shape so have the same strides
-    DW_ptr += batch_idx * DW_row_stride + channel_idx * DW_col_stride
-    DB_ptr += batch_idx * DW_row_stride + channel_idx * DW_col_stride
+    # We compute the gradients for W and B for the channel the thread is responsible for
+    DW_ptr += channel_idx
+    DB_ptr += channel_idx
     
     # Mean and rstd are the same shape so have the same strides
     mean = tl.load(Mean_ptr + batch_idx * Mean_ptr_row_stride + group_idx * Mean_ptr_col_stride)
     rstd = tl.load(RSTD_ptr + batch_idx * Mean_ptr_row_stride + group_idx * Mean_ptr_col_stride)
-    W = tl.load(W_ptr + group_idx)
+    W = tl.load(W_ptr + channel_idx)
     
     dW = 0.0
     dB = 0.0
