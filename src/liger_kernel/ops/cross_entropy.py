@@ -13,6 +13,8 @@ def liger_cross_entropy_kernel(
     Y_stride,
     loss_ptr,
     loss_stride,
+    dX_ptr,
+    dX_stride,
     n_cols,
     n_non_ignore,
     ignore_index,
@@ -49,6 +51,7 @@ def liger_cross_entropy_kernel(
 
     # 2. locate the start index
     X_ptr += program_id * X_stride
+    dX_ptr += program_id * dX_stride
 
     if y == ignore_index:
         # set all X_ptr as 0
@@ -106,15 +109,15 @@ def liger_cross_entropy_kernel(
 
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
-        X_block = tl.load(
+        dX_block = tl.load(
             X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
         )
         if reduction == "mean":
-            X_block = (tl.exp(X_block - m) / d - eps) / (n_non_ignore)
+            dX_block = (tl.exp(dX_block - m) / d - eps) / (n_non_ignore)
         else:
-            X_block = tl.exp(X_block - m) / d - eps
+            dX_block = tl.exp(dX_block - m) / d - eps
 
-        tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
+        tl.store(dX_ptr + X_offsets, dX_block, mask=X_offsets < n_cols)
 
     # We need tl.debug_barrier() to ensure the new result of X_ptr is written as mentioned in
     # https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/ops/cross_entropy.py#L34
@@ -145,14 +148,14 @@ def liger_cross_entropy_kernel(
         loss = loss / n_non_ignore
 
     # 6. Specially handle the i==y case where `dx_y = (softmax(x_y) - (1 - label_smoothing) / N`
-    X_y = tl.load(X_ptr + y)
+    dX_y = tl.load(dX_ptr + y)
     if reduction == "mean":
-        X_y += -(1 - label_smoothing) / (n_non_ignore)
+        dX_y += -(1 - label_smoothing) / (n_non_ignore)
     else:
-        X_y += -(1 - label_smoothing)
+        dX_y += -(1 - label_smoothing)
 
     tl.store(loss_ptr, loss)
-    tl.store(X_ptr + y, X_y)
+    tl.store(dX_ptr + y, dX_y)
 
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
@@ -161,7 +164,9 @@ def liger_cross_entropy_kernel(
 MAX_FUSED_SIZE = 65536 // 2  # the best size we found by manually tuning
 
 
-def cross_entropy_forward(_input, target, ignore_index, label_smoothing, reduction):
+def cross_entropy_forward(
+    _input, target, ignore_index, label_smoothing, reduction, inplace
+):
     BT, V = _input.shape
     n_rows = BT
 
@@ -178,10 +183,7 @@ def cross_entropy_forward(_input, target, ignore_index, label_smoothing, reducti
     if target.stride(-1) != 1:
         target = target.contiguous()
 
-    # Here we use a trick to store X_ptr gradient in X_ptr so we can save memory
-    # Explicitly declare an in-place operation is performed by adding a numerical value of 0 to the input in-place
-    # https://pytorch.org/docs/stable/autograd.html#in-place-correctness-checks
-    _input.add_(0)
+    dX = _input if inplace else torch.empty_like(_input)
 
     liger_cross_entropy_kernel[(n_rows,)](
         X_ptr=_input,
@@ -190,6 +192,8 @@ def cross_entropy_forward(_input, target, ignore_index, label_smoothing, reducti
         Y_stride=target.stride(-1),  # always 1
         loss_ptr=loss_1d,
         loss_stride=loss_1d.stride(-1),  # always 1
+        dX_ptr=dX,
+        dX_stride=dX.stride(-2),
         n_cols=V,
         n_non_ignore=n_non_ignore,
         ignore_index=ignore_index,
@@ -237,7 +241,13 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        ctx, _input, target, ignore_index=-100, label_smoothing=0.0, reduction="mean"
+        ctx,
+        _input,
+        target,
+        ignore_index=-100,
+        label_smoothing=0.0,
+        reduction="mean",
+        inplace=True,
     ):
         """
         The forward pass of the Liger Cross Entropy loss.
@@ -254,16 +264,21 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         tensor: The computed loss.
         """
         loss, _input = cross_entropy_forward(
-            _input, target, ignore_index, label_smoothing, reduction
+            _input, target, ignore_index, label_smoothing, reduction, inplace
         )
         # TODO: investigation
         # If we don't detach the _input tensor, the memory will double
         # Not sure why but seems that there will be a time both grad and value exist but in different location
         ctx.save_for_backward(_input.detach())
-        return loss
+
+        print(f"{inplace=}")
+        if inplace:
+            ctx.mark_dirty(_input)
+            ctx.mark_non_differentiable(_input)
+        return loss, _input
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output, grad_output2):
         """
         The backward pass of the Liger Cross Entropy loss.
 
@@ -274,10 +289,12 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         Returns:
         tuple: A tuple with the gradients with respect to the inputs. The elements are tensors or None.
         """
+        del grad_output2
         (_input,) = ctx.saved_tensors
         _input = cross_entropy_backward(_input, grad_output)
         return (
             _input,
+            None,
             None,
             None,
             None,
