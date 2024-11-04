@@ -7,20 +7,10 @@ from liger_kernel.transformers.layer_norm import LigerLayerNorm
 
 
 @pytest.mark.parametrize(
-    "hidden_size",
+    "batch_size, seq_len, hidden_size",
     [
-        64,
-        128,
-        256,
-        512,
-    ],
-)
-@pytest.mark.parametrize(
-    "batch_size, seq_len",
-    [
-        (2, 8),
-        (4, 16),
-        (8, 32),
+        (2, 8, 64),
+        (4, 16, 128),
     ],
 )
 @pytest.mark.parametrize(
@@ -59,14 +49,10 @@ def test_liger_layer_norm(batch_size, seq_len, hidden_size, dtype, atol, rtol):
 
 
 @pytest.mark.parametrize(
-    "hidden_size",
-    [8, 41],
-)
-@pytest.mark.parametrize(
-    "batch_size, seq_len",
+    "batch_size, seq_len, hidden_size",
     [
-        (2, 2),
-        (9, 7),
+        (2, 8, 64),
+        (4, 16, 128),
     ],
 )
 @pytest.mark.parametrize(

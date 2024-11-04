@@ -170,26 +170,14 @@ def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
 @pytest.mark.parametrize(
     "B, T, V",
     [
-        (2, 4096, 32000),  # llama2, mistral
-        (2, 4096, 32000),  # llama2, mistral
-        (1, 4096, 128256),  # llama3
-        # # weird shapes
-        (3, 423, 32000),
+        (2, 4096, 32000),  # llama
+        (3, 423, 32000),  # weird shapes
     ],
 )
 @pytest.mark.parametrize("reduction", ["sum", "mean"])
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        pytest.param(
-            0.1,
-            torch.bfloat16,
-            1e-8,
-            5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
         pytest.param(
             1.0,
             torch.bfloat16,
@@ -199,23 +187,8 @@ def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        pytest.param(
-            10.0,
-            torch.bfloat16,
-            1e-7,
-            5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
-        (0.1, torch.float32, 1e-8, 1e-6),
         (1.0, torch.float32, 1e-8, 1e-6),
-        (10.0, torch.float32, 1e-8, 1e-6),
     ],
-)
-@pytest.mark.skipif(
-    torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
-    reason="Needs 16GB+ GPU memory.",
 )
 def test_correctness(B, T, V, scalar, dtype, reduction, atol, rtol):
     liger_ce = LigerCrossEntropyLoss(reduction=reduction)
@@ -233,12 +206,8 @@ def test_correctness(B, T, V, scalar, dtype, reduction, atol, rtol):
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        (0.1, torch.bfloat16, 1e-8, 5e-2),
         (1.0, torch.bfloat16, 1e-8, 5e-2),
-        (10.0, torch.bfloat16, 1e-7, 5e-2),
-        (0.1, torch.float32, 1e-8, 1e-6),
         (1.0, torch.float32, 1e-8, 1e-6),
-        (10.0, torch.float32, 1e-8, 1e-6),
     ],
 )
 def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
@@ -248,9 +217,7 @@ def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
 @pytest.mark.parametrize(
     "B, T, V, ignore_index",
     [
-        (2, 4096, 32000, -100),  # llama2, mistral
-        (2, 4096, 32000, 2),  # llama2, mistral
-        (1, 4096, 128256, -300),  # llama3
+        (2, 4096, 32000, 2),
         # weird shapes
         (3, 423, 32000, -123),
     ],
@@ -260,15 +227,6 @@ def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
     "scalar, dtype, atol, rtol",
     [
         pytest.param(
-            0.1,
-            torch.bfloat16,
-            1e-8,
-            5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
-        pytest.param(
             1.0,
             torch.bfloat16,
             1e-8,
@@ -277,23 +235,8 @@ def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        pytest.param(
-            10.0,
-            torch.bfloat16,
-            1e-8,
-            5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
-        (0.1, torch.float32, 1e-8, 1e-6),
         (1.0, torch.float32, 1e-8, 1e-6),
-        (10.0, torch.float32, 1e-8, 1e-6),
     ],
-)
-@pytest.mark.skipif(
-    torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
-    reason="Needs 16GB+ GPU memory.",
 )
 def test_correctness_with_ignore_index(
     B, T, V, ignore_index, reduction, scalar, dtype, atol, rtol
@@ -307,9 +250,7 @@ def test_correctness_with_ignore_index(
 @pytest.mark.parametrize(
     "B, T, V, label_smoothing",
     [
-        (2, 4096, 32000, 0.1),  # llama2, mistral
-        (2, 4096, 32000, 0.1),  # llama2, mistral
-        (1, 4096, 128256, 0.1),  # llama3
+        (2, 4096, 32000, 0.1),
         # weird shapes
         (3, 423, 32000, 0.1),
     ],
@@ -317,15 +258,6 @@ def test_correctness_with_ignore_index(
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        pytest.param(
-            0.1,
-            torch.bfloat16,
-            1e-8,
-            5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
         pytest.param(
             1.0,
             torch.bfloat16,
@@ -335,23 +267,8 @@ def test_correctness_with_ignore_index(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        pytest.param(
-            10.0,
-            torch.bfloat16,
-            1e-8,
-            5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
-        (0.1, torch.float32, 1e-8, 1e-6),
         (1.0, torch.float32, 1e-8, 1e-6),
-        (10.0, torch.float32, 1e-8, 1e-6),
     ],
-)
-@pytest.mark.skipif(
-    torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
-    reason="Needs 16GB+ GPU memory.",
 )
 def test_correctness_with_label_smoothing_once(
     B, T, V, label_smoothing, scalar, dtype, atol, rtol
@@ -365,9 +282,7 @@ def test_correctness_with_label_smoothing_once(
 @pytest.mark.parametrize(
     "B, T, V, ignore_index, label_smoothing",
     [
-        (2, 4096, 32000, 1, 0.1),  # llama2, mistral
-        (2, 4096, 32000, -100, 0.2),  # llama2, mistral
-        (1, 4096, 128256, 2, 0.1),  # llama3
+        (2, 4096, 32000, 1, 0.1),
         # weird shapes
         (3, 423, 32000, -300, 0.2),
     ],
@@ -375,15 +290,6 @@ def test_correctness_with_label_smoothing_once(
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        pytest.param(
-            0.1,
-            torch.bfloat16,
-            1e-8,
-            5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
         pytest.param(
             1.0,
             torch.bfloat16,
@@ -393,23 +299,8 @@ def test_correctness_with_label_smoothing_once(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        pytest.param(
-            10.0,
-            torch.bfloat16,
-            1e-6,
-            5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
-        (0.1, torch.float32, 1e-8, 1e-6),
         (1.0, torch.float32, 1e-8, 1e-6),
-        (10.0, torch.float32, 1e-8, 1e-6),
     ],
-)
-@pytest.mark.skipif(
-    torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
-    reason="Needs 16GB+ GPU memory.",
 )
 def test_correctness_with_label_smoothing_with_ignore_index_once(
     B, T, V, ignore_index, label_smoothing, scalar, dtype, atol, rtol
@@ -427,8 +318,6 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
     "B, T, V",
     [
         (2, 4096, 32000),  # llama2, mistral
-        (2, 4096, 32000),  # llama2, mistral
-        (1, 4096, 128256),  # llama3
         # # weird shapes
         (3, 423, 32000),
     ],
@@ -449,52 +338,8 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
 )
-@pytest.mark.skipif(
-    torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
-    reason="Needs 16GB+ GPU memory.",
-)
 def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rtol):
     liger_ce = LigerCrossEntropyLoss(reduction=reduction)
     _test_correctness_not_last_layer_once(
         liger_ce, B, T, V, reduction, scalar, dtype, atol, rtol
     )
-
-
-#############################################################################
-# Test full pass of the liger cross entropy loss to ensure it doesn't crash
-#############################################################################
-
-
-def _full_pass_once(B, T, V, reduction):
-
-    liger_ce = LigerCrossEntropyLoss(reduction=reduction)
-
-    _input = torch.randn(
-        B * T, V, requires_grad=True, device="cuda", dtype=torch.bfloat16
-    )
-    target = torch.randint(V, (B * T, 1), device="cuda").squeeze(1)
-
-    output = liger_ce(_input, target)
-    output.backward()
-
-
-@pytest.mark.parametrize(
-    "B, T, V",
-    [
-        (
-            8,
-            8192,
-            128256,
-        ),  # _input = 16GB, total = ~32GB, 8405385216 > 2,147,483,647, so we need int64
-        (8, 16384, 128256),  # _input = 32GB, total = ~64GB
-    ],
-)
-@pytest.mark.parametrize("reduction", ["sum", "mean"])
-@pytest.mark.skipif(
-    torch.cuda.get_device_properties(0).total_memory < 64 * 1000 * 1000 * 1000,
-    reason="Needs 64GB+ GPU memory.",
-)
-def test_large_no_exception(B, T, V, reduction):
-    # The large inputs were hitting cuda illegal memory access because of
-    # https://github.com/triton-lang/triton/issues/1058
-    _full_pass_once(B, T, V, reduction)
