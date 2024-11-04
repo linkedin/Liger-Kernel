@@ -56,8 +56,8 @@ def liger_cross_entropy_kernel(
     if y == ignore_index:
         # set all X_ptr as 0
         for i in range(0, n_cols, BLOCK_SIZE):
-            X_offsets = i + tl.arange(0, BLOCK_SIZE)
-            tl.store(X_ptr + X_offsets, 0.0, mask=X_offsets < n_cols)
+            dX_offsets = i + tl.arange(0, BLOCK_SIZE)
+            tl.store(dX_ptr + dX_offsets, 0.0, mask=dX_offsets < n_cols)
         return
 
     loss_ptr += program_id * loss_stride
@@ -206,7 +206,7 @@ def cross_entropy_forward(
     )
 
     loss = torch.sum(loss_1d)
-    return loss, _input
+    return loss, dX
 
 
 def cross_entropy_backward(_input, grad_output):
