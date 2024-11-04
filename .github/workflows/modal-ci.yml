@@ -8,9 +8,16 @@ on:
     branches:
       - main
 
+concurrency:
+  # This causes it to cancel previous in-progress actions on the same PR / branch,
+  # but not on main
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  
 jobs:
   modal-gpu-ci-tests:
     runs-on: ubuntu-latest
+
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
