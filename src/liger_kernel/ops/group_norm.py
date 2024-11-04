@@ -104,6 +104,7 @@ def _group_norm_backward_kernel(
     UPSTREAM_ptr,  # pointer to output grad, shape (n_rows, n_channels, hidden_size)
     hidden_size: tl.constexpr, # hidden size
     channels_per_group: tl.constexpr, # number of groups in group norm
+    num_groups: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     dtype: tl.constexpr,
 ):
@@ -122,8 +123,8 @@ def _group_norm_backward_kernel(
     UPSTREAM_ptr += batch_idx * X_row_stride + channel_idx * X_col_stride
 
     # Mean and rstd are the same shape so have the same strides
-    mean = tl.load(Mean_ptr)
-    rstd = tl.load(RSTD_ptr)
+    mean = tl.load(Mean_ptr + batch_idx * Mean_ptr_row_stride + group_idx * Mean_ptr_col_stride)
+    rstd = tl.load(RSTD_ptr + batch_idx * Mean_ptr_row_stride + group_idx * Mean_ptr_col_stride)
     W = tl.load(W_ptr + channel_idx)
     
     dW = 0.0
@@ -146,7 +147,7 @@ def _group_norm_backward_kernel(
         """
 
         # dh_dx = -0.5 * (rstd**3) * dvar_dx
-        # c1 = 1 / hidden_size
+        c1 = 1 / hidden_size
         c2 = X - mean
         # c4 = tl.sum(c2)
         # dmean_dx = c1
@@ -159,12 +160,16 @@ def _group_norm_backward_kernel(
 
         # dX = W * UPSTREAM_grad * dY_dx
         
-        norm = c2 * rstd
-        dW += tl.sum(UPSTREAM_grad * norm)
+        c3 = c2 * rstd
+        dW += tl.sum(UPSTREAM_grad * c3)
         dB += tl.sum(UPSTREAM_grad)
 
-        dnorm = UPSTREAM_grad * W
-        dx = dnorm - dnorm.
+        x_hat = (X - mean) * rstd
+        wdy = W * UPSTREAM_grad
+        c1 = tl.sum(x_hat * wdy) / (hidden_size * num_groups)
+        c2 = tl.sum(wdy, axis=0) / (hidden_size * num_groups)
+        dx = (wdy - (x_hat * c1 + c2)) * rstd
+        tl.store(DX_ptr + hidden_size_offsets, dx.to(dtype), mask=mask)
 
         # tl.store(DX_ptr + hidden_size_offsets, dX, mask=mask)
     
@@ -178,15 +183,14 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     # Reshape X so that the mean and std are computed across the groups
     X = X.view(batch_size, num_groups, -1).contiguous()
     hidden_size = X.shape[-1]
-    print(f"Mean is {X.view(-1).mean()}")
-    print(f"RSTD is {1/torch.sqrt(torch.var(X.view(-1), unbiased=False) + 1e-6)}")
+    # print(f"Mean is {X.view(-1).mean()}")
+    # print(f"RSTD is {1/torch.sqrt(torch.var(X.view(-1), unbiased=False) + 1e-6)}")
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(hidden_size))
     Y = torch.empty((batch_size, num_groups, hidden_size), dtype=X.dtype, device=X.device)
     Mean = torch.zeros((batch_size, num_groups), dtype=X.dtype, device=X.device)
     # print(f"Init mean is {Mean}")
     RSTD = torch.zeros((batch_size, num_groups), dtype=X.dtype, device=X.device)
     # print(f"Init RSTD is {RSTD}")
-    misc = torch.zeros((batch_size, num_groups), dtype=X.dtype, device=X.device)
     
     _group_norm_forward_kernel[(batch_size, num_groups)](
         Y,
@@ -204,12 +208,9 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
         hidden_size,
         eps,
         BLOCK_SIZE=BLOCK_SIZE,
-        misc_ptr=misc
     )
-    print(X-Y)
-    print(f"Misc is {misc}")
-    print(f"After Init mean {Mean}")
-    print(f"After Init rstd {RSTD}")
+    # print(f"After Init mean {Mean}")
+    # print(f"After Init rstd {RSTD}")
     Y = Y.view(*shape)
     affine_shape = [1] * len(shape)
     affine_shape[1] = num_channels
@@ -248,10 +249,14 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
         dY,
         hidden_size,
         channels_per_group,
+        num_groups,
         BLOCK_SIZE=BLOCK_SIZE,
         dtype=triton_dtype
     )
-    print(DW)
+    print(Mean)
+    a = (X.view(batch_size, num_groups, -1) - Mean.view(batch_size, num_groups, -1)) * RSTD.view(batch_size, num_groups, -1)
+    b = a * dY.view(batch_size, num_groups, -1)
+    print(f"Pure torch output: {b.view(batch_size, num_channels, -1).sum(-1)}")
     return DX, DW, DB
 
 
