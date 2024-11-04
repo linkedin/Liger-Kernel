@@ -1,4 +1,4 @@
-name: Modl CI Pipeline
+name: Modal CI Pipeline
 
 on:
   push:
@@ -9,12 +9,12 @@ on:
       - main
 
 jobs:
-  checkstyle:
+  modal-gpu-ci-tests:
     runs-on: ubuntu-latest
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
