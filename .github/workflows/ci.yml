@@ -78,4 +78,4 @@ jobs:
 
     - name: Run convergence tests
       run: |
-        modal run dev.modal.convergence_tests
+        modal run dev.modal.conv_tests
