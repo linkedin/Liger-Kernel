@@ -10,9 +10,8 @@ on:
 
 concurrency:
   # This causes it to cancel previous in-progress actions on the same PR / branch,
-  # but not on main
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 jobs:
   checkstyle:
