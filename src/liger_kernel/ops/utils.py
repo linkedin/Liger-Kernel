@@ -12,12 +12,17 @@ Modifications made by Yanning Chen, 2024.
 
 import functools
 import importlib
+import operator
 from typing import Callable
 
 import torch
 import triton
 import triton.language as tl
 from packaging.version import Version
+
+
+def is_hip() -> bool:
+    return torch.version.hip is not None
 
 
 def ensure_contiguous(fn):
@@ -46,7 +51,7 @@ def calculate_settings(n):
 
     num_warps = 4
     if BLOCK_SIZE >= 32768:
-        num_warps = 32
+        num_warps = 32 if not is_hip() else 16
     elif BLOCK_SIZE >= 8192:
         num_warps = 16
     elif BLOCK_SIZE >= 2048:
@@ -61,6 +66,18 @@ def compare_version(package: str, operator: Callable, target: str):
         return False
     pkg_version = Version(pkg.__version__)
     return operator(pkg_version, Version(target))
+
+
+def get_amp_custom_fwd_bwd() -> Callable:
+    if compare_version("torch", operator.ge, "2.4.0"):
+        return (
+            functools.partial(torch.amp.custom_fwd, device_type="cuda"),
+            functools.partial(torch.amp.custom_bwd, device_type="cuda"),
+        )
+    return torch.cuda.amp.custom_fwd, torch.cuda.amp.custom_bwd
+
+
+amp_custom_fwd, amp_custom_bwd = get_amp_custom_fwd_bwd()
 
 
 torch_to_triton_dtype = {

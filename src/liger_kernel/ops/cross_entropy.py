@@ -2,7 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import element_mul_kernel
+from liger_kernel.ops.utils import element_mul_kernel, is_hip
 
 
 @triton.jit
@@ -198,7 +198,7 @@ def cross_entropy_forward(_input, target, ignore_index, label_smoothing, reducti
         BLOCK_SIZE=BLOCK_SIZE,
         # TODO: 32 seems to give the best performance
         # Performance is quite sensitive to num_warps
-        num_warps=32,
+        num_warps=32 if not is_hip() else 16,
     )
 
     loss = torch.sum(loss_1d)
@@ -223,7 +223,7 @@ def cross_entropy_backward(_input, grad_output):
             grad_output,
             V,
             BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32,
+            num_warps=32 if not is_hip() else 16,
         )
 
     return _input
