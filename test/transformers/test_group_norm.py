@@ -51,7 +51,6 @@ def test_liger_group_norm(batch_size, num_channels, num_groups, hidden_size, dty
     torch_output.backward(grad_output, retain_graph=True)
     assert torch.allclose(liger_x.grad, torch_x.grad, atol=atol, rtol=rtol)
     assert torch.allclose(liger_ln.bias.grad, torch_ln.bias.grad, atol=atol, rtol=rtol), "Bias grads different"
-    close_mask = torch.isclose(liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol)
     assert torch.allclose( 
         liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol
     ), "Weight grads different"
