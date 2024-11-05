@@ -64,7 +64,7 @@ def _group_norm_forward_kernel(
         squared_sum += tl.sum(X * X)
 
     m = s / hidden_size
-    
+
     # variance = E[X**2] - E[X]**2
     variance = (squared_sum / hidden_size) - (m * m)
 
@@ -146,7 +146,7 @@ def _group_norm_backward_kernel(
         dW = 0.0
         dB = 0.0
         # Move the pointers to the correct channel
-        W = tl.load(W_ptr + channel_idx)        
+        W = tl.load(W_ptr + channel_idx)
         for i in tl.range(0, hidden_size, BLOCK_SIZE):
             hidden_size_offsets = i + block_range
             mask = hidden_size_offsets < hidden_size
