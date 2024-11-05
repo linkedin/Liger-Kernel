@@ -114,7 +114,6 @@ class LigerLMHeadCE(torch.nn.Module):
         (0.1, 42, 1e-4),  # Pass non-default values once to ensure all params work along
     ],
 )
-
 def test_correctness(
     B,
     T,
