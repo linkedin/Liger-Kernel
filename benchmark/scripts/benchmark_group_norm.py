@@ -110,22 +110,22 @@ if __name__ == "__main__":
         "kernel_name": "group_norm",
         "x_name": "C",
         "x_label": "num_channels",
-        "x_values": [2**i for i in range(10, 15)],
+        "x_values": [2**i for i in range(5, 12)],
         "kernel_providers": ["liger", "huggingface"],
-        "extra_benchmark_configs": [{"M": 4096, "H": 512, "channels_per_group": 4,  "dtype": torch.float32, "eps": 1e-6}],
+        "extra_benchmark_configs": [{"M": 128, "H": 512, "channels_per_group": 4,  "dtype": torch.float32, "eps": 1e-6}],
         "overwrite": args.overwrite,
     }
 
     run_benchmarks(
         bench_test_fn=bench_speed_group_norm,
-        kernel_operation_modes=["forward", "full"],
+        kernel_operation_modes=["forward", "full", "backward"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs
     )
     run_benchmarks(
         bench_test_fn=bench_memory_group_norm,
-        kernel_operation_modes=["full"],
+        kernel_operation_modes=["full", "forward", "backward"],
         metric_name="memory",
         metric_unit="MB",
         **common_configs
