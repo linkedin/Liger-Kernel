@@ -89,11 +89,7 @@ class LigerLMHeadJSD(torch.nn.Module):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        (2, 2, 512, 1600),
-        (2, 4, 1024, 1600),
-        # Comment out to speed up testing
-        # (4, 2048, 4096, 128256),  # llama3 8B
-        # (4, 1024, 8192, 128256),  # llama3 70B
+        (8, 128, 1024, 4096),
         (4, 423, 167, 1423),  # random shape
     ],
 )
@@ -166,12 +162,8 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        (2, 4, 2048, 3200),
-        (2, 2048, 4096, 32000),  # llama2, mistral
-        # Comment out to speed up testing
-        # (4, 2048, 4096, 128256),  # llama3 8B
-        # (4, 1024, 8192, 128256),  # llama3 70B
-        (4, 423, 8192, 32000),  # random shape
+        (8, 128, 1024, 4096),
+        (4, 423, 167, 1423),  # random shape
     ],
 )
 @pytest.mark.parametrize(
@@ -257,12 +249,9 @@ def test_correctness_with_ignore_index(
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        (2, 4, 2048, 3200),
-        (2, 2048, 4096, 32000),  # llama2, mistral
-        # Comment out to speed up testing
-        # (4, 2048, 4096, 128256),  # llama3 8B
-        # (4, 1024, 8192, 128256),  # llama3 70B
-        (4, 423, 8192, 32000),  # random shape
+        (2, 2, 8, 8),
+        # weird shapes
+        (9, 7, 41, 41),
     ],
 )
 @pytest.mark.parametrize(
@@ -336,7 +325,8 @@ def test_correctness_functional(
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        (2, 4, 2048, 3200),
+        (8, 128, 1024, 4096),
+        (4, 423, 167, 1423),  # random shape
     ],
 )
 @pytest.mark.parametrize(

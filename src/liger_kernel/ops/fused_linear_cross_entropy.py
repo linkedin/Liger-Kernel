@@ -2,7 +2,12 @@ import torch
 import triton
 
 from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
-from liger_kernel.ops.utils import amp_custom_bwd, amp_custom_fwd, element_mul_kernel
+from liger_kernel.ops.utils import (
+    amp_custom_bwd,
+    amp_custom_fwd,
+    element_mul_kernel,
+    is_hip,
+)
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
@@ -92,7 +97,7 @@ def fused_linear_cross_entropy_forward(
             reduction=reduction,
             RETURN_Z_LOSS=0,  # False
             BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32,
+            num_warps=32 if not is_hip() else 16,
         )
 
         # gradient of logits_chunk is computed in-place by the above triton kernel.
@@ -157,7 +162,7 @@ def fused_linear_cross_entropy_backward(
             grad_output,
             H,
             BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32,
+            num_warps=32 if not is_hip() else 16,
         )
 
         # handle grad_weight
@@ -171,7 +176,7 @@ def fused_linear_cross_entropy_backward(
                 grad_output,
                 H,
                 BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32,
+                num_warps=32 if not is_hip() else 16,
             )
 
         if grad_bias is not None:
@@ -184,7 +189,7 @@ def fused_linear_cross_entropy_backward(
                 grad_output,
                 1,
                 BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32,
+                num_warps=32 if not is_hip() else 16,
             )
     return grad_input, grad_weight, grad_bias
 

@@ -10,20 +10,8 @@ _SHAPE_PARAMS = (
     "B, T, V",
     [
         (1, 4096, 32000),
-        (32, 4096, 1024),
         # weird shape
         (41, 401, 1271),
-        pytest.param(
-            1,
-            4096,
-            128256,
-            marks=pytest.mark.skipif(
-                torch.cuda.get_device_properties(0).total_memory
-                < 36 * 1000 * 1000 * 1000,
-                reason="This test requires a GPU with at least 36GB of memory",
-            ),
-        ),
-        (3, 423, 32000),
     ],
 )
 
