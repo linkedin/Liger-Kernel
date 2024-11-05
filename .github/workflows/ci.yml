@@ -4,9 +4,15 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "src/**"
+      - "test/**"
   pull_request:
     branches:
       - main
+    paths:
+      - "src/**"
+      - "test/**"
 
 concurrency:
   # This causes it to cancel previous in-progress actions on the same PR / branch,
@@ -61,7 +67,7 @@ jobs:
 
   convergence-tests:
     runs-on: ubuntu-latest
-    needs: [checkstyle]
+    needs: [unit-tests]
 
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
