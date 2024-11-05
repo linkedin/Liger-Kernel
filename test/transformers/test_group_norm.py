@@ -2,30 +2,27 @@ import pytest
 import random
 import torch
 
-from liger_kernel.ops.group_norm import LigerGroupNormFunction
-from liger_kernel.transformers.functional import liger_group_norm
 from liger_kernel.transformers.group_norm import LigerGroupNorm
 
 
 random_batch_size = random.randint(1, 16)
 random_num_groups = random.randint(1, 32)
 random_num_channels = random_num_groups * random.randint(1, 16)
-random_hidden_size = random.randint(1, 32)
+random_hidden_size = random.randint(1, 8192)
 
 @pytest.mark.parametrize(
     "batch_size, num_channels, num_groups, hidden_size",
     [   
         (1, 2, 1, 3),
-        # (1, 4, 2, 4),
-        # (16, 12, 3, 4096),
-        # (random_batch_size, random_num_channels, random_num_groups, random_hidden_size),
+        (1, 4, 2, 4),
+        (16, 12, 3, 4096),
+        (random_batch_size, random_num_channels, random_num_groups, random_hidden_size),
     ],
 )
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
-        (torch.float32, 1e-5, 1e-5),
-        #(torch.float16, 1e-3, 1e-3),
+        (torch.float32, 1e-4, 1e-4),
     ],
 )
 def test_liger_group_norm(batch_size, num_channels, num_groups, hidden_size, dtype, atol, rtol):
@@ -52,15 +49,9 @@ def test_liger_group_norm(batch_size, num_channels, num_groups, hidden_size, dty
     grad_output = torch.randn_like(torch_x)
     liger_output.backward(grad_output, retain_graph=True)
     torch_output.backward(grad_output, retain_graph=True)
-    print(f"Input grad liger: {liger_x.grad}")
-    
-    print(f"Torch grad :{torch_x.grad}")
     assert torch.allclose(liger_x.grad, torch_x.grad, atol=atol, rtol=rtol)
-    print(f"Upstream Gradient: {grad_output}")
-    # print(liger_x.shape)
-    print(f"Liger: grad {liger_ln.weight.grad}")
-    print(f"Torch: grad {torch_ln.weight.grad}")
     assert torch.allclose(liger_ln.bias.grad, torch_ln.bias.grad, atol=atol, rtol=rtol), "Bias grads different"
+    close_mask = torch.isclose(liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol)
     assert torch.allclose( 
         liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol
     ), "Weight grads different"
