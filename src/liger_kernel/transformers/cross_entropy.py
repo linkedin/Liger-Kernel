@@ -8,7 +8,7 @@ class LigerCrossEntropyLoss(CrossEntropyLoss):
         super(LigerCrossEntropyLoss, self).__init__(*args, **kwargs)
         assert (self.label_smoothing >= 0) and (
             self.label_smoothing <= 1
-        ), f"label_smoothing must be between 0.0 and 1.0. Got: {self.label_smoothing}"
+        ), f"label_smoothing must be between  0.0 and 1.0. Got: {self.label_smoothing}"
         assert self.reduction in {
             "mean",
             "sum",
