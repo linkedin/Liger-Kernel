@@ -50,39 +50,36 @@ def _group_norm_forward_kernel(
     X_ptr += batch_idx * X_row_stride + group_idx * X_col_stride
     Y_ptr += batch_idx * Y_row_stride + group_idx * Y_col_stride
 
-    # Compute mean
+    block_range = tl.arange(0, BLOCK_SIZE)
+
+    # Compute mean and variance using the online algorithm
     s = 0.0
-    for i in range(0, hidden_size, BLOCK_SIZE):
-        hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
+    squared_sum = 0.0
+    for i in tl.range(0, hidden_size, BLOCK_SIZE):
+        hidden_size_offsets = i + block_range
         mask = hidden_size_offsets < hidden_size
         X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0)
         s += tl.sum(X)
+        # X**2
+        squared_sum += tl.sum(X * X)
 
     m = s / hidden_size
+    
+    # variance = E[X**2] - E[X]**2
+    variance = squared_sum / hidden_size - m * m
 
-    # Compute variance
-    variance = 0.0
-    for i in range(0, hidden_size, BLOCK_SIZE):
-        hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
-        mask = hidden_size_offsets < hidden_size
-        # We need to mask out of index with mean to ensure that the variance remains unaffected
-        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=m)
-        diff = X - m
-        variance += tl.sum(diff * diff)
-
-    variance = variance / hidden_size
     # 1/std
     rstd = rsqrt(variance + eps)
 
     # Normalize
     hidden_size_per_channel = hidden_size // channels_per_group
-    for channel_idx in range(
+    for channel_idx in tl.range(
         group_idx * channels_per_group, (group_idx + 1) * channels_per_group
     ):
         W = tl.load(W_ptr + channel_idx)
         B = tl.load(B_ptr + channel_idx)
         for i in range(0, hidden_size_per_channel, BLOCK_SIZE):
-            hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
+            hidden_size_offsets = i + block_range
             mask = hidden_size_offsets < hidden_size_per_channel
             X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=m)
             Y = (X - m) * rstd * W + B
@@ -140,18 +137,18 @@ def _group_norm_backward_kernel(
 
     c1 = 0.0
     c2 = 0.0
+    block_range = tl.arange(0, BLOCK_SIZE)
 
     # We need to compute the sum terms of the backprop equations across all channels in the group
     for channel_idx in range(
         group_idx * channels_per_group, (group_idx + 1) * channels_per_group
     ):
-        # Move the pointers to the correct channel
-
         dW = 0.0
         dB = 0.0
-        W = tl.load(W_ptr + channel_idx)
-        for i in range(0, hidden_size, BLOCK_SIZE):
-            hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
+        # Move the pointers to the correct channel
+        W = tl.load(W_ptr + channel_idx)        
+        for i in tl.range(0, hidden_size, BLOCK_SIZE):
+            hidden_size_offsets = i + block_range
             mask = hidden_size_offsets < hidden_size
             X = tl.load(
                 X_ptr + channel_idx * X_col_stride + hidden_size_offsets,
@@ -180,13 +177,13 @@ def _group_norm_backward_kernel(
     c1 = c1 / N
     c2 = c2 / N
 
-    for channel_idx in range(
+    for channel_idx in tl.range(
         group_idx * channels_per_group, (group_idx + 1) * channels_per_group
     ):
         # Move the pointers to the correct channel
         W = tl.load(W_ptr + channel_idx)
         for i in range(0, hidden_size, BLOCK_SIZE):
-            hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
+            hidden_size_offsets = i + block_range
             mask = hidden_size_offsets < hidden_size
             X = tl.load(
                 X_ptr + channel_idx * X_col_stride + hidden_size_offsets,
