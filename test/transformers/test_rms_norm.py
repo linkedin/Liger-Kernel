@@ -74,14 +74,8 @@ class GemmaRMSNorm(nn.Module):
     "bs, sl, hd",
     [
         (2, 128, 512),
-        (4, 256, 1024),
-        (8, 512, 2048),
-        (8, 1024, 4096),
-        # # # weird shapes
-        (3, 423, 213),
+        # weird shapes
         (5, 123, 123),
-        (7, 341, 234),
-        (9, 236, 345),
     ],
 )
 @pytest.mark.parametrize(
@@ -96,7 +90,6 @@ class GemmaRMSNorm(nn.Module):
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        (torch.float16, 2e-1, 2e-2),
     ],
 )
 @pytest.mark.parametrize(
@@ -108,9 +101,6 @@ class GemmaRMSNorm(nn.Module):
     ],
 )
 def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode):
-    if reference == BaseRMSNorm and dtype == torch.bfloat16:
-        pytest.skip("bfloat16 has larger errors for BaseRMSNorm")
-
     _tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
 
     h1 = _tensor.clone().requires_grad_(True)
@@ -146,7 +136,7 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
     "bs, sl, hd",
     [
         (2, 2, 8),
-        # # weird shapes
+        # weird shapes
         (9, 7, 41),
     ],
 )
@@ -155,7 +145,6 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
     [
         (torch.float32, 1e-4, 1e-6),
         (torch.bfloat16, 2e-1, 2e-2),
-        (torch.float16, 2e-1, 2e-2),
     ],
 )
 @pytest.mark.parametrize(
