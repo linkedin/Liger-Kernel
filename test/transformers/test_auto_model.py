@@ -40,7 +40,6 @@ def test_auto_liger_kernel_for_causal_lm_from_pretrained():
     ), mock.patch.object(
         AutoModelForCausalLM, "from_pretrained", return_value="mock_model"
     ) as mock_super_from_pretrained:
-
         # Mock the function signature of apply_liger_kernel_to_llama
         mock_llama.__signature__ = signature(apply_liger_kernel_to_llama)
 

@@ -84,7 +84,6 @@ def swiglu_forward(a, b):
 
 
 def swiglu_backward(a, b, dc):
-
     ori_shape = dc.shape
     n_cols = ori_shape[-1]
     dc = dc.view(-1, n_cols)

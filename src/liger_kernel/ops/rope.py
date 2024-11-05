@@ -118,7 +118,6 @@ def _triton_rope(
 
 
 def rope_forward(q, k, cos, sin):
-
     # transpose it back to the physical shape because Triton looks at the physical storage
     # note: q and k are incontiguous before the transformation and will become contiguous after transpose
     q = q.transpose(1, 2)

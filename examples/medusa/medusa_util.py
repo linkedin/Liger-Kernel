@@ -236,7 +236,6 @@ def add_medusa_heads(
                         medusa_scheduler_coefficient,
                     )
             else:
-
                 loss_fct = CrossEntropyLoss()
                 for i in range(model.medusa_num_heads + 1):
                     medusa_logits_i = (

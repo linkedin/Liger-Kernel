@@ -16,7 +16,6 @@ class LigerSwiGLUMLP(nn.Module):
             raise ValueError(f"Activation function {config.hidden_act} not supported.")
 
     def forward(self, x):
-
         return self.down_proj(
             LigerSiLUMulFunction.apply(self.gate_proj(x), self.up_proj(x))
         )
@@ -36,7 +35,6 @@ class LigerBlockSparseTop2MLP(nn.Module):
             raise ValueError(f"Activation function {config.hidden_act} not supported.")
 
     def forward(self, x):
-
         return self.w2(LigerSiLUMulFunction.apply(self.w1(x), self.w3(x)))
 
 
