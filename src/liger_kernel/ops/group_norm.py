@@ -104,13 +104,16 @@ def _group_norm_backward_kernel(
     UPSTREAM_ptr,  # pointer to output grad, shape (n_rows, n_channels, hidden_size)
     hidden_size: tl.constexpr, # hidden size
     channels_per_group: tl.constexpr, # number of groups in group norm
-    num_groups: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     dtype: tl.constexpr,
 ):
     """
     References:
     https://nn.labml.ai/normalization/group_norm/index.html
+    The backprop equations are the same for group_norm and layer_norm
+    the only difference here is that we load the W, Mean, Rstd corresponding to the
+    group we're computing gradients for and the mean and rstd are computed over n-channels
+    so the total number of elements we compute the mean over is num_channels_per_group * hidden_size
     """
     batch_idx = tl.program_id(0)
     channel_idx = tl.program_id(1)
@@ -133,7 +136,7 @@ def _group_norm_backward_kernel(
     for i in range(0, hidden_size, BLOCK_SIZE):
         hidden_size_offsets = i + tl.arange(0, BLOCK_SIZE)
         mask = hidden_size_offsets < hidden_size
-        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=mean)
+        X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=0.0)
         UPSTREAM_grad = tl.load(UPSTREAM_ptr + hidden_size_offsets, mask=mask, other=0.0)
         """
         Y = (X - mean) * rstd
@@ -166,8 +169,8 @@ def _group_norm_backward_kernel(
 
         x_hat = (X - mean) * rstd
         wdy = W * UPSTREAM_grad
-        c1 = tl.sum(x_hat * wdy) / (hidden_size * num_groups)
-        c2 = tl.sum(wdy, axis=0) / (hidden_size * num_groups)
+        c1 = tl.sum(x_hat * wdy) / (hidden_size * channels_per_group)
+        c2 = tl.sum(wdy) / (hidden_size * channels_per_group)
         dx = (wdy - (x_hat * c1 + c2)) * rstd
         tl.store(DX_ptr + hidden_size_offsets, dx.to(dtype), mask=mask)
 
@@ -249,14 +252,9 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
         dY,
         hidden_size,
         channels_per_group,
-        num_groups,
         BLOCK_SIZE=BLOCK_SIZE,
         dtype=triton_dtype
     )
-    print(Mean)
-    a = (X.view(batch_size, num_groups, -1) - Mean.view(batch_size, num_groups, -1)) * RSTD.view(batch_size, num_groups, -1)
-    b = a * dY.view(batch_size, num_groups, -1)
-    print(f"Pure torch output: {b.view(batch_size, num_channels, -1).sum(-1)}")
     return DX, DW, DB
 
 
