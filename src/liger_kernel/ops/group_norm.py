@@ -66,7 +66,7 @@ def _group_norm_forward_kernel(
     m = s / hidden_size
     
     # variance = E[X**2] - E[X]**2
-    variance = squared_sum / hidden_size - m * m
+    variance = (squared_sum / hidden_size) - (m * m)
 
     # 1/std
     rstd = rsqrt(variance + eps)
