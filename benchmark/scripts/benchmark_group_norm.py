@@ -24,8 +24,12 @@ def bench_speed_group_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRun
     dtype = extra_benchmark_config["dtype"]
 
     x_shape = (M, C, H)
-    triton_ln = LigerGroupNorm(num_channels=C, num_groups=C//channels_per_group, eps=eps).to("cuda")
-    torch_ln = torch.nn.GroupNorm(num_groups=C//channels_per_group, num_channels=C, eps=eps).to("cuda")
+    triton_ln = LigerGroupNorm(
+        num_channels=C, num_groups=C // channels_per_group, eps=eps
+    ).to("cuda")
+    torch_ln = torch.nn.GroupNorm(
+        num_groups=C // channels_per_group, num_channels=C, eps=eps
+    ).to("cuda")
 
     x = torch.randn(x_shape, dtype=dtype, device="cuda")
     dy = torch.randn_like(x)
@@ -69,7 +73,6 @@ def bench_speed_group_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRun
 def bench_memory_group_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     C = input.x
     provider = input.kernel_provider
-    mode = input.kernel_operation_mode
     extra_benchmark_config = input.extra_benchmark_config
     M = extra_benchmark_config["M"]
     H = extra_benchmark_config["H"]
@@ -78,8 +81,12 @@ def bench_memory_group_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRu
     dtype = extra_benchmark_config["dtype"]
 
     x_shape = (M, C, H)
-    triton_ln = LigerGroupNorm(num_channels=C, num_groups=C//channels_per_group, eps=eps).to("cuda")
-    torch_ln = torch.nn.GroupNorm(num_groups=C//channels_per_group, num_channels=C, eps=eps).to("cuda")
+    triton_ln = LigerGroupNorm(
+        num_channels=C, num_groups=C // channels_per_group, eps=eps
+    ).to("cuda")
+    torch_ln = torch.nn.GroupNorm(
+        num_groups=C // channels_per_group, num_channels=C, eps=eps
+    ).to("cuda")
 
     x = torch.randn(x_shape, dtype=dtype, device="cuda")
     dy = torch.randn_like(x)
@@ -112,7 +119,15 @@ if __name__ == "__main__":
         "x_label": "num_channels",
         "x_values": [2**i for i in range(5, 12)],
         "kernel_providers": ["liger", "huggingface"],
-        "extra_benchmark_configs": [{"M": 128, "H": 512, "channels_per_group": 4,  "dtype": torch.float32, "eps": 1e-6}],
+        "extra_benchmark_configs": [
+            {
+                "M": 128,
+                "H": 512,
+                "channels_per_group": 4,
+                "dtype": torch.float32,
+                "eps": 1e-6,
+            }
+        ],
         "overwrite": args.overwrite,
     }
 

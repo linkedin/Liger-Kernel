@@ -37,10 +37,19 @@ class LigerGroupNorm(nn.Module):
 
     def forward(self, hidden_states):
         # hidden_states: (batch_size, num_channels, *)
-        assert hidden_states.dim() >= 3, f"Input must have atleast 3 dimensions, got {hidden_states.dim()}"
-        assert hidden_states.size(1) == self.num_channels, f"Input tensor must have {self.num_channels} channels, got {hidden_states.size(1)}"
+        assert (
+            hidden_states.dim() >= 3
+        ), f"Input must have atleast 3 dimensions, got {hidden_states.dim()}"
+        assert (
+            hidden_states.size(1) == self.num_channels
+        ), f"Input tensor must have {self.num_channels} channels, got {hidden_states.size(1)}"
         return LigerGroupNormFunction.apply(
-            hidden_states, self.weight, self.bias, self.num_channels, self.num_groups, self.variance_epsilon
+            hidden_states,
+            self.weight,
+            self.bias,
+            self.num_channels,
+            self.num_groups,
+            self.variance_epsilon,
         )
 
     def extra_repr(self):
