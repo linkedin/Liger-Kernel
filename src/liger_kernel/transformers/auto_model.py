@@ -16,7 +16,7 @@ def _get_model_config(model_dir, **model_init_kwargs):
 class AutoLigerKernelForCausalLM(AutoModelForCausalLM):
     """
     This class is a drop-in replacement for AutoModelForCausalLM that applies the Liger Kernel to the model
-    if applicable.
+    if applicable. 
     """
 
     @classmethod
