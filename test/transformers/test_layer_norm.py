@@ -22,9 +22,11 @@ from liger_kernel.transformers.layer_norm import LigerLayerNorm
 def test_liger_layer_norm(batch_size, seq_len, hidden_size, dtype, atol, rtol):
     torch.manual_seed(0)
 
-    x = torch.randn(
-        batch_size, seq_len, hidden_size, dtype=dtype, device="cuda", requires_grad=True
-    )
+    x = torch.randn(batch_size, seq_len, hidden_size, dtype=dtype, device="cuda")
+
+    liger_x = x.clone().requires_grad_(True)
+    torch_x = x.clone().requires_grad_(True)
+
     liger_ln = LigerLayerNorm(hidden_size, eps=1e-6).to(dtype).cuda()
     torch_ln = torch.nn.LayerNorm(hidden_size, eps=1e-6).to(dtype).cuda()
 
@@ -32,8 +34,8 @@ def test_liger_layer_norm(batch_size, seq_len, hidden_size, dtype, atol, rtol):
         torch_ln.weight.copy_(liger_ln.weight)
         torch_ln.bias.copy_(liger_ln.bias)
 
-    liger_output = liger_ln(x)
-    torch_output = torch_ln(x)
+    liger_output = liger_ln(liger_x)
+    torch_output = torch_ln(torch_x)
 
     assert torch.allclose(liger_output, torch_output, atol=atol, rtol=rtol)
 
@@ -41,7 +43,7 @@ def test_liger_layer_norm(batch_size, seq_len, hidden_size, dtype, atol, rtol):
     liger_output.backward(grad_output, retain_graph=True)
     torch_output.backward(grad_output, retain_graph=True)
 
-    assert torch.allclose(x.grad, x.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(liger_x.grad, torch_x.grad, atol=atol, rtol=rtol)
     assert torch.allclose(
         liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol
     )
