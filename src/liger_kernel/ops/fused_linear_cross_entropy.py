@@ -87,6 +87,8 @@ def fused_linear_cross_entropy_forward(
             Y_stride=target_chunk.stride(-1),  # always 1
             loss_ptr=loss_1d_slice,
             loss_stride=loss_1d_slice.stride(-1),  # always 1
+            dX_ptr=logits_chunk,
+            dX_stride=logits_chunk.stride(-2),
             n_cols=V,
             n_non_ignore=n_non_ignore,
             ignore_index=ignore_index,

@@ -149,8 +149,8 @@ def _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
 
     target = torch.randint(0, V, (B * T,), device="cuda", dtype=torch.long)
 
-    y1 = liger_cross_entropy(x1, target, 0)
-    y2 = LigerCrossEntropyFunction.apply(x2, target, 0)
+    y1, _ = liger_cross_entropy(x1, target, 0)
+    y2, _ = LigerCrossEntropyFunction.apply(x2, target, 0)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
 
