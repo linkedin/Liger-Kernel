@@ -35,8 +35,8 @@ def _group_norm_forward_kernel(
     RSTD_col_stride,  # stride of each column in rstd
     W_ptr,  # pointer to W
     B_ptr,  # pointer to B
-    hidden_size,
-    channels_per_group,
+    hidden_size, # hidden size of X
+    channels_per_group, # the number of channels per group
     eps,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -114,10 +114,14 @@ def _group_norm_backward_kernel(
     """
     References:
     https://nn.labml.ai/normalization/group_norm/index.html
+    https://github.com/karpathy/llm.c/blob/master/doc/layernorm/layernorm.md
+
     The backprop equations are the same for group_norm and layer_norm
-    the only difference here is that we load the W, Mean, Rstd corresponding to the
+    the only difference here is that we load the Mean, Rstd corresponding to the
     group we're computing gradients for and the mean and rstd are computed over n-channels
     so the total number of elements we compute the mean over is num_channels_per_group * hidden_size
+
+    We also need to load the Weights corresponding to the current channel to compute the gradients.
     """
     batch_idx = tl.program_id(0)
     group_idx = tl.program_id(1)
@@ -238,8 +242,8 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
         eps,
         BLOCK_SIZE=BLOCK_SIZE,
     )
-    Y = Y.view(*shape)
-    return Y, X.view(*shape), Mean, RSTD, BLOCK_SIZE
+    # Return tensors in the original shape
+    return Y.view(*shape), X.view(*shape), Mean, RSTD, BLOCK_SIZE
 
 
 def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
@@ -276,7 +280,8 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
         BLOCK_SIZE=BLOCK_SIZE,
         dtype=triton_dtype,
     )
-
+    
+    # Return tensors in the original shape
     return DX.view(*shape), DW, DB
 
 
