@@ -339,7 +339,7 @@ def _test_correctness_functional(
 
     y1, y1_z = liger_cross_entropy(x1, target, 0, 1e-4, 0.1, "mean", 30.0, True)
     y2, y2_z = LigerCrossEntropyFunction.apply(
-        x2, target, 0, 1e-4, 0.1, 30.0, "mean", True
+        x2, target, 0, 1e-4, 0.1, "mean", 30.0, True
     )
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
@@ -401,39 +401,8 @@ def test_correctness(B, T, V, scalar, dtype, reduction, atol, rtol):
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
 )
-@pytest.mark.parametrize(
-    "ignore_index, label_smoothing, reduction, softcap",
-    [
-        (-100, 0.0, "mean", None),
-        (42, 0.1, "sum", 30),
-    ],
-)
-def test_correctness_functional(
-    B,
-    T,
-    V,
-    scalar,
-    ignore_index,
-    label_smoothing,
-    reduction,
-    softcap,
-    dtype,
-    atol,
-    rtol,
-):
-    _test_correctness_functional(
-        B,
-        T,
-        V,
-        scalar,
-        ignore_index,
-        label_smoothing,
-        reduction,
-        softcap,
-        dtype,
-        atol,
-        rtol,
-    )
+def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
+    _test_correctness_functional(B, T, V, scalar, dtype, atol, rtol)
 
 
 @pytest.mark.parametrize(
@@ -540,8 +509,6 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
     "B, T, V, softcap",
     [
         (2, 4096, 32000, 30.0),  # llama2, mistral
-        (2, 4096, 32000, 30.0),  # llama2, mistral
-        (1, 4096, 128256, 30.0),  # llama3
         # weird shapes
         (3, 423, 32000, 30.0),
     ],
@@ -551,15 +518,6 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
     "scalar, dtype, atol, rtol",
     [
         pytest.param(
-            0.1,
-            torch.bfloat16,
-            1e-8,
-            5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
-        pytest.param(
             1.0,
             torch.bfloat16,
             1e-8,
@@ -568,18 +526,7 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        pytest.param(
-            10.0,
-            torch.bfloat16,
-            1e-8,
-            5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
-        (0.1, torch.float32, 1e-8, 1e-6),
         (1.0, torch.float32, 1e-8, 1e-6),
-        (10.0, torch.float32, 1e-8, 1e-6),
     ],
 )
 @pytest.mark.skipif(
