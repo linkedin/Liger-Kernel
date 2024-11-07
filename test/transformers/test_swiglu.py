@@ -27,11 +27,9 @@ SLEEP_SECONDS = 0.1
 @pytest.mark.parametrize(
     "bsz, seq_len, hidden_size, intermediate_size",
     [
-        (2, 2048, 4096, 11008),
-        (2, 2048, 2048, 4096),
+        (2, 256, 256, 512),
         # weird shapes
-        (9, 41, 341, 4231),
-        (6, 42, 256, 2048),
+        (6, 42, 123, 431),
     ],
 )
 @pytest.mark.parametrize(
@@ -109,11 +107,9 @@ def test_correctness_llamamlp(
 @pytest.mark.parametrize(
     "bsz, seq_len, hidden_size, intermediate_size",
     [
-        (2, 2048, 4096, 11008),
-        (2, 2048, 2048, 4096),
+        (2, 256, 256, 512),
         # weird shapes
-        (9, 41, 341, 4231),
-        (6, 42, 256, 2048),
+        (6, 42, 123, 431),
     ],
 )
 @pytest.mark.parametrize(

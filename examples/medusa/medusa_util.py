@@ -212,7 +212,7 @@ def add_medusa_heads(
 
             if with_liger:
                 lce = LigerFusedLinearCrossEntropyLoss()
-                for i in range(model.medusa_num_heads):
+                for i in range(model.medusa_num_heads + 1):
                     shift_hidden_states = (
                         hidden_states[..., : -(1 + i), :]
                         .contiguous()
@@ -223,7 +223,7 @@ def add_medusa_heads(
                     weight = (
                         model.lm_head.weight
                         if i == 0
-                        else model.medusa_head[i][-1].weight
+                        else model.medusa_head[i - 1][-1].weight
                     )
                     loss_i = lce(weight, shift_hidden_states, shift_labels)
 
@@ -238,7 +238,7 @@ def add_medusa_heads(
             else:
 
                 loss_fct = CrossEntropyLoss()
-                for i in range(model.medusa_num_heads):
+                for i in range(model.medusa_num_heads + 1):
                     medusa_logits_i = (
                         medusa_logits[i, :, : -(1 + i)]
                         .contiguous()

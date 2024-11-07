@@ -111,10 +111,17 @@ With one line of code, Liger Kernel can increase throughput by more than 20% and
 
 ## Installation
 
-### Dependencies
+### Dependencies 
+
+#### CUDA
 
 - `torch >= 2.1.2`
 - `triton >= 2.3.0`
+
+#### ROCm
+
+- `torch >= 2.5.0` Install according to the instruction in Pytorch official webpage.
+- `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
 
 ### Optional Dependencies
 
@@ -144,6 +151,7 @@ pip install -e .
 # or if using transformers
 pip install -e .[transformers]
 ```
+
 
 ## Getting Started
 
