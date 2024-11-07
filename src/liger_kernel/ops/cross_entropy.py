@@ -140,7 +140,7 @@ def liger_cross_entropy_kernel(
 
     # 5. Calculate the loss
 
-    # -loss = log (softmax(X_y)) = log ((e ^ (X_y - max(X)) / sum(e ^ (X - max(X))))
+    # loss = log (softmax(X_y)) = log ((e ^ (X_y - max(X)) / sum(e ^ (X - max(X))))
     #      = (X_y - max(X)) - log(sum(e ^ (X - max(X))))
     #      = X_y - m - log d = X_y - lse
     # sum(e ^ (X - max(X))) must >= 1 because the max term is e ^ 0 = 1
