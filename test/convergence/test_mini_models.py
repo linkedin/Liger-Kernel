@@ -258,9 +258,7 @@ MINI_MODEL_SETUPS = {
         ),
     ),
     "mini_gemma2": MiniModelConfig(
-        liger_kernel_patch_func=functools.partial(
-            apply_liger_kernel_to_gemma2, fused_linear_cross_entropy=False
-        ),
+        liger_kernel_patch_func=apply_liger_kernel_to_gemma2,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma2,
         model_class=Gemma2ForCausalLM,
         mini_model_config=Gemma2Config(
@@ -412,13 +410,8 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
-        model_support_flce = "gemma2" not in model_name
-
-        if model_support_flce:
-            kwargs["fused_linear_cross_entropy"] = True
-            kwargs["cross_entropy"] = False
-        else:
-            kwargs["cross_entropy"] = True
+        kwargs["fused_linear_cross_entropy"] = True
+        kwargs["cross_entropy"] = False
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
@@ -643,7 +636,7 @@ def run_mini_model(
         #     ),
         # ),
         # TODO: Gemma2 tests are not passing within the tolerance range, need to investigate
-        # ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         # pytest.param(
         #     "mini_gemma2",
         #     32,

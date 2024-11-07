@@ -15,6 +15,9 @@ from liger_kernel.transformers.model.gemma import (
     lce_forward_deprecated as gemma_lce_forward_deprecated,
 )
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
+from liger_kernel.transformers.model.gemma2 import (
+    lce_forward_deprecated as gemma2_lce_forward_deprected,
+)
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import (
     lce_forward_deprecated as llama_lce_forward_deprecated,
@@ -489,7 +492,11 @@ def apply_liger_kernel_to_gemma2(
     if cross_entropy:
         modeling_gemma2.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_gemma2.Gemma2ForCausalLM.forward = gemma2_lce_forward
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_gemma2.Gemma2ForCausalLM.forward = gemma2_lce_forward
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_gemma2.Gemma2ForCausalLM.forward = gemma2_lce_forward_deprected
     if geglu:
         modeling_gemma2.Gemma2MLP = LigerGEGLUMLP
 
