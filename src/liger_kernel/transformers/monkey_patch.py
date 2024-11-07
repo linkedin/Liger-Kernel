@@ -3,18 +3,35 @@ import logging
 from functools import partial
 from typing import Callable
 
+import transformers
+from packaging import version
 from transformers import PreTrainedModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
+from liger_kernel.transformers.model.gemma import (
+    lce_forward_deprecated as gemma_lce_forward_deprecated,
+)
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
+from liger_kernel.transformers.model.llama import (
+    lce_forward_deprecated as llama_lce_forward_deprecated,
+)
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
+from liger_kernel.transformers.model.mixtral import (
+    lce_forward_deprecated as mixtral_lce_forward_deprecated,
+)
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
+from liger_kernel.transformers.model.phi3 import (
+    lce_forward_deprecated as phi3_lce_forward_deprecated,
+)
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
+from liger_kernel.transformers.model.qwen2 import (
+    lce_forward_deprecated as qwen2_lce_forward_deprecated,
+)
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import (
@@ -23,7 +40,11 @@ from liger_kernel.transformers.swiglu import (
     LigerSwiGLUMLP,
 )
 
+transformer_version = version.parse(transformers.__version__)
+
 logger = logging.getLogger(__name__)
+SUPPORTED_TRANSFORMER_VERSION = "4.46.1"
+TRANSFORMER_DEPRECATION_WARNING = "Support for transformers versions < 4.46.1 will soon be discontinued due to issues with incorrect gradient accumulation. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/34191"
 
 
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
@@ -79,6 +100,7 @@ def apply_liger_kernel_to_llama(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.llama import modeling_llama
+    from transformers.models.llama.modeling_llama import LlamaModel
 
     if rope:
         modeling_llama.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -89,21 +111,18 @@ def apply_liger_kernel_to_llama(
     if cross_entropy:
         modeling_llama.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_llama.LlamaForCausalLM.forward = llama_lce_forward_deprecated
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules (e.g. LlamaRMSNorm or LlamaMLP)
 
-        if hasattr(model, "model"):
-            # The case for LlamaForCausalLM or LlamaForSequenceClassification, for example
-            base_model = model.model
-        elif hasattr(model, "transformer"):
-            # LlamaForQuestionAnswering uses "transformer" instead of "model"
-            base_model = model.transformer
-        else:
-            # Direct LlamaModel
-            base_model = model
+        # get the base model from the model instance
+        base_model: LlamaModel = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module(base_model.norm)
@@ -157,6 +176,9 @@ def apply_liger_kernel_to_mllama(
     )
 
     from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
+    from liger_kernel.transformers.model.mllama import (
+        lce_forward_deprecated as mllama_lce_forward_deprecated,
+    )
 
     if rope:
         modeling_mllama.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -169,9 +191,11 @@ def apply_liger_kernel_to_mllama(
     if cross_entropy:
         modeling_mllama.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        # MllamaForConditionalGeneration uses MllamaForCausalLM under the hood
-        # for the loss calculation, so we need to patch the forward method of MllamaForCausalLM
-        modeling_mllama.MllamaForCausalLM.forward = mllama_lce_forward
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_mllama.MllamaForCausalLM.forward = mllama_lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_mllama.MllamaForCausalLM.forward = mllama_lce_forward_deprecated
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -246,6 +270,7 @@ def apply_liger_kernel_to_mistral(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.mistral import modeling_mistral
+    from transformers.models.mistral.modeling_mistral import MistralModel
 
     if rope:
         modeling_mistral.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -262,12 +287,8 @@ def apply_liger_kernel_to_mistral(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for MistralForCausalLM, MistralForTokenClassification for example
-            base_model = model.model
-        else:
-            # Direct MistralModel
-            base_model = model
+        # get the base model from the model instance
+        base_model: MistralModel = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module(base_model.norm)
@@ -311,6 +332,7 @@ def apply_liger_kernel_to_mixtral(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.mixtral import modeling_mixtral
+    from transformers.models.mixtral.modeling_mixtral import MixtralModel
 
     if rope:
         modeling_mixtral.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -319,7 +341,11 @@ def apply_liger_kernel_to_mixtral(
     if cross_entropy:
         modeling_mixtral.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward_deprecated
     if swiglu:
         modeling_mixtral.MixtralBlockSparseTop2MLP = LigerBlockSparseTop2MLP
 
@@ -327,12 +353,8 @@ def apply_liger_kernel_to_mixtral(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for MixtralForCausalLM, MixtralForTokenClassification for example
-            base_model = model.model
-        else:
-            # Direct MixtralModel
-            base_model = model
+        # get the base model from the model instance
+        base_model: MixtralModel = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module(base_model.norm)
@@ -377,6 +399,7 @@ def apply_liger_kernel_to_gemma(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.gemma import modeling_gemma
+    from transformers.models.gemma.modeling_gemma import GemmaModel
 
     # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
     LigerRMSNormForGemma = partial(
@@ -395,18 +418,18 @@ def apply_liger_kernel_to_gemma(
     if geglu:
         modeling_gemma.GemmaMLP = LigerGEGLUMLP
     if fused_linear_cross_entropy:
-        modeling_gemma.GemmaForCausalLM.forward = gemma_lce_forward
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_gemma.GemmaForCausalLM.forward = gemma_lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_gemma.GemmaForCausalLM.forward = gemma_lce_forward_deprecated
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for GemmaForCausalLM, GemmaForTokenClassification for example
-            base_model = model.model
-        else:
-            # Direct GemmaModel
-            base_model = model
+        # get the base model from the model instance
+        base_model: GemmaModel = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module_for_gemma(base_model.norm)
@@ -449,6 +472,7 @@ def apply_liger_kernel_to_gemma2(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
     from transformers.models.gemma2 import modeling_gemma2
+    from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
 
     LigerRMSNormForGemma2 = partial(
         LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros"
@@ -473,12 +497,8 @@ def apply_liger_kernel_to_gemma2(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for Gemma2ForCausalLM, Gemma2ForTokenClassification for example
-            base_model = model.model
-        else:
-            # Direct Gemma2Model
-            base_model = model
+        # get the base model from the model instance
+        base_model: Gemma2Model = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module_for_gemma2(base_model.norm)
@@ -529,6 +549,7 @@ def apply_liger_kernel_to_qwen2(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.qwen2 import modeling_qwen2
+    from transformers.models.qwen2.modeling_qwen2 import Qwen2Model
 
     if rope:
         modeling_qwen2.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -536,8 +557,16 @@ def apply_liger_kernel_to_qwen2(
         modeling_qwen2.Qwen2RMSNorm = LigerRMSNorm
     if cross_entropy:
         modeling_qwen2.CrossEntropyLoss = LigerCrossEntropyLoss
+
+    # import pdb; pdb.set_trace()
     if fused_linear_cross_entropy:
-        modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward
+
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward_deprecated
+
     if swiglu:
         modeling_qwen2.Qwen2MLP = LigerSwiGLUMLP
 
@@ -545,12 +574,8 @@ def apply_liger_kernel_to_qwen2(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for Qwen2ForCausalLM, Qwen2ForTokenClassification for example
-            base_model = model.model
-        else:
-            # Direct Qwen2Model
-            base_model = model
+        # get the base model from the model instance
+        base_model: Qwen2Model = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module(base_model.norm)
@@ -563,6 +588,7 @@ def apply_liger_kernel_to_qwen2(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+    print("Applied Liger kernels to Qwen2")
 
 
 def apply_liger_kernel_to_qwen2_vl(
@@ -594,6 +620,7 @@ def apply_liger_kernel_to_qwen2_vl(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.qwen2_vl import modeling_qwen2_vl
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModel
 
     from liger_kernel.transformers.model.qwen2_vl import (
         lce_forward as qwen2_vl_lce_forward,
@@ -617,12 +644,8 @@ def apply_liger_kernel_to_qwen2_vl(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for Qwen2VLForConditionalGeneration.
-            base_model = model.model
-        else:
-            # Direct Qwen2VLModel
-            base_model = model
+        # get the base model from the model instance
+        base_model: Qwen2VLModel = getattr(model, model.base_model_prefix, model)
 
         if hasattr(model, "visual"):
             # Patch Qwen2VisionTransformerPretrainedModel
@@ -671,6 +694,7 @@ def apply_liger_kernel_to_phi3(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.phi3 import modeling_phi3
+    from transformers.models.phi3.modeling_phi3 import Phi3Model
 
     if rope:
         modeling_phi3.apply_rotary_pos_emb = liger_rotary_pos_emb  # Same as Gemma
@@ -681,18 +705,18 @@ def apply_liger_kernel_to_phi3(
     if cross_entropy:
         modeling_phi3.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward_deprecated
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for Phi3ForCausalLM, Phi3ForTokenClassification for example
-            base_model = model.model
-        else:
-            # Direct Phi3Model
-            base_model = model
+        # get the base model from the model instance
+        base_model: Phi3Model = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module(base_model.norm)

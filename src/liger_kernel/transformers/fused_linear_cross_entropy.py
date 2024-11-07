@@ -11,6 +11,7 @@ class LigerFusedLinearCrossEntropyLoss(torch.nn.Module):
     def __init__(
         self,
         ignore_index: int = -100,
+        lse_square_scale: float = 0.0,
         label_smoothing: float = 0.0,
         reduction: str = "mean",
         softcap: Optional[float] = None,
@@ -28,6 +29,7 @@ class LigerFusedLinearCrossEntropyLoss(torch.nn.Module):
             softcap is None or softcap > 0
         ), f"softcap must greater than 0.0 or None. Got: {softcap}"
         self.ignore_index = ignore_index
+        self.lse_square_scale = lse_square_scale
         self.label_smoothing = label_smoothing
         self.reduction = reduction
         self.softcap = softcap
@@ -39,6 +41,7 @@ class LigerFusedLinearCrossEntropyLoss(torch.nn.Module):
             target,
             bias,
             self.ignore_index,
+            self.lse_square_scale,
             self.label_smoothing,
             self.reduction,
             self.softcap,

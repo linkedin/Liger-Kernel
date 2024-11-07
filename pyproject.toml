@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "liger_kernel"
-version = "0.3.1"
+version = "0.4.0"
 description = "Efficient Triton kernels for LLM Training"
 urls = { "Homepage" = "https://github.com/linkedin/Liger-Kernel" }
 readme = { file = "README.md", content-type = "text/markdown" }
 license = { file = "LICENSE" }
 dependencies = [
     "torch>=2.1.2",
-    "triton>=2.3.0",
+    "triton>=2.3.1",
 ]
 
 [project.optional-dependencies]

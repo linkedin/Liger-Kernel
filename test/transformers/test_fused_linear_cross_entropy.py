@@ -1,3 +1,4 @@
+from test.transformers.test_cross_entropy import CrossEntropyWithZLoss
 from test.utils import assert_verbose_allclose, set_seed
 
 import pytest
@@ -22,6 +23,12 @@ class TorchLMHeadCE(torch.nn.Module):
     :param V: vocab size
     :param ignore_index: index to ignore
     :param reduction: reduction method
+    :param label_smoothing: label_smoothing to apply on target
+    :param lse_square_scale: scaler of lse ^ 2 to compute z loss
+
+    # TODO: if we bump CI env's `transformers` version to >= 4.46, we should just directly
+    # call https://github.com/huggingface/transformers/blob/main/src/transformers/loss/loss_utils.py#L32
+    # to be consistent with Hugging Face model implementation.
     """
 
     def __init__(
@@ -31,6 +38,7 @@ class TorchLMHeadCE(torch.nn.Module):
         dtype: torch.dtype,
         bias: bool = False,
         ignore_index: int = -100,
+        lse_square_scale: float = 0.0,
         label_smoothing: float = 0.0,
         reduction: str = "mean",
     ):
@@ -38,14 +46,15 @@ class TorchLMHeadCE(torch.nn.Module):
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
-        self.ce_loss = torch.nn.CrossEntropyLoss(
+        self.ce_loss = CrossEntropyWithZLoss(
             ignore_index=ignore_index,
-            reduction=reduction,
+            lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
+            reduction=reduction,
         )
 
     def forward(self, x, y):
-        logits = self.lin(x)
+        logits = self.lin(x).to(torch.float32)
         return self.ce_loss(logits, y)
 
 
@@ -57,6 +66,7 @@ class LigerLMHeadCE(torch.nn.Module):
         dtype: torch.dtype,
         bias: bool = False,
         ignore_index: int = -100,
+        lse_square_scale: float = 0.0,
         label_smoothing: float = 0.0,
         reduction: str = "mean",
     ):
@@ -66,8 +76,9 @@ class LigerLMHeadCE(torch.nn.Module):
         )
         self.ce_loss = LigerFusedLinearCrossEntropyLoss(
             ignore_index=ignore_index,
-            reduction=reduction,
+            lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
+            reduction=reduction,
         )
 
     def forward(self, x, y):
@@ -82,12 +93,8 @@ class LigerLMHeadCE(torch.nn.Module):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        # (2, 4, 512, 512),  # The test does not work on some CI GPUs. Issue #160
-        (8, 2048, 4096, 32000),  # llama2, mistral
-        # Comment out to speed up testing
-        # (4, 2048, 4096, 128256),  # llama3 8B
-        # (4, 1024, 8192, 128256),  # llama3 70B
-        (4, 423, 8192, 32000),  # random shape
+        (8, 128, 1024, 4096),
+        (4, 47, 31, 123),  # random shape
     ],
 )
 @pytest.mark.parametrize(
@@ -100,16 +107,36 @@ class LigerLMHeadCE(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
-@pytest.mark.parametrize("label_smoothing", [0, 0.1])
+@pytest.mark.parametrize(
+    "label_smoothing, ignore_index, lse_square_scale",
+    [
+        (0, -100, 0),
+        (0.1, 42, 1e-4),  # Pass non-default values once to ensure all params work along
+    ],
+)
 def test_correctness(
-    B, T, H, V, scalar, dtype, bias, label_smoothing, reduction, atol, rtol
+    B,
+    T,
+    H,
+    V,
+    scalar,
+    dtype,
+    bias,
+    lse_square_scale,
+    label_smoothing,
+    ignore_index,
+    reduction,
+    atol,
+    rtol,
 ):
     device = "cuda"
     torch_lm_head_ce = TorchLMHeadCE(
         H=H,
         V=V,
         bias=bias,
+        lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
+        ignore_index=ignore_index,
         reduction=reduction,
         dtype=dtype,
     ).to(device)
@@ -117,7 +144,9 @@ def test_correctness(
         H=H,
         V=V,
         bias=bias,
+        lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
+        ignore_index=ignore_index,
         reduction=reduction,
         dtype=dtype,
     ).to(device)
@@ -137,6 +166,14 @@ def test_correctness(
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    # Assign some random number of elements as ignore_index
+    num_elements_to_assign = torch.randint(
+        1, B * T // 2, (1,)
+    ).item()  # Random number of elements to set to ignore_index
+    indices_to_assign = torch.randperm(B * T)[
+        :num_elements_to_assign
+    ]  # Randomly select indices
+    target[indices_to_assign] = ignore_index
 
     output1 = torch_lm_head_ce(_input1, target)
     output2 = liger_lm_head_ce(_input2, target)
@@ -208,12 +245,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, atol, rtol):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        (2, 4, 512, 512),  # The test does not work on some CI GPUs. Issue #160
-        (8, 2048, 4096, 32000),  # llama2, mistral
-        # Comment out to speed up testing
-        (4, 2048, 4096, 128256),  # llama3 8B
-        (4, 1024, 8192, 128256),  # llama3 70B
-        (4, 423, 8192, 32000),  # random shape
+        (8, 128, 1024, 4096),
+        (4, 47, 31, 123),  # random shape
     ],
 )
 @pytest.mark.parametrize(
