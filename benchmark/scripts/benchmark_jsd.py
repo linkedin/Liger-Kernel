@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 import triton
 from utils import (
     QUANTILES,
@@ -14,16 +13,41 @@ from liger_kernel.transformers.jsd import LigerJSD
 
 
 class TorchJSD(torch.nn.Module):
-    def __init__(self):
+    def __init__(
+        self,
+        beta: float = 0.5,
+        ignore_index: int = -100,
+        dtype: torch.dtype = torch.float,
+    ):
         super(TorchJSD, self).__init__()
-        self.kl = nn.KLDivLoss(reduction="batchmean", log_target=True)
+        self.kl = torch.nn.KLDivLoss(reduction="none", log_target=True)
+        self.beta = beta
+        self.ignore_index = ignore_index
+        self.dtype = dtype
 
-    def forward(self, log_p: torch.tensor, log_q: torch.tensor):
+    def forward(
+        self,
+        log_q: torch.Tensor,  # input
+        log_p: torch.Tensor,  # target
+        label=None,
+    ):
+        log_p, log_q = log_p.to(torch.float), log_q.to(torch.float)
         log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(-1, log_q.size(-1))
-        m = 0.5 * (torch.exp(log_p) + torch.exp(log_q))
-        log_m = torch.log(m)
-        loss = 0.5 * (self.kl(log_m, log_p) + self.kl(log_m, log_q))
-        return loss
+        m = torch.lerp(torch.exp(log_q), torch.exp(log_p), self.beta)
+        loss = self.beta * self.kl(torch.log(m), log_p).sum(dim=-1) + (
+            1 - self.beta
+        ) * self.kl(torch.log(m), log_q).sum(dim=-1)
+
+        if label is not None:
+            loss = torch.where(label != self.ignore_index, loss, 0.0)
+            n_non_ignore = (label != self.ignore_index).sum().item()
+            if n_non_ignore == 0:
+                loss = 0.0
+            else:
+                loss = (loss / n_non_ignore).sum()
+        else:
+            loss = (loss / log_q.shape[0]).sum()
+        return loss.to(self.dtype)
 
 
 def bench_speed_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:

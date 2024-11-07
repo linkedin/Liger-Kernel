@@ -1,9 +1,12 @@
 import torch
 import triton
 
-from liger_kernel.ops.cross_entropy import (
+from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
+from liger_kernel.ops.utils import (
+    amp_custom_bwd,
+    amp_custom_fwd,
     element_mul_kernel,
-    liger_cross_entropy_kernel,
+    is_hip,
 )
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
@@ -18,12 +21,11 @@ def fused_linear_cross_entropy_forward(
     target,
     bias=None,
     ignore_index=-100,
+    lse_square_scale=0.0,
     label_smoothing=0.0,
     reduction="mean",
 ):
-    dtype = (
-        torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else _input.dtype
-    )
+    dtype = _input.dtype
     device = _input.device
 
     # inputs have shape: BT x H
@@ -85,14 +87,17 @@ def fused_linear_cross_entropy_forward(
             Y_ptr=target_chunk,
             Y_stride=target_chunk.stride(-1),  # always 1
             loss_ptr=loss_1d_slice,
+            z_loss_ptr=loss_1d_slice,  # dummy ptr, not used
             loss_stride=loss_1d_slice.stride(-1),  # always 1
             n_cols=V,
             n_non_ignore=n_non_ignore,
             ignore_index=ignore_index,
+            lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
             reduction=reduction,
+            RETURN_Z_LOSS=0,  # False
             BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32,
+            num_warps=32 if not is_hip() else 16,
         )
 
         # gradient of logits_chunk is computed in-place by the above triton kernel.
@@ -157,7 +162,7 @@ def fused_linear_cross_entropy_backward(
             grad_output,
             H,
             BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32,
+            num_warps=32 if not is_hip() else 16,
         )
 
         # handle grad_weight
@@ -171,7 +176,7 @@ def fused_linear_cross_entropy_backward(
                 grad_output,
                 H,
                 BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32,
+                num_warps=32 if not is_hip() else 16,
             )
 
         if grad_bias is not None:
@@ -184,13 +189,14 @@ def fused_linear_cross_entropy_backward(
                 grad_output,
                 1,
                 BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32,
+                num_warps=32 if not is_hip() else 16,
             )
     return grad_input, grad_weight, grad_bias
 
 
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
     @staticmethod
+    @amp_custom_fwd
     def forward(
         ctx,
         _input,
@@ -198,6 +204,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         target,
         bias=None,
         ignore_index=-100,
+        lse_square_scale=0.0,
         label_smoothing=0.0,
         reduction="mean",
     ):
@@ -219,7 +226,14 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         reduction: reduction to apply
         """
         loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
-            _input, weight, target, bias, ignore_index, label_smoothing, reduction
+            _input,
+            weight,
+            target,
+            bias,
+            ignore_index,
+            lse_square_scale,
+            label_smoothing,
+            reduction,
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
@@ -230,9 +244,10 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         return loss
 
     @staticmethod
+    @amp_custom_bwd
     def backward(ctx, grad_output):
         (grad_input, grad_weight, grad_bias) = ctx.saved_tensors
         grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_backward(
             grad_output, grad_input, grad_weight, grad_bias
         )
-        return (grad_input, grad_weight, None, grad_bias, None, None, None)
+        return (grad_input, grad_weight, None, grad_bias, None, None, None, None)

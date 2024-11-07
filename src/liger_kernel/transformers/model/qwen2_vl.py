@@ -80,6 +80,7 @@ def lce_forward(
     >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
     "The image shows a street scene with a red stop sign in the foreground. In the background, there is a large red gate with Chinese characters ..."
     ```"""
+    # FIXME: The code is outdated and not compatible with transformer >= 4.46.1
 
     output_attentions = (
         output_attentions
@@ -150,8 +151,9 @@ def lce_forward(
         loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
     else:
         logits = self.lm_head(hidden_states)
-        logits = logits.float()
         if labels is not None:
+            # Upcast to float if we need to compute the loss to avoid potential precision issues
+            logits = logits.float()
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()

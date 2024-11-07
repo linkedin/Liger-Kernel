@@ -2,12 +2,9 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 from torch.nn import CrossEntropyLoss
-from transformers.modeling_outputs import MoeCausalLMOutputWithPast
-from transformers.models.mixtral.modeling_mixtral import (
-    _CONFIG_FOR_DOC,
-    MIXTRAL_INPUTS_DOCSTRING,
-    load_balancing_loss_func,
-)
+from transformers.cache_utils import Cache
+from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.models.mllama.modeling_mllama import MLLAMA_INPUTS_DOCSTRING
 from transformers.utils import (
     add_start_docstrings_to_model_forward,
     replace_return_docstrings,
@@ -18,27 +15,30 @@ from liger_kernel.transformers.fused_linear_cross_entropy import (
 )
 
 
-@add_start_docstrings_to_model_forward(MIXTRAL_INPUTS_DOCSTRING)
+@add_start_docstrings_to_model_forward(MLLAMA_INPUTS_DOCSTRING)
 @replace_return_docstrings(
-    output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC
+    output_type=CausalLMOutputWithPast, config_class="MllamaTextConfig"
 )
 def lce_forward_deprecated(
     self,
     input_ids: torch.LongTensor = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[List[torch.FloatTensor]] = None,
+    cross_attention_states: Optional[torch.LongTensor] = None,
+    cross_attention_mask: Optional[torch.LongTensor] = None,
+    full_text_row_masked_out_mask: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
     inputs_embeds: Optional[torch.FloatTensor] = None,
     labels: Optional[torch.LongTensor] = None,
     use_cache: Optional[bool] = None,
     output_attentions: Optional[bool] = None,
     output_hidden_states: Optional[bool] = None,
-    output_router_logits: Optional[bool] = None,
     return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
-) -> Union[Tuple, MoeCausalLMOutputWithPast]:
+    num_logits_to_keep: int = 0,
+) -> Union[Tuple, CausalLMOutputWithPast]:
     r"""
-    Copy paste Mixtral's forward from transfomers v4.44.2 but replace torch cross entropy with liger fused linear cross entropy
+    Copy paste mllama forward but replace torch cross entropy with liger fused linear cross entropy
 
 
     Args:
@@ -46,37 +46,31 @@ def lce_forward_deprecated(
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
             config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
             (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-
+        num_logits_to_keep (`int`, *optional*):
+            Calculate logits for the last `num_logits_to_keep` tokens. If `0`, calculate logits for all
+            `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
+            token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
     Returns:
-
     Example:
-
     ```python
-    >>> from transformers import AutoTokenizer, MixtralForCausalLM
-
-    >>> model = MixtralForCausalLM.from_pretrained("mistralai/Mixtral-8x7B-v0.1")
-    >>> tokenizer = AutoTokenizer.from_pretrained("mistralai/Mixtral-8x7B-v0.1")
-
-    >>> prompt = "Hey, are you conscious? Can you talk to me?"
+    >>> from transformers import AutoTokenizer, MllamaForCausalLM
+    >>> model = MllamaForCausalLM.from_pretrained("Llama-3.2-11B-Vision")
+    >>> tokenizer = AutoTokenizer.from_pretrained("Llama-3.2-11B-Vision")
+    >>> prompt = "If I had to write a haiku, it would be:"
     >>> inputs = tokenizer(prompt, return_tensors="pt")
-
     >>> # Generate
-    >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-    >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-    ```"""
-
+    >>> generate_ids = model.generate(inputs.input_ids, max_length=40, do_sample=True, temperature=0.6)
+    >>> result = tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+    >>> print(result)
+    If I had to write a haiku, it would be: "Snowflakes gently fall" - simple, yet peaceful.
+    I love the idea of snowflakes gently falling, each one
+    ```
+    """
     output_attentions = (
         output_attentions
         if output_attentions is not None
         else self.config.output_attentions
     )
-    output_router_logits = (
-        output_router_logits
-        if output_router_logits is not None
-        else self.config.output_router_logits
-    )
-
     output_hidden_states = (
         output_hidden_states
         if output_hidden_states is not None
@@ -89,98 +83,88 @@ def lce_forward_deprecated(
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs = self.model(
         input_ids=input_ids,
+        cross_attention_states=cross_attention_states,
         attention_mask=attention_mask,
         position_ids=position_ids,
+        cross_attention_mask=cross_attention_mask,
+        full_text_row_masked_out_mask=full_text_row_masked_out_mask,
         past_key_values=past_key_values,
         inputs_embeds=inputs_embeds,
         use_cache=use_cache,
         output_attentions=output_attentions,
         output_hidden_states=output_hidden_states,
-        output_router_logits=output_router_logits,
         return_dict=return_dict,
         cache_position=cache_position,
     )
 
     hidden_states = outputs[0]
-    logits = self.lm_head(hidden_states)
 
     loss = None
+    logits = None
+
     if self.training and (labels is not None):
-        shift_hidden_states = hidden_states[..., :-1, :].contiguous()
+        kept_hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+
+        shift_hidden_states = kept_hidden_states[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
-        # Flatten the tokens
+
+        # flatten tokens
         shift_hidden_states = shift_hidden_states.view(-1, self.config.hidden_size)
         shift_labels = shift_labels.view(-1)
 
         lce = LigerFusedLinearCrossEntropyLoss()
         loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
-    elif labels is not None:
-        # Upcast to float if we need to compute the loss to avoid potential precision issues
-        logits = logits.float()
-        # Shift so that tokens < n predict n
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-        # Flatten the tokens
-        shift_logits = shift_logits.view(-1, self.config.vocab_size)
-        shift_labels = shift_labels.view(-1)
-        # Enable model parallelism
-        shift_labels = shift_labels.to(shift_logits.device)
 
-        loss_fct = CrossEntropyLoss()
-        loss = loss_fct(logits.weight, shift_labels)
-
-    aux_loss = None
-    if output_router_logits:
-        aux_loss = load_balancing_loss_func(
-            outputs.router_logits if return_dict else outputs[-1],
-            self.num_experts,
-            self.num_experts_per_tok,
-            attention_mask,
-        )
+    else:
+        logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :]).float()
         if labels is not None:
-            loss += self.router_aux_loss_coef * aux_loss.to(
-                loss.device
-            )  # make sure to reside in the same device
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = loss_fct(shift_logits, shift_labels)
 
     if not return_dict:
         output = (logits,) + outputs[1:]
-        if output_router_logits:
-            output = (aux_loss,) + output
         return (loss,) + output if loss is not None else output
 
-    return MoeCausalLMOutputWithPast(
+    return CausalLMOutputWithPast(
         loss=loss,
-        aux_loss=aux_loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
-        router_logits=outputs.router_logits,
     )
 
 
-@add_start_docstrings_to_model_forward(MIXTRAL_INPUTS_DOCSTRING)
+@add_start_docstrings_to_model_forward(MLLAMA_INPUTS_DOCSTRING)
 @replace_return_docstrings(
-    output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC
+    output_type=CausalLMOutputWithPast, config_class="MllamaTextConfig"
 )
-# Ignore copy
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[List[torch.FloatTensor]] = None,
+    cross_attention_states: Optional[torch.LongTensor] = None,
+    cross_attention_mask: Optional[torch.LongTensor] = None,
+    full_text_row_masked_out_mask: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
     inputs_embeds: Optional[torch.FloatTensor] = None,
     labels: Optional[torch.LongTensor] = None,
     use_cache: Optional[bool] = None,
     output_attentions: Optional[bool] = None,
     output_hidden_states: Optional[bool] = None,
-    output_router_logits: Optional[bool] = None,
     return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
     num_logits_to_keep: int = 0,
     **loss_kwargs,
-) -> Union[Tuple, MoeCausalLMOutputWithPast]:
+) -> Union[Tuple, CausalLMOutputWithPast]:
     r"""
     Args:
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -198,31 +182,27 @@ def lce_forward(
     Example:
 
     ```python
-    >>> from transformers import AutoTokenizer, MixtralForCausalLM
+    >>> from transformers import AutoTokenizer, MllamaForCausalLM
 
-    >>> model = MixtralForCausalLM.from_pretrained("mistralai/Mixtral-8x7B-v0.1")
-    >>> tokenizer = AutoTokenizer.from_pretrained("mistralai/Mixtral-8x7B-v0.1")
+    >>> model = MllamaForCausalLM.from_pretrained("Llama-3.2-11B-Vision")
+    >>> tokenizer = AutoTokenizer.from_pretrained("Llama-3.2-11B-Vision")
 
-    >>> prompt = "Hey, are you conscious? Can you talk to me?"
+    >>> prompt = "If I had to write a haiku, it would be:"
     >>> inputs = tokenizer(prompt, return_tensors="pt")
 
     >>> # Generate
-    >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-    >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-    ```"""
-
+    >>> generate_ids = model.generate(inputs.input_ids, max_length=40, do_sample=True, temperature=0.6)
+    >>> result = tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+    >>> print(result)
+    If I had to write a haiku, it would be: "Snowflakes gently fall" - simple, yet peaceful.
+    I love the idea of snowflakes gently falling, each one
+    ```
+    """
     output_attentions = (
         output_attentions
         if output_attentions is not None
         else self.config.output_attentions
     )
-    output_router_logits = (
-        output_router_logits
-        if output_router_logits is not None
-        else self.config.output_router_logits
-    )
-
     output_hidden_states = (
         output_hidden_states
         if output_hidden_states is not None
@@ -235,14 +215,16 @@ def lce_forward(
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs = self.model(
         input_ids=input_ids,
+        cross_attention_states=cross_attention_states,
         attention_mask=attention_mask,
         position_ids=position_ids,
+        cross_attention_mask=cross_attention_mask,
+        full_text_row_masked_out_mask=full_text_row_masked_out_mask,
         past_key_values=past_key_values,
         inputs_embeds=inputs_embeds,
         use_cache=use_cache,
         output_attentions=output_attentions,
         output_hidden_states=output_hidden_states,
-        output_router_logits=output_router_logits,
         return_dict=return_dict,
         cache_position=cache_position,
     )
@@ -279,31 +261,14 @@ def lce_forward(
                 **loss_kwargs,
             )
 
-    aux_loss = None
-    if output_router_logits:
-        aux_loss = load_balancing_loss_func(
-            outputs.router_logits if return_dict else outputs[-1],
-            self.num_experts,
-            self.num_experts_per_tok,
-            attention_mask,
-        )
-        if labels is not None:
-            loss += self.router_aux_loss_coef * aux_loss.to(
-                loss.device
-            )  # make sure to reside in the same device
-
     if not return_dict:
         output = (logits,) + outputs[1:]
-        if output_router_logits:
-            output = (aux_loss,) + output
         return (loss,) + output if loss is not None else output
 
-    return MoeCausalLMOutputWithPast(
+    return CausalLMOutputWithPast(
         loss=loss,
-        aux_loss=aux_loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
-        router_logits=outputs.router_logits,
     )
