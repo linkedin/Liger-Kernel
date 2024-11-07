@@ -35,8 +35,8 @@ def _group_norm_forward_kernel(
     RSTD_col_stride,  # stride of each column in rstd
     W_ptr,  # pointer to W
     B_ptr,  # pointer to B
-    hidden_size, # hidden size of X
-    channels_per_group, # the number of channels per group
+    hidden_size,  # hidden size of X
+    channels_per_group,  # the number of channels per group
     eps,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -280,7 +280,7 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
         BLOCK_SIZE=BLOCK_SIZE,
         dtype=triton_dtype,
     )
-    
+
     # Return tensors in the original shape
     return DX.view(*shape), DW, DB
 
