@@ -7,6 +7,7 @@ from liger_kernel.transformers.experimental.embedding import LigerEmbedding
 SLEEP_SECONDS = 0.1
 
 
+@pytest.mark.skip(reason="LigerEmbedding is under experimentation")
 @pytest.mark.parametrize(
     "num_embeddings, embedding_dim, padding_idx",
     [

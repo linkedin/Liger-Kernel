@@ -87,5 +87,5 @@ Fork the repo, copy and paste the successful test logs in the PR and submit the 
 ### Notes on version:
 Here we follow the [sematic versioning](https://semver.org/). Denote the version as `major.minor.patch`, we increment:
 - Major version when there is backward incompatible change
-- Minor version when there is new backward-compatible functionaility
+- Minor version when there is new backward-compatible functionality
 - Patch version for bug fixes

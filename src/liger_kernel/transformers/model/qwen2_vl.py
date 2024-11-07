@@ -80,6 +80,7 @@ def lce_forward(
     >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
     "The image shows a street scene with a red stop sign in the foreground. In the background, there is a large red gate with Chinese characters ..."
     ```"""
+    # FIXME: The code is outdated and not compatible with transformer >= 4.46.1
 
     output_attentions = (
         output_attentions
@@ -115,6 +116,11 @@ def lce_forward(
             inputs_embeds[video_mask] = video_embeds
         if attention_mask is not None:
             attention_mask = attention_mask.to(inputs_embeds.device)
+    # The code is copied from https://github.com/huggingface/transformers/pull/33487
+    if position_ids is None and input_ids is not None:
+        position_ids, _ = self.get_rope_index(
+            input_ids, image_grid_thw, video_grid_thw, attention_mask
+        )
 
     outputs = self.model(
         input_ids=None,
@@ -145,8 +151,9 @@ def lce_forward(
         loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
     else:
         logits = self.lm_head(hidden_states)
-        logits = logits.float()
         if labels is not None:
+            # Upcast to float if we need to compute the loss to avoid potential precision issues
+            logits = logits.float()
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()

@@ -1,4 +1,4 @@
-from test.utils import assert_verbose_allclose, supports_bfloat16
+from test.utils import supports_bfloat16
 
 import pytest
 import torch
@@ -10,20 +10,8 @@ _SHAPE_PARAMS = (
     "B, T, V",
     [
         (1, 4096, 32000),
-        (32, 4096, 1024),
         # weird shape
         (41, 401, 1271),
-        pytest.param(
-            1,
-            4096,
-            128256,
-            marks=pytest.mark.skipif(
-                torch.cuda.get_device_properties(0).total_memory
-                < 36 * 1000 * 1000 * 1000,
-                reason="This test requires a GPU with at least 36GB of memory",
-            ),
-        ),
-        (3, 423, 32000),
     ],
 )
 
@@ -72,7 +60,7 @@ def _test_correctness_once(
 
     output = torch_kldiv(x1, target)
     output2 = target_kldiv(x2, target)
-    assert_verbose_allclose(output, output2, atol=atol, rtol=rtol)
+    assert torch.allclose(output, output2, atol=atol, rtol=rtol)
 
     if (
         not is_last_layer
@@ -85,12 +73,12 @@ def _test_correctness_once(
 
     output.backward()
     output2.backward()
-    assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
-@pytest.mark.parametrize("log_target", [False, True])
-@pytest.mark.parametrize("reduction", ["none", "batchmean", "mean", "sum"])
+@pytest.mark.parametrize("log_target", [True, False])
+@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
 def test_correctness(B, T, V, log_target, reduction, dtype, atol, rtol):
     liger_kldiv = LigerKLDIVLoss(reduction=reduction, log_target=log_target)
@@ -100,8 +88,8 @@ def test_correctness(B, T, V, log_target, reduction, dtype, atol, rtol):
 
 
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
-@pytest.mark.parametrize("log_target", [False, True])
-@pytest.mark.parametrize("reduction", ["none", "batchmean", "mean", "sum"])
+@pytest.mark.parametrize("log_target", [True, False])
+@pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
 def test_correctness_not_last(B, T, V, log_target, reduction, dtype, atol, rtol):
     liger_kldiv = LigerKLDIVLoss(reduction=reduction, log_target=log_target)

@@ -4,13 +4,13 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import ensure_contiguous, is_hip
 
 
 def get_num_warps(BLOCK_SIZE):
     num_warps = 4
     if BLOCK_SIZE >= 32768:
-        num_warps = 32
+        num_warps = 32 if not is_hip() else 16
     elif BLOCK_SIZE >= 8192:
         num_warps = 16
     elif BLOCK_SIZE >= 2048:
@@ -45,6 +45,7 @@ def _kldiv_kernel_forward(
     loss_ptr,  # [B] or [B, S] if reduction == _REDUCTION_MODE_NONE, output ptr
     loss_stride,  # int, output stride
     n_cols,  # int, number of columns in the input tensor
+    eps,
     BLOCK_SIZE: tl.constexpr,
     log_target: tl.constexpr = False,
     reduction: tl.constexpr = _REDUCTION_MODE_BATCHMEAN,
@@ -56,6 +57,7 @@ def _kldiv_kernel_forward(
 
     base_offsets = tl.arange(0, BLOCK_SIZE)
 
+    loss_sum = 0.0
     for i in range(0, n_cols, BLOCK_SIZE):
         offsets = i + base_offsets
         mask = offsets < n_cols
@@ -65,32 +67,33 @@ def _kldiv_kernel_forward(
         # KL(y_true || y) = y_true * (log(y_true) - log(y))
         # We compute KL(y_true || y) with y in the log-space
         if not log_target:
-            loss = y_true * (tl.log(y_true) - y)
+            loss = y_true * (tl.log(tl.maximum(y_true, eps)) - y)
         else:
             loss = tl.exp(y_true) * (y_true - y)
 
         if reduction == _REDUCTION_MODE_NONE:
             tl.store(loss_ptr + offsets, loss, mask=mask)
         else:
-            loss = tl.sum(loss, axis=0)
-            tl.store(loss_ptr, loss)
-            loss_ptr += 1  # in case of reduction, the output tensor has dimensions [B,], therefore stride is always 1
+            loss_sum += tl.sum(loss, axis=0)
+
+    if reduction != _REDUCTION_MODE_NONE:
+        tl.store(loss_ptr, loss_sum)
 
 
 @triton.jit
 def _kldiv_kernel_backward(
-    input_ptr,
-    input_stride,
     target_ptr,
     target_stride,
+    new_grads_ptr,
+    new_grads_stride,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
     log_target: tl.constexpr = False,
 ):
     pid = tl.program_id(0).to(tl.int64)
 
-    input_ptr += pid * input_stride
     target_ptr += pid * target_stride
+    new_grads_ptr += pid * new_grads_stride
 
     offsets = tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_cols
@@ -106,19 +109,19 @@ def _kldiv_kernel_backward(
         else:
             res = -tl.exp(target)
 
-        tl.store(input_ptr + offsets, res, mask=mask)
+        tl.store(new_grads_ptr + offsets, res, mask=mask)
 
 
-def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B, S]
-    B, S = y_pred.shape
+def kldiv_forward_triton(y_pred, y_true, log_target, reduction, eps):  # [BT, V]
+    BT, V = y_pred.shape
 
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(S))
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
     num_warps = get_num_warps(BLOCK_SIZE)
 
-    grid = (B,)
+    grid = (BT,)
     reduction = _str_to_reduction_mode[reduction]
 
-    out_size = (B, S) if reduction == _REDUCTION_MODE_NONE.value else (B,)
+    out_size = (BT, V) if reduction == _REDUCTION_MODE_NONE.value else (BT,)
     output_tensor = torch.zeros(out_size, device=y_pred.device, dtype=torch.float32)
 
     _kldiv_kernel_forward[grid](
@@ -128,7 +131,8 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B
         y_true.stride(0),
         output_tensor,
         output_tensor.stride(0),
-        S,
+        V,
+        eps=eps,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
         log_target=log_target,
@@ -139,30 +143,30 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction):  # [B, S]  # [B
     # https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
     # https://github.com/pytorch/pytorch/blob/d7b57c4d63edb42e1deeeba9497fcb5f1f748ff2/torch/nn/functional.py#L3372
     if reduction == _REDUCTION_MODE_BATCHMEAN.value:
-        return output_tensor.sum() / B
+        return output_tensor.sum() / BT
     elif reduction == _REDUCTION_MODE_SUM.value:
         return output_tensor.sum(dim=0)
     elif reduction == _REDUCTION_MODE_MEAN.value:
-        return output_tensor.mean(dim=0)
+        return output_tensor.sum() / (BT * V)
     else:
         return output_tensor
 
 
-def kldiv_backward_triton(input, target, grad_output, log_target):
-    B, S = input.shape
+def kldiv_backward_triton(target, grad_output, new_grads, log_target):
+    BT, V = target.shape
 
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(S))
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
     num_warps = get_num_warps(BLOCK_SIZE)
 
-    grid = (B,)
+    grid = (BT,)
 
     # We store the gradients in-place in the input tensor
     _kldiv_kernel_backward[grid](
-        input,
-        input.stride(0),
         target,
         target.stride(0),
-        S,
+        new_grads,
+        new_grads.stride(0),
+        V,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
         log_target=log_target,
@@ -170,9 +174,9 @@ def kldiv_backward_triton(input, target, grad_output, log_target):
 
     # If cross entropy is the last layer, grad_output is 1.0. Skip the mul then.
     if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        return input
+        return new_grads
 
-    return input * grad_output
+    return new_grads * grad_output
 
 
 class LigerKLDivLossFunction(torch.autograd.Function):
@@ -196,6 +200,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
         y_true: torch.Tensor,
         reduction: REDUCTION_LITERAL = "batchmean",
         log_target: bool = False,
+        eps: float = 1e-10,
     ) -> torch.Tensor:
         """A forward pass for the KL Divergence Loss.
 
@@ -205,15 +210,16 @@ class LigerKLDivLossFunction(torch.autograd.Function):
             y_true (torch.Tensor): A tensor of shape (BT, V) containing the target values, expected to be either probabilities or log-probabilities, depending on the value of `log_target`.
             reduction (REDUCTION_LITERAL, optional): Reduction to be used. Defaults to "batchmean".
             log_target (bool, optional): If set to true, expects the ground truth to already be log-probabilities. Defaults to False.
+            eps: (float, optional): A small value to avoid division by zero. Defaults to 1e-10.
 
         Returns:
             torch.Tensor: The computed KL Divergence Loss, with shape (BT, V) if `reduction` is "none", else a scalar.
         """
-        ctx.save_for_backward(y_pred, y_true)
+        ctx.save_for_backward(y_true)
         ctx.reduction = reduction
         ctx.log_target = log_target
         return kldiv_forward_triton(
-            y_pred, y_true, log_target=log_target, reduction=reduction
+            y_pred, y_true, log_target=log_target, reduction=reduction, eps=eps
         )
 
     @staticmethod
@@ -226,21 +232,26 @@ class LigerKLDivLossFunction(torch.autograd.Function):
             grad_output (torch.Tensor): The gradient of the loss with respect to the output.
 
         Returns:
-            tuple[torch.Tensor, None, None, None]: The gradient of the loss with respect to the inputs and None for the other arguments of the forward method.
+            tuple[torch.Tensor, None, None, None, None]: The gradient of the loss with respect to the inputs and None for the other arguments of the forward method.
         """
-        y_pred, y_true = ctx.saved_tensors
+        (y_true,) = ctx.saved_tensors
 
-        derivative = kldiv_backward_triton(y_pred, y_true, grad_output, ctx.log_target)
+        new_grads = torch.empty_like(y_true)
+
+        derivative = kldiv_backward_triton(
+            y_true, grad_output, new_grads, ctx.log_target
+        )
 
         if ctx.reduction == "batchmean":
-            derivative = derivative / y_pred.shape[0]
+            derivative = derivative / y_true.shape[0]
         elif ctx.reduction == "sum" or ctx.reduction == "none":
             pass
         elif ctx.reduction == "mean":
-            derivative = derivative / (y_pred.shape[0] * y_pred.shape[1])
+            derivative = derivative / (y_true.shape[0] * y_true.shape[1])
 
         return (
             derivative,
+            None,
             None,
             None,
             None,
