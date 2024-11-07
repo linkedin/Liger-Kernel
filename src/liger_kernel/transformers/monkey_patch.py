@@ -99,6 +99,7 @@ def apply_liger_kernel_to_llama(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.llama import modeling_llama
+    from transformers.models.llama.modeling_llama import LlamaModel
 
     if rope:
         modeling_llama.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -119,15 +120,8 @@ def apply_liger_kernel_to_llama(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules (e.g. LlamaRMSNorm or LlamaMLP)
 
-        if hasattr(model, "model"):
-            # The case for LlamaForCausalLM or LlamaForSequenceClassification, for example
-            base_model = model.model
-        elif hasattr(model, "transformer"):
-            # LlamaForQuestionAnswering uses "transformer" instead of "model"
-            base_model = model.transformer
-        else:
-            # Direct LlamaModel
-            base_model = model
+        # get the base model from the model instance
+        base_model: LlamaModel = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module(base_model.norm)
@@ -275,6 +269,7 @@ def apply_liger_kernel_to_mistral(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.mistral import modeling_mistral
+    from transformers.models.mistral.modeling_mistral import MistralModel
 
     if rope:
         modeling_mistral.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -291,12 +286,8 @@ def apply_liger_kernel_to_mistral(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for MistralForCausalLM, MistralForTokenClassification for example
-            base_model = model.model
-        else:
-            # Direct MistralModel
-            base_model = model
+        # get the base model from the model instance
+        base_model: MistralModel = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module(base_model.norm)
@@ -340,6 +331,7 @@ def apply_liger_kernel_to_mixtral(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.mixtral import modeling_mixtral
+    from transformers.models.mixtral.modeling_mixtral import MixtralModel
 
     if rope:
         modeling_mixtral.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -360,12 +352,8 @@ def apply_liger_kernel_to_mixtral(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for MixtralForCausalLM, MixtralForTokenClassification for example
-            base_model = model.model
-        else:
-            # Direct MixtralModel
-            base_model = model
+        # get the base model from the model instance
+        base_model: MixtralModel = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module(base_model.norm)
@@ -410,6 +398,7 @@ def apply_liger_kernel_to_gemma(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.gemma import modeling_gemma
+    from transformers.models.gemma.modeling_gemma import GemmaModel
 
     # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
     LigerRMSNormForGemma = partial(
@@ -438,12 +427,8 @@ def apply_liger_kernel_to_gemma(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for GemmaForCausalLM, GemmaForTokenClassification for example
-            base_model = model.model
-        else:
-            # Direct GemmaModel
-            base_model = model
+        # get the base model from the model instance
+        base_model: GemmaModel = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module_for_gemma(base_model.norm)
@@ -478,6 +463,7 @@ def apply_liger_kernel_to_gemma2(
         loaded. Default is None.
     """
     from transformers.models.gemma2 import modeling_gemma2
+    from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
 
     LigerRMSNormForGemma2 = partial(
         LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros"
@@ -500,12 +486,8 @@ def apply_liger_kernel_to_gemma2(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for Gemma2ForCausalLM, Gemma2ForTokenClassification for example
-            base_model = model.model
-        else:
-            # Direct Gemma2Model
-            base_model = model
+        # get the base model from the model instance
+        base_model: Gemma2Model = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module_for_gemma2(base_model.norm)
@@ -556,6 +538,7 @@ def apply_liger_kernel_to_qwen2(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.qwen2 import modeling_qwen2
+    from transformers.models.qwen2.modeling_qwen2 import Qwen2Model
 
     if rope:
         modeling_qwen2.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -580,12 +563,8 @@ def apply_liger_kernel_to_qwen2(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for Qwen2ForCausalLM, Qwen2ForTokenClassification for example
-            base_model = model.model
-        else:
-            # Direct Qwen2Model
-            base_model = model
+        # get the base model from the model instance
+        base_model: Qwen2Model = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module(base_model.norm)
@@ -630,6 +609,7 @@ def apply_liger_kernel_to_qwen2_vl(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.qwen2_vl import modeling_qwen2_vl
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModel
 
     from liger_kernel.transformers.model.qwen2_vl import (
         lce_forward as qwen2_vl_lce_forward,
@@ -653,12 +633,8 @@ def apply_liger_kernel_to_qwen2_vl(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for Qwen2VLForConditionalGeneration.
-            base_model = model.model
-        else:
-            # Direct Qwen2VLModel
-            base_model = model
+        # get the base model from the model instance
+        base_model: Qwen2VLModel = getattr(model, model.base_model_prefix, model)
 
         if hasattr(model, "visual"):
             # Patch Qwen2VisionTransformerPretrainedModel
@@ -707,6 +683,7 @@ def apply_liger_kernel_to_phi3(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.phi3 import modeling_phi3
+    from transformers.models.phi3.modeling_phi3 import Phi3Model
 
     if rope:
         modeling_phi3.apply_rotary_pos_emb = liger_rotary_pos_emb  # Same as Gemma
@@ -727,12 +704,8 @@ def apply_liger_kernel_to_phi3(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if hasattr(model, "model"):
-            # The case for Phi3ForCausalLM, Phi3ForTokenClassification for example
-            base_model = model.model
-        else:
-            # Direct Phi3Model
-            base_model = model
+        # get the base model from the model instance
+        base_model: Phi3Model = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
             _patch_rms_norm_module(base_model.norm)
