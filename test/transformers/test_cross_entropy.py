@@ -529,10 +529,6 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
 )
-@pytest.mark.skipif(
-    torch.cuda.get_device_properties(0).total_memory < 16 * 1000 * 1000 * 1000,
-    reason="Needs 16GB+ GPU memory.",
-)
 def test_correctness_with_softcap_once(
     B, T, V, softcap, reduction, scalar, dtype, atol, rtol
 ):
