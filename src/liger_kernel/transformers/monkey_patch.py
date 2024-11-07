@@ -11,14 +11,26 @@ from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
+from liger_kernel.transformers.model.gemma import (
+    lce_forward_deprecated as gemma_lce_forward_deprecated,
+)
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import (
     lce_forward_deprecated as llama_lce_forward_deprecated,
 )
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
+from liger_kernel.transformers.model.mixtral import (
+    lce_forward_deprecated as mixtral_lce_forward_deprecated,
+)
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
+from liger_kernel.transformers.model.phi3 import (
+    lce_forward_deprecated as phi3_lce_forward_deprecated,
+)
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
+from liger_kernel.transformers.model.qwen2 import (
+    lce_forward_deprecated as qwen2_lce_forward_deprecated,
+)
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import (
@@ -30,6 +42,8 @@ from liger_kernel.transformers.swiglu import (
 transformer_version = version.parse(transformers.__version__)
 
 logger = logging.getLogger(__name__)
+SUPPORTED_TRANSFORMER_VERSION = "4.46.1"
+TRANSFORMER_DEPRECATION_WARNING = "Support for transformers versions < 4.46.1 will soon be discontinued due to issues with incorrect gradient accumulation. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/34191"
 
 
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
@@ -96,13 +110,10 @@ def apply_liger_kernel_to_llama(
     if cross_entropy:
         modeling_llama.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        if transformer_version >= version.parse("4.46.0"):
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
             modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
-        else:  # if version < 4.46.0
-            logger.warning(
-                "Support for transformers versions < 4.46.0 will soon be discontinued due to issues with incorrect gradient accumulation. "
-                "Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/34191"
-            )
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
             modeling_llama.LlamaForCausalLM.forward = llama_lce_forward_deprecated
 
     if model is not None:
@@ -164,6 +175,9 @@ def apply_liger_kernel_to_mllama(
     )
 
     from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
+    from liger_kernel.transformers.model.mllama import (
+        lce_forward_deprecated as mllama_lce_forward_deprecated,
+    )
 
     if rope:
         modeling_mllama.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -176,9 +190,11 @@ def apply_liger_kernel_to_mllama(
     if cross_entropy:
         modeling_mllama.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        # MllamaForConditionalGeneration uses MllamaForCausalLM under the hood
-        # for the loss calculation, so we need to patch the forward method of MllamaForCausalLM
-        modeling_mllama.MllamaForCausalLM.forward = mllama_lce_forward
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_mllama.MllamaForCausalLM.forward = mllama_lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_mllama.MllamaForCausalLM.forward = mllama_lce_forward_deprecated
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -324,7 +340,11 @@ def apply_liger_kernel_to_mixtral(
     if cross_entropy:
         modeling_mixtral.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward_deprecated
     if swiglu:
         modeling_mixtral.MixtralBlockSparseTop2MLP = LigerBlockSparseTop2MLP
 
@@ -397,7 +417,11 @@ def apply_liger_kernel_to_gemma(
     if geglu:
         modeling_gemma.GemmaMLP = LigerGEGLUMLP
     if fused_linear_cross_entropy:
-        modeling_gemma.GemmaForCausalLM.forward = gemma_lce_forward
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_gemma.GemmaForCausalLM.forward = gemma_lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_gemma.GemmaForCausalLM.forward = gemma_lce_forward_deprecated
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -522,8 +546,16 @@ def apply_liger_kernel_to_qwen2(
         modeling_qwen2.Qwen2RMSNorm = LigerRMSNorm
     if cross_entropy:
         modeling_qwen2.CrossEntropyLoss = LigerCrossEntropyLoss
+
+    # import pdb; pdb.set_trace()
     if fused_linear_cross_entropy:
-        modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward
+
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward_deprecated
+
     if swiglu:
         modeling_qwen2.Qwen2MLP = LigerSwiGLUMLP
 
@@ -545,6 +577,7 @@ def apply_liger_kernel_to_qwen2(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+    print("Applied Liger kernels to Qwen2")
 
 
 def apply_liger_kernel_to_qwen2_vl(
@@ -661,7 +694,11 @@ def apply_liger_kernel_to_phi3(
     if cross_entropy:
         modeling_phi3.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward_deprecated
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the

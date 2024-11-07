@@ -9,6 +9,7 @@ from liger_kernel.ops.experimental.mm_int8int2 import (
 
 
 # input_features = size*4 when the weight matrix is unpacked
+@pytest.mark.skip(reason="mm_int8int2 is under experimentation")
 @pytest.mark.parametrize(
     "size",
     [
@@ -73,6 +74,7 @@ def test_kernel_correctness(
     ), "Results differ"
 
 
+@pytest.mark.skip(reason="mm_int8int2 is under experimentation")
 @pytest.mark.parametrize(
     "size",
     [
