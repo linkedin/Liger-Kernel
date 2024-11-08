@@ -1,10 +1,12 @@
-import torch
-from typing import Tuple
-import torch.nn.functional as F
-import torch.nn as nn
-from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
-import pytest
 from test.utils import assert_verbose_allclose, set_seed
+from typing import Tuple
+
+import pytest
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
 
 # set random seed globally
 set_seed()
@@ -14,8 +16,9 @@ class HF_ORPO_Loss:
     """
     Implementation of the Odds Ratio Preference Optimization (ORPO) loss,
     adapted from Hugging Face's implementation.
-    Reference: https://github.com/huggingface/trl/blob/main/trl/trainer/orpo_trainer.py 
+    Reference: https://github.com/huggingface/trl/blob/main/trl/trainer/orpo_trainer.py
     """
+
     def __init__(self, ignore_index: int = -100, beta: float = 0.1):
         self.ignore_index = ignore_index
         self.beta = beta
@@ -38,14 +41,18 @@ class HF_ORPO_Loss:
             A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
         """
         if logits.shape[:-1] != labels.shape:
-            raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
+            raise ValueError(
+                "Logits (batch and sequence length dim) and labels must have the same shape."
+            )
 
         loss_mask = labels != self.ignore_index
 
         # dummy token; we'll ignore the losses on these tokens later
         labels = torch.where(labels == self.ignore_index, 0, labels)
 
-        per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
+        per_token_logps = torch.gather(
+            logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)
+        ).squeeze(2)
 
         if average_log_prob:
             return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
@@ -56,7 +63,13 @@ class HF_ORPO_Loss:
         self,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
-    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+    ) -> Tuple[
+        torch.FloatTensor,
+        torch.FloatTensor,
+        torch.FloatTensor,
+        torch.FloatTensor,
+        torch.FloatTensor,
+    ]:
         """Compute ORPO's odds ratio (OR) loss for a batch of policy and reference model log probabilities.
 
         Args:
@@ -73,7 +86,8 @@ class HF_ORPO_Loss:
 
         # Derived from Eqs. (4) and (7) from https://huggingface.co/papers/2403.07691 by using log identities and exp(log(P(y|x)) = P(y|x)
         log_odds = (policy_chosen_logps - policy_rejected_logps) - (
-            torch.log1p(-torch.exp(policy_chosen_logps)) - torch.log1p(-torch.exp(policy_rejected_logps))
+            torch.log1p(-torch.exp(policy_chosen_logps))
+            - torch.log1p(-torch.exp(policy_rejected_logps))
         )
         ratio = F.logsigmoid(log_odds)
         losses = self.beta * ratio
@@ -86,7 +100,9 @@ class HF_ORPO_Loss:
         weight: torch.FloatTensor,
         target: torch.LongTensor,
         bias: torch.FloatTensor = None,
-    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+    ) -> Tuple[
+        torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
+    ]:
         """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
         We do this to avoid doing two forward passes, because it's faster for FSDP.
@@ -109,7 +125,9 @@ class HF_ORPO_Loss:
             return loss
 
         labels = target
-        chosen_nll_loss = cross_entropy_loss(all_logits[:len_chosen], labels[:len_chosen])
+        chosen_nll_loss = cross_entropy_loss(
+            all_logits[:len_chosen], labels[:len_chosen]
+        )
 
         all_logps = self.get_batch_logps(
             all_logits,
@@ -123,7 +141,13 @@ class HF_ORPO_Loss:
         chosen_logits = all_logits[:len_chosen]
         rejected_logits = all_logits[len_chosen:]
 
-        return (chosen_logps, rejected_logps, chosen_logits, rejected_logits, chosen_nll_loss)
+        return (
+            chosen_logps,
+            rejected_logps,
+            chosen_logits,
+            rejected_logits,
+            chosen_nll_loss,
+        )
 
     def get_batch_loss_metrics(
         self,
@@ -143,9 +167,7 @@ class HF_ORPO_Loss:
             policy_nll_loss,
         ) = forward_output[:5]
 
-        losses = self.odds_ratio_loss(
-            policy_chosen_logps, policy_rejected_logps
-        )
+        losses = self.odds_ratio_loss(policy_chosen_logps, policy_rejected_logps)
         # full ORPO loss
         loss = policy_nll_loss - losses.mean()
         return loss
@@ -174,14 +196,19 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
-    target = torch.randint(0, V, (B, T,), device="cuda", dtype=torch.long)
+    target = torch.randint(
+        0,
+        V,
+        (
+            B,
+            T,
+        ),
+        device="cuda",
+        dtype=torch.long,
+    )
     # Assign some random number of elements as ignore_index
-    num_elements_to_assign = torch.randint(
-        1, B * T // 2, (1,)
-    ).item()
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]
+    num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
     _weight = torch.randn(V, H, device="cuda", dtype=dtype)
@@ -192,8 +219,12 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
     bias1 = _bias.detach().clone().requires_grad_(True) if bias else None
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
-    loss1 = HF_ORPO_Loss(ignore_index=ignore_index, beta=beta).get_batch_loss_metrics(input1, weight1, target, bias1)
-    loss2 = LigerFusedLinearORPOFunction.apply(input2, weight2, target, bias2, ignore_index, beta, True)
+    loss1 = HF_ORPO_Loss(ignore_index=ignore_index, beta=beta).get_batch_loss_metrics(
+        input1, weight1, target, bias1
+    )
+    loss2 = LigerFusedLinearORPOFunction.apply(
+        input2, weight2, target, bias2, ignore_index, beta, True
+    )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 

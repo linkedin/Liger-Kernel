@@ -1,6 +1,7 @@
 import torch
-from triton import next_power_of_2
 import torch.nn.functional as F
+from triton import next_power_of_2
+
 from liger_kernel.ops.utils import element_mul_kernel
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
@@ -26,7 +27,16 @@ def odds_ratio_loss(chosen_logps, rejected_logps, beta=0.1):
 
 class LigerFusedLinearORPOFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, _input, weight, target, bias=None, ignore_index=-100, beta=0.1, compiled=True):
+    def forward(
+        ctx,
+        _input,
+        weight,
+        target,
+        bias=None,
+        ignore_index=-100,
+        beta=0.1,
+        compiled=True,
+    ):
         """
         Fused linear layer with ORPO (Odds-Ratio Preference Optimization) loss.
         Handles both the forward and backward pass of the final linear layer with ORPO loss.
@@ -58,12 +68,16 @@ class LigerFusedLinearORPOFunction(torch.autograd.Function):
                 reduction="sum",
                 ignore_index=ignore_index,
             )
-            chosen_nll_loss = chosen_nll_loss / (target[:target.shape[0]//2] != ignore_index).sum()
-            
+            chosen_nll_loss = (
+                chosen_nll_loss / (target[: target.shape[0] // 2] != ignore_index).sum()
+            )
+
             loss_mask = target_chunk != ignore_index
             label_chunk = torch.where(loss_mask, target_chunk, 0)
 
-            per_token_logps = norm_logits.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
+            per_token_logps = norm_logits.gather(-1, label_chunk.unsqueeze(-1)).squeeze(
+                -1
+            )
             average_log_prob = (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
 
             chosen_logps = average_log_prob[:len_chosen_chunk]
@@ -88,14 +102,18 @@ class LigerFusedLinearORPOFunction(torch.autograd.Function):
 
         def accumulate_chunk(input_chunk, target_chunk):
             if bias is not None:
-                (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), chunk_loss = torch.func.grad_and_value(
-                    compute_orpo_loss, argnums=(0, 1, 3)
-                )(input_chunk, weight, target_chunk, bias)
+                (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), chunk_loss = (
+                    torch.func.grad_and_value(compute_orpo_loss, argnums=(0, 1, 3))(
+                        input_chunk, weight, target_chunk, bias
+                    )
+                )
                 grad_bias.add_(chunk_grad_bias)
             else:
-                (chunk_grad_input, chunk_grad_weight), chunk_loss = torch.func.grad_and_value(
-                    compute_orpo_loss, argnums=(0, 1)
-                )(input_chunk, weight, target_chunk)
+                (chunk_grad_input, chunk_grad_weight), chunk_loss = (
+                    torch.func.grad_and_value(compute_orpo_loss, argnums=(0, 1))(
+                        input_chunk, weight, target_chunk
+                    )
+                )
             grad_weight.add_(chunk_grad_weight)
             loss_acc.add_(chunk_loss)
             return chunk_grad_input
@@ -118,7 +136,9 @@ class LigerFusedLinearORPOFunction(torch.autograd.Function):
             _rejected_target_chunks,
         ):
             input_chunk = torch.cat([chosen_input_chunk, rejected_input_chunk], dim=0)
-            target_chunk = torch.cat([chosen_target_chunk, rejected_target_chunk], dim=0)
+            target_chunk = torch.cat(
+                [chosen_target_chunk, rejected_target_chunk], dim=0
+            )
 
             if compiled:
                 accumulate_chunk = torch.compile(accumulate_chunk)
