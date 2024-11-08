@@ -32,10 +32,12 @@ class LigerFusedLinearORPOFunction(torch.autograd.Function):
         Args:
             _input (torch.Tensor): Input tensor. Shape: (batch_size, seq_len, hidden_size).
             weight (torch.Tensor): Weight tensor. Shape: (vocab_size, hidden_size).
-            bias (torch.Tensor, optional): Bias tensor. Shape: (hidden_size,).
+            target (torch.Tensor): Target tensor. Shape: (batch_size, seq_len).
+            bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
             ignore_index (int): Index to ignore for loss computation.
-            compiled (bool): Whether to use compiled mode for chunk accumulation.
+            compiled (bool): Whether to use torch compile for chunk accumulation.
         """
+        # TODO: Tune CHUNK_SIZE to fully utilize the GPU
         CHUNK_SIZE = 1
 
         def _compute_orpo_loss(input_chunk, weight, target_chunk, bias=None):
