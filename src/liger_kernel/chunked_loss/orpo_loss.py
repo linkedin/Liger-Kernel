@@ -28,7 +28,10 @@ class LigerFusedLinearORPOFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, _input, weight, target, bias=None, ignore_index=-100, beta=0.1, compiled=True):
         """
-        Fused linear forward function with ORPO (Odds-Ratio Preference Optimization).
+        Fused linear layer with ORPO (Odds-Ratio Preference Optimization) loss.
+        Handles both the forward and backward pass of the final linear layer with ORPO loss.
+        Inspired from LigerFusedLinearCrossEntropyFunction which fuses final linear layer and CE loss.
+
         Args:
             _input (torch.Tensor): Input tensor. Shape: (batch_size, seq_len, hidden_size).
             weight (torch.Tensor): Weight tensor. Shape: (vocab_size, hidden_size).
