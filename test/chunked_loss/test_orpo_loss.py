@@ -1,158 +1,191 @@
 import torch
-from typing import Dict, List, Union, Literal, Tuple
+from typing import Tuple
 import torch.nn.functional as F
 import torch.nn as nn
+from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
+import pytest
 
 
-def get_batch_logps(
-    logits: torch.FloatTensor,
-    labels: torch.LongTensor,
-    average_log_prob: bool = False,
-    label_pad_token_id: int = -100,
-    is_encoder_decoder: bool = False,
-) -> torch.FloatTensor:
-    """Compute the log probabilities of the given labels under the given logits.
+class HF_ORPO_Loss:
+    def __init__(self, ignore_index: int = -100, beta: float = 0.1):
+        self.ignore_index = ignore_index
+        self.beta = beta
 
-    Args:
-        logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
-        labels: Labels for which to compute the log probabilities. Label tokens with a value of label_pad_token_id are ignored. Shape: (batch_size, sequence_length)
-        average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
-        label_pad_token_id: The label pad token id.
-        is_encoder_decoder: Whether the model is an encoder-decoder model.
+    def get_batch_logps(
+        self,
+        logits: torch.FloatTensor,
+        labels: torch.LongTensor,
+        average_log_prob: bool = False,
+    ) -> torch.FloatTensor:
+        """Compute the log probabilities of the given labels under the given logits.
 
-    Returns:
-        A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
-    """
-    if logits.shape[:-1] != labels.shape:
-        raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
+        Args:
+            logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
+            labels: Labels for which to compute the log probabilities. Label tokens with a value of ignore_index are ignored. Shape: (batch_size, sequence_length)
+            average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
+            is_encoder_decoder: Whether the model is an encoder-decoder model.
 
-    if not is_encoder_decoder:
-        labels = labels[:, 1:].clone()
-        logits = logits[:, :-1, :]
-    loss_mask = labels != label_pad_token_id
+        Returns:
+            A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
+        """
+        if logits.shape[:-1] != labels.shape:
+            raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
 
-    # dummy token; we'll ignore the losses on these tokens later
-    labels = torch.where(labels == label_pad_token_id, 0, labels)
+        loss_mask = labels != self.ignore_index
 
-    per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
+        # dummy token; we'll ignore the losses on these tokens later
+        labels = torch.where(labels == self.ignore_index, 0, labels)
 
-    if average_log_prob:
-        return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
-    else:
-        return (per_token_logps * loss_mask).sum(-1)
+        per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
 
+        if average_log_prob:
+            return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+        else:
+            return (per_token_logps * loss_mask).sum(-1)
 
-def odds_ratio_loss(
-    policy_chosen_logps: torch.FloatTensor,
-    policy_rejected_logps: torch.FloatTensor,
-    beta: float = 1.0,
-) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
-    """Compute ORPO's odds ratio (OR) loss for a batch of policy and reference model log probabilities.
+    def odds_ratio_loss(
+        self,
+        policy_chosen_logps: torch.FloatTensor,
+        policy_rejected_logps: torch.FloatTensor,
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """Compute ORPO's odds ratio (OR) loss for a batch of policy and reference model log probabilities.
 
-    Args:
-        policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (batch_size,)
-        policy_rejected_logps: Log probabilities of the policy model for the rejected responses. Shape: (batch_size,)
+        Args:
+            policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (batch_size,)
+            policy_rejected_logps: Log probabilities of the policy model for the rejected responses. Shape: (batch_size,)
 
-    Returns:
-        A tuple of three tensors: (losses, chosen_rewards, rejected_rewards).
-        The losses tensor contains the ORPO loss for each example in the batch.
-        The chosen_rewards and rejected_rewards tensors contain the rewards for the chosen and rejected responses, respectively.
-        The log odds ratio of the chosen responses over the rejected responses ratio for logging purposes.
-        The `log(sigmoid(log_odds_chosen))` for logging purposes.
-    """
+        Returns:
+            A tuple of three tensors: (losses, chosen_rewards, rejected_rewards).
+            The losses tensor contains the ORPO loss for each example in the batch.
+            The chosen_rewards and rejected_rewards tensors contain the rewards for the chosen and rejected responses, respectively.
+            The log odds ratio of the chosen responses over the rejected responses ratio for logging purposes.
+            The `log(sigmoid(log_odds_chosen))` for logging purposes.
+        """
 
-    # Derived from Eqs. (4) and (7) from https://huggingface.co/papers/2403.07691 by using log identities and exp(log(P(y|x)) = P(y|x)
-    log_odds = (policy_chosen_logps - policy_rejected_logps) - (
-        torch.log1p(-torch.exp(policy_chosen_logps)) - torch.log1p(-torch.exp(policy_rejected_logps))
-    )
-    ratio = F.logsigmoid(log_odds)
-    losses = beta * ratio
+        # Derived from Eqs. (4) and (7) from https://huggingface.co/papers/2403.07691 by using log identities and exp(log(P(y|x)) = P(y|x)
+        log_odds = (policy_chosen_logps - policy_rejected_logps) - (
+            torch.log1p(-torch.exp(policy_chosen_logps)) - torch.log1p(-torch.exp(policy_rejected_logps))
+        )
+        ratio = F.logsigmoid(log_odds)
+        losses = self.beta * ratio
 
-    return losses, torch.mean(ratio), torch.mean(log_odds)
+        return losses
 
+    def concatenated_forward(
+        self,
+        _input: torch.FloatTensor,
+        weight: torch.FloatTensor,
+        target: torch.LongTensor,
+        bias: torch.FloatTensor = None,
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
-def concatenated_forward(
-    model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]]
-) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
-    """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
+        We do this to avoid doing two forward passes, because it's faster for FSDP.
+        """
+        len_chosen = _input.shape[0] // 2
 
-    We do this to avoid doing two forward passes, because it's faster for FSDP.
-    """
-    concatenated_batch = concatenated_inputs(
-        batch,
-        is_encoder_decoder=is_encoder_decoder,
-        label_pad_token_id=label_pad_token_id,
-        padding_value=padding_value,
-        device=accelerator.device,
-    )
-    len_chosen = batch["chosen_labels"].shape[0]
+        outputs = _input @ weight.t()
+        if bias is not None:
+            outputs = outputs + bias
+        all_logits = outputs.float()
 
-    outputs = model(
-        concatenated_batch["concatenated_input_ids"],
-        attention_mask=concatenated_batch["concatenated_attention_mask"],
-        use_cache=False,
-    )
-    all_logits = outputs.logits
+        def cross_entropy_loss(logits, labels):
+            # Flatten the tokens
+            loss_fct = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
+            logits = logits.view(-1, logits.shape[-1])
+            labels = labels.view(-1)
+            # Enable model parallelism
+            labels = labels.to(logits.device)
+            loss = loss_fct(logits, labels)
+            return loss
 
-    def cross_entropy_loss(logits, labels):
-        # Shift so that tokens < n predict n
-        logits = logits[..., :-1, :].contiguous()
-        labels = labels[..., 1:].contiguous()
-        # Flatten the tokens
-        loss_fct = nn.CrossEntropyLoss()
-        logits = logits.view(-1, logits.shape[-1])
-        labels = labels.view(-1)
-        # Enable model parallelism
-        labels = labels.to(logits.device)
-        loss = loss_fct(logits, labels)
+        labels = target
+        chosen_nll_loss = cross_entropy_loss(all_logits[:len_chosen], labels[:len_chosen])
+
+        all_logps = self.get_batch_logps(
+            all_logits,
+            target,
+            average_log_prob=True,
+        )
+
+        chosen_logps = all_logps[:len_chosen]
+        rejected_logps = all_logps[len_chosen:]
+
+        chosen_logits = all_logits[:len_chosen]
+        rejected_logits = all_logits[len_chosen:]
+
+        return (chosen_logps, rejected_logps, chosen_logits, rejected_logits, chosen_nll_loss)
+
+    def get_batch_loss_metrics(
+        self,
+        _input: torch.FloatTensor,
+        weight: torch.FloatTensor,
+        target: torch.LongTensor,
+        bias: torch.FloatTensor = None,
+    ):
+        """Compute the ORPO loss and other metrics for the given batch of inputs for train or test."""
+
+        forward_output = self.concatenated_forward(_input, weight, target, bias)
+        (
+            policy_chosen_logps,
+            policy_rejected_logps,
+            policy_chosen_logits,
+            policy_rejected_logits,
+            policy_nll_loss,
+        ) = forward_output[:5]
+
+        losses = self.odds_ratio_loss(
+            policy_chosen_logps, policy_rejected_logps
+        )
+        # full ORPO loss
+        loss = policy_nll_loss #- losses.mean()
         return loss
 
-    if is_encoder_decoder:
-        labels = concatenated_batch["concatenated_labels"].clone()
-    else:
-        labels = concatenated_batch["concatenated_input_ids"].clone()
-        attention_mask = concatenated_batch["concatenated_attention_mask"]
-        labels = torch.where(attention_mask == 1, labels, label_pad_token_id)
 
-    chosen_nll_loss = cross_entropy_loss(all_logits[:len_chosen], labels[:len_chosen])
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (8, 128, 1024, 4096),
+        (4, 47, 31, 123),  # random shape
+    ],
+)
+@pytest.mark.parametrize(
+    "scalar, dtype, atol, rtol",
+    [
+        (1.0, torch.bfloat16, 5e-2, 5e-1),
+        (1.0, torch.float32, 1e-5, 5e-4),
+    ],
+)
+@pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize("ignore_index, beta", [(-100, 0.1), (42, 0.2)])
+def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta):
+    # Define input tensors
+    _tensor = torch.randn(B, T, H, device="cuda", dtype=dtype) * scalar
+    _input1 = _tensor.detach().clone().requires_grad_(True)
+    _input2 = _tensor.detach().clone().requires_grad_(True)
 
-    all_logps = get_batch_logps(
-        all_logits,
-        concatenated_batch["concatenated_labels"],
-        average_log_prob=True,
-        is_encoder_decoder=is_encoder_decoder,
-        label_pad_token_id=label_pad_token_id,
-    )
+    target = torch.randint(0, V, (B, T,), device="cuda", dtype=torch.long)
+    # Assign some random number of elements as ignore_index
+    num_elements_to_assign = torch.randint(
+        1, B * T // 2, (1,)
+    ).item()  # Random number of elements to set to ignore_index
+    indices_to_assign = torch.randperm(B * T)[
+        :num_elements_to_assign
+    ]  # Randomly select indices
+    target.view(-1)[indices_to_assign] = ignore_index
 
-    chosen_logps = all_logps[:len_chosen]
-    rejected_logps = all_logps[len_chosen:]
-
-    chosen_logits = all_logits[:len_chosen]
-    rejected_logits = all_logits[len_chosen:]
-
-    return (chosen_logps, rejected_logps, chosen_logits, rejected_logits, chosen_nll_loss)
-
-
-def get_batch_loss_metrics(
-    model,
-    batch: Dict[str, Union[List, torch.LongTensor]],
-    train_eval: Literal["train", "eval"] = "train",
-):
-    """Compute the ORPO loss and other metrics for the given batch of inputs for train or test."""
-
-    forward_output = concatenated_forward(model, batch)
-    (
-        policy_chosen_logps,
-        policy_rejected_logps,
-        policy_chosen_logits,
-        policy_rejected_logits,
-        policy_nll_loss,
-    ) = forward_output[:5]
-
-    losses, chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen = odds_ratio_loss(
-        policy_chosen_logps, policy_rejected_logps
-    )
-    # full ORPO loss
-    loss = policy_nll_loss - losses.mean()
-
-    return loss
+    weight = torch.randn(V, H, device="cuda", dtype=dtype)
+    bias = torch.randn(V, device="cuda", dtype=dtype) if bias else None
+    # Initalize HF ORPO Loss
+    hf_orpo_loss = HF_ORPO_Loss(ignore_index=ignore_index, beta=beta)
+    # Compute the ORPO loss
+    loss1 = hf_orpo_loss.get_batch_loss_metrics(_input1, weight, target, bias)
+    # Compute the ORPO loss using the LigerFusedLinearORPOFunction
+    loss2 = LigerFusedLinearORPOFunction.apply(_input2, weight, target, bias, ignore_index, beta, True)
+    # Compare the two losses
+    assert torch.allclose(loss1, loss2, atol=atol, rtol=rtol)
+    # Compute the gradients
+    loss1.backward()
+    loss2.backward()
+    # Compare the gradients
+    assert torch.allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
