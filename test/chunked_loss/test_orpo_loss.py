@@ -11,6 +11,11 @@ set_seed()
 
 
 class HF_ORPO_Loss:
+    """
+    Implementation of the Odds Ratio Preference Optimization (ORPO) loss,
+    adapted from Hugging Face's implementation.
+    Reference: https://github.com/huggingface/trl/blob/main/trl/trainer/orpo_trainer.py 
+    """
     def __init__(self, ignore_index: int = -100, beta: float = 0.1):
         self.ignore_index = ignore_index
         self.beta = beta
@@ -164,7 +169,7 @@ class HF_ORPO_Loss:
 @pytest.mark.parametrize("ignore_index, beta", [(-100, 0.1), (42, 0.2)])
 def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta):
     B = 2 * B  # orpo loss requires B to be even
-    
+
     _input = torch.randn(B, T, H, device="cuda", dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
