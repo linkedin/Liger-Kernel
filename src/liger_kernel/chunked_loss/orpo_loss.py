@@ -87,7 +87,7 @@ class LigerFusedLinearORPOFunction(torch.autograd.Function):
             or_loss = or_loss / (target.shape[0] // 2)
 
             loss = chosen_nll_loss - or_loss
-            return loss
+            return loss, (or_loss, chosen_logps, rejected_logps)
 
         def compute_orpo_loss(input_chunk, weight, target_chunk, bias=None):
             return _compute_orpo_loss(input_chunk, weight, target_chunk, bias)
@@ -102,17 +102,23 @@ class LigerFusedLinearORPOFunction(torch.autograd.Function):
 
         def accumulate_chunk(input_chunk, target_chunk):
             if bias is not None:
-                (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), chunk_loss = (
-                    torch.func.grad_and_value(compute_orpo_loss, argnums=(0, 1, 3))(
-                        input_chunk, weight, target_chunk, bias
-                    )
+                (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), (
+                    chunk_loss,
+                    (chunk_or_loss, chunk_chosen_logps, chunk_rejected_logps),
+                ) = torch.func.grad_and_value(
+                    compute_orpo_loss, argnums=(0, 1, 3), has_aux=True
+                )(
+                    input_chunk, weight, target_chunk, bias
                 )
                 grad_bias.add_(chunk_grad_bias)
             else:
-                (chunk_grad_input, chunk_grad_weight), chunk_loss = (
-                    torch.func.grad_and_value(compute_orpo_loss, argnums=(0, 1))(
-                        input_chunk, weight, target_chunk
-                    )
+                (chunk_grad_input, chunk_grad_weight), (
+                    chunk_loss,
+                    (chunk_or_loss, chunk_chosen_logps, chunk_rejected_logps),
+                ) = torch.func.grad_and_value(
+                    compute_orpo_loss, argnums=(0, 1), has_aux=True
+                )(
+                    input_chunk, weight, target_chunk
                 )
             grad_weight.add_(chunk_grad_weight)
             loss_acc.add_(chunk_loss)
