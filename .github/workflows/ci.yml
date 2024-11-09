@@ -1,4 +1,5 @@
 name: GitHub Actions CI
+
 on:
   push:
     branches:
@@ -6,8 +7,7 @@ on:
     paths:
       - "src/**"
       - "test/**"
-  # "pull_request_target" allows PR from forks to access github secrets: https://stackoverflow.com/questions/74957218/what-is-the-difference-between-pull-request-and-pull-request-target-event-in-git
-  pull_request_target:
+  pull_request:
     branches:
       - main
     paths:
@@ -15,28 +15,28 @@ on:
       - "test/**"
 
 concurrency:
+  # This causes it to cancel previous in-progress actions on the same PR / branch,
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   checkstyle:
     runs-on: ubuntu-latest
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-      with:
-        # Check out PR code instead of base branch
-        ref: ${{ github.event.pull_request.head.sha }}
-        # Required when using pull_request_target
-        github-token: ${{ secrets.GITHUB_TOKEN }}
+
     - name: Set up Python
       uses: actions/setup-python@v3
       with:
         python-version: '3.10'
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install flake8 isort black
+
     - name: Run checkstyle
       run: make checkstyle
 
@@ -46,22 +46,21 @@ jobs:
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-      with:
-        # Check out PR code instead of base branch
-        ref: ${{ github.event.pull_request.head.sha }}
-        # Required when using pull_request_target
-        github-token: ${{ secrets.GITHUB_TOKEN }}
+
     - name: Set up Python
       uses: actions/setup-python@v3
       with:
         python-version: '3.10'
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install modal
+
     - name: Run unit tests
       run: |
         modal run dev.modal.tests
