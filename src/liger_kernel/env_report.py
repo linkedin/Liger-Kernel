@@ -4,7 +4,7 @@ import sys
 
 def print_env_report():
     """
-    
+
     Prints a report of the environment. Useful for debugging and reproducibility.
     Usage:
     ```
