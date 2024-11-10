@@ -111,11 +111,11 @@ def tv_distance_forward_triton(p, q, reduction):
     )
 
     if reduction == _REDUCTION_MODE_BATCHMEAN.value:
-        return output_tensor.sum() / BT, grads
+        return output_tensor.sum() / BT, grads / BT
     elif reduction == _REDUCTION_MODE_SUM.value:
         return output_tensor.sum(dim=0), grads
     elif reduction == _REDUCTION_MODE_MEAN.value:
-        return output_tensor.sum() / (BT * V), grads
+        return output_tensor.sum() / (BT * V), grads / (BT * V)
     else:
         return output_tensor, grads
 
@@ -155,7 +155,6 @@ class LigerTVDLossFunction(torch.autograd.Function):
         """
         loss, grads = tv_distance_forward_triton(p, q, reduction)
         ctx.save_for_backward(grads)
-        ctx.reduction = reduction
         return loss
 
     @staticmethod
@@ -171,13 +170,7 @@ class LigerTVDLossFunction(torch.autograd.Function):
             tuple[torch.Tensor, None, None]: The gradient of the loss with respect to the inputs.
         """
         (grads,) = ctx.saved_tensors
-        BT, V = grads.shape
 
         grads = tvd_backward_triton(grad_output, grads)
-
-        if ctx.reduction == "batchmean":
-            grads /= BT
-        elif ctx.reduction == "mean":
-            grads /= BT * V
 
         return grads, None, None
