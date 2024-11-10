@@ -1,5 +1,6 @@
 from test.transformers.test_cross_entropy import CrossEntropyWithZLoss
 from test.utils import assert_verbose_allclose, set_seed
+from typing import Optional
 
 import pytest
 import torch
@@ -41,6 +42,7 @@ class TorchLMHeadCE(torch.nn.Module):
         lse_square_scale: float = 0.0,
         label_smoothing: float = 0.0,
         reduction: str = "mean",
+        softcap: Optional[float] = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
@@ -52,9 +54,12 @@ class TorchLMHeadCE(torch.nn.Module):
             label_smoothing=label_smoothing,
             reduction=reduction,
         )
+        self.softcap = softcap
 
     def forward(self, x, y):
         logits = self.lin(x).to(torch.float32)
+        if self.softcap is not None and self.softcap != 0.0:
+            logits = self.softcap * torch.tanh(logits / self.softcap)
         return self.ce_loss(logits, y)
 
 
@@ -69,6 +74,7 @@ class LigerLMHeadCE(torch.nn.Module):
         lse_square_scale: float = 0.0,
         label_smoothing: float = 0.0,
         reduction: str = "mean",
+        softcap: Optional[float] = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
@@ -79,6 +85,7 @@ class LigerLMHeadCE(torch.nn.Module):
             lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
             reduction=reduction,
+            softcap=softcap,
         )
 
     def forward(self, x, y):
@@ -108,10 +115,15 @@ class LigerLMHeadCE(torch.nn.Module):
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize(
-    "label_smoothing, ignore_index, lse_square_scale",
+    "label_smoothing, ignore_index, lse_square_scale, softcap",
     [
-        (0, -100, 0),
-        (0.1, 42, 1e-4),  # Pass non-default values once to ensure all params work along
+        (0, -100, 0, None),
+        (
+            0.1,
+            42,
+            1e-4,
+            30.0,
+        ),  # Pass non-default values once to ensure all params work along
     ],
 )
 def test_correctness(
@@ -126,6 +138,7 @@ def test_correctness(
     label_smoothing,
     ignore_index,
     reduction,
+    softcap,
     atol,
     rtol,
 ):
@@ -138,6 +151,7 @@ def test_correctness(
         label_smoothing=label_smoothing,
         ignore_index=ignore_index,
         reduction=reduction,
+        softcap=softcap,
         dtype=dtype,
     ).to(device)
     liger_lm_head_ce = LigerLMHeadCE(
@@ -148,6 +162,7 @@ def test_correctness(
         label_smoothing=label_smoothing,
         ignore_index=ignore_index,
         reduction=reduction,
+        softcap=softcap,
         dtype=dtype,
     ).to(device)
 

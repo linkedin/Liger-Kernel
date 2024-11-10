@@ -7,8 +7,7 @@ on:
     paths:
       - "src/**"
       - "test/**"
-  # "pull_request_target" allows PR from forks to access github secrets: https://stackoverflow.com/questions/74957218/what-is-the-difference-between-pull-request-and-pull-request-target-event-in-git
-  pull_request_target:
+  pull_request:
     branches:
       - main
     paths:
