@@ -385,6 +385,7 @@ def run_mini_model(
     dtype=torch.bfloat16,
     lr=1e-5,
     with_liger=False,
+    use_fused_loss=True,
 ):
     # If we move it to the beginning of test_mini_model, the two runs are initialized with different weights.
     # This is due to RNG (Random Number Generator). The formula of RNG progression is x_(n+1) = (a * x_n + c) % m
@@ -410,8 +411,12 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
-        kwargs["fused_linear_cross_entropy"] = True
-        kwargs["cross_entropy"] = False
+        if use_fused_loss:
+            kwargs["fused_linear_cross_entropy"] = True
+            kwargs["cross_entropy"] = False
+        else:
+            kwargs["fused_linear_cross_entropy"] = False
+            kwargs["cross_entropy"] = True
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
@@ -444,10 +449,10 @@ def run_mini_model(
 
 @pytest.mark.parametrize(
     # FIXME enable bf16 tests after revert is fixed
-    "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
+    "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol, use_fused_loss",
     [
-        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
-        # pytest.param(
+        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5, True),
+        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5, False),        # pytest.param(
         #     "mini_llama3",
         #     32,
         #     1e-4,
