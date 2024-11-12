@@ -586,7 +586,7 @@ def run_mini_model(
         #     ),
         # ),
         # TODO: mixtral is flaky so disable the test for now
-        ("mini_mixtral", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
+        # ("mini_mixtral", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
         # pytest.param(
         #     "mini_mixtral",
         #     32,

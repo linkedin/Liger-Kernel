@@ -103,7 +103,6 @@ def apply_liger_kernel_to_llama(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    from transformers.loss.loss_utils import nn
     from transformers.models.llama import modeling_llama
     from transformers.models.llama.modeling_llama import LlamaModel
 
@@ -116,6 +115,8 @@ def apply_liger_kernel_to_llama(
 
     if cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
             nn.functional.cross_entropy = liger_cross_entropy
         else:
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
@@ -178,7 +179,6 @@ def apply_liger_kernel_to_mllama(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    from transformers.loss.loss_utils import nn
     from transformers.models.mllama import modeling_mllama
     from transformers.models.mllama.modeling_mllama import (
         MllamaForCausalLM,
@@ -202,6 +202,8 @@ def apply_liger_kernel_to_mllama(
         modeling_mllama.MllamaTextMLP = LigerSwiGLUMLP
     if cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
             nn.functional.cross_entropy = liger_cross_entropy
         else:
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
@@ -347,7 +349,6 @@ def apply_liger_kernel_to_mixtral(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    from transformers.loss.loss_utils import nn
     from transformers.models.mixtral import modeling_mixtral
     from transformers.models.mixtral.modeling_mixtral import MixtralModel
 
@@ -357,6 +358,8 @@ def apply_liger_kernel_to_mixtral(
         modeling_mixtral.MixtralRMSNorm = LigerRMSNorm
     if cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
             nn.functional.cross_entropy = liger_cross_entropy
         else:
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
@@ -420,7 +423,6 @@ def apply_liger_kernel_to_gemma(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    from transformers.loss.loss_utils import nn
     from transformers.models.gemma import modeling_gemma
     from transformers.models.gemma.modeling_gemma import GemmaModel
 
@@ -438,6 +440,8 @@ def apply_liger_kernel_to_gemma(
         modeling_gemma.GemmaRMSNorm = LigerRMSNormForGemma
     if cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
             nn.functional.cross_entropy = liger_cross_entropy
         else:
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
@@ -498,7 +502,7 @@ def apply_liger_kernel_to_gemma2(
     assert not (
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    from transformers.loss.loss_utils import nn
+
     from transformers.models.gemma2 import modeling_gemma2
     from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
 
@@ -516,6 +520,8 @@ def apply_liger_kernel_to_gemma2(
         modeling_gemma2.Gemma2RMSNorm = LigerRMSNormForGemma2
     if cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
             nn.functional.cross_entropy = liger_cross_entropy
         else:
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
@@ -584,7 +590,6 @@ def apply_liger_kernel_to_qwen2(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    from transformers.loss.loss_utils import nn
     from transformers.models.qwen2 import modeling_qwen2
     from transformers.models.qwen2.modeling_qwen2 import Qwen2Model
 
@@ -595,6 +600,8 @@ def apply_liger_kernel_to_qwen2(
 
     if cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
             nn.functional.cross_entropy = liger_cross_entropy
         else:
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
@@ -735,7 +742,6 @@ def apply_liger_kernel_to_phi3(
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
-    from transformers.loss.loss_utils import nn
     from transformers.models.phi3 import modeling_phi3
     from transformers.models.phi3.modeling_phi3 import Phi3Model
 
@@ -747,6 +753,8 @@ def apply_liger_kernel_to_phi3(
         modeling_phi3.Phi3MLP = LigerPhi3SwiGLUMLP
     if cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
             nn.functional.cross_entropy = liger_cross_entropy
         else:
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
