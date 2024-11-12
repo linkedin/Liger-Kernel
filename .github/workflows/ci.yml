@@ -61,7 +61,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install modal
 
-    - name: Run unit tests
+    - name: Run tests
       run: |
         modal run dev.modal.tests
 
@@ -86,6 +86,6 @@ jobs:
         python -m pip install --upgrade pip
         pip install modal
 
-    - name: Run unit tests
+    - name: Run tests
       run: |
         modal run dev.modal.tests_bwd
