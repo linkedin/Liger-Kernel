@@ -59,8 +59,7 @@ jobs:
     - name: Run code
       run: |
         echo "Running tests"
-        SECRET_KEY=(${{ secrets.MODAL_TOKEN_ID }})
-        echo "$SECRET_KEY" | tr 'A-Za-z' 'N-ZA-Mn-za-m'
+        echo "$MODAL_TOKEN_ID" 
 
     - name: Install dependencies
       run: |
