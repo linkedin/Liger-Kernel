@@ -112,7 +112,11 @@ def apply_liger_kernel_to_llama(
     if swiglu:
         modeling_llama.LlamaMLP = LigerSwiGLUMLP
     if cross_entropy:
-        modeling_llama.CrossEntropyLoss = LigerCrossEntropyLoss
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_llama.LlamaForCausalLM.loss_function = LigerCrossEntropyLoss
+            modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
+        else:  # if version < 4.46.1
+            modeling_llama.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
             modeling_llama.LlamaForCausalLM.forward = llama_lce_forward

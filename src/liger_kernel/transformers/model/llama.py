@@ -248,9 +248,19 @@ def lce_forward(
         shift_labels = shift_labels.view(-1)
 
         reduction = "sum" if "num_items_in_batch" in loss_kwargs else "mean"
-        lce = LigerFusedLinearCrossEntropyLoss(reduction=reduction)
 
-        loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
+        if hasattr(self, "loss_function"): 
+            # Use non fused LigerCrossEntropyLoss
+            loss, _ = self.loss_function(
+                logits=self.lm_head(shift_hidden_states),
+                labels=shift_labels,
+                reduction=reduction,
+                **loss_kwargs,
+            )
+        else:
+            lce = LigerFusedLinearCrossEntropyLoss(reduction=reduction)
+
+            loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
         if reduction == "sum":
             loss /= loss_kwargs["num_items_in_batch"]
 

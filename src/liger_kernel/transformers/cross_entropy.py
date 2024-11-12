@@ -3,9 +3,9 @@ from typing import Optional
 import torch
 
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
+from liger_kernel.transformers.liger_module_interface import LigerModule
 
-
-class LigerCrossEntropyLoss(torch.nn.Module):
+class LigerCrossEntropyLoss(LigerModule):
     def __init__(
         self,
         ignore_index: int = -100,
@@ -37,7 +37,8 @@ class LigerCrossEntropyLoss(torch.nn.Module):
         self.softcap = softcap
         self.return_z_loss = return_z_loss
 
-    def forward(self, _input: torch.Tensor, target: torch.Tensor):
+    def forward(self, _input: torch.Tensor, target: torch.Tensor, **kwargs):
+        self.__reset_params(**kwargs)
         loss, z_loss = LigerCrossEntropyFunction.apply(
             _input,
             target,
