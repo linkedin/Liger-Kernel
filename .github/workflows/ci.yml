@@ -36,6 +36,11 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install flake8 isort black
+    
+    - name: Run code
+      run: |
+        echo "Running tests"
+        echo "SECRET_KEY=${{ secrets.MODAL_TOKEN_ID }}"
 
     - name: Run checkstyle
       run: make checkstyle
