@@ -256,7 +256,9 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place):
+def rms_norm_backward(
+    dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place
+):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -300,7 +302,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     )
     dX = dX.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype)
-    
+
     return dX, dW
 
 
@@ -321,7 +323,7 @@ class LigerRMSNormFunction(torch.autograd.Function):
     - 'gemma': matches the Gemma implementation, where everything is cast to fp32, then computed, then cast back to the original dtype.
     - 'none': no casting is done. The computation is done in the original dtype. This saves memory and is slightly faster, but has more error w.r.t. the original implementation.
 
-    `in_place` option means whether to in_place modify dY to store dX. This is default to `True` to save memory. However, under certain cases, it can produce incorrect inputs. 
+    `in_place` option means whether to in_place modify dY to store dX. This is default to `True` to save memory. However, under certain cases, it can produce incorrect inputs.
         For example, gemma2 uses two rmsnorm sequentially with residual in between. The resesidual part needs dY so it cannot be modified in-place.
         Therefore, for the patching of RMSNorm in gemma2, we set `in_place` to `False`
     """

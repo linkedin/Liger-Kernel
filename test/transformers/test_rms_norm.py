@@ -107,7 +107,9 @@ class GemmaRMSNorm(nn.Module):
         False,
     ],
 )
-def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode, in_place):
+def test_correctness(
+    bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode, in_place
+):
     _tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
 
     h1 = _tensor.clone().requires_grad_(True)
@@ -123,7 +125,9 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
 
     # triton
     triton_rms = (
-        LigerRMSNorm(hidden_size=hd, offset=offset, casting_mode=casting_mode, in_place=in_place)
+        LigerRMSNorm(
+            hidden_size=hd, offset=offset, casting_mode=casting_mode, in_place=in_place
+        )
         .to("cuda")
         .to(dtype)
     )

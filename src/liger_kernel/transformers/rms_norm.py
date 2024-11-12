@@ -6,7 +6,13 @@ from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 
 class LigerRMSNorm(nn.Module):
     def __init__(
-        self, hidden_size, eps=1e-6, offset=0.0, casting_mode="llama", init_fn="ones", in_place=True,
+        self,
+        hidden_size,
+        eps=1e-6,
+        offset=0.0,
+        casting_mode="llama",
+        init_fn="ones",
+        in_place=True,
     ):
         super().__init__()
         assert init_fn in [
@@ -20,7 +26,7 @@ class LigerRMSNorm(nn.Module):
             eps,
             offset,
             casting_mode,
-            in_place
+            in_place,
         )
 
     def forward(self, hidden_states):
