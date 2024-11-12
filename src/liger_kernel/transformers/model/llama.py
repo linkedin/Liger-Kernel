@@ -12,9 +12,8 @@ from transformers.utils import (
     add_start_docstrings_to_model_forward,
     replace_return_docstrings,
 )
-from liger_kernel.transformers.cross_entropy import (
-    LigerCrossEntropyLoss
-)
+
+from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.fused_linear_cross_entropy import (
     LigerFusedLinearCrossEntropyLoss,
 )
@@ -259,7 +258,7 @@ def lce_forward(
         else:
             lce = LigerFusedLinearCrossEntropyLoss(reduction=reduction)
             loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
-        
+
         if reduction == "sum":
             loss /= loss_kwargs["num_items_in_batch"]
 

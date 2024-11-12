@@ -451,8 +451,32 @@ def run_mini_model(
     # FIXME enable bf16 tests after revert is fixed
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol, use_fused_loss",
     [
-        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5, True),
-        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5, False),        # pytest.param(
+        (
+            "mini_llama3",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            2e-5,
+            1e-4,
+            1e-5,
+            5e-3,
+            1e-5,
+            True,
+        ),
+        (
+            "mini_llama3",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            2e-5,
+            1e-4,
+            1e-5,
+            5e-3,
+            1e-5,
+            False,
+        ),  # pytest.param(
         #     "mini_llama3",
         #     32,
         #     1e-4,
@@ -478,6 +502,7 @@ def run_mini_model(
             1e-5,
             5e-3,
             1e-5,
+            True,
             marks=pytest.mark.skipif(
                 not MLLAMA_AVAILABLE,
                 reason="Mllama not available in this version of transformers",
@@ -504,7 +529,19 @@ def run_mini_model(
         #         ),
         #     ],
         # ),
-        ("mini_qwen2", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        (
+            "mini_qwen2",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            True,
+        ),
         # pytest.param(
         #     "mini_qwen2",
         #     32,
@@ -558,7 +595,19 @@ def run_mini_model(
         #         ),
         #     ],
         # ),
-        ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        (
+            "mini_phi3",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            True,
+        ),
         # pytest.param(
         #     "mini_phi3",
         #     32,
@@ -574,7 +623,19 @@ def run_mini_model(
         #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
         #     ),
         # ),
-        ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+        (
+            "mini_mistral",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            True,
+        ),
         # pytest.param(
         #     "mini_mistral",
         #     32,
@@ -608,7 +669,19 @@ def run_mini_model(
         #     ),
         # ),
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
-        ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        (
+            "mini_gemma1",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-4,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            True,
+        ),
         # pytest.param(
         #     "mini_gemma1",
         #     32,
@@ -624,7 +697,19 @@ def run_mini_model(
         #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
         #     ),
         # ),
-        ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        (
+            "mini_gemma1.1",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-4,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            True,
+        ),
         # pytest.param(
         #     "mini_gemma1.1",
         #     32,
@@ -670,15 +755,25 @@ def test_mini_model(
     logits_rtol,
     param_atol,
     param_rtol,
+    use_fused_loss,
 ):
     # Non-liger models should be initialized and tested first to avoid the module being overridden
 
     expected_output = run_mini_model(
-        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr
+        model_name=model_name,
+        num_steps=num_steps,
+        dtype=dtype,
+        lr=lr,
+        use_fused_loss=use_fused_loss,
     )
 
     actual_output = run_mini_model(
-        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True
+        model_name=model_name,
+        num_steps=num_steps,
+        dtype=dtype,
+        lr=lr,
+        use_fused_loss=use_fused_loss,
+        with_liger=True,
     )
 
     # Compare every step of the loss

@@ -4,6 +4,7 @@ import torch
 
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 
+
 class LigerCrossEntropyLoss(torch.nn.Module):
     def __init__(
         self,
@@ -13,7 +14,7 @@ class LigerCrossEntropyLoss(torch.nn.Module):
         reduction: str = "mean",
         softcap: Optional[float] = None,
         return_z_loss: bool = False,
-        **kwargs
+        **kwargs,
     ):
         super().__init__()
         assert (label_smoothing >= 0) and (
