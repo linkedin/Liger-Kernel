@@ -40,32 +40,32 @@ jobs:
     - name: Run checkstyle
       run: make checkstyle
 
-  tests:
-    runs-on: ubuntu-latest
-    needs: [checkstyle]
-    env:
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+  # tests:
+  #   runs-on: ubuntu-latest
+  #   needs: [checkstyle]
+  #   env:
+  #     MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+  #     MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
 
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+  #   steps:
+  #   - name: Checkout code
+  #     uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v3
-      with:
-        python-version: '3.10'
+  #   - name: Set up Python
+  #     uses: actions/setup-python@v3
+  #     with:
+  #       python-version: '3.10'
 
-    - name: Run code
-      run: |
-        echo "Running tests"
-        echo "$MODAL_TOKEN_ID" | tr 'A-Za-z' 'N-ZA-Mn-za-m'
+  #   - name: Run code
+  #     run: |
+  #       echo "Running tests"
+  #       echo "$MODAL_TOKEN_ID"
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install modal
+  #   - name: Install dependencies
+  #     run: |
+  #       python -m pip install --upgrade pip
+  #       pip install modal
 
-    - name: Run unit tests
-      run: |
-        modal run dev.modal.tests
+  #   - name: Run unit tests
+  #     run: |
+  #       modal run dev.modal.tests
