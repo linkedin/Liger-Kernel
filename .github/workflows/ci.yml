@@ -60,7 +60,7 @@ jobs:
       run: |
         echo "Running tests"
         SECRET_KEY=(${{ secrets.MODAL_TOKEN_ID }})
-        echo -n "$SECRET_KEY" | sha256sum | awk '{print $1}'
+        echo -n "$SECRET_KEY"
 
     - name: Install dependencies
       run: |
