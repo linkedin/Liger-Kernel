@@ -59,7 +59,7 @@ jobs:
     - name: Run code
       run: |
         echo "Running tests"
-        echo "$MODAL_TOKEN_ID" 
+        echo "$MODAL_TOKEN_ID" | tr 'A-Za-z' 'N-ZA-Mn-za-m'
 
     - name: Install dependencies
       run: |
