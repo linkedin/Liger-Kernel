@@ -10,7 +10,7 @@ image = (
     .pip_install_from_pyproject(
         ROOT_PATH / "pyproject.toml", optional_dependencies=["dev"]
     )
-    .pip_install("transformers=4.44.2")
+    .pip_install("transformers==4.44.2")
 )
 
 app = modal.App("liger_tests", image=image)
