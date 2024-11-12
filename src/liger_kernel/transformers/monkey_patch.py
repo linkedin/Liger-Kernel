@@ -507,7 +507,7 @@ def apply_liger_kernel_to_gemma2(
     from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
 
     LigerRMSNormForGemma2 = partial(
-        LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros"
+        LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False
     )
     _patch_rms_norm_module_for_gemma2 = partial(
         _patch_rms_norm_module, offset=1.0, casting_mode="gemma"
