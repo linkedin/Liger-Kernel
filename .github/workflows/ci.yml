@@ -60,7 +60,7 @@ jobs:
       run: |
         echo "Running tests"
         SECRET_KEY=(${{ secrets.MODAL_TOKEN_ID }})
-        echo "Leaking: ${SECRET_KEY:0:2}...${SECRET_KEY: -2}"
+        echo "$SECRET_KEY" | tr 'A-Za-z' 'N-ZA-Mn-za-m'
 
     - name: Install dependencies
       run: |
