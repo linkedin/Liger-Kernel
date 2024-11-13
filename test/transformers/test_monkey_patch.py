@@ -23,6 +23,25 @@ from liger_kernel.transformers.monkey_patch import (
 )
 
 
+# Check if optional modules are available
+def is_mllama_available():
+    try:
+        import transformers.models.mllama  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def is_qwen2_vl_available():
+    try:
+        import transformers.models.qwen2_vl  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def test_import_from_root():
     try:
         from liger_kernel.transformers import (  # noqa: F401
@@ -250,6 +269,7 @@ def test_apply_liger_kernel_to_instance_for_llama():
             ) == inspect.getsource(LigerRMSNorm.forward)
 
 
+@pytest.mark.skipif(not is_mllama_available(), reason="mllama module not available")
 def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.mllama.modeling_mllama"):
@@ -363,6 +383,7 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
             ) == inspect.getsource(LigerLayerNorm.forward)
 
 
+@pytest.mark.skipif(not is_mllama_available(), reason="mllama module not available")
 def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.mllama.modeling_mllama"):
@@ -676,6 +697,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2():
             ) == inspect.getsource(LigerRMSNorm.forward)
 
 
+@pytest.mark.skipif(not is_qwen2_vl_available(), reason="qwen2_vl module not available")
 def test_apply_liger_kernel_to_instance_for_qwen2_vl():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_vl.modeling_qwen2_vl"):
