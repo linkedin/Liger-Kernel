@@ -26,6 +26,22 @@ Leave `#take` in the comment and tag the maintainer.
    pip install -e .'[dev]'
    ```
 
+## Structure
+
+### Source Code
+
+- `ops/`: Core Triton operations.
+- `transformers/`: PyTorch `nn.Module` implementations built on Triton operations, compliant with the `transformers` API.
+
+### Tests
+
+- `transformers/`: Correctness tests for the Triton-based layers.
+- `convergence/`: Patches Hugging Face models with all kernels, runs multiple iterations, and compares weights, logits, and loss layer-by-layer.
+
+### Benchmark
+
+- `benchmark/`: Execution time and memory benchmarks compared to Hugging Face layers.
+
 ## Adding support for a new model
 To get familiar with the folder structure, please refer to https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.
 
