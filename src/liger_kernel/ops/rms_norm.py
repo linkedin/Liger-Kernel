@@ -116,6 +116,8 @@ def _rms_norm_forward_kernel(
 def _rms_norm_backward_kernel(
     dY_ptr,
     dY_row_stride,
+    dX_ptr,
+    dX_row_stride,
     X_ptr,
     X_row_stride,
     X_dtype: tl.constexpr,
@@ -146,6 +148,8 @@ def _rms_norm_backward_kernel(
     dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     dY_ptr += row_start * dY_row_stride
+    dX_ptr += row_start * dX_row_stride
+
     X_ptr += row_start * X_row_stride
     RSTD_ptr += row_start
 
@@ -184,9 +188,10 @@ def _rms_norm_backward_kernel(
             # here X_row is already in fp32 (see previous if block)
             dW_row += dY_row * (X_row * rstd_row)
 
-        tl.store(dY_ptr + col_offsets, dX_row.to(X_dtype), mask=mask)
+        tl.store(dX_ptr + col_offsets, dX_row.to(X_dtype), mask=mask)
 
         dY_ptr += dY_row_stride
+        dX_ptr += dX_row_stride
         X_ptr += X_row_stride
         RSTD_ptr += RSTD_row_stride
 
@@ -251,7 +256,9 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps):
+def rms_norm_backward(
+    dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place
+):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -265,10 +272,17 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
     rows_per_program = math.ceil(n_rows / sm_count)
     grid = (sm_count,)
-    # Here we use dY to store the value of dX to save memory
+
+    if in_place is True:
+        dX = dY
+    else:
+        dX = torch.zeros_like(dY)
+
     _rms_norm_backward_kernel[grid](
         dY,
         dY.stride(0),
+        dX,
+        dX.stride(0),
         X,
         X.stride(0),
         torch_to_triton_dtype[X.dtype],
@@ -286,8 +300,9 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
-    dX = dY.view(*shape)
+    dX = dX.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype)
+
     return dX, dW
 
 
@@ -307,11 +322,15 @@ class LigerRMSNormFunction(torch.autograd.Function):
     - 'llama': matches the Llama implementation, where only the inverse RMS is computed on fp32.
     - 'gemma': matches the Gemma implementation, where everything is cast to fp32, then computed, then cast back to the original dtype.
     - 'none': no casting is done. The computation is done in the original dtype. This saves memory and is slightly faster, but has more error w.r.t. the original implementation.
+
+    `in_place` option means whether to in_place modify dY to store dX. This is default to `True` to save memory. However, under certain cases, it can produce incorrect inputs.
+        For example, gemma2 uses two rmsnorm sequentially with residual in between. The resesidual part needs dY so it cannot be modified in-place.
+        Therefore, for the patching of RMSNorm in gemma2, we set `in_place` to `False`
     """
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, eps, offset=0.0, casting_mode="llama"):
+    def forward(ctx, X, W, eps, offset=0.0, casting_mode="llama", in_place=True):
         """
         X: (B, T, H) or (BxT, H)
         W: (H,)
@@ -321,6 +340,7 @@ class LigerRMSNormFunction(torch.autograd.Function):
         )
         ctx.offset = offset
         ctx.casting_mode = casting_mode
+        ctx.in_place = in_place
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
         ctx.save_for_backward(X, W, RSTD)
@@ -342,5 +362,6 @@ class LigerRMSNormFunction(torch.autograd.Function):
             ctx.casting_mode,
             ctx.BLOCK_SIZE,
             ctx.num_warps,
+            ctx.in_place,
         )
-        return dX, dW, None, None, None
+        return dX, dW, None, None, None, None

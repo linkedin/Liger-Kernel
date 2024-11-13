@@ -410,8 +410,8 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
-        kwargs["fused_linear_cross_entropy"] = True
-        kwargs["cross_entropy"] = False
+        kwargs["fused_linear_cross_entropy"] = False
+        kwargs["cross_entropy"] = True
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
@@ -602,7 +602,7 @@ def run_mini_model(
         #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
         #     ),
         # ),
-        # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
+        # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match
         ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         # pytest.param(
         #     "mini_gemma1",
@@ -685,14 +685,14 @@ def test_mini_model(
     )
 
     # No logits are materialized
-
-    # # Compare the logits from the last step
-    # assert_verbose_allclose(
-    #     expected_output["logits"],
-    #     actual_output["logits"],
-    #     atol=logits_atol,
-    #     rtol=logits_rtol,
-    # )
+    # import pdb; pdb.set_trace()
+    # Compare the logits from the last step
+    assert_verbose_allclose(
+        expected_output["logits"],
+        actual_output["logits"],
+        atol=logits_atol,
+        rtol=logits_rtol,
+    )
 
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
