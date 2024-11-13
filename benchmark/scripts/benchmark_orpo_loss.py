@@ -1,5 +1,7 @@
+import os
+import sys
+
 import torch
-import torch.nn.functional as F
 import triton
 from utils import (
     QUANTILES,
@@ -9,45 +11,10 @@ from utils import (
     parse_benchmark_script_args,
     run_benchmarks,
 )
-from typing import Tuple
 
 from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
 
-
-def odds_ratio_loss(
-        policy_chosen_logps: torch.FloatTensor,
-        policy_rejected_logps: torch.FloatTensor,
-        beta: float = 0.1,
-    ) -> Tuple[
-        torch.FloatTensor,
-        torch.FloatTensor,
-        torch.FloatTensor,
-        torch.FloatTensor,
-        torch.FloatTensor,
-    ]:
-        """Compute ORPO's odds ratio (OR) loss for a batch of policy and reference model log probabilities.
-
-        Args:
-            policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (batch_size,)
-            policy_rejected_logps: Log probabilities of the policy model for the rejected responses. Shape: (batch_size,)
-
-        Returns:
-            A tuple of three tensors: (losses, chosen_rewards, rejected_rewards).
-            The losses tensor contains the ORPO loss for each example in the batch.
-            The chosen_rewards and rejected_rewards tensors contain the rewards for the chosen and rejected responses, respectively.
-            The log odds ratio of the chosen responses over the rejected responses ratio for logging purposes.
-            The `log(sigmoid(log_odds_chosen))` for logging purposes.
-        """
-
-        # Derived from Eqs. (4) and (7) from https://huggingface.co/papers/2403.07691 by using log identities and exp(log(P(y|x)) = P(y|x)
-        log_odds = (policy_chosen_logps - policy_rejected_logps) - (
-            torch.log1p(-torch.exp(policy_chosen_logps))
-            - torch.log1p(-torch.exp(policy_rejected_logps))
-        )
-        ratio = F.logsigmoid(log_odds)
-        losses = beta * ratio
-
-        return losses
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
 class TorchLMHeadORPO(torch.nn.Module):
@@ -60,23 +27,16 @@ class TorchLMHeadORPO(torch.nn.Module):
     """
 
     def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
+        from test.chunked_loss.test_orpo_loss import HF_ORPO_Loss
+
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=False, dtype=dtype
         )
-        self.ce_loss = torch.nn.CrossEntropyLoss(
-            ignore_index=ignore_index, reduction="mean"
-        )
-        self.odds_ratio_loss = odds_ratio_loss
+        self.orpo_loss = HF_ORPO_Loss().get_batch_loss_metrics
 
     def forward(self, x, y):
-        logits = self.lin(x)
-        ce_loss = self.ce_loss(logits[:logits.shape[0] // 2].view(-1, logits.shape[-1]), y[:y.shape[0] // 2].view(-1))
-        all_logprobs = F.log_softmax(logits, dim=-1).mean(dim=-1)
-        chosen_logprobs = all_logprobs[:all_logprobs.shape[0] // 2]
-        rejected_logprobs = all_logprobs[all_logprobs.shape[0] // 2:]
-        or_loss = self.odds_ratio_loss(chosen_logprobs, rejected_logprobs)
-        return ce_loss - or_loss.mean()
+        return self.orpo_loss(x, self.lin.weight, y)
 
 
 class LigerLMHeadORPO(torch.nn.Module):
@@ -201,10 +161,16 @@ if __name__ == "__main__":
         "kernel_name": "fused_linear_orpo_loss",
         "x_name": "B",
         "x_label": "B",
-        "x_values": [2**i for i in range(1, 6)],
+        "x_values": [2**i for i in range(1, 5)],
         "kernel_providers": ["liger", "huggingface"],
         "extra_benchmark_configs": [
-            {"T": 4096, "H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}
+            {
+                "T": 1024,
+                "H": 4096,
+                "V": 128256,
+                "mode": "forward",
+                "dtype": torch.bfloat16,
+            }
         ],
         "overwrite": args.overwrite,
     }
