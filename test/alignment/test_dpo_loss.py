@@ -1,9 +1,7 @@
 from test.utils import assert_verbose_allclose, set_seed
-from typing import Tuple
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from liger_kernel.alignment.dpo_loss import HF_DPO_Loss, LigerFusedLinearDPOFunction
 
