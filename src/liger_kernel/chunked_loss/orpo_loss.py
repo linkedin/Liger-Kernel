@@ -43,11 +43,11 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         """
 
         return LigerFusedLinearPreferenceBase.forward(
-            ctx,
-            _input,
-            weight,
-            target,
-            bias,
+            ctx=ctx,
+            _input=_input,
+            weight=weight,
+            target=target,
+            bias=bias,
             loss_fn=LigerFusedLinearORPOFunction.preference_loss_fn,
             compute_nll_loss=compute_nll_loss,
             ignore_index=ignore_index,
