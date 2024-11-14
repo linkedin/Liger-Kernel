@@ -111,5 +111,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
     def backward(ctx, grad_output):
-        grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)
-        return *grads[:4], None, None, None, None
+        # Get gradients for _input, weight, bias, and target from the base class
+        grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
+        # Return these gradients, followed by None for the remaining inputs
+        return *grads, None, None, None, None
