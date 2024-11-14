@@ -49,9 +49,9 @@ def _compute_orpo_loss(
     logits_chunk = input_chunk @ weight.t()  # chunk_size x V
     if bias is not None:
         logits_chunk = logits_chunk + bias
-    logits_chunk = logits_chunk.float()
-    log_probs_chunk = F.log_softmax(logits_chunk, dim=-1)
+    log_probs_chunk = F.log_softmax(logits_chunk.float(), dim=-1)
 
+    chosen_nll_loss = 0.0
     if compute_nll_loss:
         chosen_nll_loss = F.nll_loss(
             log_probs_chunk[:len_chosen_chunk].view(-1, log_probs_chunk.shape[-1]),
@@ -63,8 +63,6 @@ def _compute_orpo_loss(
             chosen_nll_loss
             / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
         )
-    else:
-        chosen_nll_loss = 0.0
 
     loss_mask = target_chunk != ignore_index
     label_chunk = torch.where(loss_mask, target_chunk, 0)
