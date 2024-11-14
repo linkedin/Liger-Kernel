@@ -1,13 +1,7 @@
 import torch
 import torch.nn.functional as F
-from triton import next_power_of_2
-
-from liger_kernel.ops.utils import element_mul_kernel
-
-# The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
-# However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
-# The optimal maximum block size depends on your hardware, your kernel, and your dtype
-MAX_FUSED_SIZE = 65536 // 2
+from functools import partial
+from liger_kernel.chunked_loss.fused_linear import LigerFusedLinearPreferenceBase
 
 
 def odds_ratio_loss(chosen_logps, rejected_logps, beta=0.1):
@@ -25,7 +19,55 @@ def odds_ratio_loss(chosen_logps, rejected_logps, beta=0.1):
     return beta * ratio.sum()
 
 
-class LigerFusedLinearORPOFunction(torch.autograd.Function):
+def _compute_orpo_loss(input_chunk, weight, target_chunk, bias=None, full_target=None, ignore_index=-100, beta=0.1):
+    """
+    Compute ORPO loss for a chunk of input and target.
+    Args:
+        input_chunk (torch.Tensor): Chunk of input tensor. Shape: (2 * chunk_size, sequence_length, hidden_size).
+        weight (torch.Tensor): Weight tensor. Shape: (vocab_size, hidden_size).
+        target_chunk (torch.Tensor): Chunk of target tensor. Shape: (2 * chunk_size, sequence_length).
+        bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
+        full_target (torch.Tensor): Full target tensor. Shape: (batch_size, sequence_length).
+        ignore_index (int): Index to ignore for loss computation.
+        beta (float): Weight for the odds ratio loss.
+    """
+    len_chosen_chunk = target_chunk.shape[0] // 2
+
+    logits_chunk = input_chunk @ weight.t()  # chunk_size x V
+    if bias is not None:
+        logits_chunk = logits_chunk + bias
+    logits_chunk = logits_chunk.float()
+    log_probs_chunk = F.log_softmax(logits_chunk, dim=-1)
+
+    chosen_nll_loss = F.nll_loss(
+        log_probs_chunk[:len_chosen_chunk].view(-1, log_probs_chunk.shape[-1]),
+        target_chunk[:len_chosen_chunk].view(-1),
+        reduction="sum",
+        ignore_index=ignore_index,
+    )
+    chosen_nll_loss = (
+        chosen_nll_loss / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
+    )
+
+    loss_mask = target_chunk != ignore_index
+    label_chunk = torch.where(loss_mask, target_chunk, 0)
+
+    per_token_logps = log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(
+        -1
+    )
+    average_log_prob = (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+
+    chosen_logps = average_log_prob[:len_chosen_chunk]
+    rejected_logps = average_log_prob[len_chosen_chunk:]
+
+    or_loss = odds_ratio_loss(chosen_logps, rejected_logps, beta=beta)
+    or_loss = or_loss / (full_target.shape[0] // 2)
+
+    loss = chosen_nll_loss - or_loss
+    return loss, (or_loss, chosen_logps, rejected_logps)
+
+
+class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
     @staticmethod
     def forward(
         ctx,
@@ -35,177 +77,17 @@ class LigerFusedLinearORPOFunction(torch.autograd.Function):
         bias=None,
         ignore_index=-100,
         beta=0.1,
-        compiled=True,
+        compiled=True
     ):
         """
         Fused linear layer with ORPO (Odds-Ratio Preference Optimization) loss.
         Handles both the forward and backward pass of the final linear layer with ORPO loss.
         Inspired from LigerFusedLinearCrossEntropyFunction which fuses final linear layer and CE loss.
-
-        Args:
-            _input (torch.Tensor): Input tensor. Shape: (batch_size, seq_len, hidden_size).
-            weight (torch.Tensor): Weight tensor. Shape: (vocab_size, hidden_size).
-            target (torch.Tensor): Target tensor. Shape: (batch_size, seq_len).
-            bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
-            ignore_index (int): Index to ignore for loss computation.
-            compiled (bool): Whether to use torch compile for chunk accumulation.
         """
-        # TODO: Tune CHUNK_SIZE to fully utilize the GPU
-        CHUNK_SIZE = 1
-
-        def _compute_orpo_loss(input_chunk, weight, target_chunk, bias=None):
-            len_chosen_chunk = target_chunk.shape[0] // 2
-
-            unnorm_logits = input_chunk @ weight.t()  # chunk_size x V
-            if bias is not None:
-                unnorm_logits = unnorm_logits + bias
-            unnorm_logits = unnorm_logits.float()
-            norm_logits = F.log_softmax(unnorm_logits, dim=-1)
-
-            chosen_nll_loss = F.nll_loss(
-                norm_logits[:len_chosen_chunk].view(-1, norm_logits.shape[-1]),
-                target_chunk[:len_chosen_chunk].view(-1),
-                reduction="sum",
-                ignore_index=ignore_index,
-            )
-            chosen_nll_loss = (
-                chosen_nll_loss / (target[: target.shape[0] // 2] != ignore_index).sum()
-            )
-
-            loss_mask = target_chunk != ignore_index
-            label_chunk = torch.where(loss_mask, target_chunk, 0)
-
-            per_token_logps = norm_logits.gather(-1, label_chunk.unsqueeze(-1)).squeeze(
-                -1
-            )
-            average_log_prob = (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
-
-            chosen_logps = average_log_prob[:len_chosen_chunk]
-            rejected_logps = average_log_prob[len_chosen_chunk:]
-
-            or_loss = odds_ratio_loss(chosen_logps, rejected_logps, beta=beta)
-            or_loss = or_loss / (target.shape[0] // 2)
-
-            loss = chosen_nll_loss - or_loss
-            return loss, (or_loss, chosen_logps, rejected_logps)
-
-        def compute_orpo_loss(input_chunk, weight, target_chunk, bias=None):
-            return _compute_orpo_loss(input_chunk, weight, target_chunk, bias)
-
-        grad_weight = torch.zeros_like(weight)
-        grad_chosen_inputs = []
-        grad_rejected_inputs = []
-        grad_bias = torch.zeros_like(bias) if bias is not None else None
-        loss_acc = torch.zeros((), device=_input.device)
-
-        chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
-
-        def accumulate_chunk(input_chunk, target_chunk):
-            if bias is not None:
-                (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), (
-                    chunk_loss,
-                    (chunk_or_loss, chunk_chosen_logps, chunk_rejected_logps),
-                ) = torch.func.grad_and_value(
-                    compute_orpo_loss, argnums=(0, 1, 3), has_aux=True
-                )(
-                    input_chunk, weight, target_chunk, bias
-                )
-                grad_bias.add_(chunk_grad_bias)
-            else:
-                (chunk_grad_input, chunk_grad_weight), (
-                    chunk_loss,
-                    (chunk_or_loss, chunk_chosen_logps, chunk_rejected_logps),
-                ) = torch.func.grad_and_value(
-                    compute_orpo_loss, argnums=(0, 1), has_aux=True
-                )(
-                    input_chunk, weight, target_chunk
-                )
-            grad_weight.add_(chunk_grad_weight)
-            loss_acc.add_(chunk_loss)
-            return chunk_grad_input
-
-        len_chosen = target.shape[0] // 2
-        _chosen_input_chunks = torch.chunk(_input[:len_chosen], chunks=chunks, dim=0)
-        _chosen_target_chunks = torch.chunk(target[:len_chosen], chunks=chunks, dim=0)
-        _rejected_input_chunks = torch.chunk(_input[len_chosen:], chunks=chunks, dim=0)
-        _rejected_target_chunks = torch.chunk(target[len_chosen:], chunks=chunks, dim=0)
-
-        for (
-            chosen_input_chunk,
-            rejected_input_chunk,
-            chosen_target_chunk,
-            rejected_target_chunk,
-        ) in zip(
-            _chosen_input_chunks,
-            _rejected_input_chunks,
-            _chosen_target_chunks,
-            _rejected_target_chunks,
-        ):
-            input_chunk = torch.cat([chosen_input_chunk, rejected_input_chunk], dim=0)
-            target_chunk = torch.cat(
-                [chosen_target_chunk, rejected_target_chunk], dim=0
-            )
-
-            if compiled:
-                accumulate_chunk = torch.compile(accumulate_chunk)
-            grad_input = accumulate_chunk(input_chunk, target_chunk)
-
-            grad_chosen_inputs.append(grad_input[: chosen_target_chunk.shape[0]])
-            grad_rejected_inputs.append(grad_input[chosen_target_chunk.shape[0] :])
-
-        # combine grad_chosen_inputs and grad_rejected_inputs
-        grad_inputs = grad_chosen_inputs + grad_rejected_inputs
-
-        ctx.save_for_backward(
-            torch.cat(grad_inputs, dim=0),
-            grad_weight,
-            grad_bias,
-        )
-        return loss_acc
+        orpo_loss_fn = partial(_compute_orpo_loss, full_target=target, ignore_index=ignore_index, beta=beta)
+        return LigerFusedLinearPreferenceBase.forward(ctx, _input, weight, target, bias, loss_fn=orpo_loss_fn)
 
     @staticmethod
     def backward(ctx, grad_output):
-        grad_input, grad_weight, grad_bias = ctx.saved_tensors
-        if torch.ne(grad_output, torch.tensor(1.0, device=grad_output.device)):
-            # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
-            # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
-            BT, H = grad_input.view(-1, grad_input.shape[-1]).shape
-            n_rows = BT
-            BLOCK_SIZE = min(MAX_FUSED_SIZE, next_power_of_2(H))
-
-            element_mul_kernel[(n_rows,)](
-                grad_input,
-                grad_input.stride(-2),
-                grad_output,
-                H,
-                BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32,
-            )
-
-            # handle grad_weight
-            if grad_weight is not None:
-                V, H = grad_weight.shape
-                n_rows = V
-
-                element_mul_kernel[(n_rows,)](
-                    grad_weight,
-                    grad_weight.stride(-2),
-                    grad_output,
-                    H,
-                    BLOCK_SIZE=BLOCK_SIZE,
-                    num_warps=32,
-                )
-
-            if grad_bias is not None:
-                V = grad_bias.shape[0]
-                n_rows = V
-
-                element_mul_kernel[(n_rows,)](
-                    grad_bias,
-                    grad_bias.stride(-1),
-                    grad_output,
-                    1,
-                    BLOCK_SIZE=BLOCK_SIZE,
-                    num_warps=32,
-                )
-        return grad_input, grad_weight, None, grad_bias, None, None, None
+        grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)
+        return *grads[:4], None, None, None
