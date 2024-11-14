@@ -3,7 +3,7 @@ from functools import partial
 import torch
 import torch.nn.functional as F
 
-from liger_kernel.chunked_loss.fused_linear import LigerFusedLinearPreferenceBase
+from liger_kernel.chunked_loss.fused_linear_preference import LigerFusedLinearPreferenceBase
 
 
 def odds_ratio_loss(chosen_logps, rejected_logps, beta=0.1):
@@ -29,6 +29,7 @@ def _compute_orpo_loss(
     full_target=None,
     ignore_index=-100,
     beta=0.1,
+    nll_loss_weight=1.0,
 ):
     """
     Compute ORPO loss for a chunk of input and target.
@@ -59,6 +60,7 @@ def _compute_orpo_loss(
         chosen_nll_loss
         / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
     )
+    chosen_nll_loss = chosen_nll_loss * nll_loss_weight
 
     loss_mask = target_chunk != ignore_index
     label_chunk = torch.where(loss_mask, target_chunk, 0)
@@ -86,6 +88,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         bias=None,
         ignore_index=-100,
         beta=0.1,
+        nll_loss_weight=1.0,
         compiled=True,
     ):
         """
@@ -94,7 +97,11 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         Inspired from LigerFusedLinearCrossEntropyFunction which fuses final linear layer and CE loss.
         """
         orpo_loss_fn = partial(
-            _compute_orpo_loss, full_target=target, ignore_index=ignore_index, beta=beta
+            _compute_orpo_loss,
+            full_target=target,
+            ignore_index=ignore_index,
+            beta=beta,
+            nll_loss_weight=nll_loss_weight,
         )
         return LigerFusedLinearPreferenceBase.forward(
             ctx, _input, weight, target, bias, loss_fn=orpo_loss_fn
