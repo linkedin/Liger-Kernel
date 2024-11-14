@@ -3,7 +3,9 @@ from functools import partial
 import torch
 import torch.nn.functional as F
 
-from liger_kernel.chunked_loss.fused_linear_preference import LigerFusedLinearPreferenceBase
+from liger_kernel.chunked_loss.fused_linear_preference import (
+    LigerFusedLinearPreferenceBase,
+)
 
 
 def odds_ratio_loss(chosen_logps, rejected_logps, beta=0.1):
@@ -94,7 +96,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         """
         Fused linear layer with ORPO (Odds-Ratio Preference Optimization) loss.
         Handles both the forward and backward pass of the final linear layer with ORPO loss.
-        Inspired from LigerFusedLinearCrossEntropyFunction which fuses final linear layer and CE loss.
+        Inspired from LigerFusedLinearCrossEntropyFunction (https://arxiv.org/abs/2410.10989) which fuses final linear layer and CE loss.
         """
         orpo_loss_fn = partial(
             _compute_orpo_loss,
