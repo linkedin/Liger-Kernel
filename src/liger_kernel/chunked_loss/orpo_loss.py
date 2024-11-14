@@ -1,5 +1,3 @@
-from functools import partial
-
 import torch
 import torch.nn.functional as F
 
@@ -41,9 +39,18 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         Handles both the forward and backward pass of the final linear layer with ORPO loss.
         Inspired from LigerFusedLinearCrossEntropyFunction (https://arxiv.org/abs/2410.10989) which fuses final linear layer and CE loss.
         """
-        
+
         return LigerFusedLinearPreferenceBase.forward(
-            ctx, _input, weight, target, bias, loss_fn=odds_ratio_loss, compute_nll_loss=compute_nll_loss, ignore_index=ignore_index, beta=beta, compiled=compiled
+            ctx,
+            _input,
+            weight,
+            target,
+            bias,
+            loss_fn=odds_ratio_loss,
+            compute_nll_loss=compute_nll_loss,
+            ignore_index=ignore_index,
+            beta=beta,
+            compiled=compiled,
         )
 
     @staticmethod

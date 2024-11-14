@@ -1,7 +1,8 @@
-import torch
-
-from torch.nn import functional as F
 from functools import partial
+
+import torch
+from torch.nn import functional as F
+
 
 class LigerFusedLinearPreferenceBase(torch.autograd.Function):
     @staticmethod
@@ -13,8 +14,8 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         bias=None,
         loss_fn=None,
         chunk_size=1,
-        compute_nll_loss=True, 
-        ignore_index=-100, 
+        compute_nll_loss=True,
+        ignore_index=-100,
         beta=0.1,
         compiled=True,
     ):
@@ -44,14 +45,23 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         loss_acc = torch.zeros((), device=_input.device)
 
         chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
+        loss_func_to_call = partial(
+            LigerFusedLinearPreferenceBase._compute_loss,
+            preference_loss_fn=loss_fn,
+            ignore_index=ignore_index,
+            beta=beta,
+            compute_nll_loss=compute_nll_loss,
+            full_target=target,
+        )
 
         def accumulate_chunk(input_chunk, target_chunk):
-            loss_func_to_call = partial(LigerFusedLinearPreferenceBase._compute_loss, loss_fn=loss_fn, ignore_index=ignore_index, beta=beta, compute_nll_loss=compute_nll_loss)
             if bias is not None:
                 (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), (
                     chunk_loss,
                     (chunk_or_loss, chunk_chosen_logps, chunk_rejected_logps),
-                ) = torch.func.grad_and_value(loss_func_to_call, argnums=(0, 1, 3), has_aux=True)(
+                ) = torch.func.grad_and_value(
+                    loss_func_to_call, argnums=(0, 1, 3), has_aux=True
+                )(
                     input_chunk, weight, target_chunk, bias
                 )
                 grad_bias.add_(chunk_grad_bias)
@@ -59,7 +69,9 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                 (chunk_grad_input, chunk_grad_weight), (
                     chunk_loss,
                     (chunk_or_loss, chunk_chosen_logps, chunk_rejected_logps),
-                ) = torch.func.grad_and_value(loss_func_to_call, argnums=(0, 1), has_aux=True)(
+                ) = torch.func.grad_and_value(
+                    loss_func_to_call, argnums=(0, 1), has_aux=True
+                )(
                     input_chunk, weight, target_chunk
                 )
             grad_weight.add_(chunk_grad_weight)
@@ -115,13 +127,13 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
 
         return grad_input, grad_weight, None, grad_bias, None, None, None
 
-
+    @staticmethod
     def _compute_loss(
-        loss_fn,
         input_chunk,
         weight,
         target_chunk,
         bias=None,
+        preference_loss_fn=None,
         full_target=None,
         ignore_index=-100,
         beta=0.1,
@@ -131,7 +143,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         """
         Compute the total loss for a chunk of input and target, while using an alignment/preference loss function.
         Args:
-            loss_fn (callable): Loss function to compute the loss on a chunk of input/target.
+            preference_loss_fn (callable): Loss function to compute the loss on a chunk of input/target.
             input_chunk (torch.Tensor): Chunk of input tensor. Shape: (2 * chunk_size, sequence_length, hidden_size).
             weight (torch.Tensor): Weight tensor. Shape: (vocab_size, hidden_size).
             target_chunk (torch.Tensor): Chunk of target tensor. Shape: (2 * chunk_size, sequence_length).
@@ -164,13 +176,17 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         loss_mask = target_chunk != ignore_index
         label_chunk = torch.where(loss_mask, target_chunk, 0)
 
-        per_token_logps = log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
+        per_token_logps = log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(
+            -1
+        )
         average_log_prob = (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
 
         chosen_logps = average_log_prob[:len_chosen_chunk]
         rejected_logps = average_log_prob[len_chosen_chunk:]
 
-        alignment_loss = loss_fn(chosen_logps, rejected_logps, beta=beta, **loss_kwargs)
+        alignment_loss = preference_loss_fn(
+            chosen_logps, rejected_logps, beta=beta, **loss_kwargs
+        )
         alignment_loss = alignment_loss / (full_target.shape[0] // 2)
 
         loss = chosen_nll_loss - alignment_loss
