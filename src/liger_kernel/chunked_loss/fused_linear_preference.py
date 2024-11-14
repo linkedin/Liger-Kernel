@@ -1,11 +1,12 @@
+from abc import abstractmethod
 from functools import partial
-from abc import ABC, abstractmethod
+
 import torch
 from torch.nn import functional as F
 
 
-class LigerFusedLinearPreferenceBase(ABC, torch.autograd.Function):
-    
+class LigerFusedLinearPreferenceBase(torch.autograd.Function):
+
     @abstractmethod
     def preference_loss_fn(chosen_logps, rejected_logps, beta=0.1):
         """

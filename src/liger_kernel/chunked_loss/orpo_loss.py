@@ -5,8 +5,9 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
     LigerFusedLinearPreferenceBase,
 )
 
+
 class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
-    
+
     @staticmethod
     def preference_loss_fn(chosen_logps, rejected_logps, beta=0.1):
         """
@@ -17,7 +18,8 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
             beta (float): Weight for the odds ratio loss.
         """
         log_odds = (chosen_logps - rejected_logps) - (
-            torch.log1p(-torch.exp(chosen_logps)) - torch.log1p(-torch.exp(rejected_logps))
+            torch.log1p(-torch.exp(chosen_logps))
+            - torch.log1p(-torch.exp(rejected_logps))
         )
         ratio = F.logsigmoid(log_odds)
         return beta * ratio.sum()
@@ -40,7 +42,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         Inspired from LigerFusedLinearCrossEntropyFunction (https://arxiv.org/abs/2410.10989) which fuses final linear layer and CE loss.
         """
 
-        return super.forward(
+        return LigerFusedLinearPreferenceBase.forward(
             ctx,
             _input,
             weight,
@@ -56,6 +58,6 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
     @staticmethod
     def backward(ctx, grad_output):
         # Get gradients for _input, weight, bias, and target from the base class
-        grads = super.backward(ctx, grad_output)[:4]
+        grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
         # Return these gradients, followed by None for the remaining inputs
         return *grads, None, None, None, None
