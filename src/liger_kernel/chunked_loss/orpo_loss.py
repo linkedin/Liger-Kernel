@@ -31,7 +31,7 @@ def _compute_orpo_loss(
     full_target=None,
     ignore_index=-100,
     beta=0.1,
-    nll_loss_weight=1.0,
+    compute_nll_loss=True,
 ):
     """
     Compute ORPO loss for a chunk of input and target.
@@ -52,17 +52,19 @@ def _compute_orpo_loss(
     logits_chunk = logits_chunk.float()
     log_probs_chunk = F.log_softmax(logits_chunk, dim=-1)
 
-    chosen_nll_loss = F.nll_loss(
-        log_probs_chunk[:len_chosen_chunk].view(-1, log_probs_chunk.shape[-1]),
-        target_chunk[:len_chosen_chunk].view(-1),
-        reduction="sum",
-        ignore_index=ignore_index,
-    )
-    chosen_nll_loss = (
-        chosen_nll_loss
-        / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
-    )
-    chosen_nll_loss = chosen_nll_loss * nll_loss_weight
+    if compute_nll_loss:
+        chosen_nll_loss = F.nll_loss(
+            log_probs_chunk[:len_chosen_chunk].view(-1, log_probs_chunk.shape[-1]),
+            target_chunk[:len_chosen_chunk].view(-1),
+            reduction="sum",
+            ignore_index=ignore_index,
+        )
+        chosen_nll_loss = (
+            chosen_nll_loss
+            / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
+        )
+    else:
+        chosen_nll_loss = 0.0
 
     loss_mask = target_chunk != ignore_index
     label_chunk = torch.where(loss_mask, target_chunk, 0)
@@ -90,7 +92,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         bias=None,
         ignore_index=-100,
         beta=0.1,
-        nll_loss_weight=1.0,
+        compute_nll_loss=True,
         compiled=True,
     ):
         """
@@ -103,7 +105,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
             full_target=target,
             ignore_index=ignore_index,
             beta=beta,
-            nll_loss_weight=nll_loss_weight,
+            compute_nll_loss=compute_nll_loss,
         )
         return LigerFusedLinearPreferenceBase.forward(
             ctx, _input, weight, target, bias, loss_fn=orpo_loss_fn
@@ -112,4 +114,4 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
     @staticmethod
     def backward(ctx, grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)
-        return *grads[:4], None, None, None
+        return *grads[:4], None, None, None, None
