@@ -16,7 +16,7 @@ def dpo_loss(chosen_logps, rejected_logps, beta=0.1):
         rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
         beta (float): Weight for the direct preference loss.
     """
-    logits_diff = beta * (chosen_logps - rejected_logps) 
+    logits_diff = beta * (chosen_logps - rejected_logps)
     losses = -F.logsigmoid(logits_diff)
     return losses.sum()
 
@@ -42,13 +42,15 @@ def _compute_dpo_loss(
         ignore_index (int): Index to ignore for loss computation.
         beta (float): Weight for the direct preference loss.
     """
-    
+
     len_chosen_chunk = target_chunk.shape[0] // 2
 
     logits_chunk = input_chunk @ weight.t()  # chunk_size x V
     if bias is not None:
         logits_chunk = logits_chunk + bias
-    log_probs_chunk = F.log_softmax(logits_chunk.float(), dim=-1) # Normalize the unnorm_logits
+    log_probs_chunk = F.log_softmax(
+        logits_chunk.float(), dim=-1
+    )  # Normalize the unnorm_logits
 
     # Compute NLL loss for chosen responses
     chosen_nll_loss = 0.0

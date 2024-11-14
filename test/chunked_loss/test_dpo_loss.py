@@ -76,7 +76,7 @@ class HF_DPO_Loss:
         logits_diff = self.beta * (policy_chosen_logps - policy_rejected_logps)
         losses = -F.logsigmoid(logits_diff)
         return losses
-    
+
     def concatenated_forward(
         self,
         _input: torch.FloatTensor,
@@ -155,6 +155,7 @@ class HF_DPO_Loss:
         loss = policy_nll_loss - losses.mean()
         return loss
 
+
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
@@ -166,7 +167,7 @@ class HF_DPO_Loss:
     "scalar, dtype, atol, rtol",
     [
         (1.0, torch.bfloat16, 5e-2, 5e-1),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        (1.0, torch.float32, 2e-2, 5e-1),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])

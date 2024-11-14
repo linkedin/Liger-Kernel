@@ -1,6 +1,7 @@
 from test.chunked_loss.test_dpo_loss import HF_DPO_Loss
 
 import torch
+import triton
 from utils import (
     QUANTILES,
     SingleBenchmarkRunInput,
@@ -10,7 +11,6 @@ from utils import (
     run_benchmarks,
 )
 
-import triton
 from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
 
 
