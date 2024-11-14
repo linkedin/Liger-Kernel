@@ -1,6 +1,8 @@
+from functools import partial
+
 import torch
 import torch.nn.functional as F
-from functools import partial
+
 from liger_kernel.chunked_loss.fused_linear import LigerFusedLinearPreferenceBase
 
 
@@ -19,7 +21,15 @@ def odds_ratio_loss(chosen_logps, rejected_logps, beta=0.1):
     return beta * ratio.sum()
 
 
-def _compute_orpo_loss(input_chunk, weight, target_chunk, bias=None, full_target=None, ignore_index=-100, beta=0.1):
+def _compute_orpo_loss(
+    input_chunk,
+    weight,
+    target_chunk,
+    bias=None,
+    full_target=None,
+    ignore_index=-100,
+    beta=0.1,
+):
     """
     Compute ORPO loss for a chunk of input and target.
     Args:
@@ -46,15 +56,14 @@ def _compute_orpo_loss(input_chunk, weight, target_chunk, bias=None, full_target
         ignore_index=ignore_index,
     )
     chosen_nll_loss = (
-        chosen_nll_loss / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
+        chosen_nll_loss
+        / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
     )
 
     loss_mask = target_chunk != ignore_index
     label_chunk = torch.where(loss_mask, target_chunk, 0)
 
-    per_token_logps = log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(
-        -1
-    )
+    per_token_logps = log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
     average_log_prob = (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
 
     chosen_logps = average_log_prob[:len_chosen_chunk]
@@ -77,15 +86,19 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         bias=None,
         ignore_index=-100,
         beta=0.1,
-        compiled=True
+        compiled=True,
     ):
         """
         Fused linear layer with ORPO (Odds-Ratio Preference Optimization) loss.
         Handles both the forward and backward pass of the final linear layer with ORPO loss.
         Inspired from LigerFusedLinearCrossEntropyFunction which fuses final linear layer and CE loss.
         """
-        orpo_loss_fn = partial(_compute_orpo_loss, full_target=target, ignore_index=ignore_index, beta=beta)
-        return LigerFusedLinearPreferenceBase.forward(ctx, _input, weight, target, bias, loss_fn=orpo_loss_fn)
+        orpo_loss_fn = partial(
+            _compute_orpo_loss, full_target=target, ignore_index=ignore_index, beta=beta
+        )
+        return LigerFusedLinearPreferenceBase.forward(
+            ctx, _input, weight, target, bias, loss_fn=orpo_loss_fn
+        )
 
     @staticmethod
     def backward(ctx, grad_output):

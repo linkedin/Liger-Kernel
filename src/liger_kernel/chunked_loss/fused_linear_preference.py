@@ -42,9 +42,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                 (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), (
                     chunk_loss,
                     (chunk_or_loss, chunk_chosen_logps, chunk_rejected_logps),
-                ) = torch.func.grad_and_value(
-                    loss_fn, argnums=(0, 1, 3), has_aux=True
-                )(
+                ) = torch.func.grad_and_value(loss_fn, argnums=(0, 1, 3), has_aux=True)(
                     input_chunk, weight, target_chunk, bias
                 )
                 grad_bias.add_(chunk_grad_bias)
@@ -52,9 +50,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                 (chunk_grad_input, chunk_grad_weight), (
                     chunk_loss,
                     (chunk_or_loss, chunk_chosen_logps, chunk_rejected_logps),
-                ) = torch.func.grad_and_value(
-                    loss_fn, argnums=(0, 1), has_aux=True
-                )(
+                ) = torch.func.grad_and_value(loss_fn, argnums=(0, 1), has_aux=True)(
                     input_chunk, weight, target_chunk
                 )
             grad_weight.add_(chunk_grad_weight)
