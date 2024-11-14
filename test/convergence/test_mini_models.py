@@ -1,20 +1,3 @@
-from test.utils import (
-    DEFAULT_DATASET_PATH,
-    MiniModelConfig,
-    assert_verbose_allclose,
-    revert_liger_kernel_to_gemma,
-    revert_liger_kernel_to_gemma2,
-    revert_liger_kernel_to_llama,
-    revert_liger_kernel_to_mistral,
-    revert_liger_kernel_to_mixtral,
-    revert_liger_kernel_to_mllama,
-    revert_liger_kernel_to_phi3,
-    revert_liger_kernel_to_qwen2,
-    revert_liger_kernel_to_qwen2_vl,
-    set_seed,
-    simple_collate_fn,
-)
-
 import pytest
 import torch
 from datasets import load_from_disk
@@ -37,6 +20,22 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
     apply_liger_kernel_to_qwen2_vl,
+)
+from test.utils import (
+    DEFAULT_DATASET_PATH,
+    MiniModelConfig,
+    assert_verbose_allclose,
+    revert_liger_kernel_to_gemma,
+    revert_liger_kernel_to_gemma2,
+    revert_liger_kernel_to_llama,
+    revert_liger_kernel_to_mistral,
+    revert_liger_kernel_to_mixtral,
+    revert_liger_kernel_to_mllama,
+    revert_liger_kernel_to_phi3,
+    revert_liger_kernel_to_qwen2,
+    revert_liger_kernel_to_qwen2_vl,
+    set_seed,
+    simple_collate_fn,
 )
 
 try:
@@ -410,8 +409,8 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
-        kwargs["fused_linear_cross_entropy"] = True
-        kwargs["cross_entropy"] = False
+        kwargs["fused_linear_cross_entropy"] = False
+        kwargs["cross_entropy"] = True
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
@@ -687,12 +686,12 @@ def test_mini_model(
     # No logits are materialized
 
     # # Compare the logits from the last step
-    # assert_verbose_allclose(
-    #     expected_output["logits"],
-    #     actual_output["logits"],
-    #     atol=logits_atol,
-    #     rtol=logits_rtol,
-    # )
+    assert_verbose_allclose(
+        expected_output["logits"],
+        actual_output["logits"],
+        atol=logits_atol,
+        rtol=logits_rtol,
+    )
 
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
