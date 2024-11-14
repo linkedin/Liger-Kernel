@@ -147,6 +147,7 @@ if QWEN2_VL_AVAILABLE:
             vision_end_token_id=2,
             vision_token_id=3,
             image_token_id=4,
+            video_token_id=5,
             hidden_act="silu",
             hidden_size=1024,  # 8192
             initializer_range=0.02,
@@ -315,7 +316,8 @@ def run_mini_model_multimodal(
     if with_liger is True:
         kwargs = {
             "rms_norm": True,
-            "cross_entropy": True,
+            "fused_linear_cross_entropy": True,
+            "cross_entropy": False,
             "layer_norm": True,
         }
         model_supports_rope = "qwen2_vl" not in model_name
