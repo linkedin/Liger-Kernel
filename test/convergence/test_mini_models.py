@@ -525,13 +525,13 @@ def run_mini_model(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        pytest.param(
+        pytest.param(  # qwen2_vl requires slightly larger tolerances to pass this test after bug fix to qwen2_vl in transformers v4.47.0
             "mini_qwen2_vl",
             32,
             1e-4,
             torch.float32,
-            1e-8,
-            1e-5,
+            8e-6,  # 1e-8,
+            2e-5,  # 1e-5,
             5e-3,
             1e-5,
             5e-3,
