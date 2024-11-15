@@ -420,8 +420,6 @@ def run_mini_model(
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
-        ...
-        # FIXME: disable revert because it will cause flce to not be patched
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
     model = create_model(model_name).to(dtype).to("cuda")
