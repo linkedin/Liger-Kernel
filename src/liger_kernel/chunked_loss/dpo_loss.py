@@ -1,4 +1,3 @@
-import torch
 import torch.nn.functional as F
 
 from liger_kernel.chunked_loss.fused_linear_preference import (
@@ -6,23 +5,20 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
 )
 
 
-class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
+class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
     def preference_loss_fn(chosen_logps, rejected_logps, beta=0.1):
         """
-        Compute odds-ratio loss.
+        Compute DPO loss (Direct Preference Optimization).
         Args:
             chosen_logps (torch.Tensor): Avg log probabilities of chosen tokens. Shape: (batch_size,).
             rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
-            beta (float): Weight for the odds ratio loss.
+            beta (float): Weight for the direct preference loss.
         """
-        log_odds = (chosen_logps - rejected_logps) - (
-            torch.log1p(-torch.exp(chosen_logps))
-            - torch.log1p(-torch.exp(rejected_logps))
-        )
-        ratio = F.logsigmoid(log_odds)
-        return beta * ratio.sum()
+        logits_diff = beta * (chosen_logps - rejected_logps)
+        losses = -F.logsigmoid(logits_diff)
+        return losses.sum()
 
     @staticmethod
     def forward(
@@ -37,18 +33,16 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         compiled=True,
     ):
         """
-        Fused linear layer with ORPO (Odds-Ratio Preference Optimization) loss.
-        Handles both the forward and backward pass of the final linear layer with ORPO loss.
-        Inspired from LigerFusedLinearCrossEntropyFunction (https://arxiv.org/abs/2410.10989) which fuses final linear layer and CE loss.
+        Fused linear layer with DPO (Direct Preference Optimization) loss.
+        Handles both the forward and backward pass of the final linear layer with DPO loss.
         """
-
         return LigerFusedLinearPreferenceBase.forward(
             ctx=ctx,
             _input=_input,
             weight=weight,
             target=target,
             bias=bias,
-            loss_fn=LigerFusedLinearORPOFunction.preference_loss_fn,
+            loss_fn=LigerFusedLinearDPOFunction.preference_loss_fn,
             compute_nll_loss=compute_nll_loss,
             ignore_index=ignore_index,
             beta=beta,
