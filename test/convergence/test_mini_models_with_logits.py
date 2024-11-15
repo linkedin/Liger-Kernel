@@ -427,8 +427,6 @@ def run_mini_model(
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
-        ...
-        # FIXME: disable revert because it will cause flce to not be patched
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
     model = create_model(model_name).to(dtype).to("cuda")
@@ -455,7 +453,6 @@ def run_mini_model(
 
 
 @pytest.mark.parametrize(
-    # FIXME enable bf16 tests after revert is fixed
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
@@ -527,8 +524,6 @@ def run_mini_model(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        # FIXME qwen2 is broken and needs fix
-        # Note: works with transformers 4.46.2 and 4.45.2
         pytest.param(
             "mini_qwen2_vl",
             32,

@@ -356,7 +356,7 @@ if QWEN2_VL_AVAILABLE:
                 mrope_section=[16, 24, 24],  # (temporal, height, width)
             ),
             sliding_window=4096,
-            tie_word_embeddings=True,
+            tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
             use_sliding_window=False,
@@ -454,7 +454,6 @@ def run_mini_model(
 
 
 @pytest.mark.parametrize(
-    # FIXME enable bf16 tests after revert is fixed
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
@@ -526,8 +525,6 @@ def run_mini_model(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        # FIXME qwen2 is broken and needs fix
-        # Note: broken with transformers 4.46.2 and 4.45.2
         pytest.param(
             "mini_qwen2_vl",
             32,
