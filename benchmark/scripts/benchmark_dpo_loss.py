@@ -91,7 +91,7 @@ def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     _input = torch.randn(B, T, H, device=device, dtype=dtype)
     # Target shape: [B, T]
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
-    
+
     ref_chosen_logps = torch.randn(B // 2, device=device)
     ref_rejected_logps = torch.randn(B // 2, device=device)
 
