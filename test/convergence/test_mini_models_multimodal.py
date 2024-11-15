@@ -312,6 +312,10 @@ def run_mini_model_multimodal(
 
     set_seed(42)
 
+    revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
+    if "mllama" in model_name:
+        revert_kwargs["model_type"] = "conditional_generation"
+
     if with_liger is True:
         kwargs = {
             "rms_norm": True,
@@ -328,7 +332,7 @@ def run_mini_model_multimodal(
             kwargs["swiglu"] = True
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
-        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
     model = create_model(model_name).to(dtype).to("cuda")
     model.gradient_checkpointing_enable()
@@ -352,7 +356,7 @@ def run_mini_model_multimodal(
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
-    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
+    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
     return {"loss": loss_list, "logits": output.logits, "model": model}
 
 
