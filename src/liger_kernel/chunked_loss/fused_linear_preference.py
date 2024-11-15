@@ -71,6 +71,9 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             compute_nll_loss=compute_nll_loss,
             full_target=target,
             **loss_kwargs,
+            beta=beta,
+            compute_nll_loss=compute_nll_loss,
+            full_target=target,
         )
 
         def accumulate_chunk(input_chunk, target_chunk):
