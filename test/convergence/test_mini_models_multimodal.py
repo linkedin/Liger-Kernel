@@ -18,7 +18,7 @@ import pytest
 import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-from transformer import PreTrainedTokenizerFast
+from transformers import PreTrainedTokenizerFast
 
 from liger_kernel.transformers import (
     apply_liger_kernel_to_mllama,
