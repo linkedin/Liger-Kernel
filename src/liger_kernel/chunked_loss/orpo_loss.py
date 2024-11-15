@@ -61,3 +61,30 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
         # Return these gradients, followed by None for the remaining inputs
         return *grads, None, None, None, None
+
+
+class LigerFusedLinearORPOLoss(torch.nn.Module):
+    def __init__(
+        self,
+        ignore_index=-100,
+        beta=0.1,
+        compute_nll_loss=True,
+        compiled=True
+    ):
+        super().__init__()
+        self.ignore_index = ignore_index
+        self.beta = beta
+        self.compute_nll_loss = compute_nll_loss
+        self.compiled = compiled
+
+    def forward(self, lin_weight, _input, target, bias=None):
+        return LigerFusedLinearORPOFunction.apply(
+            _input,
+            lin_weight,
+            target,
+            bias,
+            self.ignore_index,
+            self.beta,
+            self.compute_nll_loss,
+            self.compiled,
+        )
