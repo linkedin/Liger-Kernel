@@ -206,7 +206,7 @@ def supports_bfloat16():
     return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
 
 
-def revert_liger_kernel_to_llama():
+def revert_liger_kernel_to_llama(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Llama.
     """
@@ -214,23 +214,35 @@ def revert_liger_kernel_to_llama():
     from transformers.models.llama import modeling_llama
 
     importlib.reload(modeling_llama)
+    model_config.model_class = modeling_llama.LlamaForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_mllama():
+def revert_liger_kernel_to_mllama(
+    model_config: MiniModelConfig, model_type: str = "causal_lm"
+):
     """
     Revert all Liger kernel patches applied to MLlama.
     """
 
+    assert model_type in [
+        "causal_lm",
+        "conditional_generation",
+    ], f'model_type must be "causal_lm" or "conditional_generation", Got: {model_type}'
     import torch.nn as nn
     from transformers.models.mllama import modeling_mllama
 
     importlib.reload(nn)
     importlib.reload(modeling_mllama)
+    if model_type == "causal_lm":
+        model_config.model_class = modeling_mllama.MllamaForCausalLM
+    else:
+        model_config.model_class = modeling_mllama.MllamaForConditionalGeneration
+
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_mistral():
+def revert_liger_kernel_to_mistral(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Mistral.
     """
@@ -238,10 +250,11 @@ def revert_liger_kernel_to_mistral():
     from transformers.models.mistral import modeling_mistral
 
     importlib.reload(modeling_mistral)
+    model_config.model_class = modeling_mistral.MistralForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_mixtral():
+def revert_liger_kernel_to_mixtral(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Mixtral.
     """
@@ -249,10 +262,11 @@ def revert_liger_kernel_to_mixtral():
     from transformers.models.mixtral import modeling_mixtral
 
     importlib.reload(modeling_mixtral)
+    model_config.model_class = modeling_mixtral.MixtralForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_gemma():
+def revert_liger_kernel_to_gemma(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Gemma.
     """
@@ -260,10 +274,11 @@ def revert_liger_kernel_to_gemma():
     from transformers.models.gemma import modeling_gemma
 
     importlib.reload(modeling_gemma)
+    model_config.model_class = modeling_gemma.GemmaForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_gemma2():
+def revert_liger_kernel_to_gemma2(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Gemma2.
     """
@@ -271,10 +286,11 @@ def revert_liger_kernel_to_gemma2():
     from transformers.models.gemma2 import modeling_gemma2
 
     importlib.reload(modeling_gemma2)
+    model_config.model_class = modeling_gemma2.Gemma2ForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_qwen2():
+def revert_liger_kernel_to_qwen2(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Qwen2.
     """
@@ -282,20 +298,23 @@ def revert_liger_kernel_to_qwen2():
     from transformers.models.qwen2 import modeling_qwen2
 
     importlib.reload(modeling_qwen2)
+    model_config.model_class = modeling_qwen2.Qwen2ForCausalLM
+
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_qwen2_vl():
+def revert_liger_kernel_to_qwen2_vl(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Qwen2-VL.
     """
     from transformers.models.qwen2_vl import modeling_qwen2_vl
 
     importlib.reload(modeling_qwen2_vl)
+    model_config.model_class = modeling_qwen2_vl.Qwen2VLForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_phi3():
+def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Phi3.
     """
@@ -303,4 +322,5 @@ def revert_liger_kernel_to_phi3():
     from transformers.models.phi3 import modeling_phi3
 
     importlib.reload(modeling_phi3)
+    model_config.model_class = modeling_phi3.Phi3ForCausalLM
     print("Liger kernel patches have been reverted.")
