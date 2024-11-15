@@ -1,3 +1,6 @@
+import os
+import sys
+
 import torch
 import triton
 from utils import (
@@ -10,6 +13,8 @@ from utils import (
 )
 
 from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
 class TorchDPOLoss(torch.nn.Module):
@@ -30,12 +35,14 @@ class TorchDPOLoss(torch.nn.Module):
         )
         self.dpo_loss = HF_DPO_Loss(beta=beta, ignore_index=ignore_index)
 
-    def forward(self, x, target):
+    def forward(self, x, target, ref_chosen_logps, ref_rejected_logps):
         return self.dpo_loss.get_batch_loss_metrics(
             x,
             self.lin.weight,
             target,
             self.lin.bias if hasattr(self.lin, "bias") else None,
+            ref_chosen_logps,
+            ref_rejected_logps,
         )
 
 
@@ -51,20 +58,13 @@ class LigerDPOLoss(torch.nn.Module):
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
+            in_features=H, out_features=V, bias=False, dtype=dtype
         )
-        self.beta = beta
-        self.ignore_index = ignore_index
+        self.dpo_loss = LigerFusedLinearDPOFunction.apply
 
-    def forward(self, x, target):
-        return LigerFusedLinearDPOFunction.apply(
-            x,
-            self.lin.weight,
-            target,
-            self.lin.bias if hasattr(self.lin, "bias") else None,
-            self.ignore_index,
-            self.beta,
-            True,
+    def forward(self, x, y, ref_chosen_logps, ref_rejected_logps):
+        return self.dpo_loss(
+            x, self.lin.weight, y, ref_chosen_logps, ref_rejected_logps
         )
 
 
@@ -91,6 +91,9 @@ def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     _input = torch.randn(B, T, H, device=device, dtype=dtype)
     # Target shape: [B, T]
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
+    
+    ref_chosen_logps = torch.randn(B // 2, device=device)
+    ref_rejected_logps = torch.randn(B // 2, device=device)
 
     # Add ignore_index tokens to simulate padding
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
@@ -99,9 +102,9 @@ def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
     def fwd():
         if provider == "liger":
-            return liger_dpo_loss(_input, target)
+            return liger_dpo_loss(_input, target, ref_chosen_logps, ref_rejected_logps)
         elif provider == "huggingface":
-            return torch_dpo_loss(_input, target)
+            return torch_dpo_loss(_input, target, ref_chosen_logps, ref_rejected_logps)
 
     def full():
         y = fwd()
@@ -137,9 +140,11 @@ def bench_speed_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
 
     # Input shape: [B, T, H]
     _input = torch.randn(B, T, H, device=device, dtype=dtype)
-
     # Target shape: [B, T]
     target = torch.randint(V, (B, T), device=device, dtype=torch.long)
+
+    ref_chosen_logps = torch.randn(B // 2, device=device)
+    ref_rejected_logps = torch.randn(B // 2, device=device)
 
     # Add ignore_index tokens
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
@@ -148,9 +153,9 @@ def bench_speed_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
 
     def fwd():
         if provider == "liger":
-            return liger_dpo_loss(_input, target)
+            return liger_dpo_loss(_input, target, ref_chosen_logps, ref_rejected_logps)
         elif provider == "huggingface":
-            return torch_dpo_loss(_input, target)
+            return torch_dpo_loss(_input, target, ref_chosen_logps, ref_rejected_logps)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
