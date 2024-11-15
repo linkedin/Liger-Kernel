@@ -1,9 +1,8 @@
 from test.utils import assert_verbose_allclose, set_seed, supports_bfloat16
 from typing import Optional
-
+from torch.nn import KLDivLoss
 import pytest
 import torch
-from torch.nn import KLDivLoss
 
 from liger_kernel.transformers.functional import liger_jsd
 from liger_kernel.transformers.jsd import LigerJSD, LigerJSDFunction
@@ -327,3 +326,74 @@ def test_correctness_with_all_indices_ignored(
 
     output2.backward()
     assert_verbose_allclose(torch.zeros_like(x2.grad), x2.grad, atol=atol, rtol=rtol)
+
+
+def test_beta_zero():
+    B=1
+    T=2
+    V=4
+    ignore_index=-100
+    is_last_layer=False
+    dtype=torch.float32
+    atol=1e-5
+    device='cuda'
+    rtol=1e-5
+
+    torch_kl = KLDivLoss(log_target=True, reduction="none")
+    liger_jsd = LigerJSD(beta=0.0)
+
+    inp = torch.randn(
+        B * T, V, device='cuda', dtype=dtype, requires_grad=True
+    ).log_softmax(dim=-1)
+
+    x1 = inp.detach().clone().requires_grad_(True)
+    x2 = inp.detach().clone().requires_grad_(True)
+
+    with torch.no_grad():
+        target = torch.randn(B * T, V, dtype=dtype, device=device).log_softmax(dim=-1)
+
+    label = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    output = torch_kl(x1, target).sum(dim=-1).mean()
+    output2 = liger_jsd(x2, target, label)
+    assert_verbose_allclose(output, output2, atol=atol, rtol=rtol)
+
+    output.backward()
+    output2.backward()
+    assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+
+
+
+def test_beta_one():
+    B=1
+    T=2
+    V=4
+    ignore_index=-100
+    is_last_layer=False
+    dtype=torch.float32
+    atol=1e-5
+    device='cuda'
+    rtol=1e-5
+
+    torch_kl = KLDivLoss(log_target=True, reduction="none")
+    liger_jsd = LigerJSD(beta=1.0)
+
+    inp = torch.randn(
+        B * T, V, device='cuda', dtype=dtype, requires_grad=True
+    ).log_softmax(dim=-1)
+
+    x1 = inp.detach().clone().requires_grad_(True)
+    x2 = inp.detach().clone().requires_grad_(True)
+
+    with torch.no_grad():
+        target = torch.randn(B * T, V, dtype=dtype, device=device).log_softmax(dim=-1)
+
+    label = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    output = torch_kl(target, x1).sum(dim=-1).mean()
+    output2 = liger_jsd(x2, target, label)
+    assert_verbose_allclose(output, output2, atol=atol, rtol=rtol)
+
+    output.backward()
+    output2.backward()
+    assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
