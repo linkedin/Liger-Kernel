@@ -1,3 +1,21 @@
+from test.utils import (
+    DEFAULT_DATASET_PATH,
+    MiniModelConfig,
+    assert_verbose_allclose,
+    revert_liger_kernel_to_gemma,
+    revert_liger_kernel_to_gemma2,
+    revert_liger_kernel_to_llama,
+    revert_liger_kernel_to_mistral,
+    revert_liger_kernel_to_mixtral,
+    revert_liger_kernel_to_mllama,
+    revert_liger_kernel_to_phi3,
+    revert_liger_kernel_to_qwen2,
+    revert_liger_kernel_to_qwen2_vl,
+    set_seed,
+    simple_collate_fn,
+    supports_bfloat16,
+)
+
 import pytest
 import torch
 from datasets import load_from_disk
@@ -20,23 +38,6 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
     apply_liger_kernel_to_qwen2_vl,
-)
-from test.utils import (
-    DEFAULT_DATASET_PATH,
-    MiniModelConfig,
-    assert_verbose_allclose,
-    revert_liger_kernel_to_gemma,
-    revert_liger_kernel_to_gemma2,
-    revert_liger_kernel_to_llama,
-    revert_liger_kernel_to_mistral,
-    revert_liger_kernel_to_mixtral,
-    revert_liger_kernel_to_mllama,
-    revert_liger_kernel_to_phi3,
-    revert_liger_kernel_to_qwen2,
-    revert_liger_kernel_to_qwen2_vl,
-    set_seed,
-    simple_collate_fn,
-    supports_bfloat16,
 )
 
 try:
@@ -330,13 +331,15 @@ if QWEN2_VL_AVAILABLE:
         model_class=Qwen2VLForConditionalGeneration,
         mini_model_config=Qwen2VLConfig(
             attention_dropout=0.0,
+            # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
             bos_token_id=1,  # 151643
             eos_token_id=2,  # 151645
-            vision_start_token_id=31995,
-            vision_end_token_id=31996,
-            vision_token_id=31997,
-            image_token_id=31998,
-            video_token_id=31999,
+            vision_start_token_id=32765,  # vocab_size - 5
+            vision_end_token_id=32766,  # vocab_size - 4
+            vision_token_id=32767,  # vocab_size - 3
+            image_token_id=32768,  # vocab_size - 2
+            video_token_id=32769,  # vocab_size - 1
             hidden_act="silu",
             hidden_size=1536,  # 8192
             initializer_range=0.02,
@@ -355,7 +358,7 @@ if QWEN2_VL_AVAILABLE:
             sliding_window=4096,
             tie_word_embeddings=False,
             use_cache=True,
-            vocab_size=32000,  # 152064
+            vocab_size=32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
             use_sliding_window=False,
             vision_config={
                 "depth": 4,  # 32

@@ -1,11 +1,9 @@
 from typing import List, Optional, Tuple, Union
 
 import torch
+from packaging import version
 from torch.nn import CrossEntropyLoss
-
-from liger_kernel.transformers.fused_linear_cross_entropy import (
-    LigerFusedLinearCrossEntropyLoss,
-)
+from transformers import __version__ as transformers_version
 from transformers.models.qwen2_vl.modeling_qwen2_vl import (
     _CONFIG_FOR_DOC,
     QWEN2_VL_INPUTS_DOCSTRING,
@@ -14,6 +12,10 @@ from transformers.models.qwen2_vl.modeling_qwen2_vl import (
 from transformers.utils import (
     add_start_docstrings_to_model_forward,
     replace_return_docstrings,
+)
+
+from liger_kernel.transformers.fused_linear_cross_entropy import (
+    LigerFusedLinearCrossEntropyLoss,
 )
 
 
@@ -136,10 +138,16 @@ def lce_forward(
         if attention_mask is not None:
             attention_mask = attention_mask.to(inputs_embeds.device)
 
-    if position_ids is None and input_ids is not None:
-        position_ids, _ = self.get_rope_index(
-            input_ids, image_grid_thw, video_grid_thw, attention_mask
-        )
+    if version.parse(transformers_version) > version.parse("4.46.2"):
+        # NOTE: this bug fix for qwen2-vl is not applied until transformers 4.47.0
+        # https://github.com/huggingface/transformers/issues/33401
+        # While correct, this breaks equivalence with past versions of Qwen2-VL from
+        # transformers and leads to failed tests or users noticing differences in results.
+        # TODO: remove the above conditional when liker-kernel drops support for transformers < 4.47.0
+        if position_ids is None and input_ids is not None:
+            position_ids, _ = self.get_rope_index(
+                input_ids, image_grid_thw, video_grid_thw, attention_mask
+            )
 
     outputs = self.model(
         input_ids=None,
