@@ -331,8 +331,15 @@ if QWEN2_VL_AVAILABLE:
         model_class=Qwen2VLForConditionalGeneration,
         mini_model_config=Qwen2VLConfig(
             attention_dropout=0.0,
+            # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
             bos_token_id=1,  # 151643
             eos_token_id=2,  # 151645
+            vision_start_token_id=32765,  # vocab_size - 5
+            vision_end_token_id=32766,  # vocab_size - 4
+            vision_token_id=32767,  # vocab_size - 3
+            image_token_id=32768,  # vocab_size - 2
+            video_token_id=32769,  # vocab_size - 1
             hidden_act="silu",
             hidden_size=1536,  # 8192
             initializer_range=0.02,
@@ -351,7 +358,7 @@ if QWEN2_VL_AVAILABLE:
             sliding_window=4096,
             tie_word_embeddings=False,
             use_cache=True,
-            vocab_size=32000,  # 152064
+            vocab_size=32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
             use_sliding_window=False,
             vision_config={
                 "depth": 4,  # 32
@@ -447,7 +454,6 @@ def run_mini_model(
 
 
 @pytest.mark.parametrize(
-    # FIXME enable bf16 tests after revert is fixed
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
@@ -519,44 +525,43 @@ def run_mini_model(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        # FIXME qwen2 is broken and needs fix
-        # pytest.param(
-        #     "mini_qwen2_vl",
-        #     32,
-        #     1e-4,
-        #     torch.float32,
-        #     1e-8,
-        #     1e-5,
-        #     5e-3,
-        #     1e-5,
-        #     5e-3,
-        #     1e-5,
-        #     marks=pytest.mark.skipif(
-        #         not QWEN2_VL_AVAILABLE,
-        #         reason="Qwen2-VL not available in this version of transformers",
-        #     ),
-        # ),
-        # pytest.param(
-        #     "mini_qwen2_vl",
-        #     32,
-        #     1e-4,
-        #     torch.bfloat16,
-        #     1e-3,
-        #     1e-2,
-        #     1e-1,
-        #     1e-2,
-        #     1e-2,
-        #     1e-2,
-        #     marks=[
-        #         pytest.mark.skipif(
-        #             not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-        #         ),
-        #         pytest.mark.skipif(
-        #             not QWEN2_VL_AVAILABLE,
-        #             reason="Qwen2-VL not available in this version of transformers",
-        #         ),
-        #     ],
-        # ),
+        pytest.param(  # qwen2_vl requires slightly larger tolerances to pass this test after bug fix to qwen2_vl in transformers v4.47.0
+            "mini_qwen2_vl",
+            32,
+            1e-4,
+            torch.float32,
+            8e-6,  # 1e-8,
+            2e-5,  # 1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not QWEN2_VL_AVAILABLE,
+                reason="Qwen2-VL not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_qwen2_vl",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(
+                    not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+                ),
+                pytest.mark.skipif(
+                    not QWEN2_VL_AVAILABLE,
+                    reason="Qwen2-VL not available in this version of transformers",
+                ),
+            ],
+        ),
         ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_phi3",
