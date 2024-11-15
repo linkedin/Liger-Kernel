@@ -1,9 +1,19 @@
 import functools
 import os
+
+import pytest
+import torch
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+from transformer import PreTrainedTokenizerFast
+
+from liger_kernel.transformers import (
+    apply_liger_kernel_to_mllama,
+    apply_liger_kernel_to_qwen2_vl,
+)
 from test.utils import (
     FAKE_CONFIGS_PATH,
     UNTOKENIZED_DATASET_PATH,
-    MiniModelConfig,
     assert_verbose_allclose,
     load_tokenizer_config,
     multimodal_collate_fn,
@@ -12,17 +22,6 @@ from test.utils import (
     set_seed,
     supports_bfloat16,
     train_bpe_tokenizer,
-)
-
-import pytest
-import torch
-from datasets import load_dataset
-from torch.utils.data import DataLoader
-from transformers import PreTrainedTokenizerFast
-
-from liger_kernel.transformers import (
-    apply_liger_kernel_to_mllama,
-    apply_liger_kernel_to_qwen2_vl,
 )
 
 try:
@@ -140,13 +139,14 @@ if QWEN2_VL_AVAILABLE:
         mini_model_config=Qwen2VLConfig(
             attention_dropout=0.0,
             # Token Ids and vocab size must match those in the tokenizer/processor
-            # https://huggingface.co/Qwen/Qwen2-VL-7B-Instruct/blob/main/config.json
+            # test/resources/fake_configs/Qwen/Qwen2-VL-7B-Instruct/tokenizer_config.json
             bos_token_id=0,
             eos_token_id=0,
             vision_start_token_id=1,
             vision_end_token_id=2,
             vision_token_id=3,
             image_token_id=4,
+            video_token_id=5,
             hidden_act="silu",
             hidden_size=1024,  # 8192
             initializer_range=0.02,

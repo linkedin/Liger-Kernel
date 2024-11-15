@@ -1,20 +1,3 @@
-from test.utils import (
-    DEFAULT_DATASET_PATH,
-    MiniModelConfig,
-    assert_verbose_allclose,
-    revert_liger_kernel_to_gemma,
-    revert_liger_kernel_to_gemma2,
-    revert_liger_kernel_to_llama,
-    revert_liger_kernel_to_mistral,
-    revert_liger_kernel_to_mixtral,
-    revert_liger_kernel_to_mllama,
-    revert_liger_kernel_to_phi3,
-    revert_liger_kernel_to_qwen2,
-    revert_liger_kernel_to_qwen2_vl,
-    set_seed,
-    simple_collate_fn,
-)
-
 import pytest
 import torch
 from datasets import load_from_disk
@@ -37,6 +20,23 @@ from liger_kernel.transformers import (
     apply_liger_kernel_to_phi3,
     apply_liger_kernel_to_qwen2,
     apply_liger_kernel_to_qwen2_vl,
+)
+from test.utils import (
+    DEFAULT_DATASET_PATH,
+    MiniModelConfig,
+    assert_verbose_allclose,
+    revert_liger_kernel_to_gemma,
+    revert_liger_kernel_to_gemma2,
+    revert_liger_kernel_to_llama,
+    revert_liger_kernel_to_mistral,
+    revert_liger_kernel_to_mixtral,
+    revert_liger_kernel_to_mllama,
+    revert_liger_kernel_to_phi3,
+    revert_liger_kernel_to_qwen2,
+    revert_liger_kernel_to_qwen2_vl,
+    set_seed,
+    simple_collate_fn,
+    supports_bfloat16,
 )
 
 try:
@@ -332,6 +332,11 @@ if QWEN2_VL_AVAILABLE:
             attention_dropout=0.0,
             bos_token_id=1,  # 151643
             eos_token_id=2,  # 151645
+            vision_start_token_id=31995,
+            vision_end_token_id=31996,
+            vision_token_id=31997,
+            image_token_id=31998,
+            video_token_id=31999,
             hidden_act="silu",
             hidden_size=1536,  # 8192
             initializer_range=0.02,
@@ -516,22 +521,23 @@ def run_mini_model(
         #     ),
         # ),
         # FIXME qwen2 is broken and needs fix
-        # pytest.param(
-        #     "mini_qwen2_vl",
-        #     32,
-        #     1e-4,
-        #     torch.float32,
-        #     1e-8,
-        #     1e-5,
-        #     5e-3,
-        #     1e-5,
-        #     5e-3,
-        #     1e-5,
-        #     marks=pytest.mark.skipif(
-        #         not QWEN2_VL_AVAILABLE,
-        #         reason="Qwen2-VL not available in this version of transformers",
-        #     ),
-        # ),
+        # Note: broken with transformers 4.46.2 and 4.45.2
+        pytest.param(
+            "mini_qwen2_vl",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not QWEN2_VL_AVAILABLE,
+                reason="Qwen2-VL not available in this version of transformers",
+            ),
+        ),
         # pytest.param(
         #     "mini_qwen2_vl",
         #     32,

@@ -2,6 +2,10 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 from torch.nn import CrossEntropyLoss
+
+from liger_kernel.transformers.fused_linear_cross_entropy import (
+    LigerFusedLinearCrossEntropyLoss,
+)
 from transformers.models.qwen2_vl.modeling_qwen2_vl import (
     _CONFIG_FOR_DOC,
     QWEN2_VL_INPUTS_DOCSTRING,
@@ -10,10 +14,6 @@ from transformers.models.qwen2_vl.modeling_qwen2_vl import (
 from transformers.utils import (
     add_start_docstrings_to_model_forward,
     replace_return_docstrings,
-)
-
-from liger_kernel.transformers.fused_linear_cross_entropy import (
-    LigerFusedLinearCrossEntropyLoss,
 )
 
 
@@ -81,7 +81,6 @@ def lce_forward(
     "The image shows a street scene with a red stop sign in the foreground. In the background, there is a large red gate with Chinese characters ..."
     ```"""
     # FIXME: The code is outdated and not compatible with transformer >= 4.46.1
-
     output_attentions = (
         output_attentions
         if output_attentions is not None
@@ -100,23 +99,43 @@ def lce_forward(
         inputs_embeds = self.model.embed_tokens(input_ids)
         if pixel_values is not None:
             pixel_values = pixel_values.type(self.visual.get_dtype())
-            image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw).to(
-                inputs_embeds.device
+            image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw)
+            n_image_tokens = (input_ids == self.config.image_token_id).sum().item()
+            n_image_features = image_embeds.shape[0]
+            if n_image_tokens != n_image_features:
+                raise ValueError(
+                    f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
+                )
+            image_mask = (
+                (input_ids == self.config.image_token_id)
+                .unsqueeze(-1)
+                .expand_as(inputs_embeds)
+                .to(inputs_embeds.device)
             )
-            image_mask = input_ids == self.config.image_token_id
-            if self.training:
-                inputs_embeds = inputs_embeds.clone()
-            inputs_embeds[image_mask] = image_embeds
+            image_embeds = image_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
+            inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+
         if pixel_values_videos is not None:
             pixel_values_videos = pixel_values_videos.type(self.visual.get_dtype())
-            video_embeds = self.visual(pixel_values_videos, grid_thw=video_grid_thw).to(
-                inputs_embeds.device
+            video_embeds = self.visual(pixel_values_videos, grid_thw=video_grid_thw)
+            n_video_tokens = (input_ids == self.config.video_token_id).sum().item()
+            n_video_features = video_embeds.shape[0]
+            if n_video_tokens != n_video_features:
+                raise ValueError(
+                    f"Video features and video tokens do not match: tokens: {n_video_tokens}, features {n_video_features}"
+                )
+            video_mask = (
+                (input_ids == self.config.video_token_id)
+                .unsqueeze(-1)
+                .expand_as(inputs_embeds)
+                .to(inputs_embeds.device)
             )
-            video_mask = input_ids == self.config.video_token_id
-            inputs_embeds[video_mask] = video_embeds
+            video_embeds = video_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
+            inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
+
         if attention_mask is not None:
             attention_mask = attention_mask.to(inputs_embeds.device)
-    # The code is copied from https://github.com/huggingface/transformers/pull/33487
+
     if position_ids is None and input_ids is not None:
         position_ids, _ = self.get_rope_index(
             input_ids, image_grid_thw, video_grid_thw, attention_mask
