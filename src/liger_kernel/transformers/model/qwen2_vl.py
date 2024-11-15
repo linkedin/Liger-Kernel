@@ -142,7 +142,7 @@ def lce_forward(
         # https://github.com/huggingface/transformers/issues/33401
         # While correct, this breaks equivalence with past versions of Qwen2-VL from
         # transformers and leads to failed tests or users noticing differences in results.
-        # TODO: remove the above conditional when liker-kernel drops support for transformers < 4.47.0
+        # TODO: remove above conditional when liger drops support for transformers<4.47.0
         if position_ids is None and input_ids is not None:
             position_ids, _ = self.get_rope_index(
                 input_ids, image_grid_thw, video_grid_thw, attention_mask
