@@ -32,6 +32,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         alpha=1.0,
         beta=0.1,
         compiled=True,
+        **loss_kwargs,
     ):
         """
         Base class for fused linear layer with preference loss.
@@ -49,6 +50,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             alpha (float): Weight for the NLL loss.
             beta (float): Weight for the odds ratio loss.
             compiled (bool): Whether to use torch compile for chunk accumulation.
+            loss_kwargs (dict): Other possible arguments that a loss function might need
         """
         # TODO: Tune CHUNK_SIZE to fully utilize the GPU
         CHUNK_SIZE = chunk_size
@@ -68,6 +70,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             beta=beta,
             compute_nll_loss=compute_nll_loss,
             full_target=target,
+            **loss_kwargs,
         )
 
         def accumulate_chunk(input_chunk, target_chunk):
