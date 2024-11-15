@@ -1,5 +1,3 @@
-from test.chunked_loss.test_dpo_loss import HF_DPO_Loss
-
 import torch
 import triton
 from utils import (
@@ -24,6 +22,8 @@ class TorchDPOLoss(torch.nn.Module):
         ignore_index: int = -100,
         bias: bool = False,
     ):
+        from test.chunked_loss.test_dpo_loss import HF_DPO_Loss
+
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype

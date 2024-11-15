@@ -29,14 +29,19 @@ class HFDPOLoss(HFAlignmentLoss):
     ):
         """Compute DPO loss for a batch of policy log probabilities.
         Args:
-            policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (batch_size,)
-            policy_rejected_logps: Log probabilities of the policy model for the rejected responses. Shape: (batch_size,)
+            policy_chosen_logps: Log probs of policy model for chosen responses. Shape: (batch_size,)
+            policy_rejected_logps: Log probs of policy model for rejected responses. Shape: (batch_size,)
+            reference_chosen_logps: Log probs of reference model for chosen responses. Shape: (batch_size,)
+            reference_rejected_logps: Log probs of reference model for rejected responses. Shape: (batch_size,)
 
         Returns:
-            The losses tensor contains the DPO loss for each example in the batch.
+            DPO loss for each example in the batch
         """
-        # Derived from https://huggingface.co/papers/2305.18290
-        logits_diff = self.beta * (policy_chosen_logps - policy_rejected_logps)
+
+        chosen_advantages = policy_chosen_logps - reference_chosen_logps
+        rejected_advantages = policy_rejected_logps - reference_rejected_logps
+        logits_diff = self.beta * (chosen_advantages - rejected_advantages)
+
         losses = -F.logsigmoid(logits_diff)
         return losses
 
@@ -99,7 +104,9 @@ class LigerLMHeadDPO(torch.nn.Module):
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ignore_index, beta", [(-100, 0.1), (42, 0.2)])
-def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta):
+def test_dpo_correctness(
+    B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta
+):
     B = 2 * B  # dpo loss requires B to be even
 
     torch_lm_head_dpo = TorchLMHeadDPO(
