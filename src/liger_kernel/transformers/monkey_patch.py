@@ -607,9 +607,7 @@ def apply_liger_kernel_to_qwen2(
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
             modeling_qwen2.CrossEntropyLoss = LigerCrossEntropyLoss
 
-    # import pdb; pdb.set_trace()
     if fused_linear_cross_entropy:
-
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
             modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward
         else:  # if version < 4.46.1
