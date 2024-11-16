@@ -17,7 +17,7 @@ class CustomArguments:
     dataset: str = "HuggingFaceM4/the_cauldron"
     dataset_subset: str = "ai2d"
     dataset_split: str = "train"
-    max_seq_length: int = 1024  # potentially a bit short for multimodal data
+    max_seq_length: int = 2048
     dataset_text_field: str = "texts"
     use_liger: bool = False
 
@@ -157,5 +157,4 @@ def train():
 
 
 if __name__ == "__main__":
-    train()
     train()
