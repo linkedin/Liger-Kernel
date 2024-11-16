@@ -1,4 +1,4 @@
-uv run torchrun --nnodes=1 --nproc-per-node=2 training_multimodal.py \
+torchrun --nnodes=1 --nproc-per-node=2 training_multimodal.py \
     --model_name "Qwen/Qwen2-VL-2B-Instruct" \
     --bf16 \
     --num_train_epochs 1 \
@@ -6,7 +6,7 @@ uv run torchrun --nnodes=1 --nproc-per-node=2 training_multimodal.py \
     --per_device_eval_batch_size 2 \
     --eval_strategy "no" \
     --save_strategy "no" \
-    --optim "paged_adamw_32bit" \
+    --optim "adamw_torch_fused" \
     --learning_rate 6e-6 \
     --weight_decay 0.05 \
     --warmup_ratio 0.1 \
