@@ -58,9 +58,6 @@ class LigerJSD(torch.nn.Module):
 
     def __init__(self, beta: float = 0.5, ignore_index: int = -100):
         super().__init__()
-        assert (
-            beta > 0 and beta < 1
-        ), f"beta must be greater than 0 and less than 1. Got: {beta}"
         self.beta = beta
         self.ignore_index = ignore_index
 
