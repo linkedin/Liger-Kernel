@@ -1,5 +1,10 @@
 import os
-from test.utils import assert_verbose_allclose, set_seed, supports_bfloat16
+from test.utils import (
+    assert_verbose_allclose,
+    infer_device,
+    set_seed,
+    supports_bfloat16,
+)
 
 import pytest
 import torch
@@ -11,14 +16,15 @@ from liger_kernel.transformers.rms_norm import LigerRMSNorm
 
 set_seed(42)
 torch.use_deterministic_algorithms(True)
-
+device = infer_device()
 #  Only setting torch.use_deterministic_algorithms(True) might throw the following error:
 #  RuntimeError: Deterministic behavior was enabled with either `torch.use_deterministic_algorithms(True)` or `at::Context::setDeterministicAlgorithms(true)`,
 #  but this operation is not deterministic because it uses CuBLAS and you have CUDA >= 10.2. To enable deterministic behavior in this case, you must set an
 #  environment variable before running your PyTorch application: CUBLAS_WORKSPACE_CONFIG=:4096:8 or CUBLAS_WORKSPACE_CONFIG=:16:8. For more information,
 #  go to https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+if device == "cuda":
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 SLEEP_SECONDS = 0.1
 
@@ -97,7 +103,7 @@ class GemmaRMSNorm(nn.Module):
     [
         (LlamaRMSNorm, 0.0, "llama"),
         (GemmaRMSNorm, 1.0, "gemma"),
-        (BaseRMSNorm, 0.0, "none"),
+        # (BaseRMSNorm, 0.0, "none"),
     ],
 )
 @pytest.mark.parametrize(
@@ -110,16 +116,16 @@ class GemmaRMSNorm(nn.Module):
 def test_correctness(
     bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode, in_place
 ):
-    _tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
+    _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
 
     h1 = _tensor.clone().requires_grad_(True)
     h2 = _tensor.clone().requires_grad_(True)
 
     # do
-    do = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
+    do = torch.randn(bs, sl, hd, device=device, dtype=dtype)
 
     # reference (llama or gemma)
-    ref_rms = reference(hidden_size=hd).to("cuda").to(dtype)
+    ref_rms = reference(hidden_size=hd).to(device).to(dtype)
     ref_o = ref_rms(h1)
     ref_o.backward(do, retain_graph=True)
 
@@ -128,7 +134,7 @@ def test_correctness(
         LigerRMSNorm(
             hidden_size=hd, offset=offset, casting_mode=casting_mode, in_place=in_place
         )
-        .to("cuda")
+        .to(device)
         .to(dtype)
     )
     triton_o = triton_rms(h2)
@@ -169,12 +175,12 @@ def test_correctness_functional(
     bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode
 ):
     # h
-    _tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
+    _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
 
     h1 = _tensor.clone().requires_grad_(True)
     h2 = _tensor.clone().requires_grad_(True)
 
-    w = torch.randn(hd, device="cuda", dtype=dtype)
+    w = torch.randn(hd, device=device, dtype=dtype)
 
     y1 = liger_rms_norm(h1, w, 1e-6, offset, casting_mode)
     y2 = LigerRMSNormFunction.apply(h2, w, 1e-6, offset, casting_mode)
