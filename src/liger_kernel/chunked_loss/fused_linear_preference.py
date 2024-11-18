@@ -27,6 +27,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         bias=None,
         loss_fn=None,
         chunk_size=1,
+        auto_tune_chunk_size=False,
         compute_nll_loss=True,
         ignore_index=-100,
         beta=0.1,
@@ -43,29 +44,22 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
             loss_fn (callable): Loss function to compute the loss on a chunk of input/target.
             chunk_size (int): Size of a chunk (# of batches of stacked chosen and rejected inputs).
+            auto_tune_chunk_size (bool): Whether to auto-tune the chunk size.
             compute_nll_loss (bool): Whether to compute NLL loss.
             ignore_index (int): Index to ignore for loss computation.
             beta (float): Weight for the odds ratio loss.
             compiled (bool): Whether to use torch compile for chunk accumulation.
         """
-        # TODO: Tune CHUNK_SIZE to fully utilize the GPU
-        CHUNK_SIZE = chunk_size
 
         grad_weight = torch.zeros_like(weight)
         grad_chosen_inputs = []
         grad_rejected_inputs = []
         grad_bias = torch.zeros_like(bias) if bias is not None else None
         loss_acc = torch.zeros((), device=_input.device)
-
-        chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
-        loss_func_to_call = partial(
-            LigerFusedLinearPreferenceBase._compute_loss,
-            preference_loss_fn=loss_fn,
-            ignore_index=ignore_index,
-            beta=beta,
-            compute_nll_loss=compute_nll_loss,
-            full_target=target,
-        )
+        # Index at which the rejected responses start
+        len_chosen = target.shape[0] // 2
+        if compiled:
+                loss_func_to_call = torch.compile(accumulate_chunk)
 
         def accumulate_chunk(input_chunk, target_chunk):
             if bias is not None:
@@ -91,11 +85,48 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             loss_acc.add_(chunk_loss)
             return chunk_grad_input
 
-        len_chosen = target.shape[0] // 2
-        _chosen_input_chunks = torch.chunk(_input[:len_chosen], chunks=chunks, dim=0)
-        _chosen_target_chunks = torch.chunk(target[:len_chosen], chunks=chunks, dim=0)
-        _rejected_input_chunks = torch.chunk(_input[len_chosen:], chunks=chunks, dim=0)
-        _rejected_target_chunks = torch.chunk(target[len_chosen:], chunks=chunks, dim=0)
+        # TODO: Tune CHUNK_SIZE to fully utilize the GPU
+        if auto_tune_chunk_size:
+            total_gpu_memory = torch.cuda.get_device_properties(_input.device).total_memory
+            memory_allocated = torch.cuda.memory_allocated(device=_input.device)
+            torch.cuda.reset_peak_memory_stats(device=_input.device)
+            print(f"Total GPU memory: {total_gpu_memory}, Memory allocated: {memory_allocated}")
+            auto_tune_input_chunk  = torch.cat([_input[0], _input[len_chosen+1]], dim=0)
+            auto_tune_target_chunk = torch.cat([target[0], target[len_chosen+1]], dim=0)
+            grad_input = accumulate_chunk(auto_tune_input_chunk, auto_tune_target_chunk)
+
+            grad_chosen_inputs.append(grad_input[0])
+            grad_rejected_inputs.append(grad_input[1])
+            peak_memory = torch.cuda.max_memory_allocated(device=_input.device)
+            print(f"Peak memory: {peak_memory}")
+            memory_of_forward = peak_memory - memory_allocated
+            total_free_memory_available = total_gpu_memory - memory_allocated - memory_of_forward
+            CHUNK_SIZE = max(1, total_free_memory_available // memory_of_forward)
+        else:
+            CHUNK_SIZE = chunk_size
+
+
+        chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
+        loss_func_to_call = partial(
+            LigerFusedLinearPreferenceBase._compute_loss,
+            preference_loss_fn=loss_fn,
+            ignore_index=ignore_index,
+            beta=beta,
+            compute_nll_loss=compute_nll_loss,
+            full_target=target,
+        )
+
+        if auto_tune_chunk_size:
+            # Skip the first chosen and rejected input since they were used for auto-tuning
+            _chosen_input_chunks = torch.chunk(_input[1:len_chosen], chunks=chunks, dim=0)
+            _chosen_target_chunks = torch.chunk(target[1:len_chosen], chunks=chunks, dim=0)
+            _rejected_input_chunks = torch.chunk(_input[len_chosen+1:], chunks=chunks, dim=0)
+            _rejected_target_chunks = torch.chunk(target[len_chosen+1:], chunks=chunks, dim=0)
+        else:
+            _chosen_input_chunks = torch.chunk(_input[:len_chosen], chunks=chunks, dim=0)
+            _chosen_target_chunks = torch.chunk(target[:len_chosen], chunks=chunks, dim=0)
+            _rejected_input_chunks = torch.chunk(_input[len_chosen:], chunks=chunks, dim=0)
+            _rejected_target_chunks = torch.chunk(target[len_chosen:], chunks=chunks, dim=0)
 
         for (
             chosen_input_chunk,
@@ -113,8 +144,6 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                 [chosen_target_chunk, rejected_target_chunk], dim=0
             )
 
-            if compiled:
-                accumulate_chunk = torch.compile(accumulate_chunk)
             grad_input = accumulate_chunk(input_chunk, target_chunk)
 
             grad_chosen_inputs.append(grad_input[: chosen_target_chunk.shape[0]])
