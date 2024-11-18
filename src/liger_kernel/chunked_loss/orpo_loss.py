@@ -35,14 +35,21 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         beta=0.1,
         compute_nll_loss=True,
         compiled=True,
+        auto_tune_chunk_size=False,
+        chunk_size=1,
     ):
         """
         Fused linear layer with ORPO (Odds-Ratio Preference Optimization) loss.
         Handles both the forward and backward pass of the final linear layer with ORPO loss.
         Inspired from LigerFusedLinearCrossEntropyFunction (https://arxiv.org/abs/2410.10989) which fuses final linear layer and CE loss.
         """
+        if hasattr(ctx, "chunk_size"):
+            chunk_size = ctx.chunk_size
+            auto_tune_chunk_size = False
+        else:
+            chunk_size = chunk_size
 
-        return LigerFusedLinearPreferenceBase.forward(
+        loss, chunk_size = LigerFusedLinearPreferenceBase.forward(
             ctx=ctx,
             _input=_input,
             weight=weight,
@@ -53,11 +60,15 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
             ignore_index=ignore_index,
             beta=beta,
             compiled=compiled,
+            chunk_size=chunk_size,
+            auto_tune_chunk_size=auto_tune_chunk_size,
         )
+        ctx.chunk_size = chunk_size
+        return loss
 
     @staticmethod
     def backward(ctx, grad_output):
         # Get gradients for _input, weight, bias, and target from the base class
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
         # Return these gradients, followed by None for the remaining inputs
-        return *grads, None, None, None, None
+        return *grads, None, None, None, None, None
