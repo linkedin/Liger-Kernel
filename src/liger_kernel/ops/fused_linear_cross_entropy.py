@@ -229,6 +229,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
         reduction: reduction to apply
         """
+
         loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
             _input,
             weight,
