@@ -11,6 +11,10 @@ from utils import (
 )
 
 from liger_kernel.transformers.kl_div import LigerKLDIVLoss
+from liger_kernel.utils import infer_device
+
+
+device = infer_device()
 
 S, E = 12, 18
 
@@ -22,10 +26,10 @@ def bench_speed_kldiv(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
     torch_kl_div = nn.KLDivLoss(reduction=reduction)
     liger_kl_div = LigerKLDIVLoss(reduction=reduction)
 
-    _input = torch.randn(B * T, V, requires_grad=True, device="cuda").log_softmax(
+    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(
         dim=-1
     )
-    target = torch.randn(B * T, V, device="cuda").softmax(dim=-1)
+    target = torch.randn(B * T, V, device=device).softmax(dim=-1)
 
     def fwd():
         if input.kernel_provider == "liger":
@@ -68,10 +72,10 @@ def bench_memory_kldiv(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
     V = input.x
     B, T = input.extra_benchmark_config["B"], input.extra_benchmark_config["T"]
 
-    _input = torch.randn(B * T, V, requires_grad=True, device="cuda").log_softmax(
+    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(
         dim=-1
     )
-    target = torch.randn(B * T, V, device="cuda").softmax(dim=-1)
+    target = torch.randn(B * T, V, device=device).softmax(dim=-1)
 
     def fwd():
         if input.kernel_provider == "liger":

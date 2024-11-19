@@ -10,6 +10,10 @@ from utils import (
 )
 
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
+from liger_kernel.utils import infer_device
+
+
+device = infer_device()
 
 
 def bench_speed_layer_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -22,10 +26,10 @@ def bench_speed_layer_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRun
     dtype = extra_benchmark_config["dtype"]
 
     x_shape = (M, N)
-    triton_ln = LigerLayerNorm(hidden_size=N).to("cuda")
-    torch_ln = torch.nn.LayerNorm(N, eps=eps).to("cuda")
+    triton_ln = LigerLayerNorm(hidden_size=N).to(device)
+    torch_ln = torch.nn.LayerNorm(N, eps=eps).to(device)
 
-    x = torch.randn(x_shape, dtype=dtype, device="cuda")
+    x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
     x.requires_grad_(True)
 
@@ -73,10 +77,10 @@ def bench_memory_layer_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRu
 
     x_shape = (M, N)
 
-    triton_ln = LigerLayerNorm(hidden_size=N).to("cuda")
-    torch_ln = torch.nn.LayerNorm(N, eps=eps).to("cuda")
+    triton_ln = LigerLayerNorm(hidden_size=N).to(device)
+    torch_ln = torch.nn.LayerNorm(N, eps=eps).to(device)
 
-    x = torch.randn(x_shape, dtype=dtype, device="cuda")
+    x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
     x.requires_grad_(True)
 

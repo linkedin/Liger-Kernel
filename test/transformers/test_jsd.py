@@ -7,6 +7,9 @@ from torch.nn import KLDivLoss
 
 from liger_kernel.transformers.functional import liger_jsd
 from liger_kernel.transformers.jsd import LigerJSD, LigerJSDFunction
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 set_seed(42)
 
@@ -84,7 +87,7 @@ def _test_correctness_once(
     atol,
     rtol,
     is_last_layer=True,
-    device="cuda",
+    device=device,
 ):
     torch_jsd = JSD(dtype=dtype)
 
@@ -126,7 +129,7 @@ def _test_correctness_with_beta_once(
     atol,
     rtol,
     is_last_layer=True,
-    device="cuda",
+    device=device,
 ):
     torch_jsd = JSD(beta=beta, dtype=dtype)
 
@@ -163,7 +166,7 @@ def _test_correctness_with_ignore_index_once(
     dtype,
     atol,
     rtol,
-    device="cuda",
+    device=device,
 ):
     torch_jsd = JSD(ignore_index=ignore_index, dtype=dtype)
 
@@ -198,7 +201,7 @@ def _test_correctness_with_ignore_index_once(
 
 
 def _test_correctness_functional(
-    B, T, V, beta, ignore_index, is_last_layer, dtype, atol, rtol, device="cuda"
+    B, T, V, beta, ignore_index, is_last_layer, dtype, atol, rtol, device=device
 ):
     input = torch.randn(
         B * T, V, device=device, dtype=dtype, requires_grad=True
@@ -292,7 +295,7 @@ def test_correctness_with_all_indices_ignored(
     dtype=torch.bfloat16,
     atol=1e-3,
     rtol=1e-3,
-    device="cuda",
+    device=device,
 ):
     ignore_index = -100
     torch_jsd = JSD(ignore_index=ignore_index, dtype=dtype)

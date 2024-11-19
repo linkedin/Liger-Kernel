@@ -7,6 +7,9 @@ import torch
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
 from liger_kernel.transformers.functional import liger_fused_linear_jsd
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 set_seed(42)
 
@@ -108,7 +111,6 @@ class LigerLMHeadJSD(torch.nn.Module):
     ],
 )
 def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
-    device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
         V=V,
@@ -183,7 +185,6 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
 def test_correctness_with_ignore_index(
     B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
 ):
-    device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
         V=V,
@@ -267,8 +268,6 @@ def test_correctness_with_ignore_index(
 def test_correctness_functional(
     B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
 ):
-    device = "cuda"
-
     # init the linear in all FusedLinearJSDs with the same weights
     _weight = torch.rand(V, H // 2, device=device, dtype=dtype)
     _weight1 = _weight.detach().clone().requires_grad_(True)
@@ -346,7 +345,6 @@ def test_correctness_functional(
 def test_correctness_all_ignored(
     B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
 ):
-    device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
         V=V,
@@ -411,7 +409,6 @@ def test_amp(autocast_dtype, atol, rtol):
     ignore_index = -100
     temperature = 1.0
     beta = 0.5
-    device = "cuda"
     dtype = torch.float32
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
@@ -456,7 +453,7 @@ def test_amp(autocast_dtype, atol, rtol):
     ]  # Randomly select indices
     label[indices_to_assign] = ignore_index
 
-    with torch.autocast(device_type="cuda", dtype=autocast_dtype):
+    with torch.autocast(device_type=device, dtype=autocast_dtype):
         output1 = torch_lm_head_jsd(_input1, teacher_input, label)
         output2 = liger_lm_head_jsd(_input2, teacher_input, label)
 

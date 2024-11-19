@@ -58,6 +58,10 @@ try:
 except ImportError:
     MLLAMA_AVAILABLE = False
 
+from liger_kernel.utils import infer_device
+
+device = infer_device()
+
 torch.use_deterministic_algorithms(True)
 
 #  Only setting torch.use_deterministic_algorithms(True) throws the following error:
@@ -333,7 +337,7 @@ def run_mini_model_multimodal(
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
-    model = create_model(model_name).to(dtype).to("cuda")
+    model = create_model(model_name).to(dtype).to(device)
     model.gradient_checkpointing_enable()
 
     train_dataset = create_multimodal_dataset(model_name)

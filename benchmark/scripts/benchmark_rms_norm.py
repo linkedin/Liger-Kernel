@@ -11,6 +11,10 @@ from utils import (
 )
 
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
+from liger_kernel.utils import infer_device
+
+
+device = infer_device()
 
 
 class LlamaRMSNorm(nn.Module):
@@ -42,10 +46,10 @@ def bench_speed_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
 
     x_shape = (M, N)
 
-    triton_rms = LigerRMSNorm(hidden_size=N, eps=eps).to("cuda")
-    llama_rms = LlamaRMSNorm(hidden_size=N, eps=eps).to("cuda")
+    triton_rms = LigerRMSNorm(hidden_size=N, eps=eps).to(device)
+    llama_rms = LlamaRMSNorm(hidden_size=N, eps=eps).to(device)
 
-    x = torch.randn(x_shape, dtype=dtype, device="cuda")
+    x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
     x.requires_grad_(True)
 
@@ -104,10 +108,10 @@ def bench_memory_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
     x_shape = (M, N)
 
-    triton_rms = LigerRMSNorm(hidden_size=N, eps=eps).to("cuda")
-    llama_rms = LlamaRMSNorm(hidden_size=N, eps=eps).to("cuda")
+    triton_rms = LigerRMSNorm(hidden_size=N, eps=eps).to(device)
+    llama_rms = LlamaRMSNorm(hidden_size=N, eps=eps).to(device)
 
-    x = torch.randn(x_shape, dtype=dtype, device="cuda")
+    x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
     x.requires_grad_(True)
 

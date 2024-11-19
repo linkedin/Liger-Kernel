@@ -11,6 +11,10 @@ from utils import (
 )
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
+from liger_kernel.utils import infer_device
+
+
+device = infer_device()
 
 
 def bench_memory_cross_entropy(
@@ -24,8 +28,8 @@ def bench_memory_cross_entropy(
     B = input.extra_benchmark_config["B"]
     T = input.extra_benchmark_config["T"]
 
-    _input = torch.randn(B * T, V, requires_grad=True, device="cuda")
-    target = torch.randint(V, (B * T, 1), device="cuda").squeeze(1)
+    _input = torch.randn(B * T, V, requires_grad=True, device=device)
+    target = torch.randint(V, (B * T, 1), device=device).squeeze(1)
 
     def fwd():
         if provider == "liger":
@@ -57,8 +61,8 @@ def bench_speed_cross_entropy(
     B = input.extra_benchmark_config["B"]
     T = input.extra_benchmark_config["T"]
 
-    _input = torch.randn(B * T, V, requires_grad=True, device="cuda")
-    target = torch.randint(V, (B * T, 1), device="cuda").squeeze(1)
+    _input = torch.randn(B * T, V, requires_grad=True, device=device)
+    target = torch.randint(V, (B * T, 1), device=device).squeeze(1)
 
     def fwd():
         if provider == "liger":

@@ -4,6 +4,9 @@ import pytest
 import torch
 
 from liger_kernel.transformers.group_norm import LigerGroupNorm
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 random_batch_size = random.randint(1, 16)
 random_num_groups = random.randint(1, 32)
@@ -32,17 +35,17 @@ def test_liger_group_norm(
     torch.manual_seed(0)
 
     _tensor = torch.randn(
-        batch_size, num_channels, hidden_size, dtype=dtype, device="cuda"
+        batch_size, num_channels, hidden_size, dtype=dtype, device=device
     )
 
     liger_x = _tensor.clone().detach().requires_grad_(True)
     torch_x = _tensor.clone().detach().requires_grad_(True)
 
-    liger_ln = LigerGroupNorm(num_channels, num_groups, eps=1e-6).to(dtype).cuda()
+    liger_ln = LigerGroupNorm(num_channels, num_groups, eps=1e-6).to(dtype).to(device)
     torch_ln = (
         torch.nn.GroupNorm(num_channels=num_channels, num_groups=num_groups, eps=1e-6)
         .to(dtype)
-        .cuda()
+        .to(device)
     )
 
     with torch.no_grad():

@@ -12,6 +12,9 @@ from liger_kernel.transformers.functional import liger_fused_linear_cross_entrop
 from liger_kernel.transformers.fused_linear_cross_entropy import (
     LigerFusedLinearCrossEntropyLoss,
 )
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 # set random seed globally
 set_seed()
@@ -142,7 +145,6 @@ def test_correctness(
     atol,
     rtol,
 ):
-    device = "cuda"
     torch_lm_head_ce = TorchLMHeadCE(
         H=H,
         V=V,
@@ -233,8 +235,6 @@ def test_correctness(
 )
 @pytest.mark.parametrize("bias", [True, False])
 def test_correctness_functional(B, T, H, V, scalar, dtype, bias, atol, rtol):
-    device = "cuda"
-
     _input = torch.randn(B * T, H, device=device, dtype=dtype) * scalar
     x1 = _input.detach().clone().requires_grad_(True)
     x2 = _input.detach().clone().requires_grad_(True)
@@ -272,7 +272,6 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, atol, rtol):
     ],
 )
 def test_amp(B, T, H, V, cast_dtype, atol, rtol):
-    device = "cuda"
     dtype = torch.float32
     torch_lm_head_ce = TorchLMHeadCE(
         H=H,
@@ -302,13 +301,13 @@ def test_amp(B, T, H, V, cast_dtype, atol, rtol):
 
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
-    with torch.autocast(device_type="cuda", dtype=cast_dtype):
+    with torch.autocast(device_type=device, dtype=cast_dtype):
         output1 = torch_lm_head_ce(_input1, target)
         output2 = liger_lm_head_ce(_input2, target)
 
     assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
 
-    with torch.autocast(device_type="cuda", dtype=cast_dtype):
+    with torch.autocast(device_type=device, dtype=cast_dtype):
         output1.backward()
         output2.backward()
 

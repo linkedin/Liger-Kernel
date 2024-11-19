@@ -10,6 +10,10 @@ from utils import (
 )
 
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
+from liger_kernel.utils import infer_device
+
+
+device = infer_device()
 
 
 class TorchJSD(torch.nn.Module):
@@ -134,7 +138,6 @@ def bench_memory_fused_linear_jsd(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(H=H, V=V, dtype=dtype, device=device).to(device)
     liger_lm_head_jsd = LigerLMHeadJSD(H=H, V=V, dtype=dtype, device=device).to(device)
 
@@ -183,7 +186,6 @@ def bench_speed_fused_linear_jsd(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(H=H, V=V, dtype=dtype, device=device).to(device)
     liger_lm_head_jsd = LigerLMHeadJSD(H=H, V=V, dtype=dtype, device=device).to(device)
 
