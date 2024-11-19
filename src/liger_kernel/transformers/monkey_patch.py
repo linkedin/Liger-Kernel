@@ -56,12 +56,15 @@ def _bind_method_to_module(module, method_name: str, new_method: Callable):
     module.__dict__[method_name] = new_method.__get__(module, module.__class__)
 
 
-def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama"):
+def _patch_rms_norm_module(
+    module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True
+):
     module.offset = offset
     module.casting_mode = casting_mode
     module.variance_epsilon = (
         getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
     )
+    module.in_place = in_place
     _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
     _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
 
@@ -510,7 +513,7 @@ def apply_liger_kernel_to_gemma2(
         LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False
     )
     _patch_rms_norm_module_for_gemma2 = partial(
-        _patch_rms_norm_module, offset=1.0, casting_mode="gemma"
+        _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
     )
 
     if rope:
