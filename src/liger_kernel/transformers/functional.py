@@ -10,6 +10,7 @@ from liger_kernel.ops.group_norm import LigerGroupNormFunction
 from liger_kernel.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.kl_div import LigerKLDivLossFunction
 from liger_kernel.ops.layer_norm import LigerLayerNormFunction
+from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.rope import LigerRopeFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
@@ -19,6 +20,7 @@ liger_fused_linear_cross_entropy = LigerFusedLinearCrossEntropyFunction.apply
 liger_geglu = LigerGELUMulFunction.apply
 liger_rms_norm = LigerRMSNormFunction.apply
 liger_rope = LigerRopeFunction.apply
+liger_qwen2vl_mrope = LigerQwen2VLMRopeFunction.apply
 liger_layer_norm = LigerLayerNormFunction.apply
 liger_kl_div = LigerKLDivLossFunction.apply
 liger_jsd = LigerJSDFunction.apply
