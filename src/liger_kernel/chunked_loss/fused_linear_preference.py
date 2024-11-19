@@ -96,7 +96,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             grad_weight.add_(chunk_grad_weight)
             loss_acc.add_(chunk_loss)
             return chunk_grad_input
-        
+
         if compiled:
             accumulate_chunk = torch.compile(accumulate_chunk)
 
