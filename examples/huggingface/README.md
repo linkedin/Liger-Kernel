@@ -1,9 +1,22 @@
 # Liger-Kernel Example with HuggingFace Trainer
 
 ## How to Run
+
+### Locally on a GPU machine
+You can run the example locally on a GPU machine. The default hyperparameters and configurations work on single node with 4xA100 80GB GPUs.
+
 ```bash
 pip install -r requirements.txt
 sh run_{MODEL}.sh
+```
+
+### Remotely on Modal
+If you do not have access to a GPU machine, you can run the example on Modal. Modal is a serverless platform that allows you to run your code on a remote GPU machine. You can sign up for a free account at [Modal](https://www.modal.com/).
+
+```bash
+pip install modal
+modal setup  # authenticate with Modal
+modal run launch_on_modal.py --script "run_qwen2_vl.sh"
 ```
 
 **Notes**
@@ -27,7 +40,7 @@ Throughput improves by around 20%, while GPU memory usage drops by 40%. This all
 ### QWEN
 Benchmark conditions: Qwen2-7B, Alpaca Dataset, Max seq len = 512, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 4 A100s.
 
-Throughput improves by around 10%, while GPU memory usage drops by 50%. 
+Throughput improves by around 10%, while GPU memory usage drops by 50%.
 
 ![Throughput](img/qwen_tps.png)
 ![GPU Memory Allocated](img/qwen_mem_alloc.png)
@@ -36,7 +49,7 @@ Throughput improves by around 10%, while GPU memory usage drops by 50%.
 ### GEMMA 7B
 Benchmark conditions: Gemma-7B, Alpaca Dataset, Max seq len = 512, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 4 A100s.
 
-Throughput improves by around 24%, while GPU memory usage drops by 33%. 
+Throughput improves by around 24%, while GPU memory usage drops by 33%.
 
 ![Throughput](img/gemma_7b_mem.png)
 ![GPU Memory Allocated](img/gemma_7b_tp.png)

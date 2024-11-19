@@ -1,3 +1,5 @@
+#!/bin/bash
+
 torchrun --nnodes=1 --nproc-per-node=4 training.py \
     --bf16 \
     --num_train_epochs 1 \
