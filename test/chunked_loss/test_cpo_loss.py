@@ -22,11 +22,14 @@ class HFCPOLoss(HFAlignmentLoss):
         beta: float = 0.1,
         ignore_index: int = -100,
         label_smoothing: float = 0.0,
+        simpo_gamma: float = 0.5,
+        loss_type: str = "sigmoid",
     ):
         super().__init__(alpha=alpha, beta=beta, ignore_index=ignore_index)
         # Sigmoid defaults to the CPO loss defined in the paper listed above.
-        self.loss_type = "sigmoid"
+        self.loss_type = loss_type
         self.label_smoothing = label_smoothing
+        self.simpo_gamma = simpo_gamma
 
     def alignment_loss(
         self,
@@ -55,6 +58,12 @@ class HFCPOLoss(HFAlignmentLoss):
                 F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
                 + F.logsigmoid(-self.beta * logits) * self.label_smoothing
             )
+        elif self.loss_type == "simpo":
+            logits = logits - (self.simpo_gamma / self.beta)
+            losses = (
+                F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
+                + F.logsigmoid(-self.beta * logits) * self.label_smoothing
+            )
         else:
             raise ValueError(
                 f"Unknown loss type: {self.loss_type}. Should be one of ['sigmoid']"
@@ -66,7 +75,6 @@ class HFCPOLoss(HFAlignmentLoss):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        # (1, 2, 12, 128),
         (8, 128, 1024, 4096),
         (3, 47, 31, 123),  # random shape
     ],
