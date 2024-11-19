@@ -1,5 +1,5 @@
 """
-launch_with_modal.py
+launch_on_modal.py
 
 This tool is designed to launch scripts using Modal.
 
@@ -11,7 +11,7 @@ and executes the specified training script remotely.
 pip install modal
 modal setup  # authenticate with Modal
 export HF_TOKEN="your_huggingface_token"  # if using a gated model such as llama3
-modal run launch_with_modal.py --script "run_qwen2_vl.sh"
+modal run launch_on_modal.py --script "run_qwen2_vl.sh"
 ```
 
 ### Caveats
@@ -66,7 +66,7 @@ def main(script: str):
     Launch a script remotely on modal.
     ```bash
     export HF_TOKEN="your_huggingface_token"  # if using a gated model such as llama3
-    modal run --detach launch_with_modal.py --script "run_qwen2_vl.sh"
+    modal run --detach launch_on_modal.py --script "run_qwen2_vl.sh"
     ```
     """
     launch_script.remote(script=script)

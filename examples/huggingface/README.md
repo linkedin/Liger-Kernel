@@ -16,7 +16,7 @@ If you do not have access to a GPU machine, you can run the example on Modal. Mo
 ```bash
 pip install modal
 modal setup  # authenticate with Modal
-modal run launch_with_modal.py --script "run_qwen2_vl.sh"
+modal run launch_on_modal.py --script "run_qwen2_vl.sh"
 ```
 
 **Notes**
