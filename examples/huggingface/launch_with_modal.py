@@ -26,7 +26,6 @@ import os
 
 import modal
 from modal import gpu
-from modal.exception import InvalidError
 
 TWO_HOURS = 2 * 60 * 60
 SIXTEEN_GB = 16 * 1024
