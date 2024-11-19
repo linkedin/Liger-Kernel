@@ -407,11 +407,9 @@ def run_mini_model(
 
     if with_liger is True:
         kwargs = {
+            "rope": True,
             "rms_norm": True,
         }
-        model_supports_rope = "qwen2_vl" not in model_name
-        if model_supports_rope:
-            kwargs["rope"] = True
 
         model_supports_layer_norm = "qwen2_vl" in model_name
         if model_supports_layer_norm:
