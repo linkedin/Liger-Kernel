@@ -27,13 +27,13 @@ class TorchLMHeadORPO(torch.nn.Module):
     """
 
     def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
-        from test.chunked_loss.test_orpo_loss import HF_ORPO_Loss
+        from test.chunked_loss.test_orpo_loss import HFORPOLoss
 
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=False, dtype=dtype
         )
-        self.orpo_loss = HF_ORPO_Loss().get_batch_loss_metrics
+        self.orpo_loss = HFORPOLoss().get_batch_loss_metrics
 
     def forward(self, x, y):
         return self.orpo_loss(x, self.lin.weight, y)

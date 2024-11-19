@@ -25,6 +25,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         weight,
         target,
         bias=None,
+        chunk_fwd=None,
         loss_fn=None,
         chunk_size=1,
         compute_nll_loss=True,
@@ -62,8 +63,11 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         loss_acc = torch.zeros((), device=_input.device)
 
         chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
+        if chunk_fwd is None:
+            chunk_fwd = LigerFusedLinearPreferenceBase._compute_loss
+
         loss_func_to_call = partial(
-            LigerFusedLinearPreferenceBase._compute_loss,
+            chunk_fwd,
             preference_loss_fn=loss_fn,
             ignore_index=ignore_index,
             alpha=alpha,
