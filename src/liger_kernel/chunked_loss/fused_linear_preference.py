@@ -96,6 +96,9 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             grad_weight.add_(chunk_grad_weight)
             loss_acc.add_(chunk_loss)
             return chunk_grad_input
+        
+        if compiled:
+            accumulate_chunk = torch.compile(accumulate_chunk)
 
         len_chosen = target.shape[0] // 2
         _chosen_input_chunks = torch.chunk(_input[:len_chosen], chunks=chunks, dim=0)
@@ -119,8 +122,6 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                 [chosen_target_chunk, rejected_target_chunk], dim=0
             )
 
-            if compiled:
-                accumulate_chunk = torch.compile(accumulate_chunk)
             grad_input = accumulate_chunk(input_chunk, target_chunk)
 
             grad_chosen_inputs.append(grad_input[: chosen_target_chunk.shape[0]])
