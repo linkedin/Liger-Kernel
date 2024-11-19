@@ -34,7 +34,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         ignore_index=-100,
         beta=0.1,
         compute_nll_loss=True,
-        compiled=False,
+        compiled=True,
     ):
         """
         Fused linear layer with ORPO (Odds-Ratio Preference Optimization) loss.
