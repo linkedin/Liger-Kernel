@@ -22,6 +22,8 @@ time it is run. For iterative development, consider using `modal.Volume` to cach
 model and dataset between runs.
 """
 
+import os
+
 import modal
 from modal import gpu
 from modal.exception import InvalidError
@@ -37,12 +39,9 @@ image = (
     .copy_local_dir(".", "/root")
 )
 
-try:
-    hf_token_secret = modal.Secret.from_local_environ(["HF_TOKEN"])
-    secrets = (hf_token_secret,)
-except InvalidError:
-    print("HF_TOKEN not found in local environment. Skipping secret creation.")
-    secrets = ()
+if "HF_TOKEN" not in os.environ:
+    print("HF_TOKEN not found in environment variables, using an empty token.")
+hf_token_secret = modal.Secret.from_dict({"HF_TOKEN": os.environ.get("HF_TOKEN", "")})
 
 
 @app.function(
@@ -50,10 +49,9 @@ except InvalidError:
     image=image,
     timeout=TWO_HOURS,
     memory=SIXTEEN_GB,
-    # secrets=secrets,
+    secrets=[hf_token_secret],
 )
 def launch_script(script: str):
-    import os
     import subprocess
 
     script_path = f"/root/{script}"
