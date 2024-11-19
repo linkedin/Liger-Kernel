@@ -6,6 +6,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 from tokenizers import AddedToken, Tokenizer
@@ -16,23 +17,44 @@ from transformers import PretrainedConfig, PreTrainedModel
 from transformers.tokenization_utils_base import BatchEncoding
 
 
+def infer_device():
+    """
+    Get current device name based on available devices
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    elif torch.xpu.is_available():
+        return "xpu"
+    else:
+        return "cpu"
+
+
+torch_device = infer_device()
+
+
 def set_seed(seed=42):
     """
     Fix all random seeds we use for reproducibility.
     """
     # Python random seed
     random.seed(seed)
-
+    # Numpy random seed
+    np.random.seed(0)
     # PyTorch random seed
     torch.manual_seed(seed)
 
-    # If you are using CUDA
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    if torch_device == "cuda":
+        # If you are using CUDA
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
 
-    # PyTorch backend settings
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+        # PyTorch backend settings
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    elif torch_device == "xpu":
+        # If you ware using intel GPU
+        torch.xpu.manual_seed(seed)
+        torch.xpu.manual_seed_all(seed)
 
     # Python hash seed
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -203,9 +225,12 @@ def train_bpe_tokenizer(special_tokens: List[str], unk_token: str = "<|unk|>"):
 
 
 def supports_bfloat16():
-    if not torch.cuda.is_available():
+    if torch_device == "cuda":
+        return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
+    elif torch_device == "xpu":
+        return True
+    else:
         return False
-    return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
 
 
 def revert_liger_kernel_to_llama(model_config: MiniModelConfig):
