@@ -3,13 +3,15 @@
 ## How to Run
 
 ### Locally on a GPU machine
+You can run the example locally on a GPU machine. The default hyperparameters and configurations work on single node with 4xA100 80GB GPUs.
+
 ```bash
 pip install -r requirements.txt
 sh run_{MODEL}.sh
 ```
 
 ### Remotely on Modal
-You can rent one for a short period of time on Modal.
+If you do not have access to a GPU machine, you can run the example on Modal. Modal is a serverless platform that allows you to run your code on a remote GPU machine. You can sign up for a free account at [Modal](https://www.modal.com/).
 
 ```bash
 pip install modal
