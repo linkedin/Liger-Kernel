@@ -44,6 +44,7 @@ def construct_model_and_processor(model_name: str, use_liger: bool) -> torch.nn.
         image_token_id = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")
 
         if use_liger:
+            print("Applying Liger Kernel to Qwen2-VL model")
             monkey_patch.apply_liger_kernel_to_qwen2_vl(
                 # These args can be used to override the default Liger settings
                 # cross_entropy=True,
@@ -70,10 +71,8 @@ def _validate_and_extract_the_cauldron(examples) -> dict[str, list]:
             raise ValueError("No image found in example from the_cauldron dataset")
         if len(images) > 1:
             raise ValueError("Only one image per example is supported")
-        batch_texts.append(
-            texts[0]  # drop all except for the first text that pertains to this image
-        )
-        batch_images.append(images[0])
+        batch_texts.extend(texts)
+        batch_images.extend([images[0]] * len(texts))
     return {"texts": batch_texts, "images": batch_images}
 
 
@@ -112,7 +111,7 @@ def train():
         .map(
             _validate_and_extract_the_cauldron,
             batched=True,
-            num_proc=min(os.cpu_count(), 8),
+            num_proc=min(os.cpu_count(), 16),
             desc="Extracting text and images",
         )
         .map(
