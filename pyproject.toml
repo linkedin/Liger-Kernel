@@ -4,12 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "liger_kernel"
-<<<<<<< Updated upstream
 version = "0.4.2"
-=======
-version = "0.4.1"
-requires-python = ">=3.9"
->>>>>>> Stashed changes
 description = "Efficient Triton kernels for LLM Training"
 urls = { "Homepage" = "https://github.com/linkedin/Liger-Kernel" }
 readme = { file = "README.md", content-type = "text/markdown" }
