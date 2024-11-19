@@ -2,16 +2,23 @@ from test.utils import supports_bfloat16
 
 import pytest
 import torch
-from transformers.models.qwen2_vl.modeling_qwen2_vl import (
-    Qwen2VLRotaryEmbedding,
-    apply_multimodal_rotary_pos_emb,
-)
+
+try:
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import (
+        Qwen2VLRotaryEmbedding,
+        apply_multimodal_rotary_pos_emb,
+    )
+
+    IS_QWEN_AVAILABLE = True
+except Exception:
+    IS_QWEN_AVAILABLE = False
 
 from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.transformers.functional import liger_qwen2vl_mrope
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 
 
+@pytest.mark.skipif(not IS_QWEN_AVAILABLE, "Qwen is not available in transformers.")
 @pytest.mark.parametrize("bsz", [1, 2])
 @pytest.mark.parametrize("seq_len", [128, 131])
 @pytest.mark.parametrize("num_q_heads, num_kv_heads", [(64, 8), (28, 4), (12, 2)])
