@@ -18,7 +18,7 @@ from liger_kernel.transformers.functional import liger_qwen2vl_mrope
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 
 
-@pytest.mark.skipif(not IS_QWEN_AVAILABLE, "Qwen is not available in transformers.")
+@pytest.mark.skipif(not IS_QWEN_AVAILABLE, reason="Qwen is not available in transformers.")
 @pytest.mark.parametrize("bsz", [1, 2])
 @pytest.mark.parametrize("seq_len", [128, 131])
 @pytest.mark.parametrize("num_q_heads, num_kv_heads", [(64, 8), (28, 4), (12, 2)])
@@ -93,7 +93,7 @@ def test_correctness(
     torch.testing.assert_close(q1_grad, q2_grad, atol=atol, rtol=rtol)
     torch.testing.assert_close(k1_grad, k2_grad, atol=atol, rtol=rtol)
 
-
+@pytest.mark.skipif(not IS_QWEN_AVAILABLE, reason="Qwen is not available in transformers.")
 @pytest.mark.parametrize(
     "bsz, seq_len, num_q_heads, num_kv_heads, head_dim, mrope_section",
     [
