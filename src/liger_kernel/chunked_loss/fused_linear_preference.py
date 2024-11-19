@@ -29,6 +29,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         chunk_size=1,
         compute_nll_loss=True,
         ignore_index=-100,
+        alpha=1.0,
         beta=0.1,
         compiled=True,
     ):
@@ -45,6 +46,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             chunk_size (int): Size of a chunk (# of batches of stacked chosen and rejected inputs).
             compute_nll_loss (bool): Whether to compute NLL loss.
             ignore_index (int): Index to ignore for loss computation.
+            alpha (float): Weight for the NLL loss.
             beta (float): Weight for the odds ratio loss.
             compiled (bool): Whether to use torch compile for chunk accumulation.
         """
@@ -62,6 +64,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             LigerFusedLinearPreferenceBase._compute_loss,
             preference_loss_fn=loss_fn,
             ignore_index=ignore_index,
+            alpha=alpha,
             beta=beta,
             compute_nll_loss=compute_nll_loss,
             full_target=target,
@@ -149,6 +152,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         preference_loss_fn=None,
         full_target=None,
         ignore_index=-100,
+        alpha=1.0,
         beta=0.1,
         compute_nll_loss=True,
         **loss_kwargs,
@@ -163,6 +167,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
             full_target (torch.Tensor): Full target tensor. Shape: (batch_size, sequence_length).
             ignore_index (int): Index to ignore for loss computation.
+            alpha (float): Weight for the NLL loss.
             beta (float): Weight for the odds ratio loss.
             loss_kwargs (dict): Additional arguments for the loss function.
         """
@@ -202,5 +207,5 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         )
         alignment_loss = alignment_loss / (full_target.shape[0] // 2)
 
-        loss = chosen_nll_loss - alignment_loss
+        loss = alpha * chosen_nll_loss - alignment_loss
         return loss, (alignment_loss, chosen_logps, rejected_logps)
