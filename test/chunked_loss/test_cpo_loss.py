@@ -6,6 +6,10 @@ import torch
 import torch.nn.functional as F
 
 from liger_kernel.chunked_loss.cpo_loss import LigerFusedLinearCPOFunction
+from liger_kernel.utils import infer_device
+
+
+device = infer_device()
 
 # set random seed globally
 set_seed()
@@ -87,7 +91,7 @@ def test_correctness(
 ):
     B = 2 * B  # cpo loss requires B to be even
 
-    _input = torch.randn(B, T, H, device="cuda", dtype=dtype) * scalar
+    _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
@@ -98,7 +102,7 @@ def test_correctness(
             B,
             T,
         ),
-        device="cuda",
+        device=device,
         dtype=torch.long,
     )
     # Assign some random number of elements as ignore_index
@@ -106,11 +110,11 @@ def test_correctness(
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    _weight = torch.randn(V, H, device="cuda", dtype=dtype)
+    _weight = torch.randn(V, H, device=device, dtype=dtype)
     weight1 = _weight.detach().clone().requires_grad_(True)
     weight2 = _weight.detach().clone().requires_grad_(True)
 
-    _bias = torch.randn(V, device="cuda", dtype=dtype) if bias else None
+    _bias = torch.randn(V, device=device, dtype=dtype) if bias else None
     bias1 = _bias.detach().clone().requires_grad_(True) if bias else None
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
