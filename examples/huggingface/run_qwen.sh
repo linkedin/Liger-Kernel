@@ -1,3 +1,5 @@
+#!/bin/bash
+
 torchrun --nnodes=1 --nproc-per-node=4 training.py \
     --model_name "Qwen/Qwen2-7B" \
     --bf16 \

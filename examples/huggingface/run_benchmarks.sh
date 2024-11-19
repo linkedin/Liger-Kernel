@@ -1,3 +1,5 @@
+#!/bin/bash
+
 ## Benchmarking Script
 ## Runs the training script with different configurations and logs the results
 
@@ -17,7 +19,7 @@ for USE_LIGER in "${USE_LIGER_VALUES[@]}"; do
         echo "Running with use_liger=$USE_LIGER and batch_size=$BATCH_SIZE"
 
         for ((i=1; i<=NUM_REP; i++)); do
-        
+
             LOG_FILE="${SCRIPT_DIR}/results/${MODEL_TYPE}_use_liger_${USE_LIGER}_batch_size_${BATCH_SIZE}_rep_${i}.log"
 
             torchrun --nnodes=1 --nproc-per-node=4 training.py \
