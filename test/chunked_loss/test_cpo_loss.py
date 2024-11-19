@@ -31,7 +31,6 @@ class HFCPOLoss(HFAlignmentLoss):
         self.label_smoothing = label_smoothing
         self.simpo_gamma = simpo_gamma
 
-
     def alignment_loss(
         self,
         policy_chosen_logps: torch.FloatTensor,
