@@ -17,16 +17,34 @@ class CustomArguments:
     dataset: str = "HuggingFaceM4/the_cauldron"
     dataset_subset: str = "ai2d"
     dataset_split: str = "train"
-    max_seq_length: int = 2048
+    max_seq_length: int = 512
     dataset_text_field: str = "texts"
     use_liger: bool = False
 
 
-def construct_model(model_name: str, use_liger: bool) -> torch.nn.Module:
+def construct_model_and_processor(model_name: str, use_liger: bool) -> torch.nn.Module:
     if "Qwen2-VL" in model_name:
         from transformers import Qwen2VLForConditionalGeneration
 
+        # These settings are used to reduce the memory footprint of the Qwen2-VL model,
+        # which supports training/inferences on images in their native resolution. Large
+        # images -> many visual tokens (a max of 16384) -> large memory consumption.
+        # If fine-tuning for a real-world application, consider these values carefully.
+        min_visual_tokens_per_image = 256
+        max_visual_tokens_per_image = 256
+
+        processor = transformers.AutoProcessor.from_pretrained(
+            model_name,
+            padding_side="left",
+            truncation_side="left",
+            min_pixels=min_visual_tokens_per_image * 28 * 28,  # patch size is 14x14
+            max_pixels=max_visual_tokens_per_image * 28 * 28,  # 4 patches / token
+        )
+        processor.tokenizer.pad_token = processor.tokenizer.eos_token
+        image_token_id = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")
+
         if use_liger:
+            print("Applying Liger Kernel to Qwen2-VL model")
             monkey_patch.apply_liger_kernel_to_qwen2_vl(
                 # These args can be used to override the default Liger settings
                 # cross_entropy=True,
@@ -34,13 +52,13 @@ def construct_model(model_name: str, use_liger: bool) -> torch.nn.Module:
             )
 
         model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_name,
+            pretrained_model_name_or_path=model_name,
             use_cache=False,
             torch_dtype=torch.bfloat16,
             low_cpu_mem_usage=True,
             attn_implementation="sdpa",
         )
-        return model
+        return model, processor, image_token_id
 
     raise NotImplementedError(f"Model {model_name} not supported")
 
@@ -53,10 +71,8 @@ def _validate_and_extract_the_cauldron(examples) -> dict[str, list]:
             raise ValueError("No image found in example from the_cauldron dataset")
         if len(images) > 1:
             raise ValueError("Only one image per example is supported")
-        batch_texts.append(
-            texts[0]  # drop all except for the first text that pertains to this image
-        )
-        batch_images.append(images[0])
+        batch_texts.extend(texts)
+        batch_images.extend([images[0]] * len(texts))
     return {"texts": batch_texts, "images": batch_images}
 
 
@@ -82,12 +98,9 @@ def train():
     training_args.remove_unused_columns = False  # required to not drop the image column
     training_args.dataset_kwargs = {"skip_prepare_dataset": True}
 
-    processor = transformers.AutoProcessor.from_pretrained(
-        custom_args.model_name, padding_side="left", truncation_side="left"
+    model, processor, image_token_id = construct_model_and_processor(
+        custom_args.model_name, custom_args.use_liger
     )
-    processor.tokenizer.pad_token = processor.tokenizer.eos_token
-    # WARN: this is a (potentially) model-specific hack to get the image token id
-    image_token_id = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")
 
     dataset = (
         datasets.load_dataset(
@@ -98,7 +111,7 @@ def train():
         .map(
             _validate_and_extract_the_cauldron,
             batched=True,
-            num_proc=min(os.cpu_count(), 8),
+            num_proc=min(os.cpu_count(), 16),
             desc="Extracting text and images",
         )
         .map(
@@ -139,8 +152,6 @@ def train():
         batch["labels"] = labels
 
         return batch
-
-    model = construct_model(custom_args.model_name, custom_args.use_liger)
 
     trainer = SFTTrainer(
         model=model,
