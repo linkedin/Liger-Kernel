@@ -394,6 +394,7 @@ class HFAlignmentLoss:
         weight: torch.FloatTensor,
         target: torch.LongTensor,
         bias: torch.FloatTensor = None,
+        average_log_prob: bool = True,
     ) -> Tuple[
         torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
     ]:
@@ -426,7 +427,7 @@ class HFAlignmentLoss:
         all_logps = self.get_batch_logps(
             all_logits,
             target,
-            average_log_prob=True,
+            average_log_prob=average_log_prob,
         )
 
         chosen_logps = all_logps[:len_chosen]
@@ -450,10 +451,13 @@ class HFAlignmentLoss:
         target: torch.LongTensor,
         bias: torch.FloatTensor = None,
         alpha: float = 1.0,
+        average_log_prob: bool = True,
     ):
         """Compute the ORPO loss and other metrics for the given batch of inputs for train or test."""
 
-        forward_output = self.concatenated_forward(_input, weight, target, bias)
+        forward_output = self.concatenated_forward(
+            _input, weight, target, bias, average_log_prob
+        )
         (
             policy_chosen_logps,
             policy_rejected_logps,
@@ -463,6 +467,6 @@ class HFAlignmentLoss:
         ) = forward_output[:5]
 
         losses = self.alignment_loss(policy_chosen_logps, policy_rejected_logps)
-        # full ORPO loss
+        # full loss
         loss = policy_nll_loss * alpha - losses.mean()
         return loss
