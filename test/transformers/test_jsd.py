@@ -223,10 +223,10 @@ def _test_correctness_functional(
 
     output = LigerJSDFunction.apply(x1, target, label, beta, ignore_index)
     output2 = liger_jsd(
-        input=x2, 
-        target=target, 
-        shift_labels=label, 
-        beta=beta, 
+        input=x2,
+        target=target,
+        shift_labels=label,
+        beta=beta,
         ignore_index=ignore_index,
     )
     assert torch.allclose(output, output2, atol=atol, rtol=rtol)
