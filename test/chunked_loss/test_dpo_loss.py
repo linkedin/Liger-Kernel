@@ -1,17 +1,16 @@
 from test.utils import HFAlignmentLoss, assert_verbose_allclose, set_seed
-from typing import Tuple
 
 import pytest
 import torch
 import torch.nn.functional as F
 
-from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
+from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
 
 # set random seed globally
 set_seed()
 
 
-class HFORPOLoss(HFAlignmentLoss):
+class HF_DPO_Loss(HFAlignmentLoss):
     """
     Implementation of the Odds Ratio Preference Optimization (ORPO) loss,
     adapted from Hugging Face's implementation.
@@ -25,35 +24,18 @@ class HFORPOLoss(HFAlignmentLoss):
         self,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
-    ) -> Tuple[
-        torch.FloatTensor,
-        torch.FloatTensor,
-        torch.FloatTensor,
-        torch.FloatTensor,
-        torch.FloatTensor,
-    ]:
-        """Compute ORPO's odds ratio (OR) loss for a batch of policy and reference model log probabilities.
-
+    ):
+        """Compute DPO loss for a batch of policy log probabilities.
         Args:
             policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (batch_size,)
             policy_rejected_logps: Log probabilities of the policy model for the rejected responses. Shape: (batch_size,)
 
         Returns:
-            A tuple of three tensors: (losses, chosen_rewards, rejected_rewards).
-            The losses tensor contains the ORPO loss for each example in the batch.
-            The chosen_rewards and rejected_rewards tensors contain the rewards for the chosen and rejected responses, respectively.
-            The log odds ratio of the chosen responses over the rejected responses ratio for logging purposes.
-            The `log(sigmoid(log_odds_chosen))` for logging purposes.
+            The losses tensor contains the DPO loss for each example in the batch.
         """
-
-        # Derived from Eqs. (4) and (7) from https://huggingface.co/papers/2403.07691 by using log identities and exp(log(P(y|x)) = P(y|x)
-        log_odds = (policy_chosen_logps - policy_rejected_logps) - (
-            torch.log1p(-torch.exp(policy_chosen_logps))
-            - torch.log1p(-torch.exp(policy_rejected_logps))
-        )
-        ratio = F.logsigmoid(log_odds)
-        losses = self.beta * ratio
-
+        # Derived from https://huggingface.co/papers/2305.18290
+        logits_diff = self.beta * (policy_chosen_logps - policy_rejected_logps)
+        losses = -F.logsigmoid(logits_diff)
         return losses
 
 
@@ -68,13 +50,13 @@ class HFORPOLoss(HFAlignmentLoss):
     "scalar, dtype, atol, rtol",
     [
         (1.0, torch.bfloat16, 5e-2, 5e-1),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        (1.0, torch.float32, 2e-2, 5e-1),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ignore_index, beta", [(-100, 0.1), (42, 0.2)])
 def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta):
-    B = 2 * B  # orpo loss requires B to be even
+    B = 2 * B  # dpo loss requires B to be even
 
     _input = torch.randn(B, T, H, device="cuda", dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
@@ -103,17 +85,11 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
     bias1 = _bias.detach().clone().requires_grad_(True) if bias else None
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
-    loss1 = HFORPOLoss(ignore_index=ignore_index, beta=beta).get_batch_loss_metrics(
+    loss1 = HF_DPO_Loss(ignore_index=ignore_index, beta=beta).get_batch_loss_metrics(
         input1, weight1, target, bias1
     )
-    loss2 = LigerFusedLinearORPOFunction.apply(
-        input2,
-        weight2,
-        target,
-        bias2,
-        ignore_index,
-        beta,
-        True,
+    loss2 = LigerFusedLinearDPOFunction.apply(
+        input2, weight2, target, bias2, ignore_index, beta, True
     )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)

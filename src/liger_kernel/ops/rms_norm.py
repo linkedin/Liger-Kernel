@@ -264,7 +264,11 @@ def rms_norm_backward(
     dY = dY.view(-1, dim)
     n_rows, n_cols = dY.shape
 
-    sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
+    if X.device.type == "cuda":
+        sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
+    elif X.device.type == "xpu":
+        sm_count = torch.xpu.get_device_properties(X.device).gpu_subslice_count
+
     # fp32 for numerical stability especially.
     _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
 

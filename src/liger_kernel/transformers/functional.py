@@ -10,6 +10,7 @@ from liger_kernel.ops.group_norm import LigerGroupNormFunction
 from liger_kernel.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.kl_div import LigerKLDivLossFunction
 from liger_kernel.ops.layer_norm import LigerLayerNormFunction
+from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.rope import LigerRopeFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
@@ -152,6 +153,10 @@ def liger_kl_div(
 
 def liger_layer_norm(X, W, B, eps):
     return LigerLayerNormFunction.apply(X, W, B, eps)
+
+
+def liger_qwen2vl_mrope(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
+    return LigerQwen2VLMRopeFunction.apply(q, k, cos, sin, mrope_section, unsqueeze_dim)
 
 
 def liger_rms_norm(
