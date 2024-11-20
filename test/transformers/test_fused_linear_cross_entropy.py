@@ -244,7 +244,12 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, atol, rtol):
     weight = torch.randn(V, H, device=device, dtype=dtype)
     bias = torch.randn(V, device=device, dtype=dtype) if bias else None
 
-    y1 = liger_fused_linear_cross_entropy(x1, weight, target, bias)
+    y1 = liger_fused_linear_cross_entropy(
+        input=x1, 
+        weight=weight, 
+        target=target, 
+        bias=bias,
+    )
     y2 = LigerFusedLinearCrossEntropyFunction.apply(x2, weight, target, bias)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
