@@ -482,3 +482,257 @@ class HFAlignmentLoss:
         # full loss
         loss = policy_nll_loss * alpha - losses.mean()
         return loss
+
+
+
+class HFAlignmentLossKTO:
+
+    def __init__(self, alpha: float = 1.0, beta: float = 0.1, ignore_index: int = -100):
+        self.alpha = alpha
+        self.beta = beta
+        self.ignore_index = ignore_index
+        self.calculate_KL = False
+        self.is_encoder_decoder = False
+        self.label_pad_token_id = -100
+        self.aux_loss_enabled = False
+
+    @abstractmethod
+    def alignment_loss(self,policy_chosen_logps, policy_rejected_logps ,
+                                      reference_chosen_logps, reference_rejected_logps):
+        pass
+
+    def get_batch_logps(
+        self,
+        logits: torch.FloatTensor,
+        labels: torch.LongTensor,
+        average_log_prob: bool = False,
+        label_pad_token_id: int = -100,
+        is_encoder_decoder: bool = False,
+
+    ) -> torch.FloatTensor:
+        """Compute the log probabilities of the given labels under the given logits.
+
+        Args:
+            logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
+            labels: Labels for which to compute the log probabilities. Label tokens with a value of ignore_index are ignored. Shape: (batch_size, sequence_length)
+            average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
+            is_encoder_decoder: Whether the model is an encoder-decoder model.
+
+        Returns:
+            A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
+        """
+        if logits.shape[:-1] != labels.shape:
+            raise ValueError(
+                "Logits (batch and sequence length dim) and labels must have the same shape."
+            )
+
+        if not is_encoder_decoder:
+            labels = labels[:, 1:].clone()
+            logits = logits[:, :-1, :]
+        else:
+            # Fixes end-dec RuntimeError
+            labels = labels.clone()
+        loss_mask = labels != self.ignore_index
+
+        # dummy token; we'll ignore the losses on these tokens later
+        labels = torch.where(labels == self.ignore_index, 0, labels)
+
+        per_token_logps = torch.gather(
+            logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)
+        ).squeeze(2)
+
+        if average_log_prob:
+            return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+        else:
+            return (per_token_logps * loss_mask).sum(-1)
+
+    # def concatenated_forward(
+    #     self,
+    #     _input: torch.FloatTensor,
+    #     weight: torch.FloatTensor,
+    #     target: torch.LongTensor,
+    #     bias: torch.FloatTensor = None,
+    #     average_log_prob: bool = True,
+    # ) -> Tuple[
+    #     torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
+    # ]:
+    #     """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
+    #
+    #     We do this to avoid doing two forward passes, because it's faster for FSDP.
+    #     """
+    #     len_chosen = _input.shape[0] // 2
+    #
+    #     outputs = _input @ weight.t()
+    #     if bias is not None:
+    #         outputs = outputs + bias
+    #     all_logits = outputs.float()
+    #
+    #     def cross_entropy_loss(logits, labels):
+    #         # Flatten the tokens
+    #         loss_fct = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
+    #         logits = logits.view(-1, logits.shape[-1])
+    #         labels = labels.view(-1)
+    #         # Enable model parallelism
+    #         labels = labels.to(logits.device)
+    #         loss = loss_fct(logits, labels)
+    #         return loss
+    #
+    #     labels = target
+    #     chosen_nll_loss = cross_entropy_loss(
+    #         all_logits[:len_chosen], labels[:len_chosen]
+    #     )
+    #
+    #     all_logps = self.get_batch_logps(
+    #         all_logits,
+    #         target,
+    #         average_log_prob=average_log_prob,
+    #     )
+    #
+    #     chosen_logps = all_logps[:len_chosen]
+    #     rejected_logps = all_logps[len_chosen:]
+    #
+    #     chosen_logits = all_logits[:len_chosen]
+    #     rejected_logits = all_logits[len_chosen:]
+    #
+    #     return (
+    #         chosen_logps,
+    #         rejected_logps,
+    #         chosen_logits,
+    #         rejected_logits,
+    #         chosen_nll_loss,
+    #     )
+
+    def forward(
+        self,   _input: torch.FloatTensor,
+            weight: torch.FloatTensor,
+        target: torch.LongTensor,
+        labels,
+        bias: torch.FloatTensor = None,
+        average_log_prob: bool = True
+    ):
+        if self.calculate_KL:
+            KL_logps = None
+            # KL_model_kwargs = (
+            #     {
+            #         "input_ids": batch["KL_prompt_input_ids"],
+            #         "attention_mask": batch["KL_prompt_attention_mask"],
+            #         "labels": batch["KL_completion_labels"],
+            #         "decoder_input_ids": batch.get("KL_completion_decoder_input_ids"),
+            #     }
+            #     if self.is_encoder_decoder
+            #     else {
+            #         "input_ids": batch["KL_completion_input_ids"],
+            #         "attention_mask": batch["KL_completion_attention_mask"],
+            #     }
+            # )
+            # with torch.no_grad():
+            #     KL_logits = model(
+            #         **KL_model_kwargs,
+            #     ).logits
+            #
+            # KL_logps = self.get_batch_logps(
+            #     KL_logits,
+            #     batch["KL_completion_labels"],
+            #     average_log_prob=False,
+            #     is_encoder_decoder=self.is_encoder_decoder,
+            #     label_pad_token_id=self.label_pad_token_id,
+            # )
+        else:
+            KL_logps = 0#None
+        #
+        # model_kwargs = (
+        #     {
+        #         "labels": batch["completion_labels"],
+        #         "decoder_input_ids": batch.get("completion_decoder_input_ids"),
+        #     }
+        #     if self.is_encoder_decoder
+        #     else {}
+        # )
+        # if self.aux_loss_enabled:
+        #     model_kwargs["output_router_logits"] = True
+        #
+        # outputs = model(
+        #     batch["completion_input_ids"],
+        #     attention_mask=batch["completion_attention_mask"],
+        #     **model_kwargs,
+        # )
+        outputs = _input @ weight.t()
+        completion_logits = outputs.float()
+
+        completion_logps = self.get_batch_logps(
+            completion_logits,
+            target,
+            average_log_prob=False,
+            is_encoder_decoder=self.is_encoder_decoder,
+            label_pad_token_id=self.label_pad_token_id,
+        )
+
+        #
+        # all_logps = self.get_batch_logps(
+        #     all_logits,
+        #     target,
+        #     average_log_prob=average_log_prob,
+        # )
+        #
+        # chosen_logps = all_logps[:len_chosen]
+        # rejected_logps = all_logps[len_chosen:]
+        #
+        # chosen_logits = all_logits[:len_chosen]
+        # rejected_logits = all_logits[len_chosen:]
+
+        # chosen_idx = [i for i in range(completion_logps.shape[0]) if labels[i] is True]
+        # rejected_idx = [i for i in range(completion_logps.shape[0]) if labels[i] is False]
+        print('labels',labels)
+        chosen_idx = [i for i in range(len(completion_logps)) if labels[i] is True]
+        rejected_idx = [i for i in range(len(completion_logps)) if labels[i] is False]
+        chosen_logps = completion_logps[chosen_idx, ...]
+        rejected_logps = completion_logps[rejected_idx, ...]
+
+        chosen_logits = completion_logits[chosen_idx, ...]
+        rejected_logits = completion_logits[rejected_idx, ...]
+
+        if self.aux_loss_enabled:
+            return (chosen_logps, rejected_logps, chosen_logits, rejected_logits, KL_logps, outputs.aux_loss)
+        else:
+            return (chosen_logps, rejected_logps, chosen_logits, rejected_logits, KL_logps)
+
+    def get_batch_loss_metrics(
+        self,
+        _input: torch.FloatTensor,
+        weight: torch.FloatTensor,
+        target: torch.LongTensor,
+        labels: List,
+        reference_logps:np.array,
+        bias: torch.FloatTensor = None,
+        alpha: float = 1.0,
+        average_log_prob: bool = True,
+    ):
+        """Compute the ORPO loss and other metrics for the given batch of inputs for train or test."""
+        # policy_chosen_logps,
+        # policy_rejected_logps,
+        # policy_KL_logps,
+        # reference_chosen_logps,
+        # reference_rejected_logps,
+        # reference_KL_logps,
+        forward_output = self.forward(
+            _input, weight, target, labels
+        )
+        (
+            policy_chosen_logps,
+            policy_rejected_logps,
+            policy_chosen_logits,
+            policy_rejected_logits,
+            policy_nll_loss,
+        ) = forward_output[:5]
+        chosen_idx = [i for i in range(reference_logps.shape[0]) if labels[i] is True]
+        rejected_idx = [i for i in range(reference_logps.shape[0]) if labels[i] is False]
+
+        reference_chosen_logps = reference_logps[chosen_idx, ...]
+        reference_rejected_logps = reference_logps[rejected_idx, ...]
+
+        losses, chosen_rewards, rejected_rewards, kl = self.alignment_loss(policy_chosen_logps, policy_rejected_logps ,
+                                      reference_chosen_logps, reference_rejected_logps)
+        # full loss
+        print(losses)
+        loss = policy_nll_loss * alpha - losses.mean()
+        return loss
