@@ -77,7 +77,7 @@ def liger_geglu(a, b):
     return LigerGELUMulFunction.apply(a, b)
 
 
-def liger_rms_norm(X, W, eps, offset=0.0, casting_mode="llama", in_place=True):
+def liger_rms_norm(X, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool =True):
     return LigerRMSNormFunction.apply(X, W, eps, offset, casting_mode, in_place)
 
 
