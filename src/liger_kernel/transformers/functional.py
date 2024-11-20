@@ -45,10 +45,6 @@ def liger_cross_entropy(
     return loss, z_loss
 
 
-def liger_swiglu(a, b):
-    return LigerSiLUMulFunction.apply(a, b)
-
-
 def liger_fused_linear_cross_entropy(
     input,
     weight,
@@ -70,59 +66,6 @@ def liger_fused_linear_cross_entropy(
         label_smoothing,
         reduction,
         softcap,
-    )
-
-
-def liger_geglu(a, b):
-    return LigerGELUMulFunction.apply(a, b)
-
-
-def liger_rms_norm(X, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool =True):
-    return LigerRMSNormFunction.apply(X, W, eps, offset, casting_mode, in_place)
-
-
-def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
-    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
-
-
-def liger_layer_norm(X, W, B, eps):
-    return LigerLayerNormFunction.apply(X, W, B, eps)
-
-
-# conform to the function signature in https://pytorch.org/docs/stable/generated/torch.nn.functional.kl_div.html#torch.nn.functional.kl_div
-# `size_average` and `mean` are being deprecated in torch API and are placeholders here
-def liger_kl_div(
-    input,
-    target,
-    size_average: bool = True,
-    reduce: bool = True,
-    reduction: str = "mean",
-    log_target: bool = False,
-    eps: float = 1e-10,
-):
-    # Note: the default reduction in torch is `mean`, but being `batchmean` in Liger
-    return LigerKLDivLossFunction.apply(
-        input,
-        target,
-        reduction,
-        log_target,
-        eps,
-    )
-
-
-def liger_jsd(
-    input,
-    target,
-    shift_labels=None,
-    beta: float = 0.5,
-    ignore_index: int = -100,
-):
-    return LigerJSDFunction.apply(
-        input,
-        target,
-        shift_labels,
-        beta,
-        ignore_index,
     )
 
 
@@ -148,6 +91,10 @@ def liger_fused_linear_jsd(
     )
 
 
+def liger_geglu(a, b):
+    return LigerGELUMulFunction.apply(a, b)
+
+
 def liger_group_norm(
     X,
     affine_scaling_weight,
@@ -164,3 +111,56 @@ def liger_group_norm(
         num_groups,
         eps,
     )
+
+
+def liger_jsd(
+    input,
+    target,
+    shift_labels=None,
+    beta: float = 0.5,
+    ignore_index: int = -100,
+):
+    return LigerJSDFunction.apply(
+        input,
+        target,
+        shift_labels,
+        beta,
+        ignore_index,
+    )
+
+
+# conform to the function signature in https://pytorch.org/docs/stable/generated/torch.nn.functional.kl_div.html#torch.nn.functional.kl_div
+# `size_average` and `mean` are being deprecated in torch API and are placeholders here
+def liger_kl_div(
+    input,
+    target,
+    size_average: bool = True,
+    reduce: bool = True,
+    reduction: str = "mean",
+    log_target: bool = False,
+    eps: float = 1e-10,
+):
+    # Note: the default reduction in torch is `mean`, but being `batchmean` in Liger
+    return LigerKLDivLossFunction.apply(
+        input,
+        target,
+        reduction,
+        log_target,
+        eps,
+    )
+
+
+def liger_layer_norm(X, W, B, eps):
+    return LigerLayerNormFunction.apply(X, W, B, eps)
+
+
+def liger_rms_norm(X, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool =True):
+    return LigerRMSNormFunction.apply(X, W, eps, offset, casting_mode, in_place)
+
+
+def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+
+
+def liger_swiglu(a, b):
+    return LigerSiLUMulFunction.apply(a, b)
