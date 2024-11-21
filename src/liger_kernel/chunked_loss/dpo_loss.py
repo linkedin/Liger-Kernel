@@ -9,7 +9,13 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
 class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
-    def preference_loss_fn(chosen_logps, rejected_logps, ref_chosen_logps=None, ref_rejected_logps=None, beta=0.1):
+    def preference_loss_fn(
+        chosen_logps,
+        rejected_logps,
+        ref_chosen_logps=None,
+        ref_rejected_logps=None,
+        beta=0.1,
+    ):
         """
         Compute DPO loss (Direct Preference Optimization).
         Args:
@@ -102,7 +108,9 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         self.compiled = compiled
         self.use_ref_model = use_ref_model
 
-    def forward(self, lin_weight, _input, target, bias=None, ref_weight=None, ref_bias=None):
+    def forward(
+        self, lin_weight, _input, target, bias=None, ref_weight=None, ref_bias=None
+    ):
         return LigerFusedLinearDPOFunction.apply(
             _input,
             lin_weight,

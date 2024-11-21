@@ -19,8 +19,12 @@ class HFDPOLoss(HFAlignmentLoss):
     Reference: https://github.com/huggingface/trl/blob/main/trl/trainer/orpo_trainer.py
     """
 
-    def __init__(self, ignore_index: int = -100, beta: float = 0.1, use_ref_model: bool = True):
-        super().__init__(beta=beta, ignore_index=ignore_index, use_ref_model=use_ref_model)
+    def __init__(
+        self, ignore_index: int = -100, beta: float = 0.1, use_ref_model: bool = True
+    ):
+        super().__init__(
+            beta=beta, ignore_index=ignore_index, use_ref_model=use_ref_model
+        )
 
     def alignment_loss(
         self,
@@ -69,7 +73,9 @@ class TorchLMHeadDPO(torch.nn.Module):
         ).get_batch_loss_metrics
 
     def forward(self, x, y):
-        return self.dpo_loss(self.lin.weight, x, y, self.lin.bias, self.ref_lin.weight, self.ref_lin.bias)
+        return self.dpo_loss(
+            self.lin.weight, x, y, self.lin.bias, self.ref_lin.weight, self.ref_lin.bias
+        )
 
 
 class LigerLMHeadDPO(torch.nn.Module):
@@ -90,10 +96,14 @@ class LigerLMHeadDPO(torch.nn.Module):
         self.ref_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=ref_bias, dtype=dtype
         )
-        self.dpo_loss = LigerFusedLinearDPOLoss(ignore_index=ignore_index, beta=beta, use_ref_model=True)
+        self.dpo_loss = LigerFusedLinearDPOLoss(
+            ignore_index=ignore_index, beta=beta, use_ref_model=True
+        )
 
     def forward(self, x, y):
-        return self.dpo_loss(self.lin.weight, x, y, self.lin.bias, self.ref_lin.weight, self.ref_lin.bias)
+        return self.dpo_loss(
+            self.lin.weight, x, y, self.lin.bias, self.ref_lin.weight, self.ref_lin.bias
+        )
 
 
 @pytest.mark.parametrize(
@@ -113,7 +123,9 @@ class LigerLMHeadDPO(torch.nn.Module):
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ref_bias", [True, False])
 @pytest.mark.parametrize("ignore_index, beta", [(-100, 0.1), (42, 0.2)])
-def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, ignore_index, beta):
+def test_correctness(
+    B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, ignore_index, beta
+):
     B = 2 * B  # dpo loss requires B to be even
 
     torch_lm_head_dpo = TorchLMHeadDPO(
@@ -138,8 +150,8 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, igno
     torch_lm_head_dpo.lin.weight.data = liger_lm_head_dpo.lin.weight.data = torch.randn(
         V, H, device="cuda", dtype=dtype
     )
-    torch_lm_head_dpo.ref_lin.weight.data = liger_lm_head_dpo.ref_lin.weight.data = torch.randn(
-        V, H, device="cuda", dtype=dtype
+    torch_lm_head_dpo.ref_lin.weight.data = liger_lm_head_dpo.ref_lin.weight.data = (
+        torch.randn(V, H, device="cuda", dtype=dtype)
     )
 
     if bias:
@@ -147,8 +159,8 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, igno
             V, device="cuda", dtype=dtype
         )
     if ref_bias:
-        torch_lm_head_dpo.ref_lin.bias.data = liger_lm_head_dpo.ref_lin.bias.data = torch.randn(
-            V, device="cuda", dtype=dtype
+        torch_lm_head_dpo.ref_lin.bias.data = liger_lm_head_dpo.ref_lin.bias.data = (
+            torch.randn(V, device="cuda", dtype=dtype)
         )
 
     _input = torch.randn(B, T, H, device="cuda", dtype=dtype) * scalar
@@ -244,8 +256,12 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     ref_bias1 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
     ref_bias2 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
 
-    loss1 = LigerFusedLinearDPOFunction.apply(input1, weight1, target, bias1, ref_weight1, ref_bias1)
-    loss2 = liger_fused_linear_dpo(input2, weight2, target, bias2, ref_weight2, ref_bias2)
+    loss1 = LigerFusedLinearDPOFunction.apply(
+        input1, weight1, target, bias1, ref_weight1, ref_bias1
+    )
+    loss2 = liger_fused_linear_dpo(
+        input2, weight2, target, bias2, ref_weight2, ref_bias2
+    )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 

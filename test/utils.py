@@ -355,7 +355,13 @@ def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
 
 class HFAlignmentLoss:
 
-    def __init__(self, alpha: float = 1.0, beta: float = 0.1, ignore_index: int = -100, use_ref_model: bool = False):
+    def __init__(
+        self,
+        alpha: float = 1.0,
+        beta: float = 0.1,
+        ignore_index: int = -100,
+        use_ref_model: bool = False,
+    ):
         self.alpha = alpha
         self.beta = beta
         self.ignore_index = ignore_index
@@ -414,8 +420,13 @@ class HFAlignmentLoss:
         ref_logits = _input @ ref_weight.t()
         if ref_bias is not None:
             ref_logits = ref_logits + ref_bias
-        ref_all_logps = self.get_batch_logps(ref_logits, target, average_log_prob=average_log_prob)
-        return ref_all_logps[:_input.shape[0] // 2], ref_all_logps[_input.shape[0] // 2:]
+        ref_all_logps = self.get_batch_logps(
+            ref_logits, target, average_log_prob=average_log_prob
+        )
+        return (
+            ref_all_logps[: _input.shape[0] // 2],
+            ref_all_logps[_input.shape[0] // 2 :],
+        )
 
     def concatenated_forward(
         self,
@@ -503,7 +514,9 @@ class HFAlignmentLoss:
             )
             loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
             loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
-        losses = self.alignment_loss(policy_chosen_logps, policy_rejected_logps, **loss_kwargs)
+        losses = self.alignment_loss(
+            policy_chosen_logps, policy_rejected_logps, **loss_kwargs
+        )
         # full loss
         loss = policy_nll_loss * self.alpha - losses.mean()
         return loss

@@ -19,7 +19,9 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         raise NotImplementedError("Preference loss function must be implemented.")
 
     @staticmethod
-    def get_ref_logps(input_chunk, ref_weight, target_chunk, ref_bias=None, ignore_index=-100):
+    def get_ref_logps(
+        input_chunk, ref_weight, target_chunk, ref_bias=None, ignore_index=-100
+    ):
         with torch.no_grad():
             ref_logits_chunk = input_chunk @ ref_weight.t()
             if ref_bias is not None:
@@ -29,11 +31,15 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             loss_mask = target_chunk != ignore_index
             label_chunk = torch.where(loss_mask, target_chunk, 0)
 
-            ref_per_token_logps = ref_log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
-            ref_average_log_prob = (ref_per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+            ref_per_token_logps = ref_log_probs_chunk.gather(
+                -1, label_chunk.unsqueeze(-1)
+            ).squeeze(-1)
+            ref_average_log_prob = (ref_per_token_logps * loss_mask).sum(
+                -1
+            ) / loss_mask.sum(-1)
 
-            ref_chosen_logps = ref_average_log_prob[:input_chunk.shape[0] // 2]
-            ref_rejected_logps = ref_average_log_prob[input_chunk.shape[0] // 2:]
+            ref_chosen_logps = ref_average_log_prob[: input_chunk.shape[0] // 2]
+            ref_rejected_logps = ref_average_log_prob[input_chunk.shape[0] // 2 :]
         return ref_chosen_logps, ref_rejected_logps
 
     @staticmethod
@@ -242,8 +248,14 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         rejected_logps = average_log_prob[len_chosen_chunk:]
 
         if use_ref_model:
-            ref_chosen_logps, ref_rejected_logps = LigerFusedLinearPreferenceBase.get_ref_logps(
-                input_chunk, ref_weight, target_chunk, ref_bias=ref_bias, ignore_index=ignore_index
+            ref_chosen_logps, ref_rejected_logps = (
+                LigerFusedLinearPreferenceBase.get_ref_logps(
+                    input_chunk,
+                    ref_weight,
+                    target_chunk,
+                    ref_bias=ref_bias,
+                    ignore_index=ignore_index,
+                )
             )
             loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
             loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
