@@ -19,6 +19,24 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         raise NotImplementedError("Preference loss function must be implemented.")
 
     @staticmethod
+    def get_ref_logps(input_chunk, ref_weight, target_chunk, ref_bias=None, ignore_index=-100):
+        with torch.no_grad():
+            ref_logits_chunk = input_chunk @ ref_weight.t()
+            if ref_bias is not None:
+                ref_logits_chunk = ref_logits_chunk + ref_bias
+            ref_log_probs_chunk = F.log_softmax(ref_logits_chunk.float(), dim=-1)
+
+            loss_mask = target_chunk != ignore_index
+            label_chunk = torch.where(loss_mask, target_chunk, 0)
+
+            ref_per_token_logps = ref_log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
+            ref_average_log_prob = (ref_per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+
+            ref_chosen_logps = ref_average_log_prob[:input_chunk.shape[0] // 2]
+            ref_rejected_logps = ref_average_log_prob[input_chunk.shape[0] // 2:]
+        return ref_chosen_logps, ref_rejected_logps
+
+    @staticmethod
     def forward(
         ctx,
         _input,
@@ -32,6 +50,9 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         beta=0.1,
         compute_nll_loss=True,
         compiled=True,
+        use_ref_model=False,
+        ref_weight=None,
+        ref_bias=None,
         **loss_kwargs,
     ):
         """
@@ -49,7 +70,11 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             ignore_index (int): Index to ignore for loss computation.
             alpha (float): Weight for the NLL loss.
             beta (float): Weight for the odds ratio loss.
+            compute_nll_loss (bool): Whether to compute NLL loss.
             compiled (bool): Whether to use torch compile for chunk accumulation.
+            use_ref_model (bool): Whether to use a reference model for the alignment loss.
+            ref_weight (torch.Tensor): Reference weight tensor. Shape: (vocab_size, hidden_size).
+            ref_bias (torch.Tensor, optional): Reference bias tensor. Shape: (vocab_size,).
             loss_kwargs (dict): Other possible arguments that a loss function might need
         """
         # TODO: Tune CHUNK_SIZE to fully utilize the GPU
@@ -61,7 +86,6 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         grad_bias = torch.zeros_like(bias) if bias is not None else None
         loss_acc = torch.zeros((), device=_input.device)
 
-        chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
         loss_func_to_call = partial(
             LigerFusedLinearPreferenceBase._compute_loss,
             preference_loss_fn=loss_fn,
@@ -70,6 +94,9 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             beta=beta,
             compute_nll_loss=compute_nll_loss,
             full_target=target,
+            use_ref_model=use_ref_model,
+            ref_weight=ref_weight,
+            ref_bias=ref_bias,
             **loss_kwargs,
         )
 
@@ -101,6 +128,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             accumulate_chunk = torch.compile(accumulate_chunk)
 
         len_chosen = target.shape[0] // 2
+        chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
         _chosen_input_chunks = torch.chunk(_input[:len_chosen], chunks=chunks, dim=0)
         _chosen_target_chunks = torch.chunk(target[:len_chosen], chunks=chunks, dim=0)
         _rejected_input_chunks = torch.chunk(_input[len_chosen:], chunks=chunks, dim=0)
@@ -159,6 +187,9 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         alpha=1.0,
         beta=0.1,
         compute_nll_loss=True,
+        use_ref_model=False,
+        ref_weight=None,
+        ref_bias=None,
         **loss_kwargs,
     ):
         """
@@ -173,6 +204,10 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             ignore_index (int): Index to ignore for loss computation.
             alpha (float): Weight for the NLL loss.
             beta (float): Weight for the odds ratio loss.
+            compute_nll_loss (bool): Whether to compute NLL loss.
+            use_ref_model (bool): Whether to use a reference model for the alignment loss.
+            ref_weight (torch.Tensor): Reference weight tensor. Shape: (vocab_size, hidden_size).
+            ref_bias (torch.Tensor, optional): Reference bias tensor. Shape: (vocab_size,).
             loss_kwargs (dict): Additional arguments for the loss function.
         """
         len_chosen_chunk = target_chunk.shape[0] // 2
@@ -205,6 +240,13 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
 
         chosen_logps = average_log_prob[:len_chosen_chunk]
         rejected_logps = average_log_prob[len_chosen_chunk:]
+
+        if use_ref_model:
+            ref_chosen_logps, ref_rejected_logps = LigerFusedLinearPreferenceBase.get_ref_logps(
+                input_chunk, ref_weight, target_chunk, ref_bias=ref_bias, ignore_index=ignore_index
+            )
+            loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
+            loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
 
         alignment_loss = preference_loss_fn(
             chosen_logps, rejected_logps, beta=beta, **loss_kwargs
