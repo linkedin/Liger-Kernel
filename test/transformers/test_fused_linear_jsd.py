@@ -296,14 +296,14 @@ def test_correctness_functional(
     label[indices_to_assign] = ignore_index
 
     output1 = liger_fused_linear_jsd(
-        _input1,
-        _weight1,
-        teacher_input,
-        teacher_weight,
-        label,
-        beta,
-        ignore_index,
-        temperature,
+        student_input=_input1,
+        student_weight=_weight1,
+        teacher_input=teacher_input,
+        teacher_weight=teacher_weight,
+        shift_labels=label,
+        jsd_beta=beta,
+        ignore_index=ignore_index,
+        temperature=temperature,
     )
     output2 = LigerFusedLinearJSDFunction.apply(
         _input2,

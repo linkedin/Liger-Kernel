@@ -229,7 +229,13 @@ def _test_correctness_functional(
     label[indices_to_assign] = ignore_index
 
     output = LigerJSDFunction.apply(x1, target, label, beta, ignore_index)
-    output2 = liger_jsd(x2, target, label, beta, ignore_index)
+    output2 = liger_jsd(
+        input=x2,
+        target=target,
+        shift_labels=label,
+        beta=beta,
+        ignore_index=ignore_index,
+    )
     assert torch.allclose(output, output2, atol=atol, rtol=rtol)
     if (
         not is_last_layer
