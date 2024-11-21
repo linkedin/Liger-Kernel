@@ -458,8 +458,8 @@ class HFAlignmentLoss:
 
     def get_batch_loss_metrics(
         self,
-        _input: torch.FloatTensor,
         weight: torch.FloatTensor,
+        _input: torch.FloatTensor,
         target: torch.LongTensor,
         bias: torch.FloatTensor = None,
         alpha: float = 1.0,
