@@ -151,7 +151,7 @@ class LigerJSDFunction(torch.autograd.Function):
             _input (torch.Tensor): predict values with shape (BT, V) in logspace
             target (torch.Tensor): ground truth values with shape (BT, V) in logspace
             shift_labels (Optional[torch.LongTensor]): indicator of next predicted vocab with shape (BT) where each value is in [0, V-1].
-            beta (float): coefficient beta of generalized JSD in the open interval (0, 1)
+            beta (float): coefficient beta of generalized JSD in the interval [0, 1]. It implements forward/reverse KL when beta equals 0 and 1 respectively. Default: `0.5`
             ignore_index (int): the index to ignore. Default: -100
 
         Returns:
