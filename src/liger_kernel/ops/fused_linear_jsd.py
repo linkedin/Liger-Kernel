@@ -27,6 +27,7 @@ def fused_linear_jsd_forward(
     ignore_index,
     has_label,
     temperature,
+    softcap=0.0,
 ):
     device = student_input.device
     dtype = student_input.dtype
@@ -79,6 +80,14 @@ def fused_linear_jsd_forward(
         teacher_logits_chunk = (teacher_input_chunk @ teacher_weight.t()).to(
             torch.float32
         )
+
+        if softcap > 0.0:
+            # need to store intermediate_student for backprop
+            intermediate_student = torch.tanh(student_logits_chunk / softcap)
+            student_logits_chunk = intermediate_student * softcap
+
+            teacher_logits_chunk = torch.tanh(teacher_logits_chunk / softcap) * softcap
+
         chunk_n_rows = student_logits_chunk.shape[0]
 
         # unreduced loss
@@ -125,6 +134,8 @@ def fused_linear_jsd_forward(
                 student_prob_chunk.shape
             )
         ) / temperature
+        if softcap > 0.0:
+            student_logits_chunk *= 1 - intermediate_student**2
         # now we traverse back to grad w.r.t. input to `lm_head` and grad
         # w.r.t. `lm_head` which should be computed in original dtype
         student_logits_chunk = student_logits_chunk.to(dtype)
@@ -193,6 +204,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
         jsd_beta: float = 0.5,
         ignore_index: int = -100,
         temperature: float = 1.0,
+        softcap: float = 0.0,
     ):
         """
         Args:
@@ -227,6 +239,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
             ignore_index,
             has_label,
             temperature,
+            softcap,
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
@@ -242,4 +255,4 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
         grad_input, grad_weight = fused_linear_jsd_backward(
             grad_output, grad_input, grad_weight
         )
-        return (grad_input, grad_weight, None, None, None, None, None, None)
+        return (grad_input, grad_weight, None, None, None, None, None, None, None)
