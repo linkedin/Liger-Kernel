@@ -5,36 +5,40 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from liger_kernel.chunked_loss import LigerFusedLinearORPOLoss
-from liger_kernel.chunked_loss.functional import liger_fused_linear_orpo
-from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
+from liger_kernel.chunked_loss import LigerFusedLinearCPOLoss
+from liger_kernel.chunked_loss.cpo_loss import LigerFusedLinearCPOFunction
+from liger_kernel.chunked_loss.functional import liger_fused_linear_cpo
 
 # set random seed globally
 set_seed()
 
 
-class HFORPOLoss(HFAlignmentLoss):
+class HFCPOLoss(HFAlignmentLoss):
     """
-    Implementation of the Odds Ratio Preference Optimization (ORPO) loss,
-    adapted from Hugging Face's implementation.
-    Reference: https://github.com/huggingface/trl/blob/main/trl/trainer/orpo_trainer.py
+    HF's implementation of CPO loss in TRL. https://github.com/huggingface/trl/blob/main/trl/trainer/cpo_trainer.py
     """
 
-    def __init__(self, ignore_index: int = -100, beta: float = 0.1):
-        super().__init__(beta=beta, ignore_index=ignore_index)
+    def __init__(
+        self,
+        alpha: float = 1.0,
+        beta: float = 0.1,
+        ignore_index: int = -100,
+        label_smoothing: float = 0.0,
+        simpo_gamma: float = 0.5,
+        loss_type: str = "sigmoid",
+    ):
+        super().__init__(alpha=alpha, beta=beta, ignore_index=ignore_index)
+        # Sigmoid defaults to the CPO loss defined in the paper listed above.
+        self.loss_type = loss_type
+        self.label_smoothing = label_smoothing
+        self.simpo_gamma = simpo_gamma
 
     def alignment_loss(
         self,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
-    ) -> Tuple[
-        torch.FloatTensor,
-        torch.FloatTensor,
-        torch.FloatTensor,
-        torch.FloatTensor,
-        torch.FloatTensor,
-    ]:
-        """Compute ORPO's odds ratio (OR) loss for a batch of policy and reference model log probabilities.
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """Compute the CPO loss for a batch of policy and reference model log probabilities.
 
         Args:
             policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (batch_size,)
@@ -42,24 +46,35 @@ class HFORPOLoss(HFAlignmentLoss):
 
         Returns:
             A tuple of three tensors: (losses, chosen_rewards, rejected_rewards).
-            The losses tensor contains the ORPO loss for each example in the batch.
+            The losses tensor contains the CPO loss for each example in the batch.
             The chosen_rewards and rejected_rewards tensors contain the rewards for the chosen and rejected responses, respectively.
-            The log odds ratio of the chosen responses over the rejected responses ratio for logging purposes.
-            The `log(sigmoid(log_odds_chosen))` for logging purposes.
         """
+        logits = policy_chosen_logps - policy_rejected_logps
 
-        # Derived from Eqs. (4) and (7) from https://huggingface.co/papers/2403.07691 by using log identities and exp(log(P(y|x)) = P(y|x)
-        log_odds = (policy_chosen_logps - policy_rejected_logps) - (
-            torch.log1p(-torch.exp(policy_chosen_logps))
-            - torch.log1p(-torch.exp(policy_rejected_logps))
-        )
-        ratio = F.logsigmoid(log_odds)
-        losses = self.beta * ratio
+        # The beta is a temperature parameter for the CPO loss, typically something in the range of 0.1 to 0.5.
+        # We ignore the reference model as beta -> 0. The label_smoothing parameter encodes our uncertainty about the labels and
+        # calculates a conservative CPO loss.
+        if self.loss_type == "sigmoid":
+            # This reduces to Equation 3 from the CPO paper when label_smoothing -> 0.
+            losses = (
+                F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
+                + F.logsigmoid(-self.beta * logits) * self.label_smoothing
+            )
+        elif self.loss_type == "simpo":
+            logits = logits - (self.simpo_gamma / self.beta)
+            losses = (
+                F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
+                + F.logsigmoid(-self.beta * logits) * self.label_smoothing
+            )
+        else:
+            raise ValueError(
+                f"Unknown loss type: {self.loss_type}. Should be one of ['sigmoid']"
+            )
 
         return losses
 
 
-class TorchLMHeadORPO(torch.nn.Module):
+class TorchLMHeadCPO(torch.nn.Module):
     def __init__(
         self,
         H: int,
@@ -68,20 +83,26 @@ class TorchLMHeadORPO(torch.nn.Module):
         bias: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
+        alpha: float = 1.0,
+        loss_type: str = "sigmoid",
+        simpo_gamma: float = 0.5,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
-        self.orpo_loss = HFORPOLoss(
-            ignore_index=ignore_index, beta=beta
+        self.cpo_loss = HFCPOLoss(
+            ignore_index=ignore_index,
+            beta=beta,
+            loss_type=loss_type,
+            simpo_gamma=simpo_gamma,
         ).get_batch_loss_metrics
 
     def forward(self, x, y):
-        return self.orpo_loss(self.lin.weight, x, y, self.lin.bias)
+        return self.cpo_loss(self.lin.weight, x, y, self.lin.bias)
 
 
-class LigerLMHeadORPO(torch.nn.Module):
+class LigerLMHeadCPO(torch.nn.Module):
     def __init__(
         self,
         H: int,
@@ -90,15 +111,18 @@ class LigerLMHeadORPO(torch.nn.Module):
         bias: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
+        alpha: float = 1.0,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
-        self.orpo_loss = LigerFusedLinearORPOLoss(ignore_index=ignore_index, beta=beta)
+        self.cpo_loss = LigerFusedLinearCPOLoss(
+            ignore_index=ignore_index, beta=beta, alpha=alpha
+        )
 
     def forward(self, x, y):
-        return self.orpo_loss(self.lin.weight, x, y, self.lin.bias)
+        return self.cpo_loss(self.lin.weight, x, y, self.lin.bias)
 
 
 @pytest.mark.parametrize(
@@ -111,15 +135,20 @@ class LigerLMHeadORPO(torch.nn.Module):
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        (1.0, torch.bfloat16, 5e-2, 5e-1),
+        (1.0, torch.bfloat16, 5e-3, 5e-3),
         (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
-@pytest.mark.parametrize("ignore_index, beta", [(-100, 0.1), (42, 0.2)])
-def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta):
-    B = 2 * B  # orpo loss requires B to be even
-    torch_lm_head_orpo = TorchLMHeadORPO(
+@pytest.mark.parametrize(
+    "ignore_index, beta, alpha", [(-100, 0.1, 1.0), (42, 0.2, 0.85)]
+)
+def test_correctness(
+    B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta, alpha
+):
+    B = 2 * B  # cpo loss requires B to be even
+
+    torch_lm_head_cpo = TorchLMHeadCPO(
         H=H,
         V=V,
         dtype=dtype,
@@ -127,7 +156,7 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
         ignore_index=ignore_index,
         beta=beta,
     )
-    liger_lm_head_orpo = LigerLMHeadORPO(
+    liger_lm_head_cpo = LigerLMHeadCPO(
         H=H,
         V=V,
         dtype=dtype,
@@ -136,13 +165,13 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
         beta=beta,
     )
 
-    torch_lm_head_orpo.lin.weight.data = liger_lm_head_orpo.lin.weight.data = (
-        torch.randn(V, H, device="cuda", dtype=dtype)
+    torch_lm_head_cpo.lin.weight.data = liger_lm_head_cpo.lin.weight.data = torch.randn(
+        V, H, device="cuda", dtype=dtype
     )
 
     if bias:
-        torch_lm_head_orpo.lin.bias.data = liger_lm_head_orpo.lin.bias.data = (
-            torch.randn(V, device="cuda", dtype=dtype)
+        torch_lm_head_cpo.lin.bias.data = liger_lm_head_cpo.lin.bias.data = torch.randn(
+            V, device="cuda", dtype=dtype
         )
 
     _input = torch.randn(B, T, H, device="cuda", dtype=dtype) * scalar
@@ -164,8 +193,8 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    loss1 = torch_lm_head_orpo(input1, target)
-    loss2 = liger_lm_head_orpo(input2, target)
+    loss1 = torch_lm_head_cpo(input1, target)
+    loss2 = liger_lm_head_cpo(input2, target)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
@@ -174,15 +203,15 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
 
     assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
     assert_verbose_allclose(
-        torch_lm_head_orpo.lin.weight.grad,
-        liger_lm_head_orpo.lin.weight.grad,
+        torch_lm_head_cpo.lin.weight.grad,
+        liger_lm_head_cpo.lin.weight.grad,
         atol=atol,
         rtol=rtol,
     )
     if bias:
         assert_verbose_allclose(
-            torch_lm_head_orpo.lin.bias.grad,
-            liger_lm_head_orpo.lin.bias.grad,
+            torch_lm_head_cpo.lin.bias.grad,
+            liger_lm_head_cpo.lin.bias.grad,
             atol=atol,
             rtol=rtol,
         )
@@ -229,8 +258,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias):
     bias1 = _bias.detach().clone().requires_grad_(True) if bias else None
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
-    loss1 = LigerFusedLinearORPOFunction.apply(input1, weight1, target, bias1)
-    loss2 = liger_fused_linear_orpo(input2, weight2, target, bias2)
+    loss1 = LigerFusedLinearCPOFunction.apply(input1, weight1, target, bias1)
+    loss2 = liger_fused_linear_cpo(input2, weight2, target, bias2)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 

@@ -49,9 +49,9 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
             target=target,
             bias=bias,
             loss_fn=LigerFusedLinearORPOFunction.preference_loss_fn,
-            compute_nll_loss=compute_nll_loss,
             ignore_index=ignore_index,
             beta=beta,
+            compute_nll_loss=compute_nll_loss,
             compiled=compiled,
         )
 
@@ -61,3 +61,39 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
         # Return these gradients, followed by None for the remaining inputs
         return *grads, None, None, None, None
+
+
+class LigerFusedLinearORPOLoss(torch.nn.Module):
+    """
+    Fused linear layer with ORPO (Odds-Ratio Preference Optimization) loss.
+    """
+
+    def __init__(
+        self,
+        ignore_index: int = -100,
+        beta: float = 0.1,
+        compute_nll_loss: bool = True,
+        compiled: bool = True,
+    ):
+        """
+        Args:
+            ignore_index (int): Index to ignore in the loss.
+            beta (float): Weight for the odds ratio loss.
+        """
+        super().__init__()
+        self.ignore_index = ignore_index
+        self.beta = beta
+        self.compute_nll_loss = compute_nll_loss
+        self.compiled = compiled
+
+    def forward(self, lin_weight, _input, target, bias=None):
+        return LigerFusedLinearORPOFunction.apply(
+            _input,
+            lin_weight,
+            target,
+            bias,
+            self.ignore_index,
+            self.beta,
+            self.compute_nll_loss,
+            self.compiled,
+        )
