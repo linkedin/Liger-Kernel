@@ -1,3 +1,4 @@
+import torch
 import torch.nn.functional as F
 
 from liger_kernel.chunked_loss.fused_linear_preference import (
@@ -62,3 +63,45 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
         # Return these gradients, followed by None for the remaining inputs
         return *grads, None, None, None, None, None, None
+
+
+class LigerFusedLinearSimPOLoss(torch.nn.Module):
+    """
+    Fused linear layer with SimPO loss.
+    """
+
+    def __init__(
+        self,
+        ignore_index: int = -100,
+        beta: float = 0.1,
+        alpha: float = 1.0,
+        compute_nll_loss: bool = True,
+        compiled: bool = True,
+        gamma: float = 0.5,
+    ):
+        """
+        Args:
+            ignore_index (int): Index to ignore in the loss.
+            beta (float): Weight for the odds ratio loss.
+        """
+        super().__init__()
+        self.ignore_index = ignore_index
+        self.beta = beta
+        self.alpha = alpha
+        self.compute_nll_loss = compute_nll_loss
+        self.compiled = compiled
+        self.gamma = gamma
+
+    def forward(self, lin_weight, _input, target, bias=None):
+        return LigerFusedLinearSimPOFunction.apply(
+            _input,
+            lin_weight,
+            target,
+            bias,
+            self.ignore_index,
+            self.beta,
+            self.alpha,
+            self.compute_nll_loss,
+            self.compiled,
+            self.gamma,
+        )

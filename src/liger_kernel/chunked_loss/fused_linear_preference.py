@@ -27,10 +27,10 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         bias=None,
         loss_fn=None,
         chunk_size=1,
-        compute_nll_loss=True,
         ignore_index=-100,
         alpha=1.0,
         beta=0.1,
+        compute_nll_loss=True,
         compiled=True,
         **loss_kwargs,
     ):

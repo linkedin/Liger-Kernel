@@ -5,6 +5,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from liger_kernel.chunked_loss import LigerFusedLinearORPOLoss
+from liger_kernel.chunked_loss.functional import liger_fused_linear_orpo
 from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
 
 # set random seed globally
@@ -57,6 +59,48 @@ class HFORPOLoss(HFAlignmentLoss):
         return losses
 
 
+class TorchLMHeadORPO(torch.nn.Module):
+    def __init__(
+        self,
+        H: int,
+        V: int,
+        dtype: torch.dtype,
+        bias: bool = False,
+        ignore_index: int = -100,
+        beta: float = 0.1,
+    ):
+        super().__init__()
+        self.lin = torch.nn.Linear(
+            in_features=H, out_features=V, bias=bias, dtype=dtype
+        )
+        self.orpo_loss = HFORPOLoss(
+            ignore_index=ignore_index, beta=beta
+        ).get_batch_loss_metrics
+
+    def forward(self, x, y):
+        return self.orpo_loss(self.lin.weight, x, y, self.lin.bias)
+
+
+class LigerLMHeadORPO(torch.nn.Module):
+    def __init__(
+        self,
+        H: int,
+        V: int,
+        dtype: torch.dtype,
+        bias: bool = False,
+        ignore_index: int = -100,
+        beta: float = 0.1,
+    ):
+        super().__init__()
+        self.lin = torch.nn.Linear(
+            in_features=H, out_features=V, bias=bias, dtype=dtype
+        )
+        self.orpo_loss = LigerFusedLinearORPOLoss(ignore_index=ignore_index, beta=beta)
+
+    def forward(self, x, y):
+        return self.orpo_loss(self.lin.weight, x, y, self.lin.bias)
+
+
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
@@ -75,6 +119,31 @@ class HFORPOLoss(HFAlignmentLoss):
 @pytest.mark.parametrize("ignore_index, beta", [(-100, 0.1), (42, 0.2)])
 def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta):
     B = 2 * B  # orpo loss requires B to be even
+    torch_lm_head_orpo = TorchLMHeadORPO(
+        H=H,
+        V=V,
+        dtype=dtype,
+        bias=bias,
+        ignore_index=ignore_index,
+        beta=beta,
+    )
+    liger_lm_head_orpo = LigerLMHeadORPO(
+        H=H,
+        V=V,
+        dtype=dtype,
+        bias=bias,
+        ignore_index=ignore_index,
+        beta=beta,
+    )
+
+    torch_lm_head_orpo.lin.weight.data = liger_lm_head_orpo.lin.weight.data = (
+        torch.randn(V, H, device="cuda", dtype=dtype)
+    )
+
+    if bias:
+        torch_lm_head_orpo.lin.bias.data = liger_lm_head_orpo.lin.bias.data = (
+            torch.randn(V, device="cuda", dtype=dtype)
+        )
 
     _input = torch.randn(B, T, H, device="cuda", dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
@@ -95,6 +164,63 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
+    loss1 = torch_lm_head_orpo(input1, target)
+    loss2 = liger_lm_head_orpo(input2, target)
+
+    assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
+
+    loss1.backward()
+    loss2.backward()
+
+    assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(
+        torch_lm_head_orpo.lin.weight.grad,
+        liger_lm_head_orpo.lin.weight.grad,
+        atol=atol,
+        rtol=rtol,
+    )
+    if bias:
+        assert_verbose_allclose(
+            torch_lm_head_orpo.lin.bias.grad,
+            liger_lm_head_orpo.lin.bias.grad,
+            atol=atol,
+            rtol=rtol,
+        )
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (2, 2, 8, 8),
+        (3, 47, 31, 123),  # random shape
+    ],
+)
+@pytest.mark.parametrize(
+    "scalar, dtype, atol, rtol",
+    [
+        (1.0, torch.bfloat16, 5e-2, 5e-1),
+        (1.0, torch.float32, 1e-5, 5e-4),
+    ],
+)
+@pytest.mark.parametrize("bias", [True, False])
+def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias):
+    B = 2 * B
+
+    _input = torch.randn(B, T, H, device="cuda", dtype=dtype) * scalar
+    input1 = _input.detach().clone().requires_grad_(True)
+    input2 = _input.detach().clone().requires_grad_(True)
+
+    target = torch.randint(
+        0,
+        V,
+        (
+            B,
+            T,
+        ),
+        device="cuda",
+        dtype=torch.long,
+    )
+
     _weight = torch.randn(V, H, device="cuda", dtype=dtype)
     weight1 = _weight.detach().clone().requires_grad_(True)
     weight2 = _weight.detach().clone().requires_grad_(True)
@@ -103,18 +229,8 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
     bias1 = _bias.detach().clone().requires_grad_(True) if bias else None
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
-    loss1 = HFORPOLoss(ignore_index=ignore_index, beta=beta).get_batch_loss_metrics(
-        input1, weight1, target, bias1
-    )
-    loss2 = LigerFusedLinearORPOFunction.apply(
-        input2,
-        weight2,
-        target,
-        bias2,
-        ignore_index,
-        beta,
-        True,
-    )
+    loss1 = LigerFusedLinearORPOFunction.apply(input1, weight1, target, bias1)
+    loss2 = liger_fused_linear_orpo(input2, weight2, target, bias2)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
