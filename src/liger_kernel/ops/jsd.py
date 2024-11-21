@@ -49,7 +49,7 @@ def _jsd_kernel(
         mask = offsets < n_cols
         X = tl.load(X_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
         Y = tl.load(Y_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
-        
+
         if beta == 0.0:  # forward KL
             Y_prob = tl.exp(Y)
             loss = Y_prob * (Y - X)
@@ -66,7 +66,7 @@ def _jsd_kernel(
 
             loss = beta * P * Y + (1 - beta) * Q * X - M * log_M
             dX = (1 - beta) * Q * (X - log_M)
-        
+
         loss = loss / n_non_ignore
         dX = dX / n_non_ignore
         tl.store(loss_ptr + offsets, loss, mask=mask)

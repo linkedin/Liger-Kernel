@@ -1,8 +1,9 @@
 from test.utils import assert_verbose_allclose, set_seed, supports_bfloat16
 from typing import Optional
-from torch.nn import KLDivLoss
+
 import pytest
 import torch
+from torch.nn import KLDivLoss
 
 from liger_kernel.transformers.functional import liger_jsd
 from liger_kernel.transformers.jsd import LigerJSD, LigerJSDFunction
@@ -29,13 +30,15 @@ class JSD(torch.nn.Module):
         log_p: torch.Tensor,  # target
         label: Optional[torch.Tensor] = None,
     ):
-        if self.beta == 0.0:  # FKL
+        if self.beta == 0.0:
             loss = self.kl(log_q, log_p).sum(dim=-1)
-        elif self.beta == 1.0:  # RKL
+        elif self.beta == 1.0:
             loss = self.kl(log_p, log_q).sum(dim=-1)
         else:
             log_p, log_q = log_p.to(torch.float), log_q.to(torch.float)
-            log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(-1, log_q.size(-1))
+            log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(
+                -1, log_q.size(-1)
+            )
             m = torch.lerp(torch.exp(log_q), torch.exp(log_p), self.beta)
             loss = self.beta * self.kl(torch.log(m), log_p).sum(dim=-1) + (
                 1 - self.beta
