@@ -29,6 +29,7 @@ class TorchLMHeadJSD(torch.nn.Module):
         beta: float = 0.5,
         ignore_index: int = -100,
         temperature: float = 1.0,
+        softcap: float = 0.0,
     ):
         super().__init__()
         self.student_lin = torch.nn.Linear(
@@ -39,14 +40,25 @@ class TorchLMHeadJSD(torch.nn.Module):
         )
         self.jsd = TorchJSD(beta=beta, ignore_index=ignore_index, dtype=dtype)
         self.temperature = temperature
+        self.softcap = softcap
 
     def forward(self, student_input, teacher_input, label=None):
         student_logits = self.student_lin(student_input).to(torch.float32)
         teacher_logits = self.teacher_lin(teacher_input).to(torch.float32)
+
+        if self.softcap > 0:
+            student_logits = self._softcap(student_logits)
+            teacher_logits = self._softcap(teacher_logits)
+
         student_prob = torch.log_softmax(student_logits / self.temperature, dim=-1)
         teacher_prob = torch.log_softmax(teacher_logits / self.temperature, dim=-1)
 
         return self.jsd(student_prob, teacher_prob, label)
+
+    def _softcap(self, logits):
+        logits = logits / self.softcap
+        logits = torch.tanh(logits) * self.softcap
+        return logits
 
 
 class LigerLMHeadJSD(torch.nn.Module):
@@ -59,6 +71,7 @@ class LigerLMHeadJSD(torch.nn.Module):
         beta: float = 0.5,
         ignore_index: int = -100,
         temperature: float = 1.0,
+        softcap: float = 0.0,
     ):
         super().__init__()
         self.student_lin = torch.nn.Linear(
@@ -68,7 +81,10 @@ class LigerLMHeadJSD(torch.nn.Module):
             in_features=H, out_features=V, bias=False, dtype=dtype, device=device
         )
         self.fused_jsd = LigerFusedLinearJSD(
-            jsd_beta=beta, ignore_index=ignore_index, temperature=temperature
+            jsd_beta=beta,
+            ignore_index=ignore_index,
+            temperature=temperature,
+            softcap=softcap,
         )
 
     def forward(self, student_input, teacher_input, label=None):
@@ -107,7 +123,11 @@ class LigerLMHeadJSD(torch.nn.Module):
         (2.0, 0.1),
     ],
 )
-def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
+@pytest.mark.parametrize(
+    "softcap",
+    [0.0, 30.0, 50.0],
+)
+def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, softcap, atol, rtol):
     device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
@@ -116,6 +136,7 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
         device=device,
         temperature=temperature,
         beta=beta,
+        softcap=softcap,
     ).to(device)
     liger_lm_head_jsd = LigerLMHeadJSD(
         H=H,
@@ -124,6 +145,7 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
         device=device,
         temperature=temperature,
         beta=beta,
+        softcap=softcap,
     ).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
@@ -180,8 +202,12 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
         (2.0, 0.1, 42),
     ],
 )
+@pytest.mark.parametrize(
+    "softcap",
+    [0.0, 30.0, 50.0],
+)
 def test_correctness_with_ignore_index(
-    B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
+    B, T, H, V, scalar, dtype, beta, ignore_index, temperature, softcap, atol, rtol
 ):
     device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(
@@ -192,6 +218,7 @@ def test_correctness_with_ignore_index(
         temperature=temperature,
         ignore_index=ignore_index,
         beta=beta,
+        softcap=softcap,
     ).to(device)
     liger_lm_head_jsd = LigerLMHeadJSD(
         H=H,
@@ -201,6 +228,7 @@ def test_correctness_with_ignore_index(
         temperature=temperature,
         ignore_index=ignore_index,
         beta=beta,
+        softcap=softcap,
     ).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
@@ -264,8 +292,12 @@ def test_correctness_with_ignore_index(
 @pytest.mark.parametrize(
     "temperature, beta, ignore_index", [(1.0, 0.5, -100), (2.0, 0.1, 42)]
 )
+@pytest.mark.parametrize(
+    "softcap",
+    [0.0, 30.0, 50.0],
+)
 def test_correctness_functional(
-    B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
+    B, T, H, V, scalar, dtype, beta, ignore_index, temperature, softcap, atol, rtol
 ):
     device = "cuda"
 
@@ -300,6 +332,7 @@ def test_correctness_functional(
         beta,
         ignore_index,
         temperature,
+        softcap,
     )
     output2 = LigerFusedLinearJSDFunction.apply(
         _input2,
@@ -310,6 +343,7 @@ def test_correctness_functional(
         beta,
         ignore_index,
         temperature,
+        softcap,
     )
 
     assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
@@ -343,8 +377,12 @@ def test_correctness_functional(
         (2.0, 0.1, 42),
     ],
 )
+@pytest.mark.parametrize(
+    "softcap",
+    [0.0, 30.0, 50.0],
+)
 def test_correctness_all_ignored(
-    B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
+    B, T, H, V, scalar, dtype, beta, ignore_index, temperature, softcap, atol, rtol
 ):
     device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(
@@ -355,6 +393,7 @@ def test_correctness_all_ignored(
         temperature=temperature,
         ignore_index=ignore_index,
         beta=beta,
+        softcap=softcap,
     ).to(device)
     liger_lm_head_jsd = LigerLMHeadJSD(
         H=H,
@@ -364,6 +403,7 @@ def test_correctness_all_ignored(
         temperature=temperature,
         ignore_index=ignore_index,
         beta=beta,
+        softcap=softcap,
     ).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
