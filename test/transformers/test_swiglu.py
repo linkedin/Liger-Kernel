@@ -202,7 +202,7 @@ def test_correctness_functional(bsz, seq_len, size, dtype, atol, rtol):
     b1 = _b.clone().requires_grad_(True)
     b2 = _b.clone().requires_grad_(True)
 
-    y1 = liger_swiglu(x1, b1)
+    y1 = liger_swiglu(a=x1, b=b1)
     y2 = LigerSiLUMulFunction.apply(x2, b2)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)

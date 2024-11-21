@@ -182,7 +182,7 @@ def test_correctness_functional(
 
     w = torch.randn(hd, device=device, dtype=dtype)
 
-    y1 = liger_rms_norm(h1, w, 1e-6, offset, casting_mode)
+    y1 = liger_rms_norm(X=h1, W=w, eps=1e-6, offset=offset, casting_mode=casting_mode)
     y2 = LigerRMSNormFunction.apply(h2, w, 1e-6, offset, casting_mode)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)

@@ -121,6 +121,8 @@ class LigerLMHeadJSD(torch.nn.Module):
     [
         (1.0, 0.5),
         (2.0, 0.1),
+        (1.0, 0.0),  # FKL
+        (1.0, 1.0),  # RKL
     ],
 )
 @pytest.mark.parametrize(
@@ -199,7 +201,9 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, softcap, atol
     "temperature, beta, ignore_index",
     [
         (1.0, 0.5, 2),
+        (1.0, 0.0, 2),
         (2.0, 0.1, 42),
+        (1.0, 1.0, 2),
     ],
 )
 @pytest.mark.parametrize(
@@ -324,15 +328,15 @@ def test_correctness_functional(
     label[indices_to_assign] = ignore_index
 
     output1 = liger_fused_linear_jsd(
-        _input1,
-        _weight1,
-        teacher_input,
-        teacher_weight,
-        label,
-        beta,
-        ignore_index,
-        temperature,
-        softcap,
+        student_input=_input1,
+        student_weight=_weight1,
+        teacher_input=teacher_input,
+        teacher_weight=teacher_weight,
+        shift_labels=label,
+        jsd_beta=beta,
+        ignore_index=ignore_index,
+        temperature=temperature,
+        softcap=softcap,
     )
     output2 = LigerFusedLinearJSDFunction.apply(
         _input2,
