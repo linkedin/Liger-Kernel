@@ -105,6 +105,8 @@ class LigerLMHeadJSD(torch.nn.Module):
     [
         (1.0, 0.5),
         (2.0, 0.1),
+        (1.0, 0.0),  # FKL
+        (1.0, 1.0),  # RKL
     ],
 )
 def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
@@ -177,7 +179,9 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
     "temperature, beta, ignore_index",
     [
         (1.0, 0.5, 2),
+        (1.0, 0.0, 2),
         (2.0, 0.1, 42),
+        (1.0, 1.0, 2),
     ],
 )
 def test_correctness_with_ignore_index(
