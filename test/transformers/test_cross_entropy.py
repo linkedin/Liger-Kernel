@@ -5,7 +5,10 @@ import torch
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
 
-from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
+from liger_kernel.ops.cross_entropy import (
+    LigerCrossEntropyFunction,
+    liger_cross_entropy_kernel,
+)
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.utils import infer_device
@@ -714,3 +717,75 @@ def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rto
     _test_correctness_not_last_layer_once(
         liger_ce, B, T, V, reduction, scalar, dtype, atol, rtol
     )
+
+
+def test_float32_internal():
+    """
+    This test validates that the internal softmax calculations occur in float32,
+    even if the input dtype is bfloat16.
+    """
+    # Set up test parameters
+    batch_size = 4
+    n_cols = 128256
+    n_non_ignore = batch_size
+    ignore_index = -100
+    label_smoothing = 0.0
+    lse_square_scale = 0.0
+    softcap = 0.0
+    BLOCK_SIZE = 32768
+    reduction = "mean"
+
+    # Initialize input tensors
+    X_init = torch.randn(batch_size, n_cols, dtype=torch.bfloat16, device="cuda")
+    Y = torch.randint(0, n_cols, (batch_size,), device="cuda")
+
+    # Run kernel for bfloat16
+    X_bf16 = X_init.clone()
+    loss_bf16 = torch.zeros(batch_size, dtype=torch.float32, device="cuda")
+    liger_cross_entropy_kernel[(batch_size,)](
+        X_ptr=X_bf16,
+        X_stride=X_bf16.stride(-2),
+        Y_ptr=Y,
+        Y_stride=Y.stride(-1),
+        z_loss_ptr=loss_bf16,  # dummy ptr, not used
+        loss_ptr=loss_bf16,
+        loss_stride=loss_bf16.stride(-1),
+        n_cols=n_cols,
+        n_non_ignore=n_non_ignore,
+        ignore_index=ignore_index,
+        lse_square_scale=lse_square_scale,
+        label_smoothing=label_smoothing,
+        reduction=reduction,
+        softcap=softcap,
+        RETURN_Z_LOSS=0,  # False
+        HAS_SOFTCAPPING=False,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=32,
+    )
+
+    # Run kernel for float32
+    X_fp32 = X_init.float()
+    loss_fp32 = torch.zeros(batch_size, dtype=torch.float32, device="cuda")
+    liger_cross_entropy_kernel[(batch_size,)](
+        X_ptr=X_fp32,
+        X_stride=X_fp32.stride(-2),
+        Y_ptr=Y,
+        Y_stride=Y.stride(-1),
+        loss_ptr=loss_fp32,
+        z_loss_ptr=loss_fp32,  # dummy ptr, not used
+        loss_stride=loss_fp32.stride(-1),
+        n_cols=n_cols,
+        n_non_ignore=n_non_ignore,
+        ignore_index=ignore_index,
+        lse_square_scale=lse_square_scale,
+        label_smoothing=label_smoothing,
+        reduction=reduction,
+        softcap=softcap,
+        RETURN_Z_LOSS=0,  # False
+        HAS_SOFTCAPPING=False,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=32,
+    )
+
+    torch.allclose(X_bf16, X_fp32.bfloat16())
+    torch.allclose(loss_bf16, loss_fp32)

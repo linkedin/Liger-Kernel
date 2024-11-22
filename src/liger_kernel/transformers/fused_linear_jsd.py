@@ -12,7 +12,7 @@ class LigerFusedLinearJSD(torch.nn.Module):
     the materialization of the large logits tensor.
 
     Args:
-        jsd_beta (float): coefficient beta of generalized JSD in the open interval (0, 1). Default: `0.5`
+        jsd_beta (float): coefficient beta of generalized JSD in the interval [0, 1]. It implements forward/reverse KL when beta equals 0 and 1 respectively. Default: `0.5`
         ignore_index (int): The index to ignore in the target. Default: `-100`
         temperature (float): temperature in softmax function to control the output probability distribution. Default: `1.0`
 
@@ -70,9 +70,6 @@ class LigerFusedLinearJSD(torch.nn.Module):
 
     def __init__(self, jsd_beta=0.5, ignore_index=-100, temperature=1.0):
         super().__init__()
-        assert (
-            jsd_beta > 0 and jsd_beta < 1
-        ), f"beta must be greater than 0 and less than 1. Got: {jsd_beta}"
         assert temperature != 0, "temperature cannot be 0."
         self.jsd_beta = jsd_beta
         self.temperature = temperature

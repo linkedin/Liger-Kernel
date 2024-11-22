@@ -128,7 +128,7 @@ def test_functional_correctness(
     pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
     cos, sin = rotary_emb(k1, pos_ids)
 
-    functional_q, functional_k = liger_rope(q1, k1, cos, sin)
+    functional_q, functional_k = liger_rope(q=q1, k=k1, cos=cos, sin=sin)
     class_q, class_k = LigerRopeFunction.apply(q2, k2, cos, sin)
 
     assert torch.allclose(functional_q, class_q, atol=atol, rtol=rtol)

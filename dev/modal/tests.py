@@ -14,7 +14,7 @@ app = modal.App("liger_tests", image=image)
 repo = modal.Mount.from_local_dir(ROOT_PATH, remote_path="/root/liger-kernel")
 
 
-@app.function(gpu="A10G", mounts=[repo], timeout=60 * 10)
+@app.function(gpu="A10G", mounts=[repo], timeout=60 * 15)
 def liger_tests():
     import subprocess
 

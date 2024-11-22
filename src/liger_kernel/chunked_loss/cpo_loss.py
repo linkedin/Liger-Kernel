@@ -1,3 +1,4 @@
+import torch
 import torch.nn.functional as F
 
 from liger_kernel.chunked_loss.fused_linear_preference import (
@@ -46,10 +47,10 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             target,
             bias,
             loss_fn=LigerFusedLinearCPOFunction.preference_loss_fn,
-            compute_nll_loss=compute_nll_loss,
             ignore_index=ignore_index,
             alpha=alpha,
             beta=beta,
+            compute_nll_loss=compute_nll_loss,
             compiled=compiled,
         )
 
@@ -59,3 +60,42 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
         # Return these gradients, followed by None for the remaining inputs
         return *grads, None, None, None, None, None
+
+
+class LigerFusedLinearCPOLoss(torch.nn.Module):
+    """
+    Fused linear layer with CPO loss.
+    """
+
+    def __init__(
+        self,
+        ignore_index: int = -100,
+        beta: float = 0.1,
+        alpha: float = 1.0,
+        compute_nll_loss: bool = True,
+        compiled: bool = True,
+    ):
+        """
+        Args:
+            ignore_index (int): Index to ignore in the loss.
+            beta (float): Weight for the odds ratio loss.
+        """
+        super().__init__()
+        self.ignore_index = ignore_index
+        self.beta = beta
+        self.alpha = alpha
+        self.compute_nll_loss = compute_nll_loss
+        self.compiled = compiled
+
+    def forward(self, lin_weight, _input, target, bias=None):
+        return LigerFusedLinearCPOFunction.apply(
+            _input,
+            lin_weight,
+            target,
+            bias,
+            self.ignore_index,
+            self.beta,
+            self.alpha,
+            self.compute_nll_loss,
+            self.compiled,
+        )

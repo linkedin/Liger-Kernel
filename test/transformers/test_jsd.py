@@ -33,12 +33,19 @@ class JSD(torch.nn.Module):
         log_p: torch.Tensor,  # target
         label: Optional[torch.Tensor] = None,
     ):
-        log_p, log_q = log_p.to(torch.float), log_q.to(torch.float)
-        log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(-1, log_q.size(-1))
-        m = torch.lerp(torch.exp(log_q), torch.exp(log_p), self.beta)
-        loss = self.beta * self.kl(torch.log(m), log_p).sum(dim=-1) + (
-            1 - self.beta
-        ) * self.kl(torch.log(m), log_q).sum(dim=-1)
+        if self.beta == 0.0:
+            loss = self.kl(log_q, log_p).sum(dim=-1)
+        elif self.beta == 1.0:
+            loss = self.kl(log_p, log_q).sum(dim=-1)
+        else:
+            log_p, log_q = log_p.to(torch.float), log_q.to(torch.float)
+            log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(
+                -1, log_q.size(-1)
+            )
+            m = torch.lerp(torch.exp(log_q), torch.exp(log_p), self.beta)
+            loss = self.beta * self.kl(torch.log(m), log_p).sum(dim=-1) + (
+                1 - self.beta
+            ) * self.kl(torch.log(m), log_q).sum(dim=-1)
 
         if label is not None:
             loss = torch.where(label != self.ignore_index, loss, 0.0)
@@ -225,7 +232,13 @@ def _test_correctness_functional(
     label[indices_to_assign] = ignore_index
 
     output = LigerJSDFunction.apply(x1, target, label, beta, ignore_index)
-    output2 = liger_jsd(x2, target, label, beta, ignore_index)
+    output2 = liger_jsd(
+        input=x2,
+        target=target,
+        shift_labels=label,
+        beta=beta,
+        ignore_index=ignore_index,
+    )
     assert torch.allclose(output, output2, atol=atol, rtol=rtol)
     if (
         not is_last_layer
@@ -254,7 +267,7 @@ def test_correctness_not_last(B, T, V, dtype, atol, rtol):
 
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
-@pytest.mark.parametrize("beta", [0.1, 0.5, 0.9])
+@pytest.mark.parametrize("beta", [0.0, 0.1, 0.5, 0.9, 1.0])
 def test_correctness_with_beta(B, T, V, beta, dtype, atol, rtol):
     liger_jsd = LigerJSD(beta=beta)
     _test_correctness_with_beta_once(liger_jsd, beta, B, T, V, dtype, atol, rtol)
