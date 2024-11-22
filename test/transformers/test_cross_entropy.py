@@ -4,13 +4,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
-
-from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
-from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
-from liger_kernel.transformers.functional import (
-    liger_cross_entropy,
+from liger_kernel.ops.cross_entropy import (
+    LigerCrossEntropyFunction, 
     liger_cross_entropy_kernel
 )
+from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
+from liger_kernel.transformers.functional import liger_cross_entropy
 
 set_seed(42)
 
@@ -751,6 +750,7 @@ def test_float32_internal():
         ignore_index=ignore_index,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
+        reduction=reduction,
         softcap=softcap,
         RETURN_Z_LOSS=0,  # False
         HAS_SOFTCAPPING=False,
