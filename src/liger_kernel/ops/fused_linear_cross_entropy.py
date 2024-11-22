@@ -26,7 +26,6 @@ def fused_linear_cross_entropy_forward(
     reduction="mean",
     softcap=None,
 ):
-    dtype = _input.dtype
     device = _input.device
 
     # inputs have shape: BT x H
@@ -74,9 +73,6 @@ def fused_linear_cross_entropy_forward(
         loss_1d_slice = loss_1d[start_idx:end_idx]  # chunk_size,
         n_non_ignore = (target_chunk != ignore_index).sum().item()
 
-        # when doing CE, use the upcasted precision
-        logits_chunk = logits_chunk.float()
-
         # ensure _input and target are contiguous
         logits_chunk = logits_chunk.contiguous()
         target_chunk = target_chunk.contiguous()
@@ -102,13 +98,6 @@ def fused_linear_cross_entropy_forward(
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32 if not is_hip() else 16,
         )
-
-        # gradient of logits_chunk is computed in-place by the above triton kernel.
-        # Following HuggingFace model source code, we do the forward and backward
-        # w.r.t. logits in fp32 for numerical stability especially as the num classes (vocab size) is huge.
-        # (reference: https://github.com/huggingface/transformers/blob/v4.42.4/src/transformers/models/llama/modeling_llama.py#L1194)
-        # Propagating to lm_head's backward, we'll switch back to the original dtype.
-        logits_chunk = logits_chunk.to(dtype)
 
         # gradient of logits_chunk is computed in-place by the above triton kernel and is of shape: chunk_size x V
         # thus grad_input[start_idx: end_idx] should be of shape: chunk_size x H
