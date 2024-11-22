@@ -209,7 +209,7 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
 def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias):
     B = 2 * B
 
-    _input = torch.randn(B, T, H, device="cuda", dtype=dtype) * scalar
+    _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
@@ -220,7 +220,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias):
             B,
             T,
         ),
-        device="cuda",
+        device=device,
         dtype=torch.long,
     )
 
