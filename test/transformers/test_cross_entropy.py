@@ -5,8 +5,8 @@ import torch
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
 from liger_kernel.ops.cross_entropy import (
-    LigerCrossEntropyFunction, 
-    liger_cross_entropy_kernel
+    LigerCrossEntropyFunction,
+    liger_cross_entropy_kernel,
 )
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
@@ -713,6 +713,7 @@ def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rto
     _test_correctness_not_last_layer_once(
         liger_ce, B, T, V, reduction, scalar, dtype, atol, rtol
     )
+
 
 def test_float32_internal():
     """
