@@ -90,6 +90,7 @@ def liger_fused_linear_jsd(
         jsd_beta,
         ignore_index,
         temperature,
+        softcap,
     )
 
 
