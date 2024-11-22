@@ -4,6 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
+
 from liger_kernel.ops.cross_entropy import (
     LigerCrossEntropyFunction,
     liger_cross_entropy_kernel,

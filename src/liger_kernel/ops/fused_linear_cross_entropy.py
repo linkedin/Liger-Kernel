@@ -26,7 +26,6 @@ def fused_linear_cross_entropy_forward(
     reduction="mean",
     softcap=None,
 ):
-    dtype = _input.dtype
     device = _input.device
 
     # inputs have shape: BT x H
