@@ -60,6 +60,10 @@ try:
 except ImportError:
     QWEN2_VL_AVAILABLE = False
 
+from liger_kernel.utils import infer_device
+
+device = infer_device()
+
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_llama,
@@ -427,7 +431,7 @@ def run_mini_model(
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
-    model = create_model(model_name).to(dtype).to("cuda")
+    model = create_model(model_name).to(dtype).to(device)
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
     loader = DataLoader(
         train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn

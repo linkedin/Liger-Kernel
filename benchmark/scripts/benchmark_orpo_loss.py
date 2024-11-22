@@ -13,6 +13,10 @@ from utils import (
 )
 
 from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
+from liger_kernel.utils import infer_device
+
+
+device = infer_device()
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
@@ -66,7 +70,6 @@ def bench_memory_fused_linear_orpo_loss(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    device = "cuda"
     torch_lm_head_orpo = TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_orpo = LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(device)
 
@@ -106,8 +109,6 @@ def bench_speed_fused_linear_orpo_loss(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
-
-    device = "cuda"
 
     torch_lm_head_orpo = TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_orpo = LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(device)

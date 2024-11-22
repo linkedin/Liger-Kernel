@@ -264,6 +264,7 @@ def rms_norm_backward(
     dY = dY.view(-1, dim)
     n_rows, n_cols = dY.shape
 
+    sm_count = 1
     if X.device.type == "cuda":
         sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
     elif X.device.type == "xpu":

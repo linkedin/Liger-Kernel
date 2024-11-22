@@ -12,6 +12,10 @@ from utils import (
 )
 
 from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
+from liger_kernel.utils import infer_device
+
+
+device = infer_device()
 
 
 class TorchDPOLoss(torch.nn.Module):
@@ -79,7 +83,6 @@ def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     ignore_index = input.extra_benchmark_config["ignore_index"]
     provider = input.kernel_provider
 
-    device = "cuda"
     torch_dpo_loss = TorchDPOLoss(
         H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
     ).to(device)
@@ -127,7 +130,6 @@ def bench_speed_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
-    device = "cuda"
     torch_dpo_loss = TorchDPOLoss(
         H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
     ).to(device)

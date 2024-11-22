@@ -12,6 +12,10 @@ from utils import (
 )
 
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
+from liger_kernel.utils import infer_device
+
+
+device = infer_device()
 
 
 def bench_speed_geglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -31,7 +35,6 @@ def bench_speed_geglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
     )
 
     x_shape = (bsz, seq_len, hidden_size)
-    device = "cuda"
 
     # initialize input
     x = torch.randn(*x_shape, device=device, dtype=dtype, requires_grad=True)
@@ -99,7 +102,6 @@ def bench_memory_geglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
     )
 
     x_shape = (bsz, seq_len, hidden_size)
-    device = "cuda"
     # initialize input
     x = torch.randn(*x_shape, device=device, dtype=dtype, requires_grad=True)
 

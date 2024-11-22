@@ -5,6 +5,9 @@ import torch
 from torch.nn import KLDivLoss
 
 from liger_kernel.transformers.kl_div import LigerKLDIVLoss
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 _SHAPE_PARAMS = (
     "B, T, V",
@@ -43,7 +46,7 @@ def _test_correctness_once(
     reduction,
     log_target,
     is_last_layer=True,
-    device="cuda",
+    device=device,
 ):
     torch.manual_seed(0)
     torch_kldiv = KLDivLoss(reduction=reduction, log_target=log_target)

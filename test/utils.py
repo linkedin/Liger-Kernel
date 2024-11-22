@@ -15,21 +15,9 @@ from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.trainers import BpeTrainer
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.tokenization_utils_base import BatchEncoding
+from liger_kernel.utils import infer_device
 
-
-def infer_device():
-    """
-    Get current device name based on available devices
-    """
-    if torch.cuda.is_available():
-        return "cuda"
-    elif torch.xpu.is_available():
-        return "xpu"
-    else:
-        return "cpu"
-
-
-torch_device = infer_device()
+device = infer_device()
 
 
 def set_seed(seed=42):
@@ -43,7 +31,7 @@ def set_seed(seed=42):
     # PyTorch random seed
     torch.manual_seed(seed)
 
-    if torch_device == "cuda":
+    if device == "cuda":
         # If you are using CUDA
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
@@ -51,8 +39,8 @@ def set_seed(seed=42):
         # PyTorch backend settings
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-    elif torch_device == "xpu":
-        # If you ware using intel GPU
+    elif device == "xpu":
+        # If you are using XPU
         torch.xpu.manual_seed(seed)
         torch.xpu.manual_seed_all(seed)
 
@@ -225,9 +213,9 @@ def train_bpe_tokenizer(special_tokens: List[str], unk_token: str = "<|unk|>"):
 
 
 def supports_bfloat16():
-    if torch_device == "cuda":
+    if device == "cuda":
         return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
-    elif torch_device == "xpu":
+    elif device == "xpu":
         return True
     else:
         return False

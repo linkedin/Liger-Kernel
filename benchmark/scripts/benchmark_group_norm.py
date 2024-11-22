@@ -10,6 +10,10 @@ from utils import (
 )
 
 from liger_kernel.transformers.group_norm import LigerGroupNorm
+from liger_kernel.utils import infer_device
+
+
+device = infer_device()
 
 
 def bench_speed_group_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -26,12 +30,12 @@ def bench_speed_group_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRun
     x_shape = (M, C, H)
     triton_ln = LigerGroupNorm(
         num_channels=C, num_groups=C // channels_per_group, eps=eps
-    ).to("cuda")
+    ).to(device)
     torch_ln = torch.nn.GroupNorm(
         num_groups=C // channels_per_group, num_channels=C, eps=eps
-    ).to("cuda")
+    ).to(device)
 
-    x = torch.randn(x_shape, dtype=dtype, device="cuda")
+    x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
     x.requires_grad_(True)
 
@@ -83,12 +87,12 @@ def bench_memory_group_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRu
     x_shape = (M, C, H)
     triton_ln = LigerGroupNorm(
         num_channels=C, num_groups=C // channels_per_group, eps=eps
-    ).to("cuda")
+    ).to(device)
     torch_ln = torch.nn.GroupNorm(
         num_groups=C // channels_per_group, num_channels=C, eps=eps
-    ).to("cuda")
+    ).to(device)
 
-    x = torch.randn(x_shape, dtype=dtype, device="cuda")
+    x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
     x.requires_grad_(True)
 

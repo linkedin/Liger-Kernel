@@ -6,6 +6,9 @@ from liger_kernel.ops.experimental.mm_int8int2 import (
     pack_weights,
     unpack_weights,
 )
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 
 # input_features = size*4 when the weight matrix is unpacked
@@ -38,7 +41,7 @@ from liger_kernel.ops.experimental.mm_int8int2 import (
 @pytest.mark.parametrize(
     "atol, rtol, device",
     [
-        (1e-2, 1e-2, "cuda"),
+        (1e-2, 1e-2, device),
     ],
 )
 def test_kernel_correctness(
@@ -95,7 +98,7 @@ def test_kernel_correctness(
 @pytest.mark.parametrize(
     "device",
     [
-        "cuda",
+        device,
     ],
 )
 def test_unpack_pack_correctness(out_features, size, device):

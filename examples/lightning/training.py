@@ -15,6 +15,7 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from trl import DataCollatorForCompletionOnlyLM
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
+from liger_kernel.utils import infer_device
 
 _RETAIN_COLUMNS = {"input_ids", "attention_mask", "labels"}
 QUESTION = "<Question>"
@@ -263,10 +264,11 @@ def train():
         strategy = "auto"
         precision = "bf16-true"
 
+    device = infer_device()
     trainer = pl.Trainer(
-        accelerator="cuda",
+        accelerator=device,
         strategy=strategy,
-        devices=torch.cuda.device_count() if args.num_gpu is None else args.num_gpu,
+        devices=getattr(torch, device).device_count() if args.num_gpu is None else args.num_gpu,
         default_root_dir=args.output_dir,
         log_every_n_steps=1,
         max_epochs=1,

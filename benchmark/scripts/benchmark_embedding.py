@@ -11,6 +11,10 @@ from utils import (
 )
 
 from liger_kernel.transformers.experimental.embedding import LigerEmbedding
+from liger_kernel.utils import infer_device
+
+
+device = infer_device()
 
 # NOTE: For torch compile, we will just use default inductor settings. No further customization
 # is needed.
@@ -25,8 +29,6 @@ def bench_speed_embedding(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     T = input.extra_benchmark_config["T"]
     D = input.extra_benchmark_config["D"]
     dtype = input.extra_benchmark_config["dtype"]
-
-    device = "cuda"
 
     torch_emb = Embedding(V, D).to(device).to(dtype)
     liger_emb = LigerEmbedding(V, D).to(device).to(dtype)
@@ -67,8 +69,6 @@ def bench_memory_embedding(input: SingleBenchmarkRunInput) -> SingleBenchmarkRun
     T = input.extra_benchmark_config["T"]
     D = input.extra_benchmark_config["D"]
     dtype = input.extra_benchmark_config["dtype"]
-
-    device = "cuda"
 
     torch_emb = Embedding(V, D).to(device).to(dtype)
     liger_emb = LigerEmbedding(V, D).to(device).to(dtype)
