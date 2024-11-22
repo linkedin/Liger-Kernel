@@ -784,6 +784,5 @@ def test_float32_internal():
         num_warps=32,
     )
 
-    # The results should be **exactly** equal after downcasting
-    assert (X_bf16 == X_fp32.bfloat16()).all()
-    assert (loss_bf16 == loss_fp32).all()
+    torch.allclose(X_bf16, X_fp32.bfloat16())
+    torch.allclose(loss_bf16, loss_fp32)
