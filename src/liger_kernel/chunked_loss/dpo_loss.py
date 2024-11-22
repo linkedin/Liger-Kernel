@@ -99,6 +99,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         # Return these gradients, followed by None for the remaining inputs
         return d_input, d_weight, d_target, None, None, d_bias, None, None, None
 
+
 class LigerFusedLinearDPOLoss(torch.nn.Module):
     """
     Fused linear layer with DPO loss.
