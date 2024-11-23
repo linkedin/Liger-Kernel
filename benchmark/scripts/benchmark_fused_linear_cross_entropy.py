@@ -14,7 +14,6 @@ from liger_kernel.transformers.fused_linear_cross_entropy import (
 )
 from liger_kernel.utils import infer_device
 
-
 device = infer_device()
 
 

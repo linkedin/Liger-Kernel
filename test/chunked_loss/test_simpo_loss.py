@@ -9,7 +9,6 @@ from liger_kernel.chunked_loss.functional import liger_fused_linear_simpo
 from liger_kernel.chunked_loss.simpo_loss import LigerFusedLinearSimPOFunction
 from liger_kernel.utils import infer_device
 
-
 device = infer_device()
 
 # set random seed globally

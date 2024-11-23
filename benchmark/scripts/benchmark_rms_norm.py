@@ -13,7 +13,6 @@ from utils import (
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.utils import infer_device
 
-
 device = infer_device()
 
 

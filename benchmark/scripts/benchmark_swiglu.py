@@ -14,7 +14,6 @@ from utils import (
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 from liger_kernel.utils import infer_device
 
-
 device = infer_device()
 
 

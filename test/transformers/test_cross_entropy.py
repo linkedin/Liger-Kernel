@@ -13,7 +13,6 @@ from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.utils import infer_device
 
-
 device = infer_device()
 set_seed(42)
 

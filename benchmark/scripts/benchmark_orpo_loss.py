@@ -15,7 +15,6 @@ from utils import (
 from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
 from liger_kernel.utils import infer_device
 
-
 device = infer_device()
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))

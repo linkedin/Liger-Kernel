@@ -268,7 +268,11 @@ def train():
     trainer = pl.Trainer(
         accelerator=device,
         strategy=strategy,
-        devices=getattr(torch, device).device_count() if args.num_gpu is None else args.num_gpu,
+        devices=(
+            getattr(torch, device).device_count()
+            if args.num_gpu is None
+            else args.num_gpu
+        ),
         default_root_dir=args.output_dir,
         log_every_n_steps=1,
         max_epochs=1,

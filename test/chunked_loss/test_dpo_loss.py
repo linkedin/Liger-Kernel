@@ -9,7 +9,6 @@ from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
 from liger_kernel.chunked_loss.functional import liger_fused_linear_dpo
 from liger_kernel.utils import infer_device
 
-
 device = infer_device()
 
 # set random seed globally

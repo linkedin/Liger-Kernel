@@ -12,7 +12,6 @@ from utils import (
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
 from liger_kernel.utils import infer_device
 
-
 device = infer_device()
 
 

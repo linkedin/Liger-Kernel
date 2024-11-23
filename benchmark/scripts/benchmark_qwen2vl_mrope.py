@@ -16,7 +16,6 @@ from utils import (
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.utils import infer_device
 
-
 device = infer_device()
 
 

@@ -13,7 +13,6 @@ from utils import (
 from liger_kernel.transformers.experimental.embedding import LigerEmbedding
 from liger_kernel.utils import infer_device
 
-
 device = infer_device()
 
 # NOTE: For torch compile, we will just use default inductor settings. No further customization

@@ -10,6 +10,7 @@ from itertools import zip_longest
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
+
 from liger_kernel.utils import infer_device
 
 device = infer_device()

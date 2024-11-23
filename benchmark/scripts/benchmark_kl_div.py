@@ -13,7 +13,6 @@ from utils import (
 from liger_kernel.transformers.kl_div import LigerKLDIVLoss
 from liger_kernel.utils import infer_device
 
-
 device = infer_device()
 
 S, E = 12, 18

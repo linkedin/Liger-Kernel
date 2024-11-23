@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import torch
 import transformers
 from transformers import TrainerControl, TrainerState, TrainingArguments
+
 from liger_kernel.utils import infer_device
 
 # https://simple.wikipedia.org/wiki/Byte
@@ -220,8 +221,12 @@ class EfficiencyCallback(transformers.TrainerCallback):
         )
 
         # memory
-        step_peak_memory_allocated = getattr(torch, self.device).memory.max_memory_allocated()
-        step_peak_memory_reserved = getattr(torch, self.device).memory.max_memory_reserved()
+        step_peak_memory_allocated = getattr(
+            torch, self.device
+        ).memory.max_memory_allocated()
+        step_peak_memory_reserved = getattr(
+            torch, self.device
+        ).memory.max_memory_reserved()
 
         self.memory.step_peak_memory_allocated_MB = round_to_n_decimal(
             step_peak_memory_allocated / M_BIN_UNIT, self.precision.n_decimal_memory
