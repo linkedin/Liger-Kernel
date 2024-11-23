@@ -68,12 +68,13 @@ class LigerFusedLinearJSD(torch.nn.Module):
     ```
     """
 
-    def __init__(self, jsd_beta=0.5, ignore_index=-100, temperature=1.0):
+    def __init__(self, jsd_beta=0.5, ignore_index=-100, temperature=1.0, softcap=0.0):
         super().__init__()
         assert temperature != 0, "temperature cannot be 0."
         self.jsd_beta = jsd_beta
         self.temperature = temperature
         self.ignore_index = ignore_index
+        self.softcap = softcap
 
     def forward(
         self,
@@ -92,4 +93,5 @@ class LigerFusedLinearJSD(torch.nn.Module):
             self.jsd_beta,
             self.ignore_index,
             self.temperature,
+            self.softcap,
         )

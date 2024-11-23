@@ -79,6 +79,7 @@ def liger_fused_linear_jsd(
     jsd_beta: float = 0.5,
     ignore_index: int = -100,
     temperature: float = 1.0,
+    softcap: Optional[float] = None,
 ):
     return LigerFusedLinearJSDFunction.apply(
         student_input,
@@ -89,6 +90,7 @@ def liger_fused_linear_jsd(
         jsd_beta,
         ignore_index,
         temperature,
+        softcap,
     )
 
 
