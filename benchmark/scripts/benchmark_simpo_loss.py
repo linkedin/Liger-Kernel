@@ -13,6 +13,9 @@ from utils import (
 )
 
 from liger_kernel.chunked_loss.simpo_loss import LigerFusedLinearSimPOFunction
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
@@ -66,7 +69,6 @@ def bench_memory_fused_linear_simpo_loss(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    device = "cuda"
     torch_lm_head_simpo = TorchLMHeadSimPO(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_simpo = LigerLMHeadSimPO(H=H, V=V, dtype=dtype).to(device)
 
@@ -106,8 +108,6 @@ def bench_speed_fused_linear_simpo_loss(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
-
-    device = "cuda"
 
     torch_lm_head_simpo = TorchLMHeadSimPO(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_simpo = LigerLMHeadSimPO(H=H, V=V, dtype=dtype).to(device)

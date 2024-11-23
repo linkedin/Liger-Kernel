@@ -14,6 +14,9 @@ from utils import (
 )
 
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 
 def bench_speed_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -38,23 +41,23 @@ def bench_speed_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
     )
 
     head_dim = hidden_size // num_q_heads
-    rotary_emb = LlamaRotaryEmbedding(head_dim, device="cuda")
+    rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
     q = torch.randn(
         (1, seq_len, num_q_heads, head_dim),
-        device="cuda",
+        device=device,
         requires_grad=True,
         dtype=dtype,
     ).transpose(1, 2)
     k = torch.randn(
         (1, seq_len, num_kv_heads, head_dim),
-        device="cuda",
+        device=device,
         requires_grad=True,
         dtype=dtype,
     ).transpose(1, 2)
-    dq, dk = torch.randn_like(q, device="cuda", dtype=dtype), torch.randn_like(
-        k, device="cuda"
+    dq, dk = torch.randn_like(q, device=device, dtype=dtype), torch.randn_like(
+        k, device=device
     )
-    pos_ids = torch.arange(seq_len, device="cuda", dtype=torch.long).unsqueeze(0)
+    pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
     cos, sin = rotary_emb(k, pos_ids)
 
     def fwd():
@@ -122,23 +125,23 @@ def bench_memory_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
     )
 
     head_dim = hidden_size // num_q_heads
-    rotary_emb = LlamaRotaryEmbedding(head_dim, device="cuda")
+    rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
     q = torch.randn(
         (1, seq_len, num_q_heads, head_dim),
-        device="cuda",
+        device=device,
         requires_grad=True,
         dtype=dtype,
     ).transpose(1, 2)
     k = torch.randn(
         (1, seq_len, num_kv_heads, head_dim),
-        device="cuda",
+        device=device,
         requires_grad=True,
         dtype=dtype,
     ).transpose(1, 2)
-    dq, dk = torch.randn_like(q, device="cuda", dtype=dtype), torch.randn_like(
-        k, device="cuda"
+    dq, dk = torch.randn_like(q, device=device, dtype=dtype), torch.randn_like(
+        k, device=device
     )
-    pos_ids = torch.arange(seq_len, device="cuda", dtype=torch.long).unsqueeze(0)
+    pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
     cos, sin = rotary_emb(k, pos_ids)
 
     def full():

@@ -11,6 +11,10 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
 
+from liger_kernel.utils import infer_device
+
+device = infer_device()
+
 LIGER_KERNEL_VERSION = version("liger-kernel")
 
 QUANTILES = [0.5, 0.2, 0.8]
@@ -88,10 +92,10 @@ def _test_memory(
     total_mem = []
 
     for _ in range(_iter):
-        torch.cuda.memory.reset_peak_memory_stats()
+        getattr(torch, device).memory.reset_peak_memory_stats()
         func()
         # Convert to MB
-        mem = torch.cuda.max_memory_allocated() / 2**20
+        mem = getattr(torch, device).max_memory_allocated() / 2**20
         total_mem.append(mem)
 
     total_mem = torch.tensor(total_mem, dtype=torch.float)
@@ -141,8 +145,9 @@ def get_gpu_name():
     """
     Returns the current GPU name, formatted to serve as a directory name
     """
-    if torch.cuda.is_available():
-        gpu_name = torch.cuda.get_device_name(torch.cuda.current_device())
+    torch_device = getattr(torch, device)
+    if torch_device.is_available():
+        gpu_name = torch_device.get_device_name(torch_device.current_device())
         return gpu_name
     else:
         raise Exception("Benchmarks can only be run on GPU.")

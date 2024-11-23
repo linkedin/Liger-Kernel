@@ -1,10 +1,5 @@
 import os
-from test.utils import (
-    assert_verbose_allclose,
-    infer_device,
-    set_seed,
-    supports_bfloat16,
-)
+from test.utils import assert_verbose_allclose, set_seed, supports_bfloat16
 
 import pytest
 import torch
@@ -13,10 +8,13 @@ import torch.nn as nn
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.transformers.functional import liger_rms_norm
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 set_seed(42)
 torch.use_deterministic_algorithms(True)
-device = infer_device()
+
 #  Only setting torch.use_deterministic_algorithms(True) might throw the following error:
 #  RuntimeError: Deterministic behavior was enabled with either `torch.use_deterministic_algorithms(True)` or `at::Context::setDeterministicAlgorithms(true)`,
 #  but this operation is not deterministic because it uses CuBLAS and you have CUDA >= 10.2. To enable deterministic behavior in this case, you must set an

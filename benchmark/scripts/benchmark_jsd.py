@@ -10,6 +10,9 @@ from utils import (
 )
 
 from liger_kernel.transformers.jsd import LigerJSD
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 
 class TorchJSD(torch.nn.Module):
@@ -56,10 +59,10 @@ def bench_speed_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     torch_jsd = TorchJSD()
     liger_jsd = LigerJSD()
 
-    _input = torch.randn(B * T, V, requires_grad=True, device="cuda").log_softmax(
+    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(
         dim=-1
     )
-    target = torch.randn(B * T, V, device="cuda").log_softmax(dim=-1)
+    target = torch.randn(B * T, V, device=device).log_softmax(dim=-1)
 
     def fwd():
         if input.kernel_provider == "liger":
@@ -101,10 +104,10 @@ def bench_memory_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
     V = input.x
     B, T = input.extra_benchmark_config["B"], input.extra_benchmark_config["T"]
 
-    _input = torch.randn(B * T, V, requires_grad=True, device="cuda").log_softmax(
+    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(
         dim=-1
     )
-    target = torch.randn(B * T, V, device="cuda").log_softmax(dim=-1)
+    target = torch.randn(B * T, V, device=device).log_softmax(dim=-1)
 
     def fwd():
         if input.kernel_provider == "liger":

@@ -14,6 +14,9 @@ from utils import (
 )
 
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 
 def bench_speed_qwen2vl_mrope(
@@ -40,23 +43,23 @@ def bench_speed_qwen2vl_mrope(
     )
 
     head_dim = hidden_size // num_q_heads
-    rotary_emb = Qwen2VLRotaryEmbedding(head_dim, device="cuda")
+    rotary_emb = Qwen2VLRotaryEmbedding(head_dim, device=device)
     q = torch.randn(
         (1, seq_len, num_q_heads, head_dim),
-        device="cuda",
+        device=device,
         requires_grad=True,
         dtype=dtype,
     ).transpose(1, 2)
     k = torch.randn(
         (1, seq_len, num_kv_heads, head_dim),
-        device="cuda",
+        device=device,
         requires_grad=True,
         dtype=dtype,
     ).transpose(1, 2)
-    dq, dk = torch.randn_like(q, device="cuda", dtype=dtype), torch.randn_like(
-        k, device="cuda"
+    dq, dk = torch.randn_like(q, device=device, dtype=dtype), torch.randn_like(
+        k, device=device
     )
-    pos_ids = torch.arange(seq_len * 3, device="cuda", dtype=torch.long).view(3, 1, -1)
+    pos_ids = torch.arange(seq_len * 3, device=device, dtype=torch.long).view(3, 1, -1)
     cos, sin = rotary_emb(k, pos_ids)
 
     mrope_section_hw = head_dim * 3 // 16
@@ -133,23 +136,23 @@ def bench_memory_qwen2vl_mrope(
     )
 
     head_dim = hidden_size // num_q_heads
-    rotary_emb = Qwen2VLRotaryEmbedding(head_dim, device="cuda")
+    rotary_emb = Qwen2VLRotaryEmbedding(head_dim, device=device)
     q = torch.randn(
         (1, seq_len, num_q_heads, head_dim),
-        device="cuda",
+        device=device,
         requires_grad=True,
         dtype=dtype,
     ).transpose(1, 2)
     k = torch.randn(
         (1, seq_len, num_kv_heads, head_dim),
-        device="cuda",
+        device=device,
         requires_grad=True,
         dtype=dtype,
     ).transpose(1, 2)
-    dq, dk = torch.randn_like(q, device="cuda", dtype=dtype), torch.randn_like(
-        k, device="cuda"
+    dq, dk = torch.randn_like(q, device=device, dtype=dtype), torch.randn_like(
+        k, device=device
     )
-    pos_ids = torch.arange(seq_len * 3, device="cuda", dtype=torch.long).view(3, 1, -1)
+    pos_ids = torch.arange(seq_len * 3, device=device, dtype=torch.long).view(3, 1, -1)
     cos, sin = rotary_emb(k, pos_ids)
 
     mrope_section_hw = head_dim * 3 // 16

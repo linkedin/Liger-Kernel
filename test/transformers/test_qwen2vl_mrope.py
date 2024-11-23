@@ -16,6 +16,9 @@ except Exception:
 from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.transformers.functional import liger_qwen2vl_mrope
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 
 @pytest.mark.skipif(
@@ -49,16 +52,16 @@ from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_
 def test_correctness(
     bsz, seq_len, num_q_heads, num_kv_heads, head_dim, mrope_section, dtype, atol, rtol
 ):
-    rotary_emb = Qwen2VLRotaryEmbedding(head_dim, device="cuda")
+    rotary_emb = Qwen2VLRotaryEmbedding(head_dim, device=device)
 
     _tensor_q = (
-        torch.randn((bsz, seq_len, num_q_heads, head_dim), device="cuda")
+        torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device)
         .transpose(1, 2)
         .to(dtype)
     )
 
     _tensor_k = (
-        torch.randn((bsz, seq_len, num_kv_heads, head_dim), device="cuda")
+        torch.randn((bsz, seq_len, num_kv_heads, head_dim), device=device)
         .transpose(1, 2)
         .to(dtype)
     )
@@ -70,7 +73,7 @@ def test_correctness(
     k2 = _tensor_k.clone().requires_grad_(True)
 
     # NOTE: this position ids distribution is different from the real one, just to test op correctness
-    pos_ids = torch.arange(seq_len * 3, device="cuda", dtype=torch.long).view(3, 1, -1)
+    pos_ids = torch.arange(seq_len * 3, device=device, dtype=torch.long).view(3, 1, -1)
     cos, sin = rotary_emb(k1, pos_ids)
 
     # validate forward pass
@@ -81,8 +84,8 @@ def test_correctness(
 
     # validate backward pass
     dq, dk = (
-        torch.randn_like(hf_q, device="cuda"),
-        torch.randn_like(hf_k, device="cuda").to(dtype),
+        torch.randn_like(hf_q, device=device),
+        torch.randn_like(hf_k, device=device).to(dtype),
     )
 
     q1_grad, k1_grad = torch.autograd.grad(
@@ -116,8 +119,8 @@ def test_correctness(
 def test_functional_correctness(
     bsz, seq_len, num_q_heads, num_kv_heads, head_dim, mrope_section, dtype, atol, rtol
 ):
-    _q = torch.randn((bsz, num_q_heads, seq_len, head_dim), device="cuda", dtype=dtype)
-    _k = torch.randn((bsz, num_kv_heads, seq_len, head_dim), device="cuda", dtype=dtype)
+    _q = torch.randn((bsz, num_q_heads, seq_len, head_dim), device=device, dtype=dtype)
+    _k = torch.randn((bsz, num_kv_heads, seq_len, head_dim), device=device, dtype=dtype)
 
     q1 = _q.clone().requires_grad_(True)
     q2 = _q.clone().requires_grad_(True)
@@ -125,9 +128,9 @@ def test_functional_correctness(
     k1 = _k.clone().requires_grad_(True)
     k2 = _k.clone().requires_grad_(True)
 
-    rotary_emb = Qwen2VLRotaryEmbedding(head_dim, device="cuda")
+    rotary_emb = Qwen2VLRotaryEmbedding(head_dim, device=device)
 
-    pos_ids = torch.arange(seq_len * 3, device="cuda", dtype=torch.long).view(3, 1, -1)
+    pos_ids = torch.arange(seq_len * 3, device=device, dtype=torch.long).view(3, 1, -1)
     cos, sin = rotary_emb(k1, pos_ids)
 
     functional_q, functional_k = liger_qwen2vl_mrope(q1, k1, cos, sin, mrope_section)

@@ -5,6 +5,8 @@ import torch
 import transformers
 from transformers import TrainerControl, TrainerState, TrainingArguments
 
+from liger_kernel.utils import infer_device
+
 # https://simple.wikipedia.org/wiki/Byte
 # For memory, we use binary system
 M_BIN_UNIT = 2**20
@@ -111,6 +113,7 @@ class EfficiencyCallback(transformers.TrainerCallback):
         self.time = Time()
         self.memory = Memory()
         self.tps = TPS()
+        self.device = infer_device()
 
     def on_init_end(
         self,
@@ -171,7 +174,7 @@ class EfficiencyCallback(transformers.TrainerCallback):
         several inputs.
         """
         # memory
-        torch.cuda.reset_peak_memory_stats()
+        getattr(torch, self.device).reset_peak_memory_stats()
 
         # time
         self.state.step_start_time = time.perf_counter()
@@ -218,8 +221,12 @@ class EfficiencyCallback(transformers.TrainerCallback):
         )
 
         # memory
-        step_peak_memory_allocated = torch.cuda.memory.max_memory_allocated()
-        step_peak_memory_reserved = torch.cuda.memory.max_memory_reserved()
+        step_peak_memory_allocated = getattr(
+            torch, self.device
+        ).memory.max_memory_allocated()
+        step_peak_memory_reserved = getattr(
+            torch, self.device
+        ).memory.max_memory_reserved()
 
         self.memory.step_peak_memory_allocated_MB = round_to_n_decimal(
             step_peak_memory_allocated / M_BIN_UNIT, self.precision.n_decimal_memory

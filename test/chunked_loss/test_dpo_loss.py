@@ -7,6 +7,9 @@ import torch.nn.functional as F
 from liger_kernel.chunked_loss import LigerFusedLinearDPOLoss
 from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
 from liger_kernel.chunked_loss.functional import liger_fused_linear_dpo
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 # set random seed globally
 set_seed()
@@ -148,22 +151,22 @@ def test_correctness(
     )
 
     torch_lm_head_dpo.lin.weight.data = liger_lm_head_dpo.lin.weight.data = torch.randn(
-        V, H, device="cuda", dtype=dtype
+        V, H, device=device, dtype=dtype
     )
     torch_lm_head_dpo.ref_lin.weight.data = liger_lm_head_dpo.ref_lin.weight.data = (
-        torch.randn(V, H, device="cuda", dtype=dtype)
+        torch.randn(V, H, device=device, dtype=dtype)
     )
 
     if bias:
         torch_lm_head_dpo.lin.bias.data = liger_lm_head_dpo.lin.bias.data = torch.randn(
-            V, device="cuda", dtype=dtype
+            V, device=device, dtype=dtype
         )
     if ref_bias:
         torch_lm_head_dpo.ref_lin.bias.data = liger_lm_head_dpo.ref_lin.bias.data = (
-            torch.randn(V, device="cuda", dtype=dtype)
+            torch.randn(V, device=device, dtype=dtype)
         )
 
-    _input = torch.randn(B, T, H, device="cuda", dtype=dtype) * scalar
+    _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
@@ -174,7 +177,7 @@ def test_correctness(
             B,
             T,
         ),
-        device="cuda",
+        device=device,
         dtype=torch.long,
     )
     # Assign some random number of elements as ignore_index
@@ -225,7 +228,7 @@ def test_correctness(
 def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias):
     B = 2 * B
 
-    _input = torch.randn(B, T, H, device="cuda", dtype=dtype) * scalar
+    _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
@@ -236,23 +239,23 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
             B,
             T,
         ),
-        device="cuda",
+        device=device,
         dtype=torch.long,
     )
 
-    _weight = torch.randn(V, H, device="cuda", dtype=dtype)
+    _weight = torch.randn(V, H, device=device, dtype=dtype)
     weight1 = _weight.detach().clone().requires_grad_(True)
     weight2 = _weight.detach().clone().requires_grad_(True)
 
-    _ref_weight = torch.randn(V, H, device="cuda", dtype=dtype)
+    _ref_weight = torch.randn(V, H, device=device, dtype=dtype)
     ref_weight1 = _ref_weight.detach().clone().requires_grad_(True)
     ref_weight2 = _ref_weight.detach().clone().requires_grad_(True)
 
-    _bias = torch.randn(V, device="cuda", dtype=dtype) if bias else None
+    _bias = torch.randn(V, device=device, dtype=dtype) if bias else None
     bias1 = _bias.detach().clone().requires_grad_(True) if bias else None
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
-    _ref_bias = torch.randn(V, device="cuda", dtype=dtype) if ref_bias else None
+    _ref_bias = torch.randn(V, device=device, dtype=dtype) if ref_bias else None
     ref_bias1 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
     ref_bias2 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
 
