@@ -1,7 +1,6 @@
 import os
 from test.utils import (
     assert_verbose_allclose,
-    infer_device,
     set_seed,
     supports_bfloat16,
 )
