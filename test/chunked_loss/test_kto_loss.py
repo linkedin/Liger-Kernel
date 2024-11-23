@@ -23,7 +23,7 @@ class HFKTOLoss(HFAlignmentLossKTO):
         ignore_index: int = -100,
         label_smoothing: float = 0.0,
         simpo_gamma: float = 0.5,
-        loss_type: str = "sigmoid",
+        loss_type: str = "kto",
     ):
         super().__init__(alpha=alpha, beta=beta, ignore_index=ignore_index)
         # Sigmoid defaults to the CPO loss defined in the paper listed above.
@@ -54,11 +54,12 @@ class HFKTOLoss(HFAlignmentLossKTO):
             The chosen_rewards and rejected_rewards tensors contain the rewards for the chosen and rejected responses, respectively.
             The KL tensor contains the detached KL divergence estimate between the policy and reference models.
         """
+
         kl = torch.zeros(1).to(policy_chosen_logps.device)
 
         # Chosen losses
         if policy_chosen_logps.shape[0] != 0 or reference_chosen_logps.shape[0] != 0:
-            chosen_logratios = policy_chosen_logps - reference_chosen_logps
+            chosen_logratios = policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1)
 
             if self.loss_type == "kto":
                 # Eqn (7) of the KTO paper (https://huggingface.co/papers/2402.01306)
@@ -77,7 +78,7 @@ class HFKTOLoss(HFAlignmentLossKTO):
 
         # Rejected losses
         if policy_rejected_logps.shape[0] != 0 or reference_rejected_logps.shape[0] != 0:
-            rejected_logratios = policy_rejected_logps - reference_rejected_logps
+            rejected_logratios = policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1)
 
             if self.loss_type == "kto":
                 rejected_losses = 1 - F.sigmoid(self.beta * (kl - rejected_logratios))
@@ -139,11 +140,11 @@ def test_correctness(
     )
     labels = torch.randint(
         0,
-        V,
-        (
-            B,
-            T,
-        ),
+        2,
+         (
+             B,
+             1,
+         ),
         device="cuda",
         dtype=torch.float,
     )
@@ -162,7 +163,7 @@ def test_correctness(
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
-    labels.view(-1)[indices_to_assign] = ignore_index
+    #labels.view(-1)[indices_to_assign] = ignore_index
 
     _weight = torch.randn(V, H, device="cuda", dtype=dtype)
     weight1 = _weight.detach().clone().requires_grad_(True)
@@ -185,7 +186,8 @@ def test_correctness(
     loss2 = LigerFusedLinearKTOFunction.apply(
         input2, weight2, target,labels, reference_logps, bias2, ignore_index, beta, alpha, True
     )
-
+    print("loss1",loss1)
+    print("loss2", loss2)
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
     loss1.backward()

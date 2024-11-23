@@ -37,7 +37,6 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearKTOPreferenceBase):
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             rejected_losses = torch.Tensor([])
             rejected_rewards = torch.Tensor([])
-
         losses = torch.cat(
             (desirable_weight * chosen_losses, undesirable_weight * rejected_losses),
             0)
@@ -59,7 +58,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearKTOPreferenceBase):
         ignore_index=-100,
         beta=0.1,
         alpha=1.0,
-        compute_nll_loss=True,
+        compute_nll_loss=False,
         compiled=True,
     ):
         """

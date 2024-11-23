@@ -682,9 +682,9 @@ class HFAlignmentLossKTO:
 
         # chosen_idx = [i for i in range(completion_logps.shape[0]) if labels[i] is True]
         # rejected_idx = [i for i in range(completion_logps.shape[0]) if labels[i] is False]
-        print('labels',labels)
-        chosen_idx = [i for i in range(len(completion_logps)) if labels[i] is True]
-        rejected_idx = [i for i in range(len(completion_logps)) if labels[i] is False]
+
+        chosen_idx = [i for i in range(len(completion_logps)) if labels[i][0].item() == 1.]
+        rejected_idx = [i for i in range(len(completion_logps)) if labels[i][0].item() == 0.]
         chosen_logps = completion_logps[chosen_idx, ...]
         rejected_logps = completion_logps[rejected_idx, ...]
 
@@ -724,8 +724,8 @@ class HFAlignmentLossKTO:
             policy_rejected_logits,
             policy_nll_loss,
         ) = forward_output[:5]
-        chosen_idx = [i for i in range(reference_logps.shape[0]) if labels[i] is True]
-        rejected_idx = [i for i in range(reference_logps.shape[0]) if labels[i] is False]
+        chosen_idx = [i for i in range(reference_logps.shape[0])  if labels[i][0].item() == 1.]
+        rejected_idx = [i for i in range(reference_logps.shape[0])  if labels[i][0].item() == 0.]
 
         reference_chosen_logps = reference_logps[chosen_idx, ...]
         reference_rejected_logps = reference_logps[rejected_idx, ...]
@@ -733,6 +733,5 @@ class HFAlignmentLossKTO:
         losses, chosen_rewards, rejected_rewards, kl = self.alignment_loss(policy_chosen_logps, policy_rejected_logps ,
                                       reference_chosen_logps, reference_rejected_logps)
         # full loss
-        print(losses)
         loss = policy_nll_loss * alpha - losses.mean()
         return loss
