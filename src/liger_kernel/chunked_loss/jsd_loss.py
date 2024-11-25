@@ -1,0 +1,156 @@
+from typing import Optional
+
+import torch
+import torch.nn.functional as F
+from liger_kernel.chunked_loss.fused_linear_distillation import LigerFusedLinearDistillationBase
+
+class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
+    @staticmethod
+    def distill_loss_fn(student_logits, teacher_logits, temperature=1.0, beta=0.5):
+        """
+        Compute Jensen-Shannon Divergence loss between student and teacher distributions.
+        Args:
+            student_logits (torch.Tensor): Raw logits from student model before softmax
+            teacher_logits (torch.Tensor): Raw logits from teacher model before softmax
+            temperature (float): Temperature for softening probability distributions
+            beta (float): Weight for the loss (unused in this function, but kept for consistency)
+        Returns:
+            torch.Tensor: Jensen-Shannon Divergence loss
+        """
+        # Scale logits by temperature
+        student_logits = student_logits / temperature
+        teacher_logits = teacher_logits / temperature
+
+        # Convert to probabilities
+        student_probs = F.softmax(student_logits, dim=-1)
+        teacher_probs = F.softmax(teacher_logits, dim=-1)
+
+        # Compute mean distribution
+        mean_probs = (student_probs + teacher_probs) / 2
+
+        # Compute KL divergences
+        student_kl = F.kl_div(
+            F.log_softmax(student_logits, dim=-1),
+            mean_probs,
+            reduction='batchmean',
+            log_target=False
+        )
+
+        teacher_kl = F.kl_div(
+            F.log_softmax(teacher_logits, dim=-1),
+            mean_probs,
+            reduction='batchmean',
+            log_target=False
+        )
+
+        # JSD is the average of the KL divergences
+        jsd_loss = (student_kl + teacher_kl) / 2 * (temperature ** 2)
+        return jsd_loss
+
+    @staticmethod
+    def forward(
+        ctx,
+        student_input: torch.Tensor,
+        student_weight: torch.Tensor,
+        teacher_input: torch.Tensor,
+        teacher_weight: torch.Tensor,
+        shift_labels: torch.LongTensor,
+        beta: float = 0.5,
+        ignore_index: int = -100,
+        temperature: float = 1.0,
+        compiled: bool = True,
+    ):
+        """
+        Fused linear layer with JSD distillation loss.
+        Args:
+            student_input (torch.Tensor): Student input tensor. Shape: (BT, H_s)
+            student_weight (torch.Tensor): Student weight tensor. Shape: (V, H_s)
+            teacher_input (torch.Tensor): Teacher input tensor. Shape: (BT, H_t)
+            teacher_weight (torch.Tensor): Teacher weight tensor. Shape: (V, H_t)
+            shift_labels (torch.LongTensor): Target tensor. Shape: (BT,)
+            beta (float): Weight for distillation loss
+            ignore_index (int): Index to ignore in loss computation
+            temperature (float): Temperature for softening distributions
+            compiled (bool): Whether to use torch compile
+        Returns:
+            torch.Tensor: Computed loss
+        """
+        return LigerFusedLinearDistillationBase.forward(
+            ctx=ctx,
+            student_input=student_input,
+            student_weight=student_weight,
+            teacher_input=teacher_input,
+            teacher_weight=teacher_weight,
+            target=shift_labels,
+            loss_fn=LigerFusedLinearJSDFunction.distill_loss_fn,
+            beta=beta,
+            ignore_index=ignore_index,
+            temperature=temperature,
+            compiled=compiled,
+        )
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # Unpack first 5 gradients from the base class backward method
+        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:6]
+        
+        # Return the 5 known gradients and additional None for new parameters
+        return (*grads, None, None, None)
+
+class LigerFusedLinearJSDLoss(torch.nn.Module):
+    """
+    Fused linear layer with JSD distillation loss.
+    """
+    def __init__(
+        self, 
+        beta: float = 0.5, 
+        ignore_index: int = -100, 
+        temperature: float = 1.0, 
+        compiled: bool = False
+    ):
+        """
+        Args:
+            beta (float): Weight for distillation loss
+            ignore_index (int): Index to ignore in the loss
+            temperature (float): Temperature for softening distributions
+            compiled (bool): Whether to use torch compile
+        """
+        super().__init__()
+        assert temperature != 0, "Temperature cannot be 0."
+        self.beta = beta
+        self.ignore_index = ignore_index
+        self.temperature = temperature
+        self.compiled = compiled
+
+    def forward(
+        self,
+        student_input: torch.Tensor,
+        student_weight: torch.Tensor,
+        teacher_input: torch.Tensor,
+        teacher_weight: torch.Tensor,
+        shift_labels: torch.LongTensor,
+    ) -> torch.Tensor:
+        """
+        Compute the JSD distillation loss.
+        
+        Args:
+            student_input (torch.Tensor): Student input tensor
+            student_weight (torch.Tensor): Student weight tensor
+            teacher_input (torch.Tensor): Teacher input tensor
+            teacher_weight (torch.Tensor): Teacher weight tensor
+            shift_labels (torch.LongTensor): Target labels tensor
+        
+        Returns:
+            torch.Tensor: Computed loss
+        """
+        return LigerFusedLinearJSDFunction.apply(
+            student_input,
+            student_weight,
+            teacher_input,
+            teacher_weight,
+            shift_labels,
+            self.beta,
+            self.ignore_index,
+            self.temperature,
+            self.compiled
+        )
