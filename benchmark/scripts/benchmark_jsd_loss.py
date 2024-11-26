@@ -93,10 +93,13 @@ def bench_memory_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
         H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
     ).to(device)
 
-    # Input shape: [B, T, H]
-    _input = torch.randn(B, T, H, device=device, dtype=dtype)
-    # Target shape: [B, T]
-    target = torch.randint(V, (B, T), dtype=torch.long, device=device)
+    _tensor = torch.rand(B * T, H, device=device, dtype=dtype)
+    _input1 = _tensor.detach().clone().requires_grad_(True)
+    _input2 = _tensor.detach().clone().requires_grad_(True)
+
+    teacher_input = torch.rand(B * T, H, device=device, dtype=dtype)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
     # Add ignore_index tokens to simulate padding
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
@@ -105,9 +108,9 @@ def bench_memory_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
     def fwd():
         if provider == "liger":
-            return liger_jsd_loss(_input, target)
+            return liger_jsd_loss(_input1, teacher_input, target)
         elif provider == "huggingface":
-            return torch_jsd_loss(_input, target)
+            return torch_jsd_loss(_input2, teacher_input, target)
 
     def full():
         y = fwd()
@@ -140,11 +143,13 @@ def bench_speed_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
         H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
     ).to(device)
 
-    # Input shape: [B, T, H]
-    _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    _tensor = torch.rand(B * T, H, device=device, dtype=dtype)
+    _input1 = _tensor.detach().clone().requires_grad_(True)
+    _input2 = _tensor.detach().clone().requires_grad_(True)
 
-    # Target shape: [B, T]
-    target = torch.randint(V, (B, T), device=device, dtype=torch.long)
+    teacher_input = torch.rand(B * T, H, device=device, dtype=dtype)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
     # Add ignore_index tokens
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
@@ -153,9 +158,9 @@ def bench_speed_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
 
     def fwd():
         if provider == "liger":
-            return liger_jsd_loss(_input, target)
+            return liger_jsd_loss(_input1, teacher_input, target)
         elif provider == "huggingface":
-            return torch_jsd_loss(_input, target)
+            return torch_jsd_loss(_input2, teacher_input, target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -167,7 +172,7 @@ def bench_speed_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
         y = fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True),
-            grad_to_none=[_input],
+            grad_to_none=[_input1, _input2],
             rep=100,
             quantiles=QUANTILES,
         )
