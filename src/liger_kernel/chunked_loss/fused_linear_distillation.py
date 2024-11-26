@@ -1,69 +1,50 @@
 from abc import abstractmethod
 from functools import partial
-
 import torch
 from torch.nn import functional as F
 
 
 class LigerFusedLinearDistillationBase(torch.autograd.Function):
-
     @abstractmethod
-    def distillation_loss_fn(teacher_logits, student_logits, beta=0.5):
+    def distill_loss_fn(student_logits, teacher_logits, temperature=1.0):
         """
-        Compute preference loss.
+        Compute distillation loss.
         Args:
-            teacher_logits (torch.Tensor): Logits from the teacher model
-            student_logits (torch.Tensor): Logits from the student model
-            beta (float): Weight for the loss
-        Returns:
-            torch.Tensor: Computed loss
+            student_logits (torch.Tensor): Logits from the student model. Shape: (batch_size, seq_len, vocab_size).
+            teacher_logits (torch.Tensor): Logits from the teacher model. Shape: (batch_size, seq_len, vocab_size).
+            temperature (float): Temperature for softening probability distributions.
         """
-        raise NotImplementedError("Preference loss function must be implemented.")
+        raise NotImplementedError("Distillation loss function must be implemented.")
 
     @staticmethod
     def chunk_forward(
-        student_input_chunk,
+        student_chunk,
+        teacher_chunk,
         student_weight,
-        teacher_input_chunk,
         teacher_weight,
         target_chunk,
         bias=None,
         ignore_index=-100,
         compute_ce_loss=True,
     ):
-        # Compute logits for student and teacher
-        student_logits_chunk = student_input_chunk @ student_weight.t()
+        # Project both student and teacher inputs to logits
+        student_logits_chunk = student_chunk @ student_weight.t()
+        teacher_logits_chunk = teacher_chunk @ teacher_weight.t()
+
         if bias is not None:
             student_logits_chunk += bias
+            teacher_logits_chunk += bias
 
-        # Compute cross-entropy loss
-        chosen_nll_loss = 0.0
+        ce_loss = 0.0
         if compute_ce_loss:
-            chosen_nll_loss = F.cross_entropy(
+            ce_loss = F.cross_entropy(
                 student_logits_chunk.view(-1, student_logits_chunk.shape[-1]),
                 target_chunk.view(-1),
-                reduction='sum',
+                reduction="sum",
                 ignore_index=ignore_index,
             )
 
-        # Create loss mask
-        loss_mask = target_chunk != ignore_index
-        label_chunk = torch.where(loss_mask, target_chunk, 0)
-
-        # Compute average logits for student
-        student_per_token_logits = student_logits_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
-        student_average_logits = (student_per_token_logits * loss_mask).sum(-1) / loss_mask.sum(-1)
-
-        # Compute logits for teacher
-        teacher_logits_chunk = teacher_input_chunk @ teacher_weight.t()
-        if bias is not None:
-            teacher_logits_chunk += bias
-
-        # Compute average logits for teacher
-        teacher_per_token_logits = teacher_logits_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
-        teacher_average_logits = (teacher_per_token_logits * loss_mask).sum(-1) / loss_mask.sum(-1)
-
-        return student_average_logits, teacher_average_logits, chosen_nll_loss
+        return student_logits_chunk, teacher_logits_chunk, ce_loss
 
     @staticmethod
     def forward(
@@ -77,135 +58,152 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         loss_fn=None,
         chunk_size=1,
         ignore_index=-100,
-        beta=0.1,
+        beta=1.0,
+        temperature=1.0,
         compute_ce_loss=True,
         compiled=True,
         **loss_kwargs,
     ):
-        # Input validation
-        if loss_fn is None:
-            raise ValueError("A loss function must be provided")
-
+        """
+        Base class for fused linear layer with distillation loss, supporting differing input sizes.
+        Args:
+            student_input (torch.Tensor): Input tensor from the student model. Shape: (batch_size, seq_len, student_hidden_size).
+            teacher_input (torch.Tensor): Input tensor from the teacher model. Shape: (batch_size, seq_len, teacher_hidden_size).
+            student_weight (torch.Tensor): Weight tensor for the student model. Shape: (vocab_size, student_hidden_size).
+            teacher_weight (torch.Tensor): Weight tensor for the teacher model. Shape: (vocab_size, teacher_hidden_size).
+            target (torch.Tensor): Target tensor. Shape: (batch_size, seq_len).
+            bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
+            loss_fn (callable): Loss function to compute the distillation loss.
+            chunk_size (int): Size of a chunk (# of batches).
+            compute_ce_loss (bool): Whether to compute cross-entropy loss.
+            ignore_index (int): Index to ignore for loss computation.
+            beta (float): Weight for the cross-entropy loss.
+            temperature (float): Temperature for softening probability distributions.
+            compiled (bool): Whether to use torch compile for chunk accumulation.
+            loss_kwargs (dict): Other possible arguments that a loss function might need.
+        """
         CHUNK_SIZE = chunk_size
-
-        # Initialize gradient accumulators
-        grad_weight = torch.zeros_like(student_weight)
+        grad_student_weight = torch.zeros_like(student_weight)
+        grad_teacher_weight = torch.zeros_like(teacher_weight)
+        grad_inputs = []
         grad_bias = torch.zeros_like(bias) if bias is not None else None
         loss_acc = torch.zeros((), device=student_input.device)
 
-        # Partial function for loss computation
         loss_func_to_call = partial(
             LigerFusedLinearDistillationBase._compute_loss,
-            distillation_loss_fn=loss_fn,
+            distill_loss_fn=loss_fn,
             ignore_index=ignore_index,
             beta=beta,
-            compute_nll_loss=compute_ce_loss,
+            temperature=temperature,
+            compute_ce_loss=compute_ce_loss,
             full_target=target,
-            bias=bias,
             **loss_kwargs,
         )
 
-        def accumulate_chunk(student_input_chunk, teacher_input_chunk, target_chunk):
+        def accumulate_chunk(
+            student_chunk, teacher_chunk, target_chunk
+        ):
             if bias is not None:
-                (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), (
+                (chunk_grad_input, chunk_grad_student_weight, chunk_grad_teacher_weight, chunk_grad_bias), (
                     chunk_loss,
-                    (chunk_or_loss, chunk_chosen_logps, chunk_rejected_logps),
+                    (chunk_distill_loss, chunk_student_logits),
                 ) = torch.func.grad_and_value(
-                    loss_func_to_call, argnums=(0, 1, 3), has_aux=True
+                    loss_func_to_call, argnums=(0, 1, 2, 3), has_aux=True
                 )(
-                    student_input_chunk, student_weight, teacher_input_chunk, teacher_weight, target_chunk, bias
+                    student_chunk,
+                    teacher_chunk,
+                    student_weight,
+                    teacher_weight,
+                    target_chunk,
+                    bias,
                 )
                 grad_bias.add_(chunk_grad_bias)
             else:
-                (chunk_grad_input, chunk_grad_weight), (
+                (chunk_grad_input, chunk_grad_student_weight, chunk_grad_teacher_weight), (
                     chunk_loss,
-                    (chunk_or_loss, chunk_chosen_logps, chunk_rejected_logps),
+                    (chunk_distill_loss, chunk_student_logits),
                 ) = torch.func.grad_and_value(
-                    loss_func_to_call, argnums=(0, 1), has_aux=True
+                    loss_func_to_call, argnums=(0, 1, 2), has_aux=True
                 )(
-                    student_input_chunk, student_weight, teacher_input_chunk, teacher_weight, target_chunk
+                    student_chunk, teacher_chunk, student_weight, teacher_weight, target_chunk, None
                 )
-            grad_weight.add_(chunk_grad_weight)
+            grad_student_weight.add_(chunk_grad_student_weight)
+            grad_teacher_weight.add_(chunk_grad_teacher_weight)
             loss_acc.add_(chunk_loss)
             return chunk_grad_input
 
-
-        # Optional compilation
         if compiled:
             accumulate_chunk = torch.compile(accumulate_chunk)
 
-        # Chunk processing
-        chunks = max(1, student_input.shape[0] // (2 * CHUNK_SIZE))
-        student_input_chunks = torch.chunk(student_input, chunks=chunks, dim=0)
-        teacher_input_chunks = torch.chunk(teacher_input, chunks=chunks, dim=0)
-        _target_chunks = torch.chunk(target, chunks=chunks, dim=0)
+        chunks = max(1, student_input.shape[0] // CHUNK_SIZE)
+        student_chunks = torch.chunk(student_input, chunks=chunks, dim=0)
+        teacher_chunks = torch.chunk(teacher_input, chunks=chunks, dim=0)
+        target_chunks = torch.chunk(target, chunks=chunks, dim=0)
 
-        grad_inputs = []
-        for student_input_chunk, teacher_input_chunk, target_chunk in zip(
-            student_input_chunks, teacher_input_chunks, _target_chunks
+        for student_chunk, teacher_chunk, target_chunk in zip(
+            student_chunks, teacher_chunks, target_chunks
         ):
-            grad_input = accumulate_chunk(student_input_chunk, teacher_input_chunk, target_chunk)
-            grad_inputs.append(grad_input[: target_chunk.shape[0]])
+            grad_input = accumulate_chunk(student_chunk, teacher_chunk, target_chunk)
+            grad_inputs.append(grad_input)
 
-        # Save tensors for backward pass
         ctx.save_for_backward(
             torch.cat(grad_inputs, dim=0),
-            grad_weight,
+            grad_student_weight,
+            grad_teacher_weight,
             grad_bias,
         )
         return loss_acc
 
     @staticmethod
     def backward(ctx, grad_output):
-        grad_input, grad_weight, grad_bias = ctx.saved_tensors
-        
-        # Scale gradients by grad_output
-        grad_input = grad_input * grad_output
-        grad_weight = grad_weight * grad_output
-        grad_bias = grad_bias * grad_output if grad_bias is not None else None
-
-        return grad_input, grad_weight, None, None, None, grad_bias, None, None, None, None
+        grad_input, grad_student_weight, grad_teacher_weight, grad_bias = ctx.saved_tensors
+        if torch.ne(grad_output, torch.tensor(1.0, device=grad_output.device)):
+            grad_input = grad_input * grad_output
+            grad_student_weight = grad_student_weight * grad_output
+            grad_teacher_weight = grad_teacher_weight * grad_output
+            grad_bias = grad_bias * grad_output if grad_bias is not None else None
+        return grad_input, grad_student_weight, grad_teacher_weight, None, grad_bias, None, None, None
 
     @staticmethod
     def _compute_loss(
-        student_input_chunk,
+        student_chunk,
+        teacher_chunk,
         student_weight,
-        teacher_input_chunk,
         teacher_weight,
         target_chunk,
-        bias=None,
-        distillation_loss_fn=None,
+        bias,
+        distill_loss_fn=None,
         full_target=None,
         ignore_index=-100,
-        beta=0.1,
-        compute_nll_loss=True,
+        beta=1.0,
+        temperature=1.0,
+        compute_ce_loss=True,
         **loss_kwargs,
     ):
-        # Compute forward pass with chunk_forward
-        student_logits, teacher_logits, chosen_nll_loss = (
-            LigerFusedLinearDistillationBase.chunk_forward(
-                student_input_chunk,
-                student_weight,
-                teacher_input_chunk,
-                teacher_weight,
-                target_chunk,
-                bias=bias,
-                ignore_index=ignore_index,
-                compute_ce_loss=compute_nll_loss,
-            )
+        """
+        Compute the total loss for a chunk of input and target, while using a distillation loss function.
+        """
+        student_logits, teacher_logits, ce_loss = LigerFusedLinearDistillationBase.chunk_forward(
+            student_chunk,
+            teacher_chunk,
+            student_weight,
+            teacher_weight,
+            target_chunk,
+            bias=bias,
+            ignore_index=ignore_index,
+            compute_ce_loss=compute_ce_loss,
         )
 
-        # Normalize NLL loss
-        chosen_nll_loss = (
-            chosen_nll_loss / (full_target != ignore_index).sum()
-        )
+        if compute_ce_loss:
+            ce_loss = ce_loss / (full_target != ignore_index).sum()
+        else:
+            ce_loss = 0.0
 
-        # Compute distillation loss
-        distillation_loss = distillation_loss_fn(
-            teacher_logits, student_logits, beta=beta, **loss_kwargs
+        distill_loss = distill_loss_fn(
+            student_logits, teacher_logits, temperature=temperature, **loss_kwargs
         )
-        distillation_loss = distillation_loss / (full_target.shape[0])
+        distill_loss = distill_loss / student_chunk.shape[0]  # Normalize by chunk size
 
-        # Combine losses
-        loss = beta * chosen_nll_loss + (1 - beta) * distillation_loss
-        return loss, (distillation_loss, student_logits, teacher_logits)
+        total_loss = beta * ce_loss + (1 - beta) * distill_loss
+
+        return total_loss, (distill_loss, student_logits)

@@ -6,14 +6,13 @@ from liger_kernel.chunked_loss.fused_linear_distillation import LigerFusedLinear
 
 class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
     @staticmethod
-    def distill_loss_fn(student_logits, teacher_logits, temperature=1.0, beta=0.5):
+    def distill_loss_fn(student_logits, teacher_logits, temperature=1.0):
         """
         Compute Jensen-Shannon Divergence loss between student and teacher distributions.
         Args:
             student_logits (torch.Tensor): Raw logits from student model before softmax
             teacher_logits (torch.Tensor): Raw logits from teacher model before softmax
             temperature (float): Temperature for softening probability distributions
-            beta (float): Weight for the loss (unused in this function, but kept for consistency)
         Returns:
             torch.Tensor: Jensen-Shannon Divergence loss
         """
@@ -44,7 +43,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         )
 
         # JSD is the average of the KL divergences
-        jsd_loss = (student_kl + teacher_kl) / 2 * (temperature ** 2)
+        jsd_loss = (student_kl + teacher_kl) / 2
         return jsd_loss
 
     @staticmethod
@@ -92,10 +91,11 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
     @staticmethod
     def backward(ctx, grad_output):
         # Unpack first 5 gradients from the base class backward method
-        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:6]
+        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:7]
         
         # Return the 5 known gradients and additional None for new parameters
-        return (*grads, None, None, None)
+        return (*grads, None, None)
+
 
 class LigerFusedLinearJSDLoss(torch.nn.Module):
     """

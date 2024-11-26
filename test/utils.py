@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 from tokenizers import AddedToken, Tokenizer
 from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import Whitespace
@@ -521,7 +522,7 @@ class NaiveDistillationLoss:
         self.ignore_index = ignore_index
 
     @abstractmethod
-    def distillation_loss(self, student_logits, teacher_logits, labels):
+    def distillation_loss(self, student_logits, teacher_logits):
         """Abstract method for computing distillation loss."""
         pass
 
@@ -562,23 +563,22 @@ class NaiveDistillationLoss:
         teacher_input_reshaped = teacher_input.view(-1, teacher_hidden_size)
 
         student_outputs = student_input_reshaped @ student_weight.t()
-        # if student_bias is not None:
-        #     student_outputs = student_outputs + student_bias
+        if student_bias is not None:
+            student_outputs = student_outputs + student_bias
 
         teacher_outputs = teacher_input_reshaped @ teacher_weight.t()
-        # if teacher_bias is not None:
-        #     teacher_outputs = teacher_outputs + teacher_bias
+        if teacher_bias is not None:
+            teacher_outputs = teacher_outputs + teacher_bias
 
         student_logits = student_outputs.view(student_batch_seq_len_size, -1).float()
         teacher_logits = teacher_outputs.view(teacher_batch_seq_len_size, -1).float()
 
-        def cross_entropy_loss(logits, labels):
-            loss_fct = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
-            logits = logits.view(-1, logits.shape[-1])
-            labels = labels.view(-1).to(logits.device)
-            return loss_fct(logits, labels)
-
-        student_nll_loss = cross_entropy_loss(student_logits, target)
+        student_ce_loss = F.cross_entropy(
+            student_logits.view(-1, student_logits.shape[-1]),
+            target.view(-1),
+            reduction='mean',
+            ignore_index=self.ignore_index,
+        )
 
         student_logps = self.get_batch_logps(
             student_logits, target, average_log_prob=average_log_prob
@@ -592,7 +592,7 @@ class NaiveDistillationLoss:
             teacher_logps,
             student_logits,
             teacher_logits,
-            student_nll_loss,
+            student_ce_loss,
         )
 
     def get_batch_loss_metrics(
@@ -615,9 +615,10 @@ class NaiveDistillationLoss:
             teacher_logps,
             student_logits,
             teacher_logits,
-            student_nll_loss,
+            student_ce_loss,
         ) = forward_output
 
         distill_loss = self.distillation_loss(student_logits, teacher_logits)
-        loss = student_nll_loss * (self.beta) + distill_loss * (1-self.beta)
+        loss = student_ce_loss * (self.beta) + distill_loss.mean() * (1 - self.beta)
+        print('hf_base', student_ce_loss, distill_loss.mean(), self.beta, loss)
         return loss
