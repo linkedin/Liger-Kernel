@@ -590,7 +590,6 @@ class NaiveDistillationLoss:
             target.view(-1),
         )
 
-
         # student_ce_loss = F.cross_entropy(
         #     student_logits.view(-1, student_logits.shape[-1]),
         #     target.view(-1),

@@ -47,10 +47,18 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         loss_mask = target_chunk != ignore_index
         label_chunk = torch.where(loss_mask, target_chunk, 0)
 
-        student_per_token_logps = student_log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(
-            -1
-        )
-        student_average_log_prob = (student_per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+        student_average_log_prob = torch.zeros_like(loss_mask, dtype=torch.float)
+
+        student_per_token_logps = student_log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
+
+        loss_mask_sum = loss_mask.sum(-1)
+        valid_mask = loss_mask_sum > 0  
+
+        if valid_mask.any():  # Proceed only if there are valid entries
+            student_average_log_prob[valid_mask] = (
+                (student_per_token_logps * loss_mask).sum(-1)[valid_mask] / loss_mask_sum[valid_mask]
+            )
+
 
         student_logps = student_average_log_prob
 
@@ -60,22 +68,14 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             teacher_logits_chunk = teacher_logits_chunk + teacher_bias
         teacher_log_probs_chunk = F.log_softmax(teacher_logits_chunk.float(), dim=-1)
 
-        # ce_loss = 0.0
-        # if compute_ce_loss:
-        #     ce_loss = F.cross_entropy(
-        #         teacher_log_probs_chunk.view(-1, teacher_log_probs_chunk.shape[-1]),
-        #         target_chunk.view(-1),
-        #         reduction="sum",
-        #         ignore_index=ignore_index,
-        #     )
+        teacher_average_log_prob = torch.zeros_like(loss_mask, dtype=torch.float)
 
-        # loss_mask = target_chunk != ignore_index
-        # label_chunk = torch.where(loss_mask, target_chunk, 0)
+        teacher_per_token_logps = teacher_log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
 
-        teacher_per_token_logps = teacher_log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(
-            -1
-        )
-        teacher_average_log_prob = (teacher_per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+        if valid_mask.any(): 
+            teacher_average_log_prob[valid_mask] = (
+                (teacher_per_token_logps * loss_mask).sum(-1)[valid_mask] / loss_mask_sum[valid_mask]
+            )
 
         teacher_logps = teacher_average_log_prob
 
