@@ -1,4 +1,4 @@
-from test.transformers.test_jsd import JSD as TorchJSD
+# from test.transformers.test_jsd import JSD as TorchJSD
 
 from test.utils import NaiveDistillationLoss, assert_verbose_allclose, set_seed
 

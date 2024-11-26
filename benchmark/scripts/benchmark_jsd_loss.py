@@ -1,4 +1,5 @@
-from test.chunked_loss.test_jsd_loss import NaiveJSDLoss
+import os
+import sys
 
 import torch
 import triton
@@ -12,9 +13,12 @@ from utils import (
 )
 
 from liger_kernel.chunked_loss.jsd_loss import LigerFusedLinearJSDFunction
+
 from liger_kernel.utils import infer_device
 
 device = infer_device()
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
 class TorchJSDLoss(torch.nn.Module):
@@ -26,6 +30,8 @@ class TorchJSDLoss(torch.nn.Module):
         ignore_index: int = -100,
         bias: bool = False,
     ):
+        from test.chunked_loss.test_jsd_loss import NaiveJSDLoss
+
         super().__init__()
         self.student_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
@@ -33,16 +39,17 @@ class TorchJSDLoss(torch.nn.Module):
         self.teacher_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
-        self.jsd_loss = NaiveJSDLoss( ignore_index=ignore_index)
+        self.jsd_loss = NaiveJSDLoss( ignore_index=ignore_index).get_batch_loss_metrics
 
-    def forward(self, x, target):
-        return self.jsd_loss.get_batch_loss_metrics(
+    def forward(self, x, t, target):
+        return self.jsd_loss(
             x,
             self.student_lin.weight,
+            t,
             self.teacher_lin.weight,
             target,
-            self.student_lin.bias if hasattr(self.student_lin, "bias") else None,
-            self.teacher_lin.bias if hasattr(self.teacher_lin, "bias") else None,
+            # self.student_lin.bias if hasattr(self.student_lin, "bias") else None,
+            # self.teacher_lin.bias if hasattr(self.teacher_lin, "bias") else None,
         )
 
 
@@ -64,14 +71,15 @@ class LigerJSDLoss(torch.nn.Module):
         )
         self.ignore_index = ignore_index
 
-    def forward(self, x, target):
+    def forward(self, x, t, target):
         return LigerFusedLinearJSDFunction.apply(
             x,
             self.student_lin.weight,
+            t,
             self.teacher_lin.weight,
             target,
-            self.student_lin.bias if hasattr(self.student_lin, "bias") else None,
-            self.teacher_lin.bias if hasattr(self.teacher_lin, "bias") else None,
+            # self.student_lin.bias if hasattr(self.student_lin, "bias") else None,
+            # self.teacher_lin.bias if hasattr(self.teacher_lin, "bias") else None,
         )
 
 
@@ -87,10 +95,10 @@ def bench_memory_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     provider = input.kernel_provider
 
     torch_jsd_loss = TorchJSDLoss(
-        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
+        H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias
     ).to(device)
     liger_jsd_loss = LigerJSDLoss(
-        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
+        H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias
     ).to(device)
 
     _tensor = torch.rand(B * T, H, device=device, dtype=dtype)
@@ -137,10 +145,10 @@ def bench_speed_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     mode = input.kernel_operation_mode
 
     torch_jsd_loss = TorchJSDLoss(
-        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
+        H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias
     ).to(device)
     liger_jsd_loss = LigerJSDLoss(
-        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
+        H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias
     ).to(device)
 
     _tensor = torch.rand(B * T, H, device=device, dtype=dtype)
