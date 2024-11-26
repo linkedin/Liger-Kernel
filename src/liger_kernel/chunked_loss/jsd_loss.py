@@ -6,7 +6,7 @@ from liger_kernel.chunked_loss.fused_linear_distillation import LigerFusedLinear
 
 class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
     @staticmethod
-    def distill_loss_fn(student_logits, teacher_logits, temperature=1.0):
+    def distill_loss_fn(student_logps, teacher_logps, temperature=1.0):
         """
         Compute Jensen-Shannon Divergence loss between student and teacher distributions.
         Args:
@@ -17,26 +17,26 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             torch.Tensor: Jensen-Shannon Divergence loss
         """
         # Scale logits by temperature
-        student_logits = student_logits / temperature
-        teacher_logits = teacher_logits / temperature
+        # student_logits = student_logits / temperature
+        # teacher_logits = teacher_logits / temperature
 
         # Convert to probabilities
-        student_probs = F.softmax(student_logits, dim=-1)
-        teacher_probs = F.softmax(teacher_logits, dim=-1)
+        # student_probs = F.softmax(student_logits, dim=-1)
+        # teacher_probs = F.softmax(teacher_logits, dim=-1)
 
         # Compute mean distribution
-        mean_probs = (student_probs + teacher_probs) / 2
+        mean_probs = (student_logps + teacher_logps) / 2
 
         # Compute KL divergences
         student_kl = F.kl_div(
-            F.log_softmax(student_logits, dim=-1),
+            student_logps.log(),
             mean_probs,
             reduction='batchmean',
             log_target=False
         )
 
         teacher_kl = F.kl_div(
-            F.log_softmax(teacher_logits, dim=-1),
+            teacher_logps.log(),
             mean_probs,
             reduction='batchmean',
             log_target=False
@@ -90,11 +90,9 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
 
     @staticmethod
     def backward(ctx, grad_output):
-        # Unpack first 5 gradients from the base class backward method
-        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:7]
+        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:4]
         
-        # Return the 5 known gradients and additional None for new parameters
-        return (*grads, None, None)
+        return (*grads, None, None, None, None, None)
 
 
 class LigerFusedLinearJSDLoss(torch.nn.Module):
