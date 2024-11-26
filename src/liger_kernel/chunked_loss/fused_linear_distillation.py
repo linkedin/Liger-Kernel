@@ -60,14 +60,14 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             teacher_logits_chunk = teacher_logits_chunk + teacher_bias
         teacher_log_probs_chunk = F.log_softmax(teacher_logits_chunk.float(), dim=-1)
 
-        ce_loss = 0.0
-        if compute_ce_loss:
-            ce_loss = F.cross_entropy(
-                teacher_log_probs_chunk.view(-1, teacher_log_probs_chunk.shape[-1]),
-                target_chunk.view(-1),
-                reduction="sum",
-                ignore_index=ignore_index,
-            )
+        # ce_loss = 0.0
+        # if compute_ce_loss:
+        #     ce_loss = F.cross_entropy(
+        #         teacher_log_probs_chunk.view(-1, teacher_log_probs_chunk.shape[-1]),
+        #         target_chunk.view(-1),
+        #         reduction="sum",
+        #         ignore_index=ignore_index,
+        #     )
 
         # loss_mask = target_chunk != ignore_index
         # label_chunk = torch.where(loss_mask, target_chunk, 0)
@@ -96,9 +96,6 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         beta=0.5,
         compute_ce_loss=True,
         compiled=True,
-        use_ref_model=False,
-        ref_weight=None,
-        ref_bias=None,
         **loss_kwargs,
     ):
         """
@@ -262,15 +259,13 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
                 compute_ce_loss=compute_ce_loss,
             )
         )
-        ce_loss = (
-            ce_loss
-            / (full_target != ignore_index).sum()
-        )
+        ce_loss = ce_loss / (full_target != ignore_index).sum()
+        
 
         distillation_loss = distillation_loss_fn(
             student_logps, teacher_logps
         )
         distillation_loss = distillation_loss / (full_target.shape[0])
 
-        loss = beta * ce_loss - (1-beta) * distillation_loss
+        loss = beta * ce_loss + (1-beta) * distillation_loss
         return loss, (distillation_loss, ce_loss, student_logps, teacher_logps)

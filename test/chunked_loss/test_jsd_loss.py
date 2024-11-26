@@ -33,8 +33,8 @@ class NaiveJSDLoss(NaiveDistillationLoss):
 
     def distillation_loss(
         self,
-        student_logits: torch.FloatTensor,
-        teacher_logits: torch.FloatTensor,
+        student_logps: torch.FloatTensor,
+        teacher_logps: torch.FloatTensor,
     ) -> torch.FloatTensor:
         """Compute the JSD distillation loss for a batch of student and teacher logits.
 
@@ -45,23 +45,23 @@ class NaiveJSDLoss(NaiveDistillationLoss):
         Returns:
             The JSD distillation loss for the batch as a scalar tensor.
         """
-        print('hf', student_logits, teacher_logits, self.temperature)
+        print('hf', student_logps, teacher_logps, self.temperature)
 
-        student_logits = student_logits / self.temperature
-        teacher_logits = teacher_logits / self.temperature
-        student_probs = F.softmax(student_logits, dim=-1)
-        teacher_probs = F.softmax(teacher_logits, dim=-1)
+        # student_logits = student_logits / self.temperature
+        # teacher_logits = teacher_logits / self.temperature
+        student_probs = torch.exp(student_logps)
+        teacher_probs = torch.exp(teacher_logps)
 
         mean_probs = (student_probs + teacher_probs) / 2
 
         student_kl = F.kl_div(
-            F.log_softmax(student_logits, dim=-1),
+            student_logps,
             mean_probs,
             reduction='batchmean',
             log_target=False,
         )
         teacher_kl = F.kl_div(
-            F.log_softmax(teacher_logits, dim=-1),
+            teacher_logps,
             mean_probs,
             reduction='batchmean',
             log_target=False,
@@ -92,7 +92,7 @@ class TorchLMHeadJSD(torch.nn.Module):
     ):
         super().__init__()
         self.student_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype, device=device
+            in_features=H // 2, out_features=V, bias=False, dtype=dtype, device=device
         )
         self.teacher_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=False, dtype=dtype, device=device
@@ -125,13 +125,13 @@ class LigerLMHeadJSD(torch.nn.Module):
     ):
         super().__init__()
         self.student_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype, device=device
+            in_features=H // 2, out_features=V, bias=False, dtype=dtype, device=device
         )
         self.teacher_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=False, dtype=dtype, device=device
         )
         self.chunked_jsd = LigerFusedLinearJSDLoss(
-            beta=beta, ignore_index=ignore_index, temperature=temperature
+            beta=beta, ignore_index=ignore_index
         )
 
     def forward(self, student_input, teacher_input, target):
@@ -167,9 +167,9 @@ class LigerLMHeadJSD(torch.nn.Module):
     "temperature, beta",
     [
         (1.0, 0.5),
-        # (2.0, 0.1),
-        # (1.0, 0.0),  # FKL
-        # (1.0, 1.0),  # RKL
+        (1.0, 0.1),
+        (1.0, 0.0),  # FKL
+        (1.0, 1.0),  # RKL
     ],
 )
 def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
@@ -193,12 +193,12 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
     # init the linear in all FusedLinearJSDs with the same weights
     torch_lm_head_jsd.student_lin.weight.data = (
         liger_lm_head_jsd.student_lin.weight.data
-    ) = torch.rand(V, H, device=device, dtype=dtype)
+    ) = torch.rand(V, H // 2, device=device, dtype=dtype)
     torch_lm_head_jsd.teacher_lin.weight.data = (
         liger_lm_head_jsd.teacher_lin.weight.data
     ) = torch.rand(V, H, device=device, dtype=dtype)
 
-    _tensor = torch.rand(B * T, H, device=device, dtype=dtype) * scalar
+    _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
 

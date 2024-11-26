@@ -522,7 +522,7 @@ class NaiveDistillationLoss:
         self.ignore_index = ignore_index
 
     @abstractmethod
-    def distillation_loss(self, student_logits, teacher_logits):
+    def distillation_loss(self, student_logps, teacher_logps):
         """Abstract method for computing distillation loss."""
         pass
 
@@ -573,12 +573,30 @@ class NaiveDistillationLoss:
         student_logits = student_outputs.view(student_batch_seq_len_size, -1).float()
         teacher_logits = teacher_outputs.view(teacher_batch_seq_len_size, -1).float()
 
-        student_ce_loss = F.cross_entropy(
+
+
+        def cross_entropy_loss(logits, labels):
+            # Flatten the tokens
+            loss_fct = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
+            logits = logits.view(-1, logits.shape[-1])
+            labels = labels.view(-1)
+            # Enable model parallelism
+            labels = labels.to(logits.device)
+            loss = loss_fct(logits, labels)
+            return loss
+
+        student_ce_loss = cross_entropy_loss(
             student_logits.view(-1, student_logits.shape[-1]),
             target.view(-1),
-            reduction='mean',
-            ignore_index=self.ignore_index,
         )
+
+
+        # student_ce_loss = F.cross_entropy(
+        #     student_logits.view(-1, student_logits.shape[-1]),
+        #     target.view(-1),
+        #     reduction='mean',
+        #     ignore_index=self.ignore_index,
+        # )
 
         student_logps = self.get_batch_logps(
             student_logits, target, average_log_prob=average_log_prob
@@ -618,7 +636,7 @@ class NaiveDistillationLoss:
             student_ce_loss,
         ) = forward_output
 
-        distill_loss = self.distillation_loss(student_logits, teacher_logits)
+        distill_loss = self.distillation_loss(student_logps, teacher_logps)
         loss = student_ce_loss * (self.beta) + distill_loss.mean() * (1 - self.beta)
         print('hf_base', student_ce_loss, distill_loss.mean(), self.beta, loss)
         return loss
