@@ -50,20 +50,20 @@ class HFJSDLoss(HFDistillationLoss):
         # student_probs = F.softmax(student_logits, dim=-1)
         # teacher_probs = F.softmax(teacher_logits, dim=-1)
 
-        mean_probs = (torch.exp(student_logps) + torch.exp(teacher_logps)) / 2
+        log_mean_probs = torch.log((torch.exp(student_logps) + torch.exp(teacher_logps)) / 2)
 
         student_kl = F.kl_div(
-            student_logps,
-            mean_probs,
-            reduction="batchmean",
-            log_target=False,
+            log_mean_probs, 
+            student_logps, 
+            reduction="batchmean", 
+            log_target=True
         )
-
+        
         teacher_kl = F.kl_div(
-            teacher_logps,
-            mean_probs,
-            reduction="batchmean",
-            log_target=False,
+            log_mean_probs, 
+            teacher_logps, 
+            reduction="batchmean", 
+            log_target=True
         )
 
         # JSD is the average of the KL divergences
