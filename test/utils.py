@@ -511,8 +511,8 @@ class HFAlignmentLoss:
         loss = policy_nll_loss * self.alpha - losses.mean()
         return loss
 
-
-class NaiveDistillationLoss:
+# TODO: Naming to HF or Navie? Actually there's no Hugging Face impl of distill loss
+class HFDistillationLoss:
     def __init__(
         self,
         beta: float = 0.5,
@@ -533,10 +533,8 @@ class NaiveDistillationLoss:
         average_log_prob: bool = False,
     ) -> torch.FloatTensor:
         """Compute log probabilities for a batch."""
-        # Convert logits to log probabilities
         log_probs = torch.log_softmax(logits, dim=-1)
         
-        # Create indices for gathering the correct probabilities
         batch_indices = torch.arange(logits.size(0))
         selected_log_probs = log_probs[batch_indices, labels]
         
@@ -574,7 +572,6 @@ class NaiveDistillationLoss:
         teacher_logits = teacher_outputs.view(teacher_batch_seq_len_size, -1).float()
 
 
-
         def cross_entropy_loss(logits, labels):
             # Flatten the tokens
             loss_fct = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
@@ -585,17 +582,11 @@ class NaiveDistillationLoss:
             loss = loss_fct(logits, labels)
             return loss
 
-        student_ce_loss = cross_entropy_loss(
+        labels = target
+        ce_loss = cross_entropy_loss(
             student_logits.view(-1, student_logits.shape[-1]),
-            target.view(-1),
+            labels.view(-1),
         )
-
-        # student_ce_loss = F.cross_entropy(
-        #     student_logits.view(-1, student_logits.shape[-1]),
-        #     target.view(-1),
-        #     reduction='mean',
-        #     ignore_index=self.ignore_index,
-        # )
 
         student_logps = self.get_batch_logps(
             student_logits, target, average_log_prob=average_log_prob
@@ -609,7 +600,7 @@ class NaiveDistillationLoss:
             teacher_logps,
             student_logits,
             teacher_logits,
-            student_ce_loss,
+            ce_loss,
         )
 
     def get_batch_loss_metrics(
@@ -637,5 +628,4 @@ class NaiveDistillationLoss:
 
         distill_loss = self.distillation_loss(student_logps, teacher_logps)
         loss = student_ce_loss * (self.beta) + distill_loss.mean() * (1 - self.beta)
-        print('hf_base', student_ce_loss, distill_loss.mean(), self.beta, loss)
         return loss

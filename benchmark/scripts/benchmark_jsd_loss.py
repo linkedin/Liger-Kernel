@@ -48,8 +48,6 @@ class TorchJSDLoss(torch.nn.Module):
             t,
             self.teacher_lin.weight,
             target,
-            # self.student_lin.bias if hasattr(self.student_lin, "bias") else None,
-            # self.teacher_lin.bias if hasattr(self.teacher_lin, "bias") else None,
         )
 
 
