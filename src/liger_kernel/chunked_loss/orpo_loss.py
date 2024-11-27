@@ -22,7 +22,12 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
             - torch.log1p(-torch.exp(rejected_logps))
         )
         ratio = F.logsigmoid(log_odds)
-        return beta * ratio.sum()
+        loss = beta * ratio.sum()
+
+        chosen_rewards = beta * chosen_logps
+        rejected_rewards = beta * rejected_logps
+
+        return loss, chosen_rewards, rejected_rewards, torch.mean(ratio), torch.mean(log_odds)
 
     @staticmethod
     def forward(
@@ -56,7 +61,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         )
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, *grad_output):
         # Get gradients for _input, weight, bias, and target from the base class
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
         # Return these gradients, followed by None for the remaining inputs

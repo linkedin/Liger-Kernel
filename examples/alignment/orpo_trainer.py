@@ -4,7 +4,6 @@ from torch.distributed.fsdp import FullyShardedDataParallel
 import torch
 import torch.nn as nn
 from liger_kernel.chunked_loss import LigerFusedLinearORPOLoss
-import functools
 
 
 class _FSDPForwardRedirection:
