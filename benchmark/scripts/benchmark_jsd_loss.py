@@ -155,7 +155,7 @@ def bench_speed_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
         H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias, beta=beta
     ).to(device)
 
-    _tensor = torch.rand(B * T, H, device=device, dtype=dtype)
+    _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype)
     student_input1 = _tensor.detach().clone().requires_grad_(True)
     student_input2 = _tensor.detach().clone().requires_grad_(True)
 
