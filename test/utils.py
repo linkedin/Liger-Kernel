@@ -507,7 +507,7 @@ class HFAlignmentLoss:
         return loss
 
 
-# TODO: Naming to HF or Navie? Actually there's no Hugging Face impl of distill loss
+# TODO: Should we name it to HFDistillationLos or NavieDistillationLos? Since there's no Hugging Face impl of distill loss
 class HFDistillationLoss:
     def __init__(
         self,

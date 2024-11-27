@@ -31,7 +31,7 @@ class TorchJSDLoss(torch.nn.Module):
         temperature: float = 1.0,
         bias: bool = False,
     ):
-        from test.chunked_loss.test_jsd_loss import NaiveJSDLoss
+        from test.chunked_loss.test_jsd_loss import HFJSDLoss
 
         super().__init__()
         self.student_lin = torch.nn.Linear(
@@ -40,7 +40,7 @@ class TorchJSDLoss(torch.nn.Module):
         self.teacher_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
-        self.jsd_loss = NaiveJSDLoss(
+        self.jsd_loss = HFJSDLoss(
             ignore_index=ignore_index, beta=beta
         ).get_batch_loss_metrics
 
