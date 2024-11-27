@@ -380,11 +380,9 @@ class HFAlignmentLoss:
         labels = torch.where(loss_mask, labels, 0)
 
         log_probs = logits.log_softmax(dim=-1)
-        
+
         per_token_logps = torch.gather(
-            log_probs, 
-            dim=-1, 
-            index=labels.unsqueeze(-1)
+            log_probs, dim=-1, index=labels.unsqueeze(-1)
         ).squeeze(-1)
 
         per_token_logps = per_token_logps * loss_mask
@@ -539,12 +537,10 @@ class HFDistillationLoss:
 
         # Compute log probabilities
         log_probs = logits.log_softmax(dim=-1)
-        
+
         # Gather log probabilities for the correct tokens
         per_token_logps = torch.gather(
-            log_probs, 
-            dim=-1, 
-            index=safe_labels.unsqueeze(-1)
+            log_probs, dim=-1, index=safe_labels.unsqueeze(-1)
         ).squeeze(-1)
 
         # Mask out ignored tokens

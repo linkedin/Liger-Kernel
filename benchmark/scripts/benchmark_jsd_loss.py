@@ -78,7 +78,12 @@ class LigerJSDLoss(torch.nn.Module):
 
     def forward(self, student, teacher, target):
         return LigerFusedLinearJSDFunction.apply(
-            student, self.student_lin.weight, teacher, self.teacher_lin.weight, target, self.beta
+            student,
+            self.student_lin.weight,
+            teacher,
+            self.teacher_lin.weight,
+            target,
+            self.beta,
         )
 
 
