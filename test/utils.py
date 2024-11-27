@@ -372,29 +372,27 @@ class HFAlignmentLoss:
             logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
             labels: Labels for which to compute the log probabilities. Label tokens with a value of ignore_index are ignored. Shape: (batch_size, sequence_length)
             average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
-            is_encoder_decoder: Whether the model is an encoder-decoder model.
-
         Returns:
             A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
         """
-        if logits.shape[:-1] != labels.shape:
-            raise ValueError(
-                "Logits (batch and sequence length dim) and labels must have the same shape."
-            )
-
         loss_mask = labels != self.ignore_index
 
-        # dummy token; we'll ignore the losses on these tokens later
-        labels = torch.where(labels == self.ignore_index, 0, labels)
+        labels = torch.where(loss_mask, labels, 0)
 
+        log_probs = logits.log_softmax(dim=-1)
+        
         per_token_logps = torch.gather(
-            logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)
-        ).squeeze(2)
+            log_probs, 
+            dim=-1, 
+            index=labels.unsqueeze(-1)
+        ).squeeze(-1)
+
+        per_token_logps = per_token_logps * loss_mask
 
         if average_log_prob:
-            return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+            return per_token_logps.sum(-1) / loss_mask.sum(-1)
         else:
-            return (per_token_logps * loss_mask).sum(-1)
+            return per_token_logps.sum(-1)
 
     def get_ref_logps(
         self,
@@ -533,12 +531,30 @@ class HFDistillationLoss:
         average_log_prob: bool = False,
     ) -> torch.FloatTensor:
         """Compute log probabilities for a batch."""
-        log_probs = torch.log_softmax(logits, dim=-1)
+        # Create loss mask for ignored indices
+        loss_mask = labels != self.ignore_index
 
-        batch_indices = torch.arange(logits.size(0))
-        selected_log_probs = log_probs[batch_indices, labels]
+        # Replace ignored indices with a dummy index (0)
+        safe_labels = torch.where(loss_mask, labels, 0)
 
-        return selected_log_probs
+        # Compute log probabilities
+        log_probs = logits.log_softmax(dim=-1)
+        
+        # Gather log probabilities for the correct tokens
+        per_token_logps = torch.gather(
+            log_probs, 
+            dim=-1, 
+            index=safe_labels.unsqueeze(-1)
+        ).squeeze(-1)
+
+        # Mask out ignored tokens
+        per_token_logps = per_token_logps * loss_mask
+
+        # Compute either sum or average of log probabilities
+        if average_log_prob:
+            return per_token_logps.sum(-1) / loss_mask.sum(-1)
+        else:
+            return per_token_logps.sum(-1)
 
     def concatenated_forward(
         self,
@@ -574,6 +590,9 @@ class HFDistillationLoss:
 
         student_logits = student_outputs.view(student_batch_seq_len_size, -1).float()
         teacher_logits = teacher_outputs.view(teacher_batch_seq_len_size, -1).float()
+
+        if torch.all(target == self.ignore_index):
+            return torch.tensor(0.0)
 
         def cross_entropy_loss(logits, labels):
             # Flatten the tokens
