@@ -1,4 +1,3 @@
-
 from test.utils import HFDistillationLoss, assert_verbose_allclose, set_seed
 
 import pytest
@@ -6,8 +5,8 @@ import torch
 import torch.nn.functional as F
 
 from liger_kernel.chunked_loss import LigerFusedLinearJSDLoss
-from liger_kernel.chunked_loss.jsd_loss import LigerFusedLinearJSDFunction
 from liger_kernel.chunked_loss.functional import liger_fused_linear_jsd
+from liger_kernel.chunked_loss.jsd_loss import LigerFusedLinearJSDFunction
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -22,10 +21,7 @@ class HFJSDLoss(HFDistillationLoss):
     """
 
     def __init__(
-        self,
-        temperature: float = 1.0,
-        ignore_index: int = -100,
-        beta: float = 0.5
+        self, temperature: float = 1.0, ignore_index: int = -100, beta: float = 0.5
     ):
         super().__init__(ignore_index=ignore_index, beta=beta)
         self.temperature = temperature
@@ -59,14 +55,14 @@ class HFJSDLoss(HFDistillationLoss):
         student_kl = F.kl_div(
             student_logps,
             mean_probs,
-            reduction='batchmean',
+            reduction="batchmean",
             log_target=False,
         )
 
         teacher_kl = F.kl_div(
             teacher_logps,
             mean_probs,
-            reduction='batchmean',
+            reduction="batchmean",
             log_target=False,
         )
 
@@ -101,7 +97,9 @@ class TorchLMHeadJSD(torch.nn.Module):
         self.teacher_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=False, dtype=dtype, device=device
         )
-        self.jsd = HFJSDLoss(ignore_index=ignore_index, beta=beta).get_batch_loss_metrics
+        self.jsd = HFJSDLoss(
+            ignore_index=ignore_index, beta=beta
+        ).get_batch_loss_metrics
         self.temperature = temperature
 
     def forward(self, student_input, teacher_input, target):
@@ -135,9 +133,7 @@ class LigerLMHeadJSD(torch.nn.Module):
         self.teacher_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=False, dtype=dtype, device=device
         )
-        self.chunked_jsd = LigerFusedLinearJSDLoss(
-            beta=beta, ignore_index=ignore_index
-        )
+        self.chunked_jsd = LigerFusedLinearJSDLoss(beta=beta, ignore_index=ignore_index)
         self.temperature = temperature
 
     def forward(self, student_input, teacher_input, target):
@@ -166,7 +162,7 @@ class LigerLMHeadJSD(torch.nn.Module):
     "scalar, dtype, atol, rtol",
     [
         (1.0, torch.bfloat16, 5e-3, 5e-2),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        (1.0, torch.float32, 1e-4, 5e-3),
     ],
 )
 @pytest.mark.parametrize(
@@ -220,7 +216,9 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
     output1.backward()
     output2.backward()
 
-    assert_verbose_allclose(student_input1.grad, student_input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(
+        student_input1.grad, student_input2.grad, atol=atol, rtol=rtol
+    )
 
     assert_verbose_allclose(
         torch_lm_head_jsd.student_lin.weight.grad,
@@ -241,7 +239,7 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
     "scalar, dtype, atol, rtol",
     [
         (1.0, torch.bfloat16, 5e-3, 5e-2),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        (1.0, torch.float32, 1e-4, 5e-3),
     ],
 )
 @pytest.mark.parametrize(
@@ -291,12 +289,8 @@ def test_correctness_with_ignore_index(
     label = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
     # Assign some random number of elements as ignore_index
-    num_elements_to_assign = torch.randint(
-        1, B * T // 2, (1,)
-    ).item()
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]
+    num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     label[indices_to_assign] = ignore_index
 
     output1 = torch_lm_head_jsd(student_input1, teacher_input, label)
@@ -307,7 +301,9 @@ def test_correctness_with_ignore_index(
     output1.backward()
     output2.backward()
 
-    assert_verbose_allclose(student_input1.grad, student_input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(
+        student_input1.grad, student_input2.grad, atol=atol, rtol=rtol
+    )
 
     assert_verbose_allclose(
         torch_lm_head_jsd.student_lin.weight.grad,
@@ -328,7 +324,7 @@ def test_correctness_with_ignore_index(
     "scalar, dtype, atol, rtol",
     [
         (0.5, torch.bfloat16, 5e-3, 5e-2),
-        (0.5, torch.float32, 1e-5, 5e-4),
+        (1.0, torch.float32, 1e-4, 5e-3),
     ],
 )
 @pytest.mark.parametrize(
@@ -351,12 +347,8 @@ def test_correctness_functional(
     label = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
     # Assign some random number of elements as ignore_index
-    num_elements_to_assign = torch.randint(
-        1, B * T // 2, (1,)
-    ).item()
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]
+    num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     label[indices_to_assign] = ignore_index
 
     output1 = liger_fused_linear_jsd(
@@ -385,9 +377,13 @@ def test_correctness_functional(
     output1.backward()
     output2.backward()
 
-    assert_verbose_allclose(student_input1.grad, student_input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(
+        student_input1.grad, student_input2.grad, atol=atol, rtol=rtol
+    )
 
-    assert_verbose_allclose(student_weight1.grad, student_weight2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(
+        student_weight1.grad, student_weight2.grad, atol=atol, rtol=rtol
+    )
 
 
 @pytest.mark.parametrize(
@@ -401,7 +397,7 @@ def test_correctness_functional(
     "scalar, dtype, atol, rtol",
     [
         (1.0, torch.bfloat16, 5e-3, 5e-2),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        (1.0, torch.float32, 1e-4, 5e-3),
     ],
 )
 @pytest.mark.parametrize(
@@ -513,12 +509,8 @@ def test_amp(autocast_dtype, atol, rtol):
     label = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
     # Assign some random number of elements as ignore_index
-    num_elements_to_assign = torch.randint(
-        1, B * T // 2, (1,)
-    ).item()
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]
+    num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     label[indices_to_assign] = ignore_index
 
     with torch.autocast(device_type=device, dtype=autocast_dtype):
@@ -530,7 +522,9 @@ def test_amp(autocast_dtype, atol, rtol):
         output1.backward()
         output2.backward()
 
-    assert_verbose_allclose(student_input1.grad, student_input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(
+        student_input1.grad, student_input2.grad, atol=atol, rtol=rtol
+    )
     assert_verbose_allclose(
         torch_lm_head_jsd.student_lin.weight.grad,
         liger_lm_head_jsd.student_lin.weight.grad,

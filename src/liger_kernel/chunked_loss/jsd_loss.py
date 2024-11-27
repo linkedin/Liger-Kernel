@@ -1,8 +1,10 @@
-from typing import Optional
-
 import torch
 import torch.nn.functional as F
-from liger_kernel.chunked_loss.fused_linear_distillation import LigerFusedLinearDistillationBase
+
+from liger_kernel.chunked_loss.fused_linear_distillation import (
+    LigerFusedLinearDistillationBase,
+)
+
 
 class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
     @staticmethod
@@ -31,14 +33,14 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         student_kl = F.kl_div(
             student_logps,
             mean_probs,
-            reduction='batchmean',
+            reduction="batchmean",
             log_target=False,
         )
 
         teacher_kl = F.kl_div(
             teacher_logps,
             mean_probs,
-            reduction='batchmean',
+            reduction="batchmean",
             log_target=False,
         )
 
@@ -91,7 +93,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
     @staticmethod
     def backward(ctx, grad_output):
         grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:4]
-        
+
         return (*grads, None, None, None, None, None)
 
 
@@ -99,12 +101,13 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
     """
     Fused linear layer with JSD distillation loss.
     """
+
     def __init__(
-        self, 
-        beta: float = 0.5, 
-        ignore_index: int = -100, 
-        temperature: float = 1.0, 
-        compiled: bool = False
+        self,
+        beta: float = 0.5,
+        ignore_index: int = -100,
+        temperature: float = 1.0,
+        compiled: bool = False,
     ):
         """
         Args:
@@ -130,14 +133,14 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
     ) -> torch.Tensor:
         """
         Compute the JSD distillation loss.
-        
+
         Args:
             student_input (torch.Tensor): Student input tensor
             student_weight (torch.Tensor): Student weight tensor
             teacher_input (torch.Tensor): Teacher input tensor
             teacher_weight (torch.Tensor): Teacher weight tensor
             true_labels (torch.LongTensor): Target labels tensor
-        
+
         Returns:
             torch.Tensor: Computed loss
         """
@@ -150,5 +153,5 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             self.beta,
             self.ignore_index,
             self.temperature,
-            self.compiled
+            self.compiled,
         )

@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
 from tokenizers import AddedToken, Tokenizer
 from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import Whitespace
@@ -511,6 +510,7 @@ class HFAlignmentLoss:
         loss = policy_nll_loss * self.alpha - losses.mean()
         return loss
 
+
 # TODO: Naming to HF or Navie? Actually there's no Hugging Face impl of distill loss
 class HFDistillationLoss:
     def __init__(
@@ -534,10 +534,10 @@ class HFDistillationLoss:
     ) -> torch.FloatTensor:
         """Compute log probabilities for a batch."""
         log_probs = torch.log_softmax(logits, dim=-1)
-        
+
         batch_indices = torch.arange(logits.size(0))
         selected_log_probs = log_probs[batch_indices, labels]
-        
+
         return selected_log_probs
 
     def concatenated_forward(
@@ -551,7 +551,11 @@ class HFDistillationLoss:
         teacher_bias: torch.FloatTensor = None,
         average_log_prob: bool = True,
     ) -> Tuple[
-        torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
+        torch.FloatTensor,
+        torch.FloatTensor,
+        torch.FloatTensor,
+        torch.FloatTensor,
+        torch.FloatTensor,
     ]:
         """Compute forward pass for both student and teacher models."""
 
@@ -570,7 +574,6 @@ class HFDistillationLoss:
 
         student_logits = student_outputs.view(student_batch_seq_len_size, -1).float()
         teacher_logits = teacher_outputs.view(teacher_batch_seq_len_size, -1).float()
-
 
         def cross_entropy_loss(logits, labels):
             # Flatten the tokens
@@ -616,7 +619,14 @@ class HFDistillationLoss:
     ):
         """Compute the distillation loss and other metrics for the given batch."""
         forward_output = self.concatenated_forward(
-            student_input, student_weight, teacher_input, teacher_weight, target, student_bias, teacher_bias, average_log_prob
+            student_input,
+            student_weight,
+            teacher_input,
+            teacher_weight,
+            target,
+            student_bias,
+            teacher_bias,
+            average_log_prob,
         )
         (
             student_logps,

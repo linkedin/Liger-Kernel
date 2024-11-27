@@ -13,7 +13,6 @@ from utils import (
 )
 
 from liger_kernel.chunked_loss.jsd_loss import LigerFusedLinearJSDFunction
-
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -27,25 +26,29 @@ class TorchJSDLoss(torch.nn.Module):
         H: int,
         V: int,
         dtype: torch.dtype,
+        beta: float = 0.5,
         ignore_index: int = -100,
+        temperature: float = 1.0,
         bias: bool = False,
     ):
         from test.chunked_loss.test_jsd_loss import NaiveJSDLoss
 
         super().__init__()
         self.student_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
+            in_features=H // 2, out_features=V, bias=bias, dtype=dtype
         )
         self.teacher_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
-        self.jsd_loss = NaiveJSDLoss( ignore_index=ignore_index).get_batch_loss_metrics
+        self.jsd_loss = NaiveJSDLoss(
+            ignore_index=ignore_index, beta=beta
+        ).get_batch_loss_metrics
 
-    def forward(self, x, t, target):
+    def forward(self, student, teacher, target):
         return self.jsd_loss(
-            x,
+            student,
             self.student_lin.weight,
-            t,
+            teacher,
             self.teacher_lin.weight,
             target,
         )
@@ -57,27 +60,25 @@ class LigerJSDLoss(torch.nn.Module):
         H: int,
         V: int,
         dtype: torch.dtype,
+        beta: float = 0.5,
         ignore_index: int = -100,
+        temperature: float = 1.0,
         bias: bool = False,
     ):
         super().__init__()
         self.student_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
+            in_features=H // 2, out_features=V, bias=bias, dtype=dtype
         )
         self.teacher_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
+        self.beta = beta
         self.ignore_index = ignore_index
+        self.temperature = temperature
 
-    def forward(self, x, t, target):
+    def forward(self, student, teacher, target):
         return LigerFusedLinearJSDFunction.apply(
-            x,
-            self.student_lin.weight,
-            t,
-            self.teacher_lin.weight,
-            target,
-            # self.student_lin.bias if hasattr(self.student_lin, "bias") else None,
-            # self.teacher_lin.bias if hasattr(self.teacher_lin, "bias") else None,
+            student, self.student_lin.weight, teacher, self.teacher_lin.weight, target, self.beta
         )
 
 
@@ -93,15 +94,15 @@ def bench_memory_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     provider = input.kernel_provider
 
     torch_jsd_loss = TorchJSDLoss(
-        H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias
+        H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias, beta=beta
     ).to(device)
     liger_jsd_loss = LigerJSDLoss(
-        H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias
+        H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias, beta=beta
     ).to(device)
 
-    _tensor = torch.rand(B * T, H, device=device, dtype=dtype)
-    _input1 = _tensor.detach().clone().requires_grad_(True)
-    _input2 = _tensor.detach().clone().requires_grad_(True)
+    _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype)
+    student_input1 = _tensor.detach().clone().requires_grad_(True)
+    student_input2 = _tensor.detach().clone().requires_grad_(True)
 
     teacher_input = torch.rand(B * T, H, device=device, dtype=dtype)
 
@@ -114,9 +115,9 @@ def bench_memory_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
     def fwd():
         if provider == "liger":
-            return liger_jsd_loss(_input1, teacher_input, target)
+            return liger_jsd_loss(student_input1, teacher_input, target)
         elif provider == "huggingface":
-            return torch_jsd_loss(_input2, teacher_input, target)
+            return torch_jsd_loss(student_input2, teacher_input, target)
 
     def full():
         y = fwd()
@@ -143,15 +144,15 @@ def bench_speed_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     mode = input.kernel_operation_mode
 
     torch_jsd_loss = TorchJSDLoss(
-        H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias
+        H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias, beta=beta
     ).to(device)
     liger_jsd_loss = LigerJSDLoss(
-        H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias
+        H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias, beta=beta
     ).to(device)
 
     _tensor = torch.rand(B * T, H, device=device, dtype=dtype)
-    _input1 = _tensor.detach().clone().requires_grad_(True)
-    _input2 = _tensor.detach().clone().requires_grad_(True)
+    student_input1 = _tensor.detach().clone().requires_grad_(True)
+    student_input2 = _tensor.detach().clone().requires_grad_(True)
 
     teacher_input = torch.rand(B * T, H, device=device, dtype=dtype)
 
@@ -164,9 +165,9 @@ def bench_speed_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
 
     def fwd():
         if provider == "liger":
-            return liger_jsd_loss(_input1, teacher_input, target)
+            return liger_jsd_loss(student_input1, teacher_input, target)
         elif provider == "huggingface":
-            return torch_jsd_loss(_input2, teacher_input, target)
+            return torch_jsd_loss(student_input2, teacher_input, target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -178,7 +179,7 @@ def bench_speed_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
         y = fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True),
-            grad_to_none=[_input1, _input2],
+            grad_to_none=[student_input1, student_input2],
             rep=100,
             quantiles=QUANTILES,
         )

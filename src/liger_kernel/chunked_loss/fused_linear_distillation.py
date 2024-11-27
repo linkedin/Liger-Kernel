@@ -29,7 +29,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         ignore_index=-100,
         compute_ce_loss=True,
     ):
-        ## Student
+        # Student
         student_logits_chunk = student_input_chunk @ student_weight.t()
         if student_bias is not None:
             student_logits_chunk = student_logits_chunk + student_bias
@@ -49,29 +49,33 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         label_chunk = torch.where(loss_mask, target_chunk, 0)
 
         student_average_log_prob = torch.zeros_like(loss_mask, dtype=torch.float)
-        student_per_token_logps = student_log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
+        student_per_token_logps = student_log_probs_chunk.gather(
+            -1, label_chunk.unsqueeze(-1)
+        ).squeeze(-1)
 
         loss_mask_sum = loss_mask.sum(-1)
-        valid_mask = loss_mask_sum > 0  
+        valid_mask = loss_mask_sum > 0
 
         if valid_mask.any():
             student_average_log_prob[valid_mask] = (
-                (student_per_token_logps * loss_mask).sum(-1)[valid_mask] / loss_mask_sum[valid_mask]
-            )
+                student_per_token_logps * loss_mask
+            ).sum(-1)[valid_mask] / loss_mask_sum[valid_mask]
 
-        ## Teacher
+        # Teacher
         teacher_logits_chunk = teacher_input_chunk @ teacher_weight.t()
         if teacher_bias is not None:
             teacher_logits_chunk = teacher_logits_chunk + teacher_bias
         teacher_log_probs_chunk = F.log_softmax(teacher_logits_chunk.float(), dim=-1)
 
         teacher_average_log_prob = torch.zeros_like(loss_mask, dtype=torch.float)
-        teacher_per_token_logps = teacher_log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
+        teacher_per_token_logps = teacher_log_probs_chunk.gather(
+            -1, label_chunk.unsqueeze(-1)
+        ).squeeze(-1)
 
-        if valid_mask.any(): 
+        if valid_mask.any():
             teacher_average_log_prob[valid_mask] = (
-                (teacher_per_token_logps * loss_mask).sum(-1)[valid_mask] / loss_mask_sum[valid_mask]
-            )
+                teacher_per_token_logps * loss_mask
+            ).sum(-1)[valid_mask] / loss_mask_sum[valid_mask]
 
         return student_average_log_prob, teacher_average_log_prob, ce_loss
 
@@ -137,21 +141,43 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             if student_bias is not None:
                 (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), (
                     chunk_loss,
-                    (chunk_distillation_loss, chunk_ce_loss, chunk_student_logps, chunk_teacher_logps),
+                    (
+                        chunk_distillation_loss,
+                        chunk_ce_loss,
+                        chunk_student_logps,
+                        chunk_teacher_logps,
+                    ),
                 ) = torch.func.grad_and_value(
                     loss_func_to_call, argnums=(0, 1, 5), has_aux=True
                 )(
-                    student_input_chunk, student_weight, teacher_input_chunk, teacher_weight, target_chunk, student_bias, teacher_bias
+                    student_input_chunk,
+                    student_weight,
+                    teacher_input_chunk,
+                    teacher_weight,
+                    target_chunk,
+                    student_bias,
+                    teacher_bias,
                 )
                 grad_bias.add_(chunk_grad_bias)
             else:
                 (chunk_grad_input, chunk_grad_weight), (
                     chunk_loss,
-                    (chunk_distillation_loss, chunk_ce_loss, chunk_student_logps, chunk_teacher_logps),
+                    (
+                        chunk_distillation_loss,
+                        chunk_ce_loss,
+                        chunk_student_logps,
+                        chunk_teacher_logps,
+                    ),
                 ) = torch.func.grad_and_value(
                     loss_func_to_call, argnums=(0, 1), has_aux=True
                 )(
-                    student_input_chunk, student_weight, teacher_input_chunk, teacher_weight, target_chunk, student_bias, teacher_bias
+                    student_input_chunk,
+                    student_weight,
+                    teacher_input_chunk,
+                    teacher_weight,
+                    target_chunk,
+                    student_bias,
+                    teacher_bias,
                 )
             grad_weight.add_(chunk_grad_weight)
             loss_acc.add_(chunk_loss)
@@ -168,17 +194,12 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         _teacher_input_chunks = torch.chunk(teacher_input, chunks=teacher_chunks, dim=0)
         _target_chunks = torch.chunk(target, chunks=target_chunks, dim=0)
 
-
-        for (
-            student_input_chunk,
-            teacher_input_chunk,
-            target_chunk
-        ) in zip(
-            _student_input_chunks,
-            _teacher_input_chunks,
-            _target_chunks
+        for student_input_chunk, teacher_input_chunk, target_chunk in zip(
+            _student_input_chunks, _teacher_input_chunks, _target_chunks
         ):
-            grad_input = accumulate_chunk(student_input_chunk, teacher_input_chunk, target_chunk)
+            grad_input = accumulate_chunk(
+                student_input_chunk, teacher_input_chunk, target_chunk
+            )
             grad_inputs.append(grad_input)
 
         ctx.save_for_backward(
@@ -247,11 +268,11 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         )
 
         ce_loss = ce_loss / (full_target != ignore_index).sum()
-        
+
         distillation_loss = distillation_loss_fn(
             student_logps, teacher_logps, temperature
         )
         distillation_loss = distillation_loss / (full_target.shape[0])
 
-        loss = beta * ce_loss + (1-beta) * distillation_loss
+        loss = beta * ce_loss + (1 - beta) * distillation_loss
         return loss, (distillation_loss, ce_loss, student_logps, teacher_logps)
