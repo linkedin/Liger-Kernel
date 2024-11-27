@@ -40,7 +40,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearKTOPreferenceBase):
         losses = torch.cat(
             (desirable_weight * chosen_losses, undesirable_weight * rejected_losses),
             0)
-
+    
         return losses, chosen_rewards, rejected_rewards
         # logits = beta * (chosen_logps - rejected_logps)
         # loss = F.logsigmoid(logits).mean()
@@ -86,6 +86,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearKTOPreferenceBase):
     @staticmethod
     def backward(ctx, grad_output):
         # Get gradients for _input, weight, bias, and target from the base class
-        grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
+        grads = LigerFusedLinearKTOPreferenceBase.backward(ctx, grad_output)[:4]
         # Return these gradients, followed by None for the remaining inputs
-        return *grads, None, None, None, None, None
+
+        return *grads, None, None, None, None, None, None

@@ -63,7 +63,7 @@ class LigerFusedLinearKTOPreferenceBase(torch.autograd.Function):
         grad_bias = torch.zeros_like(bias) if bias is not None else None
         loss_acc = torch.zeros((), device=_input.device)
 
-        chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
+        chunks = 1#max(1, _input.shape[0] // (2 * CHUNK_SIZE))
 
         loss_func_to_call = partial(
             LigerFusedLinearKTOPreferenceBase._compute_loss,
@@ -77,6 +77,7 @@ class LigerFusedLinearKTOPreferenceBase(torch.autograd.Function):
         )
 
         def accumulate_chunk(input_chunk, target_chunk):
+            #global loss_acc
             if bias is not None:
                 (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), (
                     chunk_loss,
@@ -95,7 +96,9 @@ class LigerFusedLinearKTOPreferenceBase(torch.autograd.Function):
                 )(
                     input_chunk, weight, labels, reference_logps,target_chunk
                 )
-            grad_weight.add_(chunk_grad_weight)
+            #grad_weight.add_(chunk_grad_weight)
+            grad_weight = chunk_grad_weight
+            #loss_acc = chunk_loss
             loss_acc.add_(chunk_loss)
             return chunk_grad_input
 
@@ -137,6 +140,7 @@ class LigerFusedLinearKTOPreferenceBase(torch.autograd.Function):
             grad_weight,
             grad_bias,
         )
+
         return loss_acc
 
     @staticmethod
@@ -221,9 +225,12 @@ class LigerFusedLinearKTOPreferenceBase(torch.autograd.Function):
             chosen_logps, rejected_logps,reference_chosen_logps,reference_rejected_logps,
             beta=beta, **loss_kwargs
         )
-        alignment_loss = alignment_loss / (full_target.shape[0] // 2)
 
-        loss = alpha * chosen_nll_loss - alignment_loss
-
-        return loss[0], (alignment_loss, chosen_logps, rejected_logps)
+        #alignment_loss = alignment_loss / (full_target.shape[0] // 2)
+        
+        #loss = alpha * chosen_nll_loss - alignment_loss
+        loss = 0  - alignment_loss.mean()
+    
+        return loss, (alignment_loss, chosen_logps, rejected_logps)
+        #return loss[0], (alignment_loss, chosen_logps, rejected_logps)
         #return None, (None, None, None)

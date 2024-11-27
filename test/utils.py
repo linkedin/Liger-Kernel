@@ -481,6 +481,7 @@ class HFAlignmentLoss:
         losses = self.alignment_loss(policy_chosen_logps, policy_rejected_logps)
         # full loss
         loss = policy_nll_loss * alpha - losses.mean()
+
         return loss
 
 
@@ -732,6 +733,7 @@ class HFAlignmentLossKTO:
 
         losses, chosen_rewards, rejected_rewards, kl = self.alignment_loss(policy_chosen_logps, policy_rejected_logps ,
                                       reference_chosen_logps, reference_rejected_logps)
+
         # full loss
         loss = policy_nll_loss * alpha - losses.mean()
         return loss
