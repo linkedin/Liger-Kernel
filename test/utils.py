@@ -375,22 +375,24 @@ class HFAlignmentLoss:
         Returns:
             A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
         """
+        if logits.shape[:-1] != labels.shape:
+            raise ValueError(
+                "Logits (batch and sequence length dim) and labels must have the same shape."
+            )
+
         loss_mask = labels != self.ignore_index
 
-        labels = torch.where(loss_mask, labels, 0)
-
-        log_probs = logits.log_softmax(dim=-1)
+        # dummy token; we'll ignore the losses on these tokens later
+        labels = torch.where(labels == self.ignore_index, 0, labels)
 
         per_token_logps = torch.gather(
-            log_probs, dim=-1, index=labels.unsqueeze(-1)
-        ).squeeze(-1)
-
-        per_token_logps = per_token_logps * loss_mask
+            logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)
+        ).squeeze(2)
 
         if average_log_prob:
-            return per_token_logps.sum(-1) / loss_mask.sum(-1)
+            return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
         else:
-            return per_token_logps.sum(-1)
+            return (per_token_logps * loss_mask).sum(-1)
 
     def get_ref_logps(
         self,
@@ -529,24 +531,16 @@ class HFDistillationLoss:
         average_log_prob: bool = False,
     ) -> torch.FloatTensor:
         """Compute log probabilities for a batch."""
-        # Create loss mask for ignored indices
         loss_mask = labels != self.ignore_index
-
-        # Replace ignored indices with a dummy index (0)
         safe_labels = torch.where(loss_mask, labels, 0)
 
-        # Compute log probabilities
         log_probs = logits.log_softmax(dim=-1)
-
-        # Gather log probabilities for the correct tokens
         per_token_logps = torch.gather(
             log_probs, dim=-1, index=safe_labels.unsqueeze(-1)
         ).squeeze(-1)
 
-        # Mask out ignored tokens
         per_token_logps = per_token_logps * loss_mask
 
-        # Compute either sum or average of log probabilities
         if average_log_prob:
             return per_token_logps.sum(-1) / loss_mask.sum(-1)
         else:
