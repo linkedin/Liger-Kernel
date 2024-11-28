@@ -483,7 +483,7 @@ class HFAlignmentLoss:
         ref_bias: torch.FloatTensor = None,
         average_log_prob: bool = True,
     ):
-        """Compute the ORPO loss and other metrics for the given batch of inputs for train or test."""
+        """Compute the loss metrics for the given batch of inputs for train or test."""
 
         forward_output = self.concatenated_forward(
             _input, weight, target, bias, average_log_prob
