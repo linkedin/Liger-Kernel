@@ -26,7 +26,7 @@ repo = modal.Mount.from_local_dir(ROOT_PATH, remote_path="/root/liger-kernel")
 
 
 @app.function(gpu="A10G", mounts=[repo], timeout=60 * 10)
-def liger_tests():
+def liger_tests_bwd():
     import subprocess
 
     subprocess.run(["pip", "install", "-e", "."], check=True, cwd="/root/liger-kernel")
