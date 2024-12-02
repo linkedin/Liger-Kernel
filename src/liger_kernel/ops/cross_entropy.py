@@ -283,11 +283,13 @@ def cross_entropy_forward(
         assert torch.is_floating_point(
             weight
         ), f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
-        selected_weight = torch.gather(weight, dim=-1, index=target)
         if ignore_index >= 0 and ignore_index < V:
-            sum_of_non_ignore_weight = selected_weight.sum().item()
+            weight_mask = torch.ones_like(weight)
+            weight_mask[ignore_index] = 0
+            selected_weight = torch.gather(weight * weight_mask, dim=-1, index=target)
         else:
-            sum_of_non_ignore_weight = selected_weight.sum().item()
+            selected_weight = torch.gather(weight, dim=-1, index=target)
+        sum_of_non_ignore_weight = selected_weight.sum().item()
         if weight.stride(-1) != 1:
             weight = weight.contiguous()
 
