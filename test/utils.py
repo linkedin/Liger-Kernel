@@ -520,3 +520,113 @@ class HFAlignmentLoss:
             policy_nll_loss,
         )
         return loss, (*return_vars, *aggregated_aux_outputs)
+
+
+class HFDistillationLoss:
+    def __init__(
+        self,
+        beta: float = 0.5,
+        ignore_index: int = -100,
+        temperature: float = 1,
+    ):
+        self.beta = beta
+        self.ignore_index = ignore_index
+        self.temperature = temperature
+
+    @abstractmethod
+    def distillation_loss(self, student_logps, teacher_logps):
+        """Abstract method for computing distillation loss."""
+        pass
+
+    def concatenated_forward(
+        self,
+        student_input: torch.FloatTensor,
+        student_weight: torch.FloatTensor,
+        teacher_input: torch.FloatTensor,
+        teacher_weight: torch.FloatTensor,
+        target: torch.LongTensor,
+        student_bias: torch.FloatTensor = None,
+        teacher_bias: torch.FloatTensor = None,
+        average_log_prob: bool = True,
+    ) -> Tuple[
+        torch.FloatTensor,
+        torch.FloatTensor,
+        torch.FloatTensor,
+        torch.FloatTensor,
+        torch.FloatTensor,
+    ]:
+        """Compute forward pass for both student and teacher models."""
+
+        student_batch_seq_len_size, student_hidden_size = student_input.shape
+        student_input_reshaped = student_input.view(-1, student_hidden_size)
+        teacher_batch_seq_len_size, teacher_hidden_size = teacher_input.shape
+        teacher_input_reshaped = teacher_input.view(-1, teacher_hidden_size)
+
+        student_outputs = student_input_reshaped @ student_weight.t()
+        if student_bias is not None:
+            student_outputs = student_outputs + student_bias
+
+        teacher_outputs = teacher_input_reshaped @ teacher_weight.t()
+        if teacher_bias is not None:
+            teacher_outputs = teacher_outputs + teacher_bias
+
+        student_logits = student_outputs.view(student_batch_seq_len_size, -1).float()
+        teacher_logits = teacher_outputs.view(teacher_batch_seq_len_size, -1).float()
+
+        if torch.all(target == self.ignore_index):
+            return torch.tensor(0.0)
+
+        def cross_entropy_loss(logits, labels):
+            # Flatten the tokens
+            loss_fct = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
+            logits = logits.view(-1, logits.shape[-1])
+            labels = labels.view(-1)
+            # Enable model parallelism
+            labels = labels.to(logits.device)
+            loss = loss_fct(logits, labels)
+            return loss
+
+        labels = target
+        ce_loss = cross_entropy_loss(
+            student_logits.view(-1, student_logits.shape[-1]),
+            labels.view(-1),
+        )
+
+        return (
+            student_logits,
+            teacher_logits,
+            ce_loss,
+        )
+
+    def get_batch_loss_metrics(
+        self,
+        student_input: torch.FloatTensor,
+        student_weight: torch.FloatTensor,
+        teacher_input: torch.FloatTensor,
+        teacher_weight: torch.FloatTensor,
+        target: torch.LongTensor,
+        student_bias: torch.FloatTensor = None,
+        teacher_bias: torch.FloatTensor = None,
+        average_log_prob: bool = True,
+    ):
+        """Compute the distillation loss metrics for the given batch."""
+        forward_output = self.concatenated_forward(
+            student_input,
+            student_weight,
+            teacher_input,
+            teacher_weight,
+            target,
+            student_bias,
+            teacher_bias,
+            average_log_prob,
+        )
+        (
+            student_logits,
+            teacher_logits,
+            hard_loss,
+        ) = forward_output
+
+        soft_loss = self.distillation_loss(student_logits, teacher_logits)
+        # full loss
+        loss = hard_loss * (self.beta) + soft_loss.mean() * (1 - self.beta)
+        return loss
