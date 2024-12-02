@@ -8,6 +8,7 @@ from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 class LigerCrossEntropyLoss(torch.nn.Module):
     def __init__(
         self,
+        weight: Optional[torch.FloatTensor] = None,
         ignore_index: int = -100,
         lse_square_scale: float = 0.0,
         label_smoothing: float = 0.0,
@@ -30,6 +31,7 @@ class LigerCrossEntropyLoss(torch.nn.Module):
         assert (
             softcap is None or softcap > 0
         ), f"softcap must greater than 0.0 or None. Got: {softcap}"
+        self.weight = weight
         self.ignore_index = ignore_index
         self.lse_square_scale = lse_square_scale
         self.label_smoothing = label_smoothing
@@ -41,6 +43,7 @@ class LigerCrossEntropyLoss(torch.nn.Module):
         loss, z_loss = LigerCrossEntropyFunction.apply(
             _input,
             target,
+            self.weight,
             self.ignore_index,
             self.lse_square_scale,
             self.label_smoothing,
