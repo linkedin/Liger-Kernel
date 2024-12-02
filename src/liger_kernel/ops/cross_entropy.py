@@ -277,7 +277,8 @@ def cross_entropy_forward(
     else:
         z_loss_1d = loss_1d  # dummy ptr when return_z_loss == False
 
-    n_non_ignore = (target != ignore_index).sum().item()
+    target_mask = target != ignore_index
+    n_non_ignore = target_mask.sum().item()
     sum_of_non_ignore_weight = n_non_ignore
     if weight is not None:
         assert (
@@ -286,12 +287,9 @@ def cross_entropy_forward(
         assert torch.is_floating_point(
             weight
         ), f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
-        if ignore_index >= 0 and ignore_index < V:
-            weight_mask = torch.ones_like(weight)
-            weight_mask[ignore_index] = 0
-            selected_weight = torch.gather(weight * weight_mask, dim=-1, index=target)
-        else:
-            selected_weight = torch.gather(weight, dim=-1, index=target)
+        selected_weight = torch.where(
+            target_mask, torch.gather(weight, dim=0, index=target * target_mask), 0.0
+        )
         sum_of_non_ignore_weight = selected_weight.sum().item()
         if weight.stride(-1) != 1:
             weight = weight.contiguous()

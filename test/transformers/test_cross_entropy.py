@@ -41,18 +41,17 @@ class CrossEntropyWithZLoss(torch.nn.Module):
         # Loss calculations are all in float32
         logits = logits.to(torch.float32)
         HAS_WEIGHT = True if self.weight is not None else False
+
+        target_mask = targets != self.ignore_index
         if HAS_WEIGHT:
             self.weight = self.weight.to(torch.float32)
-            if self.ignore_index >= 0 and self.ignore_index < logits.shape[-1]:
-                weight_mask = torch.ones_like(self.weight)
-                weight_mask[self.ignore_index] = 0
-                selected_weight = torch.gather(
-                    self.weight * weight_mask, dim=-1, index=targets
-                )
-                del weight_mask
-            else:
-                selected_weight = torch.gather(self.weight, dim=-1, index=targets)
+            selected_weight = torch.where(
+                target_mask,
+                torch.gather(self.weight, dim=-1, index=targets * target_mask),
+                0.0,
+            )
             sum_of_non_ignore_weight = selected_weight.sum().item()
+
         # Standard cross entropy loss
         ce_loss = F.cross_entropy(
             logits,
@@ -71,7 +70,11 @@ class CrossEntropyWithZLoss(torch.nn.Module):
             targets != self.ignore_index, self.lse_square_scale * (lse**2), 0.0
         )
         if HAS_WEIGHT:
+            # print(f"{z_loss.shape=}")
             z_loss = z_loss * selected_weight
+            # print(f"{selected_weight.shape=}")
+            # print(f"{selected_weight[targets == self.ignore_index]=}")
+            # print(f"{selected_weight[targets != self.ignore_index]=}")
 
         if self.reduction == "mean":
             if HAS_WEIGHT:
