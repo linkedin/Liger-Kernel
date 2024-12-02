@@ -29,14 +29,13 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         ignore_index=-100,
         compute_ce_loss=True,
     ):
-        loss_mask = target_chunk != ignore_index
-        label_chunk = torch.where(loss_mask, target_chunk, 0)
-
         # Student
         student_per_token_logits_chunk = student_input_chunk @ student_weight.t()
         if student_bias is not None:
             student_per_token_logits_chunk += student_bias
-        student_per_token_log_probs_chunk = F.log_softmax(student_per_token_logits_chunk.float(), dim=-1)
+        student_per_token_log_probs_chunk = F.log_softmax(
+            student_per_token_logits_chunk.float(), dim=-1
+        )
 
         # Teacher
         teacher_per_token_logits_chunk = teacher_input_chunk @ teacher_weight.t()
@@ -47,7 +46,9 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         ce_loss = 0.0
         if compute_ce_loss:
             ce_loss = F.cross_entropy(
-                student_per_token_log_probs_chunk.view(-1, student_per_token_log_probs_chunk.shape[-1]),
+                student_per_token_log_probs_chunk.view(
+                    -1, student_per_token_log_probs_chunk.shape[-1]
+                ),
                 target_chunk.view(-1),
                 reduction="sum",
                 ignore_index=ignore_index,
@@ -241,9 +242,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
 
         hard_loss = hard_loss / (full_target != ignore_index).sum()
 
-        soft_loss = distillation_loss_fn(
-            student_logits, teacher_logits, temperature
-        )
+        soft_loss = distillation_loss_fn(student_logits, teacher_logits, temperature)
         soft_loss = soft_loss / (full_target != ignore_index).sum()
 
         loss = beta * hard_loss + (1 - beta) * soft_loss
