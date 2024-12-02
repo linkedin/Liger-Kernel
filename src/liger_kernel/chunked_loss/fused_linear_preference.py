@@ -4,7 +4,7 @@ from functools import partial
 import torch
 from torch.nn import functional as F
 
-
+import traceback 
 class LigerFusedLinearPreferenceBase(torch.autograd.Function):
 
     @abstractmethod
@@ -53,6 +53,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             loss_kwargs (dict): Other possible arguments that a loss function might need
         """
         # TODO: Tune CHUNK_SIZE to fully utilize the GPU
+
         CHUNK_SIZE = chunk_size
 
         grad_weight = torch.zeros_like(weight)
@@ -60,7 +61,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         grad_rejected_inputs = []
         grad_bias = torch.zeros_like(bias) if bias is not None else None
         loss_acc = torch.zeros((), device=_input.device)
-
+        
         chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
         loss_func_to_call = partial(
             LigerFusedLinearPreferenceBase._compute_loss,
@@ -101,6 +102,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             accumulate_chunk = torch.compile(accumulate_chunk)
 
         len_chosen = target.shape[0] // 2
+        chunks = int(chunks)
         _chosen_input_chunks = torch.chunk(_input[:len_chosen], chunks=chunks, dim=0)
         _chosen_target_chunks = torch.chunk(target[:len_chosen], chunks=chunks, dim=0)
         _rejected_input_chunks = torch.chunk(_input[len_chosen:], chunks=chunks, dim=0)
@@ -205,7 +207,6 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
 
         chosen_logps = average_log_prob[:len_chosen_chunk]
         rejected_logps = average_log_prob[len_chosen_chunk:]
-
         alignment_loss = preference_loss_fn(
             chosen_logps, rejected_logps, beta=beta, **loss_kwargs
         )

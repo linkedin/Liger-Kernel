@@ -1,18 +1,19 @@
 import torch.nn.functional as F
 import torch
 
-from liger_kernel.chunked_loss.fused_linear_preference_kto import (
-    LigerFusedLinearKTOPreferenceBase,
+from liger_kernel.chunked_loss.fused_linear_preference import (
+    LigerFusedLinearPreferenceBase,
 )
 
 
-class LigerFusedLinearKTOFunction(LigerFusedLinearKTOPreferenceBase):
+class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
     def preference_loss_fn(policy_chosen_logps,
                            policy_rejected_logps,
-                           reference_chosen_logps,
-                           reference_rejected_logps, beta=0.1):
+                           beta=0.1,
+                           reference_logps=None,
+                           labels=None):
         """
         Compute odds-ratio loss.
         Args:
@@ -22,6 +23,13 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearKTOPreferenceBase):
         """
         desirable_weight = 1.0
         undesirable_weight = 1.0
+        for i in range(reference_logps.shape[0]):
+            chosen_idx = [i for i in range(reference_logps.shape[0]) if labels[i][0].item() == 1.]
+            rejected_idx = [i for i in range(reference_logps.shape[0]) if labels[i][0].item() == 0.]
+        reference_chosen_logps = reference_logps[chosen_idx, ...]
+        reference_rejected_logps = reference_logps[rejected_idx, ...]
+
+
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
             chosen_losses = 1 - F.sigmoid(beta * (chosen_rewards - 0))
@@ -40,11 +48,8 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearKTOPreferenceBase):
         losses = torch.cat(
             (desirable_weight * chosen_losses, undesirable_weight * rejected_losses),
             0)
-    
-        return losses, chosen_rewards, rejected_rewards
-        # logits = beta * (chosen_logps - rejected_logps)
-        # loss = F.logsigmoid(logits).mean()
-        # return loss
+  
+        return losses.mean()
 
     @staticmethod
     def forward(
@@ -52,14 +57,14 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearKTOPreferenceBase):
         _input,
         weight,
         target,
-        labels,
-        reference_logps,
         bias=None,
         ignore_index=-100,
         beta=0.1,
         alpha=1.0,
         compute_nll_loss=False,
         compiled=True,
+        reference_logps=None,
+        labels=None
     ):
         """
         Fused linear layer with CPO (Odds-Ratio Preference Optimization) loss.
@@ -67,26 +72,27 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearKTOPreferenceBase):
         Inspired from LigerFusedLinearCrossEntropyFunction (https://arxiv.org/abs/2410.10989) which fuses final linear layer and CE loss.
         """
 
-        return LigerFusedLinearKTOPreferenceBase.forward(
+        return LigerFusedLinearPreferenceBase.forward(
             ctx,
             _input,
             weight,
             target,
-            labels,
-            reference_logps,
             bias,
+            chunk_size=1,
             loss_fn=LigerFusedLinearKTOFunction.preference_loss_fn,
             compute_nll_loss=compute_nll_loss,
             ignore_index=ignore_index,
             alpha=alpha,
             beta=beta,
             compiled=compiled,
+            reference_logps=reference_logps,
+            labels=labels
         )
 
     @staticmethod
     def backward(ctx, grad_output):
         # Get gradients for _input, weight, bias, and target from the base class
-        grads = LigerFusedLinearKTOPreferenceBase.backward(ctx, grad_output)[:4]
+        grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
         # Return these gradients, followed by None for the remaining inputs
 
         return *grads, None, None, None, None, None, None

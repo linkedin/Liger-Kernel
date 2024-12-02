@@ -126,7 +126,7 @@ def test_correctness(
         input1, weight1, target, bias1, alpha=alpha
     )
     loss2 = LigerFusedLinearCPOFunction.apply(
-        input2, weight2, target, bias2, ignore_index, beta, alpha, False
+        input2, weight2, target, bias2, ignore_index, beta, alpha, True
     )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
