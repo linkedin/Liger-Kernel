@@ -69,7 +69,8 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         loss_fn=None,
         chunk_size=1,
         ignore_index=-100,
-        beta=0.5,
+        weight_hard_loss=0.5,
+        weight_soft_loss=0.5,
         compute_ce_loss=True,
         temperature=1.0,
         compiled=True,
@@ -91,7 +92,8 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             chunk_size (int): Size of a chunk (# of batches of stacked chosen and rejected inputs).
             compute_ce_loss (bool): Whether to compute CE loss.
             ignore_index (int): Index to ignore for loss computation.
-            beta (float): Weight between soft and hard loss.
+            weight_hard_loss (float): Weight for hard loss.
+            weight_soft_loss (float): Weight for soft loss.
             compiled (bool): Whether to use torch compile for chunk accumulation.
             loss_kwargs (dict): Other possible arguments that a loss function might need
         """
@@ -106,7 +108,8 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             LigerFusedLinearDistillationBase._compute_loss,
             distillation_loss_fn=loss_fn,
             ignore_index=ignore_index,
-            beta=beta,
+            weight_hard_loss=weight_hard_loss,
+            weight_soft_loss=weight_soft_loss,
             compute_ce_loss=compute_ce_loss,
             temperature=temperature,
             full_target=target,
@@ -190,7 +193,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             grad_weight = grad_weight * grad_output
             grad_bias = grad_bias * grad_output if grad_bias is not None else None
 
-        return grad_input, grad_weight, None, grad_bias, None, None, None
+        return grad_input, grad_weight, None, grad_bias
 
     @staticmethod
     def _compute_loss(
@@ -205,7 +208,8 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         full_target=None,
         ignore_index=-100,
         temperature=1.0,
-        beta=0.5,
+        weight_hard_loss=0.5,
+        weight_soft_loss=0.5,
         compute_ce_loss=True,
         **loss_kwargs,
     ):
@@ -222,7 +226,8 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             teacher_bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
             full_target (torch.Tensor): Full target tensor. Shape: (chunk_size,).
             ignore_index (int): Index to ignore for loss computation.
-            beta (float): Weight between soft and hard loss.
+            weight_hard_loss (float): Weight for hard loss.
+            weight_soft_loss (float): Weight for soft loss.
             compute_ce_loss (bool): Whether to compute CE loss.
             loss_kwargs (dict): Additional arguments for the loss function.
         """
@@ -245,5 +250,5 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         soft_loss = distillation_loss_fn(student_logits, teacher_logits, temperature)
         soft_loss = soft_loss / (full_target != ignore_index).sum()
 
-        loss = beta * hard_loss + (1 - beta) * soft_loss
+        loss = weight_hard_loss * hard_loss + weight_soft_loss * soft_loss
         return loss, (soft_loss, hard_loss, student_logits, teacher_logits)

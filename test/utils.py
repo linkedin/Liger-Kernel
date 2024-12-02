@@ -525,11 +525,13 @@ class HFAlignmentLoss:
 class HFDistillationLoss:
     def __init__(
         self,
-        beta: float = 0.5,
+        weight_hard_loss: float = 0.5,
+        weight_soft_loss: float = 0.5,
         ignore_index: int = -100,
         temperature: float = 1,
     ):
-        self.beta = beta
+        self.weight_hard_loss = weight_hard_loss
+        self.weight_soft_loss = weight_soft_loss
         self.ignore_index = ignore_index
         self.temperature = temperature
 
@@ -547,7 +549,6 @@ class HFDistillationLoss:
         target: torch.LongTensor,
         student_bias: torch.FloatTensor = None,
         teacher_bias: torch.FloatTensor = None,
-        average_log_prob: bool = True,
     ) -> Tuple[
         torch.FloatTensor,
         torch.FloatTensor,
@@ -607,7 +608,6 @@ class HFDistillationLoss:
         target: torch.LongTensor,
         student_bias: torch.FloatTensor = None,
         teacher_bias: torch.FloatTensor = None,
-        average_log_prob: bool = True,
     ):
         """Compute the distillation loss metrics for the given batch."""
         forward_output = self.concatenated_forward(
@@ -618,7 +618,6 @@ class HFDistillationLoss:
             target,
             student_bias,
             teacher_bias,
-            average_log_prob,
         )
         (
             student_logits,
@@ -628,5 +627,5 @@ class HFDistillationLoss:
 
         soft_loss = self.distillation_loss(student_logits, teacher_logits)
         # full loss
-        loss = hard_loss * (self.beta) + soft_loss.mean() * (1 - self.beta)
+        loss = self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss.mean()
         return loss
