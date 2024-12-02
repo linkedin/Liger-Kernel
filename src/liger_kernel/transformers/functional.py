@@ -34,6 +34,7 @@ def liger_cross_entropy(
     loss, z_loss = LigerCrossEntropyFunction.apply(
         input,
         target,
+        weight,
         ignore_index,
         lse_square_scale,
         label_smoothing,

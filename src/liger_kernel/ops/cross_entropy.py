@@ -27,11 +27,14 @@ def liger_cross_entropy_kernel(
     X_stride,
     Y_ptr,
     Y_stride,
+    weight_ptr,
+    weight_stride,
     loss_ptr,
     z_loss_ptr,
     loss_stride,
     n_cols,
     n_non_ignore,
+    sum_of_non_ignore_weight,
     ignore_index,
     lse_square_scale: tl.constexpr,
     label_smoothing: tl.constexpr,
@@ -39,6 +42,7 @@ def liger_cross_entropy_kernel(
     softcap,
     RETURN_Z_LOSS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    HAS_WEIGHT: tl.constexpr,
     HAS_SOFTCAPPING: tl.constexpr,
 ):
     """
@@ -85,6 +89,9 @@ def liger_cross_entropy_kernel(
 
     loss_ptr += program_id * loss_stride
     z_loss_ptr += program_id * loss_stride
+
+    if HAS_WEIGHT:
+        weight = tl.load(weight_ptr + y).cast(tl.float32)
 
     # Online softmax: 2 loads + 1 store (compared with 3 loads + 1 store for the safe softmax)
     # Refer to Algorithm 3 in the paper: https://arxiv.org/pdf/1805.02867
@@ -162,7 +169,12 @@ def liger_cross_entropy_kernel(
         X_block = tl.where(X_offsets != y, X_block, X_block - (1 - label_smoothing))
         # reduction scale
         if reduction == "mean":
-            X_block = X_block / (n_non_ignore)
+            if HAS_WEIGHT:
+                X_block = X_block / (sum_of_non_ignore_weight)
+            else:
+                X_block = X_block / (n_non_ignore)
+        if HAS_WEIGHT:
+            X_block = X_block * weight
         # chain rule
         # d(softcap * tanh(x / softcap)) = (1 - tanh^2(x / softcap))
         if HAS_SOFTCAPPING:
@@ -201,8 +213,16 @@ def liger_cross_entropy_kernel(
     loss += z_loss
     # Normalize the loss by the number of non-ignored elements if reduction is "mean"
     if reduction == "mean":
-        z_loss = z_loss / n_non_ignore
-        loss = loss / n_non_ignore
+        if HAS_WEIGHT:
+            z_loss = z_loss / sum_of_non_ignore_weight
+            loss = loss / sum_of_non_ignore_weight
+        else:
+            z_loss = z_loss / n_non_ignore
+            loss = loss / n_non_ignore
+
+    if HAS_WEIGHT:
+        z_loss = z_loss * weight
+        loss = loss * weight
 
     tl.store(loss_ptr, loss)
     if RETURN_Z_LOSS == _TRUE:
@@ -224,6 +244,7 @@ _bool_to_return_z_loss = {
 def cross_entropy_forward(
     _input,
     target,
+    weight,
     ignore_index,
     lse_square_scale,
     label_smoothing,
@@ -254,6 +275,21 @@ def cross_entropy_forward(
         z_loss_1d = loss_1d  # dummy ptr when return_z_loss == False
 
     n_non_ignore = (target != ignore_index).sum().item()
+    sum_of_non_ignore_weight = n_non_ignore
+    if weight is not None:
+        assert (
+            weight.shape[0] == V
+        ), f"If given, weight has to be a Tensor of size V. Got: {weight.shape}"
+        assert torch.is_floating_point(
+            weight
+        ), f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
+        selected_weight = torch.gather(weight, dim=-1, index=target)
+        if ignore_index >= 0 and ignore_index < V:
+            sum_of_non_ignore_weight = selected_weight.sum().item()
+        else:
+            sum_of_non_ignore_weight = selected_weight.sum().item()
+        if weight.stride(-1) != 1:
+            weight = weight.contiguous()
 
     # ensure _input and target are contiguous in the last dimension
     if _input.stride(-1) != 1:
@@ -267,18 +303,22 @@ def cross_entropy_forward(
         X_stride=_input.stride(-2),
         Y_ptr=target,
         Y_stride=target.stride(-1),  # always 1
+        weight_ptr=weight if weight is not None else _input,  # dummy if None
+        weight_stride=weight.stride(-1) if weight is not None else 0,
         loss_ptr=loss_1d,
         z_loss_ptr=z_loss_1d,
         loss_stride=loss_1d.stride(-1),  # always 1
         n_cols=V,
         n_non_ignore=n_non_ignore,
         ignore_index=ignore_index,
+        sum_of_non_ignore_weight=sum_of_non_ignore_weight,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
         reduction=reduction,
         softcap=softcap if softcap is not None else 0.0,
         RETURN_Z_LOSS=return_z_loss,
         BLOCK_SIZE=BLOCK_SIZE,
+        HAS_WEIGHT=True if weight is not None else False,
         HAS_SOFTCAPPING=True if softcap is not None else False,
         # TODO: 32 seems to give the best performance
         # Performance is quite sensitive to num_warps
@@ -329,6 +369,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         ctx,
         _input: torch.Tensor,
         target: torch.Tensor,
+        weight: Optional[torch.FloatTensor],
         ignore_index: int = -100,
         lse_square_scale: float = 0.0,
         label_smoothing: float = 0.0,
@@ -356,6 +397,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         loss, z_loss, _input = cross_entropy_forward(
             _input,
             target,
+            weight,
             ignore_index,
             lse_square_scale,
             label_smoothing,
@@ -390,6 +432,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         _input = cross_entropy_backward(_input, grad_output)
         return (
             _input,
+            None,
             None,
             None,
             None,

@@ -301,6 +301,27 @@ def _test_correctness_with_z_loss_with_other_params_once(
     assert_verbose_allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
+def _test_correctness_with_weight_once(
+    target_ce, B, T, V, reduction, weight, scalar, dtype, atol, rtol
+):
+    torch.manual_seed(0)
+    torch_ce = CrossEntropyLoss(weight=weight, reduction=reduction)
+
+    _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
+    _input = _tensor.detach().clone().requires_grad_(True)
+    _input2 = _tensor.detach().clone().requires_grad_(True)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    output = torch_ce(_input, target)
+    output2 = target_ce(_input2, target)
+    assert torch.allclose(output, output2, atol=atol, rtol=rtol)
+
+    output.backward()
+    output2.backward()
+    assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
+
+
 def _test_correctness_not_last_layer_once(
     target_ce, B, T, V, reduction, scalar, dtype, atol, rtol
 ):
@@ -345,6 +366,7 @@ def _test_correctness_functional(
     y1, y1_z = liger_cross_entropy(
         x1,
         target,
+        None,
         ignore_index=0,
         lse_square_scale=1e-4,
         label_smoothing=0.1,
@@ -353,7 +375,7 @@ def _test_correctness_functional(
         return_z_loss=True,
     )
     y2, y2_z = LigerCrossEntropyFunction.apply(
-        x2, target, 0, 1e-4, 0.1, "mean", 30.0, True
+        x2, target, None, 0, 1e-4, 0.1, "mean", 30.0, True
     )
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
@@ -695,6 +717,41 @@ def test_correctness_with_z_loss_with_other_params_once(
         (3, 423, 32000),
     ],
 )
+@pytest.mark.parametrize("weight", [0.5, 0.1])
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
+@pytest.mark.parametrize(
+    "scalar, dtype, atol, rtol",
+    [
+        pytest.param(
+            1.0,
+            torch.bfloat16,
+            1e-8,
+            5e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
+        (1.0, torch.float32, 1e-8, 1e-6),
+    ],
+)
+def test_correctness_with_weight_once(
+    B, T, V, weight, reduction, scalar, dtype, atol, rtol
+):
+    weight = torch.rand(V, device=device, dtype=dtype)
+    test_ce = LigerCrossEntropyLoss(weight=weight, reduction=reduction)
+    _test_correctness_with_weight_once(
+        test_ce, B, T, V, reduction, weight, scalar, dtype, atol, rtol
+    )
+
+
+@pytest.mark.parametrize(
+    "B, T, V",
+    [
+        (2, 4096, 32000),  # llama2, mistral
+        # # weird shapes
+        (3, 423, 32000),
+    ],
+)
 @pytest.mark.parametrize("reduction", ["sum", "mean"])
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
@@ -746,17 +803,21 @@ def test_float32_internal():
         X_stride=X_bf16.stride(-2),
         Y_ptr=Y,
         Y_stride=Y.stride(-1),
+        weight_ptr=X_bf16,  # dummy ptr, not used
+        weight_stride=X_bf16.stride(-2),
         z_loss_ptr=loss_bf16,  # dummy ptr, not used
         loss_ptr=loss_bf16,
         loss_stride=loss_bf16.stride(-1),
         n_cols=n_cols,
         n_non_ignore=n_non_ignore,
+        sum_of_non_ignore_weight=n_non_ignore,  # not used
         ignore_index=ignore_index,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
         reduction=reduction,
         softcap=softcap,
         RETURN_Z_LOSS=0,  # False
+        HAS_WEIGHT=False,
         HAS_SOFTCAPPING=False,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=32,
@@ -770,17 +831,21 @@ def test_float32_internal():
         X_stride=X_fp32.stride(-2),
         Y_ptr=Y,
         Y_stride=Y.stride(-1),
+        weight_ptr=X_fp32,  # dummy ptr, not used
+        weight_stride=X_fp32.stride(-2),
         loss_ptr=loss_fp32,
         z_loss_ptr=loss_fp32,  # dummy ptr, not used
         loss_stride=loss_fp32.stride(-1),
         n_cols=n_cols,
         n_non_ignore=n_non_ignore,
+        sum_of_non_ignore_weight=n_non_ignore,  # not used
         ignore_index=ignore_index,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
         reduction=reduction,
         softcap=softcap,
         RETURN_Z_LOSS=0,  # False
+        HAS_WEIGHT=False,
         HAS_SOFTCAPPING=False,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=32,
