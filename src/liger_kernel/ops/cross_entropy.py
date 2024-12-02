@@ -54,11 +54,14 @@ def liger_cross_entropy_kernel(
     X_stride (int): The stride of the input tensor.
     Y_ptr: Pointer to target tensor.
     Y_stride (int): The stride of the target tensor.
+    weight_ptr: Pointer to weight tensor.
+    weight_stride (int): The stride of the weight tesnor.
     loss_ptr: Pointer to tensor to store the loss.
     z_loss_ptr: Pointer to tensor to store the z loss. No operation if RETURN_Z_LOSS is 0.
     loss_stride (int): The stride of the loss tensor.
     n_cols (int): The number of columns in the input tensor.
     n_non_ignore (int): The number of non-ignored elements in the batch.
+    sum_of_non_ignore_weight (float): The denominator when `reduction="mean"` if `weight` is given.
     ignore_index (int): The index to ignore in the target.
     label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
     lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
@@ -66,6 +69,7 @@ def liger_cross_entropy_kernel(
     reduction (str): The string for the reduction to apply
     softcap (float): The upper threshold for scaling logits to the range (-softcap, +softcap).
     BLOCK_SIZE (int): The block size for Triton operations.
+    HAS_WEIGHT (bool): The boolean value to dteremine whether assigning weight to each of the classes.
     HAS_SOFTCAPPING (bool): The boolean value to determine whether applying soft-capping or not.
     """
 
@@ -386,6 +390,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         ctx : The context object.
         _input (tensor): The input tensor of shape (BT, V) where B is batch size, T is sequence length, V is vocab size.
         target (tensor): The target tensor of shape (BT) where each value is in [0, V-1].
+        weight(Tensor, optional): a manual rescaling weight given to each class. If given, has to be a Tensor of size C and floating point dtype
         ignore_index (int): The index to ignore in the target.
         lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
