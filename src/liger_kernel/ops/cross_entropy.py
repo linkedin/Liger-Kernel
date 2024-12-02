@@ -28,7 +28,6 @@ def liger_cross_entropy_kernel(
     Y_ptr,
     Y_stride,
     weight_ptr,
-    weight_stride,
     loss_ptr,
     z_loss_ptr,
     loss_stride,
@@ -69,7 +68,7 @@ def liger_cross_entropy_kernel(
     reduction (str): The string for the reduction to apply
     softcap (float): The upper threshold for scaling logits to the range (-softcap, +softcap).
     BLOCK_SIZE (int): The block size for Triton operations.
-    HAS_WEIGHT (bool): The boolean value to dteremine whether assigning weight to each of the classes.
+    HAS_WEIGHT (bool): The boolean value to determine whether assigning weight to each of the classes.
     HAS_SOFTCAPPING (bool): The boolean value to determine whether applying soft-capping or not.
     """
 
@@ -310,7 +309,6 @@ def cross_entropy_forward(
         Y_ptr=target,
         Y_stride=target.stride(-1),  # always 1
         weight_ptr=weight if weight is not None else _input,  # dummy if None
-        weight_stride=weight.stride(-1) if weight is not None else 0,
         loss_ptr=loss_1d,
         z_loss_ptr=z_loss_1d,
         loss_stride=loss_1d.stride(-1),  # always 1
@@ -390,7 +388,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         ctx : The context object.
         _input (tensor): The input tensor of shape (BT, V) where B is batch size, T is sequence length, V is vocab size.
         target (tensor): The target tensor of shape (BT) where each value is in [0, V-1].
-        weight(Tensor, optional): a manual rescaling weight given to each class. If given, has to be a Tensor of size C and floating point dtype
+        weight(Tensor, optional): a manual rescaling weight given to each class. If given, has to be a Tensor of size V and floating point dtype
         ignore_index (int): The index to ignore in the target.
         lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
