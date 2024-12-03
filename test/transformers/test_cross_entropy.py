@@ -184,14 +184,14 @@ def _test_correctness_with_softcap_once(
     torch_ce = CrossEntropyLoss(reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
-    # upcasting to match liger's casting strategy
-    _input = _tensor.to(torch.float32).detach().clone().requires_grad_(True)
+    _input = _tensor.detach().clone().requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
-    # downcasting to original dtype
-    output = torch_ce(softcap * torch.tanh(_input / softcap), target).to(dtype)
+    # upcasting to match liger's casting strategy
+    # and downcasting to original dtype
+    output = torch_ce(softcap * torch.tanh(_input.to(torch.float32) / softcap), target).to(dtype)
     output2 = target_ce(_input2, target)
 
     assert torch.allclose(output, output2, atol=atol, rtol=rtol)
@@ -199,6 +199,7 @@ def _test_correctness_with_softcap_once(
     output.backward()
     output2.backward()
 
+    assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 def _test_correctness_with_z_loss_once(
     target_ce,
