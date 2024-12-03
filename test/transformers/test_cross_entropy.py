@@ -191,7 +191,9 @@ def _test_correctness_with_softcap_once(
 
     # upcasting to match liger's casting strategy
     # and downcasting to original dtype
-    output = torch_ce(softcap * torch.tanh(_input.to(torch.float32) / softcap), target).to(dtype)
+    output = torch_ce(
+        softcap * torch.tanh(_input.to(torch.float32) / softcap), target
+    ).to(dtype)
     output2 = target_ce(_input2, target)
 
     assert torch.allclose(output, output2, atol=atol, rtol=rtol)
@@ -200,6 +202,7 @@ def _test_correctness_with_softcap_once(
     output2.backward()
 
     assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
+
 
 def _test_correctness_with_z_loss_once(
     target_ce,
