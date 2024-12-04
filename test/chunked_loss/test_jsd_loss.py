@@ -229,14 +229,12 @@ def test_correctness(
 
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
-    with torch.autograd.detect_anomaly():
-        output1 = torch_lm_head_jsd(student_input1, teacher_input, target)
-        output2 = liger_lm_head_jsd(student_input2, teacher_input, target)
+    loss1 = torch_lm_head_jsd(student_input1, teacher_input, target)
+    loss2 = liger_lm_head_jsd(student_input2, teacher_input, target)
+    assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
-        assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
-
-    output1.backward()
-    output2.backward()
+    loss1.backward()
+    loss2.backward()
 
     assert_verbose_allclose(
         student_input1.grad, student_input2.grad, atol=atol, rtol=rtol
