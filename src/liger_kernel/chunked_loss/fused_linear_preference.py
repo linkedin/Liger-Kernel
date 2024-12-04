@@ -4,7 +4,7 @@ from functools import partial
 import torch
 from torch.nn import functional as F
 
-import traceback 
+
 class LigerFusedLinearPreferenceBase(torch.autograd.Function):
 
     @abstractmethod
@@ -20,19 +20,19 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        ctx,
-        _input,
-        weight,
-        target,
-        bias=None,
-        loss_fn=None,
-        chunk_size=1,
-        compute_nll_loss=True,
-        ignore_index=-100,
-        alpha=1.0,
-        beta=0.1,
-        compiled=True,
-        **loss_kwargs,
+            ctx,
+            _input,
+            weight,
+            target,
+            bias=None,
+            loss_fn=None,
+            chunk_size=1,
+            compute_nll_loss=True,
+            ignore_index=-100,
+            alpha=1.0,
+            beta=0.1,
+            compiled=True,
+            **loss_kwargs,
     ):
         """
         Base class for fused linear layer with preference loss.
@@ -61,7 +61,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         grad_rejected_inputs = []
         grad_bias = torch.zeros_like(bias) if bias is not None else None
         loss_acc = torch.zeros((), device=_input.device)
-        
+
         chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
         loss_func_to_call = partial(
             LigerFusedLinearPreferenceBase._compute_loss,
@@ -109,10 +109,10 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         _rejected_target_chunks = torch.chunk(target[len_chosen:], chunks=chunks, dim=0)
 
         for (
-            chosen_input_chunk,
-            rejected_input_chunk,
-            chosen_target_chunk,
-            rejected_target_chunk,
+                chosen_input_chunk,
+                rejected_input_chunk,
+                chosen_target_chunk,
+                rejected_target_chunk,
         ) in zip(
             _chosen_input_chunks,
             _rejected_input_chunks,
@@ -127,7 +127,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             grad_input = accumulate_chunk(input_chunk, target_chunk)
 
             grad_chosen_inputs.append(grad_input[: chosen_target_chunk.shape[0]])
-            grad_rejected_inputs.append(grad_input[chosen_target_chunk.shape[0] :])
+            grad_rejected_inputs.append(grad_input[chosen_target_chunk.shape[0]:])
 
         # combine grad_chosen_inputs and grad_rejected_inputs
         grad_inputs = grad_chosen_inputs + grad_rejected_inputs
@@ -151,17 +151,17 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
 
     @staticmethod
     def _compute_loss(
-        input_chunk,
-        weight,
-        target_chunk,
-        bias=None,
-        preference_loss_fn=None,
-        full_target=None,
-        ignore_index=-100,
-        alpha=1.0,
-        beta=0.1,
-        compute_nll_loss=True,
-        **loss_kwargs,
+            input_chunk,
+            weight,
+            target_chunk,
+            bias=None,
+            preference_loss_fn=None,
+            full_target=None,
+            ignore_index=-100,
+            alpha=1.0,
+            beta=0.1,
+            compute_nll_loss=True,
+            **loss_kwargs,
     ):
         """
         Compute the total loss for a chunk of input and target, while using an alignment/preference loss function.
@@ -193,8 +193,8 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                 ignore_index=ignore_index,
             )
             chosen_nll_loss = (
-                chosen_nll_loss
-                / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
+                    chosen_nll_loss
+                    / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
             )
 
         loss_mask = target_chunk != ignore_index

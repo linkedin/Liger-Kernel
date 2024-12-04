@@ -1,11 +1,10 @@
-from test.utils import HFAlignmentLossKTO, assert_verbose_allclose, set_seed
 from typing import Tuple
 
 import pytest
 import torch
 import torch.nn.functional as F
-
 from liger_kernel.chunked_loss.kto_loss import LigerFusedLinearKTOFunction
+from test.utils import HFAlignmentLossKTO, assert_verbose_allclose, set_seed
 
 # set random seed globally
 set_seed()
@@ -17,13 +16,13 @@ class HFKTOLoss(HFAlignmentLossKTO):
     """
 
     def __init__(
-        self,
-        alpha: float = 1.0,
-        beta: float = 0.1,
-        ignore_index: int = -100,
-        label_smoothing: float = 0.0,
-        simpo_gamma: float = 0.5,
-        loss_type: str = "kto",
+            self,
+            alpha: float = 1.0,
+            beta: float = 0.1,
+            ignore_index: int = -100,
+            label_smoothing: float = 0.0,
+            simpo_gamma: float = 0.5,
+            loss_type: str = "kto",
     ):
         super().__init__(alpha=alpha, beta=beta, ignore_index=ignore_index)
         # Sigmoid defaults to the CPO loss defined in the paper listed above.
@@ -32,11 +31,11 @@ class HFKTOLoss(HFAlignmentLossKTO):
         self.simpo_gamma = simpo_gamma
 
     def alignment_loss(
-        self,
-        policy_chosen_logps: torch.FloatTensor,
-        policy_rejected_logps: torch.FloatTensor,
-        reference_chosen_logps: torch.FloatTensor,
-        reference_rejected_logps: torch.FloatTensor,
+            self,
+            policy_chosen_logps: torch.FloatTensor,
+            policy_rejected_logps: torch.FloatTensor,
+            reference_chosen_logps: torch.FloatTensor,
+            reference_rejected_logps: torch.FloatTensor,
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the KTO loss for a batch of policy and reference model log probabilities.
 
@@ -56,7 +55,7 @@ class HFKTOLoss(HFAlignmentLossKTO):
         """
 
         kl = torch.zeros(1).to(policy_chosen_logps.device)
-
+        # Got the loss from here https://github.com/huggingface/trl/blob/main/trl/trainer/kto_trainer.py
         # Chosen losses
         if policy_chosen_logps.shape[0] != 0 or reference_chosen_logps.shape[0] != 0:
             chosen_logratios = policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1)
@@ -73,8 +72,8 @@ class HFKTOLoss(HFAlignmentLossKTO):
 
         else:
             # lists can't be empty -- if they are, then accelerate.gather will hang
-            chosen_losses = torch.Tensor([])#.to(self.accelerator.device)
-            chosen_rewards = torch.Tensor([])#.to(self.accelerator.device)
+            chosen_losses = torch.Tensor([])  # .to(self.accelerator.device)
+            chosen_rewards = torch.Tensor([])  # .to(self.accelerator.device)
 
         # Rejected losses
         if policy_rejected_logps.shape[0] != 0 or reference_rejected_logps.shape[0] != 0:
@@ -88,26 +87,25 @@ class HFKTOLoss(HFAlignmentLossKTO):
             rejected_rewards = self.beta * rejected_logratios.detach()
         else:
             # lists can't be empty -- if they are, then accelerate.gather will hang
-            rejected_losses = torch.Tensor([])#.to(self.accelerator.device)
-            rejected_rewards = torch.Tensor([])#.to(self.accelerator.device)
+            rejected_losses = torch.Tensor([])  # .to(self.accelerator.device)
+            rejected_rewards = torch.Tensor([])  # .to(self.accelerator.device)
         desirable_weight = 1.0
         undesirable_weight = 1.0
         losses = torch.cat(
             (desirable_weight * chosen_losses, undesirable_weight * rejected_losses),
             0,
         )
-        
+
         return losses, chosen_rewards, rejected_rewards, kl
 
 
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-       (8, 128, 1024, 4096),
+        (2, 32, 256, 1024),
         (3, 47, 31, 123),  # random shape
     ],
 )
-
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
@@ -116,17 +114,17 @@ class HFKTOLoss(HFAlignmentLossKTO):
     ],
 )
 @pytest.mark.parametrize("bias", [
-    #True,
-     False
-                                  ])
+    True,
+    False
+])
 @pytest.mark.parametrize(
     "ignore_index, beta, alpha", [
         (-100, 0.1, 1.0),
-         (42, 0.2, 0.85)
-     ]
+        (42, 0.2, 0.85)
+    ]
 )
 def test_correctness(
-    B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta, alpha
+        B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta, alpha
 ):
     B = 2 * B  # cpo loss requires B to be even
 
@@ -148,10 +146,10 @@ def test_correctness(
     labels = torch.randint(
         0,
         2,
-         (
-             B,
-             1,
-         ),
+        (
+            B,
+            1,
+        ),
         device="cuda",
         dtype=torch.float,
     )
@@ -170,7 +168,7 @@ def test_correctness(
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
-    #labels.view(-1)[indices_to_assign] = ignore_index
+    # labels.view(-1)[indices_to_assign] = ignore_index
 
     _weight = torch.randn(V, H, device="cuda", dtype=dtype)
     weight1 = _weight.detach().clone().requires_grad_(True)
@@ -181,11 +179,12 @@ def test_correctness(
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
     loss1 = HFKTOLoss(ignore_index=ignore_index, beta=beta).get_batch_loss_metrics(
-        input1, weight1, target, labels, reference_logps,bias1,alpha=alpha
+        input1, weight1, target, labels, reference_logps, bias1, alpha=alpha
     )
-    
+
     loss2 = LigerFusedLinearKTOFunction.apply(
-        input2, weight2, target,labels, reference_logps, bias2, ignore_index, beta, alpha, True
+        input2, weight2, target, bias2, ignore_index, beta, alpha, True, False, reference_logps, labels
+
     )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)

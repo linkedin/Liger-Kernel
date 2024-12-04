@@ -1,6 +1,5 @@
-import torch.nn.functional as F
 import torch
-
+import torch.nn.functional as F
 from liger_kernel.chunked_loss.fused_linear_preference import (
     LigerFusedLinearPreferenceBase,
 )
@@ -29,7 +28,6 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         reference_chosen_logps = reference_logps[chosen_idx, ...]
         reference_rejected_logps = reference_logps[rejected_idx, ...]
 
-
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
             chosen_losses = 1 - F.sigmoid(beta * (chosen_rewards - 0))
@@ -48,23 +46,23 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         losses = torch.cat(
             (desirable_weight * chosen_losses, undesirable_weight * rejected_losses),
             0)
-  
+
         return losses.mean()
 
     @staticmethod
     def forward(
-        ctx,
-        _input,
-        weight,
-        target,
-        bias=None,
-        ignore_index=-100,
-        beta=0.1,
-        alpha=1.0,
-        compute_nll_loss=False,
-        compiled=True,
-        reference_logps=None,
-        labels=None
+            ctx,
+            _input,
+            weight,
+            target,
+            bias=None,
+            ignore_index=-100,
+            beta=0.1,
+            alpha=1.0,
+            compute_nll_loss=False,
+            compiled=True,
+            reference_logps=None,
+            labels=None
     ):
         """
         Fused linear layer with CPO (Odds-Ratio Preference Optimization) loss.
