@@ -80,6 +80,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             teacher_weight=teacher_weight,
             target=true_labels,
             loss_fn=LigerFusedLinearJSDFunction.distillation_loss_fn,
+            chunk_size=2,
             weight_hard_loss=weight_hard_loss,
             weight_soft_loss=weight_soft_loss,
             ignore_index=ignore_index,
