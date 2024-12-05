@@ -536,7 +536,7 @@ class HFDistillationLoss:
         self.temperature = temperature
 
     @abstractmethod
-    def distillation_loss(self, student_logps, teacher_logps):
+    def distillation_loss(self, student_logits, teacher_logits):
         """Abstract method for computing distillation loss."""
         pass
 
