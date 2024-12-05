@@ -128,26 +128,33 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             **loss_kwargs,
         )
 
+        def accumulate_helper(input_chunk, target_chunk):
+            if bias is not None:
+                return torch.func.grad_and_value(
+                    loss_func_to_call, argnums=(0, 1, 3), has_aux=True
+                )(
+                    input_chunk, weight, target_chunk, bias
+                )
+            else:
+                return torch.func.grad_and_value(
+                    loss_func_to_call, argnums=(0, 1), has_aux=True
+                )(
+                    input_chunk, weight, target_chunk
+                )
+
         def accumulate_chunk(input_chunk, target_chunk):
             if bias is not None:
                 (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), (
                     chunk_loss,
                     (chunk_chosen_logps, chunk_rejected_logps, chunk_chosen_logits_mean, chunk_rejected_logits_mean, chunk_nll_loss, *aux_outputs),
-                ) = torch.func.grad_and_value(
-                    loss_func_to_call, argnums=(0, 1, 3), has_aux=True
-                )(
-                    input_chunk, weight, target_chunk, bias
-                )
+                ) = accumulate_helper(input_chunk, target_chunk)
                 grad_bias.add_(chunk_grad_bias)  # accumulate bias gradient
             else:
                 (chunk_grad_input, chunk_grad_weight), (
                     chunk_loss,
                     (chunk_chosen_logps, chunk_rejected_logps, chunk_chosen_logits_mean, chunk_rejected_logits_mean, chunk_nll_loss, *aux_outputs),
-                ) = torch.func.grad_and_value(
-                    loss_func_to_call, argnums=(0, 1), has_aux=True
-                )(
-                    input_chunk, weight, target_chunk
-                )
+                ) = accumulate_helper(input_chunk, target_chunk)
+
             grad_weight.add_(chunk_grad_weight)
             loss_acc.add_(chunk_loss)
             policy_chosen_logps.append(chunk_chosen_logps)
@@ -174,7 +181,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             return chunk_grad_input
 
         if compiled:
-            accumulate_chunk = torch.compile(accumulate_chunk)
+            accumulate_helper = torch.compile(accumulate_helper)
 
         len_chosen = target.shape[0] // 2
         chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
@@ -198,6 +205,11 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             target_chunk = torch.cat(
                 [chosen_target_chunk, rejected_target_chunk], dim=0
             )
+
+            # mark input_chunk, target_chunk, and target dimension 1 as dynamic to prevent torch.compile recompilation
+            torch._dynamo.mark_dynamic(input_chunk, 1)
+            torch._dynamo.mark_dynamic(target_chunk, 1)
+            torch._dynamo.mark_dynamic(target, 1)
 
             # accumulate loss, gradients, and metrics
             grad_input = accumulate_chunk(input_chunk, target_chunk)
@@ -301,14 +313,12 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
 
         preference_loss_outputs = preference_loss_fn(
-            chosen_logps, rejected_logps, beta=beta, **loss_kwargs
+            chosen_logps, rejected_logps, full_target, beta=beta, **loss_kwargs
         )
         if isinstance(preference_loss_outputs, tuple):
             preference_loss, *aux_outputs = preference_loss_outputs
         else:
             preference_loss, aux_outputs = preference_loss_outputs, []
-
-        preference_loss = preference_loss / (full_target.shape[0] // 2)
 
         loss = alpha * chosen_nll_loss - preference_loss
         return_vars = (chosen_logps, rejected_logps, chosen_logits_mean, rejected_logits_mean, chosen_nll_loss)

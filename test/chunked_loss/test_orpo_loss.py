@@ -59,7 +59,10 @@ class HFORPOLoss(HFAlignmentLoss):
         ratio = F.logsigmoid(log_odds)
         losses = self.beta * ratio
 
-        return losses
+        chosen_rewards = self.beta * policy_chosen_logps
+        rejected_rewards = self.beta * policy_rejected_logps
+
+        return losses, chosen_rewards, rejected_rewards, torch.mean(ratio), torch.mean(log_odds)
 
 
 class TorchLMHeadORPO(torch.nn.Module):
@@ -167,10 +170,20 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    loss1 = torch_lm_head_orpo(input1, target)
-    loss2, _ = liger_lm_head_orpo(input2, target)
+    loss1, aggregated_aux_outputs1 = torch_lm_head_orpo(input1, target)
+    loss2, aggregated_aux_outputs2 = liger_lm_head_orpo(input2, target)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
+
+    assert len(aggregated_aux_outputs1) == len(aggregated_aux_outputs2)
+
+    for i in range(len(aggregated_aux_outputs1)):
+        assert_verbose_allclose(
+            aggregated_aux_outputs1[i],
+            aggregated_aux_outputs2[i],
+            atol=atol,
+            rtol=rtol,
+        )
 
     loss1.backward()
     loss2.backward()
@@ -232,8 +245,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias):
     bias1 = _bias.detach().clone().requires_grad_(True) if bias else None
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
-    loss1, _ = LigerFusedLinearORPOFunction.apply(input1, weight1, target, bias1)
-    loss2, _ = liger_fused_linear_orpo(input2, weight2, target, bias2)
+    loss1, aggregated_aux_outputs1 = LigerFusedLinearORPOFunction.apply(input1, weight1, target, bias1)
+    loss2, aggregated_aux_outputs2 = liger_fused_linear_orpo(input2, weight2, target, bias2)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
