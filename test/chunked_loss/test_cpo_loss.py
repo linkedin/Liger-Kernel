@@ -270,8 +270,12 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias):
     bias1 = _bias.detach().clone().requires_grad_(True) if bias else None
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
-    loss1, aggregated_aux_outputs1 = LigerFusedLinearCPOFunction.apply(input1, weight1, target, bias1)
-    loss2, aggregated_aux_outputs2 = liger_fused_linear_cpo(input2, weight2, target, bias2)
+    loss1, aggregated_aux_outputs1 = LigerFusedLinearCPOFunction.apply(
+        input1, weight1, target, bias1
+    )
+    loss2, aggregated_aux_outputs2 = liger_fused_linear_cpo(
+        input2, weight2, target, bias2
+    )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 

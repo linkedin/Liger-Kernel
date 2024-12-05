@@ -512,5 +512,11 @@ class HFAlignmentLoss:
             losses, aggregated_aux_outputs = alignment_loss_outputs, []
         # full loss
         loss = policy_nll_loss * self.alpha - losses.mean()
-        return_vars = (policy_chosen_logps, policy_rejected_logps, policy_chosen_logits.detach().mean(), policy_rejected_logits.detach().mean(), policy_nll_loss)
+        return_vars = (
+            policy_chosen_logps,
+            policy_rejected_logps,
+            policy_chosen_logits.detach().mean(),
+            policy_rejected_logits.detach().mean(),
+            policy_nll_loss,
+        )
         return loss, (*return_vars, *aggregated_aux_outputs)
