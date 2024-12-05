@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   checkstyle:
-    runs-on: linux-mi300-gpu-1
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
@@ -41,7 +41,7 @@ jobs:
       run: make checkstyle
 
   tests:
-    runs-on: ubuntu-latest
+    runs-on: linux-mi300-gpu-1
     needs: [checkstyle]
 
     steps:
