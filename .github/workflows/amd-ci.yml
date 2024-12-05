@@ -21,7 +21,7 @@ name: GitHub Actions CI (AMD)
 
 jobs:
   checkstyle:
-    runs-on: ubuntu-latest
+    runs-on: linux-mi300-gpu-1
 
     steps:
     - name: Checkout code
