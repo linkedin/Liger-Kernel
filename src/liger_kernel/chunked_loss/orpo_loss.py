@@ -9,7 +9,7 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
 class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
-    def preference_loss_fn(chosen_logps, rejected_logps, beta=0.1):
+    def preference_loss_fn(chosen_logps, rejected_logps, full_target, beta=0.1):
         """
         Compute odds-ratio loss.
         Args:
@@ -22,7 +22,15 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
             - torch.log1p(-torch.exp(rejected_logps))
         )
         ratio = F.logsigmoid(log_odds)
-        return beta * ratio.sum()
+        loss = beta * ratio.sum() / (full_target.shape[0] // 2)
+
+        chosen_rewards = beta * chosen_logps
+        rejected_rewards = beta * rejected_logps
+
+        log_odds_ratio = torch.sum(ratio) / (full_target.shape[0] // 2)
+        log_odds_chosen = torch.sum(log_odds) / (full_target.shape[0] // 2)
+
+        return loss, chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen
 
     @staticmethod
     def forward(
@@ -56,7 +64,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         )
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, *grad_output):
         # Get gradients for _input, weight, bias, and target from the base class
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
         # Return these gradients, followed by None for the remaining inputs

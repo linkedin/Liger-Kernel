@@ -9,7 +9,7 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
 class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
-    def preference_loss_fn(chosen_logps, rejected_logps, beta=0.1):
+    def preference_loss_fn(chosen_logps, rejected_logps, full_target, beta=0.1):
         """
         Compute odds-ratio loss.
         Args:
@@ -18,7 +18,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             beta (float): Weight for the odds ratio loss.
         """
         logits = beta * (chosen_logps - rejected_logps)
-        loss = F.logsigmoid(logits).mean()
+        loss = F.logsigmoid(logits).sum() / (full_target.shape[0] // 2)
         return loss
 
     @staticmethod
@@ -55,7 +55,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
         )
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, *grad_output):
         # Get gradients for _input, weight, bias, and target from the base class
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
         # Return these gradients, followed by None for the remaining inputs

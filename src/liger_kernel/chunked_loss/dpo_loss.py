@@ -12,6 +12,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
     def preference_loss_fn(
         chosen_logps,
         rejected_logps,
+        full_target,
         ref_chosen_logps=None,
         ref_rejected_logps=None,
         beta=0.1,
@@ -34,8 +35,8 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         rejected_logratios = rejected_logps - ref_rejected_logps
 
         logits_diff = beta * (chosen_logratios - rejected_logratios)
-        losses = -F.logsigmoid(logits_diff)
-        return losses.sum()
+        loss = -F.logsigmoid(logits_diff).sum() / (full_target.shape[0] // 2)
+        return loss
 
     @staticmethod
     def forward(
@@ -73,7 +74,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         )
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, *grad_output):
         # Get gradients for _input, weight, bias, and target from the base class
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
         # Return these gradients, followed by None for the remaining inputs

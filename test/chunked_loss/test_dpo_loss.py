@@ -185,10 +185,20 @@ def test_correctness(
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    loss1 = torch_lm_head_dpo(input1, target)
-    loss2 = liger_lm_head_dpo(input2, target)
+    loss1, aggregated_aux_outputs1 = torch_lm_head_dpo(input1, target)
+    loss2, aggregated_aux_outputs2 = liger_lm_head_dpo(input2, target)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
+
+    assert len(aggregated_aux_outputs1) == len(aggregated_aux_outputs2)
+
+    for i in range(len(aggregated_aux_outputs1)):
+        assert_verbose_allclose(
+            aggregated_aux_outputs1[i],
+            aggregated_aux_outputs2[i],
+            atol=atol,
+            rtol=rtol,
+        )
 
     loss1.backward()
     loss2.backward()
@@ -259,10 +269,10 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     ref_bias1 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
     ref_bias2 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
 
-    loss1 = LigerFusedLinearDPOFunction.apply(
+    loss1, aggregated_aux_outputs1 = LigerFusedLinearDPOFunction.apply(
         input1, weight1, target, bias1, ref_weight1, ref_bias1
     )
-    loss2 = liger_fused_linear_dpo(
+    loss2, aggregated_aux_outputs2 = liger_fused_linear_dpo(
         input2, weight2, target, bias2, ref_weight2, ref_bias2
     )
 

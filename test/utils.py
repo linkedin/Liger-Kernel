@@ -503,9 +503,20 @@ class HFAlignmentLoss:
             )
             loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
             loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
-        losses = self.alignment_loss(
+        alignment_loss_outputs = self.alignment_loss(
             policy_chosen_logps, policy_rejected_logps, **loss_kwargs
         )
+        if isinstance(alignment_loss_outputs, tuple):
+            losses, *aggregated_aux_outputs = alignment_loss_outputs
+        else:
+            losses, aggregated_aux_outputs = alignment_loss_outputs, []
         # full loss
         loss = policy_nll_loss * self.alpha - losses.mean()
-        return loss
+        return_vars = (
+            policy_chosen_logps,
+            policy_rejected_logps,
+            policy_chosen_logits.detach().mean(),
+            policy_rejected_logits.detach().mean(),
+            policy_nll_loss,
+        )
+        return loss, (*return_vars, *aggregated_aux_outputs)
