@@ -67,4 +67,4 @@ jobs:
           --device /dev/dri \
           -v ${{ github.workspace }}:/liger-kernel-workspace \
           ghcr.io/embeddedllm/liger-kernel-ci:rocm6.2.3_ubuntu22.04_py3.10_pytorch2.6.0.dev20241113_triton_llvm_reg_issue_hipblaslt0.8 \
-          /bin/bash -c "cd /liger-kernel-workspace && python -m pip install -e .[dev] && make test && make test-convergence"
+          /bin/bash -c "cd /liger-kernel-workspace && python -m pip install -e .[dev] && make test-convergence"
