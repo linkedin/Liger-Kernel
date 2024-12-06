@@ -1,23 +1,23 @@
 name: GitHub Actions CI (AMD)
 
-# on:
-#   push:
-#     branches:
-#       - main
-#     paths:
-#       - "src/**"
-#       - "test/**"
-#   pull_request:
-#     branches:
-#       - main
-#     paths:
-#       - "src/**"
-#       - "test/**"
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "test/**"
+  pull_request:
+    branches:
+      - main
+    # paths:
+    #   - "src/**"
+    #   - "test/**"
 
-# concurrency:
-#   # This causes it to cancel previous in-progress actions on the same PR / branch,
-#   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-#   cancel-in-progress: true
+concurrency:
+  # This causes it to cancel previous in-progress actions on the same PR / branch,
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   checkstyle:
@@ -41,7 +41,7 @@ jobs:
       run: make checkstyle
 
   tests:
-    runs-on: ubuntu-latest
+    runs-on: linux-mi300-gpu-1
     needs: [checkstyle]
 
     steps:
