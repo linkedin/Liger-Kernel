@@ -763,7 +763,7 @@ def test_float32_internal():
         RETURN_Z_LOSS=0,  # False
         HAS_SOFTCAPPING=False,
         BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=32 if device=='cuda' else 16,
+        num_warps=32 if device == "cuda" else 16,
     )
 
     # Run kernel for float32
@@ -787,7 +787,7 @@ def test_float32_internal():
         RETURN_Z_LOSS=0,  # False
         HAS_SOFTCAPPING=False,
         BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=32 if device=='cuda' else 16,
+        num_warps=32 if device == "cuda" else 16,
     )
 
     torch.allclose(X_bf16, X_fp32.bfloat16())
