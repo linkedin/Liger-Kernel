@@ -61,6 +61,7 @@ jobs:
         cd amd_smi
         python3 -m pip install -e .
         cd ..
+        python3 -m pip install pytest pytest-xdist pytest-rerunfailures pytest-flakefinder pytest-cpp
         python3 -m pip uninstall -y torch torchvision
         python3 -m pip install --pre \
                 torch==2.6.0.dev20241122+rocm6.2 \
