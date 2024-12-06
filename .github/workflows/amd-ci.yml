@@ -15,6 +15,7 @@ on:
     #   - "test/**"
 
 concurrency:
+  # This causes it to cancel previous in-progress actions on the same PR / branch,
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
@@ -35,7 +36,6 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install flake8 isort black
-
     - name: Run checkstyle
       run: make checkstyle
 
@@ -55,16 +55,18 @@ jobs:
     - name: Check Docker Version
       run: docker version
 
-    - name: Run the tests in Docker
+    - name: Setup Dependencies
       run: |
-        sudo docker run \
-          --network=host \
-          --group-add=video \
-          --ipc=host \
-          --cap-add=SYS_PTRACE \
-          --security-opt seccomp=unconfined \
-          --device /dev/kfd \
-          --device /dev/dri \
-          -v ${{ github.workspace }}:/liger-kernel-workspace \
-          ghcr.io/embeddedllm/liger-kernel-ci:rocm6.2.3_ubuntu22.04_py3.10_pytorch2.6.0.dev20241113_triton_llvm_reg_issue_hipblaslt0.8 \
-          /bin/bash -c "cd /liger-kernel-workspace && python -m pip install -e .[dev] && make test-convergence"
+        python3 -m pip uninstall -y torch torchvision
+        python3 -m pip install --pre \
+                torch==2.6.0.dev20241122+rocm6.2 \
+                'setuptools-scm>=8' \
+                torchvision==0.20.0.dev20241122+rocm6.2 \
+                --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
+        python3 -m pip install triton==3.1.0 transformers==4.46.3
+        python3 -m pip install -e .[dev]
+    
+    - name: Run Unit Tests
+      run: |
+        make test-convergence
+        make test
