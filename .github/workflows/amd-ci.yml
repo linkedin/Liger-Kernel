@@ -64,9 +64,9 @@ jobs:
         python3 -m pip install pytest pytest-xdist pytest-rerunfailures pytest-flakefinder pytest-cpp
         python3 -m pip uninstall -y torch torchvision
         python3 -m pip install --pre \
-                torch==2.6.0.dev20241122+rocm6.2 \
+                torch==2.6.0.dev20241113+rocm6.2 \
                 'setuptools-scm>=8' \
-                torchvision==0.20.0.dev20241122+rocm6.2 \
+                torchvision==0.20.0.dev20241113+rocm6.2 \
                 --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
         python3 -m pip install triton==3.1.0 transformers==4.46.3
         python3 -m pip install -e .[dev]
