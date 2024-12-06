@@ -57,7 +57,7 @@ jobs:
       run: docker version
 
     - name: Build Liger-Kernel CI Docker image
-      run: docker build -t liger-kernel-ci -f Dockerfile.rocm .
+      run: sudo docker build -t liger-kernel-ci -f Dockerfile.rocm .
 
     - name: Run the tests
       run: |
