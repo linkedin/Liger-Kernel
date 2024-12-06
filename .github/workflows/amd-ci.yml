@@ -63,11 +63,10 @@ jobs:
                 'setuptools-scm>=8' \
                 torchvision==0.20.0.dev20241122+rocm6.2 \
                 --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
-        python3 -m pip install triton==3.1.0 transformers==4.46.3
+        python3 -m pip install triton==3.0.0 transformers==4.46.3
         python3 -m pip install -e .[dev]
     
     - name: Run Unit Tests
       run: |
+        make test
         # make test-convergence
-        # make test
-        pytest test/transformers/test_rms_norm.py::test_correctness
