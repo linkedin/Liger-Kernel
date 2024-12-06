@@ -57,6 +57,10 @@ jobs:
 
     - name: Setup Dependencies
       run: |
+        cp -r /opt/rocm/share/amd_smi ./
+        cd amd_smi
+        python3 -m pip install -e .
+        cd ..
         python3 -m pip uninstall -y torch torchvision
         python3 -m pip install --pre \
                 torch==2.6.0.dev20241122+rocm6.2 \
