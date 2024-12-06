@@ -58,8 +58,8 @@ jobs:
 
     - name: Check System Environment
       run: |
-      sudo apt list | grep hip
-      sudo apt list | grep rocm
+        sudo apt list | grep hip
+        sudo apt list | grep rocm
 
     - name: Check Python Environment
       run: |
