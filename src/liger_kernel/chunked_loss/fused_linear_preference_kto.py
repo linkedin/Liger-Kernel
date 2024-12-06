@@ -6,7 +6,6 @@ from torch.nn import functional as F
 
 
 class LigerFusedLinearKTOPreferenceBase(torch.autograd.Function):
-
     @abstractmethod
     def preference_loss_fn(chosen_logps, rejected_logps, beta=0.1):
         """
@@ -55,15 +54,13 @@ class LigerFusedLinearKTOPreferenceBase(torch.autograd.Function):
             loss_kwargs (dict): Other possible arguments that a loss function might need
         """
         # TODO: Tune CHUNK_SIZE to fully utilize the GPU
-        CHUNK_SIZE = chunk_size
 
         grad_weight = torch.zeros_like(weight)
         grad_chosen_inputs = []
         grad_rejected_inputs = []
         grad_bias = torch.zeros_like(bias) if bias is not None else None
         loss_acc = torch.zeros((), device=_input.device)
-
-        chunks = 1#max(1, _input.shape[0] // (2 * CHUNK_SIZE))
+        chunks = 1  # max(1, _input.shape[0] // (2 * CHUNK_SIZE))
 
         loss_func_to_call = partial(
             LigerFusedLinearKTOPreferenceBase._compute_loss,
@@ -77,28 +74,28 @@ class LigerFusedLinearKTOPreferenceBase(torch.autograd.Function):
         )
 
         def accumulate_chunk(input_chunk, target_chunk):
-            #global loss_acc
+            # global loss_acc
             if bias is not None:
                 (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), (
                     chunk_loss,
                     (chunk_or_loss, chunk_chosen_logps, chunk_rejected_logps),
                 ) = torch.func.grad_and_value(
-                    loss_func_to_call, argnums=(0, 1,2,3,4,5), has_aux=True
+                    loss_func_to_call, argnums=(0, 1, 2, 3, 4, 5), has_aux=True
                 )(
                     input_chunk, weight[0], labels, reference_logps, target_chunk, bias
                 )
                 grad_bias.add_(chunk_grad_bias)
             else:
-
-                ((   chunk_grad_input , chunk_grad_weight),
-                 (chunk_loss, (alignment_loss, chosen_logps,rejected_logps))) = torch.func.grad_and_value(
+                (
+                    (chunk_grad_input, chunk_grad_weight),
+                    (chunk_loss, (alignment_loss, chosen_logps, rejected_logps)),
+                ) = torch.func.grad_and_value(
                     loss_func_to_call, argnums=(0, 1), has_aux=True
                 )(
-                    input_chunk, weight, labels, reference_logps,target_chunk
+                    input_chunk, weight, labels, reference_logps, target_chunk
                 )
-            #grad_weight.add_(chunk_grad_weight)
-            grad_weight = chunk_grad_weight
-            #loss_acc = chunk_loss
+
+            # loss_acc = chunk_loss
             loss_acc.add_(chunk_loss)
             return chunk_grad_input
 
@@ -191,7 +188,7 @@ class LigerFusedLinearKTOPreferenceBase(torch.autograd.Function):
         log_probs_chunk = F.log_softmax(logits_chunk.float(), dim=-1)
 
         chosen_nll_loss = 0.0
-       # compute_nll_loss=False
+        # compute_nll_loss=False
         if compute_nll_loss:
             chosen_nll_loss = F.nll_loss(
                 log_probs_chunk[:len_chosen_chunk].view(-1, log_probs_chunk.shape[-1]),
@@ -215,22 +212,30 @@ class LigerFusedLinearKTOPreferenceBase(torch.autograd.Function):
         chosen_logps = average_log_prob[:len_chosen_chunk]
         rejected_logps = average_log_prob[len_chosen_chunk:]
         for i in range(reference_logps.shape[0]):
-            chosen_idx = [i for i in range(reference_logps.shape[0]) if labels[i][0].item() == 1.]
-            rejected_idx = [i for i in range(reference_logps.shape[0]) if labels[i][0].item() == 0.]
+            chosen_idx = [
+                i for i in range(reference_logps.shape[0]) if labels[i][0].item() == 1.0
+            ]
+            rejected_idx = [
+                i for i in range(reference_logps.shape[0]) if labels[i][0].item() == 0.0
+            ]
 
         reference_chosen_logps = reference_logps[chosen_idx, ...]
         reference_rejected_logps = reference_logps[rejected_idx, ...]
 
         alignment_loss, chosen_rewards, rejected_rewards = preference_loss_fn(
-            chosen_logps, rejected_logps,reference_chosen_logps,reference_rejected_logps,
-            beta=beta, **loss_kwargs
+            chosen_logps,
+            rejected_logps,
+            reference_chosen_logps,
+            reference_rejected_logps,
+            beta=beta,
+            **loss_kwargs,
         )
 
-        #alignment_loss = alignment_loss / (full_target.shape[0] // 2)
-        
-        #loss = alpha * chosen_nll_loss - alignment_loss
-        loss = 0  - alignment_loss.mean()
-    
+        # alignment_loss = alignment_loss / (full_target.shape[0] // 2)
+
+        # loss = alpha * chosen_nll_loss - alignment_loss
+        loss = 0 - alignment_loss.mean()
+
         return loss, (alignment_loss, chosen_logps, rejected_logps)
-        #return loss[0], (alignment_loss, chosen_logps, rejected_logps)
-        #return None, (None, None, None)
+        # return loss[0], (alignment_loss, chosen_logps, rejected_logps)
+        # return None, (None, None, None)
