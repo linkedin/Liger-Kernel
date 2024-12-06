@@ -1,13 +1,9 @@
-# train_orpo.py
-import sys
-
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import ORPOConfig, ORPOTrainer  # noqa: F401
 
-sys.path.insert(0, "/home/jobuser/Liger-Kernel/examples/alignment")
-from orpo_trainer import LigerORPOTrainer  # noqa: E402
+from liger_kernel.transformers import LigerORPOTrainer  # noqa: F401
 
 model = AutoModelForCausalLM.from_pretrained(
     "meta-llama/Llama-3.2-1B-Instruct",
@@ -21,15 +17,15 @@ tokenizer = AutoTokenizer.from_pretrained(
 )
 tokenizer.pad_token = tokenizer.eos_token
 
-train_dataset = load_dataset("./orpo_testing_data", split="train")
+train_dataset = load_dataset("trl-lib/tldr-preference", split="train")
 
-train_dataset = train_dataset.map(
-    lambda example: {
-        "prompt": example["prompt"],
-        "chosen": example["chosen"][0]["content"],
-        "rejected": example["rejected"][0]["content"],
-    }
-)
+# train_dataset = train_dataset.map(
+#     lambda example: {
+#         "prompt": example["prompt"],
+#         "chosen": example["chosen"][0]["content"],
+#         "rejected": example["rejected"][0]["content"],
+#     }
+# )
 training_args = ORPOConfig(
     output_dir="Llama3.2_1B_Instruct",
     beta=0.1,

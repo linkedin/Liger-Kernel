@@ -107,9 +107,7 @@ class LigerLMHeadORPO(torch.nn.Module):
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
-        self.orpo_loss = LigerFusedLinearORPOLoss(
-            ignore_index=ignore_index, beta=beta
-        )
+        self.orpo_loss = LigerFusedLinearORPOLoss(ignore_index=ignore_index, beta=beta)
 
     def forward(self, x, y):
         return self.orpo_loss(self.lin.weight, x, y, self.lin.bias)
