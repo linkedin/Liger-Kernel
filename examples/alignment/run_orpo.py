@@ -3,7 +3,6 @@ import sys
 
 import torch
 from datasets import load_dataset
-from torch.profiler import ProfilerActivity, profile, record_function
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import ORPOConfig, ORPOTrainer  # noqa: F401
 
@@ -24,9 +23,6 @@ tokenizer.pad_token = tokenizer.eos_token
 
 train_dataset = load_dataset("./orpo_testing_data", split="train")
 
-# get first 1000 examples
-# train_dataset = train_dataset.select(range(1000))
-
 train_dataset = train_dataset.map(
     lambda example: {
         "prompt": example["prompt"],
@@ -43,7 +39,7 @@ training_args = ORPOConfig(
     save_strategy="no",
 )
 
-trainer = ORPOTrainer(
+trainer = LigerORPOTrainer(
     model=model, args=training_args, tokenizer=tokenizer, train_dataset=train_dataset
 )
 
