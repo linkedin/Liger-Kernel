@@ -53,12 +53,21 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+    - name: Check Docker Version
+      run: docker version
 
-    - name: Run tests
+    - name: Build Liger-Kernel CI Docker image
+      run: docker build -t liger-kernel-ci -f Dockerfile.rocm .
+
+    - name: Run the tests
       run: |
-        make test
-        make test-convergence
+        sudo docker run \
+          --network=host \
+          --group-add=video \
+          --ipc=host \
+          --cap-add=SYS_PTRACE \
+          --security-opt seccomp=unconfined \
+          --device /dev/kfd \
+          --device /dev/dri \
+          liger-kernel-ci \
+          /bin/bash -c "make test; make test-convergence"
