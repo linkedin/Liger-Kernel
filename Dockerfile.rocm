@@ -13,13 +13,7 @@ FROM base AS final
 # Import the Liger-Kernel development directory from the build context
 COPY . .
 
-RUN python3 -m pip install --upgrade pip
-RUN ls
-
-RUN --mount=type=cache,target=${CCACHE_DIR} \
-    --mount=type=bind,source=.git,target=.git \
-    --mount=type=cache,target=/root/.cache/pip \
-    python3 -m pip install -e .[dev]
-
+RUN python3 -m pip install --upgrade pip \
+    && python3 -m pip install -e .[dev]
 
 CMD ["/bin/bash"]
