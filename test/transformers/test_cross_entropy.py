@@ -722,7 +722,6 @@ def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rto
     )
 
 
-@pytest.mark.skip(reason="temporary skip to validate CI pipeline.")
 def test_float32_internal():
     """
     This test validates that the internal softmax calculations occur in float32,
@@ -764,7 +763,7 @@ def test_float32_internal():
         RETURN_Z_LOSS=0,  # False
         HAS_SOFTCAPPING=False,
         BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=32,
+        num_warps=16,
     )
 
     # Run kernel for float32
@@ -788,7 +787,7 @@ def test_float32_internal():
         RETURN_Z_LOSS=0,  # False
         HAS_SOFTCAPPING=False,
         BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=32,
+        num_warps=16,
     )
 
     torch.allclose(X_bf16, X_fp32.bfloat16())
