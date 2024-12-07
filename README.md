@@ -8,7 +8,7 @@
         <th style="padding: 10px;" colspan="2">Stable</th>
         <th style="padding: 10px;" colspan="2">Nightly</th>
         <th style="padding: 10px;">Discord</th>
-        <th style="padding: 10px;">Gurubase (experimental)</th>
+        <th style="padding: 10px;">Build</th>
     </tr>
     <tr>
         <td style="padding: 10px;">
@@ -37,8 +37,8 @@
             </a>
         </td>
         <td style="padding: 10px;">
-            <a href="https://gurubase.io/g/liger-kernel">
-                <img src="https://img.shields.io/badge/Gurubase-Ask%20Liger%20Kernel%20Guru-006BFF" alt="Ask Liger Kernel Guru">
+            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/ci.yml">
+                <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/ci.yml/badge.svg?event=schedule" alt="Build">
             </a>
         </td>
     </tr>
