@@ -55,6 +55,16 @@ jobs:
     - name: Check Docker Version
       run: docker version
 
+    - name: Check Ubuntu version
+      run: lsb_release -a
+
+    - name: Check Hardware Specs
+      run: lscpu
+    
+    - name: ROCM-SMI Output
+      run: |
+        rocm-smi
+
     - name: Setup Dependencies
       run: |
         cp -r /opt/rocm/share/amd_smi ./
