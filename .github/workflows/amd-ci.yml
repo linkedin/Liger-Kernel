@@ -81,11 +81,11 @@ jobs:
                 --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
         python -m pip install triton==3.1.0 transformers==4.46.3
         python -m pip install -e .[dev]
-        python -m pip install numpy==1.26.4
+    
+    - name: List Python Environments
         python -m pip list
     
     - name: Run Unit Tests
       run: |
-        python -m pip list
         make test
         make test-convergence
