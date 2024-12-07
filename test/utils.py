@@ -373,7 +373,6 @@ class HFAlignmentLoss:
             labels: Labels for which to compute the log probabilities. Label tokens with a value of ignore_index are ignored. Shape: (batch_size, sequence_length)
             average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
             is_encoder_decoder: Whether the model is an encoder-decoder model.
-
         Returns:
             A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
         """
