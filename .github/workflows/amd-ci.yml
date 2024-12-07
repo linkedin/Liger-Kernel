@@ -83,7 +83,7 @@ jobs:
         python -m pip install -e .[dev]
     
     - name: List Python Environments
-        python -m pip list
+      run: python -m pip list
     
     - name: Run Unit Tests
       run: |
