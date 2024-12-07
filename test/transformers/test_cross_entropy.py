@@ -532,7 +532,7 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
         (3, 423, 32000, 30.0),
     ],
 )
-@pytest.mark.parametrize("reduction", ["sum", "mean"])
+@pytest.mark.parametrize("reduction", ["sum", "mean", "none"])
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [

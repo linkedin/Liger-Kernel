@@ -285,7 +285,11 @@ def cross_entropy_forward(
         num_warps=32 if not is_hip() else 16,
     )
 
-    loss = torch.sum(loss_1d)
+    if reduction == "none":
+        loss = loss_1d
+    else:
+        loss = torch.sum(loss_1d)
+
     if return_z_loss == _TRUE.value:
         z_loss = torch.sum(z_loss_1d)
     else:
