@@ -1,4 +1,4 @@
-name: AMD GPU CI
+name: AMD GPU
 
 on:
   push:

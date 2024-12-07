@@ -1,4 +1,4 @@
-name: NVIDIA GPU CI
+name: NVIDIA GPU
 
 on:
   push:
