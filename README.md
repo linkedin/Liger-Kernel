@@ -38,7 +38,7 @@
         </td>
         <td style="padding: 10px;">
             <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/ci.yml">
-                <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/ci.yml/badge.svg" alt="Build">
+                <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/ci.yml/badge.svg?event=schedule" alt="Build">
             </a>
         </td>
     </tr>
