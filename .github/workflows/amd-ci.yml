@@ -1,4 +1,4 @@
-name: GitHub Actions CI (AMD)
+name: AMD GPU CI
 
 on:
   push:
@@ -10,9 +10,13 @@ on:
   pull_request:
     branches:
       - main
-    # paths:
-    #   - "src/**"
-    #   - "test/**"
+    paths:
+      - "src/**"
+      - "test/**"
+  schedule:
+    # Runs at 00:00 UTC daily
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # Enables manual trigger
 
 concurrency:
   # This causes it to cancel previous in-progress actions on the same PR / branch,

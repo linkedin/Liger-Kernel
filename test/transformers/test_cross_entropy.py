@@ -9,10 +9,10 @@ from liger_kernel.ops.cross_entropy import (
     LigerCrossEntropyFunction,
     liger_cross_entropy_kernel,
 )
+from liger_kernel.ops.utils import is_hip
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.utils import infer_device
-from liger_kernel.ops.utils import is_hip
 
 device = infer_device()
 set_seed(42)
