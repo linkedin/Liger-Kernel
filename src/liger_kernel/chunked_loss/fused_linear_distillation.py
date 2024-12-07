@@ -54,6 +54,64 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         return student_logits_chunk, teacher_logits_chunk, ce_loss
 
     @staticmethod
+    def _compute_loss(
+        student_input_chunk,
+        student_weight,
+        teacher_input_chunk,
+        teacher_weight,
+        target_chunk,
+        student_bias=None,
+        teacher_bias=None,
+        distillation_loss_fn=None,
+        full_target=None,
+        ignore_index=-100,
+        temperature=1.0,
+        weight_hard_loss=0.5,
+        weight_soft_loss=0.5,
+        compute_ce_loss=True,
+        **loss_kwargs,
+    ):
+        """
+        Compute the total loss for a chunk of input and target, while using an knowleedge distillation loss function.
+        Args:
+            distillation_loss_fn (callable): Loss function to compute the loss on a chunk of input/target.
+            student_input_chunk (torch.Tensor): Chunk of input tensor. Shape: (chunk_size, student_hidden_size).
+            student_weight (torch.Tensor): Weight tensor. Shape: (vocab_size, student_hidden_size).
+            teacher_input_chunk (torch.Tensor): Chunk of input tensor. Shape: (chunk_size, teacher_hidden_size).
+            teacher_weight (torch.Tensor): Weight tensor. Shape: (vocab_size, teacher_hidden_size).
+            target_chunk (torch.Tensor): Chunk of target tensor. Shape: (chunk_size,).
+            student_bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
+            teacher_bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
+            full_target (torch.Tensor): Full target tensor. Shape: (chunk_size,).
+            ignore_index (int): Index to ignore for loss computation.
+            weight_hard_loss (float): Weight for hard loss.
+            weight_soft_loss (float): Weight for soft loss.
+            compute_ce_loss (bool): Whether to compute CE loss.
+            loss_kwargs (dict): Additional arguments for the loss function.
+        """
+        student_logits_chunk, teacher_logits_chunk, hard_loss = (
+            LigerFusedLinearDistillationBase.chunk_forward(
+                student_input_chunk,
+                student_weight,
+                teacher_input_chunk,
+                teacher_weight,
+                target_chunk,
+                student_bias=student_bias,
+                teacher_bias=teacher_bias,
+                ignore_index=ignore_index,
+                compute_ce_loss=compute_ce_loss,
+            )
+        )
+
+        hard_loss /= full_target.shape[0]
+
+        soft_loss = distillation_loss_fn(student_logits_chunk, teacher_logits_chunk, temperature)
+        soft_loss /= full_target.shape[0]
+
+        loss = weight_hard_loss * hard_loss + weight_soft_loss * soft_loss
+        return loss, (soft_loss, hard_loss, student_logits_chunk, teacher_logits_chunk)
+
+    @staticmethod
     def forward(
         ctx,
         student_input,
@@ -190,61 +248,3 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             grad_bias = grad_bias * grad_output if grad_bias is not None else None
 
         return grad_input, grad_weight, None, grad_bias
-
-    @staticmethod
-    def _compute_loss(
-        student_input_chunk,
-        student_weight,
-        teacher_input_chunk,
-        teacher_weight,
-        target_chunk,
-        student_bias=None,
-        teacher_bias=None,
-        distillation_loss_fn=None,
-        full_target=None,
-        ignore_index=-100,
-        temperature=1.0,
-        weight_hard_loss=0.5,
-        weight_soft_loss=0.5,
-        compute_ce_loss=True,
-        **loss_kwargs,
-    ):
-        """
-        Compute the total loss for a chunk of input and target, while using an knowleedge distillation loss function.
-        Args:
-            distillation_loss_fn (callable): Loss function to compute the loss on a chunk of input/target.
-            student_input_chunk (torch.Tensor): Chunk of input tensor. Shape: (chunk_size, student_hidden_size).
-            student_weight (torch.Tensor): Weight tensor. Shape: (vocab_size, student_hidden_size).
-            teacher_input_chunk (torch.Tensor): Chunk of input tensor. Shape: (chunk_size, teacher_hidden_size).
-            teacher_weight (torch.Tensor): Weight tensor. Shape: (vocab_size, teacher_hidden_size).
-            target_chunk (torch.Tensor): Chunk of target tensor. Shape: (chunk_size,).
-            student_bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
-            teacher_bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
-            full_target (torch.Tensor): Full target tensor. Shape: (chunk_size,).
-            ignore_index (int): Index to ignore for loss computation.
-            weight_hard_loss (float): Weight for hard loss.
-            weight_soft_loss (float): Weight for soft loss.
-            compute_ce_loss (bool): Whether to compute CE loss.
-            loss_kwargs (dict): Additional arguments for the loss function.
-        """
-        student_logits_chunk, teacher_logits_chunk, hard_loss = (
-            LigerFusedLinearDistillationBase.chunk_forward(
-                student_input_chunk,
-                student_weight,
-                teacher_input_chunk,
-                teacher_weight,
-                target_chunk,
-                student_bias=student_bias,
-                teacher_bias=teacher_bias,
-                ignore_index=ignore_index,
-                compute_ce_loss=compute_ce_loss,
-            )
-        )
-
-        hard_loss /= full_target.shape[0]
-
-        soft_loss = distillation_loss_fn(student_logits_chunk, teacher_logits_chunk, temperature)
-        soft_loss /= full_target.shape[0]
-
-        loss = weight_hard_loss * hard_loss + weight_soft_loss * soft_loss
-        return loss, (soft_loss, hard_loss, student_logits_chunk, teacher_logits_chunk)
