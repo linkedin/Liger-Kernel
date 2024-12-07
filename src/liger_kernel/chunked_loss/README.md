@@ -6,7 +6,7 @@ Liger FlexChunkLoss offers a versatile interface, delivering up to 75% memory sa
 
 FlexChunkLoss offers two flexible usage options:  
 
-1. **Via Liger[Custom Loss]Trainer**  
+1. **Via `Liger[Custom Loss]Trainer`**  
    For example, by simply replacing the HuggingFace `ORPOTrainer` with `LigerORPOTrainer` in your code, you can leverage our optimized ORPO implementation and immediately benefit from improved performance.  
 
 2. **Using `nn.Module` Implementations of Custom Loss Functions**  
