@@ -567,9 +567,10 @@ class HFDistillationLoss:
         if student_bias is not None:
             student_outputs = student_outputs + student_bias
 
-        teacher_outputs = teacher_input_reshaped @ teacher_weight.t()
-        if teacher_bias is not None:
-            teacher_outputs = teacher_outputs + teacher_bias
+        with torch.no_grad():
+            teacher_outputs = teacher_input_reshaped @ teacher_weight.t()
+            if teacher_bias is not None:
+                teacher_outputs = teacher_outputs + teacher_bias
 
         student_logits = student_outputs.view(student_batch_seq_len_size, -1).float()
         teacher_logits = teacher_outputs.view(teacher_batch_seq_len_size, -1).float()
