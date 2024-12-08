@@ -8,7 +8,6 @@ from liger_kernel.transformers.fused_linear_cross_entropy import (  # noqa: F401
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # noqa: F401
 from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
 from liger_kernel.transformers.jsd import LigerJSD  # noqa: F401
-from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401
 from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
 from liger_kernel.transformers.monkey_patch import (  # noqa: F401
     _apply_liger_kernel,
@@ -30,3 +29,4 @@ from liger_kernel.transformers.swiglu import (  # noqa: F401
     LigerPhi3SwiGLUMLP,
     LigerSwiGLUMLP,
 )
+from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401

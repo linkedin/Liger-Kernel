@@ -12,13 +12,14 @@ class TorchTVDLoss(torch.nn.Module):
         self.reduction = reduction
         self.ignore_index = ignore_index
 
-    def forward(self, p, q, label = 
-                None):
+    def forward(self, p, q, label=None):
 
         tvd = torch.abs(p - q) / 2.0
         n_non_ignore = p.size(0)
         if label is not None:
-            tvd = torch.where(label.unsqueeze(1) != self.ignore_index, tvd, torch.zeros_like(tvd))
+            tvd = torch.where(
+                label.unsqueeze(1) != self.ignore_index, tvd, torch.zeros_like(tvd)
+            )
             n_non_ignore = (label != self.ignore_index).sum().item()
             if n_non_ignore == 0:
                 return torch.tensor(0.0).to(tvd.device)
@@ -110,18 +111,19 @@ def _test_correctness_once(
     output2.backward()
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
+
 def _test_correctness_with_ignore_index_once(
-    target_tvd, 
-    torch_tvd, 
-    ignore_index, 
-    B, 
-    T, 
-    V, 
-    dtype, 
-    atol, 
-    rtol, 
+    target_tvd,
+    torch_tvd,
+    ignore_index,
+    B,
+    T,
+    V,
+    dtype,
+    atol,
+    rtol,
     reduction,
-    device="cuda"
+    device="cuda",
 ):
     input = torch.randn(B * T, V, device=device, dtype=dtype, requires_grad=True)
 
@@ -144,7 +146,7 @@ def _test_correctness_with_ignore_index_once(
 
     if reduction == "none":
         return
-    
+
     output.backward()
     output2.backward()
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
@@ -178,11 +180,16 @@ def test_correctness_not_last(B, T, V, reduction, dtype, atol, rtol):
         is_last_layer=False,
     )
 
+
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
 @pytest.mark.parametrize("reduction", ["batchmean", "sum", "mean", "none"])
 @pytest.mark.parametrize(*_DTYPE_PARAMS)
 @pytest.mark.parametrize("ignore_index", [-100, 0, 1])
-def test_correctness_with_ignore_index(B, T, V, reduction, dtype, atol, rtol, ignore_index):
+def test_correctness_with_ignore_index(
+    B, T, V, reduction, dtype, atol, rtol, ignore_index
+):
     liger_tvd = LigerTVDLoss(reduction=reduction, ignore_index=ignore_index)
     torch_tvd = TorchTVDLoss(reduction=reduction, ignore_index=ignore_index)
-    _test_correctness_with_ignore_index_once(liger_tvd, torch_tvd, ignore_index, B, T, V, dtype, atol, rtol, reduction)
+    _test_correctness_with_ignore_index_once(
+        liger_tvd, torch_tvd, ignore_index, B, T, V, dtype, atol, rtol, reduction
+    )

@@ -57,7 +57,7 @@ def _tv_distance_kernel(
     q_ptr += pid * q_stride
     loss_ptr += pid * loss_stride
     grads_ptr += pid * grads_stride
-    label_ptr += pid  
+    label_ptr += pid
 
     base_offsets = tl.arange(0, BLOCK_SIZE)
 
@@ -125,7 +125,7 @@ def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_
         ignore_index,
         V,
         BLOCK_SIZE=BLOCK_SIZE,
-        HAS_LABEL = has_label,
+        HAS_LABEL=has_label,
         num_warps=num_warps,
         reduction=reduction,
     )
@@ -162,7 +162,6 @@ class LigerTVDLossFunction(torch.autograd.Function):
         shift_labels: Optional[torch.Tensor] = None,
         reduction: REDUCTION_LITERAL = "batchmean",
         ignore_index: int = -100,
-
     ) -> torch.Tensor:
         """A forward pass for the Total Variation Distance Loss.
 
@@ -185,10 +184,12 @@ class LigerTVDLossFunction(torch.autograd.Function):
             shift_labels = shift_labels.contiguous()
             has_label = True
 
-        loss, grads = tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_label)
+        loss, grads = tv_distance_forward_triton(
+            p, q, shift_labels, reduction, ignore_index, has_label
+        )
         ctx.save_for_backward(grads)
         return loss
-    
+
     @staticmethod
     @ensure_contiguous
     def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
