@@ -77,7 +77,7 @@ jobs:
         python -m pip install -e .
         cd ..
         python -m pip install transformers==4.46.3
-        python -m pip install -e .[dev,amd]
+        python -m pip install -e .[dev,amd] --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
     
     - name: List Python Environments
       run: python -m pip list
