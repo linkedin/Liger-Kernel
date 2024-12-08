@@ -19,26 +19,6 @@ device = infer_device()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
-class TorchLMHeadSimPO(torch.nn.Module):
-    """Ground truth implementation of the linear fused with torch based cross entropy loss.
-
-    :param H: hidden size
-    :param V: vocab size
-    :param ignore_index: index to ignore
-    :param reduction: reduction method
-    """
-
-    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
-        from test.chunked_loss.test_cpo_loss import HFCPOLoss
-
-        super().__init__()
-        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
-        self.simpo_loss = HFCPOLoss(loss_type="simpo").get_batch_loss_metrics
-
-    def forward(self, x, y):
-        return self.simpo_loss(x, self.lin.weight, y)
-
-
 class LigerLMHeadSimPO(torch.nn.Module):
     def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
         super().__init__()
@@ -57,6 +37,8 @@ class LigerLMHeadSimPO(torch.nn.Module):
 def bench_memory_fused_linear_simpo_loss(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
+    from test.chunked_loss.test_simpo_loss import TorchLMHeadCPO
+
     B = input.x
     T = input.extra_benchmark_config["T"]
     H = input.extra_benchmark_config["H"]
@@ -64,7 +46,7 @@ def bench_memory_fused_linear_simpo_loss(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    torch_lm_head_simpo = TorchLMHeadSimPO(H=H, V=V, dtype=dtype).to(device)
+    torch_lm_head_simpo = TorchLMHeadCPO(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_simpo = LigerLMHeadSimPO(H=H, V=V, dtype=dtype).to(device)
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
@@ -77,8 +59,9 @@ def bench_memory_fused_linear_simpo_loss(
             return torch_lm_head_simpo(_input, target)
 
     def full():
-        y = fwd()
-        y.backward()
+        losses = fwd()
+        loss = losses[0]
+        loss.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(
@@ -96,6 +79,8 @@ def bench_memory_fused_linear_simpo_loss(
 def bench_speed_fused_linear_simpo_loss(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
+    from test.chunked_loss.test_simpo_loss import TorchLMHeadCPO
+
     B = input.x
     T = input.extra_benchmark_config["T"]
     H = input.extra_benchmark_config["H"]
@@ -104,7 +89,7 @@ def bench_speed_fused_linear_simpo_loss(
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
-    torch_lm_head_simpo = TorchLMHeadSimPO(H=H, V=V, dtype=dtype).to(device)
+    torch_lm_head_simpo = TorchLMHeadCPO(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_simpo = LigerLMHeadSimPO(H=H, V=V, dtype=dtype).to(device)
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
@@ -123,10 +108,10 @@ def bench_speed_fused_linear_simpo_loss(
             quantiles=QUANTILES,
         )
     elif mode == "backward":
-        y = fwd()
+        losses = fwd()
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(retain_graph=True),
+            lambda: losses[0].backward(retain_graph=True),
             grad_to_none=[_input],
             rep=100,
             quantiles=QUANTILES,
@@ -134,8 +119,9 @@ def bench_speed_fused_linear_simpo_loss(
     elif mode == "full":
 
         def full():
-            y = fwd()
-            y.backward()
+            losses = fwd()
+            loss = losses[0]
+            loss.backward()
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             full,
