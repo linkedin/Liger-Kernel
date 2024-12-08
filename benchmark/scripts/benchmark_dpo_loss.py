@@ -1,4 +1,5 @@
-from test.chunked_loss.test_dpo_loss import HF_DPO_Loss
+import os
+import sys
 
 import torch
 import triton
@@ -16,6 +17,8 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
 
 class TorchDPOLoss(torch.nn.Module):
     def __init__(
@@ -23,22 +26,27 @@ class TorchDPOLoss(torch.nn.Module):
         H: int,
         V: int,
         dtype: torch.dtype,
-        beta: float = 0.1,
-        ignore_index: int = -100,
         bias: bool = False,
+        ref_bias: bool = False,
+        ignore_index: int = -100,
+        beta: float = 0.1,
     ):
+        from test.chunked_loss.test_dpo_loss import HFDPOLoss
+
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
-        self.dpo_loss = HF_DPO_Loss(beta=beta, ignore_index=ignore_index)
+        self.ref_lin = torch.nn.Linear(
+            in_features=H, out_features=V, bias=ref_bias, dtype=dtype
+        )
+        self.dpo_loss = HFDPOLoss(
+            ignore_index=ignore_index, beta=beta, use_ref_model=True
+        ).get_batch_loss_metrics
 
-    def forward(self, x, target):
-        return self.dpo_loss.get_batch_loss_metrics(
-            x,
-            self.lin.weight,
-            target,
-            self.lin.bias if hasattr(self.lin, "bias") else None,
+    def forward(self, x, y):
+        return self.dpo_loss(
+            self.lin.weight, x, y, self.lin.bias, self.ref_lin.weight, self.ref_lin.bias
         )
 
 
@@ -65,8 +73,12 @@ class LigerDPOLoss(torch.nn.Module):
             self.lin.weight,
             target,
             self.lin.bias if hasattr(self.lin, "bias") else None,
+            self.lin.weight,
+            self.lin.bias if hasattr(self.lin, "bias") else None,
             self.ignore_index,
             self.beta,
+            True,
+            True,
             True,
         )
 
