@@ -287,13 +287,10 @@ def cross_entropy_forward(
 
     if reduction == "none":
         loss = loss_1d
+        z_loss = z_loss_1d if return_z_loss == _TRUE.value else None
     else:
         loss = torch.sum(loss_1d)
-
-    if return_z_loss == _TRUE.value:
-        z_loss = torch.sum(z_loss_1d)
-    else:
-        z_loss = None
+        z_loss = torch.sum(z_loss_1d) if return_z_loss == _TRUE.value else None
 
     return loss, z_loss, _input
 
