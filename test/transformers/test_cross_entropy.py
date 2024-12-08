@@ -384,7 +384,7 @@ def _test_correctness_functional(
         (3, 423, 32000),  # weird shapes
     ],
 )
-@pytest.mark.parametrize("reduction", ["sum", "mean"])
+@pytest.mark.parametrize("reduction", ["sum", "mean", "none"])
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
@@ -432,7 +432,7 @@ def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
         (3, 423, 32000, -123),
     ],
 )
-@pytest.mark.parametrize("reduction", ["sum", "mean"])
+@pytest.mark.parametrize("reduction", ["sum", "mean", "none"])
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
@@ -700,7 +700,7 @@ def test_correctness_with_z_loss_with_other_params_once(
         (3, 423, 32000),
     ],
 )
-@pytest.mark.parametrize("reduction", ["sum", "mean"])
+@pytest.mark.parametrize("reduction", ["sum", "mean", "none"])
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
