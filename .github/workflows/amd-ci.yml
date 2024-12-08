@@ -72,10 +72,6 @@ jobs:
 
     - name: Setup Dependencies
       run: |
-        cp -r /opt/rocm/share/amd_smi ./
-        cd amd_smi
-        python -m pip install -e .
-        cd ..
         python -m pip install -e .[dev,amd] --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
     
     - name: List Python Environments
