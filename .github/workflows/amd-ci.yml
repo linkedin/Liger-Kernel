@@ -76,15 +76,8 @@ jobs:
         cd amd_smi
         python -m pip install -e .
         cd ..
-        python -m pip install pytest pytest-xdist pytest-rerunfailures pytest-flakefinder pytest-cpp
-        python -m pip uninstall -y torch torchvision
-        python -m pip install --pre \
-                torch==2.6.0.dev20241113+rocm6.2 \
-                'setuptools-scm>=8' \
-                torchvision==0.20.0.dev20241113+rocm6.2 \
-                --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
-        python -m pip install triton==3.1.0 transformers==4.46.3
-        python -m pip install -e .[dev]
+        python -m pip install transformers==4.46.3
+        python -m pip install -e .[dev,amd]
     
     - name: List Python Environments
       run: python -m pip list

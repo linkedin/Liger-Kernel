@@ -4,6 +4,7 @@ from test.utils import assert_verbose_allclose, set_seed, supports_bfloat16
 import pytest
 import torch
 import torch.nn as nn
+from flaky import flaky
 
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.transformers.functional import liger_rms_norm
@@ -74,7 +75,7 @@ class GemmaRMSNorm(nn.Module):
         return output.type_as(x)
 
 
-@pytest.mark.flaky(reruns=3, reruns_delay=2)
+@flaky(max_runs=3, min_passes=1)
 @pytest.mark.parametrize(
     "bs, sl, hd",
     [
