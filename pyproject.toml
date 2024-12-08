@@ -36,9 +36,9 @@ dev = [
 ]
 
 amd = [
-    "torch==2.6.0.dev20241113+rocm6.2",
+    "torch>=2.6.0.dev",
     "setuptools-scm>=8",
-    "torchvision==0.20.0.dev20241113+rocm6.2",
+    "torchvision>=0.20.0.dev",
     "triton>=3.0.0",
 ]
 
