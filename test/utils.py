@@ -627,5 +627,7 @@ class HFDistillationLoss:
 
         soft_loss = self.distillation_loss(student_logits, teacher_logits)
         # full loss
-        loss = self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss.mean()
+        loss = (
+            self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss.mean()
+        )
         return loss

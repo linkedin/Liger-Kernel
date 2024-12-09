@@ -24,7 +24,7 @@ def print_env_report():
         cuda_version = (
             torch.version.cuda if torch.cuda.is_available() else "Not available"
         )
-        print(f"CUDA version: {cuda_version}") 
+        print(f"CUDA version: {cuda_version}")
     except ImportError:
         print("PyTorch: Not installed")
         print("CUDA version: Unable to query")
@@ -42,15 +42,14 @@ def print_env_report():
         print(f"Transformers version: {transformers.__version__}")
     except ImportError:
         print("Transformers: Not installed")
-    
+
     try:
         xpu_version = (
             torch.version.xpu if torch.xpu.is_available() else "XPU Not Available"
         )
-        print(f"XPU version: {xpu_version}") 
+        print(f"XPU version: {xpu_version}")
     except ImportError:
-        print("XPU version: Unable to query")    
-
+        print("XPU version: Unable to query")
 
 
 if __name__ == "__main__":
