@@ -37,9 +37,16 @@
             </a>
         </td>
         <td style="padding: 10px;">
-            <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/ci.yml">
-                <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/ci.yml/badge.svg?event=schedule" alt="Build">
-            </a>
+            <div style="display: block;">
+                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml/badge.svg?event=schedule" alt="Build">
+                </a>
+            </div>
+            <div style="display: block;">
+                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg" alt="Build">
+                </a>
+            </div>
         </td>
     </tr>
 </table>
