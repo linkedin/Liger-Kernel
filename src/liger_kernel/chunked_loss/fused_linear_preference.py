@@ -7,6 +7,13 @@ from torch.nn import functional as F
 
 class LigerFusedLinearPreferenceBase(torch.autograd.Function):
 
+    @abstractmethod
+    def preference_loss_fn(*args, **kwargs):
+        """
+        To be extended by subclasses.
+        """
+        raise NotImplementedError("Preference loss function must be implemented.")
+
     @staticmethod
     def forward(
         ctx,
@@ -234,10 +241,6 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             grad_bias = grad_bias * grad_output[0][0] if grad_bias is not None else None
 
         return grad_input, grad_weight, None, grad_bias, None, None, None
-
-    @abstractmethod
-    def preference_loss_fn(*args, **kwargs):
-        raise NotImplementedError("Preference loss function must be implemented.")
 
     @staticmethod
     def chunk_forward(
