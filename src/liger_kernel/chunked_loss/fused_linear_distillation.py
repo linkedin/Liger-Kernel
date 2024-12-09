@@ -8,12 +8,15 @@ from torch.nn import functional as F
 
 class LigerFusedLinearDistillationBase(torch.autograd.Function):
     @abstractmethod
-    def distillation_loss_fn(student_logits, teacher_logits, temperature):
+    def distillation_loss_fn(
+        student_logits,
+        teacher_logits,
+    ):
         """
         Compute distillation loss.
         Args:
-            student_logits (torch.Tensor): Raw logits of student tokens. Shape: (batch_size * seq_len, vocab_size).
-            teacher_logits (torch.Tensor): Raw logits of teacher tokens. Shape: (batch_size * seq_len, vocab_size).
+            student_logits (torch.Tensor): Raw (temperature-scaled) logits of student tokens. Shape: (batch_size * seq_len, vocab_size).
+            teacher_logits (torch.Tensor): Raw (temperature-scaled) logits of teacher tokens. Shape: (batch_size * seq_len, vocab_size).
         """
         raise NotImplementedError("Distillation loss function must be implemented.")
 
@@ -65,7 +68,6 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         distillation_loss_fn=None,
         full_target=None,
         ignore_index=-100,
-        temperature=1.0,
         weight_hard_loss=0.5,
         weight_soft_loss=0.5,
         compute_ce_loss=True,
@@ -107,7 +109,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
 
         hard_loss /= full_target.shape[0]
 
-        soft_loss = distillation_loss_fn(student_logits_chunk, teacher_logits_chunk, temperature)
+        soft_loss = distillation_loss_fn(student_logits_chunk, teacher_logits_chunk)
         soft_loss /= full_target.shape[0]
 
         loss = weight_hard_loss * hard_loss + weight_soft_loss * soft_loss
@@ -168,7 +170,6 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             weight_hard_loss=weight_hard_loss,
             weight_soft_loss=weight_soft_loss,
             compute_ce_loss=compute_ce_loss,
-            temperature=temperature,
             **loss_kwargs,
         )
 
@@ -222,6 +223,10 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
 
         if compiled:
             accumulate_chunk = torch.compile(accumulate_chunk)
+
+        # Scale logits by temperature, scale by 1 as default (no scale).
+        student_input /= temperature
+        teacher_input /= temperature
 
         num_chunks = max(1, student_input.shape[0] // CHUNK_SIZE)
         _student_input_chunks = torch.chunk(student_input, chunks=num_chunks, dim=0)
