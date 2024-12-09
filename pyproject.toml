@@ -14,6 +14,7 @@ dependencies = [
     "triton>=2.3.1",
 ]
 
+
 [project.optional-dependencies]
 transformers = [
     "transformers~=4.0"
@@ -27,10 +28,21 @@ dev = [
     "black>=24.4.2",
     "isort>=5.13.2",
     "pytest>=7.1.2",
+    "pytest-xdist", 
+    "pytest-rerunfailures",
     "datasets>=2.19.2",
     "torchvision>=0.16.2",
     "seaborn",
 ]
+
+amd = [
+    "torch>=2.6.0.dev",
+    "setuptools-scm>=8",
+    "torchvision>=0.20.0.dev",
+    "triton>=3.0.0",
+]
+
+
 
 [tool.setuptools.packages.find]
 where = ["src"]
