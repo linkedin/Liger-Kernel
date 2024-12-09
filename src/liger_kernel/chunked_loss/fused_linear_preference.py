@@ -48,7 +48,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             chunk_size (int): Size of a chunk (# of batches of stacked chosen and rejected inputs).
             ignore_index (int): Index to ignore for loss computation.
             alpha (float): Weight for the NLL loss.
-            beta (float): Weight for the loss.
+            beta (float): Weight for the preference loss.
             compute_nll_loss (bool): Whether to compute NLL loss.
             compiled (bool): Whether to use torch compile for chunk accumulation.
             use_ref_model (bool): Whether to use a reference model for the alignment loss.
