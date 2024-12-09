@@ -18,14 +18,28 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         beta=0.1,
     ):
         """
-        Compute DPO loss (Direct Preference Optimization).
+        Paper: https://arxiv.org/pdf/2305.18290
+
+        Formula:
+        L_DPO = -E[ log_sigmoid( β * (log(π(y_w|x)/π_ref(y_w|x)) - log(π(y_l|x)/π_ref(y_l|x))) ) ]
+
+        Where:
+        - π(y|x): Policy (model) probability
+        - π_ref(y|x): Reference model probability
+        - y_w: Chosen sequence
+        - y_l: Rejected sequence
+        - β: Weight for the direct preference loss
+        - E: Expected value over the dataset
+
         Args:
-            chosen_logps (torch.Tensor): Avg log probabilities of chosen tokens. Shape: (batch_size,).
-            rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
-            ref_chosen_logps (torch.Tensor, optional): Reference log probabilities of chosen tokens. Shape: (batch_size,).
-            ref_rejected_logps (torch.Tensor, optional): Reference log probabilities of rejected tokens. Shape: (batch_size,).
-            beta (float): Weight for the direct preference loss.
+            chosen_logps: Log probabilities of chosen tokens (batch_size,)
+            rejected_logps: Log probabilities of rejected tokens (batch_size,)
+            full_target: Full target tensor
+            ref_chosen_logps: Reference log probs of chosen tokens (batch_size,)
+            ref_rejected_logps: Reference log probs of rejected tokens (batch_size,)
+            beta: Weight for the direct preference loss
         """
+
         if ref_chosen_logps is None:
             ref_chosen_logps = torch.tensor(0.0, device=chosen_logps.device)
         if ref_rejected_logps is None:
