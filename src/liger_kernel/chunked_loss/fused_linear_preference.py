@@ -236,14 +236,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         return grad_input, grad_weight, None, grad_bias, None, None, None
 
     @abstractmethod
-    def preference_loss_fn(chosen_logps, rejected_logps, beta=0.1):
-        """
-        Compute preference loss.
-        Args:
-            chosen_logps (torch.Tensor): Avg log probabilities of chosen tokens. Shape: (batch_size,).
-            rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
-            beta (float): Weight for the odds ratio loss.
-        """
+    def preference_loss_fn(*args, **kwargs):
         raise NotImplementedError("Preference loss function must be implemented.")
 
     @staticmethod
