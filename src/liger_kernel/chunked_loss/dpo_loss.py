@@ -34,7 +34,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         Args:
             chosen_logps: Log probabilities of chosen tokens (batch_size,)
             rejected_logps: Log probabilities of rejected tokens (batch_size,)
-            full_target: Full target tensor
+            full_target: Non chunked full target tensor
             ref_chosen_logps: Reference log probs of chosen tokens (batch_size,)
             ref_rejected_logps: Reference log probs of rejected tokens (batch_size,)
             beta: Weight for the direct preference loss
@@ -67,10 +67,6 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         compiled=True,
         use_ref_model=True,
     ):
-        """
-        Fused linear layer with DPO (Direct Preference Optimization) loss.
-        Handles both the forward and backward pass of the final linear layer with DPO loss.
-        """
         return LigerFusedLinearPreferenceBase.forward(
             ctx=ctx,
             _input=_input,
@@ -89,9 +85,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
     def backward(ctx, *grad_output):
-        # Get gradients for _input, weight, bias, and target from the base class
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        # Return these gradients, followed by None for the remaining inputs
         return *grads, None, None, None, None, None, None, None
 
 
