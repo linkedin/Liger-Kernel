@@ -105,7 +105,9 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
 
         hard_loss /= full_target.shape[0] // student_input_chunk.shape[0]
 
-        soft_loss = distillation_loss_fn(student_logits_chunk, teacher_logits_chunk, temperature)
+        soft_loss = distillation_loss_fn(
+            student_logits_chunk, teacher_logits_chunk, temperature
+        )
         soft_loss /= full_target.shape[0] // student_input_chunk.shape[0]
 
         loss = weight_hard_loss * hard_loss + weight_soft_loss * soft_loss
