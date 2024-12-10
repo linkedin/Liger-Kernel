@@ -1,6 +1,6 @@
 # Liger FlexChunkLoss: Alignment and Distillation loss 
 
-Liger FlexChunkLoss offers a versatile interface, delivering up to 75% memory savings and a 10% throughput boost for post-training loss functions, including alignment (DPO, ORPO, CPO) and very soon, distillation. Its flexible design supports custom losses, ensuring efficiency gains across diverse use cases.
+Liger FlexChunkLoss offers a versatile interface, delivering up to 80% memory savings and a 10% throughput boost for post-training loss functions, including alignment (DPO, ORPO, CPO) and very soon, distillation. Its flexible design supports custom losses, ensuring efficiency gains across diverse use cases.
 
 ### User interface
 
