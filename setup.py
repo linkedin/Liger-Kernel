@@ -42,9 +42,7 @@ def get_optional_dependencies():
                 "torchvision>=0.16.2",
                 "seaborn",
             ],
-            "transformers": [
-                "transformers>=4.44.2"
-            ]
+            "transformers": ["transformers>=4.44.2"],
         }
     elif platform == "rocm":
         return {
@@ -52,9 +50,7 @@ def get_optional_dependencies():
                 "setuptools-scm>=8",
                 "torchvision>=0.20.0.dev",
             ],
-            "transformers": [
-                "transformers>=4.44.2"
-            ]
+            "transformers": ["transformers>=4.44.2"],
         }
 
 
