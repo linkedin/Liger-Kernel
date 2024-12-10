@@ -10,6 +10,7 @@ def _triton_qwen2vl_mrope(
     cos,
     sin,
     sl,
+    bs: tl.constexpr,
     n_qh: tl.constexpr,
     n_kh: tl.constexpr,
     hd: tl.constexpr,
@@ -41,13 +42,12 @@ def _triton_qwen2vl_mrope(
     t_end = mrope_section_t
     h_end = t_end + mrope_section_h
 
-    cos_row_idx = pid % sl
-    t_cos = cos + cos_row_idx * hd
-    h_cos = t_cos + sl * hd
-    w_cos = h_cos + sl * hd
-    t_sin = sin + cos_row_idx * hd
-    h_sin = t_sin + sl * hd
-    w_sin = h_sin + sl * hd
+    t_cos = cos + pid * hd
+    h_cos = t_cos + bs * sl * hd
+    w_cos = h_cos + bs * sl * hd
+    t_sin = sin + pid * hd
+    h_sin = t_sin + bs * sl * hd
+    w_sin = h_sin + bs * sl * hd
 
     cos_offsets = tl.arange(0, pad_hd // 2)
     t_mask = cos_offsets < t_end
@@ -151,6 +151,7 @@ def qwen2vl_mrope_forward(q, k, cos, sin, mrope_section):
         cos,
         sin,
         seq_len,
+        batch_size,
         n_q_head,
         n_kv_head,
         head_dim,
@@ -189,6 +190,7 @@ def qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section):
         cos,
         sin,
         seq_len,
+        batch_size,
         n_q_head,
         n_kv_head,
         head_dim,
@@ -216,8 +218,8 @@ class LigerQwen2VLMRopeFunction(torch.autograd.Function):
         """
         q size: (bsz, n_q_head, seq_len, head_dim)
         k size: (bsz, n_kv_head, seq_len, head_dim)
-        cos size: (3, 1, seq_len, head_dim)
-        sin size: (3, 1, seq_len, head_dim)
+        cos size: (3, bsz, seq_len, head_dim)
+        sin size: (3, bsz, seq_len, head_dim)
         """
         q, k, cos, sin = qwen2vl_mrope_forward(q, k, cos, sin, mrope_section)
         ctx.save_for_backward(cos, sin)
@@ -228,10 +230,9 @@ class LigerQwen2VLMRopeFunction(torch.autograd.Function):
         """
         dq size: (bsz, n_q_head, seq_len, head_dim)
         dk size: (bsz, n_kv_head, seq_len, head_dim)
-        cos size: (3, 1, seq_len, head_dim)
-        sin size: (3, 1, seq_len, head_dim)
+        cos size: (3, bsz, seq_len, head_dim)
+        sin size: (3, bsz, seq_len, head_dim)
         """
-
         cos, sin = ctx.saved_tensors
         mrope_section = ctx.mrope_section
         dq, dk = qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section)
