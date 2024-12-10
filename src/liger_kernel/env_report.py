@@ -1,5 +1,6 @@
 import platform
 import sys
+from importlib.metadata import version
 
 
 def print_env_report():
@@ -18,6 +19,11 @@ def print_env_report():
     print(f"Python version: {sys.version.split()[0]}")
 
     try:
+        print(f"Liger Kernel version: {version('liger-kernel')}")
+    except ImportError:
+        print("Liger Kernel: Not installed")
+
+    try:
         import torch
 
         print(f"PyTorch version: {torch.__version__}")
@@ -25,9 +31,17 @@ def print_env_report():
             torch.version.cuda if torch.cuda.is_available() else "Not available"
         )
         print(f"CUDA version: {cuda_version}")
+        hip_version = (
+            torch.version.hip
+            if torch.cuda.is_available() and torch.version.hip
+            else "Not available"
+        )
+        print(f"HIP(ROCm) version: {hip_version}")
+
     except ImportError:
         print("PyTorch: Not installed")
         print("CUDA version: Unable to query")
+        print("HIP(ROCm) version: Unable to query")
 
     try:
         import triton
