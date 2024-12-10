@@ -13,6 +13,7 @@ from liger_kernel.ops.layer_norm import LigerLayerNormFunction
 from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.rope import LigerRopeFunction
+from liger_kernel.ops.rope_paper import LigerRopePaperFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 
 
@@ -167,6 +168,10 @@ def liger_rms_norm(
 
 def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+
+
+def liger_rope_paper(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    return LigerRopePaperFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
 
 
 def liger_swiglu(a, b):

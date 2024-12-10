@@ -25,6 +25,9 @@ from liger_kernel.transformers.monkey_patch import (  # noqa: F401
 from liger_kernel.transformers.orpo_trainer import LigerORPOTrainer  # noqa: F401
 from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401
 from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
+from liger_kernel.transformers.rope_paper import (  # noqa: F401
+    liger_rotary_paper_pos_emb,
+)
 from liger_kernel.transformers.swiglu import (  # noqa: F401
     LigerBlockSparseTop2MLP,
     LigerPhi3SwiGLUMLP,
