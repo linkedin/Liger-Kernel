@@ -12,7 +12,7 @@ from utils import (
     run_benchmarks,
 )
 
-from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
+from liger_kernel.chunked_loss import LigerFusedLinearORPOLoss
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -21,37 +21,46 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 
 class TorchLMHeadORPO(torch.nn.Module):
-    """Ground truth implementation of the linear fused with torch based cross entropy loss.
-
-    :param H: hidden size
-    :param V: vocab size
-    :param ignore_index: index to ignore
-    :param reduction: reduction method
-    """
-
-    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
-        from test.chunked_loss.test_orpo_loss import HF_ORPO_Loss
-
+    def __init__(
+        self,
+        H: int,
+        V: int,
+        dtype: torch.dtype,
+        bias: bool = False,
+        ignore_index: int = -100,
+        beta: float = 0.1,
+    ):
+        from test.chunked_loss.test_orpo_loss import HFORPOLoss
         super().__init__()
         self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype
+            in_features=H, out_features=V, bias=bias, dtype=dtype
         )
-        self.orpo_loss = HF_ORPO_Loss().get_batch_loss_metrics
+        self.orpo_loss = HFORPOLoss(
+            ignore_index=ignore_index, beta=beta
+        ).get_batch_loss_metrics
 
     def forward(self, x, y):
-        return self.orpo_loss(x, self.lin.weight, y)
+        return self.orpo_loss(self.lin.weight, x, y, self.lin.bias)
 
 
 class LigerLMHeadORPO(torch.nn.Module):
-    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
+    def __init__(
+        self,
+        H: int,
+        V: int,
+        dtype: torch.dtype,
+        bias: bool = False,
+        ignore_index: int = -100,
+        beta: float = 0.1,
+    ):
         super().__init__()
         self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype
+            in_features=H, out_features=V, bias=bias, dtype=dtype
         )
-        self.orpo_loss = LigerFusedLinearORPOFunction.apply
+        self.orpo_loss = LigerFusedLinearORPOLoss(ignore_index=ignore_index, beta=beta)
 
     def forward(self, x, y):
-        return self.orpo_loss(x, self.lin.weight, y)
+        return self.orpo_loss(self.lin.weight, x, y, self.lin.bias)
 
 
 #############################################################################

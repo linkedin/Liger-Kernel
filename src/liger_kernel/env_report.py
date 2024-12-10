@@ -18,6 +18,13 @@ def print_env_report():
     print(f"Python version: {sys.version.split()[0]}")
 
     try:
+        import liger_kernel
+
+        print(f"Liger-Kernel version: {liger_kernel.__version__}")
+    except ImportError:
+        print("Liger-Kernel: Not installed")
+
+    try:
         import torch
 
         print(f"PyTorch version: {torch.__version__}")

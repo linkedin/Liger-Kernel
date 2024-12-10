@@ -249,7 +249,7 @@ if __name__ == "__main__":
         "kernel_name": "fused_linear_jsd",
         "x_name": "BT",
         "x_label": "B x T",
-        "x_values": [2**i for i in range(10, 14)],
+        "x_values": [2**i for i in range(14, 15)],
         "kernel_providers": ["liger", "torch"],
         "extra_benchmark_configs": [
             {"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}
