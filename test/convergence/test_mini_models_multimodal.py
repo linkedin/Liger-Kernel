@@ -364,6 +364,7 @@ def run_mini_model_multimodal(
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
     return {"loss": loss_list, "logits": output.logits, "model": model}
 
+print(f"Transformers version: {transformers.__version__}")
 
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
