@@ -9,7 +9,7 @@ ROOT_PATH = Path(__file__).parent.parent.parent
 REBUILD_IMAGE = os.getenv("REBUILD_IMAGE") is not None
 
 image = modal.Image.debian_slim().workdir(ROOT_PATH).run_commands(
-    ["pip install -e '.[dev]'"], force_build=REBUILD_IMAGE
+    ["ls -alt", "pip install -e '.[dev]'"], force_build=REBUILD_IMAGE
 )
 
 app = modal.App("liger_tests", image=image)
