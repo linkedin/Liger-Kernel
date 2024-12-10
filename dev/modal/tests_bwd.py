@@ -11,11 +11,8 @@ REBUILD_IMAGE = os.getenv("REBUILD_IMAGE") is not None
 # tests_bwd is to ensure the backward compatibility of liger with older transformers
 image = (
     modal.Image.debian_slim()
-    .pip_install_from_pyproject(
-        ROOT_PATH / "pyproject.toml",
-        optional_dependencies=["dev"],
-        force_build=REBUILD_IMAGE,
-    )
+    .workdir(ROOT_PATH)
+    .run_commands(["pip install -e '.[dev]'"], force_build=REBUILD_IMAGE)
     .pip_install("transformers==4.44.2", force_build=REBUILD_IMAGE)
 )
 
