@@ -288,6 +288,17 @@ loss.backward()
 - [Acknowledgements](https://github.com/linkedin/Liger-Kernel/blob/main/docs/Acknowledgement.md)
 - [License Information](https://github.com/linkedin/Liger-Kernel/blob/main/docs/License.md)
 
+## Sponsorship and Collaboration
+ 
+- [AMD](https://www.amd.com/en.html): Providing AMD GPUs for our AMD CI.
+- [Intel](https://www.intel.com/): Providing Intel GPUs for our Intel CI.
+- [Modal](https://modal.com/): Free 3000 credits from GPU MODE IRL for our NVIDIA CI.
+- [EmbeddedLLM](https://embeddedllm.com/): Making Liger Kernel run fast and stable on AMD. 
+- [HuggingFace](https://huggingface.co/): Integrating Liger Kernel into Hugging Face Transformers and TRL.
+- [Lightning AI](https://lightning.ai/): Integrating Liger Kernel into Lightning Thunder.
+- [Axolotl](https://axolotl.ai/): Integrating Liger Kernel into Axolotl.
+- [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory): Integrating Liger Kernel into Llama-Factory.
+
 ## Contact
 
 - For issues, create a Github ticket in this repository
@@ -312,12 +323,6 @@ Biblatex entry:
 
 ## Star History
 [![Star History Chart](https://api.star-history.com/svg?repos=linkedin/Liger-Kernel&type=Date)](https://star-history.com/#linkedin/Liger-Kernel&Date)
-
-## Contributors
-
-<a href="https://github.com/linkedin/Liger-Kernel/graphs/contributors">
-  <img alt="contributors" src="https://contrib.rocks/image?repo=linkedin/Liger-Kernel"/>
-</a>
 
 <p align="right" style="font-size: 14px; color: #555; margin-top: 20px;">
     <a href="#readme-top" style="text-decoration: none; color: #007bff; font-weight: bold;">
