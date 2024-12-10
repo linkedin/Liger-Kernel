@@ -32,7 +32,9 @@ def print_env_report():
         )
         print(f"CUDA version: {cuda_version}")
         hip_version = (
-            torch.version.hip if torch.cuda.is_available() and torch.version.hip else "Not available"
+            torch.version.hip
+            if torch.cuda.is_available() and torch.version.hip
+            else "Not available"
         )
         print(f"HIP(ROCm) version: {hip_version}")
 
