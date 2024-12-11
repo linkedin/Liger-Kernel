@@ -2,7 +2,9 @@
 
 import subprocess
 from typing import Literal
+
 from setuptools import setup
+
 
 def get_default_dependencies():
     """Determine the appropriate dependencies based on detected hardware."""
@@ -42,9 +44,7 @@ def get_optional_dependencies():
                 "torchvision>=0.16.2",
                 "seaborn",
             ],
-            "transformers": [
-                "transformers~=4.0"
-            ]
+            "transformers": ["transformers~=4.0"],
         }
     elif platform == "rocm":
         return {
@@ -52,9 +52,7 @@ def get_optional_dependencies():
                 "setuptools-scm>=8",
                 "torchvision>=0.20.0.dev",
             ],
-            "transformers": [
-                "transformers>=4.44.2"
-            ]
+            "transformers": ["transformers>=4.44.2"],
         }
 
 
