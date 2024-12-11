@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "liger_kernel"
-version = "0.4.2"
+version = "0.5.2"
 description = "Efficient Triton kernels for LLM Training"
 urls = { "Homepage" = "https://github.com/linkedin/Liger-Kernel" }
 readme = { file = "README.md", content-type = "text/markdown" }
@@ -14,23 +14,38 @@ dependencies = [
     "triton>=2.3.1",
 ]
 
+
 [project.optional-dependencies]
 transformers = [
     "transformers~=4.0"
 ]
 
+trl = [
+    "trl>=0.11.0",
+]
+
 dev = [
     "transformers>=4.44.2",
-    "trl>=0.11.0",
     "matplotlib>=3.7.2",
     "flake8>=4.0.1.1",
     "black>=24.4.2",
     "isort>=5.13.2",
     "pytest>=7.1.2",
+    "pytest-xdist", 
+    "pytest-rerunfailures",
     "datasets>=2.19.2",
     "torchvision>=0.16.2",
     "seaborn",
 ]
+
+amd = [
+    "torch>=2.6.0.dev",
+    "setuptools-scm>=8",
+    "torchvision>=0.20.0.dev",
+    "triton>=3.0.0",
+]
+
+
 
 [tool.setuptools.packages.find]
 where = ["src"]

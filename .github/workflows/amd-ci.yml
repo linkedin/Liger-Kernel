@@ -1,23 +1,27 @@
-name: GitHub Actions CI (AMD)
+name: AMD GPU
 
-# on:
-#   push:
-#     branches:
-#       - main
-#     paths:
-#       - "src/**"
-#       - "test/**"
-#   pull_request:
-#     branches:
-#       - main
-#     paths:
-#       - "src/**"
-#       - "test/**"
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "test/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "test/**"
+  schedule:
+    # Runs at 00:00 UTC daily
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # Enables manual trigger
 
-# concurrency:
-#   # This causes it to cancel previous in-progress actions on the same PR / branch,
-#   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-#   cancel-in-progress: true
+concurrency:
+  # This causes it to cancel previous in-progress actions on the same PR / branch,
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   checkstyle:
@@ -36,12 +40,11 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install flake8 isort black
-
     - name: Run checkstyle
       run: make checkstyle
 
   tests:
-    runs-on: ubuntu-latest
+    runs-on: linux-mi300-gpu-1
     needs: [checkstyle]
 
     steps:
@@ -53,12 +56,14 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Install dependencies
+    - name: Setup Dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
-
-    - name: Run tests
+        python -m pip install -e .[dev,amd] --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
+    
+    - name: List Python Environments
+      run: python -m pip list
+    
+    - name: Run Unit Tests
       run: |
         make test
         make test-convergence

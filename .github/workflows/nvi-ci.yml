@@ -1,4 +1,4 @@
-name: Modal GPU CI
+name: NVIDIA GPU
 
 on:
   push:

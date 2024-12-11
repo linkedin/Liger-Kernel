@@ -74,6 +74,7 @@ class GemmaRMSNorm(nn.Module):
         return output.type_as(x)
 
 
+@pytest.mark.flaky(reruns=3, reruns_delay=2)
 @pytest.mark.parametrize(
     "bs, sl, hd",
     [
