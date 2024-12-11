@@ -12,7 +12,6 @@ def test_import_from_root():
             LigerPhi3SwiGLUMLP,
             LigerRMSNorm,
             LigerSwiGLUMLP,
-            liger_rotary_paper_pos_emb,
             liger_rotary_pos_emb,
         )
     except Exception:
