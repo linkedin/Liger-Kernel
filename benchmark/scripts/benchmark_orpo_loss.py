@@ -20,28 +20,6 @@ device = infer_device()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
-class TorchLMHeadORPO(torch.nn.Module):
-    """Ground truth implementation of the linear fused with torch based cross entropy loss.
-
-    :param H: hidden size
-    :param V: vocab size
-    :param ignore_index: index to ignore
-    :param reduction: reduction method
-    """
-
-    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
-        from test.chunked_loss.test_orpo_loss import HF_ORPO_Loss
-
-        super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype
-        )
-        self.orpo_loss = HF_ORPO_Loss().get_batch_loss_metrics
-
-    def forward(self, x, y):
-        return self.orpo_loss(x, self.lin.weight, y)
-
-
 class LigerLMHeadORPO(torch.nn.Module):
     def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
         super().__init__()
@@ -62,6 +40,8 @@ class LigerLMHeadORPO(torch.nn.Module):
 def bench_memory_fused_linear_orpo_loss(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
+    from test.chunked_loss.test_orpo_loss import TorchLMHeadORPO
+
     B = input.x
     T = input.extra_benchmark_config["T"]
     H = input.extra_benchmark_config["H"]
@@ -82,8 +62,9 @@ def bench_memory_fused_linear_orpo_loss(
             return torch_lm_head_orpo(_input, target)
 
     def full():
-        y = fwd()
-        y.backward()
+        losses = fwd()
+        loss = losses[0]
+        loss.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(
@@ -101,6 +82,8 @@ def bench_memory_fused_linear_orpo_loss(
 def bench_speed_fused_linear_orpo_loss(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
+    from test.chunked_loss.test_orpo_loss import TorchLMHeadORPO
+
     B = input.x
     T = input.extra_benchmark_config["T"]
     H = input.extra_benchmark_config["H"]
@@ -128,10 +111,10 @@ def bench_speed_fused_linear_orpo_loss(
             quantiles=QUANTILES,
         )
     elif mode == "backward":
-        y = fwd()
+        losses = fwd()
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(retain_graph=True),
+            lambda: losses[0].backward(retain_graph=True),
             grad_to_none=[_input],
             rep=100,
             quantiles=QUANTILES,
@@ -139,8 +122,9 @@ def bench_speed_fused_linear_orpo_loss(
     elif mode == "full":
 
         def full():
-            y = fwd()
-            y.backward()
+            losses = fwd()
+            loss = losses[0]
+            loss.backward()
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             full,
