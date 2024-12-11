@@ -9,21 +9,17 @@ description = "Efficient Triton kernels for LLM Training"
 urls = { "Homepage" = "https://github.com/linkedin/Liger-Kernel" }
 readme = { file = "README.md", content-type = "text/markdown" }
 license = { file = "LICENSE" }
-dynamic = ["dependencies"]
 
-[tool.setuptools.dynamic]
-dependencies = {attr = "setup.get_default_dependencies"}
-optional-dependencies = {attr = "setup.get_optional_dependencies"}
+[tool.setuptools]
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["liger_kernel", "liger_kernel.*"]
+include = ["liger_kernel*"]
+namespaces = false
 
 [tool.pytest.ini_options]
-pythonpath = [
-  "src",
-  "."
-]
+pythonpath = ["src", "."]
 asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"

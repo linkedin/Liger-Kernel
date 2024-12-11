@@ -2,7 +2,7 @@
 
 import subprocess
 from typing import Literal
-
+from setuptools import setup
 
 def get_default_dependencies():
     """Determine the appropriate dependencies based on detected hardware."""
@@ -69,3 +69,11 @@ def _get_platform() -> Literal["cuda", "rocm", "cpu"]:
             return "rocm"
         except (subprocess.SubprocessError, FileNotFoundError):
             return "cpu"
+
+setup(
+    name="liger_kernel",
+    package_dir={"": "src"},
+    packages=["liger_kernel"],
+    install_requires=get_default_dependencies(),
+    extras_require=get_optional_dependencies(),
+)
