@@ -13,7 +13,6 @@ from liger_kernel.ops.layer_norm import LigerLayerNormFunction
 from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.rope import LigerRopeFunction
-from liger_kernel.ops.rope_paper import LigerRopePaperFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 
 
