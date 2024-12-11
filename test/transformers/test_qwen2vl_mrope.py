@@ -73,7 +73,9 @@ def test_correctness(
     k2 = _tensor_k.clone().requires_grad_(True)
 
     # NOTE: this position ids distribution is different from the real one, just to test op correctness
-    pos_ids = torch.arange(seq_len * 3, device=device, dtype=torch.long).view(3, 1, -1)
+    pos_ids = torch.arange(seq_len * 3 * bsz, device=device, dtype=torch.long).view(
+        3, bsz, seq_len
+    )
     cos, sin = rotary_emb(k1, pos_ids)
 
     # validate forward pass
@@ -130,7 +132,9 @@ def test_functional_correctness(
 
     rotary_emb = Qwen2VLRotaryEmbedding(head_dim, device=device)
 
-    pos_ids = torch.arange(seq_len * 3, device=device, dtype=torch.long).view(3, 1, -1)
+    pos_ids = torch.arange(seq_len * 3 * bsz, device=device, dtype=torch.long).view(
+        3, bsz, seq_len
+    )
     cos, sin = rotary_emb(k1, pos_ids)
 
     functional_q, functional_k = liger_qwen2vl_mrope(q1, k1, cos, sin, mrope_section)

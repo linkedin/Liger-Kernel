@@ -16,7 +16,9 @@ from test.utils import (
 
 import pytest
 import torch
+import transformers
 from datasets import load_dataset
+from packaging import version
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
 
@@ -378,8 +380,9 @@ def run_mini_model_multimodal(
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(
-                not QWEN2_VL_AVAILABLE,
-                reason="Qwen2-VL not available in this version of transformers",
+                not QWEN2_VL_AVAILABLE
+                or version.parse(transformers.__version__) >= version.parse("4.47.0"),
+                reason="Qwen2-VL not available in this version of transformers or transformers version >= 4.47.0",
             ),
         ),
         pytest.param(
@@ -398,8 +401,10 @@ def run_mini_model_multimodal(
                     not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
                 ),
                 pytest.mark.skipif(
-                    not QWEN2_VL_AVAILABLE,
-                    reason="Qwen2-VL not available in this version of transformers",
+                    not QWEN2_VL_AVAILABLE
+                    or version.parse(transformers.__version__)
+                    >= version.parse("4.47.0"),
+                    reason="Qwen2-VL not available in this version of transformers or transformers version >= 4.47.0",
                 ),
             ],
         ),

@@ -76,9 +76,7 @@ class LigerORPOTrainer(ORPOTrainer):
             padding_value=self.padding_value,
             device=self.accelerator.device,
         )
-        # if self.accelerator.is_main_process:
-        #     import pdb; pdb.set_trace()
-        # torch.distributed.barrier()
+
         model_kwargs = (
             {
                 "decoder_input_ids": self._shift_right(
