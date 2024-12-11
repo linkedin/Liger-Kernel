@@ -18,9 +18,7 @@ from test.utils import (
 
 import pytest
 import torch
-import transformers
 from datasets import load_from_disk
-from packaging import version
 from torch.utils.data import DataLoader
 from transformers.models.gemma import GemmaConfig, GemmaForCausalLM
 from transformers.models.gemma2 import Gemma2Config, Gemma2ForCausalLM

@@ -16,9 +16,7 @@ from test.utils import (
 
 import pytest
 import torch
-import transformers
 from datasets import load_dataset
-from packaging import version
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
 
