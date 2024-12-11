@@ -166,10 +166,12 @@ def liger_rms_norm(
     return LigerRMSNormFunction.apply(X, W, eps, offset, casting_mode, in_place)
 
 
-def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
-    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
-
-
+def liger_rope(
+    q, k, cos, sin, position_ids=None, unsqueeze_dim=1, paper_form: bool = False
+):
+    return LigerRopeFunction.apply(
+        q, k, cos, sin, position_ids, unsqueeze_dim, paper_form
+    )
 def liger_rope_paper(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     return LigerRopePaperFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
 

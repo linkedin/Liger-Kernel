@@ -1,7 +1,9 @@
 from liger_kernel.ops.rope import LigerRopeFunction
 
 
-def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+def liger_rotary_pos_emb(
+    q, k, cos, sin, position_ids=None, unsqueeze_dim=1, paper_form: bool = False
+):
     """
     Applies Rotary Positional Embedding (RoPE) operation to query and key states.
 
@@ -12,9 +14,12 @@ def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
         sin (torch.Tensor): The sine tensor of shape (1, seq_len, head_dim).
         position_ids (torch.Tensor, optional): The position ids tensor. Defaults to None.
         unsqueeze_dim (int, optional): The dimension to unsqueeze. Defaults to 1.
+        paper_form (bool, optional): Whether to use the paper-form RoPE rotary matrix. Defaults to false.
 
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: The query and key tensors after applying the RoPE operation.
     """
 
-    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+    return LigerRopeFunction.apply(
+        q, k, cos, sin, position_ids, unsqueeze_dim, paper_form
+    )
