@@ -11,11 +11,25 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
     @staticmethod
     def preference_loss_fn(chosen_logps, rejected_logps, full_target, beta=0.1):
         """
-        Compute odds-ratio loss.
+        Paper: https://arxiv.org/pdf/2401.08417
+
+        Formula:
+        L(π_θ; U) = -E_(x,y_w,y_l)~D[log σ(β log π_θ(y_w|x) - β log π_θ(y_l|x))]
+
+        Where:
+        - π_θ(y|x): Policy (model) probability
+        - y_w: Chosen sequence
+        - y_l: Rejected sequence
+        - σ: Sigmoid function
+        - β: Temperature parameter
+        - E: Expected value over the dataset D
+        - D: Dataset of preferences
+
         Args:
             chosen_logps (torch.Tensor): Avg log probabilities of chosen tokens. Shape: (batch_size,).
             rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
-            beta (float): Weight for the odds ratio loss.
+            full_target (torch.Tensor): Non chunked full target tensor
+            beta (float): Weight for the CPO loss
         """
         logits = beta * (chosen_logps - rejected_logps)
         loss = F.logsigmoid(logits).sum() / (full_target.shape[0] // 2)
@@ -34,12 +48,6 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=True,
         compiled=True,
     ):
-        """
-        Fused linear layer with CPO (Odds-Ratio Preference Optimization) loss.
-        Handles both the forward and backward pass of the final linear layer with CPO loss.
-        Inspired from LigerFusedLinearCrossEntropyFunction (https://arxiv.org/abs/2410.10989) which fuses final linear layer and CE loss.
-        """
-
         return LigerFusedLinearPreferenceBase.forward(
             ctx,
             _input,
@@ -56,9 +64,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
     def backward(ctx, *grad_output):
-        # Get gradients for _input, weight, bias, and target from the base class
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        # Return these gradients, followed by None for the remaining inputs
         return *grads, None, None, None, None, None
 
 
