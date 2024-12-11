@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from typing import Optional
 
 from liger_kernel.chunked_loss.fused_linear_preference import (
     LigerFusedLinearPreferenceBase,
@@ -66,6 +67,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=True,
         compiled=True,
         use_ref_model=True,
+        softcap=None
     ):
         return LigerFusedLinearPreferenceBase.forward(
             ctx=ctx,
@@ -81,6 +83,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             use_ref_model=use_ref_model,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
+            softcap=softcap,
         )
 
     @staticmethod
@@ -101,6 +104,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         compute_nll_loss: bool = True,
         compiled: bool = True,
         use_ref_model: bool = False,
+        softcap: Optional[float] = None
     ):
         """
         Args:
@@ -109,6 +113,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             compute_nll_loss (bool): Whether to compute the NLL loss.
             compiled (bool): Whether to use the torch compiled kernel.
             use_ref_model (bool): Whether to use a reference model for the DPO loss.
+            softcap (Optional[float]): The upper threshold for scaling logits to the range (-softcap, +softcap).
         """
         super().__init__()
         self.ignore_index = ignore_index
@@ -116,6 +121,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
         self.use_ref_model = use_ref_model
+        self.softcap = softcap
 
     def forward(
         self, lin_weight, _input, target, bias=None, ref_weight=None, ref_bias=None
@@ -132,4 +138,5 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             self.compute_nll_loss,
             self.compiled,
             self.use_ref_model,
+            self.softcap,
         )

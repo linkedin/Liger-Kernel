@@ -32,6 +32,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         # TODO: ref input
         ref_weight=None,
         ref_bias=None,
+        softcap=None,
         **loss_kwargs,
     ):
         """
@@ -61,6 +62,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             use_ref_model (bool): Whether to use a reference model for the alignment loss.
             ref_weight (torch.Tensor): Reference weight tensor. Shape: (vocab_size, hidden_size).
             ref_bias (torch.Tensor, optional): Reference bias tensor. Shape: (vocab_size,).
+            softcap (Optional[float]): The upper threshold for scaling logits to the range (-softcap, +softcap).
             loss_kwargs (dict): Other possible arguments that a loss function might need
         """
         # TODO: Tune CHUNK_SIZE to fully utilize the GPU
@@ -250,11 +252,16 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         bias=None,
         ignore_index=-100,
         compute_nll_loss=True,
+        softcap=None,
     ):
         len_chosen_chunk = target_chunk.shape[0] // 2
         logits_chunk = input_chunk @ weight.t()
         if bias is not None:
             logits_chunk = logits_chunk + bias
+        if softcap is not None:
+            logits_chunk = logits_chunk / softcap
+            logits_chunk = torch.tanh(logits_chunk)
+            logits_chunk = logits_chunk * softcap
         log_probs_chunk = F.log_softmax(logits_chunk.float(), dim=-1)
 
         chosen_nll_loss = 0.0
@@ -303,6 +310,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         use_ref_model=False,
         ref_weight=None,
         ref_bias=None,
+        softcap=None,
         **loss_kwargs,
     ):
         """
@@ -321,6 +329,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             use_ref_model (bool): Whether to use a reference model for the alignment loss.
             ref_weight (torch.Tensor): Reference weight tensor. Shape: (vocab_size, hidden_size).
             ref_bias (torch.Tensor, optional): Reference bias tensor. Shape: (vocab_size,).
+            softcap (Optional[float]): The upper threshold for scaling logits to the range (-softcap, +softcap).
             loss_kwargs (dict): Additional arguments for the loss function.
         """
         (
@@ -336,6 +345,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             bias=bias,
             ignore_index=ignore_index,
             compute_nll_loss=compute_nll_loss,
+            softcap=softcap
         )
         chosen_nll_loss = (
             chosen_nll_loss
@@ -363,6 +373,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                     ref_bias,
                     ignore_index=ignore_index,
                     compute_nll_loss=False,  # We don't need NLL loss for the reference model
+                    softcap=softcap
                 )
             loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
             loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
