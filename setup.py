@@ -36,7 +36,8 @@ def get_optional_dependencies():
             "pytest-rerunfailures",
             "datasets>=2.19.2",
             "seaborn",
-        ]
+        ],
+        "fmt": ["flake8", "isort", "black"],
     }
 
 
