@@ -110,25 +110,6 @@ With one line of code, Liger Kernel can increase throughput by more than 20% and
 
 ## Installation
 
-### Dependencies
-
-#### CUDA
-
-- `torch >= 2.1.2`
-- `triton >= 2.3.0`
-
-#### ROCm
-
-- `torch >= 2.5.0` Install according to the instruction in Pytorch official webpage.
-- `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
-
-### Optional Dependencies
-
-- `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
-
-> **Note:**
-> Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
-
 To install the stable version:
 
 ```bash
@@ -146,11 +127,16 @@ To install from source:
 ```bash
 git clone https://github.com/linkedin/Liger-Kernel.git
 cd Liger-Kernel
+
+# Install Default Dependencies
 pip install -e .
-# or if installing on amd platform
-pip install -e .[amd] --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2 # rocm6.2
-# or if using transformers
-pip install -e .[transformers]
+
+# Setup Development Dependencies
+# Setup.py will detect whether you are using AMD or NVIDIA
+pip install -e .[dev]
+
+# If using transformers
+pip install -e .[dev,transformers]
 ```
 
 
