@@ -18,8 +18,6 @@ def get_default_dependencies():
     elif platform == "rocm":
         return [
             "torch>=2.6.0.dev",
-            "setuptools-scm>=8",
-            "torchvision>=0.20.0.dev",
             "triton>=3.0.0",
         ]
 
@@ -29,7 +27,6 @@ def get_optional_dependencies():
     return {
         "dev": [
             "transformers>=4.44.2",
-            "trl>=0.11.0",
             "matplotlib>=3.7.2",
             "flake8>=4.0.1.1",
             "black>=24.4.2",
@@ -38,12 +35,12 @@ def get_optional_dependencies():
             "pytest-xdist",
             "pytest-rerunfailures",
             "datasets>=2.19.2",
-            "torchvision>=0.16.2",
             "seaborn",
         ]
     }
 
 
+# TODO: add intel XPU
 def get_platform() -> Literal["cuda", "rocm", "cpu"]:
     """
     Detect whether the system has NVIDIA or AMD GPU without torch dependency.
