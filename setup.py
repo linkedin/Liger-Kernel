@@ -6,7 +6,7 @@ from setuptools import setup
 
 def get_default_dependencies():
     """Determine the appropriate dependencies based on detected hardware."""
-    platform = _get_platform()
+    platform = get_platform()
 
     if platform in ["cuda", "cpu"]:
         return [
@@ -24,7 +24,7 @@ def get_default_dependencies():
 
 def get_optional_dependencies():
     """Get optional dependency groups."""
-    platform = _get_platform()
+    platform = get_platform()
 
     if platform in ["cuda", "cpu"]:
         return {
@@ -42,7 +42,13 @@ def get_optional_dependencies():
                 "torchvision>=0.16.2",
                 "seaborn",
             ],
+<<<<<<< HEAD
             "transformers": ["transformers>=4.44.2"],
+=======
+            "transformers": [
+                "transformers~=4.0"
+            ]
+>>>>>>> 41b97fa (Update project.toml)
         }
     elif platform == "rocm":
         return {
@@ -54,21 +60,25 @@ def get_optional_dependencies():
         }
 
 
-def _get_platform() -> Literal["cuda", "rocm", "cpu"]:
+def get_platform() -> Literal["cuda", "rocm", "cpu"]:
     """
     Detect whether the system has NVIDIA or AMD GPU without torch dependency.
     """
     # Try nvidia-smi first
     try:
-        subprocess.run(["nvidia-smi"], check=True, capture_output=True)
+        subprocess.run(["nvidia-smi"], check=True)
+        print("NVIDIA GPU detected")
         return "cuda"
     except (subprocess.SubprocessError, FileNotFoundError):
         # If nvidia-smi fails, check for ROCm
         try:
-            subprocess.run(["rocm-smi"], check=True, capture_output=True)
+            subprocess.run(["rocm-smi"], check=True)
+            print("ROCm GPU detected")
             return "rocm"
         except (subprocess.SubprocessError, FileNotFoundError):
+            print("No GPU detected")
             return "cpu"
+
 
 setup(
     name="liger_kernel",
