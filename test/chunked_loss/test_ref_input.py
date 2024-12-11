@@ -3,13 +3,16 @@ from test.utils import assert_verbose_allclose, set_seed
 import pytest
 import torch
 
-from liger_kernel.chunked_loss.fused_linear_preference import LigerFusedLinearPreferenceBase
+from liger_kernel.chunked_loss.fused_linear_preference import (
+    LigerFusedLinearPreferenceBase,
+)
 from liger_kernel.utils import infer_device
 
 device = infer_device()
 
 # set random seed globally
 set_seed()
+
 
 @pytest.mark.parametrize(
     "B, T, H, V",
@@ -36,9 +39,11 @@ def test_ref_input(
 
     # Create input tensors
     input_chunk = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
-    ref_input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar  # Different input for reference model
+    ref_input = (
+        torch.randn(B, T, H, device=device, dtype=dtype) * scalar
+    )  # Different input for reference model
     target_chunk = torch.randint(0, V, (B, T), device=device, dtype=torch.long)
-    
+
     # Assign some random elements as ignore_index
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
@@ -51,9 +56,18 @@ def test_ref_input(
     _ref_bias = torch.randn(V, device=device, dtype=dtype) if ref_bias else None
 
     # Mock loss function that returns the difference between policy and reference logits
-    def mock_loss_fn(chosen_logps, rejected_logps, full_target, beta=0.1, ref_chosen_logps=None, ref_rejected_logps=None):
+    def mock_loss_fn(
+        chosen_logps,
+        rejected_logps,
+        full_target,
+        beta=0.1,
+        ref_chosen_logps=None,
+        ref_rejected_logps=None,
+    ):
         # Return the mean difference between policy and reference logits
-        diff = (chosen_logps - ref_chosen_logps).mean() + (rejected_logps - ref_rejected_logps).mean()
+        diff = (chosen_logps - ref_chosen_logps).mean() + (
+            rejected_logps - ref_rejected_logps
+        ).mean()
         return diff, (diff,)  # Return an aux output to test that too
 
     # Forward pass without ref_input (using input_chunk for reference model)
