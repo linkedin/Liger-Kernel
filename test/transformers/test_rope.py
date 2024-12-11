@@ -6,11 +6,18 @@ from transformers.models.llama.modeling_llama import (
     LlamaRotaryEmbedding,
     apply_rotary_pos_emb,
 )
+from transformers.models.roformer.modeling_roformer import (
+    RoFormerSelfAttention,
+    RoFormerSinusoidalPositionalEmbedding,
+)
 
 from liger_kernel.ops.rope import LigerRopeFunction
 from liger_kernel.transformers.functional import liger_rope
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.utils import infer_device
+
+apply_paper_rotary_pos_emb = RoFormerSelfAttention.apply_rotary_position_embeddings
+
 
 device = infer_device()
 
@@ -46,10 +53,16 @@ SLEEP_SECONDS = 0.1
         ),
     ],
 )
+@pytest.mark.parametrize(
+    "paper_form",
+    [
+        False,
+        True,
+    ],
+)
 def test_correctness(
-    bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, atol, rtol
+    bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, atol, rtol, paper_form
 ):
-    rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
 
     _tensor_q = (
         torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device)
@@ -69,12 +82,25 @@ def test_correctness(
     q2 = _tensor_q.clone().requires_grad_(True)
     k2 = _tensor_k.clone().requires_grad_(True)
 
-    pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
-    cos, sin = rotary_emb(k1, pos_ids)
-
     # validate forward pass
-    hf_q, hf_k = apply_rotary_pos_emb(q1, k1, cos, sin, pos_ids)
-    tt_q, tt_k = liger_rotary_pos_emb(q2, k2, cos, sin)
+    if not paper_form:
+        rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
+
+        pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
+        cos, sin = rotary_emb(k1, pos_ids)
+
+        hf_q, hf_k = apply_rotary_pos_emb(q1, k1, cos, sin, pos_ids)
+    else:
+        rotary_emb = RoFormerSinusoidalPositionalEmbedding(
+            num_positions=seq_len, embedding_dim=head_dim
+        ).to(device)
+
+        sinusoidal_pos = rotary_emb((bsz, seq_len)).unsqueeze(0).to(dtype)
+
+        sin, cos = sinusoidal_pos.chunk(2, dim=-1)
+        hf_q, hf_k = apply_paper_rotary_pos_emb(sinusoidal_pos.unsqueeze(0), q1, k1)
+
+    tt_q, tt_k = liger_rotary_pos_emb(q2, k2, cos, sin, paper_form=paper_form)
     assert torch.allclose(hf_q, tt_q, atol=atol, rtol=rtol)
     assert torch.allclose(hf_k, tt_k, atol=atol, rtol=rtol)
 
@@ -111,8 +137,15 @@ def test_correctness(
         (torch.bfloat16, 1e-1, 1e-5),
     ],
 )
+@pytest.mark.parametrize(
+    "paper_form",
+    [
+        False,
+        True,
+    ],
+)
 def test_functional_correctness(
-    bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, atol, rtol
+    bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, atol, rtol, paper_form
 ):
     _q = torch.randn((bsz, num_q_heads, seq_len, head_dim), device=device, dtype=dtype)
     _k = torch.randn((bsz, num_kv_heads, seq_len, head_dim), device=device, dtype=dtype)
@@ -123,13 +156,27 @@ def test_functional_correctness(
     k1 = _k.clone().requires_grad_(True)
     k2 = _k.clone().requires_grad_(True)
 
-    rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
+    if not paper_form:
+        rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
 
-    pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
-    cos, sin = rotary_emb(k1, pos_ids)
+        pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
+        cos, sin = rotary_emb(k1, pos_ids)
+    else:
+        rotary_emb = RoFormerSinusoidalPositionalEmbedding(
+            num_positions=seq_len, embedding_dim=head_dim
+        ).to(device)
+        sinusoidal_pos = rotary_emb((bsz, seq_len)).unsqueeze(0).to(dtype)
 
-    functional_q, functional_k = liger_rope(q=q1, k=k1, cos=cos, sin=sin)
-    class_q, class_k = LigerRopeFunction.apply(q2, k2, cos, sin)
+        sin, cos = sinusoidal_pos.chunk(2, dim=-1)
+
+    functional_q, functional_k = liger_rope(
+        q=q1,
+        k=k1,
+        cos=cos,
+        sin=sin,
+        paper_form=paper_form,
+    )
+    class_q, class_k = LigerRopeFunction.apply(q2, k2, cos, sin, None, 1, paper_form)
 
     assert torch.allclose(functional_q, class_q, atol=atol, rtol=rtol)
     assert torch.allclose(functional_k, class_k, atol=atol, rtol=rtol)
