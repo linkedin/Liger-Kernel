@@ -77,7 +77,13 @@ class TorchLMHeadDPO(torch.nn.Module):
 
     def forward(self, x, ref_x, y):
         return self.dpo_loss(
-            self.lin.weight, x, y, self.lin.bias, ref_x, self.ref_lin.weight, self.ref_lin.bias
+            self.lin.weight,
+            x,
+            y,
+            self.lin.bias,
+            ref_x,
+            self.ref_lin.weight,
+            self.ref_lin.bias,
         )
 
 
@@ -105,7 +111,13 @@ class LigerLMHeadDPO(torch.nn.Module):
 
     def forward(self, x, ref_x, y):
         return self.dpo_loss(
-            self.lin.weight, x, y, self.lin.bias, ref_x, self.ref_lin.weight, self.ref_lin.bias
+            self.lin.weight,
+            x,
+            y,
+            self.lin.bias,
+            ref_x,
+            self.ref_lin.weight,
+            self.ref_lin.bias,
         )
 
 
@@ -170,7 +182,9 @@ def test_correctness(
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
-    ref_input = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
+    ref_input = (
+        torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
+    )
 
     target = torch.randint(
         0,
@@ -244,7 +258,9 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
-    ref_input = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
+    ref_input = (
+        torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
+    )
 
     target = torch.randint(
         0,

@@ -120,7 +120,14 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         self.use_ref_model = use_ref_model
 
     def forward(
-        self, lin_weight, _input, target, bias=None, ref_input=None, ref_weight=None, ref_bias=None
+        self,
+        lin_weight,
+        _input,
+        target,
+        bias=None,
+        ref_input=None,
+        ref_weight=None,
+        ref_bias=None,
     ):
         return LigerFusedLinearDPOFunction.apply(
             _input,
