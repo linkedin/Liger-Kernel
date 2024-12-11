@@ -2,7 +2,9 @@
 
 import subprocess
 from typing import Literal
+
 from setuptools import setup
+
 
 def get_default_dependencies():
     """Determine the appropriate dependencies based on detected hardware."""
@@ -24,40 +26,22 @@ def get_default_dependencies():
 
 def get_optional_dependencies():
     """Get optional dependency groups."""
-    platform = get_platform()
-
-    if platform in ["cuda", "cpu"]:
-        return {
-            "dev": [
-                "transformers>=4.44.2",
-                "trl>=0.11.0",
-                "matplotlib>=3.7.2",
-                "flake8>=4.0.1.1",
-                "black>=24.4.2",
-                "isort>=5.13.2",
-                "pytest>=7.1.2",
-                "pytest-xdist",
-                "pytest-rerunfailures",
-                "datasets>=2.19.2",
-                "torchvision>=0.16.2",
-                "seaborn",
-            ],
-<<<<<<< HEAD
-            "transformers": ["transformers>=4.44.2"],
-=======
-            "transformers": [
-                "transformers~=4.0"
-            ]
->>>>>>> 41b97fa (Update project.toml)
-        }
-    elif platform == "rocm":
-        return {
-            "dev": [
-                "setuptools-scm>=8",
-                "torchvision>=0.20.0.dev",
-            ],
-            "transformers": ["transformers>=4.44.2"],
-        }
+    return {
+        "dev": [
+            "transformers>=4.44.2",
+            "trl>=0.11.0",
+            "matplotlib>=3.7.2",
+            "flake8>=4.0.1.1",
+            "black>=24.4.2",
+            "isort>=5.13.2",
+            "pytest>=7.1.2",
+            "pytest-xdist",
+            "pytest-rerunfailures",
+            "datasets>=2.19.2",
+            "torchvision>=0.16.2",
+            "seaborn",
+        ]
+    }
 
 
 def get_platform() -> Literal["cuda", "rocm", "cpu"]:
