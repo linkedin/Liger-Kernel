@@ -1,5 +1,5 @@
 from test.utils import HFAlignmentLoss, assert_verbose_allclose, set_seed
-from typing import Tuple
+from typing import Tuple, Optional
 
 import pytest
 import torch
@@ -88,6 +88,7 @@ class TorchLMHeadCPO(torch.nn.Module):
         alpha: float = 1.0,
         loss_type: str = "sigmoid",
         simpo_gamma: float = 0.5,
+        softcap: Optional[float] = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
@@ -99,8 +100,12 @@ class TorchLMHeadCPO(torch.nn.Module):
             loss_type=loss_type,
             simpo_gamma=simpo_gamma,
         ).get_batch_loss_metrics
+        self.softcap = softcap
 
     def forward(self, x, y):
+        logits = self.lin(x).to(torch.float32)
+        if self.softcap is not None and self.softcap != 0.0:
+            logits = self.softcap * torch.tanh(logits / self.softcap)
         return self.cpo_loss(self.lin.weight, x, y, self.lin.bias)
 
 
@@ -114,13 +119,14 @@ class LigerLMHeadCPO(torch.nn.Module):
         ignore_index: int = -100,
         beta: float = 0.1,
         alpha: float = 1.0,
+        softcap: Optional[float] = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
         self.cpo_loss = LigerFusedLinearCPOLoss(
-            ignore_index=ignore_index, beta=beta, alpha=alpha
+            ignore_index=ignore_index, beta=beta, alpha=alpha, softcap=softcap
         )
 
     def forward(self, x, y):
@@ -135,10 +141,12 @@ class LigerLMHeadCPO(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize(
-    "scalar, dtype, atol, rtol",
+    "scalar, dtype, atol, rtol, softcap",
     [
-        (1.0, torch.bfloat16, 5e-3, 5e-3),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        (1.0, torch.bfloat16, 5e-3, 5e-3, None),
+        (1.0, torch.float32, 1e-5, 5e-4, None),
+        (1.0, torch.bfloat16, 5e-3, 5e-3, 30),
+        (1.0, torch.float32, 5e-3, 5e-3, 30),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
@@ -146,7 +154,7 @@ class LigerLMHeadCPO(torch.nn.Module):
     "ignore_index, beta, alpha", [(-100, 0.1, 1.0), (42, 0.2, 0.85)]
 )
 def test_correctness(
-    B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta, alpha
+    B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta, alpha, softcap
 ):
     B = 2 * B  # cpo loss requires B to be even
 
@@ -157,6 +165,7 @@ def test_correctness(
         bias=bias,
         ignore_index=ignore_index,
         beta=beta,
+        softcap=softcap,
     )
     liger_lm_head_cpo = LigerLMHeadCPO(
         H=H,
@@ -165,6 +174,7 @@ def test_correctness(
         bias=bias,
         ignore_index=ignore_index,
         beta=beta,
+        softcap=softcap,
     )
 
     torch_lm_head_cpo.lin.weight.data = liger_lm_head_cpo.lin.weight.data = torch.randn(
