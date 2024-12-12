@@ -7,7 +7,7 @@ def print_env_report():
     """
 
     Prints a report of the environment. Useful for debugging and reproducibility.
-    Usage:
+    Usage: 
     ```
     python -m liger_kernel.env_report
     ```
