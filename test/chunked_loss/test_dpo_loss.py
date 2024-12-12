@@ -75,9 +75,15 @@ class TorchLMHeadDPO(torch.nn.Module):
             ignore_index=ignore_index, beta=beta, use_ref_model=True
         ).get_batch_loss_metrics
 
-    def forward(self, x, y):
+    def forward(self, x, ref_x, y):
         return self.dpo_loss(
-            self.lin.weight, x, y, self.lin.bias, self.ref_lin.weight, self.ref_lin.bias
+            self.lin.weight,
+            x,
+            y,
+            self.lin.bias,
+            ref_x,
+            self.ref_lin.weight,
+            self.ref_lin.bias,
         )
 
 
@@ -103,9 +109,15 @@ class LigerLMHeadDPO(torch.nn.Module):
             ignore_index=ignore_index, beta=beta, use_ref_model=True
         )
 
-    def forward(self, x, y):
+    def forward(self, x, ref_x, y):
         return self.dpo_loss(
-            self.lin.weight, x, y, self.lin.bias, self.ref_lin.weight, self.ref_lin.bias
+            self.lin.weight,
+            x,
+            y,
+            self.lin.bias,
+            ref_x,
+            self.ref_lin.weight,
+            self.ref_lin.bias,
         )
 
 
@@ -170,6 +182,10 @@ def test_correctness(
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
+    ref_input = (
+        torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
+    )
+
     target = torch.randint(
         0,
         V,
@@ -185,8 +201,8 @@ def test_correctness(
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    loss1, aggregated_aux_outputs1 = torch_lm_head_dpo(input1, target)
-    loss2, aggregated_aux_outputs2 = liger_lm_head_dpo(input2, target)
+    loss1, aggregated_aux_outputs1 = torch_lm_head_dpo(input1, ref_input, target)
+    loss2, aggregated_aux_outputs2 = liger_lm_head_dpo(input2, ref_input, target)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
@@ -242,6 +258,10 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
+    ref_input = (
+        torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
+    )
+
     target = torch.randint(
         0,
         V,
@@ -270,10 +290,10 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     ref_bias2 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
 
     loss1, aggregated_aux_outputs1 = LigerFusedLinearDPOFunction.apply(
-        input1, weight1, target, bias1, ref_weight1, ref_bias1
+        input1, weight1, target, bias1, ref_input, ref_weight1, ref_bias1
     )
     loss2, aggregated_aux_outputs2 = liger_fused_linear_dpo(
-        input2, weight2, target, bias2, ref_weight2, ref_bias2
+        input2, weight2, target, bias2, ref_input, ref_weight2, ref_bias2
     )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)

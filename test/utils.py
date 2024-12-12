@@ -478,6 +478,7 @@ class HFAlignmentLoss:
         _input: torch.FloatTensor,
         target: torch.LongTensor,
         bias: torch.FloatTensor = None,
+        ref_input: torch.FloatTensor = None,
         ref_weight: torch.FloatTensor = None,
         ref_bias: torch.FloatTensor = None,
         average_log_prob: bool = True,
@@ -498,7 +499,7 @@ class HFAlignmentLoss:
         loss_kwargs = {}
         if self.use_ref_model:
             ref_chosen_logps, ref_rejected_logps = self.get_ref_logps(
-                _input, ref_weight, target, ref_bias, average_log_prob
+                ref_input, ref_weight, target, ref_bias, average_log_prob
             )
             loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
             loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
