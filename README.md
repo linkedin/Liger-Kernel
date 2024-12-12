@@ -92,9 +92,9 @@ With one line of code, Liger Kernel can increase throughput by more than 20% and
 
 ## Optimize post training with Liger Kernel
 
-<div style="display: flex; justify-content: center;">
+<p align="center">
     <img src="https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/post-training.png" width="50%" alt="Post Training">
-</div>
+</p>
 
 We provide optimized post training kernels like DPO, ORPO, SimPO, and more which can reduce memory usage by up to 80%. You can easily use them as python modules.
 
