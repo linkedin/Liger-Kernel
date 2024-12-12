@@ -90,7 +90,7 @@ With one line of code, Liger Kernel can increase throughput by more than 20% and
 > - Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = `bf16`, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
 > - Hugging Face models start to OOM at a 4K context length, whereas Hugging Face + Liger Kernel scales up to 16K.
 
-## Optimize post training with Liger Kernel
+## Optimize Post Training with Liger Kernel
 
 <p align="center">
     <img src="https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/post-training.png" width="50%" alt="Post Training">
