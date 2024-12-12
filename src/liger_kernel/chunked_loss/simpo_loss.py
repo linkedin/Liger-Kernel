@@ -1,6 +1,7 @@
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
-from typing import Optional
 
 from liger_kernel.chunked_loss.fused_linear_preference import (
     LigerFusedLinearPreferenceBase,
@@ -67,7 +68,7 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
             beta=beta,
             compiled=compiled,
             gamma=gamma,
-            softcap=softcap
+            softcap=softcap,
         )
 
     @staticmethod
@@ -89,7 +90,7 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
         compute_nll_loss: bool = True,
         compiled: bool = True,
         gamma: float = 0.5,
-        softcap: Optional[float] = None
+        softcap: Optional[float] = None,
     ):
         """
         Args:

@@ -1,6 +1,7 @@
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
-from typing import Optional
 
 from liger_kernel.chunked_loss.fused_linear_preference import (
     LigerFusedLinearPreferenceBase,
@@ -67,7 +68,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=True,
         compiled=True,
         use_ref_model=True,
-        softcap=None
+        softcap=None,
     ):
         return LigerFusedLinearPreferenceBase.forward(
             ctx=ctx,
@@ -104,7 +105,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         compute_nll_loss: bool = True,
         compiled: bool = True,
         use_ref_model: bool = False,
-        softcap: Optional[float] = None
+        softcap: Optional[float] = None,
     ):
         """
         Args:

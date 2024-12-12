@@ -345,7 +345,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             bias=bias,
             ignore_index=ignore_index,
             compute_nll_loss=compute_nll_loss,
-            softcap=softcap
+            softcap=softcap,
         )
         chosen_nll_loss = (
             chosen_nll_loss
@@ -373,7 +373,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                     ref_bias,
                     ignore_index=ignore_index,
                     compute_nll_loss=False,  # We don't need NLL loss for the reference model
-                    softcap=softcap
+                    softcap=softcap,
                 )
             loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
             loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
