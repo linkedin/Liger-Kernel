@@ -90,6 +90,19 @@ With one line of code, Liger Kernel can increase throughput by more than 20% and
 > - Benchmark conditions: LLaMA 3-8B, Batch Size = 8, Data Type = `bf16`, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
 > - Hugging Face models start to OOM at a 4K context length, whereas Hugging Face + Liger Kernel scales up to 16K.
 
+## Optimize post training with Liger Kernel
+
+![Post Training](https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/post-training.png)
+
+We provide optimized post training kernels like DPO, ORPO, SimPO, and more which can reduce memory usage by up to 80%. You can easily use them as python modules.
+
+```python
+from liger_kernel.chunked_loss import LigerFusedLinearDPOLoss
+orpo_loss = LigerFusedLinearORPOLoss()
+y = orpo_loss(lm_head.weight, x, target)
+```
+
+
 ## Examples
 
 | **Use Case**                                    | **Description**                                                                                   |
