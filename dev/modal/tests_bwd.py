@@ -15,7 +15,7 @@ repo = modal.Mount.from_local_dir(ROOT_PATH, remote_path=REMOTE_ROOT_PATH)
 
 
 @app.function(gpu="A10G", mounts=[repo], timeout=60 * 15)
-def liger_tests():
+def liger_bwd_tests():
     import subprocess
 
     subprocess.run(
