@@ -61,6 +61,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         weight,
         target,
         bias=None,
+        ref_input=None,
         ref_weight=None,
         ref_bias=None,
         ignore_index=-100,
@@ -82,6 +83,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             compute_nll_loss=compute_nll_loss,
             compiled=compiled,
             use_ref_model=use_ref_model,
+            ref_input=ref_input,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
             softcap=softcap,
@@ -125,13 +127,21 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         self.softcap = softcap
 
     def forward(
-        self, lin_weight, _input, target, bias=None, ref_weight=None, ref_bias=None
+        self,
+        lin_weight,
+        _input,
+        target,
+        bias=None,
+        ref_input=None,
+        ref_weight=None,
+        ref_bias=None,
     ):
         return LigerFusedLinearDPOFunction.apply(
             _input,
             lin_weight,
             target,
             bias,
+            ref_input,
             ref_weight,
             ref_bias,
             self.ignore_index,
