@@ -146,11 +146,13 @@ To install from source:
 ```bash
 git clone https://github.com/linkedin/Liger-Kernel.git
 cd Liger-Kernel
+
+# Install Default Dependencies
+# Setup.py will detect whether you are using AMD or NVIDIA
 pip install -e .
-# or if installing on amd platform
-pip install -e .[amd] --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2 # rocm6.2
-# or if using transformers
-pip install -e .[transformers]
+
+# Setup Development Dependencies
+pip install -e ".[dev]"
 ```
 
 
