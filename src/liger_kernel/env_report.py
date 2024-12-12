@@ -6,7 +6,7 @@ from importlib.metadata import version
 def print_env_report():
     """
 
-    Prints a report of the environment. Useful for debugging and reproducibility.
+    Prints a report of the environment.  Useful for debugging and reproducibility.
     Usage:
     ```
     python -m liger_kernel.env_report
