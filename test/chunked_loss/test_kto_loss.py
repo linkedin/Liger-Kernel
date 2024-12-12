@@ -4,9 +4,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from liger_kernel.chunked_loss import LigerFusedLinearDPOLoss
-from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
-from liger_kernel.chunked_loss.functional import liger_fused_linear_dpo
+from liger_kernel.chunked_loss import LigerFusedLinearKTOLoss
+from liger_kernel.chunked_loss.functional import liger_fused_linear_kto
+from liger_kernel.chunked_loss.kto_loss import LigerFusedLinearKTOFunction
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -15,11 +15,11 @@ device = infer_device()
 set_seed()
 
 
-class HFDPOLoss(HFAlignmentLoss):
+class HFKTOLoss(HFAlignmentLoss):
     """
-    Implementation of the Direct Preference Optimization (DPO) loss,
+    Implementation of the Kahneman-Tversky Optimization (KTO) loss,
     adapted from Hugging Face's implementation.
-    Reference: https://github.com/huggingface/trl/blob/main/trl/trainer/dpo_trainer.py
+    Reference: https://github.com/huggingface/trl/blob/main/trl/trainer/kto_trainer.py
     """
 
     def __init__(
@@ -36,24 +36,29 @@ class HFDPOLoss(HFAlignmentLoss):
         ref_chosen_logps: torch.FloatTensor,
         ref_rejected_logps: torch.FloatTensor,
     ):
-        """Compute DPO loss for a batch of policy log probabilities.
+        """Compute KTO loss for a batch of policy log probabilities.
         Args:
             policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (batch_size,)
             policy_rejected_logps: Log probabilities of the policy model for the rejected responses. Shape: (batch_size,)
 
         Returns:
-            The losses tensor contains the DPO loss for each example in the batch.
+            The losses tensor contains the KTO loss for each example in the batch.
         """
-        # Derived from https://huggingface.co/papers/2305.18290
+        kl = torch.zeros(1).to(policy_chosen_logps.device)
+
         chosen_logratios = policy_chosen_logps - ref_chosen_logps
+        chosen_losses = 1 - F.sigmoid(self.beta * (chosen_logratios - kl))
+        chosen_rewards = self.beta * chosen_logratios.detach()
+
         rejected_logratios = policy_rejected_logps - ref_rejected_logps
+        rejected_losses = 1 - F.sigmoid(self.beta * (kl - rejected_logratios))
+        rejected_rewards = self.beta * rejected_logratios.detach()
 
-        logits_diff = self.beta * (chosen_logratios - rejected_logratios)
-        losses = -F.logsigmoid(logits_diff)
-        return losses
+        losses = torch.cat((chosen_losses, rejected_losses), 0)
+        return losses, chosen_rewards, rejected_rewards
 
 
-class TorchLMHeadDPO(torch.nn.Module):
+class TorchLMHeadKTO(torch.nn.Module):
     def __init__(
         self,
         H: int,
@@ -71,12 +76,12 @@ class TorchLMHeadDPO(torch.nn.Module):
         self.ref_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=ref_bias, dtype=dtype
         )
-        self.dpo_loss = HFDPOLoss(
+        self.KTO_loss = HFKTOLoss(
             ignore_index=ignore_index, beta=beta, use_ref_model=True
         ).get_batch_loss_metrics
 
     def forward(self, x, ref_x, y):
-        return self.dpo_loss(
+        return self.KTO_loss(
             self.lin.weight,
             x,
             y,
@@ -87,7 +92,7 @@ class TorchLMHeadDPO(torch.nn.Module):
         )
 
 
-class LigerLMHeadDPO(torch.nn.Module):
+class LigerLMHeadKTO(torch.nn.Module):
     def __init__(
         self,
         H: int,
@@ -105,12 +110,12 @@ class LigerLMHeadDPO(torch.nn.Module):
         self.ref_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=ref_bias, dtype=dtype
         )
-        self.dpo_loss = LigerFusedLinearDPOLoss(
+        self.KTO_loss = LigerFusedLinearKTOLoss(
             ignore_index=ignore_index, beta=beta, use_ref_model=True
         )
 
     def forward(self, x, ref_x, y):
-        return self.dpo_loss(
+        return self.KTO_loss(
             self.lin.weight,
             x,
             y,
@@ -141,9 +146,9 @@ class LigerLMHeadDPO(torch.nn.Module):
 def test_correctness(
     B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, ignore_index, beta
 ):
-    B = 2 * B  # dpo loss requires B to be even
+    B = 2 * B  # KTO loss requires B to be even
 
-    torch_lm_head_dpo = TorchLMHeadDPO(
+    torch_lm_head_KTO = TorchLMHeadKTO(
         H=H,
         V=V,
         dtype=dtype,
@@ -152,7 +157,7 @@ def test_correctness(
         ignore_index=ignore_index,
         beta=beta,
     )
-    liger_lm_head_dpo = LigerLMHeadDPO(
+    liger_lm_head_KTO = LigerLMHeadKTO(
         H=H,
         V=V,
         dtype=dtype,
@@ -162,19 +167,19 @@ def test_correctness(
         beta=beta,
     )
 
-    torch_lm_head_dpo.lin.weight.data = liger_lm_head_dpo.lin.weight.data = torch.randn(
+    torch_lm_head_KTO.lin.weight.data = liger_lm_head_KTO.lin.weight.data = torch.randn(
         V, H, device=device, dtype=dtype
     )
-    torch_lm_head_dpo.ref_lin.weight.data = liger_lm_head_dpo.ref_lin.weight.data = (
+    torch_lm_head_KTO.ref_lin.weight.data = liger_lm_head_KTO.ref_lin.weight.data = (
         torch.randn(V, H, device=device, dtype=dtype)
     )
 
     if bias:
-        torch_lm_head_dpo.lin.bias.data = liger_lm_head_dpo.lin.bias.data = torch.randn(
+        torch_lm_head_KTO.lin.bias.data = liger_lm_head_KTO.lin.bias.data = torch.randn(
             V, device=device, dtype=dtype
         )
     if ref_bias:
-        torch_lm_head_dpo.ref_lin.bias.data = liger_lm_head_dpo.ref_lin.bias.data = (
+        torch_lm_head_KTO.ref_lin.bias.data = liger_lm_head_KTO.ref_lin.bias.data = (
             torch.randn(V, device=device, dtype=dtype)
         )
 
@@ -201,8 +206,8 @@ def test_correctness(
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    loss1, aggregated_aux_outputs1 = torch_lm_head_dpo(input1, ref_input, target)
-    loss2, aggregated_aux_outputs2 = liger_lm_head_dpo(input2, ref_input, target)
+    loss1, aggregated_aux_outputs1 = torch_lm_head_KTO(input1, ref_input, target)
+    loss2, aggregated_aux_outputs2 = liger_lm_head_KTO(input2, ref_input, target)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
@@ -221,15 +226,15 @@ def test_correctness(
 
     assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
     assert_verbose_allclose(
-        torch_lm_head_dpo.lin.weight.grad,
-        liger_lm_head_dpo.lin.weight.grad,
+        torch_lm_head_KTO.lin.weight.grad,
+        liger_lm_head_KTO.lin.weight.grad,
         atol=atol,
         rtol=rtol,
     )
     if bias:
         assert_verbose_allclose(
-            torch_lm_head_dpo.lin.bias.grad,
-            liger_lm_head_dpo.lin.bias.grad,
+            torch_lm_head_KTO.lin.bias.grad,
+            liger_lm_head_KTO.lin.bias.grad,
             atol=atol,
             rtol=rtol,
         )
@@ -289,10 +294,10 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     ref_bias1 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
     ref_bias2 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
 
-    loss1, aggregated_aux_outputs1 = LigerFusedLinearDPOFunction.apply(
+    loss1, aggregated_aux_outputs1 = LigerFusedLinearKTOFunction.apply(
         input1, weight1, target, bias1, ref_input, ref_weight1, ref_bias1
     )
-    loss2, aggregated_aux_outputs2 = liger_fused_linear_dpo(
+    loss2, aggregated_aux_outputs2 = liger_fused_linear_kto(
         input2, weight2, target, bias2, ref_input, ref_weight2, ref_bias2
     )
 
