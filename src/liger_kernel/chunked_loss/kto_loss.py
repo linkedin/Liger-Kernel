@@ -68,8 +68,6 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         rejected_logratios = rejected_logps - ref_rejected_logps
 
         kl = torch.zeros_like(chosen_logratios)
-        # chosen_KL = chosen_logratios.mean().clamp(min=0)
-        # rejected_KL = rejected_logratios.mean().clamp(min=0)
 
         losses = torch.cat(
             (
