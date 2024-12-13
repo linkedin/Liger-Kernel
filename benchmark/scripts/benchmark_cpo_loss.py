@@ -19,16 +19,6 @@ device = infer_device()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
-class LigerLMHeadCPO(torch.nn.Module):
-    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
-        super().__init__()
-        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
-        self.cpo_loss = LigerFusedLinearCPOFunction.apply
-
-    def forward(self, x, y):
-        return self.cpo_loss(x, self.lin.weight, y)
-
-
 #############################################################################
 # Test the memory consumption of the linear fused cross entropy loss
 #############################################################################
@@ -37,7 +27,7 @@ class LigerLMHeadCPO(torch.nn.Module):
 def bench_memory_fused_linear_cpo_loss(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
-    from test.chunked_loss.test_cpo_loss import TorchLMHeadCPO
+    from test.chunked_loss.test_cpo_loss import LigerLMHeadCPO, TorchLMHeadCPO
 
     B = input.x
     T = input.extra_benchmark_config["T"]
@@ -46,8 +36,12 @@ def bench_memory_fused_linear_cpo_loss(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    torch_lm_head_cpo = TorchLMHeadCPO(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_cpo = LigerLMHeadCPO(H=H, V=V, dtype=dtype).to(device)
+    torch_lm_head_cpo = lambda x, target: TorchLMHeadCPO(H=H, V=V, dtype=dtype).to(
+        device
+    )(x, target)[0]
+    liger_lm_head_cpo = lambda x, target: LigerLMHeadCPO(H=H, V=V, dtype=dtype).to(
+        device
+    )(x, target)[0]
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
@@ -59,9 +53,8 @@ def bench_memory_fused_linear_cpo_loss(
             return torch_lm_head_cpo(_input, target)
 
     def full():
-        losses = fwd()
-        loss = losses[0]
-        loss.backward()
+        y = fwd()
+        y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(
@@ -79,7 +72,7 @@ def bench_memory_fused_linear_cpo_loss(
 def bench_speed_fused_linear_cpo_loss(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
-    from test.chunked_loss.test_cpo_loss import TorchLMHeadCPO
+    from test.chunked_loss.test_cpo_loss import LigerLMHeadCPO, TorchLMHeadCPO
 
     B = input.x
     T = input.extra_benchmark_config["T"]
@@ -89,8 +82,12 @@ def bench_speed_fused_linear_cpo_loss(
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
-    torch_lm_head_cpo = TorchLMHeadCPO(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_cpo = LigerLMHeadCPO(H=H, V=V, dtype=dtype).to(device)
+    torch_lm_head_cpo = lambda x, target: TorchLMHeadCPO(H=H, V=V, dtype=dtype).to(
+        device
+    )(x, target)[0]
+    liger_lm_head_cpo = lambda x, target: LigerLMHeadCPO(H=H, V=V, dtype=dtype).to(
+        device
+    )(x, target)[0]
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
@@ -108,10 +105,10 @@ def bench_speed_fused_linear_cpo_loss(
             quantiles=QUANTILES,
         )
     elif mode == "backward":
-        losses = fwd()
+        y = fwd()
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: losses[0].backward(retain_graph=True),
+            lambda: y.backward(retain_graph=True),
             grad_to_none=[_input],
             rep=100,
             quantiles=QUANTILES,
@@ -119,9 +116,8 @@ def bench_speed_fused_linear_cpo_loss(
     elif mode == "full":
 
         def full():
-            losses = fwd()
-            loss = losses[0]
-            loss.backward()
+            y = fwd()
+            y.backward()
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             full,
