@@ -50,8 +50,18 @@ def _triton_rope(
     # a clone of the left half.
     batch_idx = pid // sl
     seq_idx = pid % sl
-    cos = cos + batch_idx * (sl * cos_row_stride) + seq_idx * cos_row_stride
-    sin = sin + batch_idx * (sl * sin_row_stride) + seq_idx * sin_row_stride
+
+    # cos.shape = (1, seq_len, head_dim)
+    if cos.shape[0] == 1:  
+        # All batches share the same cos/sin, only need sequence position offset
+        cos = cos + seq_idx * cos_row_stride
+        sin = sin + seq_idx * sin_row_stride
+    else:  
+        # cos.shape = (bsz, seq_len, head_dim)
+        # Each batch has its own cos/sin, need to consider both batch and sequence position offset
+        cos = cos + batch_idx * (sl * cos_row_stride) + seq_idx * cos_row_stride
+        sin = sin + batch_idx * (sl * sin_row_stride) + seq_idx * sin_row_stride
+
     cos_offsets = tl.arange(0, pad_hd // 2)
     cos_mask = cos_offsets < hd // 2
     cos_row = tl.load(cos + cos_offsets, mask=cos_mask, other=0)
@@ -119,6 +129,9 @@ def _triton_rope(
 
 
 def rope_forward(q, k, cos, sin):
+    # 添加调试信息
+    print(f"cos shape: {cos.shape}, stride: {cos.stride()}")
+    print(f"sin shape: {sin.shape}, stride: {sin.stride()}")
 
     # transpose it back to the physical shape because Triton looks at the physical storage
     # note: q and k are incontiguous before the transformation and will become contiguous after transpose
