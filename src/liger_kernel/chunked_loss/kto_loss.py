@@ -59,7 +59,11 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         chosen_rewards = beta * chosen_logratios.detach()
         rejected_rewards = beta * rejected_logratios.detach()
 
-        return losses.sum() / (full_target.shape[0] // 2), chosen_rewards, rejected_rewards
+        return (
+            losses.sum() / (full_target.shape[0] // 2),
+            chosen_rewards,
+            rejected_rewards,
+        )
 
     @staticmethod
     def forward(
