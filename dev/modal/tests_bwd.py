@@ -8,7 +8,7 @@ PYTHON_VERSION = "3.12"
 
 image = modal.Image.debian_slim(python_version=PYTHON_VERSION).pip_install("uv")
 
-app = modal.App("liger_tests", image=image)
+app = modal.App("liger_tests_bwd", image=image)
 
 # mount: add local files to the remote container
 repo = modal.Mount.from_local_dir(ROOT_PATH, remote_path=REMOTE_ROOT_PATH)
