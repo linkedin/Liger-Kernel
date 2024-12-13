@@ -12,6 +12,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
     def preference_loss_fn(
         chosen_logps,
         rejected_logps,
+        full_target,
         ref_chosen_logps=None,
         ref_rejected_logps=None,
         beta=0.1,
@@ -30,6 +31,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         Args:
             chosen_logps: Log probabilities of chosen tokens (batch_size,)
             rejected_logps: Log probabilities of rejected tokens (batch_size,)
+            full_target: Non chunked full target tensor
             ref_chosen_logps: Reference log probs of chosen tokens (batch_size,)
             ref_rejected_logps: Reference log probs of rejected tokens (batch_size,)
             beta: Weight for the direct preference loss
@@ -42,7 +44,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         chosen_logratios = chosen_logps - ref_chosen_logps
         rejected_logratios = rejected_logps - ref_rejected_logps
 
-        kl = torch.zeros(1).to(chosen_logps.device)
+        kl = torch.zeros_like(chosen_logratios)
         # chosen_KL = chosen_logratios.mean().clamp(min=0)
         # rejected_KL = rejected_logratios.mean().clamp(min=0)
 
@@ -57,7 +59,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         chosen_rewards = beta * chosen_logratios.detach()
         rejected_rewards = beta * rejected_logratios.detach()
 
-        return losses, chosen_rewards, rejected_rewards
+        return losses.sum() / (full_target.shape[0] // 2), chosen_rewards, rejected_rewards
 
     @staticmethod
     def forward(
@@ -66,10 +68,14 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         weight,
         target,
         bias=None,
+        ref_input=None,
+        ref_weight=None,
+        ref_bias=None,
         ignore_index=-100,
         beta=0.1,
         compute_nll_loss=True,
         compiled=True,
+        use_ref_model=True,
     ):
         return LigerFusedLinearPreferenceBase.forward(
             ctx=ctx,
@@ -82,6 +88,10 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
             beta=beta,
             compute_nll_loss=compute_nll_loss,
             compiled=compiled,
+            use_ref_model=use_ref_model,
+            ref_input=ref_input,
+            ref_weight=ref_weight,
+            ref_bias=ref_bias,
         )
 
     @staticmethod

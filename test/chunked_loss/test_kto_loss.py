@@ -44,7 +44,7 @@ class HFKTOLoss(HFAlignmentLoss):
         Returns:
             The losses tensor contains the KTO loss for each example in the batch.
         """
-        kl = torch.zeros(1).to(policy_chosen_logps.device)
+        kl = torch.zeros_like(policy_chosen_logps)
 
         chosen_logratios = policy_chosen_logps - ref_chosen_logps
         chosen_losses = 1 - F.sigmoid(self.beta * (chosen_logratios - kl))
