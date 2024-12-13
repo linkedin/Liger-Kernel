@@ -2,16 +2,23 @@ import importlib
 import json
 import os
 import random
+from abc import abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
+import numpy as np
 import torch
+import torch.nn as nn
 from tokenizers import AddedToken, Tokenizer
 from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.trainers import BpeTrainer
 from transformers import PretrainedConfig, PreTrainedModel
 from transformers.tokenization_utils_base import BatchEncoding
+
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 
 def set_seed(seed=42):
@@ -20,17 +27,23 @@ def set_seed(seed=42):
     """
     # Python random seed
     random.seed(seed)
-
+    # Numpy random seed
+    np.random.seed(0)
     # PyTorch random seed
     torch.manual_seed(seed)
 
-    # If you are using CUDA
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    if device == "cuda":
+        # If you are using CUDA
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
 
-    # PyTorch backend settings
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+        # PyTorch backend settings
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    elif device == "xpu":
+        # If you are using XPU
+        torch.xpu.manual_seed(seed)
+        torch.xpu.manual_seed_all(seed)
 
     # Python hash seed
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -201,12 +214,15 @@ def train_bpe_tokenizer(special_tokens: List[str], unk_token: str = "<|unk|>"):
 
 
 def supports_bfloat16():
-    if not torch.cuda.is_available():
+    if device == "cuda":
+        return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
+    elif device == "xpu":
+        return True
+    else:
         return False
-    return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
 
 
-def revert_liger_kernel_to_llama():
+def revert_liger_kernel_to_llama(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Llama.
     """
@@ -214,23 +230,35 @@ def revert_liger_kernel_to_llama():
     from transformers.models.llama import modeling_llama
 
     importlib.reload(modeling_llama)
+    model_config.model_class = modeling_llama.LlamaForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_mllama():
+def revert_liger_kernel_to_mllama(
+    model_config: MiniModelConfig, model_type: str = "causal_lm"
+):
     """
     Revert all Liger kernel patches applied to MLlama.
     """
 
+    assert model_type in [
+        "causal_lm",
+        "conditional_generation",
+    ], f'model_type must be "causal_lm" or "conditional_generation", Got: {model_type}'
     import torch.nn as nn
     from transformers.models.mllama import modeling_mllama
 
     importlib.reload(nn)
     importlib.reload(modeling_mllama)
+    if model_type == "causal_lm":
+        model_config.model_class = modeling_mllama.MllamaForCausalLM
+    else:
+        model_config.model_class = modeling_mllama.MllamaForConditionalGeneration
+
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_mistral():
+def revert_liger_kernel_to_mistral(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Mistral.
     """
@@ -238,10 +266,11 @@ def revert_liger_kernel_to_mistral():
     from transformers.models.mistral import modeling_mistral
 
     importlib.reload(modeling_mistral)
+    model_config.model_class = modeling_mistral.MistralForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_mixtral():
+def revert_liger_kernel_to_mixtral(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Mixtral.
     """
@@ -249,10 +278,11 @@ def revert_liger_kernel_to_mixtral():
     from transformers.models.mixtral import modeling_mixtral
 
     importlib.reload(modeling_mixtral)
+    model_config.model_class = modeling_mixtral.MixtralForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_gemma():
+def revert_liger_kernel_to_gemma(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Gemma.
     """
@@ -260,10 +290,11 @@ def revert_liger_kernel_to_gemma():
     from transformers.models.gemma import modeling_gemma
 
     importlib.reload(modeling_gemma)
+    model_config.model_class = modeling_gemma.GemmaForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_gemma2():
+def revert_liger_kernel_to_gemma2(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Gemma2.
     """
@@ -271,10 +302,11 @@ def revert_liger_kernel_to_gemma2():
     from transformers.models.gemma2 import modeling_gemma2
 
     importlib.reload(modeling_gemma2)
+    model_config.model_class = modeling_gemma2.Gemma2ForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_qwen2():
+def revert_liger_kernel_to_qwen2(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Qwen2.
     """
@@ -282,20 +314,23 @@ def revert_liger_kernel_to_qwen2():
     from transformers.models.qwen2 import modeling_qwen2
 
     importlib.reload(modeling_qwen2)
+    model_config.model_class = modeling_qwen2.Qwen2ForCausalLM
+
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_qwen2_vl():
+def revert_liger_kernel_to_qwen2_vl(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Qwen2-VL.
     """
     from transformers.models.qwen2_vl import modeling_qwen2_vl
 
     importlib.reload(modeling_qwen2_vl)
+    model_config.model_class = modeling_qwen2_vl.Qwen2VLForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_phi3():
+def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Phi3.
     """
@@ -303,4 +338,297 @@ def revert_liger_kernel_to_phi3():
     from transformers.models.phi3 import modeling_phi3
 
     importlib.reload(modeling_phi3)
+    model_config.model_class = modeling_phi3.Phi3ForCausalLM
     print("Liger kernel patches have been reverted.")
+
+
+class HFAlignmentLoss:
+
+    def __init__(
+        self,
+        alpha: float = 1.0,
+        beta: float = 0.1,
+        ignore_index: int = -100,
+        use_ref_model: bool = False,
+    ):
+        self.alpha = alpha
+        self.beta = beta
+        self.ignore_index = ignore_index
+        self.use_ref_model = use_ref_model
+
+    @abstractmethod
+    def alignment_loss(self):
+        pass
+
+    def get_batch_logps(
+        self,
+        logits: torch.FloatTensor,
+        labels: torch.LongTensor,
+        average_log_prob: bool = False,
+    ) -> torch.FloatTensor:
+        """Compute the log probabilities of the given labels under the given logits.
+
+        Args:
+            logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
+            labels: Labels for which to compute the log probabilities. Label tokens with a value of ignore_index are ignored. Shape: (batch_size, sequence_length)
+            average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
+            is_encoder_decoder: Whether the model is an encoder-decoder model.
+        Returns:
+            A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
+        """
+        if logits.shape[:-1] != labels.shape:
+            raise ValueError(
+                "Logits (batch and sequence length dim) and labels must have the same shape."
+            )
+
+        loss_mask = labels != self.ignore_index
+
+        # dummy token; we'll ignore the losses on these tokens later
+        labels = torch.where(labels == self.ignore_index, 0, labels)
+
+        per_token_logps = torch.gather(
+            logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)
+        ).squeeze(2)
+
+        if average_log_prob:
+            return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+        else:
+            return (per_token_logps * loss_mask).sum(-1)
+
+    def get_ref_logps(
+        self,
+        _input: torch.FloatTensor,
+        ref_weight: torch.FloatTensor,
+        target: torch.LongTensor,
+        ref_bias: torch.FloatTensor,
+        average_log_prob: bool = True,
+    ):
+        """Compute the log probabilities of the given labels under the given reference model."""
+
+        ref_logits = _input @ ref_weight.t()
+        if ref_bias is not None:
+            ref_logits = ref_logits + ref_bias
+        ref_all_logps = self.get_batch_logps(
+            ref_logits, target, average_log_prob=average_log_prob
+        )
+        return (
+            ref_all_logps[: _input.shape[0] // 2],
+            ref_all_logps[_input.shape[0] // 2 :],
+        )
+
+    def concatenated_forward(
+        self,
+        _input: torch.FloatTensor,
+        weight: torch.FloatTensor,
+        target: torch.LongTensor,
+        bias: torch.FloatTensor = None,
+        average_log_prob: bool = True,
+    ) -> Tuple[
+        torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
+    ]:
+        """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
+
+        We do this to avoid doing two forward passes, because it's faster for FSDP.
+        """
+        len_chosen = _input.shape[0] // 2
+
+        outputs = _input @ weight.t()
+        if bias is not None:
+            outputs = outputs + bias
+        all_logits = outputs.float()
+
+        def cross_entropy_loss(logits, labels):
+            # Flatten the tokens
+            loss_fct = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
+            logits = logits.view(-1, logits.shape[-1])
+            labels = labels.view(-1)
+            # Enable model parallelism
+            labels = labels.to(logits.device)
+            loss = loss_fct(logits, labels)
+            return loss
+
+        labels = target
+        chosen_nll_loss = cross_entropy_loss(
+            all_logits[:len_chosen], labels[:len_chosen]
+        )
+
+        all_logps = self.get_batch_logps(
+            all_logits,
+            target,
+            average_log_prob=average_log_prob,
+        )
+
+        chosen_logps = all_logps[:len_chosen]
+        rejected_logps = all_logps[len_chosen:]
+
+        chosen_logits = all_logits[:len_chosen]
+        rejected_logits = all_logits[len_chosen:]
+
+        return (
+            chosen_logps,
+            rejected_logps,
+            chosen_logits,
+            rejected_logits,
+            chosen_nll_loss,
+        )
+
+    def get_batch_loss_metrics(
+        self,
+        weight: torch.FloatTensor,
+        _input: torch.FloatTensor,
+        target: torch.LongTensor,
+        bias: torch.FloatTensor = None,
+        ref_input: torch.FloatTensor = None,
+        ref_weight: torch.FloatTensor = None,
+        ref_bias: torch.FloatTensor = None,
+        average_log_prob: bool = True,
+    ):
+        """Compute the loss metrics for the given batch of inputs for train or test."""
+
+        forward_output = self.concatenated_forward(
+            _input, weight, target, bias, average_log_prob
+        )
+        (
+            policy_chosen_logps,
+            policy_rejected_logps,
+            policy_chosen_logits,
+            policy_rejected_logits,
+            policy_nll_loss,
+        ) = forward_output[:5]
+
+        loss_kwargs = {}
+        if self.use_ref_model:
+            ref_chosen_logps, ref_rejected_logps = self.get_ref_logps(
+                ref_input, ref_weight, target, ref_bias, average_log_prob
+            )
+            loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
+            loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
+        alignment_loss_outputs = self.alignment_loss(
+            policy_chosen_logps, policy_rejected_logps, **loss_kwargs
+        )
+        if isinstance(alignment_loss_outputs, tuple):
+            losses, *aggregated_aux_outputs = alignment_loss_outputs
+        else:
+            losses, aggregated_aux_outputs = alignment_loss_outputs, []
+        # full loss
+        loss = policy_nll_loss * self.alpha - losses.mean()
+        return_vars = (
+            policy_chosen_logps,
+            policy_rejected_logps,
+            policy_chosen_logits.detach().mean(),
+            policy_rejected_logits.detach().mean(),
+            policy_nll_loss,
+        )
+        return loss, (*return_vars, *aggregated_aux_outputs)
+
+
+class HFDistillationLoss:
+    def __init__(
+        self,
+        weight_hard_loss: float = 0.5,
+        weight_soft_loss: float = 0.5,
+        ignore_index: int = -100,
+        temperature: float = 1,
+    ):
+        self.weight_hard_loss = weight_hard_loss
+        self.weight_soft_loss = weight_soft_loss
+        self.ignore_index = ignore_index
+        self.temperature = temperature
+
+    @abstractmethod
+    def distillation_loss(self, student_logits, teacher_logits):
+        """Abstract method for computing distillation loss."""
+        pass
+
+    def concatenated_forward(
+        self,
+        student_input: torch.FloatTensor,
+        student_weight: torch.FloatTensor,
+        teacher_input: torch.FloatTensor,
+        teacher_weight: torch.FloatTensor,
+        target: torch.LongTensor,
+        student_bias: torch.FloatTensor = None,
+        teacher_bias: torch.FloatTensor = None,
+    ) -> Tuple[
+        torch.FloatTensor,
+        torch.FloatTensor,
+        torch.FloatTensor,
+        torch.FloatTensor,
+        torch.FloatTensor,
+    ]:
+        """Compute forward pass for both student and teacher models."""
+
+        student_batch_seq_len_size, student_hidden_size = student_input.shape
+        student_input_reshaped = student_input.view(-1, student_hidden_size)
+        teacher_batch_seq_len_size, teacher_hidden_size = teacher_input.shape
+        teacher_input_reshaped = teacher_input.view(-1, teacher_hidden_size)
+
+        student_outputs = student_input_reshaped @ student_weight.t()
+        if student_bias is not None:
+            student_outputs = student_outputs + student_bias
+
+        with torch.no_grad():
+            teacher_outputs = teacher_input_reshaped @ teacher_weight.t()
+            if teacher_bias is not None:
+                teacher_outputs = teacher_outputs + teacher_bias
+
+        student_logits = student_outputs.view(student_batch_seq_len_size, -1).float()
+        teacher_logits = teacher_outputs.view(teacher_batch_seq_len_size, -1).float()
+
+        if torch.all(target == self.ignore_index):
+            return torch.tensor(0.0)
+
+        def cross_entropy_loss(logits, labels):
+            # Flatten the tokens
+            loss_fct = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
+            logits = logits.view(-1, logits.shape[-1])
+            labels = labels.view(-1)
+            # Enable model parallelism
+            labels = labels.to(logits.device)
+            loss = loss_fct(logits, labels)
+            return loss
+
+        labels = target
+        ce_loss = cross_entropy_loss(
+            student_logits.view(-1, student_logits.shape[-1]),
+            labels.view(-1),
+        )
+
+        return (
+            student_logits,
+            teacher_logits,
+            ce_loss,
+        )
+
+    def get_batch_loss_metrics(
+        self,
+        student_input: torch.FloatTensor,
+        student_weight: torch.FloatTensor,
+        teacher_input: torch.FloatTensor,
+        teacher_weight: torch.FloatTensor,
+        target: torch.LongTensor,
+        student_bias: torch.FloatTensor = None,
+        teacher_bias: torch.FloatTensor = None,
+    ):
+        """Compute the distillation loss metrics for the given batch."""
+        forward_output = self.concatenated_forward(
+            student_input,
+            student_weight,
+            teacher_input,
+            teacher_weight,
+            target,
+            student_bias,
+            teacher_bias,
+        )
+        (
+            student_logits,
+            teacher_logits,
+            hard_loss,
+        ) = forward_output
+
+        soft_loss = self.distillation_loss(student_logits, teacher_logits)
+        # full loss
+        loss = (
+            self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss.mean()
+        )
+        return loss

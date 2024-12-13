@@ -36,6 +36,7 @@ from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forwa
 from liger_kernel.transformers.model.qwen2 import (
     lce_forward_deprecated as qwen2_lce_forward_deprecated,
 )
+from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import (
@@ -56,12 +57,15 @@ def _bind_method_to_module(module, method_name: str, new_method: Callable):
     module.__dict__[method_name] = new_method.__get__(module, module.__class__)
 
 
-def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama"):
+def _patch_rms_norm_module(
+    module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True
+):
     module.offset = offset
     module.casting_mode = casting_mode
     module.variance_epsilon = (
         getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
     )
+    module.in_place = in_place
     _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
     _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
 
@@ -510,7 +514,7 @@ def apply_liger_kernel_to_gemma2(
         LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False
     )
     _patch_rms_norm_module_for_gemma2 = partial(
-        _patch_rms_norm_module, offset=1.0, casting_mode="gemma"
+        _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
     )
 
     if rope:
@@ -607,9 +611,7 @@ def apply_liger_kernel_to_qwen2(
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
             modeling_qwen2.CrossEntropyLoss = LigerCrossEntropyLoss
 
-    # import pdb; pdb.set_trace()
     if fused_linear_cross_entropy:
-
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
             modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward
         else:  # if version < 4.46.1
@@ -641,6 +643,7 @@ def apply_liger_kernel_to_qwen2(
 
 
 def apply_liger_kernel_to_qwen2_vl(
+    rope: bool = True,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
@@ -675,8 +678,10 @@ def apply_liger_kernel_to_qwen2_vl(
         lce_forward as qwen2_vl_lce_forward,
     )
 
-    # TODO: Support Qwen2-VL's multimodal RoPE implementation
-
+    if rope:
+        modeling_qwen2_vl.apply_multimodal_rotary_pos_emb = (
+            liger_multimodal_rotary_pos_emb
+        )
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L439
         modeling_qwen2_vl.Qwen2RMSNorm = LigerRMSNorm

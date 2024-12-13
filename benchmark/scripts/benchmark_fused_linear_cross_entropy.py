@@ -12,6 +12,9 @@ from utils import (
 from liger_kernel.transformers.fused_linear_cross_entropy import (
     LigerFusedLinearCrossEntropyLoss,
 )
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 
 class TorchLMHeadCE(torch.nn.Module):
@@ -65,7 +68,6 @@ def bench_memory_fused_linear_cross_entropy(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    device = "cuda"
     torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
 
@@ -104,8 +106,6 @@ def bench_speed_fused_linear_cross_entropy(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
-
-    device = "cuda"
 
     torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)

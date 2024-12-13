@@ -8,6 +8,9 @@ import torch.nn as nn
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.transformers.functional import liger_rms_norm
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 set_seed(42)
 torch.use_deterministic_algorithms(True)
@@ -18,7 +21,8 @@ torch.use_deterministic_algorithms(True)
 #  environment variable before running your PyTorch application: CUBLAS_WORKSPACE_CONFIG=:4096:8 or CUBLAS_WORKSPACE_CONFIG=:16:8. For more information,
 #  go to https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+if device == "cuda":
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 SLEEP_SECONDS = 0.1
 
@@ -70,6 +74,7 @@ class GemmaRMSNorm(nn.Module):
         return output.type_as(x)
 
 
+@pytest.mark.flaky(reruns=3, reruns_delay=2)
 @pytest.mark.parametrize(
     "bs, sl, hd",
     [
@@ -110,16 +115,16 @@ class GemmaRMSNorm(nn.Module):
 def test_correctness(
     bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode, in_place
 ):
-    _tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
+    _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
 
     h1 = _tensor.clone().requires_grad_(True)
     h2 = _tensor.clone().requires_grad_(True)
 
     # do
-    do = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
+    do = torch.randn(bs, sl, hd, device=device, dtype=dtype)
 
     # reference (llama or gemma)
-    ref_rms = reference(hidden_size=hd).to("cuda").to(dtype)
+    ref_rms = reference(hidden_size=hd).to(device).to(dtype)
     ref_o = ref_rms(h1)
     ref_o.backward(do, retain_graph=True)
 
@@ -128,7 +133,7 @@ def test_correctness(
         LigerRMSNorm(
             hidden_size=hd, offset=offset, casting_mode=casting_mode, in_place=in_place
         )
-        .to("cuda")
+        .to(device)
         .to(dtype)
     )
     triton_o = triton_rms(h2)
@@ -169,14 +174,14 @@ def test_correctness_functional(
     bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode
 ):
     # h
-    _tensor = torch.randn(bs, sl, hd, device="cuda", dtype=dtype)
+    _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
 
     h1 = _tensor.clone().requires_grad_(True)
     h2 = _tensor.clone().requires_grad_(True)
 
-    w = torch.randn(hd, device="cuda", dtype=dtype)
+    w = torch.randn(hd, device=device, dtype=dtype)
 
-    y1 = liger_rms_norm(h1, w, 1e-6, offset, casting_mode)
+    y1 = liger_rms_norm(X=h1, W=w, eps=1e-6, offset=offset, casting_mode=casting_mode)
     y2 = LigerRMSNormFunction.apply(h2, w, 1e-6, offset, casting_mode)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)

@@ -92,8 +92,8 @@ def liger_cross_entropy_kernel(
     # 3. [Online softmax] first pass: find max + sum
     m = float("-inf")  # m is the max value. use the notation from the paper
     d = 0.0  # d is the sum. use the notation from the paper
-    ori_X_y = tl.load(
-        X_ptr + y
+    ori_X_y = tl.load(X_ptr + y).cast(
+        tl.float32
     )  # we need to store the original value of X_y for the loss calculation
     if HAS_SOFTCAPPING:
         ori_X_y = softcap * tanh(ori_X_y / softcap)
@@ -106,8 +106,11 @@ def liger_cross_entropy_kernel(
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(
-            X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
-        )
+            X_ptr + X_offsets,
+            mask=X_offsets < n_cols,
+            other=float("-inf"),
+            # Ensure float32 precision for softmax calculation
+        ).cast(tl.float32)
         if HAS_SOFTCAPPING:
             X_block = softcap * tanh(X_block / softcap)
         block_max = tl.max(X_block)
@@ -141,8 +144,11 @@ def liger_cross_entropy_kernel(
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(
-            X_ptr + X_offsets, mask=X_offsets < n_cols, other=float("-inf")
-        )
+            X_ptr + X_offsets,
+            mask=X_offsets < n_cols,
+            other=float("-inf"),
+            # Ensure float32 precision for softmax calculation
+        ).cast(tl.float32)
         if HAS_SOFTCAPPING:
             intermediate = tanh(X_block / softcap)
             X_block = softcap * intermediate
@@ -279,11 +285,12 @@ def cross_entropy_forward(
         num_warps=32 if not is_hip() else 16,
     )
 
-    loss = torch.sum(loss_1d)
-    if return_z_loss == _TRUE.value:
-        z_loss = torch.sum(z_loss_1d)
+    if reduction == "none":
+        loss = loss_1d
+        z_loss = z_loss_1d if return_z_loss == _TRUE.value else None
     else:
-        z_loss = None
+        loss = torch.sum(loss_1d)
+        z_loss = torch.sum(z_loss_1d) if return_z_loss == _TRUE.value else None
 
     return loss, z_loss, _input
 

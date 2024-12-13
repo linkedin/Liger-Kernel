@@ -58,6 +58,10 @@ try:
 except ImportError:
     MLLAMA_AVAILABLE = False
 
+from liger_kernel.utils import infer_device
+
+device = infer_device()
+
 torch.use_deterministic_algorithms(True)
 
 #  Only setting torch.use_deterministic_algorithms(True) throws the following error:
@@ -140,13 +144,14 @@ if QWEN2_VL_AVAILABLE:
         mini_model_config=Qwen2VLConfig(
             attention_dropout=0.0,
             # Token Ids and vocab size must match those in the tokenizer/processor
-            # https://huggingface.co/Qwen/Qwen2-VL-7B-Instruct/blob/main/config.json
+            # test/resources/fake_configs/Qwen/Qwen2-VL-7B-Instruct/tokenizer_config.json
             bos_token_id=0,
             eos_token_id=0,
             vision_start_token_id=1,
             vision_end_token_id=2,
             vision_token_id=3,
             image_token_id=4,
+            video_token_id=5,
             hidden_act="silu",
             hidden_size=1024,  # 8192
             initializer_range=0.02,
@@ -312,15 +317,17 @@ def run_mini_model_multimodal(
 
     set_seed(42)
 
+    revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
+    if "mllama" in model_name:
+        revert_kwargs["model_type"] = "conditional_generation"
+
     if with_liger is True:
         kwargs = {
+            "rope": True,
             "rms_norm": True,
             "cross_entropy": True,
             "layer_norm": True,
         }
-        model_supports_rope = "qwen2_vl" not in model_name
-        if model_supports_rope:
-            kwargs["rope"] = True
 
         if "gemma" in model_name:
             kwargs["geglu"] = True
@@ -328,9 +335,9 @@ def run_mini_model_multimodal(
             kwargs["swiglu"] = True
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
-        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
-    model = create_model(model_name).to(dtype).to("cuda")
+    model = create_model(model_name).to(dtype).to(device)
     model.gradient_checkpointing_enable()
 
     train_dataset = create_multimodal_dataset(model_name)
@@ -352,7 +359,7 @@ def run_mini_model_multimodal(
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
-    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
+    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
     return {"loss": loss_list, "logits": output.logits, "model": model}
 
 
