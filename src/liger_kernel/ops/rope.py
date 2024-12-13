@@ -29,7 +29,7 @@ def _triton_rope(
     # k size: (bsz, seq_len, num_kv_heads, head_dim)
     # k stride: (seq_len * num_kv_heads * head_dim, num_kv_heads * head_dim, head_dim, 1)
 
-    # cos size: (1, seq_len, head_dim)
+    # cos size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
     # stride: (seq_len * head_dim, head_dim, 1)
     pid = tl.program_id(0)
 
@@ -48,9 +48,10 @@ def _triton_rope(
     # and pid % sl to get the sequence index.
     # 2. We only need the left half of cos and sin matrix because the right half is just
     # a clone of the left half.
-    cos_row_idx = pid % (sl)
-    cos = cos + cos_row_idx * cos_row_stride
-    sin = sin + cos_row_idx * sin_row_stride
+    batch_idx = pid // sl
+    seq_idx = pid % sl
+    cos = cos + batch_idx * (sl * cos_row_stride) + seq_idx * cos_row_stride
+    sin = sin + batch_idx * (sl * sin_row_stride) + seq_idx * sin_row_stride
     cos_offsets = tl.arange(0, pad_hd // 2)
     cos_mask = cos_offsets < hd // 2
     cos_row = tl.load(cos + cos_offsets, mask=cos_mask, other=0)
@@ -221,8 +222,8 @@ class LigerRopeFunction(torch.autograd.Function):
         """
         q size: (bsz, n_q_head, seq_len, head_dim)
         k size: (bsz, n_kv_head, seq_len, head_dim)
-        cos size: (1, seq_len, head_dim)
-        sin size: (1, seq_len, head_dim)
+        cos size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
+        sin size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
         """
         q, k, cos, sin = rope_forward(q, k, cos, sin)
         ctx.save_for_backward(cos, sin)
@@ -232,8 +233,8 @@ class LigerRopeFunction(torch.autograd.Function):
         """
         dq size: (bsz, n_q_head, seq_len, head_dim)
         dk size: (bsz, n_kv_head, seq_len, head_dim)
-        cos size: (1, seq_len, head_dim)
-        sin size: (1, seq_len, head_dim)
+        cos size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
+        sin size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
         """
 
         cos, sin = ctx.saved_tensors
