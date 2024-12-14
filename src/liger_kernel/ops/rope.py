@@ -50,8 +50,7 @@ def _triton_rope(
     # 2. We only need the left half of cos and sin matrix because the right half is just
     # a clone of the left half.
     batch_idx = pid // sl
-    cos_row_idx = pid % sl
-    
+    cos_row_idx = pid % sl    
     cos = cos + tl.where(
         cos_bs == 1,
         cos_row_idx * cos_row_stride,
