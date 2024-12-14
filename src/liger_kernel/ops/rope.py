@@ -15,6 +15,7 @@ def _triton_rope(
     sin_row_stride,
     sl,
     bs: tl.constexpr,
+    cos_bs: tl.constexpr,
     n_qh: tl.constexpr,
     n_kh: tl.constexpr,
     hd: tl.constexpr,
@@ -49,18 +50,18 @@ def _triton_rope(
     # 2. We only need the left half of cos and sin matrix because the right half is just
     # a clone of the left half.
     batch_idx = pid // sl
-    seq_idx = pid % sl
-
-    # cos.shape = (1, seq_len, head_dim)
-    if cos.shape[0] == 1:  
-        # All batches share the same cos/sin, only need sequence position offset
-        cos = cos + seq_idx * cos_row_stride
-        sin = sin + seq_idx * sin_row_stride
-    else:  
-        # cos.shape = (bsz, seq_len, head_dim)
-        # Each batch has its own cos/sin, need to consider both batch and sequence position offset
-        cos = cos + batch_idx * (sl * cos_row_stride) + seq_idx * cos_row_stride
-        sin = sin + batch_idx * (sl * sin_row_stride) + seq_idx * sin_row_stride
+    cos_row_idx = pid % sl
+    
+    cos = cos + tl.where(
+        cos_bs == 1,
+        cos_row_idx * cos_row_stride,
+        batch_idx * (sl * cos_row_stride) + cos_row_idx * cos_row_stride
+    )
+    sin = sin + tl.where(
+        cos_bs == 1,
+        cos_row_idx * sin_row_stride,
+        batch_idx * (sl * sin_row_stride) + cos_row_idx * sin_row_stride
+    )
 
     cos_offsets = tl.arange(0, pad_hd // 2)
     cos_mask = cos_offsets < hd // 2
@@ -129,10 +130,6 @@ def _triton_rope(
 
 
 def rope_forward(q, k, cos, sin):
-    # 添加调试信息
-    print(f"cos shape: {cos.shape}, stride: {cos.stride()}")
-    print(f"sin shape: {sin.shape}, stride: {sin.stride()}")
-
     # transpose it back to the physical shape because Triton looks at the physical storage
     # note: q and k are incontiguous before the transformation and will become contiguous after transpose
     q = q.transpose(1, 2)
@@ -152,6 +149,7 @@ def rope_forward(q, k, cos, sin):
     k = k.contiguous()
     cos = cos.contiguous()
     sin = sin.contiguous()
+    cos_batch_size = cos.shape[0]
 
     _triton_rope[(n_row,)](
         q,
@@ -164,6 +162,7 @@ def rope_forward(q, k, cos, sin):
         sin.stride(-2),
         seq_len,
         batch_size,
+        cos_batch_size,
         n_q_head,
         n_kv_head,
         head_dim,
@@ -181,6 +180,7 @@ def rope_backward(dq, dk, cos, sin):
     dk = dk.transpose(1, 2)
 
     batch_size, seq_len, n_q_head, head_dim = dq.shape
+    cos_batch_size = cos.shape[0]
     n_kv_head = dk.shape[2]
     pad_hd = triton.next_power_of_2(head_dim)
     pad_n_q_head = triton.next_power_of_2(n_q_head)
@@ -205,6 +205,7 @@ def rope_backward(dq, dk, cos, sin):
         sin.stride(-2),
         seq_len,
         batch_size,
+        cos_batch_size,
         n_q_head,
         n_kv_head,
         head_dim,
