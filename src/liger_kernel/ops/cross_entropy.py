@@ -33,7 +33,7 @@ def liger_cross_entropy_kernel(
     loss_stride,
     n_cols,
     n_non_ignore,
-    sum_of_non_ignore_weight,
+    weight_sum,
     ignore_index,
     lse_square_scale: tl.constexpr,
     label_smoothing: tl.constexpr,
@@ -54,13 +54,13 @@ def liger_cross_entropy_kernel(
     Y_ptr: Pointer to target tensor.
     Y_stride (int): The stride of the target tensor.
     weight_ptr: Pointer to weight tensor.
-    weight_stride (int): The stride of the weight tesnor.
+    weight_stride (int): The stride of the weight tensor.
     loss_ptr: Pointer to tensor to store the loss.
     z_loss_ptr: Pointer to tensor to store the z loss. No operation if RETURN_Z_LOSS is 0.
     loss_stride (int): The stride of the loss tensor.
     n_cols (int): The number of columns in the input tensor.
-    n_non_ignore (int): The number of non-ignored elements in the batch.
-    sum_of_non_ignore_weight (float): The denominator when `reduction="mean"` if `weight` is given.
+    n_non_ignore (flaot): The number of non-ignored elements or the sum of non-ignored target's weights in the batch
+    weight_sum (float): The sum of weigh tensor
     ignore_index (int): The index to ignore in the target.
     label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
     lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
@@ -94,7 +94,7 @@ def liger_cross_entropy_kernel(
     z_loss_ptr += program_id * loss_stride
 
     if HAS_WEIGHT:
-        weight = tl.load(weight_ptr + y).cast(tl.float32)
+        weight_y = tl.load(weight_ptr + y).cast(tl.float32)
 
     # Online softmax: 2 loads + 1 store (compared with 3 loads + 1 store for the safe softmax)
     # Refer to Algorithm 3 in the paper: https://arxiv.org/pdf/1805.02867
@@ -126,7 +126,15 @@ def liger_cross_entropy_kernel(
         block_max = tl.max(X_block)
         if label_smoothing > 0:
             # scale X beforehand to avoid overflow
-            scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -eps * X_block, 0.0))
+            if HAS_WEIGHT:
+                weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
+                scaled_x_sum += tl.sum(
+                    tl.where(X_offsets < n_cols, -eps * X_block * weight_block, 0.0)
+                )
+            else:
+                scaled_x_sum += tl.sum(
+                    tl.where(X_offsets < n_cols, -eps * X_block, 0.0)
+                )
         m_new = tl.maximum(m, block_max)
         d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
         m = m_new
@@ -172,12 +180,9 @@ def liger_cross_entropy_kernel(
         X_block = tl.where(X_offsets != y, X_block, X_block - (1 - label_smoothing))
         # reduction scale
         if reduction == "mean":
-            if HAS_WEIGHT:
-                X_block = X_block / (sum_of_non_ignore_weight)
-            else:
-                X_block = X_block / (n_non_ignore)
+            X_block = X_block / (n_non_ignore)
         if HAS_WEIGHT:
-            X_block = X_block * weight
+            X_block = X_block * weight_y
         # chain rule
         # d(softcap * tanh(x / softcap)) = (1 - tanh^2(x / softcap))
         if HAS_SOFTCAPPING:
@@ -197,6 +202,8 @@ def liger_cross_entropy_kernel(
     # sum(e ^ (X - max(X))) must >= 1 because the max term is e ^ 0 = 1
     # So we can safely calculate log (softmax(X_y)) without overflow
     loss = lse - ori_X_y
+    if HAS_WEIGHT:
+        loss = weight_y * loss
 
     # Original loss = H(q, p),  with label smoothing regularization = H(q', p) and (label_smoothing / V) = eps
     # H(q', p) = (1 - label_smoothing) * H(q, p) + label_smoothing * H(u, p)
@@ -207,7 +214,10 @@ def liger_cross_entropy_kernel(
     # pytorch: https://github.com/pytorch/pytorch/blob/2981534f54d49fa3a9755c9b0855e7929c2527f0/aten/src/ATen/native/LossNLL.cpp#L516
     # See full derivation at https://github.com/linkedin/Liger-Kernel/pull/198#issuecomment-2333753087
     if label_smoothing > 0:
-        smooth_loss = scaled_x_sum + label_smoothing * lse
+        if HAS_WEIGHT:
+            smooth_loss = scaled_x_sum + eps * lse * weight_sum
+        else:
+            smooth_loss = scaled_x_sum + label_smoothing * lse
         loss = loss * (1 - label_smoothing) + smooth_loss
 
     # An auxiliary loss, z_loss
@@ -216,17 +226,8 @@ def liger_cross_entropy_kernel(
     loss += z_loss
     # Normalize the loss by the number of non-ignored elements if reduction is "mean"
     if reduction == "mean":
-        if HAS_WEIGHT:
-            z_loss = z_loss / sum_of_non_ignore_weight
-            loss = loss / sum_of_non_ignore_weight
-        else:
-            z_loss = z_loss / n_non_ignore
-            loss = loss / n_non_ignore
-
-    if HAS_WEIGHT:
-        z_loss = z_loss * weight
-        loss = loss * weight
-
+        z_loss = z_loss / n_non_ignore
+        loss = loss / n_non_ignore
     tl.store(loss_ptr, loss)
     if RETURN_Z_LOSS == _TRUE:
         tl.store(z_loss_ptr, z_loss)
@@ -279,7 +280,7 @@ def cross_entropy_forward(
 
     target_mask = target != ignore_index
     n_non_ignore = target_mask.sum().item()
-    sum_of_non_ignore_weight = n_non_ignore
+    weight_sum = weight.sum().item()
     if weight is not None:
         assert (
             weight.shape[0] == V
@@ -287,10 +288,11 @@ def cross_entropy_forward(
         assert torch.is_floating_point(
             weight
         ), f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
-        selected_weight = torch.where(
-            target_mask, torch.gather(weight, dim=0, index=target * target_mask), 0.0
+        n_non_ignore = (
+            torch.gather(weight, dim=0, index=target.masked_select(target_mask))
+            .sum()
+            .item()
         )
-        sum_of_non_ignore_weight = selected_weight.sum().item()
         if weight.stride(-1) != 1:
             weight = weight.contiguous()
 
@@ -313,7 +315,7 @@ def cross_entropy_forward(
         n_cols=V,
         n_non_ignore=n_non_ignore,
         ignore_index=ignore_index,
-        sum_of_non_ignore_weight=sum_of_non_ignore_weight,
+        weight_sum=weight_sum,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
         reduction=reduction,
