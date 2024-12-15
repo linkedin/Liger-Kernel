@@ -9,12 +9,26 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
 class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
-    def preference_loss_fn(chosen_logps, rejected_logps, beta=0.1):
+    def preference_loss_fn(chosen_logps, rejected_logps, full_target, beta=0.1):
         """
-        Compute odds-ratio loss.
+        Paper: https://arxiv.org/pdf/2403.07691
+
+        Formula:
+        Compute odds-ratio loss: L_OR = -log(σ(log(odds_θ(y_w|x) / odds_θ(y_l|x))))
+        where odds_θ(y|x) = P_θ(y|x) / (1 - P_θ(y|x))
+
+        Where:
+        - P_θ(y|x): Policy (model) probability
+        - y_w: Chosen sequence
+        - y_l: Rejected sequence
+        - σ: Sigmoid function
+        - β: Weight for the odds ratio loss
+        - odds_θ: Odds function for the policy
+
         Args:
             chosen_logps (torch.Tensor): Avg log probabilities of chosen tokens. Shape: (batch_size,).
             rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
+            full_target (torch.Tensor): Non chunked full target tensor
             beta (float): Weight for the odds ratio loss.
         """
         log_odds = (chosen_logps - rejected_logps) - (
@@ -22,7 +36,15 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
             - torch.log1p(-torch.exp(rejected_logps))
         )
         ratio = F.logsigmoid(log_odds)
-        return beta * ratio.sum()
+        loss = beta * ratio.sum() / (full_target.shape[0] // 2)
+
+        chosen_rewards = beta * chosen_logps
+        rejected_rewards = beta * rejected_logps
+
+        log_odds_ratio = torch.sum(ratio) / (full_target.shape[0] // 2)
+        log_odds_chosen = torch.sum(log_odds) / (full_target.shape[0] // 2)
+
+        return loss, chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen
 
     @staticmethod
     def forward(
@@ -36,12 +58,6 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=True,
         compiled=True,
     ):
-        """
-        Fused linear layer with ORPO (Odds-Ratio Preference Optimization) loss.
-        Handles both the forward and backward pass of the final linear layer with ORPO loss.
-        Inspired from LigerFusedLinearCrossEntropyFunction (https://arxiv.org/abs/2410.10989) which fuses final linear layer and CE loss.
-        """
-
         return LigerFusedLinearPreferenceBase.forward(
             ctx=ctx,
             _input=_input,
@@ -56,10 +72,8 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         )
 
     @staticmethod
-    def backward(ctx, grad_output):
-        # Get gradients for _input, weight, bias, and target from the base class
+    def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        # Return these gradients, followed by None for the remaining inputs
         return *grads, None, None, None, None
 
 

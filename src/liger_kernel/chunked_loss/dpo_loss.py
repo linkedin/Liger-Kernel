@@ -12,19 +12,34 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
     def preference_loss_fn(
         chosen_logps,
         rejected_logps,
+        full_target,
         ref_chosen_logps=None,
         ref_rejected_logps=None,
         beta=0.1,
     ):
         """
-        Compute DPO loss (Direct Preference Optimization).
+        Paper: https://arxiv.org/pdf/2305.18290
+
+        Formula:
+        L_DPO = -E[ log_sigmoid( β * (log(π(y_w|x)/π_ref(y_w|x)) - log(π(y_l|x)/π_ref(y_l|x))) ) ]
+
+        Where:
+        - π(y|x): Policy (model) probability
+        - π_ref(y|x): Reference model probability
+        - y_w: Chosen sequence
+        - y_l: Rejected sequence
+        - β: Weight for the direct preference loss
+        - E: Expected value over the dataset
+
         Args:
-            chosen_logps (torch.Tensor): Avg log probabilities of chosen tokens. Shape: (batch_size,).
-            rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
-            ref_chosen_logps (torch.Tensor, optional): Reference log probabilities of chosen tokens. Shape: (batch_size,).
-            ref_rejected_logps (torch.Tensor, optional): Reference log probabilities of rejected tokens. Shape: (batch_size,).
-            beta (float): Weight for the direct preference loss.
+            chosen_logps: Log probabilities of chosen tokens (batch_size,)
+            rejected_logps: Log probabilities of rejected tokens (batch_size,)
+            full_target: Non chunked full target tensor
+            ref_chosen_logps: Reference log probs of chosen tokens (batch_size,)
+            ref_rejected_logps: Reference log probs of rejected tokens (batch_size,)
+            beta: Weight for the direct preference loss
         """
+
         if ref_chosen_logps is None:
             ref_chosen_logps = torch.tensor(0.0, device=chosen_logps.device)
         if ref_rejected_logps is None:
@@ -34,8 +49,8 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         rejected_logratios = rejected_logps - ref_rejected_logps
 
         logits_diff = beta * (chosen_logratios - rejected_logratios)
-        losses = -F.logsigmoid(logits_diff)
-        return losses.sum()
+        loss = -F.logsigmoid(logits_diff).sum() / (full_target.shape[0] // 2)
+        return loss
 
     @staticmethod
     def forward(
@@ -44,6 +59,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         weight,
         target,
         bias=None,
+        ref_input=None,
         ref_weight=None,
         ref_bias=None,
         ignore_index=-100,
@@ -52,10 +68,6 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         compiled=True,
         use_ref_model=True,
     ):
-        """
-        Fused linear layer with DPO (Direct Preference Optimization) loss.
-        Handles both the forward and backward pass of the final linear layer with DPO loss.
-        """
         return LigerFusedLinearPreferenceBase.forward(
             ctx=ctx,
             _input=_input,
@@ -68,16 +80,15 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             compute_nll_loss=compute_nll_loss,
             compiled=compiled,
             use_ref_model=use_ref_model,
+            ref_input=ref_input,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
         )
 
     @staticmethod
-    def backward(ctx, grad_output):
-        # Get gradients for _input, weight, bias, and target from the base class
+    def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        # Return these gradients, followed by None for the remaining inputs
-        return *grads, None, None, None, None, None, None, None
+        return *grads, None, None, None, None, None, None, None, None
 
 
 class LigerFusedLinearDPOLoss(torch.nn.Module):
@@ -109,13 +120,21 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         self.use_ref_model = use_ref_model
 
     def forward(
-        self, lin_weight, _input, target, bias=None, ref_weight=None, ref_bias=None
+        self,
+        lin_weight,
+        _input,
+        target,
+        bias=None,
+        ref_input=None,
+        ref_weight=None,
+        ref_bias=None,
     ):
         return LigerFusedLinearDPOFunction.apply(
             _input,
             lin_weight,
             target,
             bias,
+            ref_input,
             ref_weight,
             ref_bias,
             self.ignore_index,
