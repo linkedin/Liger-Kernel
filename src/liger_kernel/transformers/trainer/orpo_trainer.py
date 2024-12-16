@@ -125,6 +125,10 @@ class LigerORPOTrainer(ORPOTrainer):
             outputs.last_hidden_state,
             concatenated_batch["concatenated_labels"],
         )
+        # if aux_loss_enabled, add the aux_loss to the orpo_loss
+        if self.aux_loss_enabled:
+            orpo_loss += self.aux_loss_coef * outputs.aux_loss
+
         return orpo_loss, aux_outputs
 
     def get_batch_loss_metrics(
