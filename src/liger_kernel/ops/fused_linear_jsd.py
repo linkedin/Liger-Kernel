@@ -4,7 +4,12 @@ import torch
 import triton
 
 from liger_kernel.ops.jsd import _jsd_kernel
-from liger_kernel.ops.utils import amp_custom_bwd, amp_custom_fwd, element_mul_kernel
+from liger_kernel.ops.utils import (
+    amp_custom_bwd,
+    amp_custom_fwd,
+    element_mul_kernel,
+    is_hip,
+)
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
@@ -147,7 +152,7 @@ def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
             grad_output,
             H,
             BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32,
+            num_warps=32 if not is_hip() else 16,
         )
 
         # handle grad_weight
@@ -161,7 +166,7 @@ def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
                 grad_output,
                 H,
                 BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32,
+                num_warps=32 if not is_hip() else 16,
             )
 
     return grad_input, grad_weight
@@ -197,7 +202,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
             teacher_input (torch.tensor): input of the last projection layer in teacher model, with shape (B*T, H), where B is batch size, T is sequence length, H is hidden dimension.
             teacher_weight (torch.tensor): the last projection layer in teacher model, with shape (V, H), where V is vocab size
             shift_labels (Optional[torch.LongTensor]): indicator of next predicted vocab with shape (BT) where each value is in [0, V-1].
-            jsd_beta (float): coefficient beta of generalized JSD in the open interval (0, 1). Default: `0.5`
+            jsd_beta (float): coefficient beta of generalized JSD in the interval [0, 1]. It implements forward/reverse KL when beta equals 0 and 1 respectively. Default: `0.5`
             ignore_index (int): the index to ignore. Default: -100
             temperature (float): temperature in softmax function to control the output probability distribution. Default: `1.0`
 

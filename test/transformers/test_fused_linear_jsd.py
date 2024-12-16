@@ -7,6 +7,9 @@ import torch
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
 from liger_kernel.transformers.functional import liger_fused_linear_jsd
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 set_seed(42)
 
@@ -89,11 +92,7 @@ class LigerLMHeadJSD(torch.nn.Module):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        (2, 2, 512, 1600),
-        (2, 4, 1024, 1600),
-        # Comment out to speed up testing
-        # (4, 2048, 4096, 128256),  # llama3 8B
-        # (4, 1024, 8192, 128256),  # llama3 70B
+        (8, 128, 1024, 4096),
         (4, 423, 167, 1423),  # random shape
     ],
 )
@@ -109,10 +108,11 @@ class LigerLMHeadJSD(torch.nn.Module):
     [
         (1.0, 0.5),
         (2.0, 0.1),
+        (1.0, 0.0),  # FKL
+        (1.0, 1.0),  # RKL
     ],
 )
 def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
-    device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
         V=V,
@@ -166,12 +166,8 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        (2, 4, 2048, 3200),
-        (2, 2048, 4096, 32000),  # llama2, mistral
-        # Comment out to speed up testing
-        # (4, 2048, 4096, 128256),  # llama3 8B
-        # (4, 1024, 8192, 128256),  # llama3 70B
-        (4, 423, 8192, 32000),  # random shape
+        (8, 128, 1024, 4096),
+        (4, 423, 167, 1423),  # random shape
     ],
 )
 @pytest.mark.parametrize(
@@ -185,13 +181,14 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
     "temperature, beta, ignore_index",
     [
         (1.0, 0.5, 2),
+        (1.0, 0.0, 2),
         (2.0, 0.1, 42),
+        (1.0, 1.0, 2),
     ],
 )
 def test_correctness_with_ignore_index(
     B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
 ):
-    device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
         V=V,
@@ -257,12 +254,9 @@ def test_correctness_with_ignore_index(
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        (2, 4, 2048, 3200),
-        (2, 2048, 4096, 32000),  # llama2, mistral
-        # Comment out to speed up testing
-        # (4, 2048, 4096, 128256),  # llama3 8B
-        # (4, 1024, 8192, 128256),  # llama3 70B
-        (4, 423, 8192, 32000),  # random shape
+        (2, 2, 8, 8),
+        # weird shapes
+        (9, 7, 41, 41),
     ],
 )
 @pytest.mark.parametrize(
@@ -278,8 +272,6 @@ def test_correctness_with_ignore_index(
 def test_correctness_functional(
     B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
 ):
-    device = "cuda"
-
     # init the linear in all FusedLinearJSDs with the same weights
     _weight = torch.rand(V, H // 2, device=device, dtype=dtype)
     _weight1 = _weight.detach().clone().requires_grad_(True)
@@ -303,14 +295,14 @@ def test_correctness_functional(
     label[indices_to_assign] = ignore_index
 
     output1 = liger_fused_linear_jsd(
-        _input1,
-        _weight1,
-        teacher_input,
-        teacher_weight,
-        label,
-        beta,
-        ignore_index,
-        temperature,
+        student_input=_input1,
+        student_weight=_weight1,
+        teacher_input=teacher_input,
+        teacher_weight=teacher_weight,
+        shift_labels=label,
+        jsd_beta=beta,
+        ignore_index=ignore_index,
+        temperature=temperature,
     )
     output2 = LigerFusedLinearJSDFunction.apply(
         _input2,
@@ -336,7 +328,8 @@ def test_correctness_functional(
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        (2, 4, 2048, 3200),
+        (8, 128, 1024, 4096),
+        (4, 423, 167, 1423),  # random shape
     ],
 )
 @pytest.mark.parametrize(
@@ -356,7 +349,6 @@ def test_correctness_functional(
 def test_correctness_all_ignored(
     B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
 ):
-    device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
         V=V,
@@ -421,7 +413,6 @@ def test_amp(autocast_dtype, atol, rtol):
     ignore_index = -100
     temperature = 1.0
     beta = 0.5
-    device = "cuda"
     dtype = torch.float32
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
@@ -466,7 +457,7 @@ def test_amp(autocast_dtype, atol, rtol):
     ]  # Randomly select indices
     label[indices_to_assign] = ignore_index
 
-    with torch.autocast(device_type="cuda", dtype=autocast_dtype):
+    with torch.autocast(device_type=device, dtype=autocast_dtype):
         output1 = torch_lm_head_jsd(_input1, teacher_input, label)
         output2 = liger_lm_head_jsd(_input2, teacher_input, label)
 

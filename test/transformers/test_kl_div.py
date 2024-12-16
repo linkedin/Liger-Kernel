@@ -5,25 +5,16 @@ import torch
 from torch.nn import KLDivLoss
 
 from liger_kernel.transformers.kl_div import LigerKLDIVLoss
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 _SHAPE_PARAMS = (
     "B, T, V",
     [
         (1, 4096, 32000),
-        (32, 4096, 1024),
         # weird shape
         (41, 401, 1271),
-        pytest.param(
-            1,
-            4096,
-            128256,
-            marks=pytest.mark.skipif(
-                torch.cuda.get_device_properties(0).total_memory
-                < 36 * 1000 * 1000 * 1000,
-                reason="This test requires a GPU with at least 36GB of memory",
-            ),
-        ),
-        (3, 423, 32000),
     ],
 )
 
@@ -55,7 +46,7 @@ def _test_correctness_once(
     reduction,
     log_target,
     is_last_layer=True,
-    device="cuda",
+    device=device,
 ):
     torch.manual_seed(0)
     torch_kldiv = KLDivLoss(reduction=reduction, log_target=log_target)

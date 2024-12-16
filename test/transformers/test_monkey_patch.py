@@ -23,6 +23,25 @@ from liger_kernel.transformers.monkey_patch import (
 )
 
 
+# Check if optional modules are available
+def is_mllama_available():
+    try:
+        import transformers.models.mllama  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def is_qwen2_vl_available():
+    try:
+        import transformers.models.qwen2_vl  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def test_import_from_root():
     try:
         from liger_kernel.transformers import (  # noqa: F401
@@ -249,7 +268,14 @@ def test_apply_liger_kernel_to_instance_for_llama():
                 layer.post_attention_layernorm.forward
             ) == inspect.getsource(LigerRMSNorm.forward)
 
+        # Ensure that the model patched with Liger modules can work properly
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
+
+@pytest.mark.skipif(not is_mllama_available(), reason="mllama module not available")
 def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.mllama.modeling_mllama"):
@@ -362,7 +388,13 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
                 layer.post_attention_layernorm.forward
             ) == inspect.getsource(LigerLayerNorm.forward)
 
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
+
+@pytest.mark.skipif(not is_mllama_available(), reason="mllama module not available")
 def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.mllama.modeling_mllama"):
@@ -419,6 +451,11 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
                 layer.post_attention_layernorm.forward
             ) == inspect.getsource(LigerRMSNorm.forward)
 
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
 
 def test_apply_liger_kernel_to_instance_for_mistral():
     # Ensure any monkey patching is cleaned up for subsequent tests
@@ -466,6 +503,11 @@ def test_apply_liger_kernel_to_instance_for_mistral():
             assert inspect.getsource(
                 layer.post_attention_layernorm.forward
             ) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
 def test_apply_liger_kernel_to_instance_for_mixtral():
@@ -519,6 +561,11 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
                 layer.post_attention_layernorm.forward
             ) == inspect.getsource(LigerRMSNorm.forward)
 
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
 
 def test_apply_liger_kernel_to_instance_for_gemma():
     # Ensure any monkey patching is cleaned up for subsequent tests
@@ -566,6 +613,11 @@ def test_apply_liger_kernel_to_instance_for_gemma():
             assert inspect.getsource(
                 layer.post_attention_layernorm.forward
             ) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
 def test_apply_liger_kernel_to_instance_for_gemma2():
@@ -627,6 +679,11 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
                 layer.post_feedforward_layernorm.forward
             ) == inspect.getsource(LigerRMSNorm.forward)
 
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
 
 def test_apply_liger_kernel_to_instance_for_qwen2():
     # Ensure any monkey patching is cleaned up for subsequent tests
@@ -675,7 +732,13 @@ def test_apply_liger_kernel_to_instance_for_qwen2():
                 layer.post_attention_layernorm.forward
             ) == inspect.getsource(LigerRMSNorm.forward)
 
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
+
+@pytest.mark.skipif(not is_qwen2_vl_available(), reason="qwen2_vl module not available")
 def test_apply_liger_kernel_to_instance_for_qwen2_vl():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_vl.modeling_qwen2_vl"):
@@ -753,6 +816,11 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl():
                 LigerLayerNorm.forward
             )
 
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
 
 def test_apply_liger_kernel_to_instance_for_phi3():
     # Ensure any monkey patching is cleaned up for subsequent tests
@@ -800,3 +868,8 @@ def test_apply_liger_kernel_to_instance_for_phi3():
             assert inspect.getsource(
                 layer.post_attention_layernorm.forward
             ) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")

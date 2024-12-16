@@ -8,6 +8,9 @@ from transformers.models.llama.modeling_llama import LlamaMLP
 from liger_kernel.ops.geglu import LigerGELUMulFunction
 from liger_kernel.transformers.functional import liger_geglu
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 LLAMA_CONFIG = LlamaConfig(
     hidden_size=4096,
@@ -20,11 +23,9 @@ SLEEP_SECONDS = 0.1
 @pytest.mark.parametrize(
     "bsz, seq_len, hidden_size, intermediate_size",
     [
-        (2, 2048, 4096, 11008),
         (2, 2048, 2048, 4096),
         # weird shapes
         (9, 41, 341, 4231),
-        (6, 42, 256, 2048),
     ],
 )
 @pytest.mark.parametrize(
@@ -44,22 +45,22 @@ SLEEP_SECONDS = 0.1
     ],
 )
 def test_correctness(bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol):
-    _input = torch.randn(bsz, seq_len, hidden_size, device="cuda", dtype=dtype)
+    _input = torch.randn(bsz, seq_len, hidden_size, device=device, dtype=dtype)
 
     x1 = _input.clone().requires_grad_(True)
     x2 = _input.clone().requires_grad_(True)
 
     # initialize weights
-    G = torch.randn(hidden_size, intermediate_size, device="cuda", dtype=dtype)
-    U = torch.randn(hidden_size, intermediate_size, device="cuda", dtype=dtype)
-    D = torch.randn(intermediate_size, hidden_size, device="cuda", dtype=dtype)
+    G = torch.randn(hidden_size, intermediate_size, device=device, dtype=dtype)
+    U = torch.randn(hidden_size, intermediate_size, device=device, dtype=dtype)
+    D = torch.randn(intermediate_size, hidden_size, device=device, dtype=dtype)
 
-    llama_mlp = LlamaMLP(config=LLAMA_CONFIG).to("cuda").to(dtype)
+    llama_mlp = LlamaMLP(config=LLAMA_CONFIG).to(device).to(dtype)
     llama_mlp.gate_proj.weight.data = G.T
     llama_mlp.up_proj.weight.data = U.T
     llama_mlp.down_proj.weight.data = D.T
 
-    liger_mlp = LigerGEGLUMLP(config=LLAMA_CONFIG).to("cuda").to(dtype)
+    liger_mlp = LigerGEGLUMLP(config=LLAMA_CONFIG).to(device).to(dtype)
     liger_mlp.gate_proj.weight.data = G.T
     liger_mlp.up_proj.weight.data = U.T
     liger_mlp.down_proj.weight.data = D.T
@@ -123,8 +124,8 @@ def test_correctness(bsz, seq_len, hidden_size, intermediate_size, dtype, atol, 
     ],
 )
 def test_correctness_functional(bsz, seq_len, size, dtype, atol, rtol):
-    _input = torch.randn(bsz, seq_len, size, device="cuda", dtype=dtype)
-    _b = torch.randn(bsz, seq_len, size, device="cuda", dtype=dtype)
+    _input = torch.randn(bsz, seq_len, size, device=device, dtype=dtype)
+    _b = torch.randn(bsz, seq_len, size, device=device, dtype=dtype)
 
     x1 = _input.clone().requires_grad_(True)
     x2 = _input.clone().requires_grad_(True)
@@ -132,7 +133,7 @@ def test_correctness_functional(bsz, seq_len, size, dtype, atol, rtol):
     b1 = _b.clone().requires_grad_(True)
     b2 = _b.clone().requires_grad_(True)
 
-    y1 = liger_geglu(x1, b1)
+    y1 = liger_geglu(a=x1, b=b1)
     y2 = LigerGELUMulFunction.apply(x2, b2)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)

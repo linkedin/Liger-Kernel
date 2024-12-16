@@ -60,6 +60,10 @@ try:
 except ImportError:
     QWEN2_VL_AVAILABLE = False
 
+from liger_kernel.utils import infer_device
+
+device = infer_device()
+
 MINI_MODEL_SETUPS = {
     "mini_llama3": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_llama,
@@ -331,8 +335,15 @@ if QWEN2_VL_AVAILABLE:
         model_class=Qwen2VLForConditionalGeneration,
         mini_model_config=Qwen2VLConfig(
             attention_dropout=0.0,
+            # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
             bos_token_id=1,  # 151643
             eos_token_id=2,  # 151645
+            vision_start_token_id=32765,  # vocab_size - 5
+            vision_end_token_id=32766,  # vocab_size - 4
+            vision_token_id=32767,  # vocab_size - 3
+            image_token_id=32768,  # vocab_size - 2
+            video_token_id=32769,  # vocab_size - 1
             hidden_act="silu",
             hidden_size=1536,  # 8192
             initializer_range=0.02,
@@ -351,7 +362,7 @@ if QWEN2_VL_AVAILABLE:
             sliding_window=4096,
             tie_word_embeddings=False,
             use_cache=True,
-            vocab_size=32000,  # 152064
+            vocab_size=32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
             use_sliding_window=False,
             vision_config={
                 "depth": 4,  # 32
@@ -394,13 +405,15 @@ def run_mini_model(
 
     set_seed(42)
 
+    revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
+    if "mllama" in model_name:
+        revert_kwargs["model_type"] = "causal_lm"
+
     if with_liger is True:
         kwargs = {
+            "rope": True,
             "rms_norm": True,
         }
-        model_supports_rope = "qwen2_vl" not in model_name
-        if model_supports_rope:
-            kwargs["rope"] = True
 
         model_supports_layer_norm = "qwen2_vl" in model_name
         if model_supports_layer_norm:
@@ -411,18 +424,14 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
-        model_support_flce = "gemma2" not in model_name
-        if model_support_flce:
-            kwargs["fused_linear_cross_entropy"] = True
-            kwargs["cross_entropy"] = False
-        else:
-            kwargs["cross_entropy"] = True
+        kwargs["fused_linear_cross_entropy"] = False
+        kwargs["cross_entropy"] = True
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
-        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
-    model = create_model(model_name).to(dtype).to("cuda")
+    model = create_model(model_name).to(dtype).to(device)
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
     loader = DataLoader(
         train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn
@@ -441,7 +450,7 @@ def run_mini_model(
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
-    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func()
+    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
     return {"loss": loss_list, "logits": output.logits, "model": model}
 
 
@@ -603,7 +612,7 @@ def run_mini_model(
         #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
         #     ),
         # ),
-        # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
+        # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match
         ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_gemma1",
@@ -636,8 +645,8 @@ def run_mini_model(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
         ),
-        # TODO: Gemma2 tests are not passing within the tolerance range, need to investigate
-        # ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        # TODO: Gemma2 test for bf16 is not passing within the tolerance range, might be casting issue, need to investigate
         # pytest.param(
         #     "mini_gemma2",
         #     32,
@@ -686,14 +695,14 @@ def test_mini_model(
     )
 
     # No logits are materialized
-
-    # # Compare the logits from the last step
-    # assert_verbose_allclose(
-    #     expected_output["logits"],
-    #     actual_output["logits"],
-    #     atol=logits_atol,
-    #     rtol=logits_rtol,
-    # )
+    # import pdb; pdb.set_trace()
+    # Compare the logits from the last step
+    assert_verbose_allclose(
+        expected_output["logits"],
+        actual_output["logits"],
+        atol=logits_atol,
+        rtol=logits_rtol,
+    )
 
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them

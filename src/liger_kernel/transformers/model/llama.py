@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -17,6 +17,9 @@ from liger_kernel.transformers.fused_linear_cross_entropy import (
     LigerFusedLinearCrossEntropyLoss,
 )
 
+if TYPE_CHECKING:
+    from transformers.cache_utils import Cache
+
 
 @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
 @replace_return_docstrings(
@@ -27,7 +30,7 @@ def lce_forward_deprecated(
     input_ids: torch.LongTensor = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[List[torch.FloatTensor]] = None,
+    past_key_values: Optional[Union["Cache", List[torch.FloatTensor]]] = None,
     inputs_embeds: Optional[torch.FloatTensor] = None,
     labels: Optional[torch.LongTensor] = None,
     use_cache: Optional[bool] = None,
@@ -153,19 +156,19 @@ def lce_forward_deprecated(
 )
 def lce_forward(
     self,
-    input_ids=None,
-    attention_mask=None,
-    position_ids=None,
-    past_key_values=None,
-    inputs_embeds=None,
-    labels=None,
-    use_cache=None,
-    output_attentions=None,
-    output_hidden_states=None,
-    return_dict=None,
-    cache_position=None,
-    num_logits_to_keep=0,
-    **kwargs,
+    input_ids: torch.LongTensor = None,
+    attention_mask: Optional[torch.Tensor] = None,
+    position_ids: Optional[torch.LongTensor] = None,
+    past_key_values: Optional[Union["Cache", List[torch.FloatTensor]]] = None,
+    inputs_embeds: Optional[torch.FloatTensor] = None,
+    labels: Optional[torch.LongTensor] = None,
+    use_cache: Optional[bool] = None,
+    output_attentions: Optional[bool] = None,
+    output_hidden_states: Optional[bool] = None,
+    return_dict: Optional[bool] = None,
+    cache_position: Optional[torch.LongTensor] = None,
+    num_logits_to_keep: int = 0,
+    **loss_kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
     r"""
     Args:
@@ -224,7 +227,6 @@ def lce_forward(
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
         cache_position=cache_position,
-        **kwargs,
     )
 
     hidden_states = outputs[0]
@@ -245,12 +247,12 @@ def lce_forward(
         shift_hidden_states = shift_hidden_states.view(-1, self.config.hidden_size)
         shift_labels = shift_labels.view(-1)
 
-        reduction = "sum" if "num_items_in_batch" in kwargs else "mean"
+        reduction = "sum" if "num_items_in_batch" in loss_kwargs else "mean"
         lce = LigerFusedLinearCrossEntropyLoss(reduction=reduction)
 
         loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
         if reduction == "sum":
-            loss /= kwargs["num_items_in_batch"]
+            loss /= loss_kwargs["num_items_in_batch"]
 
     else:  # if in inference mode materialize logits
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
@@ -259,7 +261,7 @@ def lce_forward(
                 logits=logits,
                 labels=labels,
                 vocab_size=self.config.vocab_size,
-                **kwargs,
+                **loss_kwargs,
             )
 
     if not return_dict:

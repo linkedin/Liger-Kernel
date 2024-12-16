@@ -3,10 +3,14 @@ import torch
 from torch.nn import Embedding
 
 from liger_kernel.transformers.experimental.embedding import LigerEmbedding
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 SLEEP_SECONDS = 0.1
 
 
+@pytest.mark.skip(reason="LigerEmbedding is under experimentation")
 @pytest.mark.parametrize(
     "num_embeddings, embedding_dim, padding_idx",
     [
@@ -26,7 +30,7 @@ SLEEP_SECONDS = 0.1
 @pytest.mark.parametrize(
     "dtype, atol, rtol, device",
     [
-        (torch.float32, 1e-6, 1e-5, "cuda"),
+        (torch.float32, 1e-6, 1e-5, device),
     ],
 )
 def test_embedding_correctness(

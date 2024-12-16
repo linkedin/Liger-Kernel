@@ -20,6 +20,12 @@ import triton
 import triton.language as tl
 from packaging.version import Version
 
+from liger_kernel.utils import infer_device
+
+
+def is_hip() -> bool:
+    return torch.version.hip is not None
+
 
 def ensure_contiguous(fn):
     @functools.wraps(fn)
@@ -47,7 +53,7 @@ def calculate_settings(n):
 
     num_warps = 4
     if BLOCK_SIZE >= 32768:
-        num_warps = 32
+        num_warps = 32 if not is_hip() else 16
     elif BLOCK_SIZE >= 8192:
         num_warps = 16
     elif BLOCK_SIZE >= 2048:
@@ -65,10 +71,11 @@ def compare_version(package: str, operator: Callable, target: str):
 
 
 def get_amp_custom_fwd_bwd() -> Callable:
+    device = infer_device()
     if compare_version("torch", operator.ge, "2.4.0"):
         return (
-            functools.partial(torch.amp.custom_fwd, device_type="cuda"),
-            functools.partial(torch.amp.custom_bwd, device_type="cuda"),
+            functools.partial(torch.amp.custom_fwd, device_type=device),
+            functools.partial(torch.amp.custom_bwd, device_type=device),
         )
     return torch.cuda.amp.custom_fwd, torch.cuda.amp.custom_bwd
 

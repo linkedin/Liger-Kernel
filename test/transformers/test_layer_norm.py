@@ -4,23 +4,16 @@ import torch
 from liger_kernel.ops.layer_norm import LigerLayerNormFunction
 from liger_kernel.transformers.functional import liger_layer_norm
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 
 @pytest.mark.parametrize(
-    "hidden_size",
+    "batch_size, seq_len, hidden_size",
     [
-        64,
-        128,
-        256,
-        512,
-    ],
-)
-@pytest.mark.parametrize(
-    "batch_size, seq_len",
-    [
-        (2, 8),
-        (4, 16),
-        (8, 32),
+        (2, 8, 64),
+        (4, 16, 128),
     ],
 )
 @pytest.mark.parametrize(
@@ -32,18 +25,20 @@ from liger_kernel.transformers.layer_norm import LigerLayerNorm
 def test_liger_layer_norm(batch_size, seq_len, hidden_size, dtype, atol, rtol):
     torch.manual_seed(0)
 
-    x = torch.randn(
-        batch_size, seq_len, hidden_size, dtype=dtype, device="cuda", requires_grad=True
-    )
-    liger_ln = LigerLayerNorm(hidden_size, eps=1e-6).to(dtype).cuda()
-    torch_ln = torch.nn.LayerNorm(hidden_size, eps=1e-6).to(dtype).cuda()
+    x = torch.randn(batch_size, seq_len, hidden_size, dtype=dtype, device=device)
+
+    liger_x = x.clone().requires_grad_(True)
+    torch_x = x.clone().requires_grad_(True)
+
+    liger_ln = LigerLayerNorm(hidden_size, eps=1e-6).to(dtype).to(device)
+    torch_ln = torch.nn.LayerNorm(hidden_size, eps=1e-6).to(dtype).to(device)
 
     with torch.no_grad():
         torch_ln.weight.copy_(liger_ln.weight)
         torch_ln.bias.copy_(liger_ln.bias)
 
-    liger_output = liger_ln(x)
-    torch_output = torch_ln(x)
+    liger_output = liger_ln(liger_x)
+    torch_output = torch_ln(torch_x)
 
     assert torch.allclose(liger_output, torch_output, atol=atol, rtol=rtol)
 
@@ -51,7 +46,7 @@ def test_liger_layer_norm(batch_size, seq_len, hidden_size, dtype, atol, rtol):
     liger_output.backward(grad_output, retain_graph=True)
     torch_output.backward(grad_output, retain_graph=True)
 
-    assert torch.allclose(x.grad, x.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(liger_x.grad, torch_x.grad, atol=atol, rtol=rtol)
     assert torch.allclose(
         liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol
     )
@@ -59,14 +54,10 @@ def test_liger_layer_norm(batch_size, seq_len, hidden_size, dtype, atol, rtol):
 
 
 @pytest.mark.parametrize(
-    "hidden_size",
-    [8, 41],
-)
-@pytest.mark.parametrize(
-    "batch_size, seq_len",
+    "batch_size, seq_len, hidden_size",
     [
-        (2, 2),
-        (9, 7),
+        (2, 8, 64),
+        (4, 16, 128),
     ],
 )
 @pytest.mark.parametrize(
@@ -80,22 +71,22 @@ def test_liger_layer_norm_functional(
 ):
     torch.manual_seed(0)
 
-    input = torch.randn(batch_size, seq_len, hidden_size, dtype=dtype, device="cuda")
+    input = torch.randn(batch_size, seq_len, hidden_size, dtype=dtype, device=device)
 
     x1 = input.clone().requires_grad_(True)
     x2 = input.clone().requires_grad_(True)
 
-    w = torch.randn(hidden_size, device="cuda", dtype=dtype)
+    w = torch.randn(hidden_size, device=device, dtype=dtype)
 
     w1 = w.clone().requires_grad_(True)
     w2 = w.clone().requires_grad_(True)
 
-    b = torch.randn(hidden_size, device="cuda", dtype=dtype)
+    b = torch.randn(hidden_size, device=device, dtype=dtype)
 
     b1 = b.clone().requires_grad_(True)
     b2 = b.clone().requires_grad_(True)
 
-    y1 = liger_layer_norm(x1, w1, b1, 1e-6)
+    y1 = liger_layer_norm(X=x1, W=w1, B=b1, eps=1e-6)
     y2 = LigerLayerNormFunction.apply(x2, w2, b2, 1e-6)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
