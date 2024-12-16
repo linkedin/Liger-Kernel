@@ -20,42 +20,8 @@ device = infer_device()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
-class LigerLMHeadDPO(torch.nn.Module):
-    def __init__(
-        self,
-        H: int,
-        V: int,
-        dtype: torch.dtype,
-        beta: float = 0.1,
-        ignore_index: int = -100,
-        bias: bool = False,
-    ):
-        super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
-        self.beta = beta
-        self.ignore_index = ignore_index
-
-    def forward(self, x, ref_x, target):
-        return LigerFusedLinearDPOFunction.apply(
-            x,
-            self.lin.weight,
-            target,
-            self.lin.bias if hasattr(self.lin, "bias") else None,
-            ref_x,
-            self.lin.weight,
-            self.lin.bias if hasattr(self.lin, "bias") else None,
-            self.ignore_index,
-            self.beta,
-            True,
-            True,
-            True,
-        )
-
-
 def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    from test.chunked_loss.test_dpo_loss import TorchLMHeadDPO
+    from test.chunked_loss.test_dpo_loss import LigerLMHeadDPO, TorchLMHeadDPO
 
     B = input.x
     T = input.extra_benchmark_config["T"]
@@ -104,7 +70,7 @@ def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
 
 def bench_speed_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    from test.chunked_loss.test_dpo_loss import TorchLMHeadDPO
+    from test.chunked_loss.test_dpo_loss import LigerLMHeadDPO, TorchLMHeadDPO
 
     B = input.x
     T = input.extra_benchmark_config["T"]

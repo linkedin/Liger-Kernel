@@ -20,18 +20,6 @@ device = infer_device()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
-class LigerLMHeadSimPO(torch.nn.Module):
-    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
-        super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype
-        )
-        self.simpo_loss = LigerFusedLinearSimPOFunction.apply
-
-    def forward(self, x, y):
-        return self.simpo_loss(x, self.lin.weight, y)
-
-
 #############################################################################
 # Test the memory consumption of the linear fused cross entropy loss
 #############################################################################
@@ -40,7 +28,7 @@ class LigerLMHeadSimPO(torch.nn.Module):
 def bench_memory_fused_linear_simpo_loss(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
-    from test.chunked_loss.test_simpo_loss import TorchLMHeadCPO
+    from test.chunked_loss.test_simpo_loss import LigerLMHeadSimPO, TorchLMHeadCPO
 
     B = input.x
     T = input.extra_benchmark_config["T"]
@@ -85,7 +73,7 @@ def bench_memory_fused_linear_simpo_loss(
 def bench_speed_fused_linear_simpo_loss(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
-    from test.chunked_loss.test_simpo_loss import TorchLMHeadCPO
+    from test.chunked_loss.test_simpo_loss import LigerLMHeadSimPO, TorchLMHeadCPO
 
     B = input.x
     T = input.extra_benchmark_config["T"]
