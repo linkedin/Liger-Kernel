@@ -1,0 +1,8 @@
+sphinx>=7.0.0
+furo>=2023.09.10
+sphinxcontrib-applehelp>=1.0.4
+sphinxcontrib-devhelp>=1.0.2
+sphinxcontrib-htmlhelp>=2.0.1
+sphinxcontrib-serializinghtml>=1.1.5
+sphinxcontrib-qthelp>=1.0.3
+typing-extensions>=4.8.0
