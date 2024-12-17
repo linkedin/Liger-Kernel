@@ -1,4 +1,3 @@
-## Low-level APIs
 
 - `Fused Linear` kernels combine linear layers with losses, reducing memory usage by up to 80% - ideal for HBM-constrained workloads.
 - Other kernels use fusion and in-place techniques for memory and performance optimization.

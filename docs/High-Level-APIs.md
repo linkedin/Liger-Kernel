@@ -1,4 +1,3 @@
-## High-level APIs
 
 ### AutoModel
 
