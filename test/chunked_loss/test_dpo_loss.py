@@ -131,8 +131,8 @@ class LigerLMHeadDPO(torch.nn.Module):
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        (1.0, torch.bfloat16, 5e-2, 5e-1),
-        (1.0, torch.float32, 2e-2, 5e-1),
+        (1.0, torch.bfloat16, 5e-3, 5e-3),
+        (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
