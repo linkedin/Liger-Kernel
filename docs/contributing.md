@@ -43,7 +43,7 @@ Leave `#take` in the comment and tag the maintainer.
 - `benchmark/`: Execution time and memory benchmarks compared to Hugging Face layers.
 
 ## Adding support for a new model
-To get familiar with the folder structure, please refer to https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.
+To get familiar with the folder structure, please refer [here](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.).
 
 1. **Figure out the kernels that can be monkey-patched**
    - Check the `src/liger_kernel/ops` directory to find the kernels that can be monkey-patched.
@@ -57,7 +57,7 @@ To get familiar with the folder structure, please refer to https://github.com/li
    - Create unit tests and convergence tests for the monkey-patched model in the tests directory. Ensure that your tests cover all functionalities of the monkey-patched model.
 
 ## Adding a New Kernel
-To get familiar with the folder structure, please refer to https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.
+To get familiar with the folder structure, please refer [here](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.).
 
 1. **Create Your Kernel**
 Add your kernel implementation in `src/liger_kernel/`.
@@ -92,7 +92,7 @@ Fork the repo, copy and paste the successful test logs in the PR and submit the 
 
 > As a contributor, you represent that the code you submit is your original work or that of your employer (in which case you represent you have the right to bind your employer).  By submitting code, you (and, if applicable, your employer) are licensing the submitted code to LinkedIn and the open source community subject to the BSD 2-Clause license.
 
-## Release (maintainer only)
+#### Release (Maintainer only)
 
 1. Bump the version in pyproject.toml to the desired version (for example, `0.2.0`)
 2. Submit a PR and merge
@@ -100,7 +100,7 @@ Fork the repo, copy and paste the successful test logs in the PR and submit the 
 4. Adding release note: Minimum requirement is to click the `Generate Release Notes` button that will automatically generates 1) changes included, 2) new contributors. It's good to add sections on top to highlight the important changes.
 5. New pip uploading will be triggered upon a new release. NOTE: Both pre-release and official release will trigger the workflow to build wheel and publish to pypi, so please be sure that step 1-3 are followed correctly!
 
-### Notes on version:
+#### Notes on version:
 Here we follow the [sematic versioning](https://semver.org/). Denote the version as `major.minor.patch`, we increment:
 - Major version when there is backward incompatible change
 - Minor version when there is new backward-compatible functionality
