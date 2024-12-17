@@ -35,7 +35,7 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
             gamma (float): gemma margin term
         """
         logits = beta * (chosen_logps - rejected_logps) - gamma
-        loss = F.logsigmoid(logits).sum() / (full_target.shape[0] // 2)
+        loss = - F.logsigmoid(logits).sum() / (full_target.shape[0] // 2)
         return loss
 
     @staticmethod

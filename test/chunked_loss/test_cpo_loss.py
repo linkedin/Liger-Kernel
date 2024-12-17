@@ -59,13 +59,13 @@ class HFCPOLoss(HFAlignmentLoss):
         # calculates a conservative CPO loss.
         if self.loss_type == "sigmoid":
             # This reduces to Equation 3 from the CPO paper when label_smoothing -> 0.
-            losses = (
+            losses = - (
                 F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
                 + F.logsigmoid(-self.beta * logits) * self.label_smoothing
             )
         elif self.loss_type == "simpo":
             logits = logits - (self.simpo_gamma / self.beta)
-            losses = (
+            losses = - (
                 F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
                 + F.logsigmoid(-self.beta * logits) * self.label_smoothing
             )

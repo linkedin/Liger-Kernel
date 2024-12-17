@@ -32,7 +32,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             beta (float): Weight for the CPO loss
         """
         logits = beta * (chosen_logps - rejected_logps)
-        loss = F.logsigmoid(logits).sum() / (full_target.shape[0] // 2)
+        loss = - F.logsigmoid(logits).sum() / (full_target.shape[0] // 2)
         return loss
 
     @staticmethod
