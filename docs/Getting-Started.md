@@ -1,5 +1,3 @@
-## Getting Started
-
 There are a couple of ways to apply Liger kernels, depending on the level of customization required.
 
 ### 1. Use AutoLigerKernelForCausalLM

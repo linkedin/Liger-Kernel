@@ -11,6 +11,16 @@ theme:
     - navigation.footer
     - toc.follow
     - navigation.top
+    - navigation.sections
+  nav:
+  - Home: index.md
+  - Examples: Examples.md
+  - Getting Started: Getting-Started.md
+  - High Level APIs: High-Level-APIs.md
+  - Low Level APIs: Low-Level-APIs.md
+  - Contributing: contributing.md
+  - Acknowledgment: acknowledgement.md
+  - License: license.md
   palette:
     # Dark Mode
     - scheme: slate
