@@ -67,6 +67,4 @@ class LigerJSD(torch.nn.Module):
         log_p: torch.Tensor,
         shift_labels: Optional[torch.LongTensor] = None,
     ):
-        return LigerJSDFunction.apply(
-            log_q, log_p, shift_labels, self.beta, self.ignore_index
-        )
+        return LigerJSDFunction.apply(log_q, log_p, shift_labels, self.beta, self.ignore_index)

@@ -7,9 +7,7 @@ from liger_kernel.ops.experimental.embedding import LigerEmbeddingFunction
 
 
 class LigerEmbedding(nn.Module):
-    def __init__(
-        self, num_embeddings, embedding_dim, padding_idx: Optional[int] = None
-    ):
+    def __init__(self, num_embeddings, embedding_dim, padding_idx: Optional[int] = None):
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim

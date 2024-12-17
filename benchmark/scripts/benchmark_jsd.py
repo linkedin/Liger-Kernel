@@ -1,13 +1,12 @@
 import torch
 import triton
-from utils import (
-    QUANTILES,
-    SingleBenchmarkRunInput,
-    SingleBenchmarkRunOutput,
-    _test_memory,
-    parse_benchmark_script_args,
-    run_benchmarks,
-)
+
+from utils import QUANTILES
+from utils import SingleBenchmarkRunInput
+from utils import SingleBenchmarkRunOutput
+from utils import _test_memory
+from utils import parse_benchmark_script_args
+from utils import run_benchmarks
 
 from liger_kernel.transformers.jsd import LigerJSD
 from liger_kernel.utils import infer_device
@@ -37,9 +36,9 @@ class TorchJSD(torch.nn.Module):
         log_p, log_q = log_p.to(torch.float), log_q.to(torch.float)
         log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(-1, log_q.size(-1))
         m = torch.lerp(torch.exp(log_q), torch.exp(log_p), self.beta)
-        loss = self.beta * self.kl(torch.log(m), log_p).sum(dim=-1) + (
-            1 - self.beta
-        ) * self.kl(torch.log(m), log_q).sum(dim=-1)
+        loss = self.beta * self.kl(torch.log(m), log_p).sum(dim=-1) + (1 - self.beta) * self.kl(
+            torch.log(m), log_q
+        ).sum(dim=-1)
 
         if label is not None:
             loss = torch.where(label != self.ignore_index, loss, 0.0)
@@ -59,9 +58,7 @@ def bench_speed_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     torch_jsd = TorchJSD()
     liger_jsd = LigerJSD()
 
-    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(
-        dim=-1
-    )
+    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(dim=-1)
     target = torch.randn(B * T, V, device=device).log_softmax(dim=-1)
 
     def fwd():
@@ -87,9 +84,7 @@ def bench_speed_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
             y = fwd()
             y.backward(retain_graph=True)
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full, quantiles=QUANTILES, rep=100
-        )
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
         y_50=ms_50,
@@ -104,9 +99,7 @@ def bench_memory_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
     V = input.x
     B, T = input.extra_benchmark_config["B"], input.extra_benchmark_config["T"]
 
-    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(
-        dim=-1
-    )
+    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(dim=-1)
     target = torch.randn(B * T, V, device=device).log_softmax(dim=-1)
 
     def fwd():

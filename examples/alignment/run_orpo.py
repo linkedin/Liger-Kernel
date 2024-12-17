@@ -1,6 +1,8 @@
 import torch
+
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
+from transformers import AutoTokenizer
 from trl import ORPOConfig  # noqa: F401
 
 from liger_kernel.transformers.trainer import LigerORPOTrainer  # noqa: F401
@@ -28,8 +30,6 @@ training_args = ORPOConfig(
     save_strategy="no",
 )
 
-trainer = LigerORPOTrainer(
-    model=model, args=training_args, tokenizer=tokenizer, train_dataset=train_dataset
-)
+trainer = LigerORPOTrainer(model=model, args=training_args, tokenizer=tokenizer, train_dataset=train_dataset)
 
 trainer.train()

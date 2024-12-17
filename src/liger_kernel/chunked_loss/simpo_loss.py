@@ -1,17 +1,12 @@
 import torch
 import torch.nn.functional as F
 
-from liger_kernel.chunked_loss.fused_linear_preference import (
-    LigerFusedLinearPreferenceBase,
-)
+from liger_kernel.chunked_loss.fused_linear_preference import LigerFusedLinearPreferenceBase
 
 
 class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
-
     @staticmethod
-    def preference_loss_fn(
-        chosen_logps, rejected_logps, full_target, beta=0.1, gamma=0.5
-    ):
+    def preference_loss_fn(chosen_logps, rejected_logps, full_target, beta=0.1, gamma=0.5):
         """
         Paper: https://arxiv.org/pdf/2405.14734
 

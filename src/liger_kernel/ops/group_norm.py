@@ -4,7 +4,8 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import compare_version, ensure_contiguous
+from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import ensure_contiguous
 
 if compare_version("triton", operator.ge, "3.0.0"):
     try:
@@ -73,9 +74,7 @@ def _group_norm_forward_kernel(
 
     # Normalize
     hidden_size_per_channel = hidden_size // channels_per_group
-    for channel_idx in tl.range(
-        group_idx * channels_per_group, (group_idx + 1) * channels_per_group
-    ):
+    for channel_idx in tl.range(group_idx * channels_per_group, (group_idx + 1) * channels_per_group):
         W = tl.load(W_ptr + channel_idx)
         B = tl.load(B_ptr + channel_idx)
         for i in range(0, hidden_size_per_channel, BLOCK_SIZE):
@@ -132,21 +131,15 @@ def _group_norm_backward_kernel(
     UPSTREAM_ptr += batch_idx * X_row_stride
 
     # Mean and rstd are the same shape so have the same strides
-    mean = tl.load(
-        Mean_ptr + batch_idx * Mean_ptr_row_stride + group_idx * Mean_ptr_col_stride
-    )
-    rstd = tl.load(
-        RSTD_ptr + batch_idx * Mean_ptr_row_stride + group_idx * Mean_ptr_col_stride
-    )
+    mean = tl.load(Mean_ptr + batch_idx * Mean_ptr_row_stride + group_idx * Mean_ptr_col_stride)
+    rstd = tl.load(RSTD_ptr + batch_idx * Mean_ptr_row_stride + group_idx * Mean_ptr_col_stride)
 
     c1 = 0.0
     c2 = 0.0
     block_range = tl.arange(0, BLOCK_SIZE)
 
     # We need to compute the sum terms of the backprop equations across all channels in the group
-    for channel_idx in range(
-        group_idx * channels_per_group, (group_idx + 1) * channels_per_group
-    ):
+    for channel_idx in range(group_idx * channels_per_group, (group_idx + 1) * channels_per_group):
         dW = 0.0
         dB = 0.0
         # Move the pointers to the correct channel
@@ -181,9 +174,7 @@ def _group_norm_backward_kernel(
     c1 = c1 / N
     c2 = c2 / N
 
-    for channel_idx in tl.range(
-        group_idx * channels_per_group, (group_idx + 1) * channels_per_group
-    ):
+    for channel_idx in tl.range(group_idx * channels_per_group, (group_idx + 1) * channels_per_group):
         # Move the pointers to the correct channel
         W = tl.load(W_ptr + channel_idx)
         for i in range(0, hidden_size, BLOCK_SIZE):
@@ -203,9 +194,7 @@ def _group_norm_backward_kernel(
             x_hat = (X - mean) * rstd
             wdy = W * UPSTREAM_grad
             dx = (wdy - (x_hat * c1 + c2)) * rstd
-            tl.store(
-                DX_ptr + channel_idx * X_col_stride + hidden_size_offsets, dx, mask=mask
-            )
+            tl.store(DX_ptr + channel_idx * X_col_stride + hidden_size_offsets, dx, mask=mask)
 
 
 def group_norm_forward(X, num_channels, num_groups, W, B, eps):
@@ -216,9 +205,7 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     X = X.view(batch_size, num_groups, -1).contiguous()
     hidden_size = X.shape[-1]
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(hidden_size))
-    Y = torch.empty(
-        (batch_size, num_groups, hidden_size), dtype=X.dtype, device=X.device
-    )
+    Y = torch.empty((batch_size, num_groups, hidden_size), dtype=X.dtype, device=X.device)
     Mean = torch.zeros((batch_size, num_groups), dtype=X.dtype, device=X.device)
     RSTD = torch.zeros((batch_size, num_groups), dtype=X.dtype, device=X.device)
 
@@ -307,16 +294,12 @@ class LigerGroupNormFunction(torch.autograd.Function):
         )
         ctx.num_channels = num_channels
         ctx.num_groups = num_groups
-        ctx.save_for_backward(
-            X, affine_scaling_weight, affine_shifting_bias, Mean, RSTD
-        )
+        ctx.save_for_backward(X, affine_scaling_weight, affine_shifting_bias, Mean, RSTD)
         return Y
 
     @staticmethod
     @ensure_contiguous
     def backward(ctx, dY):
         X, W, B, Mean, RSTD = ctx.saved_tensors
-        DX, DW, DB = group_norm_backward(
-            dY, X, W, B, Mean, RSTD, ctx.num_channels, ctx.num_groups
-        )
+        DX, DW, DB = group_norm_backward(dY, X, W, B, Mean, RSTD, ctx.num_channels, ctx.num_groups)
         return DX, DW, DB, None, None, None

@@ -1,17 +1,14 @@
 import torch
 import triton
-from transformers.models.llama.modeling_llama import (
-    LlamaRotaryEmbedding,
-    apply_rotary_pos_emb,
-)
-from utils import (
-    QUANTILES,
-    SingleBenchmarkRunInput,
-    SingleBenchmarkRunOutput,
-    _test_memory,
-    parse_benchmark_script_args,
-    run_benchmarks,
-)
+
+from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
+from utils import QUANTILES
+from utils import SingleBenchmarkRunInput
+from utils import SingleBenchmarkRunOutput
+from utils import _test_memory
+from utils import parse_benchmark_script_args
+from utils import run_benchmarks
 
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.utils import infer_device
@@ -29,16 +26,8 @@ def bench_speed_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
     dtype = extra_benchmark_config["dtype"]
 
     # x can be either hidden_size or seq_len
-    hidden_size = (
-        extra_benchmark_config["hidden_size"]
-        if "hidden_size" in extra_benchmark_config
-        else input.x
-    )
-    seq_len = (
-        extra_benchmark_config["seq_len"]
-        if "seq_len" in extra_benchmark_config
-        else input.x
-    )
+    hidden_size = extra_benchmark_config["hidden_size"] if "hidden_size" in extra_benchmark_config else input.x
+    seq_len = extra_benchmark_config["seq_len"] if "seq_len" in extra_benchmark_config else input.x
 
     head_dim = hidden_size // num_q_heads
     rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
@@ -54,8 +43,9 @@ def bench_speed_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
         requires_grad=True,
         dtype=dtype,
     ).transpose(1, 2)
-    dq, dk = torch.randn_like(q, device=device, dtype=dtype), torch.randn_like(
-        k, device=device
+    dq, dk = (
+        torch.randn_like(q, device=device, dtype=dtype),
+        torch.randn_like(k, device=device),
     )
     pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
     cos, sin = rotary_emb(k, pos_ids)
@@ -78,9 +68,7 @@ def bench_speed_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
     elif mode == "backward":
         q_out, k_out = fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: torch.autograd.grad(
-                (q_out, k_out), (q, k), (dq, dk), allow_unused=True, retain_graph=True
-            ),
+            lambda: torch.autograd.grad((q_out, k_out), (q, k), (dq, dk), allow_unused=True, retain_graph=True),
             grad_to_none=[q, k],
             rep=400,
             quantiles=QUANTILES,
@@ -113,16 +101,8 @@ def bench_memory_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
     dtype = extra_benchmark_config["dtype"]
 
     # x can be either hidden_size or seq_len
-    hidden_size = (
-        extra_benchmark_config["hidden_size"]
-        if "hidden_size" in extra_benchmark_config
-        else input.x
-    )
-    seq_len = (
-        extra_benchmark_config["seq_len"]
-        if "seq_len" in extra_benchmark_config
-        else input.x
-    )
+    hidden_size = extra_benchmark_config["hidden_size"] if "hidden_size" in extra_benchmark_config else input.x
+    seq_len = extra_benchmark_config["seq_len"] if "seq_len" in extra_benchmark_config else input.x
 
     head_dim = hidden_size // num_q_heads
     rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
@@ -138,8 +118,9 @@ def bench_memory_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
         requires_grad=True,
         dtype=dtype,
     ).transpose(1, 2)
-    dq, dk = torch.randn_like(q, device=device, dtype=dtype), torch.randn_like(
-        k, device=device
+    dq, dk = (
+        torch.randn_like(q, device=device, dtype=dtype),
+        torch.randn_like(k, device=device),
     )
     pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
     cos, sin = rotary_emb(k, pos_ids)
@@ -149,9 +130,7 @@ def bench_memory_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
             q_out, k_out = liger_rotary_pos_emb(q, k, cos, sin, pos_ids)
         else:
             q_out, k_out = apply_rotary_pos_emb(q, k, cos, sin, pos_ids)
-        torch.autograd.grad(
-            (q_out, k_out), (q, k), (dq, dk), allow_unused=True, retain_graph=True
-        )
+        torch.autograd.grad((q_out, k_out), (q, k), (dq, dk), allow_unused=True, retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(
         full,

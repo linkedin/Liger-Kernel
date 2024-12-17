@@ -1,7 +1,7 @@
-from test.utils import supports_bfloat16
-
 import pytest
 import torch
+
+from test.utils import supports_bfloat16
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaMLP
 from transformers.models.phi3.configuration_phi3 import Phi3Config
@@ -9,7 +9,8 @@ from transformers.models.phi3.modeling_phi3 import Phi3MLP
 
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.transformers.functional import liger_swiglu
-from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP, LigerSwiGLUMLP
+from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
+from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -46,15 +47,11 @@ SLEEP_SECONDS = 0.1
             torch.bfloat16,
             1e4,
             1e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
 )
-def test_correctness_llamamlp(
-    bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol
-):
+def test_correctness_llamamlp(bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol):
     _input = torch.randn(bsz, seq_len, hidden_size, device=device, dtype=dtype)
 
     x1 = _input.clone().requires_grad_(True)
@@ -126,15 +123,11 @@ def test_correctness_llamamlp(
             torch.bfloat16,
             1e4,
             1e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
 )
-def test_correctness_phi3mlp(
-    bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol
-):
+def test_correctness_phi3mlp(bsz, seq_len, hidden_size, intermediate_size, dtype, atol, rtol):
     _input = torch.randn(bsz, seq_len, hidden_size, device=device, dtype=dtype)
 
     x1 = _input.clone().requires_grad_(True)

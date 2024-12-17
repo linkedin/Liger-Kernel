@@ -1,15 +1,14 @@
 import torch
 import triton
+
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaMLP
-from utils import (
-    QUANTILES,
-    SingleBenchmarkRunInput,
-    SingleBenchmarkRunOutput,
-    _test_memory,
-    parse_benchmark_script_args,
-    run_benchmarks,
-)
+from utils import QUANTILES
+from utils import SingleBenchmarkRunInput
+from utils import SingleBenchmarkRunOutput
+from utils import _test_memory
+from utils import parse_benchmark_script_args
+from utils import run_benchmarks
 
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 from liger_kernel.utils import infer_device
@@ -128,9 +127,7 @@ def bench_memory_swiglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOut
     elif mode == "backward":
         do = torch.randn_like(x)
         y = fwd()
-        mem_50, mem_20, mem_80 = _test_memory(
-            lambda: y.backward(do, retain_graph=True), quantiles=QUANTILES
-        )
+        mem_50, mem_20, mem_80 = _test_memory(lambda: y.backward(do, retain_graph=True), quantiles=QUANTILES)
     else:
         mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
 

@@ -37,9 +37,7 @@ def pack_weights(intweights: torch.Tensor, bits: int = 2) -> torch.Tensor:
     else:
         packed_tensor_shape = (row_dim, *original_shape[1:])
 
-    packed = torch.zeros(
-        packed_tensor_shape, device=intweights.device, dtype=torch.uint8
-    )
+    packed = torch.zeros(packed_tensor_shape, device=intweights.device, dtype=torch.uint8)
     unpacked = intweights.to(torch.uint8)
 
     def lshift(t: torch.Tensor, bits: int):
@@ -327,17 +325,13 @@ def matmul_kernel(
 
 
 def matmul(a, b):
-    assert (
-        a.shape[1] == b.shape[0] * 4
-    ), "Incompatible dimensions, the weight matrix need to be packed"
+    assert a.shape[1] == b.shape[0] * 4, "Incompatible dimensions, the weight matrix need to be packed"
     assert a.is_contiguous(), "Matrix A must be contiguous"
     M, K = a.shape
     _, N = b.shape
     # c is in int32 to avoid any overflows or underflows
     c = torch.empty((M, N), device=a.device, dtype=torch.int32)
-    grid = lambda META: (
-        triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
-    )
+    grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),)
     matmul_kernel[grid](
         a,
         b,

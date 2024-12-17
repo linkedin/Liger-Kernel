@@ -1,5 +1,6 @@
 import pytest
 import torch
+
 from torch.nn import Embedding
 
 from liger_kernel.transformers.experimental.embedding import LigerEmbedding
@@ -33,24 +34,12 @@ SLEEP_SECONDS = 0.1
         (torch.float32, 1e-6, 1e-5, device),
     ],
 )
-def test_embedding_correctness(
-    num_embeddings, embedding_dim, padding_idx, dtype, atol, rtol, device
-):
-    print(
-        f"\nTesting embedding with size: ({num_embeddings}, {embedding_dim}), padding_idx: {padding_idx}"
-    )
+def test_embedding_correctness(num_embeddings, embedding_dim, padding_idx, dtype, atol, rtol, device):
+    print(f"\nTesting embedding with size: ({num_embeddings}, {embedding_dim}), padding_idx: {padding_idx}")
     torch.manual_seed(42)
 
-    torch_embedding = (
-        Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
-        .to(dtype)
-        .to(device)
-    )
-    liger_embedding = (
-        LigerEmbedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
-        .to(dtype)
-        .to(device)
-    )
+    torch_embedding = Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx).to(dtype).to(device)
+    liger_embedding = LigerEmbedding(num_embeddings, embedding_dim, padding_idx=padding_idx).to(dtype).to(device)
     liger_embedding.weight.data.copy_(torch_embedding.weight.data)
 
     if padding_idx is not None:
@@ -69,6 +58,4 @@ def test_embedding_correctness(
     torch_output.backward(grad_output)
     liger_output.backward(grad_output)
 
-    assert torch.allclose(
-        torch_embedding.weight.grad, liger_embedding.weight.grad, atol=atol, rtol=rtol
-    )
+    assert torch.allclose(torch_embedding.weight.grad, liger_embedding.weight.grad, atol=atol, rtol=rtol)

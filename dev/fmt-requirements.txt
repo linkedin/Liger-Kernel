@@ -1,3 +1,1 @@
-flake8
-isort
-black
+ruff>=0.1.6

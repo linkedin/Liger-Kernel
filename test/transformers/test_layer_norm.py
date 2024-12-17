@@ -47,9 +47,7 @@ def test_liger_layer_norm(batch_size, seq_len, hidden_size, dtype, atol, rtol):
     torch_output.backward(grad_output, retain_graph=True)
 
     assert torch.allclose(liger_x.grad, torch_x.grad, atol=atol, rtol=rtol)
-    assert torch.allclose(
-        liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol
-    )
+    assert torch.allclose(liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol)
     assert torch.allclose(liger_ln.bias.grad, torch_ln.bias.grad, atol=atol, rtol=rtol)
 
 
@@ -66,9 +64,7 @@ def test_liger_layer_norm(batch_size, seq_len, hidden_size, dtype, atol, rtol):
         (torch.float32, 1e-5, 1e-5),
     ],
 )
-def test_liger_layer_norm_functional(
-    hidden_size, batch_size, seq_len, dtype, atol, rtol
-):
+def test_liger_layer_norm_functional(hidden_size, batch_size, seq_len, dtype, atol, rtol):
     torch.manual_seed(0)
 
     input = torch.randn(batch_size, seq_len, hidden_size, dtype=dtype, device=device)

@@ -1,5 +1,6 @@
 import json
 import os
+
 from argparse import ArgumentParser
 from dataclasses import dataclass
 
@@ -39,9 +40,7 @@ def parse_args() -> VisualizationsConfig:
         VisualizationsConfig: Configuration object for the visualizations script.
     """
     parser = ArgumentParser()
-    parser.add_argument(
-        "--kernel-name", type=str, required=True, help="Kernel name to benchmark"
-    )
+    parser.add_argument("--kernel-name", type=str, required=True, help="Kernel name to benchmark")
     parser.add_argument(
         "--metric-name",
         type=str,
@@ -54,9 +53,7 @@ def parse_args() -> VisualizationsConfig:
         required=True,
         help="Kernel operation mode to visualize (forward/backward/full)",
     )
-    parser.add_argument(
-        "--display", action="store_true", help="Display the visualization"
-    )
+    parser.add_argument("--display", action="store_true", help="Display the visualization")
     parser.add_argument(
         "--overwrite",
         action="store_true",
@@ -126,7 +123,7 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
     lines = ax.get_lines()
     colors = [line.get_color() for line in lines]
 
-    for (_, group_data), color in zip(df.groupby("kernel_provider"), colors):
+    for (_, group_data), color in zip(df.groupby("kernel_provider"), colors, strict=False):
         # for i, row in group_data.iterrows():
         y_error_lower = group_data["y_value_50"] - group_data["y_value_20"]
         y_error_upper = group_data["y_value_80"] - group_data["y_value_50"]
@@ -145,9 +142,7 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
     plt.ylabel(ylabel)
     plt.tight_layout()
 
-    out_path = os.path.join(
-        VISUALIZATIONS_PATH, f"{config.kernel_name}_{config.metric_name}.png"
-    )
+    out_path = os.path.join(VISUALIZATIONS_PATH, f"{config.kernel_name}_{config.metric_name}.png")
 
     if config.display:
         plt.show()

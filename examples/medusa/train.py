@@ -19,20 +19,22 @@
 import json
 import os
 import pathlib
-from dataclasses import dataclass, field
-from typing import Dict, Optional
+
+from dataclasses import dataclass
+from dataclasses import field
+from typing import Dict
+from typing import Optional
 
 import torch
 import transformers
+
 from callback import EfficiencyCallback
 from medusa_util import add_medusa_heads
 from safetensors.torch import save_file
 from sklearn.model_selection import train_test_split
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    FullStateDictConfig,
-    StateDictType,
-)
+from torch.distributed.fsdp.fully_sharded_data_parallel import FullStateDictConfig
+from torch.distributed.fsdp.fully_sharded_data_parallel import StateDictType
 from torch.utils.data import Dataset
 from transformers import Trainer
 from transformers.trainer_pt_utils import LabelSmoother
@@ -53,9 +55,7 @@ class DataArguments:
         default="Aeala/ShareGPT_Vicuna_unfiltered",
         metadata={"help": "Path to the training data."},
     )
-    eval_data_path: str = field(
-        default=None, metadata={"help": "Path to the evaluation data."}
-    )
+    eval_data_path: str = field(default=None, metadata={"help": "Path to the evaluation data."})
     lazy_preprocess: bool = True
 
 
@@ -66,9 +66,7 @@ class TrainingArguments(transformers.TrainingArguments):
     optim: str = field(default="adamw_torch")
     model_max_length: int = field(
         default=2048,
-        metadata={
-            "help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."
-        },
+        metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
     )
     medusa_num_heads: int = field(
         default=1,
@@ -102,9 +100,7 @@ class TrainingArguments(transformers.TrainingArguments):
     )
     medusa_only_heads: bool = field(
         default=False,
-        metadata={
-            "help": "If train medusa heads only, default is False, the whole model will be trained"
-        },
+        metadata={"help": "If train medusa heads only, default is False, the whole model will be trained"},
     )
     use_liger: bool = field(
         default=False,
@@ -162,9 +158,7 @@ def preprocess(
             }
             for c in conversation["conversations"]
         ]
-        prompt = tokenizer.apply_chat_template(
-            tokenizer_compatible_conv, tokenize=False
-        )
+        prompt = tokenizer.apply_chat_template(tokenizer_compatible_conv, tokenize=False)
         prompts.append(prompt)
         conversations.append(tokenizer_compatible_conv)
 
@@ -181,9 +175,7 @@ def preprocess(
     input_ids = encoding.input_ids
 
     # Mask targets. Only compute loss on the assistant outputs.
-    for conv_index, (conversation, target, prompt) in enumerate(
-        zip(conversations, targets, prompts)
-    ):
+    for conv_index, (conversation, target, prompt) in enumerate(zip(conversations, targets, prompts, strict=False)):
         # print(conv_index)
         for turn in conversation:
             if turn["role"] == "assistant":
@@ -192,9 +184,7 @@ def preprocess(
                 start = prompt.index(content.strip())
                 # stop = start + len(content)
                 indices = []
-                for tok_index, (tok_start, tok_stop) in enumerate(
-                    encoding.offset_mapping[conv_index]
-                ):
+                for tok_index, (tok_start, tok_stop) in enumerate(encoding.offset_mapping[conv_index]):
                     if tok_stop >= start or tok_start < tok_stop:
                         indices.append(tok_index)
                 target[indices] = encoding.input_ids[conv_index][indices]
@@ -273,9 +263,7 @@ class LazySupervisedDataset(Dataset):
         return ret
 
 
-def make_supervised_data_module(
-    tokenizer: transformers.PreTrainedTokenizer, data_args, test_size=0.05
-) -> Dict:
+def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args, test_size=0.05) -> Dict:
     """Make dataset and collator for supervised fine-tuning.
 
     Args:
@@ -286,18 +274,14 @@ def make_supervised_data_module(
     Returns:
         dict: A dictionary containing train and eval datasets.
     """
-    dataset_cls = (
-        LazySupervisedDataset if data_args.lazy_preprocess else SupervisedDataset
-    )
+    dataset_cls = LazySupervisedDataset if data_args.lazy_preprocess else SupervisedDataset
     rank0_print("Loading data...")
 
     # Load the entire dataset
     train_json = json.load(open(data_args.data_path, "r"))
 
     # Perform a train-test split based on test_size
-    train_data, eval_data = train_test_split(
-        train_json, test_size=test_size, random_state=42
-    )
+    train_data, eval_data = train_test_split(train_json, test_size=test_size, random_state=42)
     # Create the train and eval datasets
     train_dataset = dataset_cls(train_data, tokenizer=tokenizer)
     eval_dataset = dataset_cls(eval_data, tokenizer=tokenizer)
@@ -308,9 +292,7 @@ def make_supervised_data_module(
 def train():
     global local_rank
 
-    parser = transformers.HfArgumentParser(
-        (ModelArguments, DataArguments, TrainingArguments)
-    )
+    parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     local_rank = training_args.local_rank
 
@@ -326,9 +308,7 @@ def train():
 
     # Making sure the tokenizer works before loading the model.
     print(tokenizer(["This is a test", "secondary"], padding=True))
-    print(
-        tokenizer.apply_chat_template([{"role": "user", "content": "This is a test"}])
-    )
+    print(tokenizer.apply_chat_template([{"role": "user", "content": "This is a test"}]))
 
     # Load model and tokenizer
     model = transformers.AutoModelForCausalLM.from_pretrained(

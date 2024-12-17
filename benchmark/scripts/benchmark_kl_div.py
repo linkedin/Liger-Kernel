@@ -1,14 +1,13 @@
 import torch
 import torch.nn as nn
 import triton
-from utils import (
-    QUANTILES,
-    SingleBenchmarkRunInput,
-    SingleBenchmarkRunOutput,
-    _test_memory,
-    parse_benchmark_script_args,
-    run_benchmarks,
-)
+
+from utils import QUANTILES
+from utils import SingleBenchmarkRunInput
+from utils import SingleBenchmarkRunOutput
+from utils import _test_memory
+from utils import parse_benchmark_script_args
+from utils import run_benchmarks
 
 from liger_kernel.transformers.kl_div import LigerKLDIVLoss
 from liger_kernel.utils import infer_device
@@ -25,9 +24,7 @@ def bench_speed_kldiv(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
     torch_kl_div = nn.KLDivLoss(reduction=reduction)
     liger_kl_div = LigerKLDIVLoss(reduction=reduction)
 
-    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(
-        dim=-1
-    )
+    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(dim=-1)
     target = torch.randn(B * T, V, device=device).softmax(dim=-1)
 
     def fwd():
@@ -53,9 +50,7 @@ def bench_speed_kldiv(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
             y = fwd()
             y.backward(retain_graph=True)
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full, quantiles=QUANTILES, rep=100
-        )
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
         y_50=ms_50,
@@ -71,9 +66,7 @@ def bench_memory_kldiv(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
     V = input.x
     B, T = input.extra_benchmark_config["B"], input.extra_benchmark_config["T"]
 
-    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(
-        dim=-1
-    )
+    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(dim=-1)
     target = torch.randn(B * T, V, device=device).softmax(dim=-1)
 
     def fwd():

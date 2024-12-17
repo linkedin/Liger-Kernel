@@ -1,44 +1,47 @@
-from test.utils import (
-    DEFAULT_DATASET_PATH,
-    MiniModelConfig,
-    assert_verbose_allclose,
-    revert_liger_kernel_to_gemma,
-    revert_liger_kernel_to_gemma2,
-    revert_liger_kernel_to_llama,
-    revert_liger_kernel_to_mistral,
-    revert_liger_kernel_to_mixtral,
-    revert_liger_kernel_to_mllama,
-    revert_liger_kernel_to_phi3,
-    revert_liger_kernel_to_qwen2,
-    revert_liger_kernel_to_qwen2_vl,
-    set_seed,
-    simple_collate_fn,
-    supports_bfloat16,
-)
-
 import pytest
 import torch
+
 from datasets import load_from_disk
 from torch.utils.data import DataLoader
-from transformers.models.gemma import GemmaConfig, GemmaForCausalLM
-from transformers.models.gemma2 import Gemma2Config, Gemma2ForCausalLM
-from transformers.models.llama import LlamaConfig, LlamaForCausalLM
-from transformers.models.mistral import MistralConfig, MistralForCausalLM
-from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
-from transformers.models.phi3 import Phi3Config, Phi3ForCausalLM
-from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
+from transformers.models.gemma import GemmaConfig
+from transformers.models.gemma import GemmaForCausalLM
+from transformers.models.gemma2 import Gemma2Config
+from transformers.models.gemma2 import Gemma2ForCausalLM
+from transformers.models.llama import LlamaConfig
+from transformers.models.llama import LlamaForCausalLM
+from transformers.models.mistral import MistralConfig
+from transformers.models.mistral import MistralForCausalLM
+from transformers.models.mixtral import MixtralConfig
+from transformers.models.mixtral import MixtralForCausalLM
+from transformers.models.phi3 import Phi3Config
+from transformers.models.phi3 import Phi3ForCausalLM
+from transformers.models.qwen2 import Qwen2Config
+from transformers.models.qwen2 import Qwen2ForCausalLM
 
-from liger_kernel.transformers import (
-    apply_liger_kernel_to_gemma,
-    apply_liger_kernel_to_gemma2,
-    apply_liger_kernel_to_llama,
-    apply_liger_kernel_to_mistral,
-    apply_liger_kernel_to_mixtral,
-    apply_liger_kernel_to_mllama,
-    apply_liger_kernel_to_phi3,
-    apply_liger_kernel_to_qwen2,
-    apply_liger_kernel_to_qwen2_vl,
-)
+from liger_kernel.transformers import apply_liger_kernel_to_gemma
+from liger_kernel.transformers import apply_liger_kernel_to_gemma2
+from liger_kernel.transformers import apply_liger_kernel_to_llama
+from liger_kernel.transformers import apply_liger_kernel_to_mistral
+from liger_kernel.transformers import apply_liger_kernel_to_mixtral
+from liger_kernel.transformers import apply_liger_kernel_to_mllama
+from liger_kernel.transformers import apply_liger_kernel_to_phi3
+from liger_kernel.transformers import apply_liger_kernel_to_qwen2
+from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
+from test.utils import DEFAULT_DATASET_PATH
+from test.utils import MiniModelConfig
+from test.utils import assert_verbose_allclose
+from test.utils import revert_liger_kernel_to_gemma
+from test.utils import revert_liger_kernel_to_gemma2
+from test.utils import revert_liger_kernel_to_llama
+from test.utils import revert_liger_kernel_to_mistral
+from test.utils import revert_liger_kernel_to_mixtral
+from test.utils import revert_liger_kernel_to_mllama
+from test.utils import revert_liger_kernel_to_phi3
+from test.utils import revert_liger_kernel_to_qwen2
+from test.utils import revert_liger_kernel_to_qwen2_vl
+from test.utils import set_seed
+from test.utils import simple_collate_fn
+from test.utils import supports_bfloat16
 
 try:
     # Mllama is only available in transformers>=4.45.0
@@ -52,9 +55,7 @@ except ImportError:
 try:
     # Qwen2-VL is only available in transformers>4.44.2
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
-    from transformers.models.qwen2_vl.modeling_qwen2_vl import (
-        Qwen2VLForConditionalGeneration,
-    )
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
 
     QWEN2_VL_AVAILABLE = True
 except ImportError:
@@ -433,9 +434,7 @@ def run_mini_model(
 
     model = create_model(model_name).to(dtype).to(device)
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
-    loader = DataLoader(
-        train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn
-    )
+    loader = DataLoader(train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn)
     loader_iter = iter(loader)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
@@ -469,9 +468,7 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         pytest.param(
             "mini_mllama",
@@ -501,9 +498,7 @@ def run_mini_model(
             1e-2,
             1e-2,
             marks=[
-                pytest.mark.skipif(
-                    not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-                ),
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
                 pytest.mark.skipif(
                     not MLLAMA_AVAILABLE,
                     reason="Mllama not available in this version of transformers",
@@ -522,9 +517,7 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         pytest.param(
             "mini_qwen2_vl",
@@ -554,9 +547,7 @@ def run_mini_model(
             1e-2,
             1e-2,
             marks=[
-                pytest.mark.skipif(
-                    not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-                ),
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
                 pytest.mark.skipif(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
@@ -575,9 +566,7 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
@@ -591,9 +580,7 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         # TODO: mixtral is flaky so disable the test for now
         # ("mini_mixtral", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
@@ -625,9 +612,7 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
@@ -641,9 +626,7 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         # TODO: Gemma2 test for bf16 is not passing within the tolerance range, might be casting issue, need to investigate
@@ -678,13 +661,9 @@ def test_mini_model(
 ):
     # Non-liger models should be initialized and tested first to avoid the module being overridden
 
-    expected_output = run_mini_model(
-        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr
-    )
+    expected_output = run_mini_model(model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr)
 
-    actual_output = run_mini_model(
-        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True
-    )
+    actual_output = run_mini_model(model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True)
 
     # Compare every step of the loss
     assert_verbose_allclose(
@@ -709,7 +688,6 @@ def test_mini_model(
     for expected_param, actual_param in zip(
         expected_output["model"].named_parameters(),
         actual_output["model"].named_parameters(),
+        strict=False,
     ):
-        assert_verbose_allclose(
-            expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol
-        )
+        assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)

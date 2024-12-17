@@ -29,24 +29,16 @@ random_hidden_size = random.randint(1, 8192)
         (torch.float32, 1e-4, 1e-4),
     ],
 )
-def test_liger_group_norm(
-    batch_size, num_channels, num_groups, hidden_size, dtype, atol, rtol
-):
+def test_liger_group_norm(batch_size, num_channels, num_groups, hidden_size, dtype, atol, rtol):
     torch.manual_seed(0)
 
-    _tensor = torch.randn(
-        batch_size, num_channels, hidden_size, dtype=dtype, device=device
-    )
+    _tensor = torch.randn(batch_size, num_channels, hidden_size, dtype=dtype, device=device)
 
     liger_x = _tensor.clone().detach().requires_grad_(True)
     torch_x = _tensor.clone().detach().requires_grad_(True)
 
     liger_ln = LigerGroupNorm(num_channels, num_groups, eps=1e-6).to(dtype).to(device)
-    torch_ln = (
-        torch.nn.GroupNorm(num_channels=num_channels, num_groups=num_groups, eps=1e-6)
-        .to(dtype)
-        .to(device)
-    )
+    torch_ln = torch.nn.GroupNorm(num_channels=num_channels, num_groups=num_groups, eps=1e-6).to(dtype).to(device)
 
     with torch.no_grad():
         torch_ln.weight.copy_(liger_ln.weight)
@@ -62,9 +54,5 @@ def test_liger_group_norm(
     liger_output.backward(grad_output, retain_graph=True)
     torch_output.backward(grad_output, retain_graph=True)
     assert torch.allclose(liger_x.grad, torch_x.grad, atol=atol, rtol=rtol)
-    assert torch.allclose(
-        liger_ln.bias.grad, torch_ln.bias.grad, atol=atol, rtol=rtol
-    ), "Bias grads different"
-    assert torch.allclose(
-        liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol
-    ), "Weight grads different"
+    assert torch.allclose(liger_ln.bias.grad, torch_ln.bias.grad, atol=atol, rtol=rtol), "Bias grads different"
+    assert torch.allclose(liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol), "Weight grads different"

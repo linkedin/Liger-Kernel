@@ -1,11 +1,14 @@
 import operator
+
 from typing import Optional
 
 import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import compare_version, element_mul_kernel, is_hip
+from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import element_mul_kernel
+from liger_kernel.ops.utils import is_hip
 
 if compare_version("triton", operator.ge, "3.0.0"):
     try:
@@ -92,9 +95,7 @@ def liger_cross_entropy_kernel(
     # 3. [Online softmax] first pass: find max + sum
     m = float("-inf")  # m is the max value. use the notation from the paper
     d = 0.0  # d is the sum. use the notation from the paper
-    ori_X_y = tl.load(X_ptr + y).cast(
-        tl.float32
-    )  # we need to store the original value of X_y for the loss calculation
+    ori_X_y = tl.load(X_ptr + y).cast(tl.float32)  # we need to store the original value of X_y for the loss calculation
     if HAS_SOFTCAPPING:
         ori_X_y = softcap * tanh(ori_X_y / softcap)
 
@@ -232,14 +233,10 @@ def cross_entropy_forward(
     return_z_loss,
 ):
     if not isinstance(return_z_loss, int):
-        assert (
-            return_z_loss in _bool_to_return_z_loss
-        ), f"return_z_loss must be True or False. Got: {return_z_loss}"
+        assert return_z_loss in _bool_to_return_z_loss, f"return_z_loss must be True or False. Got: {return_z_loss}"
         return_z_loss = _bool_to_return_z_loss[return_z_loss]
     else:
-        assert (
-            return_z_loss in _bool_to_return_z_loss
-        ), f"return_z_loss must be True or False. Got: {return_z_loss}"
+        assert return_z_loss in _bool_to_return_z_loss, f"return_z_loss must be True or False. Got: {return_z_loss}"
 
     BT, V = _input.shape
     n_rows = BT
