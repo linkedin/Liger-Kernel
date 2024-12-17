@@ -26,6 +26,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         ignore_index=-100,
         alpha=1.0,
         beta=0.1,
+        is_encoder_decoder=False,
         compute_nll_loss=True,
         compiled=True,
         use_ref_model=False,
@@ -56,6 +57,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             ignore_index (int): Index to ignore for loss computation.
             alpha (float): Weight for the NLL loss.
             beta (float): Weight for the preference loss.
+            is_encoder_decoder (bool): Whether the model is an encoder-decoder model.
             compute_nll_loss (bool): Whether to compute NLL loss.
             compiled (bool): Whether to use torch compile for chunk accumulation.
             use_ref_model (bool): Whether to use a reference model for the alignment loss.
@@ -94,6 +96,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             use_ref_model=use_ref_model,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
+            is_encoder_decoder=is_encoder_decoder,
             **loss_kwargs,
         )
 
@@ -282,6 +285,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         bias=None,
         ignore_index=-100,
         compute_nll_loss=True,
+        is_encoder_decoder=False,
     ):
         len_chosen_chunk = target_chunk.shape[0] // 2
         logits_chunk = input_chunk @ weight.t()
@@ -291,11 +295,22 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
 
         chosen_nll_loss = 0.0
         if compute_nll_loss:
+            if not is_encoder_decoder:
+                shifted_logits = log_probs_chunk[:len_chosen_chunk, :-1].contiguous()
+                shifted_target = target_chunk[:len_chosen_chunk, 1:].contiguous()
+            else:
+                shifted_logits = log_probs_chunk[:len_chosen_chunk].contiguous()
+                shifted_target = target_chunk[:len_chosen_chunk].contiguous()
+
             chosen_nll_loss = F.nll_loss(
-                log_probs_chunk[:len_chosen_chunk].view(-1, log_probs_chunk.shape[-1]),
-                target_chunk[:len_chosen_chunk].view(-1),
+                shifted_logits.view(-1, log_probs_chunk.shape[-1]),
+                shifted_target.view(-1),
                 reduction="sum",
                 ignore_index=ignore_index,
+            )
+        else:
+            chosen_nll_loss = torch.zeros(
+                (), device=target_chunk.device, dtype=target_chunk.dtype
             )
 
         loss_mask = target_chunk != ignore_index
@@ -331,6 +346,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         ignore_index=-100,
         alpha=1.0,
         beta=0.1,
+        is_encoder_decoder=False,
         compute_nll_loss=True,
         use_ref_model=False,
         ref_input_chunk=None,
@@ -350,6 +366,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             ignore_index (int): Index to ignore for loss computation.
             alpha (float): Weight for the NLL loss.
             beta (float): Weight for the preference loss.
+            is_encoder_decoder (bool): Whether the model is an encoder-decoder model.
             compute_nll_loss (bool): Whether to compute NLL loss.
             use_ref_model (bool): Whether to use a reference model for the alignment loss.
             ref_weight (torch.Tensor): Reference weight tensor. Shape: (vocab_size, hidden_size).
@@ -369,6 +386,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             bias=bias,
             ignore_index=ignore_index,
             compute_nll_loss=compute_nll_loss,
+            is_encoder_decoder=is_encoder_decoder,
         )
         chosen_nll_loss = (
             chosen_nll_loss

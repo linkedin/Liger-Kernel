@@ -350,11 +350,13 @@ class HFAlignmentLoss:
         beta: float = 0.1,
         ignore_index: int = -100,
         use_ref_model: bool = False,
+        is_encoder_decoder: bool = False,
     ):
         self.alpha = alpha
         self.beta = beta
         self.ignore_index = ignore_index
         self.use_ref_model = use_ref_model
+        self.is_encoder_decoder = is_encoder_decoder
 
     @abstractmethod
     def alignment_loss(self):
@@ -440,6 +442,9 @@ class HFAlignmentLoss:
         def cross_entropy_loss(logits, labels):
             # Flatten the tokens
             loss_fct = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
+            if not self.is_encoder_decoder:
+                logits = logits[..., :-1, :].contiguous()
+                labels = labels[..., 1:].contiguous()
             logits = logits.view(-1, logits.shape[-1])
             labels = labels.view(-1)
             # Enable model parallelism
