@@ -308,10 +308,6 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                 reduction="sum",
                 ignore_index=ignore_index,
             )
-        else:
-            chosen_nll_loss = torch.zeros(
-                (), device=target_chunk.device, dtype=target_chunk.dtype
-            )
 
         loss_mask = target_chunk != ignore_index
         label_chunk = torch.where(loss_mask, target_chunk, 0)
