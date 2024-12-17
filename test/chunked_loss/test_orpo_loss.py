@@ -57,7 +57,7 @@ class HFORPOLoss(HFAlignmentLoss):
             - torch.log1p(-torch.exp(policy_rejected_logps))
         )
         ratio = F.logsigmoid(log_odds)
-        losses = - self.beta * ratio
+        losses = -self.beta * ratio
 
         chosen_rewards = self.beta * policy_chosen_logps
         rejected_rewards = self.beta * policy_rejected_logps

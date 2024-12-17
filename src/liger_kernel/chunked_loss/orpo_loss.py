@@ -36,7 +36,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
             - torch.log1p(-torch.exp(rejected_logps))
         )
         ratio = F.logsigmoid(log_odds)
-        loss = - beta * ratio.sum() / (full_target.shape[0] // 2)
+        loss = -beta * ratio.sum() / (full_target.shape[0] // 2)
 
         chosen_rewards = beta * chosen_logps
         rejected_rewards = beta * rejected_logps
