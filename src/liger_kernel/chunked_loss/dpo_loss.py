@@ -49,7 +49,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         rejected_logratios = rejected_logps - ref_rejected_logps
 
         logits_diff = beta * (chosen_logratios - rejected_logratios)
-        loss = - F.logsigmoid(logits_diff).sum() / (full_target.shape[0] // 2)
+        loss = -F.logsigmoid(logits_diff).sum() / (full_target.shape[0] // 2)
         return loss
 
     @staticmethod
