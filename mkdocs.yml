@@ -10,6 +10,7 @@ theme:
   features:
     - navigation.footer
     - toc.follow
+    - navigation.top
   palette:
     # Dark Mode
     - scheme: slate

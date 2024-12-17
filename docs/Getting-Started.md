@@ -16,7 +16,7 @@ model = AutoLigerKernelForCausalLM.from_pretrained("path/to/some/model")
 
 ### 2. Apply Model-Specific Patching APIs
 
-Using the [patching APIs](#patching), you can swap Hugging Face models with optimized Liger Kernels.
+Using the [patching APIs](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#patching), you can swap Hugging Face models with optimized Liger Kernels.
 
 ```python
 import transformers
@@ -40,7 +40,7 @@ model = transformers.AutoModelForCausalLM("path/to/llama/model")
 
 ### 3. Compose Your Own Model
 
-You can take individual [kernels](#kernels) to compose your models.
+You can take individual [kernels](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#model-kernels) to compose your models.
 
 ```python
 from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
