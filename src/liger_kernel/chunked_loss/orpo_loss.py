@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 
@@ -57,6 +59,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         beta=0.1,
         compute_nll_loss=True,
         compiled=True,
+        softcap=None,
     ):
         return LigerFusedLinearPreferenceBase.forward(
             ctx=ctx,
@@ -69,12 +72,13 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
             beta=beta,
             compute_nll_loss=compute_nll_loss,
             compiled=compiled,
+            softcap=softcap,
         )
 
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None
+        return *grads, None, None, None, None, None
 
 
 class LigerFusedLinearORPOLoss(torch.nn.Module):
@@ -88,17 +92,20 @@ class LigerFusedLinearORPOLoss(torch.nn.Module):
         beta: float = 0.1,
         compute_nll_loss: bool = True,
         compiled: bool = True,
+        softcap: Optional[float] = None,
     ):
         """
         Args:
             ignore_index (int): Index to ignore in the loss.
             beta (float): Weight for the odds ratio loss.
+            softcap (Optional[float]): The upper threshold for scaling logits to the range (-softcap, +softcap).
         """
         super().__init__()
         self.ignore_index = ignore_index
         self.beta = beta
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
+        self.softcap = softcap
 
     def forward(self, lin_weight, _input, target, bias=None):
         return LigerFusedLinearORPOFunction.apply(
@@ -110,4 +117,5 @@ class LigerFusedLinearORPOLoss(torch.nn.Module):
             self.beta,
             self.compute_nll_loss,
             self.compiled,
+            self.softcap,
         )

@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 
@@ -51,6 +53,7 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=False,
         compiled=True,
         gamma=0.5,
+        softcap=None,
     ):
         return LigerFusedLinearPreferenceBase.forward(
             ctx,
@@ -65,12 +68,13 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
             beta=beta,
             compiled=compiled,
             gamma=gamma,
+            softcap=softcap,
         )
 
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None, None, None
+        return *grads, None, None, None, None, None, None, None
 
 
 class LigerFusedLinearSimPOLoss(torch.nn.Module):
@@ -86,11 +90,13 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
         compute_nll_loss: bool = True,
         compiled: bool = True,
         gamma: float = 0.5,
+        softcap: Optional[float] = None,
     ):
         """
         Args:
             ignore_index (int): Index to ignore in the loss.
             beta (float): Weight for the odds ratio loss.
+            softcap (Optional[float]): The upper threshold for scaling logits to the range (-softcap, +softcap).
         """
         super().__init__()
         self.ignore_index = ignore_index
@@ -99,6 +105,7 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
         self.gamma = gamma
+        self.softcap = softcap
 
     def forward(self, lin_weight, _input, target, bias=None):
         return LigerFusedLinearSimPOFunction.apply(
@@ -112,4 +119,5 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
             self.compute_nll_loss,
             self.compiled,
             self.gamma,
+            self.softcap,
         )
