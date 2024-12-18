@@ -287,43 +287,46 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         compute_nll_loss=True,
         is_encoder_decoder=False,
     ):
-        len_chosen_chunk = target_chunk.shape[0] // 2
+        # Calculate logits and log probabilities
         logits_chunk = input_chunk @ weight.t()
         if bias is not None:
-            logits_chunk = logits_chunk + bias
-        log_probs_chunk = F.log_softmax(logits_chunk.float(), dim=-1)
+            logits_chunk += bias
+        log_probs_chunk = F.log_softmax(logits_chunk, dim=-1)
 
+        # Split chunk into chosen and rejected portions
+        len_chosen_chunk = target_chunk.shape[0] // 2
+
+        # Handle sequence shifting for non-encoder-decoder models
+        if not is_encoder_decoder:
+            logits_chunk = logits_chunk[:, :-1]
+            log_probs_chunk = log_probs_chunk[:, :-1]
+            target_chunk = target_chunk[:, 1:]
+
+        # Calculate NLL loss for chosen sequences
         chosen_nll_loss = 0.0
         if compute_nll_loss:
-            if not is_encoder_decoder:
-                shifted_logits = log_probs_chunk[:len_chosen_chunk, :-1].contiguous()
-                shifted_target = target_chunk[:len_chosen_chunk, 1:].contiguous()
-            else:
-                shifted_logits = log_probs_chunk[:len_chosen_chunk].contiguous()
-                shifted_target = target_chunk[:len_chosen_chunk].contiguous()
-
+            chosen_probs = log_probs_chunk[:len_chosen_chunk]
+            chosen_targets = target_chunk[:len_chosen_chunk]
             chosen_nll_loss = F.nll_loss(
-                shifted_logits.view(-1, log_probs_chunk.shape[-1]),
-                shifted_target.view(-1),
+                chosen_probs.reshape(-1, chosen_probs.shape[-1]),
+                chosen_targets.reshape(-1),
                 reduction="sum",
                 ignore_index=ignore_index,
             )
 
-        if not is_encoder_decoder:
-            log_probs_chunk = log_probs_chunk[:, :-1]
-            target_chunk = target_chunk[..., 1:]
-
+        # Calculate per-token log probabilities
         loss_mask = target_chunk != ignore_index
         label_chunk = torch.where(loss_mask, target_chunk, 0)
-
         per_token_logps = log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(
             -1
         )
         average_log_prob = (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
 
-        chosen_logps = average_log_prob[:len_chosen_chunk]
-        rejected_logps = average_log_prob[len_chosen_chunk:]
-
+        # Split results for chosen and rejected
+        chosen_logps, rejected_logps = (
+            average_log_prob[:len_chosen_chunk],
+            average_log_prob[len_chosen_chunk:],
+        )
         chosen_logits = logits_chunk[:len_chosen_chunk]
         rejected_logits = logits_chunk[len_chosen_chunk:]
 
@@ -401,19 +404,15 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
 
         if use_ref_model:
             with torch.no_grad():
-                (
-                    ref_chosen_logps,
-                    ref_rejected_logps,
-                    ref_chosen_logits,
-                    ref_rejected_logits,
-                    ref_chosen_nll_loss,
-                ) = LigerFusedLinearPreferenceBase.chunk_forward(
-                    ref_input_chunk,
-                    ref_weight,
-                    target_chunk,
-                    ref_bias,
-                    ignore_index=ignore_index,
-                    compute_nll_loss=False,  # We don't need NLL loss for the reference model
+                (ref_chosen_logps, ref_rejected_logps, _, _, _) = (
+                    LigerFusedLinearPreferenceBase.chunk_forward(
+                        ref_input_chunk,
+                        ref_weight,
+                        target_chunk,
+                        ref_bias,
+                        ignore_index=ignore_index,
+                        compute_nll_loss=False,  # We don't need NLL loss for the reference model
+                    )
                 )
             loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
             loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
