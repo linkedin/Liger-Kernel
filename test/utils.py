@@ -468,8 +468,12 @@ class HFAlignmentLoss:
         chosen_logps = all_logps[:len_chosen]
         rejected_logps = all_logps[len_chosen:]
 
-        chosen_logits = all_logits[:len_chosen]
-        rejected_logits = all_logits[len_chosen:]
+        if not self.is_encoder_decoder:
+            chosen_logits = all_logits[:len_chosen, :-1]
+            rejected_logits = all_logits[len_chosen:, :-1]
+        else:
+            chosen_logits = all_logits[:len_chosen]
+            rejected_logits = all_logits[len_chosen:]
 
         return (
             chosen_logps,
