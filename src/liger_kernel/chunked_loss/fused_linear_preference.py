@@ -28,6 +28,8 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         beta=0.1,
         compute_nll_loss=True,
         compiled=True,
+        unpaired=False,
+        preference_labels=None,
         use_ref_model=False,
         ref_input=None,
         ref_weight=None,
@@ -59,6 +61,10 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             compute_nll_loss (bool): Whether to compute NLL loss.
             compiled (bool): Whether to use torch compile for chunk accumulation.
             use_ref_model (bool): Whether to use a reference model for the alignment loss.
+            unpaired (bool): Whether the inputs are unpaired (chosen and rejected).
+                Some loss functions that don't use paired preference, like KTO, can set this to True.
+            preference_labels (torch.Tensor): Boolean tensor indicating chosen (True) vs rejected (False) examples.
+                Shape: (batch_size,). Required if unpaired is True.
             ref_weight (torch.Tensor): Reference weight tensor. Shape: (vocab_size, hidden_size).
             ref_bias (torch.Tensor, optional): Reference bias tensor. Shape: (vocab_size,).
             loss_kwargs (dict): Other possible arguments that a loss function might need
@@ -181,20 +187,58 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         if compiled:
             fused_fwd_bwd = torch.compile(fused_fwd_bwd)
 
-        len_chosen = target.shape[0] // 2
-        chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
-        _chosen_input_chunks = torch.chunk(_input[:len_chosen], chunks=chunks, dim=0)
-        _chosen_target_chunks = torch.chunk(target[:len_chosen], chunks=chunks, dim=0)
-        _rejected_input_chunks = torch.chunk(_input[len_chosen:], chunks=chunks, dim=0)
-        _rejected_target_chunks = torch.chunk(target[len_chosen:], chunks=chunks, dim=0)
+        if not unpaired:
+            len_chosen = target.shape[0] // 2
+            chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
+            _chosen_input_chunks = torch.chunk(
+                _input[:len_chosen], chunks=chunks, dim=0
+            )
+            _chosen_target_chunks = torch.chunk(
+                target[:len_chosen], chunks=chunks, dim=0
+            )
+            _rejected_input_chunks = torch.chunk(
+                _input[len_chosen:], chunks=chunks, dim=0
+            )
+            _rejected_target_chunks = torch.chunk(
+                target[len_chosen:], chunks=chunks, dim=0
+            )
 
-        if use_ref_model:
-            _ref_chosen_input_chunks = torch.chunk(
-                ref_input[:len_chosen], chunks=chunks, dim=0
+            if use_ref_model:
+                _ref_chosen_input_chunks = torch.chunk(
+                    ref_input[:len_chosen], chunks=chunks, dim=0
+                )
+                _ref_rejected_input_chunks = torch.chunk(
+                    ref_input[len_chosen:], chunks=chunks, dim=0
+                )
+        else:
+            # When not paired, use labels to separate chosen and rejected
+            assert (
+                preference_labels is not None
+            ), "preference_labels must be provided when unpaired=True"
+            chosen_mask = preference_labels == 1
+            rejected_mask = ~chosen_mask
+
+            chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
+            _chosen_input_chunks = torch.chunk(
+                _input[chosen_mask], chunks=chunks, dim=0
             )
-            _ref_rejected_input_chunks = torch.chunk(
-                ref_input[len_chosen:], chunks=chunks, dim=0
+            _chosen_target_chunks = torch.chunk(
+                target[chosen_mask], chunks=chunks, dim=0
             )
+            _rejected_input_chunks = torch.chunk(
+                _input[rejected_mask], chunks=chunks, dim=0
+            )
+            _rejected_target_chunks = torch.chunk(
+                target[rejected_mask], chunks=chunks, dim=0
+            )
+
+            if use_ref_model:
+                _ref_chosen_input_chunks = torch.chunk(
+                    ref_input[chosen_mask], chunks=chunks, dim=0
+                )
+                _ref_rejected_input_chunks = torch.chunk(
+                    ref_input[rejected_mask], chunks=chunks, dim=0
+                )
 
         for (
             chosen_input_chunk,
@@ -283,6 +327,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         ignore_index=-100,
         compute_nll_loss=True,
     ):
+        # Data is already properly stacked (chosen then rejected) by the forward method
         len_chosen_chunk = target_chunk.shape[0] // 2
         logits_chunk = input_chunk @ weight.t()
         if bias is not None:
