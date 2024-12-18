@@ -23,11 +23,25 @@ class HFKTOLoss(HFAlignmentLoss):
     """
 
     def __init__(
-        self, ignore_index: int = -100, beta: float = 0.1, use_ref_model: bool = True
+        self,
+        ignore_index: int = -100,
+        beta: float = 0.1,
+        use_ref_model: bool = True,
+        policy_KL_logps: torch.FloatTensor = None,
+        ref_KL_logps: torch.FloatTensor = None,
     ):
         super().__init__(
-            beta=beta, ignore_index=ignore_index, use_ref_model=use_ref_model
+            beta=beta,
+            ignore_index=ignore_index,
+            use_ref_model=use_ref_model,
+            policy_KL_logps=policy_KL_logps,
+            ref_KL_logps=ref_KL_logps,
+            unpaired=True,
         )
+        # KL logps need to be passed into the Loss class since it requires a full model forward pass
+        # See paper https://arxiv.org/abs/2402.01306 (4.1. Derivation)
+        self.policy_KL_logps = policy_KL_logps
+        self.ref_KL_logps = ref_KL_logps
 
     def alignment_loss(
         self,
@@ -40,11 +54,18 @@ class HFKTOLoss(HFAlignmentLoss):
         Args:
             policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (batch_size,)
             policy_rejected_logps: Log probabilities of the policy model for the rejected responses. Shape: (batch_size,)
-
+            ref_chosen_logps: Log probabilities of the reference model for the chosen responses. Shape: (batch_size,)
+            ref_rejected_logps: Log probabilities of the reference model for the rejected responses. Shape: (batch_size,)
         Returns:
             The losses tensor contains the KTO loss for each example in the batch.
         """
-        kl = torch.zeros_like(policy_chosen_logps)
+        if self.policy_KL_logps is None:
+            self.policy_KL_logps = torch.zeros(1).to(device)
+
+        if self.ref_KL_logps is None:
+            self.ref_KL_logps = torch.zeros(1).to(device)
+
+        kl = (self.policy_KL_logps - self.ref_KL_logps).mean().clamp(min=0).detach()
 
         chosen_logratios = policy_chosen_logps - ref_chosen_logps
         chosen_losses = 1 - F.sigmoid(self.beta * (chosen_logratios - kl))
@@ -68,6 +89,8 @@ class TorchLMHeadKTO(torch.nn.Module):
         ref_bias: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
+        policy_KL_logps: torch.FloatTensor = None,
+        ref_KL_logps: torch.FloatTensor = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
@@ -77,18 +100,23 @@ class TorchLMHeadKTO(torch.nn.Module):
             in_features=H, out_features=V, bias=ref_bias, dtype=dtype
         )
         self.KTO_loss = HFKTOLoss(
-            ignore_index=ignore_index, beta=beta, use_ref_model=True
+            ignore_index=ignore_index,
+            beta=beta,
+            use_ref_model=True,
+            policy_KL_logps=policy_KL_logps,
+            ref_KL_logps=ref_KL_logps,
         ).get_batch_loss_metrics
 
-    def forward(self, x, ref_x, y):
+    def forward(self, x, ref_x, y, preference_labels):
         return self.KTO_loss(
-            self.lin.weight,
-            x,
-            y,
-            self.lin.bias,
-            ref_x,
-            self.ref_lin.weight,
-            self.ref_lin.bias,
+            weight=self.lin.weight,
+            _input=x,
+            target=y,
+            bias=self.lin.bias,
+            ref_input=ref_x,
+            ref_weight=self.ref_lin.weight,
+            ref_bias=self.ref_lin.bias,
+            preference_labels=preference_labels,
         )
 
 
@@ -102,6 +130,8 @@ class LigerLMHeadKTO(torch.nn.Module):
         ref_bias: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
+        policy_KL_logps: torch.FloatTensor = None,
+        ref_KL_logps: torch.FloatTensor = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
@@ -111,18 +141,23 @@ class LigerLMHeadKTO(torch.nn.Module):
             in_features=H, out_features=V, bias=ref_bias, dtype=dtype
         )
         self.KTO_loss = LigerFusedLinearKTOLoss(
-            ignore_index=ignore_index, beta=beta, use_ref_model=True
+            ignore_index=ignore_index,
+            beta=beta,
+            use_ref_model=True,
+            policy_KL_logps=policy_KL_logps,
+            ref_KL_logps=ref_KL_logps,
         )
 
-    def forward(self, x, ref_x, y):
+    def forward(self, x, ref_x, y, preference_labels):
         return self.KTO_loss(
-            self.lin.weight,
-            x,
-            y,
-            self.lin.bias,
-            ref_x,
-            self.ref_lin.weight,
-            self.ref_lin.bias,
+            _input=x,
+            lin_weight=self.lin.weight,
+            target=y,
+            preference_labels=preference_labels,
+            bias=self.lin.bias,
+            ref_input=ref_x,
+            ref_weight=self.ref_lin.weight,
+            ref_bias=self.ref_lin.bias,
         )
 
 
@@ -130,7 +165,7 @@ class LigerLMHeadKTO(torch.nn.Module):
     "B, T, H, V",
     [
         (8, 128, 1024, 4096),
-        (3, 47, 31, 123),  # random shape
+        (8, 47, 31, 123),  # random shape
     ],
 )
 @pytest.mark.parametrize(
@@ -146,7 +181,14 @@ class LigerLMHeadKTO(torch.nn.Module):
 def test_correctness(
     B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, ignore_index, beta
 ):
-    B = 2 * B  # KTO loss requires B to be even
+    # Create labels tensor with scattered True values
+    preference_labels = torch.zeros(B, dtype=torch.bool, device=device)
+    num_chosen = B // 2  # Keep same number of chosen examples
+    generator = torch.Generator(device=device).manual_seed(42)
+    chosen_indices = torch.randint(
+        0, B, (num_chosen,), generator=generator, device=device
+    )
+    preference_labels[chosen_indices] = True
 
     torch_lm_head_KTO = TorchLMHeadKTO(
         H=H,
@@ -206,8 +248,12 @@ def test_correctness(
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    loss1, aggregated_aux_outputs1 = torch_lm_head_KTO(input1, ref_input, target)
-    loss2, aggregated_aux_outputs2 = liger_lm_head_KTO(input2, ref_input, target)
+    loss1, aggregated_aux_outputs1 = torch_lm_head_KTO(
+        x=input1, ref_x=ref_input, y=target, preference_labels=preference_labels
+    )
+    loss2, aggregated_aux_outputs2 = liger_lm_head_KTO(
+        x=input2, ref_x=ref_input, y=target, preference_labels=preference_labels
+    )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
@@ -261,6 +307,15 @@ def test_correctness(
 def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias):
     B = 2 * B
 
+    # Create labels tensor with scattered True values
+    preference_labels = torch.zeros(B, dtype=torch.bool, device=device)
+    num_chosen = B // 2  # Keep same number of chosen examples
+    generator = torch.Generator(device=device).manual_seed(42)
+    chosen_indices = torch.randint(
+        0, B, (num_chosen,), generator=generator, device=device
+    )
+    preference_labels[chosen_indices] = True
+
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
@@ -297,10 +352,24 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     ref_bias2 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
 
     loss1, aggregated_aux_outputs1 = LigerFusedLinearKTOFunction.apply(
-        input1, weight1, target, bias1, ref_input, ref_weight1, ref_bias1
+        input1,
+        weight1,
+        target,
+        bias1,
+        ref_input,
+        ref_weight1,
+        ref_bias1,
+        preference_labels,
     )
     loss2, aggregated_aux_outputs2 = liger_fused_linear_kto(
-        input2, weight2, target, bias2, ref_input, ref_weight2, ref_bias2
+        input2,
+        weight2,
+        target,
+        bias2,
+        ref_input,
+        ref_weight2,
+        ref_bias2,
+        preference_labels,
     )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)

@@ -16,6 +16,8 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         ref_chosen_logps=None,
         ref_rejected_logps=None,
         beta=0.1,
+        policy_KL_logps=None,
+        ref_KL_logps=None,
     ):
         """
         Implements the Kahneman-Tversky Optimization (KTO) loss function.
@@ -52,6 +54,8 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
             ref_chosen_logps: Reference log probs of chosen tokens (batch_size,)
             ref_rejected_logps: Reference log probs of rejected tokens (batch_size,)
             beta: Weight for the direct preference loss
+            policy_KL_logps: KL divergence between the policy model and the reference model for the chosen responses. Shape: (batch_size,)
+            ref_KL_logps: KL divergence between the reference model and the policy model for the chosen responses. Shape: (batch_size,)
 
         Returns:
             Tuple of (loss, chosen_rewards, rejected_rewards):
@@ -67,7 +71,12 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         chosen_logratios = chosen_logps - ref_chosen_logps
         rejected_logratios = rejected_logps - ref_rejected_logps
 
-        kl = torch.zeros_like(chosen_logratios)
+        if policy_KL_logps is None:
+            policy_KL_logps = torch.tensor(0.0, device=chosen_logps.device)
+        if ref_KL_logps is None:
+            ref_KL_logps = torch.tensor(0.0, device=chosen_logps.device)
+
+        kl = policy_KL_logps - ref_KL_logps
 
         losses = torch.cat(
             (
@@ -93,6 +102,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         _input,
         weight,
         target,
+        preference_labels,
         bias=None,
         ref_input=None,
         ref_weight=None,
@@ -102,6 +112,8 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=True,
         compiled=True,
         use_ref_model=True,
+        policy_KL_logps=None,
+        ref_KL_logps=None,
     ):
         return LigerFusedLinearPreferenceBase.forward(
             ctx=ctx,
@@ -118,12 +130,31 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
             ref_input=ref_input,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
+            unpaired=True,  # KTO loss functions use unpaired preference
+            preference_labels=preference_labels,
+            policy_KL_logps=policy_KL_logps,
+            ref_KL_logps=ref_KL_logps,
         )
 
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None, None, None, None, None
+        return (
+            *grads,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
 
 
 class LigerFusedLinearKTOLoss(torch.nn.Module):
@@ -138,6 +169,8 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
         compute_nll_loss: bool = True,
         compiled: bool = True,
         use_ref_model: bool = False,
+        policy_KL_logps: torch.FloatTensor = None,
+        ref_KL_logps: torch.FloatTensor = None,
     ):
         """
         Args:
@@ -153,12 +186,15 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
         self.use_ref_model = use_ref_model
+        self.policy_KL_logps = policy_KL_logps
+        self.ref_KL_logps = ref_KL_logps
 
     def forward(
         self,
-        lin_weight,
         _input,
+        lin_weight,
         target,
+        preference_labels,
         bias=None,
         ref_input=None,
         ref_weight=None,
@@ -168,6 +204,7 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
             _input,
             lin_weight,
             target,
+            preference_labels,
             bias,
             ref_input,
             ref_weight,
@@ -177,4 +214,6 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
             self.compute_nll_loss,
             self.compiled,
             self.use_ref_model,
+            self.policy_KL_logps,
+            self.ref_KL_logps,
         )
