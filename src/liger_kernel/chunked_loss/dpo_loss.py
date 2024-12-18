@@ -64,7 +64,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         ref_bias=None,
         ignore_index=-100,
         beta=0.1,
-        compute_nll_loss=False,
+        compute_nll_loss=True,
         compiled=True,
         use_ref_model=True,
         is_encoder_decoder=False,
