@@ -291,7 +291,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         logits_chunk = input_chunk @ weight.t()
         if bias is not None:
             logits_chunk += bias
-        log_probs_chunk = F.log_softmax(logits_chunk, dim=-1)
+        log_probs_chunk = F.log_softmax(logits_chunk.float(), dim=-1)
 
         # Split chunk into chosen and rejected portions
         len_chosen_chunk = target_chunk.shape[0] // 2
@@ -393,13 +393,13 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         )
         chosen_nll_loss = (
             chosen_nll_loss
-            / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
+            / (full_target[: full_target.shape[0] // 2, 1:] != ignore_index).sum()
         )
         chosen_logits_mean = chosen_logits.sum() / (
-            full_target.shape[0] // 2 * input_chunk.shape[1] * weight.shape[0]
+            full_target.shape[0] // 2 * (input_chunk.shape[1] - 1) * weight.shape[0]
         )
         rejected_logits_mean = rejected_logits.sum() / (
-            full_target.shape[0] // 2 * input_chunk.shape[1] * weight.shape[0]
+            full_target.shape[0] // 2 * (input_chunk.shape[1] - 1) * weight.shape[0]
         )
 
         if use_ref_model:
