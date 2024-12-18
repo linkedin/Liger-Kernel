@@ -391,16 +391,28 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             compute_nll_loss=compute_nll_loss,
             is_encoder_decoder=is_encoder_decoder,
         )
-        chosen_nll_loss = (
-            chosen_nll_loss
-            / (full_target[: full_target.shape[0] // 2, 1:] != ignore_index).sum()
-        )
-        chosen_logits_mean = chosen_logits.sum() / (
-            full_target.shape[0] // 2 * (input_chunk.shape[1] - 1) * weight.shape[0]
-        )
-        rejected_logits_mean = rejected_logits.sum() / (
-            full_target.shape[0] // 2 * (input_chunk.shape[1] - 1) * weight.shape[0]
-        )
+        if not is_encoder_decoder:
+            chosen_nll_loss = (
+                chosen_nll_loss
+                / (full_target[: full_target.shape[0] // 2, 1:] != ignore_index).sum()
+            )
+            chosen_logits_mean = chosen_logits.sum() / (
+                full_target.shape[0] // 2 * (input_chunk.shape[1] - 1) * weight.shape[0]
+            )
+            rejected_logits_mean = rejected_logits.sum() / (
+                full_target.shape[0] // 2 * (input_chunk.shape[1] - 1) * weight.shape[0]
+            )
+        else:
+            chosen_nll_loss = (
+                chosen_nll_loss
+                / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
+            )
+            chosen_logits_mean = chosen_logits.sum() / (
+                full_target.shape[0] // 2 * input_chunk.shape[1] * weight.shape[0]
+            )
+            rejected_logits_mean = rejected_logits.sum() / (
+                full_target.shape[0] // 2 * input_chunk.shape[1] * weight.shape[0]
+            )
 
         if use_ref_model:
             with torch.no_grad():
@@ -412,6 +424,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                         ref_bias,
                         ignore_index=ignore_index,
                         compute_nll_loss=False,  # We don't need NLL loss for the reference model
+                        is_encoder_decoder=is_encoder_decoder,  # assume the ref model is the same family
                     )
                 )
             loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
