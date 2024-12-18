@@ -308,6 +308,10 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                 reduction="sum",
                 ignore_index=ignore_index,
             )
+        
+        if not is_encoder_decoder:
+            log_probs_chunk = log_probs_chunk[:, :-1]
+            target_chunk = target_chunk[..., 1:]
 
         loss_mask = target_chunk != ignore_index
         label_chunk = torch.where(loss_mask, target_chunk, 0)
