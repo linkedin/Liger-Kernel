@@ -1,7 +1,4 @@
 
-## Acknowledgement
-
-
 ### Design
 
 - [@claire_yishan](https://twitter.com/claire_yishan) for the LOGO design

@@ -1,0 +1,56 @@
+name: Publish documentation
+
+on:
+  push:
+    branches:
+      - develop
+      - gh-pages
+    tags:
+      - "**"
+
+concurrency:
+  group: observers-docs
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout docs-site
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: ${{ env.pythonLocation }}
+          key: ${{ runner.os }}-python-${{ env.pythonLocation }}-${{ hashFiles('pyproject.toml') }}-docs-v00
+
+      - name: Install dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: ./scripts/install_docs_dependencies.sh
+
+      - name: Check no warnings
+        run: mkdocs build --strict
+
+      - name: Set git credentials
+        run: |
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+      - run: mike deploy dev --push
+        if: github.ref == 'refs/heads/develop'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: mike deploy ${{ github.ref_name }} latest --update-aliases --push
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
