@@ -350,11 +350,13 @@ class HFAlignmentLoss:
         beta: float = 0.1,
         ignore_index: int = -100,
         use_ref_model: bool = False,
+        is_encoder_decoder: bool = False,
     ):
         self.alpha = alpha
         self.beta = beta
         self.ignore_index = ignore_index
         self.use_ref_model = use_ref_model
+        self.is_encoder_decoder = is_encoder_decoder
 
     @abstractmethod
     def alignment_loss(self):
@@ -372,7 +374,6 @@ class HFAlignmentLoss:
             logits: Logits of the model (unnormalized). Shape: (batch_size, sequence_length, vocab_size)
             labels: Labels for which to compute the log probabilities. Label tokens with a value of ignore_index are ignored. Shape: (batch_size, sequence_length)
             average_log_prob: If True, return the average log probability per (non-masked) token. Otherwise, return the sum of the log probabilities of the (non-masked) tokens.
-            is_encoder_decoder: Whether the model is an encoder-decoder model.
         Returns:
             A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
         """
@@ -381,6 +382,9 @@ class HFAlignmentLoss:
                 "Logits (batch and sequence length dim) and labels must have the same shape."
             )
 
+        if not self.is_encoder_decoder:
+            logits = logits[..., :-1, :].contiguous()
+            labels = labels[..., 1:].contiguous()
         loss_mask = labels != self.ignore_index
 
         # dummy token; we'll ignore the losses on these tokens later
@@ -440,6 +444,9 @@ class HFAlignmentLoss:
         def cross_entropy_loss(logits, labels):
             # Flatten the tokens
             loss_fct = nn.CrossEntropyLoss(ignore_index=self.ignore_index)
+            if not self.is_encoder_decoder:
+                logits = logits[..., :-1, :].contiguous()
+                labels = labels[..., 1:].contiguous()
             logits = logits.view(-1, logits.shape[-1])
             labels = labels.view(-1)
             # Enable model parallelism
@@ -461,8 +468,12 @@ class HFAlignmentLoss:
         chosen_logps = all_logps[:len_chosen]
         rejected_logps = all_logps[len_chosen:]
 
-        chosen_logits = all_logits[:len_chosen]
-        rejected_logits = all_logits[len_chosen:]
+        if not self.is_encoder_decoder:
+            chosen_logits = all_logits[:len_chosen, :-1]
+            rejected_logits = all_logits[len_chosen:, :-1]
+        else:
+            chosen_logits = all_logits[:len_chosen]
+            rejected_logits = all_logits[len_chosen:]
 
         return (
             chosen_logps,
