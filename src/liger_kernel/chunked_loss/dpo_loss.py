@@ -67,7 +67,6 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=True,
         compiled=True,
         use_ref_model=True,
-        is_encoder_decoder=False,
     ):
         return LigerFusedLinearPreferenceBase.forward(
             ctx=ctx,
@@ -84,13 +83,12 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             ref_input=ref_input,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
-            is_encoder_decoder=is_encoder_decoder,
         )
 
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None, None, None, None, None, None
+        return *grads, None, None, None, None, None, None, None, None
 
 
 class LigerFusedLinearDPOLoss(torch.nn.Module):
@@ -105,7 +103,6 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         compute_nll_loss: bool = True,
         compiled: bool = True,
         use_ref_model: bool = False,
-        is_encoder_decoder: bool = False,
     ):
         """
         Args:
@@ -114,7 +111,6 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             compute_nll_loss (bool): Whether to compute the NLL loss.
             compiled (bool): Whether to use the torch compiled kernel.
             use_ref_model (bool): Whether to use a reference model for the DPO loss.
-            is_encoder_decoder (bool): Whether the model is an encoder-decoder model.
         """
         super().__init__()
         self.ignore_index = ignore_index
@@ -122,7 +118,6 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
         self.use_ref_model = use_ref_model
-        self.is_encoder_decoder = is_encoder_decoder
 
     def forward(
         self,
@@ -147,5 +142,4 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             self.compute_nll_loss,
             self.compiled,
             self.use_ref_model,
-            self.is_encoder_decoder,
         )
