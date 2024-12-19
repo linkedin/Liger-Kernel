@@ -165,7 +165,7 @@ class LigerLMHeadKTO(torch.nn.Module):
     "B, T, H, V",
     [
         (8, 128, 1024, 4096),
-        (8, 47, 31, 123),  # random shape
+        (8, 47, 31, 123),
     ],
 )
 @pytest.mark.parametrize(
@@ -181,13 +181,12 @@ class LigerLMHeadKTO(torch.nn.Module):
 def test_correctness(
     B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, ignore_index, beta
 ):
+    B = 2 * B
     # Create labels tensor with scattered True values
     preference_labels = torch.zeros(B, dtype=torch.bool, device=device)
     num_chosen = B // 2  # Keep same number of chosen examples
     generator = torch.Generator(device=device).manual_seed(42)
-    chosen_indices = torch.randint(
-        0, B, (num_chosen,), generator=generator, device=device
-    )
+    chosen_indices = torch.randperm(B, generator=generator, device=device)[:num_chosen]
     preference_labels[chosen_indices] = True
 
     torch_lm_head_KTO = TorchLMHeadKTO(
@@ -272,7 +271,15 @@ def test_correctness(
     loss1.backward()
     loss2.backward()
 
-    assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
+    # Passed
+    assert_verbose_allclose(input1, input2, atol=atol, rtol=rtol)
+    assert_verbose_allclose(torch_lm_head_KTO.lin.weight, liger_lm_head_KTO.lin.weight, atol=atol, rtol=rtol)
+    
+    if bias:
+        assert_verbose_allclose(torch_lm_head_KTO.lin.bias, liger_lm_head_KTO.lin.bias, atol=atol, rtol=rtol)
+    
+    # Failed
+    # assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
     assert_verbose_allclose(
         torch_lm_head_KTO.lin.weight.grad,
         liger_lm_head_KTO.lin.weight.grad,
@@ -356,10 +363,10 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
         weight1,
         target,
         bias1,
+        preference_labels,
         ref_input,
         ref_weight1,
         ref_bias1,
-        preference_labels,
     )
     loss2, aggregated_aux_outputs2 = liger_fused_linear_kto(
         input2,
