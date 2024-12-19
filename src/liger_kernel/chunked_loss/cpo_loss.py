@@ -47,6 +47,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
         alpha=1.0,
         compute_nll_loss=True,
         compiled=True,
+        is_encoder_decoder=False,
     ):
         return LigerFusedLinearPreferenceBase.forward(
             ctx,
@@ -60,12 +61,13 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             beta=beta,
             compute_nll_loss=compute_nll_loss,
             compiled=compiled,
+            is_encoder_decoder=is_encoder_decoder,
         )
 
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None, None
+        return *grads, None, None, None, None, None, None
 
 
 class LigerFusedLinearCPOLoss(torch.nn.Module):
@@ -80,11 +82,16 @@ class LigerFusedLinearCPOLoss(torch.nn.Module):
         alpha: float = 1.0,
         compute_nll_loss: bool = True,
         compiled: bool = True,
+        is_encoder_decoder: bool = False,
     ):
         """
         Args:
             ignore_index (int): Index to ignore in the loss.
             beta (float): Weight for the odds ratio loss.
+            alpha (float): Weight for the NLL loss.
+            compute_nll_loss (bool): Whether to compute NLL loss.
+            compiled (bool): Whether to compile the loss function.
+            is_encoder_decoder (bool): Whether the model is an encoder-decoder model.
         """
         super().__init__()
         self.ignore_index = ignore_index
@@ -92,6 +99,7 @@ class LigerFusedLinearCPOLoss(torch.nn.Module):
         self.alpha = alpha
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
+        self.is_encoder_decoder = is_encoder_decoder
 
     def forward(self, lin_weight, _input, target, bias=None):
         return LigerFusedLinearCPOFunction.apply(
@@ -104,4 +112,5 @@ class LigerFusedLinearCPOLoss(torch.nn.Module):
             self.alpha,
             self.compute_nll_loss,
             self.compiled,
+            self.is_encoder_decoder,
         )
