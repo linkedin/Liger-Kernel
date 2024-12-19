@@ -76,7 +76,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         if ref_KL_logps is None:
             ref_KL_logps = torch.tensor(0.0, device=chosen_logps.device)
 
-        kl = policy_KL_logps - ref_KL_logps
+        kl = (policy_KL_logps - ref_KL_logps).mean().clamp(min=0).detach()
 
         losses = torch.cat(
             (

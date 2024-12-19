@@ -165,14 +165,14 @@ class LigerLMHeadKTO(torch.nn.Module):
     "B, T, H, V",
     [
         (8, 128, 1024, 4096),
-        (8, 47, 31, 123),
+        (3, 47, 31, 123),  # random shape
     ],
 )
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
         (1.0, torch.bfloat16, 5e-2, 5e-1),
-        (1.0, torch.float32, 2e-2, 5e-1),
+        (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
@@ -188,6 +188,12 @@ def test_correctness(
     generator = torch.Generator(device=device).manual_seed(42)
     chosen_indices = torch.randperm(B, generator=generator, device=device)[:num_chosen]
     preference_labels[chosen_indices] = True
+    preference_labels = torch.cat(
+        (
+            torch.ones(B // 2, dtype=torch.bool, device=device),
+            torch.zeros(B // 2, dtype=torch.bool, device=device),
+        )
+    )
 
     torch_lm_head_KTO = TorchLMHeadKTO(
         H=H,
@@ -273,13 +279,16 @@ def test_correctness(
 
     # Passed
     assert_verbose_allclose(input1, input2, atol=atol, rtol=rtol)
-    assert_verbose_allclose(torch_lm_head_KTO.lin.weight, liger_lm_head_KTO.lin.weight, atol=atol, rtol=rtol)
-    
+    assert_verbose_allclose(
+        torch_lm_head_KTO.lin.weight, liger_lm_head_KTO.lin.weight, atol=atol, rtol=rtol
+    )
+
     if bias:
-        assert_verbose_allclose(torch_lm_head_KTO.lin.bias, liger_lm_head_KTO.lin.bias, atol=atol, rtol=rtol)
-    
-    # Failed
-    # assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
+        assert_verbose_allclose(
+            torch_lm_head_KTO.lin.bias, liger_lm_head_KTO.lin.bias, atol=atol, rtol=rtol
+        )
+
+    assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
     assert_verbose_allclose(
         torch_lm_head_KTO.lin.weight.grad,
         liger_lm_head_KTO.lin.weight.grad,
@@ -373,10 +382,10 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
         weight2,
         target,
         bias2,
+        preference_labels,
         ref_input,
         ref_weight2,
         ref_bias2,
-        preference_labels,
     )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)

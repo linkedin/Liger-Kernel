@@ -459,9 +459,14 @@ class HFAlignmentLoss:
             return loss
 
         labels = target
-        chosen_nll_loss = cross_entropy_loss(
-            all_logits[:len_chosen], labels[:len_chosen]
-        )
+        if self.unpaired and preference_labels is not None:
+            chosen_nll_loss = cross_entropy_loss(
+                all_logits[preference_labels], labels[preference_labels]
+            )
+        else:
+            chosen_nll_loss = cross_entropy_loss(
+                all_logits[:len_chosen], labels[:len_chosen]
+            )
 
         all_logps = self.get_batch_logps(
             all_logits,
