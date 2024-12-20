@@ -84,20 +84,20 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             )
 
         def accumulate_chunk(student_input_chunk, teacher_input_chunk, target_chunk):
-            (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (
+            (grad_input_chunk, grad_weight_chunk, *grad_bias_chunk), (
                 chunk_loss,
                 (
-                    chunk_student_logits,
-                    chunk_teacher_logits,
+                    student_logits_chunk,
+                    teacher_logits_chunk,
                 ),
             ) = fused_fwd_bwd(student_input_chunk, teacher_input_chunk, target_chunk)
 
             if student_bias is not None:
-                grad_bias.add_(chunk_grad_bias)
+                grad_bias.add_(grad_bias_chunk)
 
-            grad_weight.add_(chunk_grad_weight)
+            grad_weight.add_(grad_weight_chunk)
             loss_acc.add_(chunk_loss)
-            grad_inputs.append(chunk_grad_input)
+            grad_inputs.append(grad_input_chunk)
 
         if compiled:
             fused_fwd_bwd = torch.compile(fused_fwd_bwd)

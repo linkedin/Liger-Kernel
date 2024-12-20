@@ -114,55 +114,55 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             )
 
         def accumulate_chunk(input_chunk, target_chunk, ref_input_chunk=None):
-            (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (
-                chunk_loss,
+            (grad_input_chunk, grad_weight_chunk, *grad_bias_chunk), (
+                loss_chunk,
                 (
-                    chunk_chosen_logps,
-                    chunk_rejected_logps,
-                    chunk_chosen_logits_mean,
-                    chunk_rejected_logits_mean,
-                    chunk_nll_loss,
-                    *aux_outputs,
+                    chosen_logps_chunk,
+                    rejected_logps_chunk,
+                    chosen_logits_mean_chunk,
+                    rejected_logits_mean_chunk,
+                    nll_loss_chunk,
+                    *aux_outputs_chunk,
                 ),
             ) = fused_fwd_bwd(input_chunk, target_chunk, ref_input_chunk)
 
             if bias is not None:
-                grad_bias.add_(chunk_grad_bias[0])  # accumulate bias gradient
+                grad_bias.add_(grad_bias_chunk[0])  # accumulate bias gradient
 
             # Accumulate gradients
-            grad_weight.add_(chunk_grad_weight)
-            grad_chosen_inputs.append(chunk_grad_input[: chosen_target_chunk.shape[0]])
+            grad_weight.add_(grad_weight_chunk)
+            grad_chosen_inputs.append(grad_input_chunk[: chosen_target_chunk.shape[0]])
             grad_rejected_inputs.append(
-                chunk_grad_input[chosen_target_chunk.shape[0] :]
+                grad_input_chunk[chosen_target_chunk.shape[0] :]
             )
 
             # Accumulate loss
-            loss_acc.add_(chunk_loss)
+            loss_acc.add_(loss_chunk)
 
             # Accumulate metrics
-            policy_chosen_logps.append(chunk_chosen_logps)
-            policy_rejected_logps.append(chunk_rejected_logps)
-            policy_chosen_logits_mean.add_(chunk_chosen_logits_mean)
-            policy_rejected_logits_mean.add_(chunk_rejected_logits_mean)
-            policy_nll_loss.add_(chunk_nll_loss)
+            policy_chosen_logps.append(chosen_logps_chunk)
+            policy_rejected_logps.append(rejected_logps_chunk)
+            policy_chosen_logits_mean.add_(chosen_logits_mean_chunk)
+            policy_rejected_logits_mean.add_(rejected_logits_mean_chunk)
+            policy_nll_loss.add_(nll_loss_chunk)
 
             # aux_outputs
             # Initialize storage for aux_outputs
             if len(aggregated_aux_outputs) == 0:
-                for aux in aux_outputs:
-                    if aux.ndim == 0:
+                for aux_chunk in aux_outputs_chunk:
+                    if aux_chunk.ndim == 0:
                         aggregated_aux_outputs.append(
-                            torch.zeros((), device=aux.device)
+                            torch.zeros((), device=aux_chunk.device)
                         )
                     else:
                         aggregated_aux_outputs.append([])
 
             # Process each aux_output
-            for i, aux in enumerate(aux_outputs):
-                if aux.ndim == 0:
-                    aggregated_aux_outputs[i].add_(aux)
+            for i, aux_chunk in enumerate(aux_outputs_chunk):
+                if aux_chunk.ndim == 0:
+                    aggregated_aux_outputs[i].add_(aux_chunk)
                 else:
-                    aggregated_aux_outputs[i].append(aux)
+                    aggregated_aux_outputs[i].append(aux_chunk)
 
         if compiled:
             fused_fwd_bwd = torch.compile(fused_fwd_bwd)
