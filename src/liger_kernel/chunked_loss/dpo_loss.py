@@ -12,7 +12,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
     def preference_loss_fn(
         chosen_logps,
         rejected_logps,
-        full_target,
+        num_items_in_batch,
         ref_chosen_logps=None,
         ref_rejected_logps=None,
         beta=0.1,
@@ -34,7 +34,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         Args:
             chosen_logps: Log probabilities of chosen tokens (batch_size,)
             rejected_logps: Log probabilities of rejected tokens (batch_size,)
-            full_target: Non chunked full target tensor
+            num_items_in_batch (int): Number of items in the batch.
             ref_chosen_logps: Reference log probs of chosen tokens (batch_size,)
             ref_rejected_logps: Reference log probs of rejected tokens (batch_size,)
             beta: Weight for the direct preference loss
@@ -49,7 +49,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         rejected_logratios = rejected_logps - ref_rejected_logps
 
         logits_diff = beta * (chosen_logratios - rejected_logratios)
-        loss = -F.logsigmoid(logits_diff).sum() / (full_target.shape[0] // 2)
+        loss = -F.logsigmoid(logits_diff).sum() / (num_items_in_batch // 2)
         return loss
 
     @staticmethod
