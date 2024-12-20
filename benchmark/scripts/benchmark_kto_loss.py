@@ -29,6 +29,8 @@ class TorchKTOLoss(torch.nn.Module):
         ref_bias: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
+        policy_KL_logps: torch.FloatTensor = None,
+        ref_KL_logps: torch.FloatTensor = None,
     ):
         from test.chunked_loss.test_kto_loss import HFKTOLoss
 
@@ -40,18 +42,23 @@ class TorchKTOLoss(torch.nn.Module):
             in_features=H, out_features=V, bias=ref_bias, dtype=dtype
         )
         self.kto_loss = HFKTOLoss(
-            ignore_index=ignore_index, beta=beta, use_ref_model=True
+            ignore_index=ignore_index,
+            beta=beta,
+            use_ref_model=True,
+            policy_KL_logps=policy_KL_logps,
+            ref_KL_logps=ref_KL_logps,
         ).get_batch_loss_metrics
 
-    def forward(self, x, ref_x, y):
+    def forward(self, x, ref_x, y, preference_labels):
         return self.kto_loss(
-            self.lin.weight,
-            x,
-            y,
-            self.lin.bias,
-            ref_x,
-            self.ref_lin.weight,
-            self.ref_lin.bias,
+            weight=self.lin.weight,
+            _input=x,
+            target=y,
+            bias=self.lin.bias,
+            ref_input=ref_x,
+            ref_weight=self.ref_lin.weight,
+            ref_bias=self.ref_lin.bias,
+            preference_labels=preference_labels,
         )[0]
 
 
@@ -65,6 +72,8 @@ class LigerKTOLoss(torch.nn.Module):
         ref_bias: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
+        policy_KL_logps: torch.FloatTensor = None,
+        ref_KL_logps: torch.FloatTensor = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
@@ -74,18 +83,23 @@ class LigerKTOLoss(torch.nn.Module):
             in_features=H, out_features=V, bias=ref_bias, dtype=dtype
         )
         self.kto_loss = LigerFusedLinearKTOLoss(
-            ignore_index=ignore_index, beta=beta, use_ref_model=True
+            ignore_index=ignore_index,
+            beta=beta,
+            use_ref_model=True,
+            policy_KL_logps=policy_KL_logps,
+            ref_KL_logps=ref_KL_logps,
         )
 
-    def forward(self, x, ref_x, y):
+    def forward(self, x, ref_x, y, preference_labels):
         return self.kto_loss(
-            self.lin.weight,
-            x,
-            y,
-            self.lin.bias,
-            ref_x,
-            self.ref_lin.weight,
-            self.ref_lin.bias,
+            _input=x,
+            lin_weight=self.lin.weight,
+            target=y,
+            bias=self.lin.bias,
+            preference_labels=preference_labels,
+            ref_input=ref_x,
+            ref_weight=self.ref_lin.weight,
+            ref_bias=self.ref_lin.bias,
         )[0]
 
 
@@ -122,8 +136,14 @@ def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
     # Input shape: [B, T, H]
     _input = torch.randn(B, T, H, device=device, dtype=dtype)
+
     # Target shape: [B, T]
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
+
+    # Preference labels shape: [B]
+    # Create binary preference labels (0 or 1) for each sequence in the batch
+    # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
+    preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
 
     # Add ignore_index tokens to simulate padding
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
@@ -135,9 +155,13 @@ def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
     def fwd():
         if provider == "liger":
-            return liger_kto_loss(_input, ref_input, target)
+            return liger_kto_loss(
+                x=_input, ref_x=ref_input, y=target, preference_labels=preference_labels
+            )
         elif provider == "huggingface":
-            return torch_kto_loss(_input, ref_input, target)
+            return torch_kto_loss(
+                x=_input, ref_x=ref_input, y=target, preference_labels=preference_labels
+            )
 
     def full():
         y = fwd()
@@ -164,10 +188,20 @@ def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     mode = input.kernel_operation_mode
 
     torch_kto_loss = TorchKTOLoss(
-        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
+        H=H,
+        V=V,
+        dtype=dtype,
+        beta=beta,
+        ignore_index=ignore_index,
+        bias=bias,
     ).to(device)
     liger_kto_loss = LigerKTOLoss(
-        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
+        H=H,
+        V=V,
+        dtype=dtype,
+        beta=beta,
+        ignore_index=ignore_index,
+        bias=bias,
     ).to(device)
 
     # Input shape: [B, T, H]
@@ -175,6 +209,11 @@ def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
 
     # Target shape: [B, T]
     target = torch.randint(V, (B, T), device=device, dtype=torch.long)
+
+    # Preference labels shape: [B]
+    # Create binary preference labels (0 or 1) for each sequence in the batch
+    # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
+    preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
 
     # Add ignore_index tokens
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
@@ -186,9 +225,13 @@ def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
 
     def fwd():
         if provider == "liger":
-            return liger_kto_loss(_input, ref_input, target)
+            return liger_kto_loss(
+                x=_input, ref_x=ref_input, y=target, preference_labels=preference_labels
+            )
         elif provider == "huggingface":
-            return torch_kto_loss(_input, ref_input, target)
+            return torch_kto_loss(
+                x=_input, ref_x=ref_input, y=target, preference_labels=preference_labels
+            )
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(

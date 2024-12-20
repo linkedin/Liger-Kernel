@@ -182,13 +182,10 @@ class LigerLMHeadKTO(torch.nn.Module):
 def test_correctness(
     B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, ignore_index, beta
 ):
-    B = 2 * B
-    # Create labels tensor with scattered True values
-    preference_labels = torch.zeros(B, dtype=torch.bool, device=device)
-    num_chosen = torch.randint(1, B, (1,)).item()
-    generator = torch.Generator(device=device).manual_seed(42)
-    chosen_indices = torch.randperm(B, generator=generator, device=device)[:num_chosen]
-    preference_labels[chosen_indices] = True
+    # Preference labels shape: [B]
+    # Create binary preference labels (0 or 1) for each sequence in the batch
+    # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
+    preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
 
     torch_lm_head_KTO = TorchLMHeadKTO(
         H=H,
@@ -306,16 +303,10 @@ def test_correctness(
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ref_bias", [True, False])
 def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias):
-    B = 2 * B
-
-    # Create labels tensor with scattered True values
-    preference_labels = torch.zeros(B, dtype=torch.bool, device=device)
-    num_chosen = torch.randint(1, B, (1,)).item()
-    generator = torch.Generator(device=device).manual_seed(42)
-    chosen_indices = torch.randint(
-        0, B, (num_chosen,), generator=generator, device=device
-    )
-    preference_labels[chosen_indices] = True
+    # Preference labels shape: [B]
+    # Create binary preference labels (0 or 1) for each sequence in the batch
+    # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
+    preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
 
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)

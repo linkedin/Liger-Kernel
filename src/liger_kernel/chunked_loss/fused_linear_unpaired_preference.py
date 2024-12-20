@@ -35,7 +35,7 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
         **loss_kwargs,
     ):
         """
-        Base class for fused linear layer with preference loss.
+        Base class for fused linear layer with unpaired preference loss like KTO
         Expects _input to be stacked with chosen and rejected inputs on the batch dimension.
 
         The mental model is:
@@ -200,8 +200,7 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
             preference_labels is not None
         ), "preference_labels must be provided for unpaired preference loss"
 
-        # TODO: Update the 2 * CHUNK_SIZE to CHUNK_SIZE
-        chunks = max(1, _input.shape[0] // (2 * CHUNK_SIZE))
+        chunks = max(1, _input.shape[0] // CHUNK_SIZE)
         _input_chunks = torch.chunk(_input, chunks=chunks, dim=0)
         _target_chunks = torch.chunk(target, chunks=chunks, dim=0)
         _preference_labels_chunks = torch.chunk(preference_labels, chunks=chunks, dim=0)
@@ -336,6 +335,7 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
             bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
             full_target (torch.Tensor): Full target tensor. Shape: (batch_size, sequence_length).
             ignore_index (int): Index to ignore for loss computation.
+            alpha (float): Weight for the NLL loss.
             beta (float): Weight for the preference loss.
             use_ref_model (bool): Whether to use a reference model for the alignment loss.
             ref_weight (torch.Tensor): Reference weight tensor. Shape: (vocab_size, hidden_size).
