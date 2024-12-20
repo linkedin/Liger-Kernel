@@ -2,13 +2,14 @@ from abc import abstractmethod
 from functools import partial
 
 import torch
-from torch.nn import functional as F
 
 
 class LigerFusedLinearDistillationBase(torch.autograd.Function):
 
     @abstractmethod
-    def distillation_loss_fn(student_logits_chunk, teacher_logits_chunk, target_chunk, full_target, **kwargs):
+    def distillation_loss_fn(
+        student_logits_chunk, teacher_logits_chunk, target_chunk, full_target, **kwargs
+    ):
         """
         Compute distillation loss.
         Args:
@@ -70,7 +71,9 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             Fused forward and backward pass for a chunk of student input, teacher input and target.
             """
             argnums = (0, 1, 5) if student_bias is not None else (0, 1)
-            return torch.func.grad_and_value(compute_loss, argnums=argnums, has_aux=True)(
+            return torch.func.grad_and_value(
+                compute_loss, argnums=argnums, has_aux=True
+            )(
                 student_input_chunk,
                 student_weight,
                 teacher_input_chunk,
@@ -82,15 +85,13 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
 
         def accumulate_chunk(student_input_chunk, teacher_input_chunk, target_chunk):
             (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (
-                    chunk_loss,
-                    (
-                        chunk_soft_loss,
-                        chunk_hard_loss,
-                        chunk_student_logits,
-                        chunk_teacher_logits,
-                    ),
-                ) = fused_fwd_bwd(student_input_chunk, teacher_input_chunk, target_chunk)
-            
+                chunk_loss,
+                (
+                    chunk_student_logits,
+                    chunk_teacher_logits,
+                ),
+            ) = fused_fwd_bwd(student_input_chunk, teacher_input_chunk, target_chunk)
+
             if student_bias is not None:
                 grad_bias.add_(chunk_grad_bias)
 
@@ -109,9 +110,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         for student_input_chunk, teacher_input_chunk, target_chunk in zip(
             _student_input_chunks, _teacher_input_chunks, _target_chunks
         ):
-            accumulate_chunk(
-                student_input_chunk, teacher_input_chunk, target_chunk
-            )
+            accumulate_chunk(student_input_chunk, teacher_input_chunk, target_chunk)
 
         ctx.save_for_backward(
             torch.cat(grad_inputs, dim=0),
@@ -168,8 +167,12 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             if teacher_bias is not None:
                 teacher_logits_chunk += teacher_bias
 
-        loss = distillation_loss_fn(
-            student_logits_chunk, teacher_logits_chunk, target_chunk, full_target, **loss_kwargs
+        loss_chunk = distillation_loss_fn(
+            student_logits_chunk,
+            teacher_logits_chunk,
+            target_chunk,
+            full_target,
+            **loss_kwargs,
         )
-        
-        return loss, (student_logits_chunk, teacher_logits_chunk)
+
+        return loss_chunk, (student_logits_chunk, teacher_logits_chunk)
