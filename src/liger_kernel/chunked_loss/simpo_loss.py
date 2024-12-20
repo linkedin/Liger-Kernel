@@ -43,7 +43,7 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
         logits = beta * (chosen_logps - rejected_logps) - gamma
         loss = (
             F.logsigmoid(logits).sum() * (1 - label_smoothing)
-            + F.logsigmoid(logits) * label_smoothing
+            + F.logsigmoid(logits).sum() * label_smoothing
         ) / (full_target.shape[0] // 2)
 
         return loss
