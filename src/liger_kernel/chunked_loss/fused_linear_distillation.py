@@ -21,50 +21,6 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         raise NotImplementedError("Distillation loss function must be implemented.")
 
     @staticmethod
-    def _compute_loss(
-        student_input_chunk,
-        student_weight,
-        teacher_input_chunk,
-        teacher_weight,
-        target_chunk,
-        student_bias=None,
-        teacher_bias=None,
-        distillation_loss_fn=None,
-        full_target=None,
-        **loss_kwargs,
-    ):
-        """
-        Compute the total loss for a chunk of input and target, while using an knowleedge distillation loss function.
-        Args:
-            distillation_loss_fn (callable): Loss function to compute the loss on a chunk of input/target.
-            student_input_chunk (torch.Tensor): Chunk of input tensor. Shape: (chunk_size, student_hidden_size).
-            student_weight (torch.Tensor): Weight tensor. Shape: (vocab_size, student_hidden_size).
-            teacher_input_chunk (torch.Tensor): Chunk of input tensor. Shape: (chunk_size, teacher_hidden_size).
-            teacher_weight (torch.Tensor): Weight tensor. Shape: (vocab_size, teacher_hidden_size).
-            target_chunk (torch.Tensor): Chunk of target tensor. Shape: (chunk_size,).
-            student_bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
-            teacher_bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
-            full_target (torch.Tensor): Full target tensor. Shape: (chunk_size,).
-            loss_kwargs (dict): Additional arguments for the loss function.
-        """
-        # Student
-        student_logits_chunk = student_input_chunk @ student_weight.t()
-        if student_bias is not None:
-            student_logits_chunk += student_bias
-
-        # Teacher
-        with torch.no_grad():
-            teacher_logits_chunk = teacher_input_chunk @ teacher_weight.t()
-            if teacher_bias is not None:
-                teacher_logits_chunk += teacher_bias
-
-        loss = distillation_loss_fn(
-            student_logits_chunk, teacher_logits_chunk, target_chunk, full_target, **loss_kwargs
-        )
-        
-        return loss, (student_logits_chunk, teacher_logits_chunk)
-
-    @staticmethod
     def forward(
         ctx,
         student_input,
@@ -173,3 +129,47 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             grad_bias = grad_bias * grad_output if grad_bias is not None else None
 
         return grad_input, grad_weight, None, grad_bias
+
+    @staticmethod
+    def _compute_loss(
+        student_input_chunk,
+        student_weight,
+        teacher_input_chunk,
+        teacher_weight,
+        target_chunk,
+        student_bias=None,
+        teacher_bias=None,
+        distillation_loss_fn=None,
+        full_target=None,
+        **loss_kwargs,
+    ):
+        """
+        Compute the total loss for a chunk of input and target, while using an knowleedge distillation loss function.
+        Args:
+            student_input_chunk (torch.Tensor): Chunk of input tensor. Shape: (chunk_size, student_hidden_size).
+            student_weight (torch.Tensor): Weight tensor. Shape: (vocab_size, student_hidden_size).
+            teacher_input_chunk (torch.Tensor): Chunk of input tensor. Shape: (chunk_size, teacher_hidden_size).
+            teacher_weight (torch.Tensor): Weight tensor. Shape: (vocab_size, teacher_hidden_size).
+            target_chunk (torch.Tensor): Chunk of target tensor. Shape: (chunk_size,).
+            student_bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
+            teacher_bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
+            distillation_loss_fn (callable): Loss function to compute the loss on a chunk of input/target.
+            full_target (torch.Tensor): Full target tensor. Shape: (chunk_size,).
+            loss_kwargs (dict): Additional arguments for the loss function.
+        """
+        # Student
+        student_logits_chunk = student_input_chunk @ student_weight.t()
+        if student_bias is not None:
+            student_logits_chunk += student_bias
+
+        # Teacher
+        with torch.no_grad():
+            teacher_logits_chunk = teacher_input_chunk @ teacher_weight.t()
+            if teacher_bias is not None:
+                teacher_logits_chunk += teacher_bias
+
+        loss = distillation_loss_fn(
+            student_logits_chunk, teacher_logits_chunk, target_chunk, full_target, **loss_kwargs
+        )
+        
+        return loss, (student_logits_chunk, teacher_logits_chunk)
