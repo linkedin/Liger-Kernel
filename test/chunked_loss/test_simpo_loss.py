@@ -25,6 +25,7 @@ class LigerLMHeadSimPO(torch.nn.Module):
         ignore_index: int = -100,
         beta: float = 0.1,
         alpha: float = 1.0,
+        label_smoothing: float = 0.0,
         gamma: float = 0.5,
     ):
         super().__init__()
@@ -32,7 +33,11 @@ class LigerLMHeadSimPO(torch.nn.Module):
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
         self.simpo_loss = LigerFusedLinearSimPOLoss(
-            ignore_index=ignore_index, beta=beta, alpha=alpha, gamma=gamma
+            ignore_index=ignore_index,
+            beta=beta,
+            alpha=alpha,
+            gamma=gamma,
+            label_smoothing=label_smoothing,
         )
 
     def forward(self, x, y):
@@ -57,8 +62,21 @@ class LigerLMHeadSimPO(torch.nn.Module):
 @pytest.mark.parametrize(
     "ignore_index, beta, gamma", [(-100, 0.1, 0.5), (42, 0.2, 0.85)]
 )
+@pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
 def test_correctness(
-    B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta, gamma
+    B,
+    T,
+    H,
+    V,
+    scalar,
+    dtype,
+    atol,
+    rtol,
+    bias,
+    ignore_index,
+    beta,
+    gamma,
+    label_smoothing,
 ):
     B = 2 * B  # SimPO loss requires B to be even
 
@@ -70,6 +88,7 @@ def test_correctness(
         ignore_index=ignore_index,
         beta=beta,
         loss_type="simpo",
+        label_smoothing=label_smoothing,
         simpo_gamma=gamma,
     )
     liger_lm_head_simpo = LigerLMHeadSimPO(
@@ -79,6 +98,7 @@ def test_correctness(
         bias=bias,
         ignore_index=ignore_index,
         beta=beta,
+        label_smoothing=label_smoothing,
         gamma=gamma,
     )
 
