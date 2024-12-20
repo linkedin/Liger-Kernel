@@ -185,7 +185,7 @@ def test_correctness(
     B = 2 * B
     # Create labels tensor with scattered True values
     preference_labels = torch.zeros(B, dtype=torch.bool, device=device)
-    num_chosen = B // 2  # Keep same number of chosen examples
+    num_chosen = torch.randint(1, B, (1,)).item()
     generator = torch.Generator(device=device).manual_seed(42)
     chosen_indices = torch.randperm(B, generator=generator, device=device)[:num_chosen]
     preference_labels[chosen_indices] = True
@@ -310,7 +310,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
 
     # Create labels tensor with scattered True values
     preference_labels = torch.zeros(B, dtype=torch.bool, device=device)
-    num_chosen = B // 2  # Keep same number of chosen examples
+    num_chosen = torch.randint(1, B, (1,)).item()
     generator = torch.Generator(device=device).manual_seed(42)
     chosen_indices = torch.randint(
         0, B, (num_chosen,), generator=generator, device=device
