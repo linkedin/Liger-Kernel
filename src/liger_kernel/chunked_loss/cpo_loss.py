@@ -9,7 +9,7 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
 class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
-    def preference_loss_fn(chosen_logps, rejected_logps, num_items_in_batch, beta=0.1):
+    def preference_loss_fn(chosen_logps, rejected_logps, full_target, beta=0.1):
         """
         Paper: https://arxiv.org/pdf/2401.08417
 
@@ -28,11 +28,11 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
         Args:
             chosen_logps (torch.Tensor): Avg log probabilities of chosen tokens. Shape: (batch_size,).
             rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
-            num_items_in_batch (int): Number of items in the batch.
+            full_target (torch.Tensor): Non chunked full target tensor
             beta (float): Weight for the CPO loss
         """
         logits = beta * (chosen_logps - rejected_logps)
-        loss = F.logsigmoid(logits).sum() / (num_items_in_batch // 2)
+        loss = F.logsigmoid(logits).sum() / (full_target.shape[0] // 2)
         return loss
 
     @staticmethod

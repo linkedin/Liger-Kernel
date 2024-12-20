@@ -9,7 +9,7 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
 class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
-    def preference_loss_fn(chosen_logps, rejected_logps, num_items_in_batch, beta=0.1):
+    def preference_loss_fn(chosen_logps, rejected_logps, full_target, beta=0.1):
         """
         Paper: https://arxiv.org/pdf/2403.07691
 
@@ -28,7 +28,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         Args:
             chosen_logps (torch.Tensor): Avg log probabilities of chosen tokens. Shape: (batch_size,).
             rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
-            num_items_in_batch (int): Number of items in the batch.
+            full_target (torch.Tensor): Non chunked full target tensor
             beta (float): Weight for the odds ratio loss.
         """
         log_odds = (chosen_logps - rejected_logps) - (
@@ -36,13 +36,13 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
             - torch.log1p(-torch.exp(rejected_logps))
         )
         ratio = F.logsigmoid(log_odds)
-        loss = beta * ratio.sum() / (num_items_in_batch // 2)
+        loss = beta * ratio.sum() / (full_target.shape[0] // 2)
 
         chosen_rewards = beta * chosen_logps
         rejected_rewards = beta * rejected_logps
 
-        log_odds_ratio = torch.sum(ratio) / (num_items_in_batch // 2)
-        log_odds_chosen = torch.sum(log_odds) / (num_items_in_batch // 2)
+        log_odds_ratio = torch.sum(ratio) / (full_target.shape[0] // 2)
+        log_odds_chosen = torch.sum(log_odds) / (full_target.shape[0] // 2)
 
         return loss, chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen
 

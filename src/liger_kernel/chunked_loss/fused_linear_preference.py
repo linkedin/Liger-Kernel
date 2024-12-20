@@ -387,7 +387,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
 
         preference_loss_outputs = preference_loss_fn(
-            chosen_logps, rejected_logps, full_target.shape[0], beta=beta, **loss_kwargs
+            chosen_logps, rejected_logps, full_target, beta=beta, **loss_kwargs
         )
         if isinstance(preference_loss_outputs, tuple):
             preference_loss, *aux_outputs = preference_loss_outputs
