@@ -33,7 +33,11 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
         """
         logits = beta * (chosen_logps - rejected_logps)
         loss = F.logsigmoid(logits).sum() / (full_target.shape[0] // 2)
-        return loss
+
+        chosen_rewards = beta * chosen_logps
+        rejected_rewards = beta * rejected_logps
+
+        return loss, chosen_rewards, rejected_rewards
 
     @staticmethod
     def forward(

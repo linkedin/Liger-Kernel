@@ -73,7 +73,11 @@ class HFCPOLoss(HFAlignmentLoss):
             raise ValueError(
                 f"Unknown loss type: {self.loss_type}. Should be one of ['sigmoid']"
             )
-        return losses
+
+        chosen_rewards = self.beta * policy_chosen_logps
+        rejected_rewards = self.beta * policy_rejected_logps
+
+        return losses, chosen_rewards, rejected_rewards
 
 
 class TorchLMHeadCPO(torch.nn.Module):
