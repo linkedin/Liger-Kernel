@@ -10,7 +10,7 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
     def preference_loss_fn(
-        chosen_logps, rejected_logps, full_target, beta=0.1, gamma=0.5
+        chosen_logps_chunk, rejected_logps_chunk, full_target, beta=0.1, gamma=0.5
     ):
         """
         Paper: https://arxiv.org/pdf/2405.14734
@@ -28,15 +28,15 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
         - γ: gemma margin term
 
         Args:
-            chosen_logps (torch.Tensor): Avg log probabilities of chosen tokens. Shape: (batch_size,).
-            rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
+            chosen_logps_chunk (torch.Tensor): Avg log probabilities of chosen tokens in the chunk. Shape: (batch_size,).
+            rejected_logps_chunk (torch.Tensor): Avg log probabilities of rejected tokens in the chunk. Shape: (batch_size,).
             full_target: Non chunked full target tensor
             beta (float): beta weight
             gamma (float): gemma margin term
         """
-        logits = beta * (chosen_logps - rejected_logps) - gamma
-        loss = F.logsigmoid(logits).sum() / (full_target.shape[0] // 2)
-        return loss
+        logits_chunk = beta * (chosen_logps_chunk - rejected_logps_chunk) - gamma
+        loss_chunk = F.logsigmoid(logits_chunk).sum() / (full_target.shape[0] // 2)
+        return loss_chunk
 
     @staticmethod
     def forward(

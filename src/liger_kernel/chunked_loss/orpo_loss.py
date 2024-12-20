@@ -9,7 +9,9 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
 class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
-    def preference_loss_fn(chosen_logps, rejected_logps, full_target, beta=0.1):
+    def preference_loss_fn(
+        chosen_logps_chunk, rejected_logps_chunk, full_target, beta=0.1
+    ):
         """
         Paper: https://arxiv.org/pdf/2403.07691
 
@@ -26,25 +28,31 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         - odds_θ: Odds function for the policy
 
         Args:
-            chosen_logps (torch.Tensor): Avg log probabilities of chosen tokens. Shape: (batch_size,).
-            rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
-            full_target (torch.Tensor): Non chunked full target tensor
+            chosen_logps_chunk (torch.Tensor): Avg log probabilities of chosen tokens in the chunk. Shape: (batch_size,).
+            rejected_logps_chunk (torch.Tensor): Avg log probabilities of rejected tokens in the chunk. Shape: (batch_size,).
+            full_target (torch.Tensor): Non chunked full target tensor.
             beta (float): Weight for the odds ratio loss.
         """
-        log_odds = (chosen_logps - rejected_logps) - (
-            torch.log1p(-torch.exp(chosen_logps))
-            - torch.log1p(-torch.exp(rejected_logps))
+        log_odds_chunk = (chosen_logps_chunk - rejected_logps_chunk) - (
+            torch.log1p(-torch.exp(chosen_logps_chunk))
+            - torch.log1p(-torch.exp(rejected_logps_chunk))
         )
-        ratio = F.logsigmoid(log_odds)
-        loss = beta * ratio.sum() / (full_target.shape[0] // 2)
+        ratio_chunk = F.logsigmoid(log_odds_chunk)
+        loss_chunk = beta * ratio_chunk.sum() / (full_target.shape[0] // 2)
 
-        chosen_rewards = beta * chosen_logps
-        rejected_rewards = beta * rejected_logps
+        chosen_rewards_chunk = beta * chosen_logps_chunk
+        rejected_rewards_chunk = beta * rejected_logps_chunk
 
-        log_odds_ratio = torch.sum(ratio) / (full_target.shape[0] // 2)
-        log_odds_chosen = torch.sum(log_odds) / (full_target.shape[0] // 2)
+        log_odds_ratio_chunk = torch.sum(ratio_chunk) / (full_target.shape[0] // 2)
+        log_odds_chosen_chunk = torch.sum(log_odds_chunk) / (full_target.shape[0] // 2)
 
-        return loss, chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen
+        return (
+            loss_chunk,
+            chosen_rewards_chunk,
+            rejected_rewards_chunk,
+            log_odds_ratio_chunk,
+            log_odds_chosen_chunk,
+        )
 
     @staticmethod
     def forward(
