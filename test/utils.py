@@ -350,11 +350,13 @@ class HFAlignmentLoss:
         beta: float = 0.1,
         ignore_index: int = -100,
         use_ref_model: bool = False,
+        compute_nll_loss: bool = True,
     ):
         self.alpha = alpha
         self.beta = beta
         self.ignore_index = ignore_index
         self.use_ref_model = use_ref_model
+        self.compute_nll_loss = compute_nll_loss
 
     @abstractmethod
     def alignment_loss(self):
@@ -448,9 +450,11 @@ class HFAlignmentLoss:
             return loss
 
         labels = target
-        chosen_nll_loss = cross_entropy_loss(
-            all_logits[:len_chosen], labels[:len_chosen]
-        )
+        chosen_nll_loss = torch.tensor(0.0, device=all_logits.device)
+        if self.compute_nll_loss:
+            chosen_nll_loss = cross_entropy_loss(
+                all_logits[:len_chosen], labels[:len_chosen]
+            )
 
         all_logps = self.get_batch_logps(
             all_logits,
