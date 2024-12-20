@@ -17,7 +17,7 @@ class _FSDPForwardRedirection:
     This is needed in cases where we call a submodule of a FSDP module. For instance, when we want to call only
     the `LlamaModel` part out of a FSDP-wrapped `LlamaForCausalLM` to get the hidden states without involving
     GPU-memory-heavy `lm_head` and cross entropy computation, doing this directly (i.e. `model.model.forward()`)
-    will not work because the first `nn.Emebedding` layer is not independently wrapped as a FSDP module (because of
+    will not work because the first `nn.Embedding` layer is not independently wrapped as a FSDP module (because of
     the transformer-based wrapping policy), and not calling it through FSDP root module forward will not all-gather
     its parameter, thus resulting in "RuntimeError: 'weight' must be 2-D" error. Similarly, if we want to call just
     the `lm_head` part of a model, we need this trick too to properly get its params all-gathered.
