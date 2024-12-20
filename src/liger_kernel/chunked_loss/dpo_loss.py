@@ -10,11 +10,11 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
     def preference_loss_fn(
-        chosen_logps,
-        rejected_logps,
+        chosen_logps_chunk,
+        rejected_logps_chunk,
         full_target,
-        ref_chosen_logps=None,
-        ref_rejected_logps=None,
+        ref_chosen_logps_chunk=None,
+        ref_rejected_logps_chunk=None,
         beta=0.1,
     ):
         """
@@ -32,25 +32,25 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         - E: Expected value over the dataset
 
         Args:
-            chosen_logps: Log probabilities of chosen tokens (batch_size,)
-            rejected_logps: Log probabilities of rejected tokens (batch_size,)
+            chosen_logps_chunk: Log probabilities of chosen tokens in the chunk (batch_size,)
+            rejected_logps_chunk: Log probabilities of rejected tokens in the chunk (batch_size,)
             full_target: Non chunked full target tensor
-            ref_chosen_logps: Reference log probs of chosen tokens (batch_size,)
-            ref_rejected_logps: Reference log probs of rejected tokens (batch_size,)
+            ref_chosen_logps_chunk: Reference log probs of chosen tokens in the chunk (batch_size,)
+            ref_rejected_logps_chunk: Reference log probs of rejected tokens in the chunk (batch_size,)
             beta: Weight for the direct preference loss
         """
 
-        if ref_chosen_logps is None:
-            ref_chosen_logps = torch.tensor(0.0, device=chosen_logps.device)
-        if ref_rejected_logps is None:
-            ref_rejected_logps = torch.tensor(0.0, device=rejected_logps.device)
+        if ref_chosen_logps_chunk is None:
+            ref_chosen_logps_chunk = torch.tensor(0.0, device=chosen_logps_chunk.device)
+        if ref_rejected_logps_chunk is None:
+            ref_rejected_logps_chunk = torch.tensor(0.0, device=rejected_logps_chunk.device)
 
-        chosen_logratios = chosen_logps - ref_chosen_logps
-        rejected_logratios = rejected_logps - ref_rejected_logps
+        chosen_logratios_chunk = chosen_logps_chunk - ref_chosen_logps_chunk
+        rejected_logratios_chunk = rejected_logps_chunk - ref_rejected_logps_chunk
 
-        logits_diff = beta * (chosen_logratios - rejected_logratios)
-        loss = -F.logsigmoid(logits_diff).sum() / (full_target.shape[0] // 2)
-        return loss
+        logits_diff_chunk = beta * (chosen_logratios_chunk - rejected_logratios_chunk)
+        loss_chunk = -F.logsigmoid(logits_diff_chunk).sum() / (full_target.shape[0] // 2)
+        return loss_chunk
 
     @staticmethod
     def forward(

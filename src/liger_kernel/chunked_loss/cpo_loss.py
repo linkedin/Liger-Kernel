@@ -9,7 +9,7 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
 class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
-    def preference_loss_fn(chosen_logps, rejected_logps, full_target, beta=0.1):
+    def preference_loss_fn(chosen_logps_chunk, rejected_logps_chunk, full_target, beta=0.1):
         """
         Paper: https://arxiv.org/pdf/2401.08417
 
@@ -26,14 +26,14 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
         - D: Dataset of preferences
 
         Args:
-            chosen_logps (torch.Tensor): Avg log probabilities of chosen tokens. Shape: (batch_size,).
-            rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
-            full_target (torch.Tensor): Non chunked full target tensor
-            beta (float): Weight for the CPO loss
+            chosen_logps_chunk (torch.Tensor): Avg log probabilities of chosen tokens in the chunk. Shape: (batch_size,).
+            rejected_logps_chunk (torch.Tensor): Avg log probabilities of rejected tokens in the chunk. Shape: (batch_size,).
+            full_target (torch.Tensor): Non chunked full target tensor.
+            beta (float): Weight for the CPO loss.
         """
-        logits = beta * (chosen_logps - rejected_logps)
-        loss = F.logsigmoid(logits).sum() / (full_target.shape[0] // 2)
-        return loss
+        logits_chunk = beta * (chosen_logps_chunk - rejected_logps_chunk)
+        loss_chunk = F.logsigmoid(logits_chunk).sum() / (full_target.shape[0] // 2)
+        return loss_chunk
 
     @staticmethod
     def forward(

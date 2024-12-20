@@ -275,35 +275,35 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             logits_chunk = logits_chunk + bias
         log_probs_chunk = F.log_softmax(logits_chunk.float(), dim=-1)
 
-        chosen_nll_loss = 0.0
+        chosen_nll_loss_chunk = 0.0
         if compute_nll_loss:
-            chosen_nll_loss = F.nll_loss(
+            chosen_nll_loss_chunk = F.nll_loss(
                 log_probs_chunk[:len_chosen_chunk].view(-1, log_probs_chunk.shape[-1]),
                 target_chunk[:len_chosen_chunk].view(-1),
                 reduction="sum",
                 ignore_index=ignore_index,
             )
 
-        loss_mask = target_chunk != ignore_index
-        label_chunk = torch.where(loss_mask, target_chunk, 0)
+        loss_mask_chunk = target_chunk != ignore_index
+        label_chunk = torch.where(loss_mask_chunk, target_chunk, 0)
 
-        per_token_logps = log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(
+        per_token_logps_chunk = log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(
             -1
         )
-        average_log_prob = (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+        average_log_prob_chunk = (per_token_logps_chunk * loss_mask_chunk).sum(-1) / loss_mask_chunk.sum(-1)
 
-        chosen_logps = average_log_prob[:len_chosen_chunk]
-        rejected_logps = average_log_prob[len_chosen_chunk:]
+        chosen_logps_chunk = average_log_prob_chunk[:len_chosen_chunk]
+        rejected_logps_chunk = average_log_prob_chunk[len_chosen_chunk:]
 
-        chosen_logits = logits_chunk[:len_chosen_chunk]
-        rejected_logits = logits_chunk[len_chosen_chunk:]
+        chosen_logits_chunk = logits_chunk[:len_chosen_chunk]
+        rejected_logits_chunk = logits_chunk[len_chosen_chunk:]
 
         return (
-            chosen_logps,
-            rejected_logps,
-            chosen_logits,
-            rejected_logits,
-            chosen_nll_loss,
+            chosen_logps_chunk,
+            rejected_logps_chunk,
+            chosen_logits_chunk,
+            rejected_logits_chunk,
+            chosen_nll_loss_chunk,
         )
 
     @staticmethod
@@ -343,11 +343,11 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             loss_kwargs (dict): Additional arguments for the loss function.
         """
         (
-            chosen_logps,
-            rejected_logps,
-            chosen_logits,
-            rejected_logits,
-            chosen_nll_loss,
+            chosen_logps_chunk,
+            rejected_logps_chunk,
+            chosen_logits_chunk,
+            rejected_logits_chunk,
+            chosen_nll_loss_chunk,
         ) = LigerFusedLinearPreferenceBase.chunk_forward(
             input_chunk,
             weight,
@@ -356,25 +356,25 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             ignore_index=ignore_index,
             compute_nll_loss=compute_nll_loss,
         )
-        chosen_nll_loss = (
-            chosen_nll_loss
+        chosen_nll_loss_chunk = (
+            chosen_nll_loss_chunk
             / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
         )
-        chosen_logits_mean = chosen_logits.sum() / (
+        chosen_logits_mean_chunk = chosen_logits_chunk.sum() / (
             full_target.shape[0] // 2 * input_chunk.shape[1] * weight.shape[0]
         )
-        rejected_logits_mean = rejected_logits.sum() / (
+        rejected_logits_mean_chunk = rejected_logits_chunk.sum() / (
             full_target.shape[0] // 2 * input_chunk.shape[1] * weight.shape[0]
         )
 
         if use_ref_model:
             with torch.no_grad():
                 (
-                    ref_chosen_logps,
-                    ref_rejected_logps,
-                    ref_chosen_logits,
-                    ref_rejected_logits,
-                    ref_chosen_nll_loss,
+                    ref_chosen_logps_chunk,
+                    ref_rejected_logps_chunk,
+                    _,
+                    _,
+                    _,
                 ) = LigerFusedLinearPreferenceBase.chunk_forward(
                     ref_input_chunk,
                     ref_weight,
@@ -383,23 +383,23 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
                     ignore_index=ignore_index,
                     compute_nll_loss=False,  # We don't need NLL loss for the reference model
                 )
-            loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
-            loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
+            loss_kwargs["ref_chosen_logps_chunk"] = ref_chosen_logps_chunk
+            loss_kwargs["ref_rejected_logps_chunk"] = ref_rejected_logps_chunk
 
         preference_loss_outputs = preference_loss_fn(
-            chosen_logps, rejected_logps, full_target, beta=beta, **loss_kwargs
+            chosen_logps_chunk, rejected_logps_chunk, full_target, beta=beta, **loss_kwargs
         )
         if isinstance(preference_loss_outputs, tuple):
-            preference_loss, *aux_outputs = preference_loss_outputs
+            preference_loss_chunk, *aux_outputs_chunk = preference_loss_outputs
         else:
-            preference_loss, aux_outputs = preference_loss_outputs, []
+            preference_loss_chunk, aux_outputs_chunk = preference_loss_outputs, []
 
-        loss = alpha * chosen_nll_loss - preference_loss
-        return_vars = (
-            chosen_logps,
-            rejected_logps,
-            chosen_logits_mean,
-            rejected_logits_mean,
-            chosen_nll_loss,
+        loss_chunk = alpha * chosen_nll_loss_chunk - preference_loss_chunk
+        return_vars_chunk = (
+            chosen_logps_chunk,
+            rejected_logps_chunk,
+            chosen_logits_mean_chunk,
+            rejected_logits_mean_chunk,
+            chosen_nll_loss_chunk,
         )
-        return loss, (*return_vars, *aux_outputs)
+        return loss_chunk, (*return_vars_chunk, *aux_outputs_chunk)
