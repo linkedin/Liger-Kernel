@@ -1,12 +1,12 @@
 import torch
 import torch.nn.functional as F
 
-from liger_kernel.chunked_loss.fused_linear_preference import (
-    LigerFusedLinearPreferenceBase,
+from liger_kernel.chunked_loss.fused_linear_unpaired_preference import (
+    LigerFusedLinearUnpairedPreferenceBase,
 )
 
 
-class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
+class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
 
     @staticmethod
     def preference_loss_fn(
@@ -77,20 +77,20 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
             ref_KL_logps = torch.tensor(0.0, device=chosen_logps.device)
 
         kl = (policy_KL_logps - ref_KL_logps).mean().clamp(min=0).detach()
+        losses = []
 
-        losses = torch.cat(
-            (
-                1 - F.sigmoid(beta * (chosen_logratios - kl)),
-                1 - F.sigmoid(beta * (kl - rejected_logratios)),
-            ),
-            0,
-        )
+        if chosen_logps.numel() > 0:
+            losses.append(1 - F.sigmoid(beta * (chosen_logratios - kl)))
+        if rejected_logps.numel() > 0:
+            losses.append(1 - F.sigmoid(beta * (kl - rejected_logratios)))
+
+        losses = torch.cat(losses, dim=0)
 
         chosen_rewards = beta * chosen_logratios.detach()
         rejected_rewards = beta * rejected_logratios.detach()
 
         return (
-            # We don't divide by 2 because KTO Loss doesn't need pair-wise examples
+            # We don't divide by 2 because KTO Loss doesn't need pairwise examples
             losses.sum() / (full_target.shape[0]),
             chosen_rewards,
             rejected_rewards,
@@ -109,13 +109,12 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
         ref_bias=None,
         ignore_index=-100,
         beta=0.1,
-        compute_nll_loss=True,
         compiled=True,
         use_ref_model=True,
         policy_KL_logps=None,
         ref_KL_logps=None,
     ):
-        return LigerFusedLinearPreferenceBase.forward(
+        return LigerFusedLinearUnpairedPreferenceBase.forward(
             ctx=ctx,
             _input=_input,
             weight=weight,
@@ -124,13 +123,11 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
             loss_fn=LigerFusedLinearKTOFunction.preference_loss_fn,
             ignore_index=ignore_index,
             beta=beta,
-            compute_nll_loss=compute_nll_loss,
             compiled=compiled,
             use_ref_model=use_ref_model,
             ref_input=ref_input,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
-            unpaired=True,  # KTO loss functions use unpaired preference
             preference_labels=preference_labels,
             policy_KL_logps=policy_KL_logps,
             ref_KL_logps=ref_KL_logps,
@@ -138,12 +135,9 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
     def backward(ctx, *grad_output):
-        grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
+        grads = LigerFusedLinearUnpairedPreferenceBase.backward(ctx, grad_output)[:4]
         return (
             *grads,
-            None,
-            None,
-            None,
             None,
             None,
             None,
@@ -166,7 +160,6 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
         self,
         ignore_index: int = -100,
         beta: float = 0.1,
-        compute_nll_loss: bool = True,
         compiled: bool = True,
         use_ref_model: bool = False,
         policy_KL_logps: torch.FloatTensor = None,
@@ -176,14 +169,12 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
         Args:
             ignore_index (int): Index to ignore in the loss calculation
             beta (float): Temperature parameter for the KTO loss
-            compute_nll_loss (bool): Whether to compute the NLL loss alongside KTO
             compiled (bool): Whether to use compiled operations
             use_ref_model (bool): Whether to use a reference model for the DPO loss.
         """
         super().__init__()
         self.ignore_index = ignore_index
         self.beta = beta
-        self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
         self.use_ref_model = use_ref_model
         self.policy_KL_logps = policy_KL_logps
@@ -211,7 +202,6 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
             ref_bias,
             self.ignore_index,
             self.beta,
-            self.compute_nll_loss,
             self.compiled,
             self.use_ref_model,
             self.policy_KL_logps,

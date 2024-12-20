@@ -351,6 +351,7 @@ class HFAlignmentLoss:
         ignore_index: int = -100,
         use_ref_model: bool = False,
         unpaired: bool = False,
+        compute_nll_loss: bool = True,
         **kwargs,
     ):
         self.alpha = alpha
@@ -358,6 +359,7 @@ class HFAlignmentLoss:
         self.ignore_index = ignore_index
         self.use_ref_model = use_ref_model
         self.unpaired = unpaired
+        self.compute_nll_loss = compute_nll_loss
 
     @abstractmethod
     def alignment_loss(self):
@@ -459,13 +461,11 @@ class HFAlignmentLoss:
             return loss
 
         labels = target
-        if self.unpaired and preference_labels is not None:
+
+        chosen_nll_loss = torch.tensor(0.0, device=all_logits.device)
+        if self.compute_nll_loss:
             chosen_nll_loss = cross_entropy_loss(
                 all_logits[preference_labels], labels[preference_labels]
-            )
-        else:
-            chosen_nll_loss = cross_entropy_loss(
-                all_logits[:len_chosen], labels[:len_chosen]
             )
 
         all_logps = self.get_batch_logps(
@@ -540,8 +540,13 @@ class HFAlignmentLoss:
             losses, *aggregated_aux_outputs = alignment_loss_outputs
         else:
             losses, aggregated_aux_outputs = alignment_loss_outputs, []
-        # full loss
-        loss = policy_nll_loss * self.alpha - losses.mean()
+
+        if self.compute_nll_loss:
+            # full loss
+            loss = policy_nll_loss * self.alpha - losses.mean()
+        else:
+            # only alignment loss
+            loss = -losses.mean()
         return_vars = (
             policy_chosen_logps,
             policy_rejected_logps,
