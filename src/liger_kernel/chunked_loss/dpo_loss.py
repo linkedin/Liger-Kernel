@@ -43,13 +43,17 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         if ref_chosen_logps_chunk is None:
             ref_chosen_logps_chunk = torch.tensor(0.0, device=chosen_logps_chunk.device)
         if ref_rejected_logps_chunk is None:
-            ref_rejected_logps_chunk = torch.tensor(0.0, device=rejected_logps_chunk.device)
+            ref_rejected_logps_chunk = torch.tensor(
+                0.0, device=rejected_logps_chunk.device
+            )
 
         chosen_logratios_chunk = chosen_logps_chunk - ref_chosen_logps_chunk
         rejected_logratios_chunk = rejected_logps_chunk - ref_rejected_logps_chunk
 
         logits_diff_chunk = beta * (chosen_logratios_chunk - rejected_logratios_chunk)
-        loss_chunk = -F.logsigmoid(logits_diff_chunk).sum() / (full_target.shape[0] // 2)
+        loss_chunk = -F.logsigmoid(logits_diff_chunk).sum() / (
+            full_target.shape[0] // 2
+        )
         return loss_chunk
 
     @staticmethod

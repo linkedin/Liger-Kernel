@@ -9,7 +9,9 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
 class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
-    def preference_loss_fn(chosen_logps_chunk, rejected_logps_chunk, full_target, beta=0.1):
+    def preference_loss_fn(
+        chosen_logps_chunk, rejected_logps_chunk, full_target, beta=0.1
+    ):
         """
         Paper: https://arxiv.org/pdf/2403.07691
 
@@ -44,7 +46,13 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         log_odds_ratio_chunk = torch.sum(ratio_chunk) / (full_target.shape[0] // 2)
         log_odds_chosen_chunk = torch.sum(log_odds_chunk) / (full_target.shape[0] // 2)
 
-        return loss_chunk, chosen_rewards_chunk, rejected_rewards_chunk, log_odds_ratio_chunk, log_odds_chosen_chunk
+        return (
+            loss_chunk,
+            chosen_rewards_chunk,
+            rejected_rewards_chunk,
+            log_odds_ratio_chunk,
+            log_odds_chosen_chunk,
+        )
 
     @staticmethod
     def forward(

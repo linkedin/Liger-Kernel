@@ -287,10 +287,12 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         loss_mask_chunk = target_chunk != ignore_index
         label_chunk = torch.where(loss_mask_chunk, target_chunk, 0)
 
-        per_token_logps_chunk = log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(
+        per_token_logps_chunk = log_probs_chunk.gather(
+            -1, label_chunk.unsqueeze(-1)
+        ).squeeze(-1)
+        average_log_prob_chunk = (per_token_logps_chunk * loss_mask_chunk).sum(
             -1
-        )
-        average_log_prob_chunk = (per_token_logps_chunk * loss_mask_chunk).sum(-1) / loss_mask_chunk.sum(-1)
+        ) / loss_mask_chunk.sum(-1)
 
         chosen_logps_chunk = average_log_prob_chunk[:len_chosen_chunk]
         rejected_logps_chunk = average_log_prob_chunk[len_chosen_chunk:]
@@ -387,7 +389,11 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             loss_kwargs["ref_rejected_logps_chunk"] = ref_rejected_logps_chunk
 
         preference_loss_outputs = preference_loss_fn(
-            chosen_logps_chunk, rejected_logps_chunk, full_target, beta=beta, **loss_kwargs
+            chosen_logps_chunk,
+            rejected_logps_chunk,
+            full_target,
+            beta=beta,
+            **loss_kwargs,
         )
         if isinstance(preference_loss_outputs, tuple):
             preference_loss_chunk, *aux_outputs_chunk = preference_loss_outputs
