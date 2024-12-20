@@ -101,47 +101,33 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             """
             Fused forward and backward pass for a chunk of input and target.
             """
-            if bias is not None:
-                return torch.func.grad_and_value(
-                    compute_loss, argnums=(0, 1, 3), has_aux=True
-                )(
-                    input_chunk,
-                    weight,
-                    target_chunk,
-                    bias,
-                    ref_input_chunk=ref_input_chunk,
-                )
-            else:
-                return torch.func.grad_and_value(
-                    compute_loss, argnums=(0, 1), has_aux=True
-                )(input_chunk, weight, target_chunk, ref_input_chunk=ref_input_chunk)
+            argnums = (0, 1, 3) if bias is not None else (0, 1)
+
+            return torch.func.grad_and_value(
+                compute_loss, argnums=argnums, has_aux=True
+            )(
+                input_chunk,
+                weight,
+                target_chunk,
+                bias,
+                ref_input_chunk=ref_input_chunk,
+            )
 
         def accumulate_chunk(input_chunk, target_chunk, ref_input_chunk=None):
+            (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (
+                    chunk_loss,
+                    (
+                        chunk_chosen_logps,
+                        chunk_rejected_logps,
+                        chunk_chosen_logits_mean,
+                        chunk_rejected_logits_mean,
+                        chunk_nll_loss,
+                        *aux_outputs,
+                    ),
+                ) = fused_fwd_bwd(input_chunk, target_chunk, ref_input_chunk)
+
             if bias is not None:
-                (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), (
-                    chunk_loss,
-                    (
-                        chunk_chosen_logps,
-                        chunk_rejected_logps,
-                        chunk_chosen_logits_mean,
-                        chunk_rejected_logits_mean,
-                        chunk_nll_loss,
-                        *aux_outputs,
-                    ),
-                ) = fused_fwd_bwd(input_chunk, target_chunk, ref_input_chunk)
-                grad_bias.add_(chunk_grad_bias)  # accumulate bias gradient
-            else:
-                (chunk_grad_input, chunk_grad_weight), (
-                    chunk_loss,
-                    (
-                        chunk_chosen_logps,
-                        chunk_rejected_logps,
-                        chunk_chosen_logits_mean,
-                        chunk_rejected_logits_mean,
-                        chunk_nll_loss,
-                        *aux_outputs,
-                    ),
-                ) = fused_fwd_bwd(input_chunk, target_chunk, ref_input_chunk)
+                grad_bias.add_(chunk_grad_bias[0])  # accumulate bias gradient
 
             # Accumulate gradients
             grad_weight.add_(chunk_grad_weight)
