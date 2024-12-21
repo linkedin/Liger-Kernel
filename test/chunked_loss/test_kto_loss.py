@@ -27,22 +27,14 @@ class HFKTOLoss(HFAlignmentLoss):
         ignore_index: int = -100,
         beta: float = 0.1,
         use_ref_model: bool = True,
-        policy_KL_logps: torch.FloatTensor = None,
-        ref_KL_logps: torch.FloatTensor = None,
     ):
         super().__init__(
             beta=beta,
             ignore_index=ignore_index,
             use_ref_model=use_ref_model,
-            policy_KL_logps=policy_KL_logps,
-            ref_KL_logps=ref_KL_logps,
             unpaired=True,
             compute_nll_loss=False,
         )
-        # KL logps need to be passed into the Loss class since it requires a full model forward pass
-        # See paper https://arxiv.org/abs/2402.01306 (4.1. Derivation)
-        self.policy_KL_logps = policy_KL_logps
-        self.ref_KL_logps = ref_KL_logps
 
     def alignment_loss(
         self,
@@ -50,6 +42,7 @@ class HFKTOLoss(HFAlignmentLoss):
         policy_rejected_logps: torch.FloatTensor,
         ref_chosen_logps: torch.FloatTensor,
         ref_rejected_logps: torch.FloatTensor,
+        kl: torch.FloatTensor = None,
     ):
         """Compute KTO loss for a batch of policy log probabilities.
         Args:
@@ -60,24 +53,34 @@ class HFKTOLoss(HFAlignmentLoss):
         Returns:
             The losses tensor contains the KTO loss for each example in the batch.
         """
-        if self.policy_KL_logps is None:
-            self.policy_KL_logps = torch.zeros(1).to(device)
+        if kl is None:
+            kl = torch.zeros(1).to(policy_chosen_logps.device)
 
-        if self.ref_KL_logps is None:
-            self.ref_KL_logps = torch.zeros(1).to(device)
 
-        kl = (self.policy_KL_logps - self.ref_KL_logps).mean().clamp(min=0).detach()
+        # Chosen losses
+        if policy_chosen_logps.shape[0] != 0 or ref_chosen_logps.shape[0] != 0:
+            chosen_logratios = policy_chosen_logps - ref_chosen_logps
+            # Eqn (7) of the KTO paper (https://huggingface.co/papers/2402.01306)
+            chosen_losses = 1 - F.sigmoid(self.beta * (chosen_logratios - kl))
 
-        chosen_logratios = policy_chosen_logps - ref_chosen_logps
-        chosen_losses = 1 - F.sigmoid(self.beta * (chosen_logratios - kl))
-        chosen_rewards = self.beta * chosen_logratios.detach()
+        else:
+            # lists can't be empty -- if they are, then accelerate.gather will hang
+            chosen_losses = torch.Tensor([]).to(policy_chosen_logps.device)
 
-        rejected_logratios = policy_rejected_logps - ref_rejected_logps
-        rejected_losses = 1 - F.sigmoid(self.beta * (kl - rejected_logratios))
-        rejected_rewards = self.beta * rejected_logratios.detach()
+        # Rejected losses
+        if policy_rejected_logps.shape[0] != 0 or ref_rejected_logps.shape[0] != 0:
+            rejected_logratios = policy_rejected_logps - ref_rejected_logps
+            rejected_losses = 1 - F.sigmoid(self.beta * (kl - rejected_logratios))
+        else:
+            # lists can't be empty -- if they are, then accelerate.gather will hang
+            rejected_losses = torch.Tensor([]).to(policy_rejected_logps.device)
 
-        losses = torch.cat((chosen_losses, rejected_losses), 0)
-        return losses, chosen_rewards, rejected_rewards
+        losses = torch.cat(
+            (chosen_losses, rejected_losses),
+            0,
+        )
+
+        return losses
 
 
 class TorchLMHeadKTO(torch.nn.Module):
@@ -90,8 +93,6 @@ class TorchLMHeadKTO(torch.nn.Module):
         ref_bias: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
-        policy_KL_logps: torch.FloatTensor = None,
-        ref_KL_logps: torch.FloatTensor = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
@@ -104,11 +105,9 @@ class TorchLMHeadKTO(torch.nn.Module):
             ignore_index=ignore_index,
             beta=beta,
             use_ref_model=True,
-            policy_KL_logps=policy_KL_logps,
-            ref_KL_logps=ref_KL_logps,
         ).get_batch_loss_metrics
 
-    def forward(self, x, ref_x, y, preference_labels):
+    def forward(self, x, ref_x, y, preference_labels, kl=None):
         return self.KTO_loss(
             weight=self.lin.weight,
             _input=x,
@@ -118,6 +117,7 @@ class TorchLMHeadKTO(torch.nn.Module):
             ref_weight=self.ref_lin.weight,
             ref_bias=self.ref_lin.bias,
             preference_labels=preference_labels,
+            kl=kl,
         )
 
 
@@ -131,8 +131,6 @@ class LigerLMHeadKTO(torch.nn.Module):
         ref_bias: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
-        policy_KL_logps: torch.FloatTensor = None,
-        ref_KL_logps: torch.FloatTensor = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
@@ -145,11 +143,9 @@ class LigerLMHeadKTO(torch.nn.Module):
             ignore_index=ignore_index,
             beta=beta,
             use_ref_model=True,
-            policy_KL_logps=policy_KL_logps,
-            ref_KL_logps=ref_KL_logps,
         )
 
-    def forward(self, x, ref_x, y, preference_labels):
+    def forward(self, x, ref_x, y, preference_labels, kl=None):
         return self.KTO_loss(
             _input=x,
             lin_weight=self.lin.weight,
@@ -159,6 +155,7 @@ class LigerLMHeadKTO(torch.nn.Module):
             ref_input=ref_x,
             ref_weight=self.ref_lin.weight,
             ref_bias=self.ref_lin.bias,
+            kl=kl,
         )
 
 
@@ -185,7 +182,7 @@ def test_correctness(
     # Preference labels shape: [B]
     # Create binary preference labels (0 or 1) for each sequence in the batch
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
-    preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
+    preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device, requires_grad=False)
 
     torch_lm_head_KTO = TorchLMHeadKTO(
         H=H,
@@ -245,21 +242,18 @@ def test_correctness(
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    loss1, aggregated_aux_outputs1 = torch_lm_head_KTO(
+    loss1 = torch_lm_head_KTO(
         x=input1, ref_x=ref_input, y=target, preference_labels=preference_labels
     )
-    loss2, aggregated_aux_outputs2 = liger_lm_head_KTO(
+    loss2 = liger_lm_head_KTO(
         x=input2, ref_x=ref_input, y=target, preference_labels=preference_labels
     )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
-    assert len(aggregated_aux_outputs1) == len(aggregated_aux_outputs2)
-
     loss1.backward()
     loss2.backward()
 
-    # Passed
     assert_verbose_allclose(input1, input2, atol=atol, rtol=rtol)
     assert_verbose_allclose(
         torch_lm_head_KTO.lin.weight, liger_lm_head_KTO.lin.weight, atol=atol, rtol=rtol
@@ -343,22 +337,22 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     ref_bias1 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
     ref_bias2 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
 
-    loss1, aggregated_aux_outputs1 = LigerFusedLinearKTOFunction.apply(
+    loss1 = LigerFusedLinearKTOFunction.apply(
         input1,
         weight1,
         target,
-        bias1,
         preference_labels,
+        bias1,
         ref_input,
         ref_weight1,
         ref_bias1,
     )
-    loss2, aggregated_aux_outputs2 = liger_fused_linear_kto(
+    loss2 = liger_fused_linear_kto(
         input2,
         weight2,
         target,
-        bias2,
         preference_labels,
+        bias2,
         ref_input,
         ref_weight2,
         ref_bias2,

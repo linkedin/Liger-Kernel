@@ -10,14 +10,12 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
 
     @staticmethod
     def preference_loss_fn(
-        chosen_logps,
-        rejected_logps,
+        average_log_prob_chunk,
+        preference_labels_chunk,
         full_target,
-        ref_chosen_logps=None,
-        ref_rejected_logps=None,
+        ref_average_log_prob_chunk=None,
         beta=0.1,
-        policy_KL_logps=None,
-        ref_KL_logps=None,
+        kl=None,
     ):
         """
         Implements the Kahneman-Tversky Optimization (KTO) loss function.
@@ -63,38 +61,14 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
             - chosen_rewards: Reward signals for chosen responses (detached)
             - rejected_rewards: Reward signals for rejected responses (detached)
         """
-        if ref_chosen_logps is None:
-            ref_chosen_logps = torch.tensor(0.0, device=chosen_logps.device)
-        if ref_rejected_logps is None:
-            ref_rejected_logps = torch.tensor(0.0, device=rejected_logps.device)
+        logratios_chunk = average_log_prob_chunk - ref_average_log_prob_chunk
+        multiplier_chunk = torch.where(preference_labels_chunk, 1, -1)
+        if kl is not None:
+            losses = -(1 - F.sigmoid(beta * (logratios_chunk - kl) * multiplier_chunk))
+        else:
+            losses = -(1 - F.sigmoid(beta * logratios_chunk * multiplier_chunk))
 
-        chosen_logratios = chosen_logps - ref_chosen_logps
-        rejected_logratios = rejected_logps - ref_rejected_logps
-
-        if policy_KL_logps is None:
-            policy_KL_logps = torch.tensor(0.0, device=chosen_logps.device)
-        if ref_KL_logps is None:
-            ref_KL_logps = torch.tensor(0.0, device=chosen_logps.device)
-
-        kl = (policy_KL_logps - ref_KL_logps).mean().clamp(min=0).detach()
-        losses = []
-
-        if chosen_logps.numel() > 0:
-            losses.append(1 - F.sigmoid(beta * (chosen_logratios - kl)))
-        if rejected_logps.numel() > 0:
-            losses.append(1 - F.sigmoid(beta * (kl - rejected_logratios)))
-
-        losses = torch.cat(losses, dim=0)
-
-        chosen_rewards = beta * chosen_logratios.detach()
-        rejected_rewards = beta * rejected_logratios.detach()
-
-        return (
-            # We don't divide by 2 because KTO Loss doesn't need pairwise examples
-            losses.sum() / (full_target.shape[0]),
-            chosen_rewards,
-            rejected_rewards,
-        )
+        return losses.sum() / (full_target.shape[0])
 
     @staticmethod
     def forward(
@@ -102,23 +76,23 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
         _input,
         weight,
         target,
+        preference_labels,
         bias=None,
-        preference_labels=None,
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
+        kl=None,
         ignore_index=-100,
         beta=0.1,
         compiled=True,
         use_ref_model=True,
-        policy_KL_logps=None,
-        ref_KL_logps=None,
     ):
         return LigerFusedLinearUnpairedPreferenceBase.forward(
             ctx=ctx,
             _input=_input,
             weight=weight,
             target=target,
+            preference_labels=preference_labels,
             bias=bias,
             loss_fn=LigerFusedLinearKTOFunction.preference_loss_fn,
             ignore_index=ignore_index,
@@ -128,14 +102,12 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
             ref_input=ref_input,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
-            preference_labels=preference_labels,
-            policy_KL_logps=policy_KL_logps,
-            ref_KL_logps=ref_KL_logps,
+            kl=kl,
         )
 
     @staticmethod
     def backward(ctx, *grad_output):
-        grads = LigerFusedLinearUnpairedPreferenceBase.backward(ctx, grad_output)[:4]
+        grads = LigerFusedLinearUnpairedPreferenceBase.backward(ctx, grad_output)[:5]
         return (
             *grads,
             None,
@@ -162,8 +134,6 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
         beta: float = 0.1,
         compiled: bool = True,
         use_ref_model: bool = False,
-        policy_KL_logps: torch.FloatTensor = None,
-        ref_KL_logps: torch.FloatTensor = None,
     ):
         """
         Args:
@@ -179,8 +149,6 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
         self.beta = beta
         self.compiled = compiled
         self.use_ref_model = use_ref_model
-        self.policy_KL_logps = policy_KL_logps
-        self.ref_KL_logps = ref_KL_logps
 
     def forward(
         self,
@@ -192,20 +160,20 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
+        kl=None,
     ):
         return LigerFusedLinearKTOFunction.apply(
             _input,
             lin_weight,
             target,
-            bias,
             preference_labels,
+            bias,
             ref_input,
             ref_weight,
             ref_bias,
+            kl,
             self.ignore_index,
             self.beta,
             self.compiled,
             self.use_ref_model,
-            self.policy_KL_logps,
-            self.ref_KL_logps,
         )

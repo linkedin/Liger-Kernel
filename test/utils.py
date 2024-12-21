@@ -402,7 +402,7 @@ class HFAlignmentLoss:
 
     def get_ref_logps(
         self,
-        _input: torch.FloatTensor,
+        ref_input: torch.FloatTensor,
         ref_weight: torch.FloatTensor,
         target: torch.LongTensor,
         ref_bias: torch.FloatTensor,
@@ -411,22 +411,23 @@ class HFAlignmentLoss:
     ):
         """Compute the log probabilities of the given labels under the given reference model."""
 
-        ref_logits = _input @ ref_weight.t()
-        if ref_bias is not None:
-            ref_logits = ref_logits + ref_bias
-        ref_all_logps = self.get_batch_logps(
-            ref_logits, target, average_log_prob=average_log_prob
-        )
-
-        if self.unpaired and preference_labels is not None:
-            # Split based on preference labels
-            return ref_all_logps[preference_labels], ref_all_logps[~preference_labels]
-        else:
-            # Original paired behavior - split in half
-            return (
-                ref_all_logps[: _input.shape[0] // 2],
-                ref_all_logps[_input.shape[0] // 2 :],
+        with torch.no_grad():
+            ref_logits = ref_input @ ref_weight.t()
+            if ref_bias is not None:
+                ref_logits = ref_logits + ref_bias
+            ref_all_logps = self.get_batch_logps(
+                ref_logits, target, average_log_prob=average_log_prob
             )
+
+            if self.unpaired and preference_labels is not None:
+                # Split based on preference labels
+                return ref_all_logps[preference_labels], ref_all_logps[~preference_labels]
+            else:
+                # Original paired behavior - split in half
+                return (
+                    ref_all_logps[: ref_input.shape[0] // 2],
+                    ref_all_logps[ref_input.shape[0] // 2 :],
+                )
 
     def concatenated_forward(
         self,
@@ -506,9 +507,9 @@ class HFAlignmentLoss:
         ref_bias: torch.FloatTensor = None,
         average_log_prob: bool = True,
         preference_labels: torch.Tensor = None,
+        **loss_kwargs,
     ):
         """Compute the loss metrics for the given batch of inputs for train or test."""
-
         forward_output = self.concatenated_forward(
             _input, weight, target, bias, average_log_prob, preference_labels
         )
@@ -520,7 +521,6 @@ class HFAlignmentLoss:
             policy_nll_loss,
         ) = forward_output[:5]
 
-        loss_kwargs = {}
         if self.use_ref_model:
             ref_chosen_logps, ref_rejected_logps = self.get_ref_logps(
                 ref_input,
@@ -540,20 +540,20 @@ class HFAlignmentLoss:
         else:
             losses, aggregated_aux_outputs = alignment_loss_outputs, []
 
-        if self.compute_nll_loss:
-            # full loss
-            loss = policy_nll_loss * self.alpha - losses.mean()
+
+        loss = policy_nll_loss * self.alpha - losses.mean()
+
+        if not self.unpaired:
+            return_vars = (
+                policy_chosen_logps,
+                policy_rejected_logps,
+                policy_chosen_logits.detach().mean(),
+                policy_rejected_logits.detach().mean(),
+                policy_nll_loss,
+            )
+            return loss, (*return_vars, *aggregated_aux_outputs)
         else:
-            # only alignment loss
-            loss = -losses.mean()
-        return_vars = (
-            policy_chosen_logps,
-            policy_rejected_logps,
-            policy_chosen_logits.detach().mean(),
-            policy_rejected_logits.detach().mean(),
-            policy_nll_loss,
-        )
-        return loss, (*return_vars, *aggregated_aux_outputs)
+            return loss
 
 
 class HFDistillationLoss:
