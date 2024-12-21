@@ -9,7 +9,7 @@ on:
       - "**"
 
 concurrency:
-  group: observers-docs
+  group: liger-kernel-docs
   cancel-in-progress: false
 
 jobs:
