@@ -11,7 +11,9 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
 class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
 
     @staticmethod
-    def preference_loss_fn(chosen_logps, rejected_logps, full_target, beta=0.1):
+    def preference_loss_fn(
+        chosen_logps, rejected_logps, full_target, beta=0.1, label_smoothing=0.0
+    ):
         """
         Paper: https://arxiv.org/pdf/2401.08417
 
@@ -32,9 +34,14 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             rejected_logps (torch.Tensor): Avg log probabilities of rejected tokens. Shape: (batch_size,).
             full_target (torch.Tensor): Non chunked full target tensor
             beta (float): Weight for the CPO loss
+            label_smoothing (float): Label smoothing factor, will reduce to Equation above when label_smoothing -> 0.
         """
         logits = beta * (chosen_logps - rejected_logps)
-        loss = F.logsigmoid(logits).sum() / (full_target.shape[0] // 2)
+        loss = (
+            - F.logsigmoid(logits) * (1 - label_smoothing)
+            - F.logsigmoid(-logits) * label_smoothing
+        ).sum() / (full_target.shape[0] // 2)
+
         return loss
 
     @staticmethod
@@ -47,6 +54,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
         ignore_index=-100,
         beta=0.1,
         alpha=1.0,
+        label_smoothing=0.0,
         compute_nll_loss=True,
         compiled=True,
         softcap=None,
@@ -61,6 +69,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             ignore_index=ignore_index,
             alpha=alpha,
             beta=beta,
+            label_smoothing=label_smoothing,
             compute_nll_loss=compute_nll_loss,
             compiled=compiled,
             softcap=softcap,
@@ -82,6 +91,7 @@ class LigerFusedLinearCPOLoss(torch.nn.Module):
         ignore_index: int = -100,
         beta: float = 0.1,
         alpha: float = 1.0,
+        label_smoothing: float = 0.0,
         compute_nll_loss: bool = True,
         compiled: bool = True,
         softcap: Optional[float] = None,
@@ -96,6 +106,7 @@ class LigerFusedLinearCPOLoss(torch.nn.Module):
         self.ignore_index = ignore_index
         self.beta = beta
         self.alpha = alpha
+        self.label_smoothing = label_smoothing
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
         self.softcap = softcap
@@ -109,6 +120,7 @@ class LigerFusedLinearCPOLoss(torch.nn.Module):
             self.ignore_index,
             self.beta,
             self.alpha,
+            self.label_smoothing,
             self.compute_nll_loss,
             self.compiled,
             self.softcap,
