@@ -114,6 +114,8 @@ class LigerLMHeadCE(torch.nn.Module):
         ("mean", 1.0, torch.float32, 1e-5, 5e-4),
         ("sum", 1.0, torch.bfloat16, 5e-0, 5e1),
         ("sum", 1.0, torch.float32, 1e-3, 5e-2),
+        ("none", 1.0, torch.bfloat16, 5e-0, 5e1),
+        ("none", 1.0, torch.float32, 1e-3, 5e-2),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
@@ -197,8 +199,8 @@ def test_correctness(
 
     assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
 
-    output1.backward()
-    output2.backward()
+    output1.backward(gradients=torch.ones_like(output1))
+    output2.backward(gradients=torch.ones_like(output2))
 
     assert_verbose_allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
 
