@@ -31,6 +31,7 @@ class TorchLMHeadKTO(torch.nn.Module):
         beta: float = 0.1,
     ):
         from test.chunked_loss.test_kto_loss import HFKTOLoss
+
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype

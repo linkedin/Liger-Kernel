@@ -421,7 +421,10 @@ class HFAlignmentLoss:
 
             if self.unpaired and preference_labels is not None:
                 # Split based on preference labels
-                return ref_all_logps[preference_labels], ref_all_logps[~preference_labels]
+                return (
+                    ref_all_logps[preference_labels],
+                    ref_all_logps[~preference_labels],
+                )
             else:
                 # Original paired behavior - split in half
                 return (

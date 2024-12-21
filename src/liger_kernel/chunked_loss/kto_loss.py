@@ -64,9 +64,9 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
         logratios_chunk = average_log_prob_chunk - ref_average_log_prob_chunk
         multiplier_chunk = torch.where(preference_labels_chunk, 1, -1)
         if kl is not None:
-            losses = -(1 - F.sigmoid(beta * (logratios_chunk - kl) * multiplier_chunk))
+            losses = 1 - F.sigmoid(beta * (logratios_chunk - kl) * multiplier_chunk)
         else:
-            losses = -(1 - F.sigmoid(beta * logratios_chunk * multiplier_chunk))
+            losses = 1 - F.sigmoid(beta * logratios_chunk * multiplier_chunk)
 
         return losses.sum() / (full_target.shape[0])
 

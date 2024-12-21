@@ -56,7 +56,6 @@ class HFKTOLoss(HFAlignmentLoss):
         if kl is None:
             kl = torch.zeros(1).to(policy_chosen_logps.device)
 
-
         # Chosen losses
         if policy_chosen_logps.shape[0] != 0 or ref_chosen_logps.shape[0] != 0:
             chosen_logratios = policy_chosen_logps - ref_chosen_logps
@@ -182,7 +181,9 @@ def test_correctness(
     # Preference labels shape: [B]
     # Create binary preference labels (0 or 1) for each sequence in the batch
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
-    preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device, requires_grad=False)
+    preference_labels = torch.randint(
+        2, (B,), dtype=torch.bool, device=device, requires_grad=False
+    )
 
     torch_lm_head_KTO = TorchLMHeadKTO(
         H=H,

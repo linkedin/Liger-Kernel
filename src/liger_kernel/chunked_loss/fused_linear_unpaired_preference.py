@@ -107,10 +107,10 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
             preference_labels_chunk=None,
             ref_input_chunk=None,
         ):
-            (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (
-                chunk_loss
-            ) = fused_fwd_bwd(
-                input_chunk, target_chunk, preference_labels_chunk, ref_input_chunk
+            (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (chunk_loss) = (
+                fused_fwd_bwd(
+                    input_chunk, target_chunk, preference_labels_chunk, ref_input_chunk
+                )
             )
             if bias is not None:
                 grad_bias.add_(chunk_grad_bias[0])  # accumulate bias gradient
@@ -200,10 +200,12 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
         loss_mask_chunk = target_chunk != ignore_index
         label_chunk = torch.where(loss_mask_chunk, target_chunk, 0)
 
-        per_token_logps_chunk = log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(
+        per_token_logps_chunk = log_probs_chunk.gather(
+            -1, label_chunk.unsqueeze(-1)
+        ).squeeze(-1)
+        average_log_prob_chunk = (per_token_logps_chunk * loss_mask_chunk).sum(
             -1
-        )
-        average_log_prob_chunk = (per_token_logps_chunk * loss_mask_chunk).sum(-1) / loss_mask_chunk.sum(-1)
+        ) / loss_mask_chunk.sum(-1)
 
         return average_log_prob_chunk
 
@@ -248,12 +250,14 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
 
         if use_ref_model:
             with torch.no_grad():
-                ref_average_log_prob_chunk = LigerFusedLinearUnpairedPreferenceBase.chunk_forward(
-                    ref_input_chunk,
-                    ref_weight,
-                    target_chunk,
-                    ref_bias,
-                    ignore_index=ignore_index,
+                ref_average_log_prob_chunk = (
+                    LigerFusedLinearUnpairedPreferenceBase.chunk_forward(
+                        ref_input_chunk,
+                        ref_weight,
+                        target_chunk,
+                        ref_bias,
+                        ignore_index=ignore_index,
+                    )
                 )
             loss_kwargs["ref_average_log_prob_chunk"] = ref_average_log_prob_chunk
 
