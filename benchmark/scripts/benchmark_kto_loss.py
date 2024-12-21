@@ -19,7 +19,7 @@ device = infer_device()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
-class TorchKTOLoss(torch.nn.Module):
+class TorchLMHeadKTO(torch.nn.Module):
     def __init__(
         self,
         H: int,
@@ -29,11 +29,8 @@ class TorchKTOLoss(torch.nn.Module):
         ref_bias: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
-        policy_KL_logps: torch.FloatTensor = None,
-        ref_KL_logps: torch.FloatTensor = None,
     ):
         from test.chunked_loss.test_kto_loss import HFKTOLoss
-
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
@@ -41,16 +38,14 @@ class TorchKTOLoss(torch.nn.Module):
         self.ref_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=ref_bias, dtype=dtype
         )
-        self.kto_loss = HFKTOLoss(
+        self.KTO_loss = HFKTOLoss(
             ignore_index=ignore_index,
             beta=beta,
             use_ref_model=True,
-            policy_KL_logps=policy_KL_logps,
-            ref_KL_logps=ref_KL_logps,
         ).get_batch_loss_metrics
 
-    def forward(self, x, ref_x, y, preference_labels):
-        return self.kto_loss(
+    def forward(self, x, ref_x, y, preference_labels, kl=None):
+        return self.KTO_loss(
             weight=self.lin.weight,
             _input=x,
             target=y,
@@ -59,10 +54,11 @@ class TorchKTOLoss(torch.nn.Module):
             ref_weight=self.ref_lin.weight,
             ref_bias=self.ref_lin.bias,
             preference_labels=preference_labels,
-        )[0]
+            kl=kl,
+        )
 
 
-class LigerKTOLoss(torch.nn.Module):
+class LigerLMHeadKTO(torch.nn.Module):
     def __init__(
         self,
         H: int,
@@ -72,8 +68,6 @@ class LigerKTOLoss(torch.nn.Module):
         ref_bias: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
-        policy_KL_logps: torch.FloatTensor = None,
-        ref_KL_logps: torch.FloatTensor = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
@@ -82,25 +76,24 @@ class LigerKTOLoss(torch.nn.Module):
         self.ref_lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=ref_bias, dtype=dtype
         )
-        self.kto_loss = LigerFusedLinearKTOLoss(
+        self.KTO_loss = LigerFusedLinearKTOLoss(
             ignore_index=ignore_index,
             beta=beta,
             use_ref_model=True,
-            policy_KL_logps=policy_KL_logps,
-            ref_KL_logps=ref_KL_logps,
         )
 
-    def forward(self, x, ref_x, y, preference_labels):
-        return self.kto_loss(
+    def forward(self, x, ref_x, y, preference_labels, kl=None):
+        return self.KTO_loss(
             _input=x,
             lin_weight=self.lin.weight,
             target=y,
-            bias=self.lin.bias,
             preference_labels=preference_labels,
+            bias=self.lin.bias,
             ref_input=ref_x,
             ref_weight=self.ref_lin.weight,
             ref_bias=self.ref_lin.bias,
-        )[0]
+            kl=kl,
+        )
 
 
 def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -114,7 +107,7 @@ def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     ignore_index = input.extra_benchmark_config["ignore_index"]
     provider = input.kernel_provider
 
-    torch_kto_loss = TorchKTOLoss(
+    torch_kto_loss = TorchLMHeadKTO(
         H=H,
         V=V,
         dtype=dtype,
@@ -124,7 +117,7 @@ def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
         beta=beta,
     ).to(device)
 
-    liger_kto_loss = LigerKTOLoss(
+    liger_kto_loss = LigerLMHeadKTO(
         H=H,
         V=V,
         dtype=dtype,
@@ -187,7 +180,7 @@ def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
-    torch_kto_loss = TorchKTOLoss(
+    torch_kto_loss = TorchLMHeadKTO(
         H=H,
         V=V,
         dtype=dtype,
@@ -195,7 +188,7 @@ def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
         ignore_index=ignore_index,
         bias=bias,
     ).to(device)
-    liger_kto_loss = LigerKTOLoss(
+    liger_kto_loss = LigerLMHeadKTO(
         H=H,
         V=V,
         dtype=dtype,
