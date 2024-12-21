@@ -38,7 +38,7 @@ def lce_forward_deprecated(
     cache_position: Optional[torch.LongTensor] = None,
 ) -> Union[Tuple, MoeCausalLMOutputWithPast]:
     r"""
-    Copy paste Mixtral's forward from transfomers v4.44.2 but replace torch cross entropy with liger fused linear cross entropy
+    Copy paste Mixtral's forward from transformers v4.44.2 but replace torch cross entropy with liger fused linear cross entropy
 
 
     Args:

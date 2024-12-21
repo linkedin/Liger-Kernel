@@ -408,7 +408,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         else:
             preference_loss, aux_outputs = preference_loss_outputs, []
 
-        loss = alpha * chosen_nll_loss - preference_loss
+        loss = alpha * chosen_nll_loss + preference_loss
         return_vars = (
             chosen_logps,
             rejected_logps,
