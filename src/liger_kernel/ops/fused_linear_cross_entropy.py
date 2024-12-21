@@ -133,7 +133,10 @@ def fused_linear_cross_entropy_forward(
                 alpha=alpha,
             )
 
-    loss = torch.sum(loss_1d)
+    if reduction == "none":
+        loss = torch.sum(loss_1d)
+    else:
+        loss = loss_1d
     return loss, grad_input, grad_weight, grad_bias
 
 
