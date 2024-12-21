@@ -5,6 +5,7 @@ site/
 .venv/
 venv/
 .ipynb_checkpoints/
+.vscode/
 
 # Misc
 .DS_Store
