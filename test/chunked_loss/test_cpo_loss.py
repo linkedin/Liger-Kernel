@@ -60,14 +60,14 @@ class HFCPOLoss(HFAlignmentLoss):
         if self.loss_type == "sigmoid":
             # This reduces to Equation 3 from the CPO paper when label_smoothing -> 0.
             losses = (
-                F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
-                + F.logsigmoid(-self.beta * logits) * self.label_smoothing
+                -F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
+                - F.logsigmoid(-self.beta * logits) * self.label_smoothing
             )
         elif self.loss_type == "simpo":
             logits = logits - (self.simpo_gamma / self.beta)
             losses = (
-                F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
-                + F.logsigmoid(-self.beta * logits) * self.label_smoothing
+                -F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
+                - F.logsigmoid(-self.beta * logits) * self.label_smoothing
             )
         else:
             raise ValueError(
@@ -86,6 +86,7 @@ class TorchLMHeadCPO(torch.nn.Module):
         ignore_index: int = -100,
         beta: float = 0.1,
         alpha: float = 1.0,
+        label_smoothing: float = 0.0,
         loss_type: str = "sigmoid",
         simpo_gamma: float = 0.5,
     ):
@@ -97,6 +98,7 @@ class TorchLMHeadCPO(torch.nn.Module):
             ignore_index=ignore_index,
             beta=beta,
             loss_type=loss_type,
+            label_smoothing=label_smoothing,
             simpo_gamma=simpo_gamma,
         ).get_batch_loss_metrics
 
@@ -114,13 +116,17 @@ class LigerLMHeadCPO(torch.nn.Module):
         ignore_index: int = -100,
         beta: float = 0.1,
         alpha: float = 1.0,
+        label_smoothing: float = 0.0,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(
             in_features=H, out_features=V, bias=bias, dtype=dtype
         )
         self.cpo_loss = LigerFusedLinearCPOLoss(
-            ignore_index=ignore_index, beta=beta, alpha=alpha
+            ignore_index=ignore_index,
+            beta=beta,
+            alpha=alpha,
+            label_smoothing=label_smoothing,
         )
 
     def forward(self, x, y):
@@ -145,8 +151,21 @@ class LigerLMHeadCPO(torch.nn.Module):
 @pytest.mark.parametrize(
     "ignore_index, beta, alpha", [(-100, 0.1, 1.0), (42, 0.2, 0.85)]
 )
+@pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
 def test_correctness(
-    B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta, alpha
+    B,
+    T,
+    H,
+    V,
+    scalar,
+    dtype,
+    atol,
+    rtol,
+    bias,
+    ignore_index,
+    beta,
+    alpha,
+    label_smoothing,
 ):
     B = 2 * B  # cpo loss requires B to be even
 
@@ -157,6 +176,7 @@ def test_correctness(
         bias=bias,
         ignore_index=ignore_index,
         beta=beta,
+        label_smoothing=label_smoothing,
     )
     liger_lm_head_cpo = LigerLMHeadCPO(
         H=H,
@@ -165,6 +185,7 @@ def test_correctness(
         bias=bias,
         ignore_index=ignore_index,
         beta=beta,
+        label_smoothing=label_smoothing,
     )
 
     torch_lm_head_cpo.lin.weight.data = liger_lm_head_cpo.lin.weight.data = torch.randn(

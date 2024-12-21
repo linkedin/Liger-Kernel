@@ -540,8 +540,7 @@ class HFAlignmentLoss:
         else:
             losses, aggregated_aux_outputs = alignment_loss_outputs, []
 
-
-        loss = policy_nll_loss * self.alpha - losses.mean()
+        loss = policy_nll_loss * self.alpha + losses.mean()
 
         if not self.unpaired:
             return_vars = (
