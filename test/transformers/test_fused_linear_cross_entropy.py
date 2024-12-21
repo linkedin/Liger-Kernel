@@ -199,8 +199,8 @@ def test_correctness(
 
     assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
 
-    output1.backward(gradients=torch.ones_like(output1))
-    output2.backward(gradients=torch.ones_like(output2))
+    output1.backward(gradient=torch.ones_like(output1))
+    output2.backward(gradient=torch.ones_like(output2))
 
     assert_verbose_allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
 
