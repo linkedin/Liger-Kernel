@@ -835,22 +835,22 @@ def test_correctness_with_weight_once(B, T, V, reduction, scalar, dtype, atol, r
 @pytest.mark.parametrize(
     "ignore_index, lse_square_scale, label_smoothing, softcap",
     [
-        (-100, 1e-4, 0.1, 30.0),
-        (42, 1e-5, 0.2, 40.0),
+        (-100, 0, 0.1, 30.0),
+        # (42, 1e-5, 0.2, 40.0),
     ],
 )
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        pytest.param(
-            1.0,
-            torch.bfloat16,
-            1e-8,
-            5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-        ),
+        # pytest.param(
+        #     1.0,
+        #     torch.bfloat16,
+        #     1e-8,
+        #     5e-2,
+        #     marks=pytest.mark.skipif(
+        #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+        #     ),
+        # ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
 )

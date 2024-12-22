@@ -280,7 +280,7 @@ def cross_entropy_forward(
 
     target_mask = target != ignore_index
     n_non_ignore = target_mask.sum().item()
-    weight_sum = weight.sum().item()
+    weight_sum = weight.sum().item() if weight is not None else 0
     if weight is not None:
         assert (
             weight.shape[0] == V
