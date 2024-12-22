@@ -33,7 +33,7 @@ def liger_cross_entropy_kernel(
     loss_stride,
     n_cols,
     n_non_ignore,
-    n_sum_non_ignore_weight,
+    sum_non_ignore_weight,
     weight_sum,
     ignore_index,
     lse_square_scale: tl.constexpr,
@@ -55,19 +55,19 @@ def liger_cross_entropy_kernel(
     Y_ptr: Pointer to target tensor.
     Y_stride (int): The stride of the target tensor.
     weight_ptr: Pointer to weight tensor.
-    weight_stride (int): The stride of the weight tensor.
     loss_ptr: Pointer to tensor to store the loss.
     z_loss_ptr: Pointer to tensor to store the z loss. No operation if RETURN_Z_LOSS is 0.
     loss_stride (int): The stride of the loss tensor.
     n_cols (int): The number of columns in the input tensor.
-    n_non_ignore (flaot): The number of non-ignored elements or the sum of non-ignored target's weights in the batch
-    weight_sum (float): The sum of weigh tensor
+    n_non_ignore (flaot): The number of non-ignored elements in the batch.
+    sum_non_ignore_weight (float): The sum of non-ignored target's weights in the batch.
+    weight_sum (float): The sum of weight tensor.
     ignore_index (int): The index to ignore in the target.
     label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
     lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
-    RETURN_Z_LOSS (int): The boolean value to decide whether storing z loss to z_loss_ptr or not. It must be 0 or 1.
     reduction (str): The string for the reduction to apply
     softcap (float): The upper threshold for scaling logits to the range (-softcap, +softcap).
+    RETURN_Z_LOSS (int): The boolean value to decide whether storing z loss to z_loss_ptr or not. It must be 0 or 1.
     BLOCK_SIZE (int): The block size for Triton operations.
     HAS_WEIGHT (bool): The boolean value to determine whether assigning weight to each of the classes.
     HAS_SOFTCAPPING (bool): The boolean value to determine whether applying soft-capping or not.
@@ -200,8 +200,8 @@ def liger_cross_entropy_kernel(
             dz_loss = 2 * lse_square_scale * lse * softmax_X
             # reduction scale
             if reduction == "mean":
-                dloss_ori = dloss_ori / n_sum_non_ignore_weight
-                dloss_smooth = dloss_smooth / n_sum_non_ignore_weight
+                dloss_ori = dloss_ori / sum_non_ignore_weight
+                dloss_smooth = dloss_smooth / sum_non_ignore_weight
                 dz_loss = dz_loss / n_non_ignore
             # derivative of total_loss
             X_block = dloss_ori + dloss_smooth + dz_loss
@@ -249,7 +249,7 @@ def liger_cross_entropy_kernel(
     # Normalize the loss by the number of non-ignored elements if reduction is "mean"
     if reduction == "mean":
         if HAS_WEIGHT:
-            loss = loss / n_sum_non_ignore_weight
+            loss = loss / sum_non_ignore_weight
         else:
             loss = loss / n_non_ignore
         z_loss = z_loss / n_non_ignore
@@ -307,8 +307,8 @@ def cross_entropy_forward(
 
     target_mask = target != ignore_index
     n_non_ignore = target_mask.sum().item()
-    n_sum_non_ignore_weight = n_non_ignore
-    weight_sum = weight.sum().item() if weight is not None else 0.0
+    sum_non_ignore_weight = n_non_ignore
+    weight_sum = 0.0
     if weight is not None:
         assert (
             weight.shape[0] == V
@@ -316,11 +316,12 @@ def cross_entropy_forward(
         assert torch.is_floating_point(
             weight
         ), f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
-        n_sum_non_ignore_weight = (
+        sum_non_ignore_weight = (
             torch.gather(weight, dim=0, index=target.masked_select(target_mask))
             .sum()
             .item()
         )
+        weight_sum = weight.sum().item()
         if weight.stride(-1) != 1:
             weight = weight.contiguous()
 
@@ -342,7 +343,7 @@ def cross_entropy_forward(
         loss_stride=loss_1d.stride(-1),  # always 1
         n_cols=V,
         n_non_ignore=n_non_ignore,
-        n_sum_non_ignore_weight=n_sum_non_ignore_weight,
+        sum_non_ignore_weight=sum_non_ignore_weight,
         ignore_index=ignore_index,
         weight_sum=weight_sum,
         lse_square_scale=lse_square_scale,

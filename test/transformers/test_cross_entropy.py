@@ -808,31 +808,31 @@ def test_correctness_with_weight_once(B, T, V, reduction, scalar, dtype, atol, r
 @pytest.mark.parametrize(
     "B, T, V",
     [
-        (2, 4096, 3200),  # llama2, mistral
+        (2, 4096, 32000),  # llama2, mistral
         # # weird shapes
-        (3, 423, 3200),
+        (3, 423, 32000),
     ],
 )
 @pytest.mark.parametrize("reduction", ["sum", "mean", "none"])
 @pytest.mark.parametrize(
     "ignore_index, lse_square_scale, label_smoothing, softcap",
     [
-        (-100, 0, 0.1, 30.0),
-        # (42, 1e-5, 0.2, 40.0),
+        (-100, 1e-4, 0.1, 30.0),
+        (42, 1e-5, 0.2, 40.0),
     ],
 )
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        # pytest.param(
-        #     1.0,
-        #     torch.bfloat16,
-        #     1e-8,
-        #     5e-2,
-        #     marks=pytest.mark.skipif(
-        #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-        #     ),
-        # ),
+        pytest.param(
+            1.0,
+            torch.bfloat16,
+            1e-8,
+            5e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
+            ),
+        ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
 )
@@ -942,7 +942,7 @@ def test_float32_internal():
         loss_stride=loss_bf16.stride(-1),
         n_cols=n_cols,
         n_non_ignore=n_non_ignore,
-        n_sum_non_ignore_weight=n_non_ignore,  # not used
+        sum_non_ignore_weight=n_non_ignore,  # not used
         weight_sum=0.0,  # not used
         ignore_index=ignore_index,
         lse_square_scale=lse_square_scale,
@@ -970,7 +970,7 @@ def test_float32_internal():
         loss_stride=loss_fp32.stride(-1),
         n_cols=n_cols,
         n_non_ignore=n_non_ignore,
-        n_sum_non_ignore_weight=n_non_ignore,  # not used
+        sum_non_ignore_weight=n_non_ignore,  # not used
         weight_sum=n_non_ignore,  # not used
         ignore_index=ignore_index,
         lse_square_scale=lse_square_scale,
