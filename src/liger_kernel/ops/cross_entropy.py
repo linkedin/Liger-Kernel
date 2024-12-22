@@ -33,6 +33,7 @@ def liger_cross_entropy_kernel(
     loss_stride,
     n_cols,
     n_non_ignore,
+    n_sum_non_ignore_weight,
     weight_sum,
     ignore_index,
     lse_square_scale: tl.constexpr,
@@ -170,20 +171,42 @@ def liger_cross_entropy_kernel(
         if HAS_SOFTCAPPING:
             intermediate = tanh(X_block / softcap)
             X_block = softcap * intermediate
-        # softmax(x_i)
-        X_block = tl.exp(X_block - m) / d
-        # derivative of z-loss: 2 * lse_square_scale * lse * softmax(x_i)
-        X_block += 2 * lse_square_scale * lse * X_block
-        # smoothing term
-        X_block += -eps
-        # special handle dx_y
-        X_block = tl.where(X_offsets != y, X_block, X_block - (1 - label_smoothing))
-        # reduction scale
-        if reduction == "mean":
-            X_block = X_block / (n_non_ignore)
-        if HAS_WEIGHT:
-            X_block = X_block * weight_y
-        # chain rule
+
+        if not HAS_WEIGHT:
+            # softmax(x_i)
+            X_block = tl.exp(X_block - m) / d
+            # derivative of z-loss: 2 * lse_square_scale * lse * softmax(x_i)
+            X_block += 2 * lse_square_scale * lse * X_block
+            # smoothing term
+            X_block += -eps
+            # special handle dx_y
+            X_block = tl.where(X_offsets != y, X_block, X_block - (1 - label_smoothing))
+            # reduction scale
+            if reduction == "mean":
+                X_block = X_block / n_non_ignore
+        else:
+            weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
+            softmax_X = tl.exp(X_block - m) / d
+            # derivative of original_loss
+            dloss_ori = (1 - label_smoothing) * softmax_X
+            # specially handle dx_y
+            dloss_ori = tl.where(
+                X_offsets != y, dloss_ori, dloss_ori - (1 - label_smoothing)
+            )
+            dloss_ori = dloss_ori * weight_y
+            # derivative of smooth_loss
+            dloss_smooth = eps * (-weight_block + softmax_X * weight_sum)
+            # derivative of z-loss
+            dz_loss = 2 * lse_square_scale * lse * softmax_X
+            # reduction scale
+            if reduction == "mean":
+                dloss_ori = dloss_ori / n_sum_non_ignore_weight
+                dloss_smooth = dloss_smooth / n_sum_non_ignore_weight
+                dz_loss = dz_loss / n_non_ignore
+            # derivative of total_loss
+            X_block = dloss_ori + dloss_smooth + dz_loss
+
+        # chain rule softcapping
         # d(softcap * tanh(x / softcap)) = (1 - tanh^2(x / softcap))
         if HAS_SOFTCAPPING:
             X_block = X_block * (1 - intermediate * intermediate)
@@ -223,11 +246,15 @@ def liger_cross_entropy_kernel(
     # An auxiliary loss, z_loss
     # Refer to Page14 Loss function section in the paper PaLM: https://www.jmlr.org/papers/v24/22-1144.html
     z_loss = lse_square_scale * lse * lse
-    loss += z_loss
     # Normalize the loss by the number of non-ignored elements if reduction is "mean"
     if reduction == "mean":
+        if HAS_WEIGHT:
+            loss = loss / n_sum_non_ignore_weight
+        else:
+            loss = loss / n_non_ignore
         z_loss = z_loss / n_non_ignore
-        loss = loss / n_non_ignore
+    loss += z_loss
+
     tl.store(loss_ptr, loss)
     if RETURN_Z_LOSS == _TRUE:
         tl.store(z_loss_ptr, z_loss)
@@ -280,7 +307,8 @@ def cross_entropy_forward(
 
     target_mask = target != ignore_index
     n_non_ignore = target_mask.sum().item()
-    weight_sum = weight.sum().item() if weight is not None else 0
+    n_sum_non_ignore_weight = n_non_ignore
+    weight_sum = weight.sum().item() if weight is not None else 0.0
     if weight is not None:
         assert (
             weight.shape[0] == V
@@ -288,7 +316,7 @@ def cross_entropy_forward(
         assert torch.is_floating_point(
             weight
         ), f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
-        n_non_ignore = (
+        n_sum_non_ignore_weight = (
             torch.gather(weight, dim=0, index=target.masked_select(target_mask))
             .sum()
             .item()
@@ -314,6 +342,7 @@ def cross_entropy_forward(
         loss_stride=loss_1d.stride(-1),  # always 1
         n_cols=V,
         n_non_ignore=n_non_ignore,
+        n_sum_non_ignore_weight=n_sum_non_ignore_weight,
         ignore_index=ignore_index,
         weight_sum=weight_sum,
         lse_square_scale=lse_square_scale,

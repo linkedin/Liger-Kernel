@@ -41,17 +41,8 @@ class CrossEntropyWithZLoss(torch.nn.Module):
     def forward(self, logits, targets):
         # Loss calculations are all in float32
         logits = logits.to(torch.float32)
-        HAS_WEIGHT = True if self.weight is not None else False
 
         target_mask = targets != self.ignore_index
-        if HAS_WEIGHT:
-            self.weight = self.weight.to(torch.float32)
-            selected_weight = torch.where(
-                target_mask,
-                torch.gather(self.weight, dim=-1, index=targets * target_mask),
-                0.0,
-            )
-            sum_of_non_ignore_weight = selected_weight.sum().item()
 
         # Standard cross entropy loss
         ce_loss = F.cross_entropy(
@@ -70,18 +61,9 @@ class CrossEntropyWithZLoss(torch.nn.Module):
         z_loss = torch.where(
             targets != self.ignore_index, self.lse_square_scale * (lse**2), 0.0
         )
-        if HAS_WEIGHT:
-            # print(f"{z_loss.shape=}")
-            z_loss = z_loss * selected_weight
-            # print(f"{selected_weight.shape=}")
-            # print(f"{selected_weight[targets == self.ignore_index]=}")
-            # print(f"{selected_weight[targets != self.ignore_index]=}")
 
         if self.reduction == "mean":
-            if HAS_WEIGHT:
-                z_loss = z_loss.sum() / sum_of_non_ignore_weight
-            else:
-                z_loss = z_loss.sum() / (targets != self.ignore_index).sum()
+            z_loss = z_loss.sum() / target_mask.sum()
         elif self.reduction == "sum":
             z_loss = z_loss.sum()
         else:
@@ -960,7 +942,8 @@ def test_float32_internal():
         loss_stride=loss_bf16.stride(-1),
         n_cols=n_cols,
         n_non_ignore=n_non_ignore,
-        sum_of_non_ignore_weight=n_non_ignore,  # not used
+        n_sum_non_ignore_weight=n_non_ignore,  # not used
+        weight_sum=0.0,  # not used
         ignore_index=ignore_index,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
@@ -987,7 +970,8 @@ def test_float32_internal():
         loss_stride=loss_fp32.stride(-1),
         n_cols=n_cols,
         n_non_ignore=n_non_ignore,
-        sum_of_non_ignore_weight=n_non_ignore,  # not used
+        n_sum_non_ignore_weight=n_non_ignore,  # not used
+        weight_sum=n_non_ignore,  # not used
         ignore_index=ignore_index,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
