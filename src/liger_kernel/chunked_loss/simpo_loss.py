@@ -1,16 +1,18 @@
 import torch
 import torch.nn.functional as F
 
-from liger_kernel.chunked_loss.fused_linear_preference import (
-    LigerFusedLinearPreferenceBase,
-)
+from liger_kernel.chunked_loss.fused_linear_preference import LigerFusedLinearPreferenceBase
 
 
 class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
-
     @staticmethod
     def preference_loss_fn(
-        chosen_logps, rejected_logps, full_target, beta=0.1, gamma=0.5
+        chosen_logps,
+        rejected_logps,
+        full_target,
+        beta=0.1,
+        gamma=0.5,
+        label_smoothing=0.0,
     ):
         """
         Paper: https://arxiv.org/pdf/2405.14734
@@ -33,9 +35,13 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
             full_target: Non chunked full target tensor
             beta (float): beta weight
             gamma (float): gemma margin term
+            label_smoothing (float): Label smoothing factor, will reduce to Equation above when label_smoothing -> 0.
         """
         logits = beta * (chosen_logps - rejected_logps) - gamma
-        loss = F.logsigmoid(logits).sum() / (full_target.shape[0] // 2)
+        loss = (-F.logsigmoid(logits) * (1 - label_smoothing) - F.logsigmoid(-logits) * label_smoothing).sum() / (
+            full_target.shape[0] // 2
+        )
+
         return loss
 
     @staticmethod
@@ -48,6 +54,7 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
         ignore_index=-100,
         beta=0.1,
         alpha=1.0,
+        label_smoothing=0.0,
         compute_nll_loss=False,
         compiled=True,
         gamma=0.5,
@@ -63,6 +70,7 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
             ignore_index=ignore_index,
             alpha=alpha,
             beta=beta,
+            label_smoothing=label_smoothing,
             compiled=compiled,
             gamma=gamma,
         )
@@ -70,7 +78,7 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None, None, None
+        return *grads, None, None, None, None, None, None, None
 
 
 class LigerFusedLinearSimPOLoss(torch.nn.Module):
@@ -83,6 +91,7 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
         ignore_index: int = -100,
         beta: float = 0.1,
         alpha: float = 1.0,
+        label_smoothing: float = 0.0,
         compute_nll_loss: bool = True,
         compiled: bool = True,
         gamma: float = 0.5,
@@ -96,6 +105,7 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
         self.ignore_index = ignore_index
         self.beta = beta
         self.alpha = alpha
+        self.label_smoothing = label_smoothing
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
         self.gamma = gamma
@@ -109,6 +119,7 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
             self.ignore_index,
             self.beta,
             self.alpha,
+            self.label_smoothing,
             self.compute_nll_loss,
             self.compiled,
             self.gamma,

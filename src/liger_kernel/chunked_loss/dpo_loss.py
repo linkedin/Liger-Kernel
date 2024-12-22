@@ -1,13 +1,10 @@
 import torch
 import torch.nn.functional as F
 
-from liger_kernel.chunked_loss.fused_linear_preference import (
-    LigerFusedLinearPreferenceBase,
-)
+from liger_kernel.chunked_loss.fused_linear_preference import LigerFusedLinearPreferenceBase
 
 
 class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
-
     @staticmethod
     def preference_loss_fn(
         chosen_logps,
@@ -64,7 +61,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         ref_bias=None,
         ignore_index=-100,
         beta=0.1,
-        compute_nll_loss=True,
+        compute_nll_loss=False,
         compiled=True,
         use_ref_model=True,
     ):
@@ -100,7 +97,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         self,
         ignore_index: int = -100,
         beta: float = 0.1,
-        compute_nll_loss: bool = True,
+        compute_nll_loss: bool = False,
         compiled: bool = True,
         use_ref_model: bool = False,
     ):

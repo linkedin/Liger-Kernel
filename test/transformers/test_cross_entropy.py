@@ -1,14 +1,14 @@
-from test.utils import assert_verbose_allclose, set_seed, supports_bfloat16
-
 import pytest
 import torch
 import torch.nn.functional as F
+
+from test.utils import assert_verbose_allclose
+from test.utils import set_seed
+from test.utils import supports_bfloat16
 from torch.nn import CrossEntropyLoss
 
-from liger_kernel.ops.cross_entropy import (
-    LigerCrossEntropyFunction,
-    liger_cross_entropy_kernel,
-)
+from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
+from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
@@ -98,10 +98,7 @@ def _test_correctness_once(target_ce, B, T, V, reduction, scalar, dtype, atol, r
     assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
-def _test_correctness_with_ignore_index_once(
-    target_ce, B, T, V, ignore_index, reduction, scalar, dtype, atol, rtol
-):
-
+def _test_correctness_with_ignore_index_once(target_ce, B, T, V, ignore_index, reduction, scalar, dtype, atol, rtol):
     torch_ce = CrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
@@ -114,9 +111,7 @@ def _test_correctness_with_ignore_index_once(
     num_elements_to_assign = torch.randint(
         1, B * T // 2, (1,)
     ).item()  # Random number of elements to set to ignore_index
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]  # Randomly select indices
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     target[indices_to_assign] = ignore_index
 
     output = torch_ce(_input, target)
@@ -129,10 +124,7 @@ def _test_correctness_with_ignore_index_once(
     assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
-def _test_correctness_with_label_smoothing_once(
-    target_ce, B, T, V, label_smoothing, scalar, dtype, atol, rtol
-):
-
+def _test_correctness_with_label_smoothing_once(target_ce, B, T, V, label_smoothing, scalar, dtype, atol, rtol):
     torch_ce = CrossEntropyLoss(label_smoothing=label_smoothing)
 
     _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
@@ -154,10 +146,7 @@ def _test_correctness_with_label_smoothing_once(
 def _test_correctness_with_label_smoothing_with_ignore_index_once(
     target_ce, B, T, V, ignore_index, label_smoothing, scalar, dtype, atol, rtol
 ):
-
-    torch_ce = CrossEntropyLoss(
-        ignore_index=ignore_index, label_smoothing=label_smoothing
-    )
+    torch_ce = CrossEntropyLoss(ignore_index=ignore_index, label_smoothing=label_smoothing)
 
     _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
     _input = _tensor.detach().clone().requires_grad_(True)
@@ -169,9 +158,7 @@ def _test_correctness_with_label_smoothing_with_ignore_index_once(
     num_elements_to_assign = torch.randint(
         1, B * T // 2, (1,)
     ).item()  # Random number of elements to set to ignore_index
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]  # Randomly select indices
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     target[indices_to_assign] = ignore_index
 
     output = torch_ce(_input, target)
@@ -184,10 +171,7 @@ def _test_correctness_with_label_smoothing_with_ignore_index_once(
     assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
-def _test_correctness_with_softcap_once(
-    target_ce, B, T, V, softcap, reduction, scalar, dtype, atol, rtol
-):
-
+def _test_correctness_with_softcap_once(target_ce, B, T, V, softcap, reduction, scalar, dtype, atol, rtol):
     torch_ce = CrossEntropyLoss(reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
@@ -198,9 +182,7 @@ def _test_correctness_with_softcap_once(
 
     # upcasting to match liger's casting strategy
     # and downcasting to original dtype
-    output = torch_ce(
-        softcap * torch.tanh(_input.to(torch.float32) / softcap), target
-    ).to(dtype)
+    output = torch_ce(softcap * torch.tanh(_input.to(torch.float32) / softcap), target).to(dtype)
     output2 = target_ce(_input2, target)
 
     assert torch.allclose(output, output2, atol=atol, rtol=rtol)
@@ -289,9 +271,7 @@ def _test_correctness_with_z_loss_with_other_params_once(
     num_elements_to_assign = torch.randint(
         1, B * T // 2, (1,)
     ).item()  # Random number of elements to set to ignore_index
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]  # Randomly select indices
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     target[indices_to_assign] = ignore_index
 
     if return_z_loss:
@@ -419,7 +399,6 @@ def _test_correctness_functional(
     atol,
     rtol,
 ):
-
     _input = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
 
     x1 = _input.clone().requires_grad_(True)
@@ -474,9 +453,7 @@ def _test_correctness_functional(
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
@@ -522,20 +499,14 @@ def test_correctness_functional(B, T, V, scalar, dtype, atol, rtol):
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
 )
-def test_correctness_with_ignore_index(
-    B, T, V, ignore_index, reduction, scalar, dtype, atol, rtol
-):
+def test_correctness_with_ignore_index(B, T, V, ignore_index, reduction, scalar, dtype, atol, rtol):
     liger_ce = LigerCrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
-    _test_correctness_with_ignore_index_once(
-        liger_ce, B, T, V, ignore_index, reduction, scalar, dtype, atol, rtol
-    )
+    _test_correctness_with_ignore_index_once(liger_ce, B, T, V, ignore_index, reduction, scalar, dtype, atol, rtol)
 
 
 @pytest.mark.parametrize(
@@ -554,20 +525,14 @@ def test_correctness_with_ignore_index(
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
 )
-def test_correctness_with_label_smoothing_once(
-    B, T, V, label_smoothing, scalar, dtype, atol, rtol
-):
+def test_correctness_with_label_smoothing_once(B, T, V, label_smoothing, scalar, dtype, atol, rtol):
     liger_ce = LigerCrossEntropyLoss(label_smoothing=label_smoothing)
-    _test_correctness_with_label_smoothing_once(
-        liger_ce, B, T, V, label_smoothing, scalar, dtype, atol, rtol
-    )
+    _test_correctness_with_label_smoothing_once(liger_ce, B, T, V, label_smoothing, scalar, dtype, atol, rtol)
 
 
 @pytest.mark.parametrize(
@@ -586,9 +551,7 @@ def test_correctness_with_label_smoothing_once(
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
@@ -622,20 +585,14 @@ def test_correctness_with_label_smoothing_with_ignore_index_once(
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
 )
-def test_correctness_with_softcap_once(
-    B, T, V, softcap, reduction, scalar, dtype, atol, rtol
-):
+def test_correctness_with_softcap_once(B, T, V, softcap, reduction, scalar, dtype, atol, rtol):
     liger_ce = LigerCrossEntropyLoss(softcap=softcap, reduction=reduction)
-    _test_correctness_with_softcap_once(
-        liger_ce, B, T, V, softcap, reduction, scalar, dtype, atol, rtol
-    )
+    _test_correctness_with_softcap_once(liger_ce, B, T, V, softcap, reduction, scalar, dtype, atol, rtol)
 
 
 @pytest.mark.parametrize(
@@ -654,9 +611,7 @@ def test_correctness_with_softcap_once(
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
@@ -714,9 +669,7 @@ def test_correctness_with_z_loss_once(
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
@@ -790,9 +743,7 @@ def test_correctness_with_z_loss_with_other_params_once(
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
@@ -903,9 +854,7 @@ def test_correctness_with_weight_with_other_params_once(
 )
 def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rtol):
     liger_ce = LigerCrossEntropyLoss(reduction=reduction)
-    _test_correctness_not_last_layer_once(
-        liger_ce, B, T, V, reduction, scalar, dtype, atol, rtol
-    )
+    _test_correctness_not_last_layer_once(liger_ce, B, T, V, reduction, scalar, dtype, atol, rtol)
 
 
 def test_float32_internal():

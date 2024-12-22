@@ -1,40 +1,33 @@
 import functools
 import os
-from test.utils import (
-    FAKE_CONFIGS_PATH,
-    UNTOKENIZED_DATASET_PATH,
-    MiniModelConfig,
-    assert_verbose_allclose,
-    load_tokenizer_config,
-    multimodal_collate_fn,
-    revert_liger_kernel_to_mllama,
-    revert_liger_kernel_to_qwen2_vl,
-    set_seed,
-    supports_bfloat16,
-    train_bpe_tokenizer,
-)
 
 import pytest
 import torch
+
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
 
-from liger_kernel.transformers import (
-    apply_liger_kernel_to_mllama,
-    apply_liger_kernel_to_qwen2_vl,
-)
+from liger_kernel.transformers import apply_liger_kernel_to_mllama
+from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
+from test.utils import FAKE_CONFIGS_PATH
+from test.utils import UNTOKENIZED_DATASET_PATH
+from test.utils import MiniModelConfig
+from test.utils import assert_verbose_allclose
+from test.utils import load_tokenizer_config
+from test.utils import multimodal_collate_fn
+from test.utils import revert_liger_kernel_to_mllama
+from test.utils import revert_liger_kernel_to_qwen2_vl
+from test.utils import set_seed
+from test.utils import supports_bfloat16
+from test.utils import train_bpe_tokenizer
 
 try:
     # Qwen2-VL is only available in transformers>=4.45.0
     from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
-    from transformers.models.qwen2_vl.image_processing_qwen2_vl import (
-        Qwen2VLImageProcessor,
-    )
-    from transformers.models.qwen2_vl.modeling_qwen2_vl import (
-        Qwen2VLForConditionalGeneration,
-    )
+    from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
     from transformers.models.qwen2_vl.processing_qwen2_vl import Qwen2VLProcessor
 
     QWEN2_VL_AVAILABLE = True
@@ -43,15 +36,11 @@ except ImportError:
 
 try:
     # Mllama is only available in transformers>=4.45.0
-    from transformers.models.mllama.configuration_mllama import (
-        MllamaConfig,
-        MllamaTextConfig,
-        MllamaVisionConfig,
-    )
+    from transformers.models.mllama.configuration_mllama import MllamaConfig
+    from transformers.models.mllama.configuration_mllama import MllamaTextConfig
+    from transformers.models.mllama.configuration_mllama import MllamaVisionConfig
     from transformers.models.mllama.image_processing_mllama import MllamaImageProcessor
-    from transformers.models.mllama.modeling_mllama import (
-        MllamaForConditionalGeneration,
-    )
+    from transformers.models.mllama.modeling_mllama import MllamaForConditionalGeneration
     from transformers.models.mllama.processing_mllama import MllamaProcessor
 
     MLLAMA_AVAILABLE = True
@@ -79,9 +68,7 @@ MINI_MODEL_SETUPS = {}
 
 if MLLAMA_AVAILABLE:
     MINI_MODEL_SETUPS["mini_mllama"] = MiniModelConfig(
-        liger_kernel_patch_func=functools.partial(
-            apply_liger_kernel_to_mllama, fused_linear_cross_entropy=False
-        ),
+        liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_mllama, fused_linear_cross_entropy=False),
         liger_kernel_patch_revert_func=revert_liger_kernel_to_mllama,
         model_class=MllamaForConditionalGeneration,
         mini_model_config=MllamaConfig(
@@ -136,9 +123,7 @@ if MLLAMA_AVAILABLE:
 
 if QWEN2_VL_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen2_vl"] = MiniModelConfig(
-        liger_kernel_patch_func=functools.partial(
-            apply_liger_kernel_to_qwen2_vl, fused_linear_cross_entropy=False
-        ),
+        liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_qwen2_vl, fused_linear_cross_entropy=False),
         liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2_vl,
         model_class=Qwen2VLForConditionalGeneration,
         mini_model_config=Qwen2VLConfig(
@@ -188,9 +173,7 @@ if QWEN2_VL_AVAILABLE:
 def create_processor(model_name):
     if model_name == "mini_qwen2_vl":
         tokenizer_config = load_tokenizer_config(
-            os.path.join(
-                FAKE_CONFIGS_PATH, "Qwen/Qwen2-VL-7B-Instruct/tokenizer_config.json"
-            )
+            os.path.join(FAKE_CONFIGS_PATH, "Qwen/Qwen2-VL-7B-Instruct/tokenizer_config.json")
         )
         tokenizer_base = train_bpe_tokenizer(
             [
@@ -201,13 +184,9 @@ def create_processor(model_name):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(
-            tokenizer_object=tokenizer_base, **tokenizer_config
-        )
+        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor()
-        return Qwen2VLProcessor(
-            image_processor=image_processor, tokenizer=qwen_tokenizer
-        )
+        return Qwen2VLProcessor(image_processor=image_processor, tokenizer=qwen_tokenizer)
 
     elif model_name == "mini_mllama":
         tokenizer_config = load_tokenizer_config(
@@ -225,13 +204,9 @@ def create_processor(model_name):
                 )
             ]
         )
-        fast_tokenizer = PreTrainedTokenizerFast(
-            tokenizer_object=tokenizer_base, **tokenizer_config
-        )
+        fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = MllamaImageProcessor(size={"height": 560, "width": 560})
-        return MllamaProcessor(
-            image_processor=image_processor, tokenizer=fast_tokenizer
-        )
+        return MllamaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
     else:
         raise ValueError(f"Processor not available for model {model_name}")
 
@@ -265,9 +240,7 @@ def create_multimodal_dataset(model_name: str):
                 "content": [{"type": "text", "text": example["text"]}],
             },
         ]
-        example["text"] = processor.tokenizer.apply_chat_template(
-            conversation, tokenize=False
-        )
+        example["text"] = processor.tokenizer.apply_chat_template(conversation, tokenize=False)
         return example
 
     def preprocess_function(examples):
@@ -282,9 +255,7 @@ def create_multimodal_dataset(model_name: str):
         )
 
     train_dataset = (
-        load_dataset(
-            "text", data_files={"train": UNTOKENIZED_DATASET_PATH}, split="train"
-        )
+        load_dataset("text", data_files={"train": UNTOKENIZED_DATASET_PATH}, split="train")
         .to_iterable_dataset()  # only map examples as-needed and on-demand
         .map(generate_procedural_image, with_indices=True)
         .map(apply_chat_template)
@@ -341,9 +312,7 @@ def run_mini_model_multimodal(
     model.gradient_checkpointing_enable()
 
     train_dataset = create_multimodal_dataset(model_name)
-    loader = DataLoader(
-        train_dataset, batch_size=2, shuffle=False, collate_fn=multimodal_collate_fn
-    )
+    loader = DataLoader(train_dataset, batch_size=2, shuffle=False, collate_fn=multimodal_collate_fn)
     loader_iter = iter(loader)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
@@ -394,9 +363,7 @@ def run_mini_model_multimodal(
             1e-2,
             1e-2,
             marks=[
-                pytest.mark.skipif(
-                    not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-                ),
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
                 pytest.mark.skipif(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
@@ -431,9 +398,7 @@ def run_mini_model_multimodal(
             1e-2,
             1e-2,
             marks=[
-                pytest.mark.skipif(
-                    not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-                ),
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
                 pytest.mark.skipif(
                     not MLLAMA_AVAILABLE,
                     reason="Mllama not available in this version of transformers",
@@ -455,9 +420,7 @@ def test_mini_model_multimodal(
     param_rtol,
 ):
     # Non-liger models should be initialized and tested first to avoid the module being overridden
-    expected_output = run_mini_model_multimodal(
-        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr
-    )
+    expected_output = run_mini_model_multimodal(model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr)
 
     actual_output = run_mini_model_multimodal(
         model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True
@@ -484,7 +447,6 @@ def test_mini_model_multimodal(
     for expected_param, actual_param in zip(
         expected_output["model"].named_parameters(),
         actual_output["model"].named_parameters(),
+        strict=False,
     ):
-        assert_verbose_allclose(
-            expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol
-        )
+        assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)
