@@ -186,7 +186,7 @@ def test_correctness(
     )
 
     # Precomputed KL divergence between policy and reference distributions
-    kl = torch.randn(1, device=device, dtype=dtype).item()
+    kl = torch.randn(1, device=device, dtype=dtype)
 
     torch_lm_head_KTO = TorchLMHeadKTO(
         H=H,
@@ -307,7 +307,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
 
     # Precomputed KL divergence between policy and reference distributions
-    kl = torch.randn(1, device=device, dtype=dtype).item()
+    kl = torch.randn(1, device=device, dtype=dtype)
 
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)

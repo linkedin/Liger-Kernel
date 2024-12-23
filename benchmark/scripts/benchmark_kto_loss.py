@@ -140,7 +140,7 @@ def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
 
     # Precomputed KL divergence between policy and reference distributions
-    kl = torch.randn(1, device=device, dtype=dtype).item()
+    kl = torch.randn(1, device=device, dtype=dtype)
 
     # Add ignore_index tokens to simulate padding
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
@@ -221,7 +221,7 @@ def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
 
     # Precomputed KL divergence between policy and reference distributions
-    kl = torch.randn(1, device=device, dtype=dtype).item()
+    kl = torch.randn(1, device=device, dtype=dtype)
 
     # Add ignore_index tokens
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
