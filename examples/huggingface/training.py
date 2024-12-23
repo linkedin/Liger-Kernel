@@ -3,8 +3,10 @@ from dataclasses import dataclass
 import datasets
 import torch
 import transformers
+
 from callback import EfficiencyCallback
-from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
+from trl import DataCollatorForCompletionOnlyLM
+from trl import SFTTrainer
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
@@ -22,9 +24,7 @@ def formatting_prompts_func(example):
 
 
 def train():
-    parser = transformers.HfArgumentParser(
-        (transformers.TrainingArguments, CustomArguments)
-    )
+    parser = transformers.HfArgumentParser((transformers.TrainingArguments, CustomArguments))
     training_args, custom_args = parser.parse_args_into_dataclasses()
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         custom_args.model_name,
@@ -33,9 +33,7 @@ def train():
     )
     tokenizer.pad_token = tokenizer.eos_token
 
-    dataset = datasets.load_dataset(custom_args.dataset)["train"].train_test_split(
-        test_size=0.1
-    )
+    dataset = datasets.load_dataset(custom_args.dataset)["train"].train_test_split(test_size=0.1)
     train_dataset = dataset["train"]
     eval_dataset = dataset["test"]
     response_prompt = tokenizer.encode("### Response:\n", add_special_tokens=False)

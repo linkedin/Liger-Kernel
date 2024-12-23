@@ -1,27 +1,23 @@
-from typing import List, Optional, Tuple, Union
+from typing import List
+from typing import Optional
+from typing import Tuple
+from typing import Union
 
 import torch
+
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
-from transformers.models.mixtral.modeling_mixtral import (
-    _CONFIG_FOR_DOC,
-    MIXTRAL_INPUTS_DOCSTRING,
-    load_balancing_loss_func,
-)
-from transformers.utils import (
-    add_start_docstrings_to_model_forward,
-    replace_return_docstrings,
-)
+from transformers.models.mixtral.modeling_mixtral import _CONFIG_FOR_DOC
+from transformers.models.mixtral.modeling_mixtral import MIXTRAL_INPUTS_DOCSTRING
+from transformers.models.mixtral.modeling_mixtral import load_balancing_loss_func
+from transformers.utils import add_start_docstrings_to_model_forward
+from transformers.utils import replace_return_docstrings
 
-from liger_kernel.transformers.fused_linear_cross_entropy import (
-    LigerFusedLinearCrossEntropyLoss,
-)
+from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 
 
 @add_start_docstrings_to_model_forward(MIXTRAL_INPUTS_DOCSTRING)
-@replace_return_docstrings(
-    output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC
-)
+@replace_return_docstrings(output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward_deprecated(
     self,
     input_ids: torch.LongTensor = None,
@@ -66,25 +62,15 @@ def lce_forward_deprecated(
     "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
     ```"""
 
-    output_attentions = (
-        output_attentions
-        if output_attentions is not None
-        else self.config.output_attentions
-    )
+    output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_router_logits = (
-        output_router_logits
-        if output_router_logits is not None
-        else self.config.output_router_logits
+        output_router_logits if output_router_logits is not None else self.config.output_router_logits
     )
 
     output_hidden_states = (
-        output_hidden_states
-        if output_hidden_states is not None
-        else self.config.output_hidden_states
+        output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
-    return_dict = (
-        return_dict if return_dict is not None else self.config.use_return_dict
-    )
+    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs = self.model(
@@ -138,9 +124,7 @@ def lce_forward_deprecated(
             attention_mask,
         )
         if labels is not None:
-            loss += self.router_aux_loss_coef * aux_loss.to(
-                loss.device
-            )  # make sure to reside in the same device
+            loss += self.router_aux_loss_coef * aux_loss.to(loss.device)  # make sure to reside in the same device
 
     if not return_dict:
         output = (logits,) + outputs[1:]
@@ -160,9 +144,7 @@ def lce_forward_deprecated(
 
 
 @add_start_docstrings_to_model_forward(MIXTRAL_INPUTS_DOCSTRING)
-@replace_return_docstrings(
-    output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC
-)
+@replace_return_docstrings(output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 # Ignore copy
 def lce_forward(
     self,
@@ -212,25 +194,15 @@ def lce_forward(
     "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
     ```"""
 
-    output_attentions = (
-        output_attentions
-        if output_attentions is not None
-        else self.config.output_attentions
-    )
+    output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_router_logits = (
-        output_router_logits
-        if output_router_logits is not None
-        else self.config.output_router_logits
+        output_router_logits if output_router_logits is not None else self.config.output_router_logits
     )
 
     output_hidden_states = (
-        output_hidden_states
-        if output_hidden_states is not None
-        else self.config.output_hidden_states
+        output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
-    return_dict = (
-        return_dict if return_dict is not None else self.config.use_return_dict
-    )
+    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs = self.model(
@@ -288,9 +260,7 @@ def lce_forward(
             attention_mask,
         )
         if labels is not None:
-            loss += self.router_aux_loss_coef * aux_loss.to(
-                loss.device
-            )  # make sure to reside in the same device
+            loss += self.router_aux_loss_coef * aux_loss.to(loss.device)  # make sure to reside in the same device
 
     if not return_dict:
         output = (logits,) + outputs[1:]

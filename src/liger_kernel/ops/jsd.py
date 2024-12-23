@@ -98,9 +98,7 @@ def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
         loss_stride=loss.stride(-2),
         dX_ptr=dX,
         dX_stride=dX.stride(-2),
-        label_ptr=(
-            shift_labels if has_label else torch.empty(1, device=_input.device)
-        ),  # dummy ptr if no label
+        label_ptr=(shift_labels if has_label else torch.empty(1, device=_input.device)),  # dummy ptr if no label
         beta=beta,
         n_non_ignore=n_non_ignore,
         ignore_index=ignore_index,
@@ -165,9 +163,7 @@ class LigerJSDFunction(torch.autograd.Function):
             shift_labels = shift_labels.contiguous()
             has_label = True
 
-        loss, dX = jsd_forward(
-            _input, target, shift_labels, beta, ignore_index, has_label
-        )
+        loss, dX = jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label)
         ctx.save_for_backward(dX)
         return loss
 

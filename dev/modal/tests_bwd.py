@@ -32,6 +32,4 @@ def liger_bwd_tests():
         cwd=REMOTE_ROOT_PATH,
     )
     subprocess.run(["make test"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
-    subprocess.run(
-        ["make test-convergence"], check=True, shell=True, cwd=REMOTE_ROOT_PATH
-    )
+    subprocess.run(["make test-convergence"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)

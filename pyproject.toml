@@ -24,3 +24,35 @@ pythonpath = ["src", "."]
 asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+respect-gitignore = true
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "F",  # pyflakes
+    "I",  # isort
+]
+ignore = ["E501", "B006", "E731", "A002", "E203"]
+
+exclude = [
+    ".git",
+    "__pycache__",
+    "benchmark_internal/others",
+    ".venv",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+known-first-party = ["liger_kernel"]
+force-single-line = true
+lines-between-types = 1
