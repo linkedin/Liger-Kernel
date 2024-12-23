@@ -1,6 +1,3 @@
-from test.chunked_loss.test_cpo_loss import TorchLMHeadCPO
-from test.utils import assert_verbose_allclose, set_seed
-
 import pytest
 import torch
 
@@ -8,6 +5,9 @@ from liger_kernel.chunked_loss import LigerFusedLinearSimPOLoss
 from liger_kernel.chunked_loss.functional import liger_fused_linear_simpo
 from liger_kernel.chunked_loss.simpo_loss import LigerFusedLinearSimPOFunction
 from liger_kernel.utils import infer_device
+from test.chunked_loss.test_cpo_loss import TorchLMHeadCPO
+from test.utils import assert_verbose_allclose
+from test.utils import set_seed
 
 device = infer_device()
 
@@ -102,13 +102,13 @@ def test_correctness(
         gamma=gamma,
     )
 
-    torch_lm_head_simpo.lin.weight.data = liger_lm_head_simpo.lin.weight.data = (
-        torch.randn(V, H, device=device, dtype=dtype)
+    torch_lm_head_simpo.lin.weight.data = liger_lm_head_simpo.lin.weight.data = torch.randn(
+        V, H, device=device, dtype=dtype
     )
 
     if bias:
-        torch_lm_head_simpo.lin.bias.data = liger_lm_head_simpo.lin.bias.data = (
-            torch.randn(V, device=device, dtype=dtype)
+        torch_lm_head_simpo.lin.bias.data = liger_lm_head_simpo.lin.bias.data = torch.randn(
+            V, device=device, dtype=dtype
         )
 
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
@@ -205,12 +205,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias):
     bias1 = _bias.detach().clone().requires_grad_(True) if bias else None
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
-    loss1, aggregated_aux_outputs1 = LigerFusedLinearSimPOFunction.apply(
-        input1, weight1, target, bias1
-    )
-    loss2, aggregated_aux_outputs2 = liger_fused_linear_simpo(
-        input2, weight2, target, bias2
-    )
+    loss1, aggregated_aux_outputs1 = LigerFusedLinearSimPOFunction.apply(input1, weight1, target, bias1)
+    loss2, aggregated_aux_outputs2 = liger_fused_linear_simpo(input2, weight2, target, bias2)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 

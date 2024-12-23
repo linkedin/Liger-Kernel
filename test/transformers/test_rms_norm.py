@@ -1,9 +1,12 @@
 import os
-from test.utils import assert_verbose_allclose, set_seed, supports_bfloat16
 
 import pytest
 import torch
 import torch.nn as nn
+
+from test.utils import assert_verbose_allclose
+from test.utils import set_seed
+from test.utils import supports_bfloat16
 
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.transformers.functional import liger_rms_norm
@@ -91,9 +94,7 @@ class GemmaRMSNorm(nn.Module):
             torch.bfloat16,
             2e-1,
             2e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
 )
@@ -112,9 +113,7 @@ class GemmaRMSNorm(nn.Module):
         False,
     ],
 )
-def test_correctness(
-    bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode, in_place
-):
+def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode, in_place):
     _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
 
     h1 = _tensor.clone().requires_grad_(True)
@@ -130,19 +129,13 @@ def test_correctness(
 
     # triton
     triton_rms = (
-        LigerRMSNorm(
-            hidden_size=hd, offset=offset, casting_mode=casting_mode, in_place=in_place
-        )
-        .to(device)
-        .to(dtype)
+        LigerRMSNorm(hidden_size=hd, offset=offset, casting_mode=casting_mode, in_place=in_place).to(device).to(dtype)
     )
     triton_o = triton_rms(h2)
     triton_o.backward(do, retain_graph=True)
 
     assert_verbose_allclose(ref_o, triton_o, atol=atol, rtol=rtol)
-    assert_verbose_allclose(
-        ref_rms.weight.grad, triton_rms.weight.grad, atol=atol, rtol=rtol
-    )
+    assert_verbose_allclose(ref_rms.weight.grad, triton_rms.weight.grad, atol=atol, rtol=rtol)
     print(f"{h1.grad=}")
     print(f"{h2.grad=}")
     assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol, max_print=20)
@@ -170,9 +163,7 @@ def test_correctness(
         (GemmaRMSNorm, 1.0, "gemma"),
     ],
 )
-def test_correctness_functional(
-    bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode
-):
+def test_correctness_functional(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode):
     # h
     _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
 
