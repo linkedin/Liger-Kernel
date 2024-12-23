@@ -4,7 +4,8 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import ensure_contiguous, is_hip
+from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import is_hip
 
 
 def get_num_warps(BLOCK_SIZE):
@@ -218,9 +219,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
         ctx.save_for_backward(y_true)
         ctx.reduction = reduction
         ctx.log_target = log_target
-        return kldiv_forward_triton(
-            y_pred, y_true, log_target=log_target, reduction=reduction, eps=eps
-        )
+        return kldiv_forward_triton(y_pred, y_true, log_target=log_target, reduction=reduction, eps=eps)
 
     @staticmethod
     @ensure_contiguous
@@ -238,9 +237,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
 
         new_grads = torch.empty_like(y_true)
 
-        derivative = kldiv_backward_triton(
-            y_true, grad_output, new_grads, ctx.log_target
-        )
+        derivative = kldiv_backward_triton(y_true, grad_output, new_grads, ctx.log_target)
 
         if ctx.reduction == "batchmean":
             derivative = derivative / y_true.shape[0]

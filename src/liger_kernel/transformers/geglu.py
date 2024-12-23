@@ -19,7 +19,4 @@ class LigerGEGLUMLP(nn.Module):
         # So we can safely assume we use tanh approximation form all the time
 
     def forward(self, x):
-
-        return self.down_proj(
-            LigerGELUMulFunction.apply(self.gate_proj(x), self.up_proj(x))
-        )
+        return self.down_proj(LigerGELUMulFunction.apply(self.gate_proj(x), self.up_proj(x)))

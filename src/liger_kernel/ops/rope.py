@@ -72,36 +72,20 @@ def _triton_rope(
     # program instance (i.e. for the current token) separately
     # ####################################################################
     # left half of the head
-    first_half_q_offsets = (
-        tl.arange(0, pad_n_qh)[:, None] * hd + tl.arange(0, pad_hd // 2)[None, :]
-    )
-    first_half_k_offsets = (
-        tl.arange(0, pad_n_kh)[:, None] * hd + tl.arange(0, pad_hd // 2)[None, :]
-    )
-    first_q_mask = (tl.arange(0, pad_n_qh)[:, None] < n_qh) & (
-        tl.arange(0, pad_hd // 2)[None, :] < hd // 2
-    )
-    first_k_mask = (tl.arange(0, pad_n_kh)[:, None] < n_kh) & (
-        tl.arange(0, pad_hd // 2)[None, :] < hd // 2
-    )
-    q_tile_1 = tl.load(q_ptr + first_half_q_offsets, mask=first_q_mask, other=0).to(
-        sin_row.dtype
-    )
-    k_tile_1 = tl.load(k_ptr + first_half_k_offsets, mask=first_k_mask, other=0).to(
-        sin_row.dtype
-    )
+    first_half_q_offsets = tl.arange(0, pad_n_qh)[:, None] * hd + tl.arange(0, pad_hd // 2)[None, :]
+    first_half_k_offsets = tl.arange(0, pad_n_kh)[:, None] * hd + tl.arange(0, pad_hd // 2)[None, :]
+    first_q_mask = (tl.arange(0, pad_n_qh)[:, None] < n_qh) & (tl.arange(0, pad_hd // 2)[None, :] < hd // 2)
+    first_k_mask = (tl.arange(0, pad_n_kh)[:, None] < n_kh) & (tl.arange(0, pad_hd // 2)[None, :] < hd // 2)
+    q_tile_1 = tl.load(q_ptr + first_half_q_offsets, mask=first_q_mask, other=0).to(sin_row.dtype)
+    k_tile_1 = tl.load(k_ptr + first_half_k_offsets, mask=first_k_mask, other=0).to(sin_row.dtype)
 
     # right half of the head
     second_half_q_offsets = first_half_q_offsets + (hd // 2)
     second_half_k_offsets = first_half_k_offsets + (hd // 2)
     second_q_mask = first_q_mask
     second_k_mask = first_k_mask
-    q_tile_2 = tl.load(q_ptr + second_half_q_offsets, mask=second_q_mask, other=0).to(
-        sin_row.dtype
-    )
-    k_tile_2 = tl.load(k_ptr + second_half_k_offsets, mask=second_k_mask, other=0).to(
-        sin_row.dtype
-    )
+    q_tile_2 = tl.load(q_ptr + second_half_q_offsets, mask=second_q_mask, other=0).to(sin_row.dtype)
+    k_tile_2 = tl.load(k_ptr + second_half_k_offsets, mask=second_k_mask, other=0).to(sin_row.dtype)
 
     if not BACKWARD_PASS:
         # y = [x1, x2] * [cos, cos] + [-x2, x1] * [sin, sin]

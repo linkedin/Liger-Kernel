@@ -2,11 +2,11 @@ from abc import abstractmethod
 from functools import partial
 
 import torch
+
 from torch.nn import functional as F
 
 
 class LigerFusedLinearDistillationBase(torch.autograd.Function):
-
     @abstractmethod
     def distillation_loss_fn(student_logits, teacher_logits, temperature):
         """
@@ -89,25 +89,25 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             compute_ce_loss (bool): Whether to compute CE loss.
             loss_kwargs (dict): Additional arguments for the loss function.
         """
-        student_logits_chunk, teacher_logits_chunk, hard_loss = (
-            LigerFusedLinearDistillationBase.chunk_forward(
-                student_input_chunk,
-                student_weight,
-                teacher_input_chunk,
-                teacher_weight,
-                target_chunk,
-                student_bias=student_bias,
-                teacher_bias=teacher_bias,
-                ignore_index=ignore_index,
-                compute_ce_loss=compute_ce_loss,
-            )
+        (
+            student_logits_chunk,
+            teacher_logits_chunk,
+            hard_loss,
+        ) = LigerFusedLinearDistillationBase.chunk_forward(
+            student_input_chunk,
+            student_weight,
+            teacher_input_chunk,
+            teacher_weight,
+            target_chunk,
+            student_bias=student_bias,
+            teacher_bias=teacher_bias,
+            ignore_index=ignore_index,
+            compute_ce_loss=compute_ce_loss,
         )
 
         hard_loss /= full_target.shape[0]
 
-        soft_loss = distillation_loss_fn(
-            student_logits_chunk, teacher_logits_chunk, temperature
-        )
+        soft_loss = distillation_loss_fn(student_logits_chunk, teacher_logits_chunk, temperature)
         soft_loss /= full_target.shape[0]
 
         loss = weight_hard_loss * hard_loss + weight_soft_loss * soft_loss
@@ -174,17 +174,18 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
 
         def accumulate_chunk(student_input_chunk, teacher_input_chunk, target_chunk):
             if student_bias is not None:
-                (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), (
-                    chunk_loss,
+                (
+                    (chunk_grad_input, chunk_grad_weight, chunk_grad_bias),
                     (
-                        chunk_soft_loss,
-                        chunk_hard_loss,
-                        chunk_student_logits,
-                        chunk_teacher_logits,
+                        chunk_loss,
+                        (
+                            chunk_soft_loss,
+                            chunk_hard_loss,
+                            chunk_student_logits,
+                            chunk_teacher_logits,
+                        ),
                     ),
-                ) = torch.func.grad_and_value(
-                    loss_func_to_call, argnums=(0, 1, 5), has_aux=True
-                )(
+                ) = torch.func.grad_and_value(loss_func_to_call, argnums=(0, 1, 5), has_aux=True)(
                     student_input_chunk,
                     student_weight,
                     teacher_input_chunk,
@@ -195,17 +196,18 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
                 )
                 grad_bias.add_(chunk_grad_bias)
             else:
-                (chunk_grad_input, chunk_grad_weight), (
-                    chunk_loss,
+                (
+                    (chunk_grad_input, chunk_grad_weight),
                     (
-                        chunk_soft_loss,
-                        chunk_hard_loss,
-                        chunk_student_logits,
-                        chunk_teacher_logits,
+                        chunk_loss,
+                        (
+                            chunk_soft_loss,
+                            chunk_hard_loss,
+                            chunk_student_logits,
+                            chunk_teacher_logits,
+                        ),
                     ),
-                ) = torch.func.grad_and_value(
-                    loss_func_to_call, argnums=(0, 1), has_aux=True
-                )(
+                ) = torch.func.grad_and_value(loss_func_to_call, argnums=(0, 1), has_aux=True)(
                     student_input_chunk,
                     student_weight,
                     teacher_input_chunk,
@@ -229,9 +231,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         for student_input_chunk, teacher_input_chunk, target_chunk in zip(
             _student_input_chunks, _teacher_input_chunks, _target_chunks
         ):
-            grad_input = accumulate_chunk(
-                student_input_chunk, teacher_input_chunk, target_chunk
-            )
+            grad_input = accumulate_chunk(student_input_chunk, teacher_input_chunk, target_chunk)
             grad_inputs.append(grad_input)
 
         ctx.save_for_backward(

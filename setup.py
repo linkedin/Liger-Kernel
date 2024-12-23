@@ -1,6 +1,7 @@
 # setup.py
 
 import subprocess
+
 from typing import Literal
 
 from setuptools import setup
