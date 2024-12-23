@@ -52,9 +52,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
             ref_chosen_logps: Reference log probs of chosen tokens (batch_size,)
             ref_rejected_logps: Reference log probs of rejected tokens (batch_size,)
             beta: Weight for the direct preference loss
-            policy_KL_logps: KL divergence between the policy model and the reference model for the chosen responses. Shape: (batch_size,)
-            ref_KL_logps: KL divergence between the reference model and the policy model for the chosen responses. Shape: (batch_size,)
-
+            kl: KL divergence between the policy model and the reference model for the chosen responses. Shape: (batch_size,)
         Returns:
             Tuple of (loss, chosen_rewards, rejected_rewards):
             - loss: The KTO loss value
@@ -141,8 +139,6 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
             beta (float): Temperature parameter for the KTO loss
             compiled (bool): Whether to use compiled operations
             use_ref_model (bool): Whether to use a reference model for the DPO loss.
-            policy_KL_logps: KL divergence between the policy model and the reference model for the chosen responses. Shape: (batch_size,)
-            ref_KL_logps: KL divergence between the reference model and the policy model for the chosen responses. Shape: (batch_size,)
         """
         super().__init__()
         self.ignore_index = ignore_index

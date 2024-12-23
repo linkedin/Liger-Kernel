@@ -185,6 +185,9 @@ def test_correctness(
         2, (B,), dtype=torch.bool, device=device, requires_grad=False
     )
 
+    # Precomputed KL divergence between policy and reference distributions
+    kl = torch.randn(1, device=device, dtype=dtype).item()
+
     torch_lm_head_KTO = TorchLMHeadKTO(
         H=H,
         V=V,
@@ -244,10 +247,10 @@ def test_correctness(
     target.view(-1)[indices_to_assign] = ignore_index
 
     loss1 = torch_lm_head_KTO(
-        x=input1, ref_x=ref_input, y=target, preference_labels=preference_labels
+        x=input1, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl
     )
     loss2 = liger_lm_head_KTO(
-        x=input2, ref_x=ref_input, y=target, preference_labels=preference_labels
+        x=input2, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl
     )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
@@ -303,6 +306,9 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
     preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
 
+    # Precomputed KL divergence between policy and reference distributions
+    kl = torch.randn(1, device=device, dtype=dtype).item()
+
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
@@ -347,6 +353,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
         ref_input,
         ref_weight1,
         ref_bias1,
+        kl,
     )
     loss2 = liger_fused_linear_kto(
         input2,
@@ -357,6 +364,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
         ref_input,
         ref_weight2,
         ref_bias2,
+        kl,
     )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
