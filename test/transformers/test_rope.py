@@ -46,8 +46,20 @@ SLEEP_SECONDS = 0.1
         ),
     ],
 )
+@pytest.mark.parametrize(
+    "expand_position_ids",
+    [True, False],
+)
 def test_correctness(
-    bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, atol, rtol
+    bsz,
+    seq_len,
+    num_q_heads,
+    num_kv_heads,
+    head_dim,
+    dtype,
+    expand_position_ids,
+    atol,
+    rtol,
 ):
     rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
 
@@ -70,6 +82,8 @@ def test_correctness(
     k2 = _tensor_k.clone().requires_grad_(True)
 
     pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
+    if expand_position_ids:
+        pos_ids = pos_ids.expand(bsz, -1)
     cos, sin = rotary_emb(k1, pos_ids)
 
     # validate forward pass
@@ -111,8 +125,20 @@ def test_correctness(
         (torch.bfloat16, 1e-1, 1e-5),
     ],
 )
+@pytest.mark.parametrize(
+    "expand_position_ids",
+    [True, False],
+)
 def test_functional_correctness(
-    bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, atol, rtol
+    bsz,
+    seq_len,
+    num_q_heads,
+    num_kv_heads,
+    head_dim,
+    expand_position_ids,
+    dtype,
+    atol,
+    rtol,
 ):
     _q = torch.randn((bsz, num_q_heads, seq_len, head_dim), device=device, dtype=dtype)
     _k = torch.randn((bsz, num_kv_heads, seq_len, head_dim), device=device, dtype=dtype)
@@ -126,6 +152,8 @@ def test_functional_correctness(
     rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
 
     pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
+    if expand_position_ids:
+        pos_ids = pos_ids.expand(bsz, -1)
     cos, sin = rotary_emb(k1, pos_ids)
 
     functional_q, functional_k = liger_rope(q=q1, k=k1, cos=cos, sin=sin)
