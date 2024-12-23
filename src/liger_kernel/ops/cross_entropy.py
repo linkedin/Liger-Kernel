@@ -17,8 +17,8 @@ if compare_version("triton", operator.ge, "3.0.0"):
 else:
     from triton.language.math import tanh
 
-_TRUE: tl.constexpr = 1
-_FALSE: tl.constexpr = 0
+_TRUE: tl.constexpr = tl.constexpr(1)
+_FALSE: tl.constexpr = tl.constexpr(0)
 
 
 @triton.jit
