@@ -35,9 +35,9 @@ else:
     from triton.language.math import rsqrt
 
 
-_CASTING_MODE_NONE = tl.constexpr(-1)
-_CASTING_MODE_LLAMA = tl.constexpr(0)
-_CASTING_MODE_GEMMA = tl.constexpr(1)
+_CASTING_MODE_NONE: tl.constexpr = tl.constexpr(-1)
+_CASTING_MODE_LLAMA: tl.constexpr = tl.constexpr(0)
+_CASTING_MODE_GEMMA: tl.constexpr = tl.constexpr(1)
 
 
 @triton.jit

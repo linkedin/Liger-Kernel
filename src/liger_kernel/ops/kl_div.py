@@ -23,10 +23,10 @@ MAX_FUSED_SIZE = 65536 // 4  # 65536 // 4 or 8 works the best
 
 REDUCTION_LITERAL = Literal["none", "sum", "mean", "batchmean"]
 
-_REDUCTION_MODE_NONE = tl.constexpr(0)
-_REDUCTION_MODE_SUM = tl.constexpr(1)
-_REDUCTION_MODE_MEAN = tl.constexpr(2)
-_REDUCTION_MODE_BATCHMEAN = tl.constexpr(3)
+_REDUCTION_MODE_NONE: tl.constexpr = tl.constexpr(0)
+_REDUCTION_MODE_SUM: tl.constexpr = tl.constexpr(1)
+_REDUCTION_MODE_MEAN: tl.constexpr = tl.constexpr(2)
+_REDUCTION_MODE_BATCHMEAN: tl.constexpr = tl.constexpr(3)
 
 _str_to_reduction_mode = {
     "none": _REDUCTION_MODE_NONE.value,
