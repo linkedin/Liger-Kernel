@@ -139,6 +139,9 @@ def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
     preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
 
+    # Precomputed KL divergence between policy and reference distributions
+    kl = torch.randn(1, device=device, dtype=dtype).item()
+
     # Add ignore_index tokens to simulate padding
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
@@ -150,11 +153,19 @@ def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     def fwd():
         if provider == "liger":
             return liger_kto_loss(
-                x=_input, ref_x=ref_input, y=target, preference_labels=preference_labels
+                x=_input,
+                ref_x=ref_input,
+                y=target,
+                preference_labels=preference_labels,
+                kl=kl,
             )
         elif provider == "huggingface":
             return torch_kto_loss(
-                x=_input, ref_x=ref_input, y=target, preference_labels=preference_labels
+                x=_input,
+                ref_x=ref_input,
+                y=target,
+                preference_labels=preference_labels,
+                kl=kl,
             )
 
     def full():
@@ -209,6 +220,9 @@ def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
     preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
 
+    # Precomputed KL divergence between policy and reference distributions
+    kl = torch.randn(1, device=device, dtype=dtype).item()
+
     # Add ignore_index tokens
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
@@ -220,11 +234,19 @@ def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     def fwd():
         if provider == "liger":
             return liger_kto_loss(
-                x=_input, ref_x=ref_input, y=target, preference_labels=preference_labels
+                x=_input,
+                ref_x=ref_input,
+                y=target,
+                preference_labels=preference_labels,
+                kl=kl,
             )
         elif provider == "huggingface":
             return torch_kto_loss(
-                x=_input, ref_x=ref_input, y=target, preference_labels=preference_labels
+                x=_input,
+                ref_x=ref_input,
+                y=target,
+                preference_labels=preference_labels,
+                kl=kl,
             )
 
     if mode == "forward":
