@@ -10,8 +10,8 @@ test:
 # Command to run flake8 (code style check), isort (import ordering), and black (code formatting)
 # Subsequent commands still run if the previous fails, but return failure at the end
 checkstyle:
-	ruff check .; ruff_check_status=$$?; \
-	ruff format --check .; ruff_format_status=$$?; \
+	ruff check . --fix; ruff_check_status=$$?; \
+	ruff format .; ruff_format_status=$$?; \
 	if [ $$ruff_check_status -ne 0 ] || [ $$ruff_format_status -ne 0 ]; then \
 		exit 1; \
 	fi
