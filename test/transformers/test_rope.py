@@ -51,7 +51,15 @@ SLEEP_SECONDS = 0.1
     [True, False],
 )
 def test_correctness(
-    bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, expand_position_ids, atol, rtol
+    bsz,
+    seq_len,
+    num_q_heads,
+    num_kv_heads,
+    head_dim,
+    dtype,
+    expand_position_ids,
+    atol,
+    rtol,
 ):
     rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
 
@@ -122,7 +130,15 @@ def test_correctness(
     [True, False],
 )
 def test_functional_correctness(
-    bsz, seq_len, num_q_heads, num_kv_heads, head_dim, expand_position_ids, dtype, atol, rtol
+    bsz,
+    seq_len,
+    num_q_heads,
+    num_kv_heads,
+    head_dim,
+    expand_position_ids,
+    dtype,
+    atol,
+    rtol,
 ):
     _q = torch.randn((bsz, num_q_heads, seq_len, head_dim), device=device, dtype=dtype)
     _k = torch.randn((bsz, num_kv_heads, seq_len, head_dim), device=device, dtype=dtype)

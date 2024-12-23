@@ -50,16 +50,16 @@ def _triton_rope(
     # 2. We only need the left half of cos and sin matrix because the right half is just
     # a clone of the left half.
     batch_idx = pid // sl
-    cos_row_idx = pid % sl    
+    cos_row_idx = pid % sl
     cos = cos + tl.where(
         cos_bs == 1,
         cos_row_idx * cos_row_stride,
-        batch_idx * (sl * cos_row_stride) + cos_row_idx * cos_row_stride
+        batch_idx * (sl * cos_row_stride) + cos_row_idx * cos_row_stride,
     )
     sin = sin + tl.where(
         cos_bs == 1,
         cos_row_idx * sin_row_stride,
-        batch_idx * (sl * sin_row_stride) + cos_row_idx * sin_row_stride
+        batch_idx * (sl * sin_row_stride) + cos_row_idx * sin_row_stride,
     )
 
     cos_offsets = tl.arange(0, pad_hd // 2)
