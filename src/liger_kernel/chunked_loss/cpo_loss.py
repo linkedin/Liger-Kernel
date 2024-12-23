@@ -30,11 +30,10 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             label_smoothing (float): Label smoothing factor, will reduce to Equation above when label_smoothing -> 0.
         """
         logits = beta * (chosen_logps - rejected_logps)
-        
-        loss = (
-            -F.logsigmoid(logits) * (1 - label_smoothing)
-            - F.logsigmoid(-logits) * label_smoothing
-        ).sum() / (full_target.shape[0] // 2)
+
+        loss = (-F.logsigmoid(logits) * (1 - label_smoothing) - F.logsigmoid(-logits) * label_smoothing).sum() / (
+            full_target.shape[0] // 2
+        )
 
         loss = (-F.logsigmoid(logits) * (1 - label_smoothing) - F.logsigmoid(-logits) * label_smoothing).sum() / (
             full_target.shape[0] // 2

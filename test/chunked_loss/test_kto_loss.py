@@ -1,5 +1,3 @@
-from test.utils import HFAlignmentLoss, assert_verbose_allclose, set_seed
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -8,6 +6,9 @@ from liger_kernel.chunked_loss import LigerFusedLinearKTOLoss
 from liger_kernel.chunked_loss.functional import liger_fused_linear_kto
 from liger_kernel.chunked_loss.kto_loss import LigerFusedLinearKTOFunction
 from liger_kernel.utils import infer_device
+from test.utils import HFAlignmentLoss
+from test.utils import assert_verbose_allclose
+from test.utils import set_seed
 
 device = infer_device()
 
@@ -94,12 +95,8 @@ class TorchLMHeadKTO(torch.nn.Module):
         beta: float = 0.1,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
-        self.ref_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=ref_bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
         self.KTO_loss = HFKTOLoss(
             ignore_index=ignore_index,
             beta=beta,
@@ -132,12 +129,8 @@ class LigerLMHeadKTO(torch.nn.Module):
         beta: float = 0.1,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
-        self.ref_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=ref_bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
         self.KTO_loss = LigerFusedLinearKTOLoss(
             ignore_index=ignore_index,
             beta=beta,
@@ -175,15 +168,11 @@ class LigerLMHeadKTO(torch.nn.Module):
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ref_bias", [True, False])
 @pytest.mark.parametrize("ignore_index, beta", [(-100, 0.1), (42, 0.2)])
-def test_correctness(
-    B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, ignore_index, beta
-):
+def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, ignore_index, beta):
     # Preference labels shape: [B]
     # Create binary preference labels (0 or 1) for each sequence in the batch
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
-    preference_labels = torch.randint(
-        2, (B,), dtype=torch.bool, device=device, requires_grad=False
-    )
+    preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device, requires_grad=False)
 
     # Precomputed KL divergence between policy and reference distributions
     kl = torch.randn(1, device=device, dtype=dtype)
@@ -210,26 +199,22 @@ def test_correctness(
     torch_lm_head_KTO.lin.weight.data = liger_lm_head_KTO.lin.weight.data = torch.randn(
         V, H, device=device, dtype=dtype
     )
-    torch_lm_head_KTO.ref_lin.weight.data = liger_lm_head_KTO.ref_lin.weight.data = (
-        torch.randn(V, H, device=device, dtype=dtype)
+    torch_lm_head_KTO.ref_lin.weight.data = liger_lm_head_KTO.ref_lin.weight.data = torch.randn(
+        V, H, device=device, dtype=dtype
     )
 
     if bias:
-        torch_lm_head_KTO.lin.bias.data = liger_lm_head_KTO.lin.bias.data = torch.randn(
-            V, device=device, dtype=dtype
-        )
+        torch_lm_head_KTO.lin.bias.data = liger_lm_head_KTO.lin.bias.data = torch.randn(V, device=device, dtype=dtype)
     if ref_bias:
-        torch_lm_head_KTO.ref_lin.bias.data = liger_lm_head_KTO.ref_lin.bias.data = (
-            torch.randn(V, device=device, dtype=dtype)
+        torch_lm_head_KTO.ref_lin.bias.data = liger_lm_head_KTO.ref_lin.bias.data = torch.randn(
+            V, device=device, dtype=dtype
         )
 
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
-    ref_input = (
-        torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
-    )
+    ref_input = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
 
     target = torch.randint(
         0,
@@ -246,12 +231,8 @@ def test_correctness(
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    loss1 = torch_lm_head_KTO(
-        x=input1, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl
-    )
-    loss2 = liger_lm_head_KTO(
-        x=input2, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl
-    )
+    loss1 = torch_lm_head_KTO(x=input1, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl)
+    loss2 = liger_lm_head_KTO(x=input2, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
@@ -259,14 +240,10 @@ def test_correctness(
     loss2.backward()
 
     assert_verbose_allclose(input1, input2, atol=atol, rtol=rtol)
-    assert_verbose_allclose(
-        torch_lm_head_KTO.lin.weight, liger_lm_head_KTO.lin.weight, atol=atol, rtol=rtol
-    )
+    assert_verbose_allclose(torch_lm_head_KTO.lin.weight, liger_lm_head_KTO.lin.weight, atol=atol, rtol=rtol)
 
     if bias:
-        assert_verbose_allclose(
-            torch_lm_head_KTO.lin.bias, liger_lm_head_KTO.lin.bias, atol=atol, rtol=rtol
-        )
+        assert_verbose_allclose(torch_lm_head_KTO.lin.bias, liger_lm_head_KTO.lin.bias, atol=atol, rtol=rtol)
 
     assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
     assert_verbose_allclose(
@@ -313,9 +290,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
-    ref_input = (
-        torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
-    )
+    ref_input = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
 
     target = torch.randint(
         0,

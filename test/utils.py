@@ -400,9 +400,7 @@ class HFAlignmentLoss:
             ref_logits = ref_input @ ref_weight.t()
             if ref_bias is not None:
                 ref_logits = ref_logits + ref_bias
-            ref_all_logps = self.get_batch_logps(
-                ref_logits, target, average_log_prob=average_log_prob
-            )
+            ref_all_logps = self.get_batch_logps(ref_logits, target, average_log_prob=average_log_prob)
 
             if self.unpaired and preference_labels is not None:
                 # Split based on preference labels
@@ -417,7 +415,6 @@ class HFAlignmentLoss:
                     ref_all_logps[ref_input.shape[0] // 2 :],
                 )
 
-
     def concatenated_forward(
         self,
         _input: torch.FloatTensor,
@@ -426,9 +423,7 @@ class HFAlignmentLoss:
         bias: torch.FloatTensor = None,
         average_log_prob: bool = True,
         preference_labels: torch.Tensor = None,
-    ) -> Tuple[
-        torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
-    ]:
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
         We do this to avoid doing two forward passes, because it's faster for FSDP.
@@ -497,9 +492,7 @@ class HFAlignmentLoss:
         **loss_kwargs,
     ):
         """Compute the loss metrics for the given batch of inputs for train or test."""
-        forward_output = self.concatenated_forward(
-            _input, weight, target, bias, average_log_prob, preference_labels
-        )
+        forward_output = self.concatenated_forward(_input, weight, target, bias, average_log_prob, preference_labels)
 
         (
             policy_chosen_logps,

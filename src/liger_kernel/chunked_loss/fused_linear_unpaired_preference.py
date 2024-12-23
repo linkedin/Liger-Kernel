@@ -2,11 +2,11 @@ from abc import abstractmethod
 from functools import partial
 
 import torch
+
 from torch.nn import functional as F
 
 
 class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
-
     @abstractmethod
     def preference_loss_fn(*args, **kwargs):
         """
@@ -83,16 +83,12 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
             **loss_kwargs,
         )
 
-        def fused_fwd_bwd(
-            input_chunk, target_chunk, preference_labels_chunk, ref_input_chunk
-        ):
+        def fused_fwd_bwd(input_chunk, target_chunk, preference_labels_chunk, ref_input_chunk):
             """
             Fused forward and backward pass for a chunk of input and target.
             """
             argnums = (0, 1, 4) if bias is not None else (0, 1)
-            return torch.func.grad_and_value(
-                compute_loss, argnums=argnums, has_aux=False
-            )(
+            return torch.func.grad_and_value(compute_loss, argnums=argnums, has_aux=False)(
                 input_chunk,
                 weight,
                 target_chunk,
@@ -107,10 +103,8 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
             preference_labels_chunk=None,
             ref_input_chunk=None,
         ):
-            (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (chunk_loss) = (
-                fused_fwd_bwd(
-                    input_chunk, target_chunk, preference_labels_chunk, ref_input_chunk
-                )
+            (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (chunk_loss) = fused_fwd_bwd(
+                input_chunk, target_chunk, preference_labels_chunk, ref_input_chunk
             )
             if bias is not None:
                 grad_bias.add_(chunk_grad_bias[0])  # accumulate bias gradient
@@ -126,9 +120,7 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
             fused_fwd_bwd = torch.compile(fused_fwd_bwd)
 
         # When not paired, use labels to separate chosen and rejected
-        assert (
-            preference_labels is not None
-        ), "preference_labels must be provided for unpaired preference loss"
+        assert preference_labels is not None, "preference_labels must be provided for unpaired preference loss"
 
         chunks = max(1, _input.shape[0] // CHUNK_SIZE)
         _input_chunks = torch.chunk(_input, chunks=chunks, dim=0)
@@ -161,9 +153,7 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
             torch._dynamo.mark_dynamic(preference_labels_chunk, 1)
 
             # accumulate loss, gradients, and metrics
-            accumulate_chunk(
-                input_chunk, target_chunk, preference_labels_chunk, ref_input_chunk
-            )
+            accumulate_chunk(input_chunk, target_chunk, preference_labels_chunk, ref_input_chunk)
 
         ctx.save_for_backward(
             torch.cat(grad_inputs, dim=0),
@@ -175,9 +165,7 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
     @staticmethod
     def backward(ctx, *grad_output):
         grad_input, grad_weight, grad_bias = ctx.saved_tensors
-        if torch.ne(
-            grad_output[0][0], torch.tensor(1.0, device=grad_output[0][0].device)
-        ):
+        if torch.ne(grad_output[0][0], torch.tensor(1.0, device=grad_output[0][0].device)):
             grad_input = grad_input * grad_output[0][0]
             grad_weight = grad_weight * grad_output[0][0]
             grad_bias = grad_bias * grad_output[0][0] if grad_bias is not None else None
@@ -200,12 +188,8 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
         loss_mask_chunk = target_chunk != ignore_index
         label_chunk = torch.where(loss_mask_chunk, target_chunk, 0)
 
-        per_token_logps_chunk = log_probs_chunk.gather(
-            -1, label_chunk.unsqueeze(-1)
-        ).squeeze(-1)
-        average_log_prob_chunk = (per_token_logps_chunk * loss_mask_chunk).sum(
-            -1
-        ) / loss_mask_chunk.sum(-1)
+        per_token_logps_chunk = log_probs_chunk.gather(-1, label_chunk.unsqueeze(-1)).squeeze(-1)
+        average_log_prob_chunk = (per_token_logps_chunk * loss_mask_chunk).sum(-1) / loss_mask_chunk.sum(-1)
 
         return average_log_prob_chunk
 
@@ -250,14 +234,12 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
 
         if use_ref_model:
             with torch.no_grad():
-                ref_average_log_prob_chunk = (
-                    LigerFusedLinearUnpairedPreferenceBase.chunk_forward(
-                        ref_input_chunk,
-                        ref_weight,
-                        target_chunk,
-                        ref_bias,
-                        ignore_index=ignore_index,
-                    )
+                ref_average_log_prob_chunk = LigerFusedLinearUnpairedPreferenceBase.chunk_forward(
+                    ref_input_chunk,
+                    ref_weight,
+                    target_chunk,
+                    ref_bias,
+                    ignore_index=ignore_index,
                 )
             loss_kwargs["ref_average_log_prob_chunk"] = ref_average_log_prob_chunk
 

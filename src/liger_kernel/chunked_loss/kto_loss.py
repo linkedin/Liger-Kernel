@@ -1,13 +1,10 @@
 import torch
 import torch.nn.functional as F
 
-from liger_kernel.chunked_loss.fused_linear_unpaired_preference import (
-    LigerFusedLinearUnpairedPreferenceBase,
-)
+from liger_kernel.chunked_loss.fused_linear_unpaired_preference import LigerFusedLinearUnpairedPreferenceBase
 
 
 class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
-
     @staticmethod
     def preference_loss_fn(
         average_log_prob_chunk,

@@ -3,14 +3,13 @@ import sys
 
 import torch
 import triton
-from utils import (
-    QUANTILES,
-    SingleBenchmarkRunInput,
-    SingleBenchmarkRunOutput,
-    _test_memory,
-    parse_benchmark_script_args,
-    run_benchmarks,
-)
+
+from utils import QUANTILES
+from utils import SingleBenchmarkRunInput
+from utils import SingleBenchmarkRunOutput
+from utils import _test_memory
+from utils import parse_benchmark_script_args
+from utils import run_benchmarks
 
 from liger_kernel.chunked_loss import LigerFusedLinearKTOLoss
 from liger_kernel.utils import infer_device
@@ -33,12 +32,8 @@ class TorchLMHeadKTO(torch.nn.Module):
         from test.chunked_loss.test_kto_loss import HFKTOLoss
 
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
-        self.ref_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=ref_bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
         self.KTO_loss = HFKTOLoss(
             ignore_index=ignore_index,
             beta=beta,
@@ -71,12 +66,8 @@ class LigerLMHeadKTO(torch.nn.Module):
         beta: float = 0.1,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
-        self.ref_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=ref_bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
         self.KTO_loss = LigerFusedLinearKTOLoss(
             ignore_index=ignore_index,
             beta=beta,
@@ -311,7 +302,7 @@ if __name__ == "__main__":
         kernel_operation_modes=["forward", "full"],
         metric_name="speed",
         metric_unit="ms",
-        **common_configs
+        **common_configs,
     )
 
     run_benchmarks(
@@ -319,5 +310,5 @@ if __name__ == "__main__":
         kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
-        **common_configs
+        **common_configs,
     )
