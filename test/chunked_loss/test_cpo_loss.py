@@ -117,9 +117,7 @@ class LigerLMHeadCPO(torch.nn.Module):
         label_smoothing: float = 0.0,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.cpo_loss = LigerFusedLinearCPOLoss(
             ignore_index=ignore_index,
             beta=beta,
@@ -146,9 +144,7 @@ class LigerLMHeadCPO(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
-@pytest.mark.parametrize(
-    "ignore_index, beta, alpha", [(-100, 0.1, 1.0), (42, 0.2, 0.85)]
-)
+@pytest.mark.parametrize("ignore_index, beta, alpha", [(-100, 0.1, 1.0), (42, 0.2, 0.85)])
 @pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
 def test_correctness(
     B,

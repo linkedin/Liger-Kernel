@@ -433,9 +433,7 @@ class HFAlignmentLoss:
         labels = target
         chosen_nll_loss = torch.tensor(0.0, device=all_logits.device)
         if self.compute_nll_loss:
-            chosen_nll_loss = cross_entropy_loss(
-                all_logits[:len_chosen], labels[:len_chosen]
-            )
+            chosen_nll_loss = cross_entropy_loss(all_logits[:len_chosen], labels[:len_chosen])
 
         all_logps = self.get_batch_logps(
             all_logits,

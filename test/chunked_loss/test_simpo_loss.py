@@ -29,9 +29,7 @@ class LigerLMHeadSimPO(torch.nn.Module):
         gamma: float = 0.5,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.simpo_loss = LigerFusedLinearSimPOLoss(
             ignore_index=ignore_index,
             beta=beta,
@@ -59,9 +57,7 @@ class LigerLMHeadSimPO(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
-@pytest.mark.parametrize(
-    "ignore_index, beta, gamma", [(-100, 0.1, 0.5), (42, 0.2, 0.85)]
-)
+@pytest.mark.parametrize("ignore_index, beta, gamma", [(-100, 0.1, 0.5), (42, 0.2, 0.85)])
 @pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
 def test_correctness(
     B,

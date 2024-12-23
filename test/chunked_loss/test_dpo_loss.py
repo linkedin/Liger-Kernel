@@ -74,12 +74,8 @@ class TorchLMHeadDPO(torch.nn.Module):
         beta: float = 0.1,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
-        self.ref_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=ref_bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
         self.dpo_loss = HFDPOLoss(
             ignore_index=ignore_index,
             beta=beta,
@@ -112,12 +108,8 @@ class LigerLMHeadDPO(torch.nn.Module):
         beta: float = 0.1,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
-        self.ref_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=ref_bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
         self.dpo_loss = LigerFusedLinearDPOLoss(
             ignore_index=ignore_index,
             beta=beta,
@@ -279,9 +271,7 @@ def test_correctness(
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ref_bias", [True, False])
 @pytest.mark.parametrize("compute_nll_loss", [True, False])
-def test_correctness_functional(
-    B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, compute_nll_loss
-):
+def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, compute_nll_loss):
     B = 2 * B
 
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
