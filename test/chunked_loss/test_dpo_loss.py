@@ -1,5 +1,3 @@
-from test.utils import HFAlignmentLoss, assert_verbose_allclose, set_seed
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -8,6 +6,9 @@ from liger_kernel.chunked_loss import LigerFusedLinearDPOLoss
 from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
 from liger_kernel.chunked_loss.functional import liger_fused_linear_dpo
 from liger_kernel.utils import infer_device
+from test.utils import HFAlignmentLoss
+from test.utils import assert_verbose_allclose
+from test.utils import set_seed
 
 device = infer_device()
 
@@ -73,12 +74,8 @@ class TorchLMHeadDPO(torch.nn.Module):
         beta: float = 0.1,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
-        self.ref_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=ref_bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
         self.dpo_loss = HFDPOLoss(
             ignore_index=ignore_index,
             beta=beta,
@@ -111,12 +108,8 @@ class LigerLMHeadDPO(torch.nn.Module):
         beta: float = 0.1,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
-        self.ref_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=ref_bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
         self.dpo_loss = LigerFusedLinearDPOLoss(
             ignore_index=ignore_index,
             beta=beta,
@@ -195,26 +188,22 @@ def test_correctness(
     torch_lm_head_dpo.lin.weight.data = liger_lm_head_dpo.lin.weight.data = torch.randn(
         V, H, device=device, dtype=dtype
     )
-    torch_lm_head_dpo.ref_lin.weight.data = liger_lm_head_dpo.ref_lin.weight.data = (
-        torch.randn(V, H, device=device, dtype=dtype)
+    torch_lm_head_dpo.ref_lin.weight.data = liger_lm_head_dpo.ref_lin.weight.data = torch.randn(
+        V, H, device=device, dtype=dtype
     )
 
     if bias:
-        torch_lm_head_dpo.lin.bias.data = liger_lm_head_dpo.lin.bias.data = torch.randn(
-            V, device=device, dtype=dtype
-        )
+        torch_lm_head_dpo.lin.bias.data = liger_lm_head_dpo.lin.bias.data = torch.randn(V, device=device, dtype=dtype)
     if ref_bias:
-        torch_lm_head_dpo.ref_lin.bias.data = liger_lm_head_dpo.ref_lin.bias.data = (
-            torch.randn(V, device=device, dtype=dtype)
+        torch_lm_head_dpo.ref_lin.bias.data = liger_lm_head_dpo.ref_lin.bias.data = torch.randn(
+            V, device=device, dtype=dtype
         )
 
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
-    ref_input = (
-        torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
-    )
+    ref_input = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
 
     target = torch.randint(
         0,
@@ -282,18 +271,14 @@ def test_correctness(
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ref_bias", [True, False])
 @pytest.mark.parametrize("compute_nll_loss", [True, False])
-def test_correctness_functional(
-    B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, compute_nll_loss
-):
+def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, compute_nll_loss):
     B = 2 * B
 
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
-    ref_input = (
-        torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
-    )
+    ref_input = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
 
     target = torch.randint(
         0,

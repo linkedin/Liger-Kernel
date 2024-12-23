@@ -2,7 +2,8 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import calculate_settings, ensure_contiguous
+from liger_kernel.ops.utils import calculate_settings
+from liger_kernel.ops.utils import ensure_contiguous
 
 
 @triton.jit
@@ -11,9 +12,7 @@ def silu(x):
 
 
 @triton.jit
-def _swiglu_forward_kernel(
-    a_ptr, b_ptr, c_ptr, stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr
-):
+def _swiglu_forward_kernel(a_ptr, b_ptr, c_ptr, stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr):
     program_id = tl.program_id(0).to(tl.int64)
 
     # locate start index
@@ -32,9 +31,7 @@ def _swiglu_forward_kernel(
 
 
 @triton.jit
-def _swiglu_backward_kernel(
-    dc_ptr, a_ptr, b_ptr, stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr
-):
+def _swiglu_backward_kernel(dc_ptr, a_ptr, b_ptr, stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr):
     program_id = tl.program_id(0).to(tl.int64)
 
     # locate start index
@@ -84,7 +81,6 @@ def swiglu_forward(a, b):
 
 
 def swiglu_backward(a, b, dc):
-
     ori_shape = dc.shape
     n_cols = ori_shape[-1]
     dc = dc.view(-1, n_cols)

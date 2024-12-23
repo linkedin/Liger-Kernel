@@ -1,9 +1,11 @@
 import os
+
 from dataclasses import dataclass
 
 import datasets
 import torch
 import transformers
+
 from callback import EfficiencyCallback
 from datasets import Image as ImageFeature
 from trl import SFTTrainer
@@ -66,7 +68,7 @@ def construct_model_and_processor(model_name: str, use_liger: bool) -> torch.nn.
 def _validate_and_extract_the_cauldron(examples) -> dict[str, list]:
     batch_texts = []
     batch_images = []
-    for images, texts in zip(examples["images"], examples["texts"]):
+    for images, texts in zip(examples["images"], examples["texts"], strict=False):
         if not images:
             raise ValueError("No image found in example from the_cauldron dataset")
         if len(images) > 1:
@@ -91,16 +93,12 @@ def _format_for_convo(example, tokenizer):
 
 
 def train():
-    parser = transformers.HfArgumentParser(
-        (transformers.TrainingArguments, CustomArguments)
-    )
+    parser = transformers.HfArgumentParser((transformers.TrainingArguments, CustomArguments))
     training_args, custom_args = parser.parse_args_into_dataclasses()
     training_args.remove_unused_columns = False  # required to not drop the image column
     training_args.dataset_kwargs = {"skip_prepare_dataset": True}
 
-    model, processor, image_token_id = construct_model_and_processor(
-        custom_args.model_name, custom_args.use_liger
-    )
+    model, processor, image_token_id = construct_model_and_processor(custom_args.model_name, custom_args.use_liger)
 
     dataset = (
         datasets.load_dataset(

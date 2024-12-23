@@ -4,11 +4,9 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import (
-    calculate_settings,
-    compare_version,
-    ensure_contiguous,
-)
+from liger_kernel.ops.utils import calculate_settings
+from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import ensure_contiguous
 
 if compare_version("triton", operator.ge, "3.0.0"):
     try:
@@ -22,9 +20,7 @@ else:
 
 
 @triton.jit
-def _geglu_tanh_forward_kernel(
-    a, b, c, stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr
-):
+def _geglu_tanh_forward_kernel(a, b, c, stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr):
     program_id = tl.program_id(0).to(tl.int64)
 
     # locate start index
@@ -49,9 +45,7 @@ def _geglu_tanh_forward_kernel(
 
 
 @triton.jit
-def _geglu_tanh_backward_kernel(
-    dc, a, b, stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr
-):
+def _geglu_tanh_backward_kernel(dc, a, b, stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr):
     program_id = tl.program_id(0).to(tl.int64)
 
     # locate start index
@@ -80,12 +74,7 @@ def _geglu_tanh_backward_kernel(
     # where z = sqrt(2/pi) * (a + 0.044715 * a^3)
     term1 = 0.5 * (1 + tanh_result)
     tanh_sq = tanh_result * tanh_result
-    term2 = (
-        0.5
-        * a_row
-        * (1 - tanh_sq)
-        * (sqrt_2_over_pi * (1 + 3 * 0.044715 * a_row * a_row))
-    )
+    term2 = 0.5 * a_row * (1 - tanh_sq) * (sqrt_2_over_pi * (1 + 3 * 0.044715 * a_row * a_row))
     da_row = dc_row * b_row * (term1 + term2)
 
     tl.store(a + col_offsets, da_row, mask=mask)
