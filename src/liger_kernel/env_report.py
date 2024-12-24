@@ -1,12 +1,13 @@
 import platform
 import sys
+
 from importlib.metadata import version
 
 
 def print_env_report():
     """
 
-    Prints a report of the environment. Useful for debugging and reproducibility.
+    Prints a report of the environment.  Useful for debugging and reproducibility.
     Usage:
     ```
     python -m liger_kernel.env_report
@@ -27,15 +28,9 @@ def print_env_report():
         import torch
 
         print(f"PyTorch version: {torch.__version__}")
-        cuda_version = (
-            torch.version.cuda if torch.cuda.is_available() else "Not available"
-        )
+        cuda_version = torch.version.cuda if torch.cuda.is_available() else "Not available"
         print(f"CUDA version: {cuda_version}")
-        hip_version = (
-            torch.version.hip
-            if torch.cuda.is_available() and torch.version.hip
-            else "Not available"
-        )
+        hip_version = torch.version.hip if torch.cuda.is_available() and torch.version.hip else "Not available"
         print(f"HIP(ROCm) version: {hip_version}")
 
     except ImportError:
@@ -58,9 +53,7 @@ def print_env_report():
         print("Transformers: Not installed")
 
     try:
-        xpu_version = (
-            torch.version.xpu if torch.xpu.is_available() else "XPU Not Available"
-        )
+        xpu_version = torch.version.xpu if torch.xpu.is_available() else "XPU Not Available"
         print(f"XPU version: {xpu_version}")
     except ImportError:
         print("XPU version: Unable to query")

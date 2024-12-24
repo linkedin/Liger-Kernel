@@ -3,6 +3,7 @@ __pycache__/
 site/
 .cache/
 .venv/
+venv/
 .ipynb_checkpoints/
 
 # Misc

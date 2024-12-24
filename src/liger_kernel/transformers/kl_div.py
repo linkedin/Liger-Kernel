@@ -9,6 +9,4 @@ class LigerKLDIVLoss(nn.KLDivLoss):
         self.eps = eps
 
     def forward(self, y_pred, y_true):
-        return LigerKLDivLossFunction.apply(
-            y_pred, y_true, self.reduction, self.log_target, self.eps
-        )
+        return LigerKLDivLossFunction.apply(y_pred, y_true, self.reduction, self.log_target, self.eps)

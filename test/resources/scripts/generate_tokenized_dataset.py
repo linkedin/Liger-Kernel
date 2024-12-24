@@ -13,19 +13,13 @@ def prepare_dataset(tokenizer, text_file_path: str):
     dataset = load_dataset("text", data_files={"train": text_file_path})
 
     def tokenize_function(examples):
-        return tokenizer(
-            examples["text"], padding="max_length", truncation=True, max_length=128
-        )
+        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=128)
 
-    tokenized_dataset = dataset.map(
-        tokenize_function, batched=True, remove_columns=["text"]
-    )
+    tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=["text"])
     return tokenized_dataset["train"]
 
 
-def generate_tokenized_dataset(
-    tokenizer_path: str, text_file_path: str, output_dir: str
-) -> None:
+def generate_tokenized_dataset(tokenizer_path: str, text_file_path: str, output_dir: str) -> None:
     """
     Generate tokenized dataset from a text file, where each line is a different example.
 
@@ -44,9 +38,7 @@ def generate_tokenized_dataset(
 if __name__ == "__main__":
     # Example usage:
     # python generate_tokenized_dataset.py --tokenizer_path /shared/public/models/Mistral-7B --text_file_path ./../../resources/tiny_shakespeare.txt --output_dir ./../../resources/tiny_shakespeare_tokenized
-    parser = argparse.ArgumentParser(
-        description="Generate tokenized dataset from a text file."
-    )
+    parser = argparse.ArgumentParser(description="Generate tokenized dataset from a text file.")
 
     # Add arguments
     parser.add_argument(

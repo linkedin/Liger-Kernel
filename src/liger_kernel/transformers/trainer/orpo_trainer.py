@@ -1,7 +1,14 @@
-from typing import Any, Callable, Dict, List, Literal, Tuple, Union
+from typing import Any
+from typing import Callable
+from typing import Dict
+from typing import List
+from typing import Literal
+from typing import Tuple
+from typing import Union
 
 import torch
 import torch.nn as nn
+
 from torch.distributed.fsdp import FullyShardedDataParallel
 from trl.trainer import ORPOTrainer
 
@@ -17,7 +24,7 @@ class _FSDPForwardRedirection:
     This is needed in cases where we call a submodule of a FSDP module. For instance, when we want to call only
     the `LlamaModel` part out of a FSDP-wrapped `LlamaForCausalLM` to get the hidden states without involving
     GPU-memory-heavy `lm_head` and cross entropy computation, doing this directly (i.e. `model.model.forward()`)
-    will not work because the first `nn.Emebedding` layer is not independently wrapped as a FSDP module (because of
+    will not work because the first `nn.Embedding` layer is not independently wrapped as a FSDP module (because of
     the transformer-based wrapping policy), and not calling it through FSDP root module forward will not all-gather
     its parameter, thus resulting in "RuntimeError: 'weight' must be 2-D" error. Similarly, if we want to call just
     the `lm_head` part of a model, we need this trick too to properly get its params all-gathered.
@@ -62,9 +69,7 @@ class _FSDPForwardRedirection:
 class LigerORPOTrainer(ORPOTrainer):
     def concatenated_forward(
         self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]]
-    ) -> Tuple[
-        torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
-    ]:
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """
         Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
         We do this to avoid doing two forward passes, because it's faster for FSDP.
@@ -79,9 +84,7 @@ class LigerORPOTrainer(ORPOTrainer):
 
         model_kwargs = (
             {
-                "decoder_input_ids": self._shift_right(
-                    concatenated_batch["concatenated_labels"]
-                ),
+                "decoder_input_ids": self._shift_right(concatenated_batch["concatenated_labels"]),
             }
             if self.is_encoder_decoder
             else {}
@@ -109,14 +112,10 @@ class LigerORPOTrainer(ORPOTrainer):
                 **model_kwargs,
             )
 
-        orpo_loss_fn = LigerFusedLinearORPOLoss(
-            ignore_index=self.label_pad_token_id, beta=self.beta
-        )
+        orpo_loss_fn = LigerFusedLinearORPOLoss(ignore_index=self.label_pad_token_id, beta=self.beta)
 
         def orpo_partial(lm_head, last_hidden_state, concatenated_labels):
-            return orpo_loss_fn(
-                lm_head.weight, last_hidden_state, concatenated_labels, lm_head.bias
-            )
+            return orpo_loss_fn(lm_head.weight, last_hidden_state, concatenated_labels, lm_head.bias)
 
         orpo_loss, aux_outputs = _FSDPForwardRedirection()(
             model,
@@ -125,6 +124,10 @@ class LigerORPOTrainer(ORPOTrainer):
             outputs.last_hidden_state,
             concatenated_batch["concatenated_labels"],
         )
+        # if aux_loss_enabled, add the aux_loss to the orpo_loss
+        if self.aux_loss_enabled:
+            orpo_loss += self.aux_loss_coef * outputs.aux_loss
+
         return orpo_loss, aux_outputs
 
     def get_batch_loss_metrics(
@@ -145,9 +148,7 @@ class LigerORPOTrainer(ORPOTrainer):
         ) = aux_outputs[:5]
 
         # return loss, metrics
-        chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen = aux_outputs[
-            5:
-        ]
+        chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen = aux_outputs[5:]
 
         reward_accuracies = (chosen_rewards > rejected_rewards).float()
 

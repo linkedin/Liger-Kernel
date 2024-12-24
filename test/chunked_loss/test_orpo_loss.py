@@ -1,4 +1,3 @@
-from test.utils import HFAlignmentLoss, assert_verbose_allclose, set_seed
 from typing import Tuple
 
 import pytest
@@ -9,6 +8,9 @@ from liger_kernel.chunked_loss import LigerFusedLinearORPOLoss
 from liger_kernel.chunked_loss.functional import liger_fused_linear_orpo
 from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
 from liger_kernel.utils import infer_device
+from test.utils import HFAlignmentLoss
+from test.utils import assert_verbose_allclose
+from test.utils import set_seed
 
 device = infer_device()
 
@@ -53,11 +55,10 @@ class HFORPOLoss(HFAlignmentLoss):
 
         # Derived from Eqs. (4) and (7) from https://huggingface.co/papers/2403.07691 by using log identities and exp(log(P(y|x)) = P(y|x)
         log_odds = (policy_chosen_logps - policy_rejected_logps) - (
-            torch.log1p(-torch.exp(policy_chosen_logps))
-            - torch.log1p(-torch.exp(policy_rejected_logps))
+            torch.log1p(-torch.exp(policy_chosen_logps)) - torch.log1p(-torch.exp(policy_rejected_logps))
         )
         ratio = F.logsigmoid(log_odds)
-        losses = self.beta * ratio
+        losses = -self.beta * ratio
 
         chosen_rewards = self.beta * policy_chosen_logps
         rejected_rewards = self.beta * policy_rejected_logps
@@ -82,12 +83,8 @@ class TorchLMHeadORPO(torch.nn.Module):
         beta: float = 0.1,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
-        self.orpo_loss = HFORPOLoss(
-            ignore_index=ignore_index, beta=beta
-        ).get_batch_loss_metrics
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
+        self.orpo_loss = HFORPOLoss(ignore_index=ignore_index, beta=beta).get_batch_loss_metrics
 
     def forward(self, x, y):
         return self.orpo_loss(self.lin.weight, x, y, self.lin.bias)
@@ -104,9 +101,7 @@ class LigerLMHeadORPO(torch.nn.Module):
         beta: float = 0.1,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.orpo_loss = LigerFusedLinearORPOLoss(ignore_index=ignore_index, beta=beta)
 
     def forward(self, x, y):
@@ -148,14 +143,12 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
         beta=beta,
     )
 
-    torch_lm_head_orpo.lin.weight.data = liger_lm_head_orpo.lin.weight.data = (
-        torch.randn(V, H, device=device, dtype=dtype)
+    torch_lm_head_orpo.lin.weight.data = liger_lm_head_orpo.lin.weight.data = torch.randn(
+        V, H, device=device, dtype=dtype
     )
 
     if bias:
-        torch_lm_head_orpo.lin.bias.data = liger_lm_head_orpo.lin.bias.data = (
-            torch.randn(V, device=device, dtype=dtype)
-        )
+        torch_lm_head_orpo.lin.bias.data = liger_lm_head_orpo.lin.bias.data = torch.randn(V, device=device, dtype=dtype)
 
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
@@ -251,12 +244,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias):
     bias1 = _bias.detach().clone().requires_grad_(True) if bias else None
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
-    loss1, aggregated_aux_outputs1 = LigerFusedLinearORPOFunction.apply(
-        input1, weight1, target, bias1
-    )
-    loss2, aggregated_aux_outputs2 = liger_fused_linear_orpo(
-        input2, weight2, target, bias2
-    )
+    loss1, aggregated_aux_outputs1 = LigerFusedLinearORPOFunction.apply(input1, weight1, target, bias1)
+    loss2, aggregated_aux_outputs2 = liger_fused_linear_orpo(input2, weight2, target, bias2)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 

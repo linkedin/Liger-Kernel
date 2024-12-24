@@ -1,5 +1,3 @@
-from test.utils import HFAlignmentLoss, assert_verbose_allclose, set_seed
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -8,6 +6,9 @@ from liger_kernel.chunked_loss import LigerFusedLinearDPOLoss
 from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
 from liger_kernel.chunked_loss.functional import liger_fused_linear_dpo
 from liger_kernel.utils import infer_device
+from test.utils import HFAlignmentLoss
+from test.utils import assert_verbose_allclose
+from test.utils import set_seed
 
 device = infer_device()
 
@@ -23,10 +24,17 @@ class HFDPOLoss(HFAlignmentLoss):
     """
 
     def __init__(
-        self, ignore_index: int = -100, beta: float = 0.1, use_ref_model: bool = True
+        self,
+        ignore_index: int = -100,
+        beta: float = 0.1,
+        use_ref_model: bool = True,
+        compute_nll_loss: bool = False,
     ):
         super().__init__(
-            beta=beta, ignore_index=ignore_index, use_ref_model=use_ref_model
+            beta=beta,
+            ignore_index=ignore_index,
+            use_ref_model=use_ref_model,
+            compute_nll_loss=compute_nll_loss,
         )
 
     def alignment_loss(
@@ -61,23 +69,29 @@ class TorchLMHeadDPO(torch.nn.Module):
         dtype: torch.dtype,
         bias: bool = False,
         ref_bias: bool = False,
+        compute_nll_loss: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
-        self.ref_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=ref_bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
         self.dpo_loss = HFDPOLoss(
-            ignore_index=ignore_index, beta=beta, use_ref_model=True
+            ignore_index=ignore_index,
+            beta=beta,
+            use_ref_model=True,
+            compute_nll_loss=compute_nll_loss,
         ).get_batch_loss_metrics
 
-    def forward(self, x, y):
+    def forward(self, x, ref_x, y):
         return self.dpo_loss(
-            self.lin.weight, x, y, self.lin.bias, self.ref_lin.weight, self.ref_lin.bias
+            self.lin.weight,
+            x,
+            y,
+            self.lin.bias,
+            ref_x,
+            self.ref_lin.weight,
+            self.ref_lin.bias,
         )
 
 
@@ -89,23 +103,29 @@ class LigerLMHeadDPO(torch.nn.Module):
         dtype: torch.dtype,
         bias: bool = False,
         ref_bias: bool = False,
+        compute_nll_loss: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
-        self.ref_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=ref_bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
         self.dpo_loss = LigerFusedLinearDPOLoss(
-            ignore_index=ignore_index, beta=beta, use_ref_model=True
+            ignore_index=ignore_index,
+            beta=beta,
+            use_ref_model=True,
+            compute_nll_loss=compute_nll_loss,
         )
 
-    def forward(self, x, y):
+    def forward(self, x, ref_x, y):
         return self.dpo_loss(
-            self.lin.weight, x, y, self.lin.bias, self.ref_lin.weight, self.ref_lin.bias
+            self.lin.weight,
+            x,
+            y,
+            self.lin.bias,
+            ref_x,
+            self.ref_lin.weight,
+            self.ref_lin.bias,
         )
 
 
@@ -120,14 +140,27 @@ class LigerLMHeadDPO(torch.nn.Module):
     "scalar, dtype, atol, rtol",
     [
         (1.0, torch.bfloat16, 5e-2, 5e-1),
-        (1.0, torch.float32, 2e-2, 5e-1),
+        (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ref_bias", [True, False])
+@pytest.mark.parametrize("compute_nll_loss", [True, False])
 @pytest.mark.parametrize("ignore_index, beta", [(-100, 0.1), (42, 0.2)])
 def test_correctness(
-    B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, ignore_index, beta
+    B,
+    T,
+    H,
+    V,
+    scalar,
+    dtype,
+    atol,
+    rtol,
+    bias,
+    ref_bias,
+    compute_nll_loss,
+    ignore_index,
+    beta,
 ):
     B = 2 * B  # dpo loss requires B to be even
 
@@ -137,6 +170,7 @@ def test_correctness(
         dtype=dtype,
         bias=bias,
         ref_bias=ref_bias,
+        compute_nll_loss=compute_nll_loss,
         ignore_index=ignore_index,
         beta=beta,
     )
@@ -146,6 +180,7 @@ def test_correctness(
         dtype=dtype,
         bias=bias,
         ref_bias=ref_bias,
+        compute_nll_loss=compute_nll_loss,
         ignore_index=ignore_index,
         beta=beta,
     )
@@ -153,22 +188,22 @@ def test_correctness(
     torch_lm_head_dpo.lin.weight.data = liger_lm_head_dpo.lin.weight.data = torch.randn(
         V, H, device=device, dtype=dtype
     )
-    torch_lm_head_dpo.ref_lin.weight.data = liger_lm_head_dpo.ref_lin.weight.data = (
-        torch.randn(V, H, device=device, dtype=dtype)
+    torch_lm_head_dpo.ref_lin.weight.data = liger_lm_head_dpo.ref_lin.weight.data = torch.randn(
+        V, H, device=device, dtype=dtype
     )
 
     if bias:
-        torch_lm_head_dpo.lin.bias.data = liger_lm_head_dpo.lin.bias.data = torch.randn(
-            V, device=device, dtype=dtype
-        )
+        torch_lm_head_dpo.lin.bias.data = liger_lm_head_dpo.lin.bias.data = torch.randn(V, device=device, dtype=dtype)
     if ref_bias:
-        torch_lm_head_dpo.ref_lin.bias.data = liger_lm_head_dpo.ref_lin.bias.data = (
-            torch.randn(V, device=device, dtype=dtype)
+        torch_lm_head_dpo.ref_lin.bias.data = liger_lm_head_dpo.ref_lin.bias.data = torch.randn(
+            V, device=device, dtype=dtype
         )
 
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
+
+    ref_input = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
 
     target = torch.randint(
         0,
@@ -185,8 +220,8 @@ def test_correctness(
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    loss1, aggregated_aux_outputs1 = torch_lm_head_dpo(input1, target)
-    loss2, aggregated_aux_outputs2 = liger_lm_head_dpo(input2, target)
+    loss1, aggregated_aux_outputs1 = torch_lm_head_dpo(input1, ref_input, target)
+    loss2, aggregated_aux_outputs2 = liger_lm_head_dpo(input2, ref_input, target)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
@@ -235,12 +270,15 @@ def test_correctness(
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ref_bias", [True, False])
-def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias):
+@pytest.mark.parametrize("compute_nll_loss", [True, False])
+def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, compute_nll_loss):
     B = 2 * B
 
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
+
+    ref_input = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False) * scalar
 
     target = torch.randint(
         0,
@@ -270,10 +308,28 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     ref_bias2 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
 
     loss1, aggregated_aux_outputs1 = LigerFusedLinearDPOFunction.apply(
-        input1, weight1, target, bias1, ref_weight1, ref_bias1
+        input1,
+        weight1,
+        target,
+        bias1,
+        ref_input,
+        ref_weight1,
+        ref_bias1,
+        -100,
+        0.1,
+        compute_nll_loss,
     )
     loss2, aggregated_aux_outputs2 = liger_fused_linear_dpo(
-        input2, weight2, target, bias2, ref_weight2, ref_bias2
+        input2,
+        weight2,
+        target,
+        bias2,
+        ref_input,
+        ref_weight2,
+        ref_bias2,
+        -100,
+        0.1,
+        compute_nll_loss,
     )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
