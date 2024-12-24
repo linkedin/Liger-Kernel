@@ -62,8 +62,6 @@ We've also added optimized Post-Training kernels that deliver **up to 80% memory
 
 ## Supercharge Your Model with Liger Kernel
 
-![Banner](https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/banner.GIF)
-
 With one line of code, Liger Kernel can increase throughput by more than 20% and reduce memory usage by 60%, thereby enabling longer context lengths, larger batch sizes, and massive vocabularies.
 
 

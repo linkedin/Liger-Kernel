@@ -1,8 +1,4 @@
-
-- `Fused Linear` kernels combine linear layers with losses, reducing memory usage by up to 80% - ideal for HBM-constrained workloads.
-- Other kernels use fusion and in-place techniques for memory and performance optimization.
-
-### Model Kernels
+## Model Kernels
 
 | **Kernel**                      | **API**                                                     |
 |---------------------------------|-------------------------------------------------------------|
@@ -14,8 +10,17 @@
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
 | Fused Linear CrossEntropy         | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
 
+### RMS Norm
 
-### Alignment Kernels
+RMS(Root Mean Square) Norm performs the LayerNorm operation by scaling the input vectors without performing the mean subtraction, making it computationally simpler while maintaining effectiveness.
+
+We write the kernel in pure Trition
+
+You can try it out as shown in this example [here](https://colab.research.google.com/drive/1CQYhul7MVG5F0gmqTBbx1O1HgolPgF0M?usp=sharing).
+
+### 
+
+## Alignment Kernels
 
 | **Kernel**                      | **API**                                                     |
 |---------------------------------|-------------------------------------------------------------|
@@ -24,7 +29,7 @@
 | Fused Linear ORPO Loss          | `liger_kernel.chunked_loss.LigerFusedLinearORPOLoss`      |
 | Fused Linear SimPO Loss         | `liger_kernel.chunked_loss.LigerFusedLinearSimPOLoss`     |
 
-### Distillation Kernels
+## Distillation Kernels
 
 | **Kernel**                      | **API**                                                     |
 |---------------------------------|-------------------------------------------------------------|
@@ -32,7 +37,7 @@
 | JSD                             | `liger_kernel.transformers.LigerJSD`                        |
 | Fused Linear JSD                  | `liger_kernel.transformers.LigerFusedLinearJSD`             |
 
-### Experimental Kernels
+## Experimental Kernels
 
 | **Kernel**                      | **API**                                                     |
 |---------------------------------|-------------------------------------------------------------|
