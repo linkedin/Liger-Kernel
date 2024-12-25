@@ -5,11 +5,12 @@ from unittest.mock import MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+import sys
 import pytest
 import torch
 import transformers
 
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoConfig
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
 
@@ -56,6 +57,7 @@ def test_import_from_root():
         from liger_kernel.transformers import apply_liger_kernel_to_phi3  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_qwen2  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_deepseek_v2  # noqa: F401
     except Exception:
         pytest.fail("Import kernel patch from root fails")
 
@@ -693,5 +695,50 @@ def test_apply_liger_kernel_to_instance_for_phi3():
 
         try:
             print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+def test_apply_liger_kernel_to_deepseek_v2():
+    from accelerate import init_empty_weights
+
+    config = AutoConfig.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Base", trust_remote_code=True)
+
+    config.torch_dtype = torch.bfloat16
+    # config.layer_norm_eps = 1e-6
+    config.rms_norm_eps = 1e-5
+    config.hidden_size = 32
+    config.intermediate_size = 64
+    config.hidden_act = "silu"
+    config.num_hidden_layers = 2
+        
+    # config.attention_probs_dropout_prob = 0.1
+    # config.rope_theta = 10000.0
+    # config.tie_word_embeddings = False
+    
+    with init_empty_weights():
+        dummy_model = AutoModelForCausalLM.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Base", config=config, trust_remote_code=True)
+        modeling_mod = sys.modules[dummy_model.__class__.__module__]
+
+    with patch("modeling_mod"):
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model.model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model.model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
