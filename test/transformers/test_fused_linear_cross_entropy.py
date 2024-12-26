@@ -1,17 +1,15 @@
-from test.transformers.test_cross_entropy import CrossEntropyWithZLoss
-from test.utils import assert_verbose_allclose, set_seed
 from typing import Optional
 
 import pytest
 import torch
 
-from liger_kernel.ops.fused_linear_cross_entropy import (
-    LigerFusedLinearCrossEntropyFunction,
-)
+from test.transformers.test_cross_entropy import CrossEntropyWithZLoss
+from test.utils import assert_verbose_allclose
+from test.utils import set_seed
+
+from liger_kernel.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.transformers.functional import liger_fused_linear_cross_entropy
-from liger_kernel.transformers.fused_linear_cross_entropy import (
-    LigerFusedLinearCrossEntropyLoss,
-)
+from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -48,9 +46,7 @@ class TorchLMHeadCE(torch.nn.Module):
         softcap: Optional[float] = None,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.ce_loss = CrossEntropyWithZLoss(
             ignore_index=ignore_index,
             lse_square_scale=lse_square_scale,
@@ -80,9 +76,7 @@ class LigerLMHeadCE(torch.nn.Module):
         softcap: Optional[float] = None,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.ce_loss = LigerFusedLinearCrossEntropyLoss(
             ignore_index=ignore_index,
             lse_square_scale=lse_square_scale,
@@ -171,14 +165,10 @@ def test_correctness(
     ).to(device)
 
     # init the linear in all CEs with the same weights
-    torch_lm_head_ce.lin.weight.data = liger_lm_head_ce.lin.weight.data = torch.rand(
-        V, H, device=device, dtype=dtype
-    )
+    torch_lm_head_ce.lin.weight.data = liger_lm_head_ce.lin.weight.data = torch.rand(V, H, device=device, dtype=dtype)
 
     if bias:
-        torch_lm_head_ce.lin.bias.data = liger_lm_head_ce.lin.bias.data = torch.rand(
-            V, device=device, dtype=dtype
-        )
+        torch_lm_head_ce.lin.bias.data = liger_lm_head_ce.lin.bias.data = torch.rand(V, device=device, dtype=dtype)
 
     _tensor = torch.randn(B * T, H, device=device, dtype=dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
@@ -189,9 +179,7 @@ def test_correctness(
     num_elements_to_assign = torch.randint(
         1, B * T // 2, (1,)
     ).item()  # Random number of elements to set to ignore_index
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]  # Randomly select indices
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     target[indices_to_assign] = ignore_index
 
     output1 = torch_lm_head_ce(_input1, target)
@@ -298,9 +286,7 @@ def test_amp(B, T, H, V, cast_dtype, atol, rtol):
     ).to(device)
 
     # init the linear in all CEs with the same weights
-    torch_lm_head_ce.lin.weight.data = liger_lm_head_ce.lin.weight.data = torch.rand(
-        V, H, device=device, dtype=dtype
-    )
+    torch_lm_head_ce.lin.weight.data = liger_lm_head_ce.lin.weight.data = torch.rand(V, H, device=device, dtype=dtype)
 
     _tensor = torch.randn(B * T, H, device=device, dtype=dtype)
     _input1 = _tensor.detach().clone().requires_grad_(True)

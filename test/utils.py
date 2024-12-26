@@ -2,18 +2,25 @@ import importlib
 import json
 import os
 import random
+
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
-from tokenizers import AddedToken, Tokenizer
+
+from tokenizers import AddedToken
+from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.trainers import BpeTrainer
-from transformers import PretrainedConfig, PreTrainedModel
+from transformers import PretrainedConfig
+from transformers import PreTrainedModel
 from transformers.tokenization_utils_base import BatchEncoding
 
 from liger_kernel.utils import infer_device
@@ -80,13 +87,9 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
     nan_mismatched = torch.logical_xor(torch.isnan(tensor1), torch.isnan(tensor2))
 
     # Find +inf mismatched elements
-    posinf_mismatched = torch.logical_xor(
-        torch.isposinf(tensor1), torch.isposinf(tensor2)
-    )
+    posinf_mismatched = torch.logical_xor(torch.isposinf(tensor1), torch.isposinf(tensor2))
     # Find -inf mismatched elements
-    neginf_mismatched = torch.logical_xor(
-        torch.isneginf(tensor1), torch.isneginf(tensor2)
-    )
+    neginf_mismatched = torch.logical_xor(torch.isneginf(tensor1), torch.isneginf(tensor2))
 
     # Find all mismatched elements
     mismatched = torch.logical_or(
@@ -108,29 +111,19 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
         print_count = min(max_print, num_mismatched)
         for index in mismatched_indices[:print_count]:
             i = tuple(index.tolist())
-            mismatch_details.append(
-                f"Mismatch at index {i}: tensor1[{i}] = {tensor1[i]}, tensor2[{i}] = {tensor2[i]}"
-            )
+            mismatch_details.append(f"Mismatch at index {i}: tensor1[{i}] = {tensor1[i]}, tensor2[{i}] = {tensor2[i]}")
         if num_mismatched > max_print:
-            mismatch_details.append(
-                f"... and {num_mismatched - max_print} more mismatched elements."
-            )
+            mismatch_details.append(f"... and {num_mismatched - max_print} more mismatched elements.")
 
         raise AssertionError("\n".join(mismatch_details))
 
 
 # Pre-tokenized dataset using Mistral-7B tokenizer used for convergence tests
-DEFAULT_DATASET_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare_tokenized"
-)
+DEFAULT_DATASET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare_tokenized")
 
-UNTOKENIZED_DATASET_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare.txt"
-)
+UNTOKENIZED_DATASET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare.txt")
 
-FAKE_CONFIGS_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "resources/fake_configs"
-)
+FAKE_CONFIGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/fake_configs")
 
 
 @dataclass
@@ -145,9 +138,7 @@ def simple_collate_fn(data: List[Dict[str, Any]]):
     """A basic collate function to use for DataLoader"""
 
     input_ids = torch.stack([torch.tensor(item["input_ids"]) for item in data])
-    attention_mask = torch.stack(
-        [torch.tensor(item["attention_mask"]) for item in data]
-    )
+    attention_mask = torch.stack([torch.tensor(item["attention_mask"]) for item in data])
     labels = input_ids.clone()
 
     return BatchEncoding(
@@ -234,9 +225,7 @@ def revert_liger_kernel_to_llama(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_mllama(
-    model_config: MiniModelConfig, model_type: str = "causal_lm"
-):
+def revert_liger_kernel_to_mllama(model_config: MiniModelConfig, model_type: str = "causal_lm"):
     """
     Revert all Liger kernel patches applied to MLlama.
     """
@@ -246,6 +235,7 @@ def revert_liger_kernel_to_mllama(
         "conditional_generation",
     ], f'model_type must be "causal_lm" or "conditional_generation", Got: {model_type}'
     import torch.nn as nn
+
     from transformers.models.mllama import modeling_mllama
 
     importlib.reload(nn)
@@ -343,7 +333,6 @@ def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
 
 
 class HFAlignmentLoss:
-
     def __init__(
         self,
         alpha: float = 1.0,
@@ -379,18 +368,14 @@ class HFAlignmentLoss:
             A tensor of shape (batch_size,) containing the average/sum log probabilities of the given labels under the given logits.
         """
         if logits.shape[:-1] != labels.shape:
-            raise ValueError(
-                "Logits (batch and sequence length dim) and labels must have the same shape."
-            )
+            raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
 
         loss_mask = labels != self.ignore_index
 
         # dummy token; we'll ignore the losses on these tokens later
         labels = torch.where(labels == self.ignore_index, 0, labels)
 
-        per_token_logps = torch.gather(
-            logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)
-        ).squeeze(2)
+        per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
 
         if average_log_prob:
             return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
@@ -410,9 +395,7 @@ class HFAlignmentLoss:
         ref_logits = _input @ ref_weight.t()
         if ref_bias is not None:
             ref_logits = ref_logits + ref_bias
-        ref_all_logps = self.get_batch_logps(
-            ref_logits, target, average_log_prob=average_log_prob
-        )
+        ref_all_logps = self.get_batch_logps(ref_logits, target, average_log_prob=average_log_prob)
         return (
             ref_all_logps[: _input.shape[0] // 2],
             ref_all_logps[_input.shape[0] // 2 :],
@@ -425,9 +408,7 @@ class HFAlignmentLoss:
         target: torch.LongTensor,
         bias: torch.FloatTensor = None,
         average_log_prob: bool = True,
-    ) -> Tuple[
-        torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
-    ]:
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
         We do this to avoid doing two forward passes, because it's faster for FSDP.
@@ -452,9 +433,7 @@ class HFAlignmentLoss:
         labels = target
         chosen_nll_loss = torch.tensor(0.0, device=all_logits.device)
         if self.compute_nll_loss:
-            chosen_nll_loss = cross_entropy_loss(
-                all_logits[:len_chosen], labels[:len_chosen]
-            )
+            chosen_nll_loss = cross_entropy_loss(all_logits[:len_chosen], labels[:len_chosen])
 
         all_logps = self.get_batch_logps(
             all_logits,
@@ -489,9 +468,7 @@ class HFAlignmentLoss:
     ):
         """Compute the loss metrics for the given batch of inputs for train or test."""
 
-        forward_output = self.concatenated_forward(
-            _input, weight, target, bias, average_log_prob
-        )
+        forward_output = self.concatenated_forward(_input, weight, target, bias, average_log_prob)
         (
             policy_chosen_logps,
             policy_rejected_logps,
@@ -507,9 +484,7 @@ class HFAlignmentLoss:
             )
             loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
             loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
-        alignment_loss_outputs = self.alignment_loss(
-            policy_chosen_logps, policy_rejected_logps, **loss_kwargs
-        )
+        alignment_loss_outputs = self.alignment_loss(policy_chosen_logps, policy_rejected_logps, **loss_kwargs)
         if isinstance(alignment_loss_outputs, tuple):
             losses, *aggregated_aux_outputs = alignment_loss_outputs
         else:
@@ -632,7 +607,5 @@ class HFDistillationLoss:
 
         soft_loss = self.distillation_loss(student_logits, teacher_logits)
         # full loss
-        loss = (
-            self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss.mean()
-        )
+        loss = self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss.mean()
         return loss

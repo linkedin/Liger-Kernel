@@ -1,24 +1,22 @@
-from typing import List, Optional, Tuple, Union
+from typing import List
+from typing import Optional
+from typing import Tuple
+from typing import Union
 
 import torch
+
 from torch.nn import CrossEntropyLoss
 from transformers.cache_utils import Cache
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.mllama.modeling_mllama import MLLAMA_INPUTS_DOCSTRING
-from transformers.utils import (
-    add_start_docstrings_to_model_forward,
-    replace_return_docstrings,
-)
+from transformers.utils import add_start_docstrings_to_model_forward
+from transformers.utils import replace_return_docstrings
 
-from liger_kernel.transformers.fused_linear_cross_entropy import (
-    LigerFusedLinearCrossEntropyLoss,
-)
+from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 
 
 @add_start_docstrings_to_model_forward(MLLAMA_INPUTS_DOCSTRING)
-@replace_return_docstrings(
-    output_type=CausalLMOutputWithPast, config_class="MllamaTextConfig"
-)
+@replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class="MllamaTextConfig")
 def lce_forward_deprecated(
     self,
     input_ids: torch.LongTensor = None,
@@ -66,19 +64,11 @@ def lce_forward_deprecated(
     I love the idea of snowflakes gently falling, each one
     ```
     """
-    output_attentions = (
-        output_attentions
-        if output_attentions is not None
-        else self.config.output_attentions
-    )
+    output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
-        output_hidden_states
-        if output_hidden_states is not None
-        else self.config.output_hidden_states
+        output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
-    return_dict = (
-        return_dict if return_dict is not None else self.config.use_return_dict
-    )
+    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs = self.model(
@@ -143,9 +133,7 @@ def lce_forward_deprecated(
 
 
 @add_start_docstrings_to_model_forward(MLLAMA_INPUTS_DOCSTRING)
-@replace_return_docstrings(
-    output_type=CausalLMOutputWithPast, config_class="MllamaTextConfig"
-)
+@replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class="MllamaTextConfig")
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -198,19 +186,11 @@ def lce_forward(
     I love the idea of snowflakes gently falling, each one
     ```
     """
-    output_attentions = (
-        output_attentions
-        if output_attentions is not None
-        else self.config.output_attentions
-    )
+    output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
-        output_hidden_states
-        if output_hidden_states is not None
-        else self.config.output_hidden_states
+        output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
-    return_dict = (
-        return_dict if return_dict is not None else self.config.use_return_dict
-    )
+    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs = self.model(

@@ -1,12 +1,16 @@
-from test.utils import assert_verbose_allclose, set_seed, supports_bfloat16
 from typing import Optional
 
 import pytest
 import torch
+
+from test.utils import assert_verbose_allclose
+from test.utils import set_seed
+from test.utils import supports_bfloat16
 from torch.nn import KLDivLoss
 
 from liger_kernel.transformers.functional import liger_jsd
-from liger_kernel.transformers.jsd import LigerJSD, LigerJSDFunction
+from liger_kernel.transformers.jsd import LigerJSD
+from liger_kernel.transformers.jsd import LigerJSDFunction
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -39,13 +43,14 @@ class JSD(torch.nn.Module):
             loss = self.kl(log_p, log_q).sum(dim=-1)
         else:
             log_p, log_q = log_p.to(torch.float), log_q.to(torch.float)
-            log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(
-                -1, log_q.size(-1)
+            log_p, log_q = (
+                log_p.view(-1, log_p.size(-1)),
+                log_q.view(-1, log_q.size(-1)),
             )
             m = torch.lerp(torch.exp(log_q), torch.exp(log_p), self.beta)
-            loss = self.beta * self.kl(torch.log(m), log_p).sum(dim=-1) + (
-                1 - self.beta
-            ) * self.kl(torch.log(m), log_q).sum(dim=-1)
+            loss = self.beta * self.kl(torch.log(m), log_p).sum(dim=-1) + (1 - self.beta) * self.kl(
+                torch.log(m), log_q
+            ).sum(dim=-1)
 
         if label is not None:
             loss = torch.where(label != self.ignore_index, loss, 0.0)
@@ -75,9 +80,7 @@ _DTYPE_PARAMS = (
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         (torch.float32, 1e-8, 1e-6),
         (torch.float16, 1e-3, 1e-3),
@@ -98,9 +101,7 @@ def _test_correctness_once(
 ):
     torch_jsd = JSD(dtype=dtype)
 
-    input = torch.randn(
-        B * T, V, device=device, dtype=dtype, requires_grad=True
-    ).log_softmax(dim=-1)
+    input = torch.randn(B * T, V, device=device, dtype=dtype, requires_grad=True).log_softmax(dim=-1)
 
     x1 = input.detach().clone().requires_grad_(True)
     x2 = input.detach().clone().requires_grad_(True)
@@ -140,9 +141,7 @@ def _test_correctness_with_beta_once(
 ):
     torch_jsd = JSD(beta=beta, dtype=dtype)
 
-    input = torch.randn(
-        B * T, V, device=device, dtype=dtype, requires_grad=True
-    ).log_softmax(dim=-1)
+    input = torch.randn(B * T, V, device=device, dtype=dtype, requires_grad=True).log_softmax(dim=-1)
 
     x1 = input.detach().clone().requires_grad_(True)
     x2 = input.detach().clone().requires_grad_(True)
@@ -177,9 +176,7 @@ def _test_correctness_with_ignore_index_once(
 ):
     torch_jsd = JSD(ignore_index=ignore_index, dtype=dtype)
 
-    input = torch.randn(
-        B * T, V, device=device, dtype=dtype, requires_grad=True
-    ).log_softmax(dim=-1)
+    input = torch.randn(B * T, V, device=device, dtype=dtype, requires_grad=True).log_softmax(dim=-1)
 
     x1 = input.detach().clone().requires_grad_(True)
     x2 = input.detach().clone().requires_grad_(True)
@@ -193,9 +190,7 @@ def _test_correctness_with_ignore_index_once(
     num_elements_to_assign = torch.randint(
         1, B * T // 2, (1,)
     ).item()  # Random number of elements to set to ignore_index
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]  # Randomly select indices
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     label[indices_to_assign] = ignore_index
 
     output = torch_jsd(x1, target, label)
@@ -207,12 +202,8 @@ def _test_correctness_with_ignore_index_once(
     assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
 
-def _test_correctness_functional(
-    B, T, V, beta, ignore_index, is_last_layer, dtype, atol, rtol, device=device
-):
-    input = torch.randn(
-        B * T, V, device=device, dtype=dtype, requires_grad=True
-    ).log_softmax(dim=-1)
+def _test_correctness_functional(B, T, V, beta, ignore_index, is_last_layer, dtype, atol, rtol, device=device):
+    input = torch.randn(B * T, V, device=device, dtype=dtype, requires_grad=True).log_softmax(dim=-1)
 
     x1 = input.detach().clone().requires_grad_(True)
     x2 = input.detach().clone().requires_grad_(True)
@@ -226,9 +217,7 @@ def _test_correctness_functional(
     num_elements_to_assign = torch.randint(
         1, B * T // 2, (1,)
     ).item()  # Random number of elements to set to ignore_index
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]  # Randomly select indices
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     label[indices_to_assign] = ignore_index
 
     output = LigerJSDFunction.apply(x1, target, label, beta, ignore_index)
@@ -278,9 +267,7 @@ def test_correctness_with_beta(B, T, V, beta, dtype, atol, rtol):
 @pytest.mark.parametrize("ignore_index", [2, 42])
 def test_correctness_with_ignore_index(B, T, V, ignore_index, dtype, atol, rtol):
     liger_jsd = LigerJSD(ignore_index=ignore_index)
-    _test_correctness_with_ignore_index_once(
-        liger_jsd, ignore_index, B, T, V, dtype, atol, rtol
-    )
+    _test_correctness_with_ignore_index_once(liger_jsd, ignore_index, B, T, V, dtype, atol, rtol)
 
 
 @pytest.mark.parametrize(*_SHAPE_PARAMS)
@@ -292,12 +279,8 @@ def test_correctness_with_ignore_index(B, T, V, ignore_index, dtype, atol, rtol)
         (0.1, 42, True),
     ],
 )
-def test_correctness_functional(
-    B, T, V, beta, ignore_index, is_last_layer, dtype, atol, rtol
-):
-    _test_correctness_functional(
-        B, T, V, beta, ignore_index, is_last_layer, dtype, atol, rtol
-    )
+def test_correctness_functional(B, T, V, beta, ignore_index, is_last_layer, dtype, atol, rtol):
+    _test_correctness_functional(B, T, V, beta, ignore_index, is_last_layer, dtype, atol, rtol)
 
 
 # @pytest.mark.parametrize(*_SHAPE_PARAMS)
@@ -314,9 +297,7 @@ def test_correctness_with_all_indices_ignored(
     torch_jsd = JSD(ignore_index=ignore_index, dtype=dtype)
     liger_jsd = LigerJSD(ignore_index=ignore_index)
 
-    inp = torch.randn(
-        B * T, V, device=device, dtype=dtype, requires_grad=True
-    ).log_softmax(dim=-1)
+    inp = torch.randn(B * T, V, device=device, dtype=dtype, requires_grad=True).log_softmax(dim=-1)
 
     x1 = inp.detach().clone().requires_grad_(True)
     x2 = inp.detach().clone().requires_grad_(True)
@@ -331,9 +312,7 @@ def test_correctness_with_all_indices_ignored(
     num_elements_to_assign = torch.randint(
         1, B * T // 2, (1,)
     ).item()  # Random number of elements to set to ignore_index
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]  # Randomly select indices
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     label[indices_to_assign] = ignore_index
 
     output = torch_jsd(x1, target, label)
