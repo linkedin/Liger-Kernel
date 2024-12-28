@@ -131,13 +131,16 @@ def fused_linear_cross_entropy_forward(
                 alpha=alpha,
             )
 
-    loss = torch.sum(loss_1d)
+    if reduction == "none":
+        loss = loss_1d
+    else:
+        loss = torch.sum(loss_1d)
     return loss, grad_input, grad_weight, grad_bias
 
 
 def fused_linear_cross_entropy_backward(grad_output, grad_input, grad_weight, grad_bias):
     # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
-    if torch.ne(grad_output, torch.tensor(1.0, device=grad_output.device)):
+    if not torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
         # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
         # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
         BT, H = grad_input.shape
