@@ -106,9 +106,7 @@ def liger_cross_entropy_kernel(
     # 3. [Online softmax] first pass: find max + sum
     m = float("-inf")  # m is the max value. use the notation from the paper
     d = 0.0  # d is the sum. use the notation from the paper
-    ori_X_y = tl.load(X_ptr + y).cast(
-        tl.float32
-    )  # we need to store the original value of X_y for the loss calculation
+    ori_X_y = tl.load(X_ptr + y).cast(tl.float32)  # we need to store the original value of X_y for the loss calculation
     if HAS_SOFTCAPPING:
         ori_X_y = softcap * tanh(ori_X_y / softcap)
 
@@ -132,13 +130,9 @@ def liger_cross_entropy_kernel(
             # scale X beforehand to avoid overflow
             if HAS_WEIGHT:
                 weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
-                scaled_x_sum += tl.sum(
-                    tl.where(X_offsets < n_cols, -eps * X_block * weight_block, 0.0)
-                )
+                scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -eps * X_block * weight_block, 0.0))
             else:
-                scaled_x_sum += tl.sum(
-                    tl.where(X_offsets < n_cols, -eps * X_block, 0.0)
-                )
+                scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -eps * X_block, 0.0))
         m_new = tl.maximum(m, block_max)
         d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
         m = m_new
@@ -193,9 +187,7 @@ def liger_cross_entropy_kernel(
             # derivative of original_loss
             dloss_ori = (1 - label_smoothing) * softmax_X
             # specially handle dx_y
-            dloss_ori = tl.where(
-                X_offsets != y, dloss_ori, dloss_ori - (1 - label_smoothing)
-            )
+            dloss_ori = tl.where(X_offsets != y, dloss_ori, dloss_ori - (1 - label_smoothing))
             dloss_ori = dloss_ori * weight_y
             # derivative of smooth_loss
             dloss_smooth = eps * (-weight_block + softmax_X * weight_sum)
@@ -289,14 +281,10 @@ def cross_entropy_forward(
     return_z_loss,
 ):
     if not isinstance(return_z_loss, int):
-        assert (
-            return_z_loss in _bool_to_return_z_loss
-        ), f"return_z_loss must be True or False. Got: {return_z_loss}"
+        assert return_z_loss in _bool_to_return_z_loss, f"return_z_loss must be True or False. Got: {return_z_loss}"
         return_z_loss = _bool_to_return_z_loss[return_z_loss]
     else:
-        assert (
-            return_z_loss in _bool_to_return_z_loss
-        ), f"return_z_loss must be True or False. Got: {return_z_loss}"
+        assert return_z_loss in _bool_to_return_z_loss, f"return_z_loss must be True or False. Got: {return_z_loss}"
 
     BT, V = _input.shape
     n_rows = BT
@@ -315,17 +303,11 @@ def cross_entropy_forward(
     sum_non_ignore_weight = n_non_ignore
     weight_sum = 0.0
     if weight is not None:
-        assert (
-            weight.shape[0] == V
-        ), f"If given, weight has to be a Tensor of size V. Got: {weight.shape}"
+        assert weight.shape[0] == V, f"If given, weight has to be a Tensor of size V. Got: {weight.shape}"
         assert torch.is_floating_point(
             weight
         ), f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
-        sum_non_ignore_weight = (
-            torch.gather(weight, dim=0, index=target.masked_select(target_mask))
-            .sum()
-            .item()
-        )
+        sum_non_ignore_weight = torch.gather(weight, dim=0, index=target.masked_select(target_mask)).sum().item()
         weight_sum = weight.sum().item()
         # ensure weight is contiguous
         if weight.stride(-1) != 1:
