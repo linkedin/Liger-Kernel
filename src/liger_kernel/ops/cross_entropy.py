@@ -197,6 +197,7 @@ def liger_cross_entropy_kernel(
             if reduction == "mean":
                 dloss_ori = dloss_ori / sum_non_ignore_weight
                 dloss_smooth = dloss_smooth / sum_non_ignore_weight
+                # z_loss isn't scaled by weight
                 dz_loss = dz_loss / n_non_ignore
             # derivative of total_loss
             X_block = dloss_ori + dloss_smooth + dz_loss
@@ -247,6 +248,7 @@ def liger_cross_entropy_kernel(
             loss = loss / sum_non_ignore_weight
         else:
             loss = loss / n_non_ignore
+        # z_loss isn't scaled by weight
         z_loss = z_loss / n_non_ignore
     loss += z_loss
 
@@ -307,6 +309,7 @@ def cross_entropy_forward(
         ), f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
         sum_non_ignore_weight = torch.gather(weight, dim=0, index=target.masked_select(target_mask)).sum().item()
         weight_sum = weight.sum().item()
+        # ensure weight is contiguous
         if weight.stride(-1) != 1:
             weight = weight.contiguous()
 
