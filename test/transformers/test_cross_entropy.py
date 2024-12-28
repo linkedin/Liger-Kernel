@@ -58,9 +58,7 @@ class CrossEntropyWithZLoss(torch.nn.Module):
         lse = torch.logsumexp(logits, dim=-1)
 
         # Z-loss term
-        z_loss = torch.where(
-            targets != self.ignore_index, self.lse_square_scale * (lse**2), 0.0
-        )
+        z_loss = torch.where(targets != self.ignore_index, self.lse_square_scale * (lse**2), 0.0)
 
         if self.reduction == "mean":
             z_loss = z_loss.sum() / target_mask.sum()
@@ -292,9 +290,7 @@ def _test_correctness_with_z_loss_with_other_params_once(
     assert_verbose_allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
-def _test_correctness_with_weight_once(
-    target_ce, B, T, V, reduction, weight, scalar, dtype, atol, rtol
-):
+def _test_correctness_with_weight_once(target_ce, B, T, V, reduction, weight, scalar, dtype, atol, rtol):
     torch.manual_seed(0)
     torch_ce = CrossEntropyLoss(weight=weight, reduction=reduction)
 
@@ -350,14 +346,10 @@ def _test_correctness_with_weight_with_other_params_once(
     num_elements_to_assign = torch.randint(
         1, B * T // 2, (1,)
     ).item()  # Random number of elements to set to ignore_index
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]  # Randomly select indices
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     target[indices_to_assign] = ignore_index
 
-    output = torch_ce(
-        softcap * torch.tanh(_input.to(torch.float32) / softcap), target
-    ).to(dtype)
+    output = torch_ce(softcap * torch.tanh(_input.to(torch.float32) / softcap), target).to(dtype)
     output2 = target_ce(_input2, target)
     assert_verbose_allclose(output, output2, atol=atol, rtol=rtol)
 
@@ -366,10 +358,7 @@ def _test_correctness_with_weight_with_other_params_once(
     assert_verbose_allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
-def _test_correctness_not_last_layer_once(
-    target_ce, B, T, V, reduction, scalar, dtype, atol, rtol
-):
-
+def _test_correctness_not_last_layer_once(target_ce, B, T, V, reduction, scalar, dtype, atol, rtol):
     torch_ce = CrossEntropyLoss(reduction=reduction)
 
     _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
@@ -417,9 +406,7 @@ def _test_correctness_functional(
         softcap=30.0,
         return_z_loss=True,
     )
-    y2, y2_z = LigerCrossEntropyFunction.apply(
-        x2, target, None, 0, 1e-4, 0.1, "mean", 30.0, True
-    )
+    y2, y2_z = LigerCrossEntropyFunction.apply(x2, target, None, 0, 1e-4, 0.1, "mean", 30.0, True)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
     assert torch.allclose(y1_z, y2_z, atol=atol, rtol=rtol)
@@ -751,9 +738,7 @@ def test_correctness_with_z_loss_with_other_params_once(
 def test_correctness_with_weight_once(B, T, V, reduction, scalar, dtype, atol, rtol):
     weight = torch.rand(V, device=device, dtype=dtype)
     test_ce = LigerCrossEntropyLoss(weight=weight, reduction=reduction)
-    _test_correctness_with_weight_once(
-        test_ce, B, T, V, reduction, weight, scalar, dtype, atol, rtol
-    )
+    _test_correctness_with_weight_once(test_ce, B, T, V, reduction, weight, scalar, dtype, atol, rtol)
 
 
 @pytest.mark.parametrize(
@@ -780,9 +765,7 @@ def test_correctness_with_weight_once(B, T, V, reduction, scalar, dtype, atol, r
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
@@ -845,9 +828,7 @@ def test_correctness_with_weight_with_other_params_once(
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
         (1.0, torch.float32, 1e-8, 1e-6),
     ],
