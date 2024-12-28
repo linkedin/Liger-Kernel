@@ -48,7 +48,7 @@ def fused_linear_cross_entropy_forward(
     # we use fp32 for loss accumulator
     loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
 
-    # NOTE: skip .item() here to avoid CUDA synchronization
+    # TODO: evaluate how CUDA synchronization caused by .item() affects the speed
     target_mask = target != ignore_index
     total_n_non_ignore = target_mask.sum().item()
     total_sum_non_ignore_ce_weight = total_n_non_ignore
