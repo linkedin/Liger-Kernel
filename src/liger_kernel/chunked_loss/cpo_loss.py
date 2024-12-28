@@ -33,7 +33,6 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
         loss = (-F.logsigmoid(logits) * (1 - label_smoothing) - F.logsigmoid(-logits) * label_smoothing).sum() / (
             full_target.shape[0] // 2
         )
-
         return loss
 
     @staticmethod
