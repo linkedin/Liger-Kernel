@@ -59,10 +59,11 @@ def fused_linear_cross_entropy_forward(
         logits_chunk = _input_chunk @ weight.t()  # chunk_size x V
         if bias is not None:
             logits_chunk = logits_chunk + bias
-        if logits_chunk.dtype != weight.dtype:
-            # In an autocast scenario with no bias, the logits_chunk may have a different data type here,
-            # which can cause an error during the subsequent addmm operation.
-            logits_chunk = logits_chunk.to(weight.dtype)
+
+        # In an autocast scenario with no bias, the logits_chunk may have a different data type here,
+        # which can cause an error during the subsequent addmm operation.
+        logits_chunk = logits_chunk.to(weight.dtype)
+
         target_chunk = target[start_idx:end_idx]  # chunk_size,
 
         n_rows = logits_chunk.shape[0]
