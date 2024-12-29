@@ -288,7 +288,9 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
 
         chosen_nll_loss = 0.0
         if compute_nll_loss:
-            nll_labels = chosen_nll_target_chunk or target_chunk[:len_chosen_chunk]
+            nll_labels = (
+                chosen_nll_target_chunk if chosen_nll_target_chunk is not None else target_chunk[:len_chosen_chunk]
+            )
             chosen_nll_loss = F.nll_loss(
                 log_probs_chunk[:len_chosen_chunk].view(-1, log_probs_chunk.shape[-1]),
                 nll_labels.view(-1),

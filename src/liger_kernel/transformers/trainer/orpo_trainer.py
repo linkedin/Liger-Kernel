@@ -122,15 +122,19 @@ class LigerORPOTrainer(ORPOTrainer):
         orpo_loss_fn = LigerFusedLinearORPOLoss(ignore_index=self.label_pad_token_id, beta=self.beta)
 
         def orpo_partial(lm_head, last_hidden_state, concatenated_labels, nll_target):
-            return orpo_loss_fn(lm_head.weight, last_hidden_state, concatenated_labels, lm_head.bias, nll_target)
+            return orpo_loss_fn(
+                lm_head.weight, last_hidden_state, concatenated_labels, lm_head.bias, nll_target=nll_target
+            )
 
         orpo_loss, aux_outputs = _FSDPForwardRedirection()(
             model,
             orpo_partial,
             model.lm_head,
-            outputs.last_hidden_state,
-            concatenated_batch["concatenated_labels"],
-            labels,
+            outputs.last_hidden_state[:, :-1] if not self.is_encoder_decoder else outputs.last_hidden_state,
+            concatenated_batch["concatenated_labels"][:, 1:]
+            if not self.is_encoder_decoder
+            else concatenated_batch["concatenated_labels"],
+            labels[:, 1:] if not self.is_encoder_decoder else labels,
         )
         # if aux_loss_enabled, add the aux_loss to the orpo_loss
         if self.aux_loss_enabled:
