@@ -93,6 +93,13 @@ class LigerORPOTrainer(ORPOTrainer):
         if self.aux_loss_enabled:
             model_kwargs["output_router_logits"] = True
 
+        if self.is_encoder_decoder:
+            labels = concatenated_batch["concatenated_labels"].clone()
+        else:
+            labels = concatenated_batch["concatenated_input_ids"].clone()
+            attention_mask = concatenated_batch["concatenated_attention_mask"]
+            labels = torch.where(attention_mask == 1, labels, self.label_pad_token_id)
+
         if isinstance(model, FullyShardedDataParallel):
             outputs = _FSDPForwardRedirection()(
                 model,
@@ -114,8 +121,8 @@ class LigerORPOTrainer(ORPOTrainer):
 
         orpo_loss_fn = LigerFusedLinearORPOLoss(ignore_index=self.label_pad_token_id, beta=self.beta)
 
-        def orpo_partial(lm_head, last_hidden_state, concatenated_labels):
-            return orpo_loss_fn(lm_head.weight, last_hidden_state, concatenated_labels, lm_head.bias)
+        def orpo_partial(lm_head, last_hidden_state, concatenated_labels, nll_target):
+            return orpo_loss_fn(lm_head.weight, last_hidden_state, concatenated_labels, lm_head.bias, nll_target)
 
         orpo_loss, aux_outputs = _FSDPForwardRedirection()(
             model,
@@ -123,6 +130,7 @@ class LigerORPOTrainer(ORPOTrainer):
             model.lm_head,
             outputs.last_hidden_state,
             concatenated_batch["concatenated_labels"],
+            labels,
         )
         # if aux_loss_enabled, add the aux_loss to the orpo_loss
         if self.aux_loss_enabled:
