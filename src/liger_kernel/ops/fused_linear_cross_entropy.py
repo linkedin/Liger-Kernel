@@ -60,10 +60,6 @@ def fused_linear_cross_entropy_forward(
         if bias is not None:
             logits_chunk = logits_chunk + bias
 
-        # In an autocast scenario with no bias, the logits_chunk may have a different data type here,
-        # which can cause an error during the subsequent addmm operation.
-        logits_chunk = logits_chunk.to(weight.dtype)
-
         target_chunk = target[start_idx:end_idx]  # chunk_size,
 
         n_rows = logits_chunk.shape[0]
@@ -117,7 +113,9 @@ def fused_linear_cross_entropy_forward(
         if grad_weight is not None:
             torch.addmm(
                 input=grad_weight,
-                mat1=logits_chunk.t(),
+                mat1=logits_chunk.t().to(
+                    _input_chunk.dtype
+                ),  # In an autocast scenario without bias, differing logits_chunk data types will cause an addmm operation error.
                 mat2=_input_chunk,
                 out=grad_weight,
                 alpha=alpha,
