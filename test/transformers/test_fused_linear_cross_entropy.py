@@ -260,18 +260,20 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, atol, rtol):
     ],
 )
 @pytest.mark.parametrize(
-    "cast_dtype, atol, rtol",
+    "bias, cast_dtype, atol, rtol",
     [
-        (torch.bfloat16, 5e-3, 5e-2),
-        (torch.float16, 5e-3, 5e-2),
+        (True, torch.bfloat16, 5e-3, 5e-2),
+        (True, torch.float16, 5e-3, 5e-2),
+        (False, torch.bfloat16, 5e-3, 5e-2),
+        (False, torch.float16, 5e-3, 5e-2),
     ],
 )
-def test_amp(B, T, H, V, cast_dtype, atol, rtol):
+def test_amp(B, T, H, V, bias, cast_dtype, atol, rtol):
     dtype = torch.float32
     torch_lm_head_ce = TorchLMHeadCE(
         H=H,
         V=V,
-        bias=True,
+        bias=bias,
         label_smoothing=0.0,
         reduction="mean",
         dtype=dtype,
@@ -279,7 +281,7 @@ def test_amp(B, T, H, V, cast_dtype, atol, rtol):
     liger_lm_head_ce = LigerLMHeadCE(
         H=H,
         V=V,
-        bias=True,
+        bias=bias,
         label_smoothing=0.0,
         reduction="mean",
         dtype=dtype,
