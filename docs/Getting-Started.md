@@ -4,17 +4,21 @@ There are a couple of ways to apply Liger kernels, depending on the level of cus
 
 Using the `AutoLigerKernelForCausalLM` is the simplest approach, as you don't have to import a model-specific patching API. If the model type is supported, the modeling code will be automatically patched using the default settings.
 
-```python
-from liger_kernel.transformers import AutoLigerKernelForCausalLM
+!!! Example
 
-# This AutoModel wrapper class automatically monkey-patches the
-# model with the optimized Liger kernels if the model is supported.
-model = AutoLigerKernelForCausalLM.from_pretrained("path/to/some/model")
-```
+  ```python
+  from liger_kernel.transformers import AutoLigerKernelForCausalLM
+
+  # This AutoModel wrapper class automatically monkey-patches the
+  # model with the optimized Liger kernels if the model is supported.
+  model = AutoLigerKernelForCausalLM.from_pretrained("path/to/some/model")
+  ```
 
 ### 2. Apply Model-Specific Patching APIs
 
 Using the [patching APIs](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#patching), you can swap Hugging Face models with optimized Liger Kernels.
+
+!!! Example
 
 ```python
 import transformers
@@ -39,6 +43,8 @@ model = transformers.AutoModelForCausalLM("path/to/llama/model")
 ### 3. Compose Your Own Model
 
 You can take individual [kernels](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#model-kernels) to compose your models.
+
+!!! Example
 
 ```python
 from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss

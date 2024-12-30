@@ -1,6 +1,5 @@
 
-
-
+!!! Example "HANDS-ON USECASE EXAMPLES"
 | **Use Case**                                    | **Description**                                                                                   |
 |------------------------------------------------|---------------------------------------------------------------------------------------------------|
 | [**Hugging Face Trainer**](https://github.com/linkedin/Liger-Kernel/tree/main/examples/huggingface)      | Train LLaMA 3-8B ~20% faster with over 40% memory reduction on Alpaca dataset using 4 A100s with FSDP |
@@ -16,6 +15,8 @@
 #### Locally on a GPU machine
 You can run the example locally on a GPU machine. The default hyperparameters and configurations work on single node with 4xA100 80GB GPUs and FSDP.
 
+!!! Example
+
 ```bash
 pip install -r requirements.txt
 sh run_{MODEL}.sh
@@ -24,18 +25,20 @@ sh run_{MODEL}.sh
 #### Remotely on Modal
 If you do not have access to a GPU machine, you can run the example on Modal. Modal is a serverless platform that allows you to run your code on a remote GPU machine. You can sign up for a free account at [Modal](https://www.modal.com/).
 
+!!! Example
+
 ```bash
 pip install modal
 modal setup  # authenticate with Modal
 modal run launch_on_modal.py --script "run_qwen2_vl.sh"
 ```
 
-**Notes**
+!!! Notes
 
 1. This example uses an optional `use_liger` flag. If true, it does a 1 line monkey patch to apply liger kernel.
 
 2. The example uses Llama3 model that requires community license agreement and HuggingFace Hub login. If you want to use Llama3 in this example, please make sure you have done the following:
-    * Agree on the [community license agreement](https://huggingface.co/meta-llama/Meta-Llama-3-8B)
+    * Agree on the [community license agreement](https://huggingface.co/meta-llama/Meta-Llama-3-8B) .
     * Run `huggingface-cli login` and enter your HuggingFace token.
 
 3. The default hyperparameters and configurations work on single node with 4xA100 80GB GPUs. For running on device with less GPU RAM, please consider reducing the per-GPU batch size and/or enable `CPUOffload` in FSDP.
@@ -44,6 +47,8 @@ modal run launch_on_modal.py --script "run_qwen2_vl.sh"
 ### Benchmark Result
 
 ### Llama
+
+!!! Info
 >Benchmark conditions: 
 >Model= LLaMA 3-8B,Datset= Alpaca, Max seq len = 512, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 4 A100s.
 
@@ -53,6 +58,8 @@ Throughput improves by around 20%, while GPU memory usage drops by 40%. This all
 ![GPU Memory Allocated](https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/examples/huggingface/img/llama_mem_alloc.png)
 
 ### Qwen
+
+!!! Info
 >Benchmark conditions:
 >Model= Qwen2-7B, Dataset= Alpaca, Max seq len = 512, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 4 A100s.
 
@@ -63,6 +70,8 @@ Throughput improves by around 10%, while GPU memory usage drops by 50%.
 
 
 ### Gemma 7B
+
+!!! Info
 >Benchmark conditions:
 > Model= Gemma-7B, Dataset= Alpaca, Max seq len = 512, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 4 A100s.
 
@@ -78,6 +87,8 @@ Throughput improves by around 24%, while GPU memory usage drops by 33%.
 #### Locally on a GPU machine
 You can run the example locally on a GPU machine.
 
+!!! Example
+
 ```bash
 pip install -r requirements.txt
 
@@ -88,7 +99,7 @@ python training.py --model Qwen/Qwen2-0.5B-Instruct --num_gpu 1 --max_length 102
 python training.py --model meta-llama/Meta-Llama-3-8B --strategy deepspeed
 ```
 
-**Notes**
+!!! Notes
 
 1. The example uses Llama3 model that requires community license agreement and HuggingFace Hub login. If you want to use Llama3 in this example, please make sure you have done the following:
     * Agree on the [community license agreement](https://huggingface.co/meta-llama/Meta-Llama-3-8B)
@@ -98,7 +109,7 @@ python training.py --model meta-llama/Meta-Llama-3-8B --strategy deepspeed
 
 ## Medusa
 
-Medusa is a simple framework that democratizes the acceleration techniques for LLM generation with multiple decoding heads. [[repo](https://arxiv.org/abs/2401.10774)], [[paper](https://arxiv.org/abs/2401.10774)]
+Medusa is a simple framework that democratizes the acceleration techniques for LLM generation with multiple decoding heads. To know more, you can check out the [repo](https://arxiv.org/abs/2401.10774) and the [paper](https://arxiv.org/abs/2401.10774) .
 
 The Liger fused CE kernel is highly effective in this scenario, eliminating the need to materialize logits for each head, which usually consumes a large volume of memory due to the extensive vocabulary size (e.g., for LLaMA-3, the vocabulary size is 128k).
 
@@ -106,6 +117,8 @@ The introduction of multiple heads can easily lead to OOM (Out of Memory) issues
 
 
 ### How to Run
+
+!!! Example
 
 ```bash
 git clone git@github.com:linkedin/Liger-Kernel.git
@@ -116,7 +129,7 @@ pip install -r requirements.txt
 sh scripts/llama3_8b_medusa.sh
 ```
 
-**Notes**
+!!! Notes
 
 1. This example uses an optional `use_liger` flag. If true, it does a monkey patch to apply liger kernel with medusa heads.
 
@@ -130,13 +143,14 @@ sh scripts/llama3_8b_medusa.sh
 
 ### Benchmark Result
 
-> **Note:**  
+!!! Info
 > 1. Benchmark conditions: LLaMA 3-8B, Batch Size = 6, Data Type = bf16, Optimizer = AdamW, Gradient Checkpointing = True, Distributed Strategy = FSDP1 on 8 A100s.
 
-#### Stage1
+#### Stage 1
 
-Stage1 refers to Medusa-1 where the backbone model is frozen and only weights of LLM heads are updated.
+Stage 1 refers to Medusa-1 where the backbone model is frozen and only weights of LLM heads are updated.
 
+!!! Warning
 ```bash
 # Modify this flag in llama3_8b_medusa.sh to True enables stage1 
 --medusa_only_heads True
@@ -152,14 +166,15 @@ Stage1 refers to Medusa-1 where the backbone model is frozen and only weights of
 ![Memory](https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/examples/medusa/docs/images/Memory_Stage1_num_head_5.png)
 ![Throughput](https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/examples/medusa/docs/images/Throughput_Stage1_num_head_5.png)
 
-#### Stage2
+#### Stage 2
 
+!!! Warning
 ```bash
 # Modify this flag to False in llama3_8b_medusa.sh enables stage2
 --medusa_only_heads False
 ```
 
-Stage2 refers to Medusa-2 where all the model weights are updated incuding backbone model and llm heads.
+Stage 2 refers to Medusa-2 where all the model weights are updated including the backbone model and llm heads.
 
 #### num_head = 3
 
@@ -179,7 +194,7 @@ Stage2 refers to Medusa-2 where all the model weights are updated incuding backb
 ### Locally on a GPU Machine
 You can run the example locally on a GPU machine. The default hyperparameters and configurations work on single node with 4xA100 80GB GPUs.
 
-
+!!! Example
 ```bash
 #!/bin/bash
 
@@ -213,6 +228,7 @@ torchrun --nnodes=1 --nproc-per-node=4 training_multimodal.py \
 
 You can run the example locally on a GPU machine and FSDP.
 
+!!! Example
 ```py
 import torch
 from datasets import load_dataset

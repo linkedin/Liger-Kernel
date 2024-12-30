@@ -7,13 +7,15 @@
 
 This API extends the implementation of the `AutoModelForCausalLM` within the `transformers` library from Hugging Face.
 
-You can try it out as shown in this example [here](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#1-use-autoligerkernelforcausallm).
+!!! Example "Try it Out"
+    You can experiment as shown in this example [here](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#1-use-autoligerkernelforcausallm).
 
 ### Patching
 
-You can also use the Patching APIs to use the kernels for a specifc model architecture.
+You can also use the Patching APIs to use the kernels for a specific model architecture.
 
-You can try it out as shown in this example [here](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#2-apply-model-specific-patching-apis).
+!!! Example "Try it Out"
+    You can experiment as shown in this example [here](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#2-apply-model-specific-patching-apis).
 
 | **Model**   | **API**                                                      | **Supported Operations**                                                |
 |-------------|--------------------------------------------------------------|-------------------------------------------------------------------------|

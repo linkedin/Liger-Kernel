@@ -17,7 +17,8 @@ RMS Norm simplifies the LayerNorm operation by eliminating mean subtraction, whi
 This kernel performs normalization by scaling input vectors to have a unit root mean square (RMS) value. This method allows for a ~7x speed improvement and a ~3x reduction in memory footprint compared to
 implementations in PyTorch.
 
-You can try it out as shown in this example [here](https://colab.research.google.com/drive/1CQYhul7MVG5F0gmqTBbx1O1HgolPgF0M?usp=sharing).
+!!! Example "Try it out"
+    You can experiment as shown in this example [here](https://colab.research.google.com/drive/1CQYhul7MVG5F0gmqTBbx1O1HgolPgF0M?usp=sharing).
 
 ### RoPE
 
@@ -25,7 +26,8 @@ RoPE (Rotary Position Embedding) enhances the positional encoding used in transf
 
 The implementation allows for effective handling of positional information without incurring significant computational overhead.
 
-You can try it out as shown in this example [here](https://colab.research.google.com/drive/1llnAdo0hc9FpxYRRnjih0l066NCp7Ylu?usp=sharing).
+!!! Example "Try it out"
+    You can experiment as shown in this example [here](https://colab.research.google.com/drive/1llnAdo0hc9FpxYRRnjih0l066NCp7Ylu?usp=sharing).
 
 ### SwiGLU 
 
@@ -37,13 +39,15 @@ This kernel is optimized for calculating the loss function used in classificatio
 
 The  kernel achieves a ~3x execution speed increase and a ~5x reduction in memory usage for substantial vocabulary sizes compared to implementations in PyTorch.
 
-You can try it out as shown in this example [here](https://colab.research.google.com/drive/1WgaU_cmaxVzx8PcdKB5P9yHB6_WyGd4T?usp=sharing).
+!!! Example "Try it out"
+    You can experiment as shown in this example [here](https://colab.research.google.com/drive/1WgaU_cmaxVzx8PcdKB5P9yHB6_WyGd4T?usp=sharing).
 
 ### Fused Linear CrossEntropy
 
 This kernel combines linear transformations with cross-entropy loss calculations into a single operation.
 
-You can try it out as shown in this example [here](https://colab.research.google.com/drive/1Z2QtvaIiLm5MWOs7X6ZPS1MN3hcIJFbj?usp=sharing)
+!!! Example "Try it out"
+    You can experiment as shown in this example [here](https://colab.research.google.com/drive/1Z2QtvaIiLm5MWOs7X6ZPS1MN3hcIJFbj?usp=sharing)
 
 ## Alignment Kernels
 

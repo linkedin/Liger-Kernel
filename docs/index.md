@@ -98,25 +98,6 @@ y = orpo_loss(lm_head.weight, x, target)
 
 ### Installation
 
-#### Dependencies
-
-#### CUDA
-
-- `torch >= 2.1.2`
-- `triton >= 2.3.0`
-
-#### ROCm
-
-- `torch >= 2.5.0` Install according to the instruction in Pytorch official webpage.
-- `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
-
-#### Optional Dependencies
-
-- `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
-
-> **Note:**
-> Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
-
 To install the stable version:
 
 ```bash
@@ -143,7 +124,27 @@ pip install -e .
 pip install -e ".[dev]"
 ```
 
-### Sponsorship and Collaboration
+!!! Note " Dependencies " 
+
+    #### CUDA
+
+    - `torch >= 2.1.2`
+    - `triton >= 2.3.0`
+
+    #### ROCm
+
+    - `torch >= 2.5.0` Install according to the instruction in Pytorch official webpage.
+    - `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
+
+!!!Tip "Optional Dependencies "
+
+    - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
+
+!!! Note
+     Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
+
+
+#### Sponsorship and Collaboration
  
 - [AMD](https://www.amd.com/en.html): Providing AMD GPUs for our AMD CI.
 - [Intel](https://www.intel.com/): Providing Intel GPUs for our Intel CI.
@@ -154,15 +155,16 @@ pip install -e ".[dev]"
 - [Axolotl](https://axolotl.ai/): Integrating Liger Kernel into Axolotl.
 - [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory): Integrating Liger Kernel into Llama-Factory.
 
-### Contact
 
-- For issues, create a Github ticket in this repository
-- For open discussion, join [our discord channel](https://discord.gg/gpumode)
-- For formal collaboration, send an email to byhsu@linkedin.com
+!!! Note " Contact " 
+
+    - For issues, create a Github ticket in this repository .
+    - For open discussion, join [our discord channel](https://discord.gg/gpumode) .
+    - For formal collaboration, send an email to byhsu@linkedin.com .
 
 ### Cite this work
 
-Biblatex entry:
+Bib Latex entry:
 ```bib
 @article{hsu2024ligerkernelefficienttriton,
       title={Liger Kernel: Efficient Triton Kernels for LLM Training},
