@@ -96,7 +96,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             use_ref_model=use_ref_model,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
-            full_chosen_target=nll_target,
+            full_nll_target=nll_target,
             **loss_kwargs,
         )
 
@@ -335,7 +335,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
         ref_input_chunk=None,
         ref_weight=None,
         ref_bias=None,
-        full_chosen_target=None,
+        full_nll_target=None,
         chosen_nll_target_chunk=None,
         **loss_kwargs,
     ):
@@ -355,7 +355,7 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             use_ref_model (bool): Whether to use a reference model for the alignment loss.
             ref_weight (torch.Tensor): Reference weight tensor. Shape: (vocab_size, hidden_size).
             ref_bias (torch.Tensor, optional): Reference bias tensor. Shape: (vocab_size,).
-            full_chosen_target (torch.Tensor, optional): Full target tensor for NLL loss. Shape: (batch_size, sequence_length).
+            full_nll_target (torch.Tensor, optional): Full target tensor for NLL loss. Shape: (batch_size, sequence_length).
             chosen_nll_target_chunk (torch.Tensor, optional): Target tensor for NLL loss. Shape: (chunk_size, sequence_length) If not provided the target_chunk is used.
             loss_kwargs (dict): Additional arguments for the loss function.
         """
@@ -374,8 +374,8 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             compute_nll_loss=compute_nll_loss,
             chosen_nll_target_chunk=chosen_nll_target_chunk,
         )
-        if full_chosen_target is not None :
-            chosen_nll_loss = chosen_nll_loss / (full_chosen_target != ignore_index).sum()
+        if full_nll_target is not None:
+            chosen_nll_loss = chosen_nll_loss / (full_nll_target[: full_nll_target.shape[0] // 2] != ignore_index).sum()
         else:
             chosen_nll_loss = chosen_nll_loss / (full_target[: full_target.shape[0] // 2] != ignore_index).sum()
 
