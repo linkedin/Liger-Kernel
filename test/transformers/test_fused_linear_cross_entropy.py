@@ -39,6 +39,7 @@ class TorchLMHeadCE(torch.nn.Module):
         V: int,
         dtype: torch.dtype,
         bias: bool = False,
+        ce_weight: Optional[torch.FloatTensor] = None,
         ignore_index: int = -100,
         lse_square_scale: float = 0.0,
         label_smoothing: float = 0.0,
@@ -48,6 +49,7 @@ class TorchLMHeadCE(torch.nn.Module):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.ce_loss = CrossEntropyWithZLoss(
+            weight=ce_weight,
             ignore_index=ignore_index,
             lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
@@ -68,6 +70,7 @@ class LigerLMHeadCE(torch.nn.Module):
         H: int,
         V: int,
         dtype: torch.dtype,
+        ce_weight: Optional[torch.FloatTensor] = None,
         bias: bool = False,
         ignore_index: int = -100,
         lse_square_scale: float = 0.0,
@@ -78,6 +81,7 @@ class LigerLMHeadCE(torch.nn.Module):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.ce_loss = LigerFusedLinearCrossEntropyLoss(
+            ce_weight=ce_weight,
             ignore_index=ignore_index,
             lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
@@ -114,15 +118,11 @@ class LigerLMHeadCE(torch.nn.Module):
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize(
-    "label_smoothing, ignore_index, lse_square_scale, softcap",
+    "has_ce_weight, label_smoothing, ignore_index, lse_square_scale, softcap",
     [
-        (0, -100, 0, None),
-        (
-            0.1,
-            42,
-            1e-4,
-            30.0,
-        ),  # Pass non-default values once to ensure all params work along
+        (False, 0, -100, 0, None),
+        # Pass non-default values once to ensure all params work along
+        (True, 0.1, 42, 1e-4, 30.0),
     ],
 )
 def test_correctness(
@@ -133,6 +133,7 @@ def test_correctness(
     scalar,
     dtype,
     bias,
+    has_ce_weight,
     lse_square_scale,
     label_smoothing,
     ignore_index,
@@ -141,10 +142,15 @@ def test_correctness(
     atol,
     rtol,
 ):
+    if has_ce_weight:
+        ce_weight = torch.rand(V, device=device, dtype=torch.float32)
+    else:
+        ce_weight = None
     torch_lm_head_ce = TorchLMHeadCE(
         H=H,
         V=V,
         bias=bias,
+        ce_weight=ce_weight,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
         ignore_index=ignore_index,
@@ -156,6 +162,7 @@ def test_correctness(
         H=H,
         V=V,
         bias=bias,
+        ce_weight=ce_weight,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
         ignore_index=ignore_index,
