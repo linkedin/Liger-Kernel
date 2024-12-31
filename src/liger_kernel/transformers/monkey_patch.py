@@ -798,9 +798,13 @@ def apply_liger_kernel_to_deepseek_v2(
         if rms_norm:
             _patch_rms_norm_module(base_model.norm)
 
-        for decoder_layer in base_model.layers:
+        for i, decoder_layer in enumerate(base_model.layers):
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                if i == 0:
+                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                else:
+                    for expert in decoder_layer.mlp.experts:
+                        _bind_method_to_module(expert, "forward", LigerSwiGLUMLP.forward)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)

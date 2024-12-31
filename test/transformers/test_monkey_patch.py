@@ -723,8 +723,12 @@ def test_apply_liger_kernel_to_deepseek_v2():
     with patch("modeling_mod"):
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
-        for layer in dummy_model.model.layers:
-            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+        for i, layer in enumerate(dummy_model.model.layers):
+            if i == 0:
+                assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
@@ -733,9 +737,13 @@ def test_apply_liger_kernel_to_deepseek_v2():
 
         # Check that the model's instance variables were correctly patched with Liger modules
         assert inspect.getsource(dummy_model.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
-        for layer in dummy_model.model.layers:
-            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
-            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for i, layer in enumerate(dummy_model.model.layers):
+            if i == 0:
+                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.self_attn.kv_a_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
         try:
