@@ -763,7 +763,7 @@ def apply_liger_kernel_to_deepseek_v2(
 
     import sys
 
-    # Ensure the model is a DeepSeek model and v2 mode is enabled
+    # Ensure the model is a DeepSeek model 
     if 'deepseek' not in model.__class__.__module__:
         raise ValueError("The provided model is not a DeepSeek model")
 
@@ -773,7 +773,7 @@ def apply_liger_kernel_to_deepseek_v2(
         pass
         # modeling_mod.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        modeling_mod.DeepseekRMSNormV2 = LigerRMSNorm  
+        modeling_mod.DeepseekV2RMSNorm = LigerRMSNorm  
     if swiglu:
         modeling_mod.DeepseekV2MLP.forward = LigerSwiGLUMLP.forward
     if cross_entropy:
@@ -800,9 +800,13 @@ def apply_liger_kernel_to_deepseek_v2(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                if isinstance(decoder_layer.mlp, modeling_mod.DeepseekV2MLP):
+                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                if isinstance(decoder_layer.mlp, modeling_mod.DeepseekV2MoE):
+                    for expert in decoder_layer.mlp.experts:
+                        _bind_method_to_module(expert, "forward", LigerSwiGLUMLP.forward)
             if rms_norm:
-                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.self_attn.kv_a_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
