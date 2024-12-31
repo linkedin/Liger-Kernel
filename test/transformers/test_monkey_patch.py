@@ -700,27 +700,20 @@ def test_apply_liger_kernel_to_instance_for_phi3():
 
 
 def test_apply_liger_kernel_to_deepseek_v2():
-    from accelerate import init_empty_weights
 
     config = AutoConfig.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Base", trust_remote_code=True)
 
     config.torch_dtype = torch.bfloat16
-    # config.layer_norm_eps = 1e-6
     config.rms_norm_eps = 1e-5
     config.hidden_size = 32
     config.intermediate_size = 64
     config.hidden_act = "silu"
     config.num_hidden_layers = 2
         
-    # config.attention_probs_dropout_prob = 0.1
-    # config.rope_theta = 10000.0
-    # config.tie_word_embeddings = False
-    
-    with init_empty_weights():
-        dummy_model = AutoModelForCausalLM.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Base", config=config, trust_remote_code=True)
-        modeling_mod = sys.modules[dummy_model.__class__.__module__]
+    dummy_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    modeling_mod_name = dummy_model.__class__.__module__
 
-    with patch("modeling_mod"):
+    with patch.dict(sys.modules, {modeling_mod_name: Mock()}):
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for i, layer in enumerate(dummy_model.model.layers):
