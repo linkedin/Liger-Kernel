@@ -1,16 +1,17 @@
 import inspect
+import sys
 
 from inspect import signature
 from unittest.mock import MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
-import sys
 import pytest
 import torch
 import transformers
 
-from transformers import AutoModelForCausalLM, AutoConfig
+from transformers import AutoConfig
+from transformers import AutoModelForCausalLM
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
 
@@ -48,6 +49,7 @@ def is_qwen2_vl_available():
 def test_import_from_root():
     try:
         from liger_kernel.transformers import AutoLigerKernelForCausalLM  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_deepseek_v2  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma2  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_llama  # noqa: F401
@@ -57,7 +59,6 @@ def test_import_from_root():
         from liger_kernel.transformers import apply_liger_kernel_to_phi3  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_qwen2  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl  # noqa: F401
-        from liger_kernel.transformers import apply_liger_kernel_to_deepseek_v2  # noqa: F401
     except Exception:
         pytest.fail("Import kernel patch from root fails")
 
@@ -700,7 +701,6 @@ def test_apply_liger_kernel_to_instance_for_phi3():
 
 
 def test_apply_liger_kernel_to_deepseek_v2():
-
     config = AutoConfig.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Base", trust_remote_code=True)
 
     config.torch_dtype = torch.bfloat16
@@ -709,7 +709,7 @@ def test_apply_liger_kernel_to_deepseek_v2():
     config.intermediate_size = 64
     config.hidden_act = "silu"
     config.num_hidden_layers = 2
-        
+
     dummy_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
     modeling_mod_name = dummy_model.__class__.__module__
 

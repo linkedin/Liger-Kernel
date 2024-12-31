@@ -7,6 +7,7 @@ from liger_kernel.transformers.jsd import LigerJSD  # noqa: F401
 from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel  # noqa: F401
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance  # noqa: F401
+from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_deepseek_v2  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma2  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
@@ -16,7 +17,6 @@ from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mllama 
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_phi3  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2_vl  # noqa: F401
-from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_deepseek_v2  # noqa: F401
 from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401
 from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP  # noqa: F401

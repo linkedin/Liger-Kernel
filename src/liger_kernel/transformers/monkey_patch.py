@@ -13,6 +13,7 @@ from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
+from liger_kernel.transformers.model.deepseekv2 import lce_forward as deepseek_v2_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward_deprecated
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
@@ -26,7 +27,6 @@ from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward_deprecated
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward_deprecated
-from liger_kernel.transformers.model.deepseekv2 import lce_forward as deepseek_v2_lce_forward
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
@@ -735,6 +735,7 @@ def apply_liger_kernel_to_phi3(
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
+
 def apply_liger_kernel_to_deepseek_v2(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -763,8 +764,8 @@ def apply_liger_kernel_to_deepseek_v2(
 
     import sys
 
-    # Ensure the model is a DeepSeek model 
-    if 'deepseek' not in model.__class__.__module__:
+    # Ensure the model is a DeepSeek model
+    if "deepseek" not in model.__class__.__module__:
         raise ValueError("The provided model is not a DeepSeek model")
 
     modeling_mod = sys.modules[model.__class__.__module__]
@@ -773,7 +774,7 @@ def apply_liger_kernel_to_deepseek_v2(
         pass
         # modeling_mod.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        modeling_mod.DeepseekV2RMSNorm = LigerRMSNorm  
+        modeling_mod.DeepseekV2RMSNorm = LigerRMSNorm
     if swiglu:
         modeling_mod.DeepseekV2MLP.forward = LigerSwiGLUMLP.forward
     if cross_entropy:
@@ -787,7 +788,6 @@ def apply_liger_kernel_to_deepseek_v2(
     if fused_linear_cross_entropy:
         modeling_mod.DeepseekForCausalLM.forward = deepseek_v2_lce_forward
 
-    
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
@@ -808,6 +808,7 @@ def apply_liger_kernel_to_deepseek_v2(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.self_attn.kv_a_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
