@@ -149,10 +149,11 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             teacher_bias (torch.Tensor, optional): Teacher bias tensor. Shape: (vocab_size,).
             loss_fn (callable): Loss function to compute the loss on a chunk of input/target.
             chunk_size (int): Size of a chunk.
-            compute_ce_loss (bool): Whether to compute CE loss.
             ignore_index (int): Index to ignore for loss computation.
             weight_hard_loss (float): Weight for hard/task loss.
             weight_soft_loss (float): Weight for soft/distillation loss.
+            compute_ce_loss (bool): Whether to compute CE loss.
+            temperature (float): Temperature to control the input probability distribution. Default: `1.0` (i.e. no scale)
             compiled (bool): Whether to use torch compile for chunk accumulation.
             loss_kwargs (dict): Other possible arguments that a loss function might need
         """
@@ -224,7 +225,6 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         if compiled:
             accumulate_chunk = torch.compile(accumulate_chunk)
 
-        # Scale logits by temperature, scale by 1 as default (no scale).
         student_input /= temperature
         teacher_input /= temperature
 
