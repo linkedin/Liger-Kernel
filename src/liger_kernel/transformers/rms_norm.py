@@ -19,9 +19,7 @@ class LigerRMSNorm(nn.Module):
             "ones",
             "zeros",
         ], f"init_fn must be either 'ones' or 'zeros', got {init_fn}"
-        self.weight = nn.Parameter(
-            torch.ones(hidden_size) if init_fn == "ones" else torch.zeros(hidden_size)
-        )
+        self.weight = nn.Parameter(torch.ones(hidden_size) if init_fn == "ones" else torch.zeros(hidden_size))
         self.variance_epsilon, self.offset, self.casting_mode, self.in_place = (
             eps,
             offset,
@@ -40,4 +38,6 @@ class LigerRMSNorm(nn.Module):
         )
 
     def extra_repr(self):
-        return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}, offset={self.offset}, in_place={self.in_place}"
+        return (
+            f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}, offset={self.offset}, in_place={self.in_place}"
+        )

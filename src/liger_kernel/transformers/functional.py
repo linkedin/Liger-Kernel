@@ -1,9 +1,7 @@
 from typing import Optional
 
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
-from liger_kernel.ops.fused_linear_cross_entropy import (
-    LigerFusedLinearCrossEntropyFunction,
-)
+from liger_kernel.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
 from liger_kernel.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.group_norm import LigerGroupNormFunction
@@ -34,6 +32,7 @@ def liger_cross_entropy(
     loss, z_loss = LigerCrossEntropyFunction.apply(
         input,
         target,
+        weight,
         ignore_index,
         lse_square_scale,
         label_smoothing,
@@ -51,6 +50,7 @@ def liger_fused_linear_cross_entropy(
     weight,
     target,
     bias=None,
+    ce_weight=None,
     ignore_index: int = -100,
     lse_square_scale: float = 0.0,
     label_smoothing: float = 0.0,
@@ -62,6 +62,7 @@ def liger_fused_linear_cross_entropy(
         weight,
         target,
         bias,
+        ce_weight,
         ignore_index,
         lse_square_scale,
         label_smoothing,
@@ -159,9 +160,7 @@ def liger_qwen2vl_mrope(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
     return LigerQwen2VLMRopeFunction.apply(q, k, cos, sin, mrope_section, unsqueeze_dim)
 
 
-def liger_rms_norm(
-    X, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True
-):
+def liger_rms_norm(X, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):
     return LigerRMSNormFunction.apply(X, W, eps, offset, casting_mode, in_place)
 
 

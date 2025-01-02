@@ -7,7 +7,6 @@ from liger_kernel.chunked_loss.fused_linear_preference import (
 
 
 class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
-
     @staticmethod
     def preference_loss_fn(
         chosen_logps, rejected_logps, full_target, beta=0.1, label_smoothing=0.0

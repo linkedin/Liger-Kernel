@@ -1,22 +1,20 @@
 import logging
-from typing import Optional, Tuple, Union
+
+from typing import Optional
+from typing import Tuple
+from typing import Union
 
 import torch
+
 from torch.nn import CrossEntropyLoss
 from transformers.cache_utils import HybridCache
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.gemma2.modeling_gemma2 import (
-    _CONFIG_FOR_DOC,
-    GEMMA2_INPUTS_DOCSTRING,
-)
-from transformers.utils import (
-    add_start_docstrings_to_model_forward,
-    replace_return_docstrings,
-)
+from transformers.models.gemma2.modeling_gemma2 import _CONFIG_FOR_DOC
+from transformers.models.gemma2.modeling_gemma2 import GEMMA2_INPUTS_DOCSTRING
+from transformers.utils import add_start_docstrings_to_model_forward
+from transformers.utils import replace_return_docstrings
 
-from liger_kernel.transformers.fused_linear_cross_entropy import (
-    LigerFusedLinearCrossEntropyLoss,
-)
+from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 
 logger = logging.getLogger(__name__)
 
@@ -63,19 +61,11 @@ def lce_forward_deprecated(
             "It is strongly recommended to train Gemma2 models with the `eager` attention implementation "
             f"instead of `{self.config._attn_implementation}`. Use `eager` with `AutoModelForCausalLM.from_pretrained('<path-to-checkpoint>', attn_implementation='eager')`."
         )
-    output_attentions = (
-        output_attentions
-        if output_attentions is not None
-        else self.config.output_attentions
-    )
+    output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
-        output_hidden_states
-        if output_hidden_states is not None
-        else self.config.output_hidden_states
+        output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
-    return_dict = (
-        return_dict if return_dict is not None else self.config.use_return_dict
-    )
+    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs = self.model(
         input_ids=input_ids,
@@ -104,9 +94,7 @@ def lce_forward_deprecated(
         shift_hidden_states = shift_hidden_states.view(-1, self.config.hidden_size)
         shift_labels = shift_labels.view(-1)
 
-        lce = LigerFusedLinearCrossEntropyLoss(
-            softcap=self.config.final_logit_softcapping
-        )
+        lce = LigerFusedLinearCrossEntropyLoss(softcap=self.config.final_logit_softcapping)
         loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
 
     else:
@@ -146,9 +134,7 @@ def lce_forward_deprecated(
 
 
 @add_start_docstrings_to_model_forward(GEMMA2_INPUTS_DOCSTRING)
-@replace_return_docstrings(
-    output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC
-)
+@replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -201,19 +187,11 @@ def lce_forward(
             "It is strongly recommended to train Gemma2 models with the `eager` attention implementation "
             f"instead of `{self.config._attn_implementation}`. Use `eager` with `AutoModelForCausalLM.from_pretrained('<path-to-checkpoint>', attn_implementation='eager')`."
         )
-    output_attentions = (
-        output_attentions
-        if output_attentions is not None
-        else self.config.output_attentions
-    )
+    output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
-        output_hidden_states
-        if output_hidden_states is not None
-        else self.config.output_hidden_states
+        output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
-    return_dict = (
-        return_dict if return_dict is not None else self.config.use_return_dict
-    )
+    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs = self.model(
         input_ids=input_ids,
