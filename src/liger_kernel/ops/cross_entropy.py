@@ -95,7 +95,8 @@ def liger_cross_entropy_kernel(
         return
 
     loss_ptr += program_id * loss_stride
-    z_loss_ptr += program_id * loss_stride
+    if RETURN_Z_LOSS == _TRUE:
+        z_loss_ptr += program_id * loss_stride
 
     if HAS_WEIGHT:
         weight_y = tl.load(weight_ptr + y).cast(tl.float32)
@@ -296,7 +297,7 @@ def cross_entropy_forward(
     if return_z_loss == _TRUE.value:
         z_loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
     else:
-        z_loss_1d = loss_1d  # dummy ptr when return_z_loss == False
+        z_loss_1d = None  # set None when return_z_loss == False
 
     target_mask = target != ignore_index
     n_non_ignore = target_mask.sum().item()
