@@ -1,16 +1,12 @@
 import torch
 import torch.nn.functional as F
 
-from liger_kernel.chunked_loss.fused_linear_preference import (
-    LigerFusedLinearPreferenceBase,
-)
+from liger_kernel.chunked_loss.fused_linear_preference import LigerFusedLinearPreferenceBase
 
 
 class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
     @staticmethod
-    def preference_loss_fn(
-        chosen_logps, rejected_logps, full_target, beta=0.1, label_smoothing=0.0
-    ):
+    def preference_loss_fn(chosen_logps, rejected_logps, full_target, beta=0.1, label_smoothing=0.0):
         """
         Paper: https://arxiv.org/pdf/2401.08417
 
@@ -34,10 +30,9 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             label_smoothing (float): Label smoothing factor, will reduce to Equation above when label_smoothing -> 0.
         """
         logits = beta * (chosen_logps - rejected_logps)
-        loss = (
-            -F.logsigmoid(logits).sum() * (1 - label_smoothing)
-            - F.logsigmoid(-logits).sum() * label_smoothing
-        ) / (full_target.shape[0] // 2)
+        loss = (-F.logsigmoid(logits) * (1 - label_smoothing) - F.logsigmoid(-logits) * label_smoothing).sum() / (
+            full_target.shape[0] // 2
+        )
 
         chosen_rewards = beta * chosen_logps
         rejected_rewards = beta * rejected_logps
