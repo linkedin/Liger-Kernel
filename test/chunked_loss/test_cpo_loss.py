@@ -101,7 +101,7 @@ class TorchLMHeadCPO(torch.nn.Module):
         ).get_batch_loss_metrics
 
     def forward(self, x, y):
-        return self.cpo_loss(self.lin.weight, x, y, self.lin.bias)
+        return self.cpo_loss(self.lin.weight, x, y, self.lin.bias, average_log_prob=False)
 
 
 class LigerLMHeadCPO(torch.nn.Module):
