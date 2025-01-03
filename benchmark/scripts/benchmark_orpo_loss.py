@@ -19,36 +19,6 @@ device = infer_device()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
-class TorchLMHeadORPO(torch.nn.Module):
-    """Ground truth implementation of the linear fused with torch based cross entropy loss.
-
-    :param H: hidden size
-    :param V: vocab size
-    :param ignore_index: index to ignore
-    :param reduction: reduction method
-    """
-
-    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
-        from test.chunked_loss.test_orpo_loss import HFORPOLoss
-
-        super().__init__()
-        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
-        self.orpo_loss = HFORPOLoss().get_batch_loss_metrics
-
-    def forward(self, x, y, nll_target):
-        return self.orpo_loss(x, self.lin.weight, y, nll_target=nll_target)
-
-
-class LigerLMHeadORPO(torch.nn.Module):
-    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
-        super().__init__()
-        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
-        self.orpo_loss = LigerFusedLinearORPOFunction.apply
-
-    def forward(self, x, y, nll_target):
-        return self.orpo_loss(x, self.lin.weight, y, nll_target=nll_target)
-
-
 #############################################################################
 # Test the memory consumption of the linear fused cross entropy loss
 #############################################################################
@@ -57,6 +27,8 @@ class LigerLMHeadORPO(torch.nn.Module):
 def bench_memory_fused_linear_orpo_loss(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
+    from test.chunked_loss.test_orpo_loss import LigerLMHeadORPO, TorchLMHeadORPO
+
     B = input.x
     T = input.extra_benchmark_config["T"]
     H = input.extra_benchmark_config["H"]
@@ -64,8 +36,12 @@ def bench_memory_fused_linear_orpo_loss(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    torch_lm_head_orpo = TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_orpo = LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(device)
+    torch_lm_head_orpo = lambda x, target: TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(
+        device
+    )(x, target)[0]
+    liger_lm_head_orpo = lambda x, target: LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(
+        device
+    )(x, target)[0]
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
@@ -97,6 +73,8 @@ def bench_memory_fused_linear_orpo_loss(
 def bench_speed_fused_linear_orpo_loss(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
+    from test.chunked_loss.test_orpo_loss import LigerLMHeadORPO, TorchLMHeadORPO
+
     B = input.x
     T = input.extra_benchmark_config["T"]
     H = input.extra_benchmark_config["H"]
@@ -105,8 +83,12 @@ def bench_speed_fused_linear_orpo_loss(
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
-    torch_lm_head_orpo = TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_orpo = LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(device)
+    torch_lm_head_orpo = lambda x, target: TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(
+        device
+    )(x, target)[0]
+    liger_lm_head_orpo = lambda x, target: LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(
+        device
+    )(x, target)[0]
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
