@@ -99,9 +99,10 @@ class TorchLMHeadCPO(torch.nn.Module):
             label_smoothing=label_smoothing,
             simpo_gamma=simpo_gamma,
         ).get_batch_loss_metrics
+        self.average_log_prob = loss_type == "simpo"
 
     def forward(self, x, y):
-        return self.cpo_loss(self.lin.weight, x, y, self.lin.bias, average_log_prob=False)
+        return self.cpo_loss(self.lin.weight, x, y, self.lin.bias, average_log_prob=self.average_log_prob)
 
 
 class LigerLMHeadCPO(torch.nn.Module):
