@@ -52,6 +52,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         ignore_index=-100,
         beta=0.1,
         compute_nll_loss=True,
+        nll_target=None,
         compiled=True,
     ):
         return LigerFusedLinearPreferenceBase.forward(
@@ -64,13 +65,14 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
             ignore_index=ignore_index,
             beta=beta,
             compute_nll_loss=compute_nll_loss,
+            nll_target=nll_target,
             compiled=compiled,
         )
 
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None
+        return *grads, None, None, None, None, None
 
 
 class LigerFusedLinearORPOLoss(torch.nn.Module):
@@ -96,7 +98,7 @@ class LigerFusedLinearORPOLoss(torch.nn.Module):
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
 
-    def forward(self, lin_weight, _input, target, bias=None):
+    def forward(self, lin_weight, _input, target, bias=None, nll_target=None):
         return LigerFusedLinearORPOFunction.apply(
             _input,
             lin_weight,
@@ -105,5 +107,6 @@ class LigerFusedLinearORPOLoss(torch.nn.Module):
             self.ignore_index,
             self.beta,
             self.compute_nll_loss,
+            nll_target,
             self.compiled,
         )

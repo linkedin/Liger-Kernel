@@ -86,8 +86,8 @@ class TorchLMHeadORPO(torch.nn.Module):
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.orpo_loss = HFORPOLoss(ignore_index=ignore_index, beta=beta).get_batch_loss_metrics
 
-    def forward(self, x, y):
-        return self.orpo_loss(self.lin.weight, x, y, self.lin.bias)
+    def forward(self, x, y, nll_target=None):
+        return self.orpo_loss(self.lin.weight, x, y, self.lin.bias, nll_target=nll_target)
 
 
 class LigerLMHeadORPO(torch.nn.Module):
@@ -104,8 +104,8 @@ class LigerLMHeadORPO(torch.nn.Module):
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.orpo_loss = LigerFusedLinearORPOLoss(ignore_index=ignore_index, beta=beta)
 
-    def forward(self, x, y):
-        return self.orpo_loss(self.lin.weight, x, y, self.lin.bias)
+    def forward(self, x, y, nll_target=None):
+        return self.orpo_loss(self.lin.weight, x, y, self.lin.bias, nll_target=nll_target)
 
 
 @pytest.mark.parametrize(
@@ -164,13 +164,15 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
         device=device,
         dtype=torch.long,
     )
+    nll_target = torch.randint(0, V, (B, T), device=device, dtype=torch.long)
+
     # Assign some random number of elements as ignore_index
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    loss1, aggregated_aux_outputs1 = torch_lm_head_orpo(input1, target)
-    loss2, aggregated_aux_outputs2 = liger_lm_head_orpo(input2, target)
+    loss1, aggregated_aux_outputs1 = torch_lm_head_orpo(input1, target, nll_target)
+    loss2, aggregated_aux_outputs2 = liger_lm_head_orpo(input2, target, nll_target)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
@@ -244,8 +246,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias):
     bias1 = _bias.detach().clone().requires_grad_(True) if bias else None
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
-    loss1, aggregated_aux_outputs1 = LigerFusedLinearORPOFunction.apply(input1, weight1, target, bias1)
-    loss2, aggregated_aux_outputs2 = liger_fused_linear_orpo(input2, weight2, target, bias2)
+    loss1, _ = LigerFusedLinearORPOFunction.apply(input1, weight1, target, bias1)
+    loss2, _ = liger_fused_linear_orpo(input2, weight2, target, bias2)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 

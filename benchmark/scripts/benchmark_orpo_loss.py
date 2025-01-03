@@ -45,12 +45,13 @@ def bench_memory_fused_linear_orpo_loss(
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
+    nll_target = torch.randint(V, (B, T), dtype=torch.long, device=device)
 
     def fwd():
         if provider == "liger":
-            return liger_lm_head_orpo(_input, target)
+            return liger_lm_head_orpo(_input, target, nll_target)
         elif provider == "huggingface":
-            return torch_lm_head_orpo(_input, target)
+            return torch_lm_head_orpo(_input, target, nll_target)
 
     def full():
         y = fwd()
@@ -91,12 +92,13 @@ def bench_speed_fused_linear_orpo_loss(
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
+    nll_target = torch.randint(V, (B, T), dtype=torch.long, device=device)
 
     def fwd():
         if provider == "liger":
-            return liger_lm_head_orpo(_input, target)
+            return liger_lm_head_orpo(_input, target, nll_target)
         elif provider == "huggingface":
-            return torch_lm_head_orpo(_input, target)
+            return torch_lm_head_orpo(_input, target, nll_target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
