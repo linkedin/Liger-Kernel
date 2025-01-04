@@ -20,9 +20,6 @@ if compare_version("triton", operator.ge, "3.0.0"):
 else:
     from triton.language.math import tanh
 
-_TRUE: tl.constexpr = tl.constexpr(1)
-_FALSE: tl.constexpr = tl.constexpr(0)
-
 
 @triton.jit
 def liger_cross_entropy_kernel(
@@ -95,7 +92,7 @@ def liger_cross_entropy_kernel(
         return
 
     loss_ptr += program_id * loss_stride
-    if RETURN_Z_LOSS == _TRUE:
+    if RETURN_Z_LOSS:
         z_loss_ptr += program_id * loss_stride
 
     if HAS_WEIGHT:
@@ -254,7 +251,7 @@ def liger_cross_entropy_kernel(
     loss += z_loss
 
     tl.store(loss_ptr, loss)
-    if RETURN_Z_LOSS == _TRUE:
+    if RETURN_Z_LOSS:
         tl.store(z_loss_ptr, z_loss)
 
 
@@ -262,12 +259,6 @@ def liger_cross_entropy_kernel(
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
 MAX_FUSED_SIZE = 65536 // 2  # the best size we found by manually tuning
-
-
-_bool_to_return_z_loss = {
-    True: _TRUE.value,
-    False: _FALSE.value,
-}
 
 
 def cross_entropy_forward(
@@ -281,11 +272,7 @@ def cross_entropy_forward(
     softcap,
     return_z_loss,
 ):
-    if not isinstance(return_z_loss, int):
-        assert return_z_loss in _bool_to_return_z_loss, f"return_z_loss must be True or False. Got: {return_z_loss}"
-        return_z_loss = _bool_to_return_z_loss[return_z_loss]
-    else:
-        assert return_z_loss in _bool_to_return_z_loss, f"return_z_loss must be True or False. Got: {return_z_loss}"
+    assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
 
     BT, V = _input.shape
     n_rows = BT
@@ -294,10 +281,7 @@ def cross_entropy_forward(
 
     # unreduced loss
     loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
-    if return_z_loss == _TRUE.value:
-        z_loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
-    else:
-        z_loss_1d = None  # set None when return_z_loss == False
+    z_loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device) if return_z_loss else None
 
     target_mask = target != ignore_index
     n_non_ignore = target_mask.sum().item()
@@ -326,7 +310,7 @@ def cross_entropy_forward(
         X_stride=_input.stride(-2),
         Y_ptr=target,
         Y_stride=target.stride(-1),  # always 1
-        weight_ptr=weight if weight is not None else _input,  # dummy if None
+        weight_ptr=weight,  # dummy if None
         loss_ptr=loss_1d,
         z_loss_ptr=z_loss_1d,
         loss_stride=loss_1d.stride(-1),  # always 1
@@ -338,7 +322,7 @@ def cross_entropy_forward(
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
         reduction=reduction,
-        softcap=softcap if softcap is not None else 0.0,
+        softcap=softcap,
         RETURN_Z_LOSS=return_z_loss,
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_WEIGHT=True if weight is not None else False,
@@ -350,10 +334,10 @@ def cross_entropy_forward(
 
     if reduction == "none":
         loss = loss_1d
-        z_loss = z_loss_1d if return_z_loss == _TRUE.value else None
+        z_loss = z_loss_1d if return_z_loss else None
     else:
         loss = torch.sum(loss_1d)
-        z_loss = torch.sum(z_loss_1d) if return_z_loss == _TRUE.value else None
+        z_loss = torch.sum(z_loss_1d) if return_z_loss else None
 
     return loss, z_loss, _input
 
