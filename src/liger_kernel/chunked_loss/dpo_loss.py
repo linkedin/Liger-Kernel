@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 
@@ -64,6 +66,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=False,
         compiled=True,
         use_ref_model=True,
+        softcap=None,
     ):
         return LigerFusedLinearPreferenceBase.forward(
             ctx=ctx,
@@ -80,12 +83,13 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             ref_input=ref_input,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
+            softcap=softcap,
         )
 
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None, None, None, None, None
+        return *grads, None, None, None, None, None, None, None, None, None
 
 
 class LigerFusedLinearDPOLoss(torch.nn.Module):
@@ -100,6 +104,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         compute_nll_loss: bool = False,
         compiled: bool = True,
         use_ref_model: bool = False,
+        softcap: Optional[float] = None,
     ):
         """
         Args:
@@ -108,6 +113,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             compute_nll_loss (bool): Whether to compute the NLL loss.
             compiled (bool): Whether to use the torch compiled kernel.
             use_ref_model (bool): Whether to use a reference model for the DPO loss.
+            softcap (Optional[float]): The upper threshold for scaling logits to the range (-softcap, +softcap).
         """
         super().__init__()
         self.ignore_index = ignore_index
@@ -115,6 +121,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
         self.use_ref_model = use_ref_model
+        self.softcap = softcap
 
     def forward(
         self,
@@ -139,4 +146,5 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             self.compute_nll_loss,
             self.compiled,
             self.use_ref_model,
+            self.softcap,
         )

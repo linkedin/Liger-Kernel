@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 
@@ -48,6 +50,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
         label_smoothing=0.0,
         compute_nll_loss=True,
         compiled=True,
+        softcap=None,
     ):
         return LigerFusedLinearPreferenceBase.forward(
             ctx,
@@ -62,6 +65,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             label_smoothing=label_smoothing,
             compute_nll_loss=compute_nll_loss,
             compiled=compiled,
+            softcap=softcap,
         )
 
     @staticmethod
@@ -83,11 +87,13 @@ class LigerFusedLinearCPOLoss(torch.nn.Module):
         label_smoothing: float = 0.0,
         compute_nll_loss: bool = True,
         compiled: bool = True,
+        softcap: Optional[float] = None,
     ):
         """
         Args:
             ignore_index (int): Index to ignore in the loss.
             beta (float): Weight for the odds ratio loss.
+            softcap (Optional[float]): The upper threshold for scaling logits to the range (-softcap, +softcap).
         """
         super().__init__()
         self.ignore_index = ignore_index
@@ -96,6 +102,7 @@ class LigerFusedLinearCPOLoss(torch.nn.Module):
         self.label_smoothing = label_smoothing
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
+        self.softcap = softcap
 
     def forward(self, lin_weight, _input, target, bias=None):
         return LigerFusedLinearCPOFunction.apply(
@@ -109,4 +116,5 @@ class LigerFusedLinearCPOLoss(torch.nn.Module):
             self.label_smoothing,
             self.compute_nll_loss,
             self.compiled,
+            self.softcap,
         )
