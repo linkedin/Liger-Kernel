@@ -6,19 +6,15 @@ from liger_kernel.chunked_loss.fused_linear_distillation import LigerFusedLinear
 
 class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
     @staticmethod
-    def distillation_loss_fn(student_logits, teacher_logits, temperature):
+    def distillation_loss_fn(student_logits, teacher_logits):
         """
         Compute JSD loss (Jensen-Shannon Divergence Loss).
         Args:
-            student_logits (torch.Tensor): Raw logits of student tokens. Shape: (batch_size,).
-            teacher_logits (torch.Tensor): Raw logits of teacher tokens. Shape: (batch_size,).
-            temperature (float): Temperature for softening probability distributions
+            student_logits (torch.Tensor): Logits of student tokens. Shape: (batch_size * seq_len,).
+            teacher_logits (torch.Tensor): Logits of teacher tokens. Shape: (batch_size * seq_len,).
         Returns:
             torch.Tensor: Jensen-Shannon Divergence loss
         """
-        # Scale logits by temperature
-        student_logits = student_logits / temperature
-        teacher_logits = teacher_logits / temperature
         # Convert to probabilities
         student_probs = F.softmax(student_logits, dim=-1)
         teacher_probs = F.softmax(teacher_logits, dim=-1)
@@ -28,13 +24,13 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         student_kl = F.kl_div(
             log_mean_probs,
             torch.log(student_probs),
-            reduction="batchmean",
+            reduction="sum",
             log_target=True,
         )
         teacher_kl = F.kl_div(
             log_mean_probs,
             torch.log(teacher_probs),
-            reduction="batchmean",
+            reduction="sum",
             log_target=True,
         )
 
@@ -67,7 +63,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             weight_hard_loss (float): Weight for hard loss.
             weight_soft_loss (float): Weight for soft loss.
             ignore_index (int): Index to ignore in loss computation
-            temperature (float): Temperature for softening distributions
+            temperature (float): Temperature for softening/sharpening distributions
             compiled (bool): Whether to use torch compile
         Returns:
             torch.Tensor: Computed loss

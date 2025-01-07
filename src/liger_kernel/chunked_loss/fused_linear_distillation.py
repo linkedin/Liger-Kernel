@@ -71,10 +71,11 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         weight_hard_loss=0.5,
         weight_soft_loss=0.5,
         compute_ce_loss=True,
+        temperature=1,
         **loss_kwargs,
     ):
         """
-        Compute the total loss for a chunk of input and target, while using an knowleedge distillation loss function.
+        Compute the total loss for a chunk of input and target, while using an knowledge distillation loss function.
         Args:
             distillation_loss_fn (callable): Loss function to compute the loss on a chunk of input/target.
             student_input_chunk (torch.Tensor): Chunk of input tensor. Shape: (chunk_size, student_hidden_size).
@@ -84,11 +85,12 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             target_chunk (torch.Tensor): Chunk of target tensor. Shape: (chunk_size,).
             student_bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
             teacher_bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,).
-            full_target (torch.Tensor): Full target tensor. Shape: (chunk_size,).
+            full_target (torch.Tensor): Full target tensor. Shape: (batch_size * sequence_length,).
             ignore_index (int): Index to ignore for loss computation.
             weight_hard_loss (float): Weight for hard loss.
             weight_soft_loss (float): Weight for soft loss.
             compute_ce_loss (bool): Whether to compute CE loss.
+            temperature (float): Temperature to control the input probability distribution. Default: `1.0` (i.e. no scale)
             loss_kwargs (dict): Additional arguments for the loss function.
         """
         (
@@ -106,6 +108,9 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             ignore_index=ignore_index,
             compute_ce_loss=compute_ce_loss,
         )
+
+        student_logits_chunk /= temperature
+        teacher_logits_chunk /= temperature
 
         hard_loss /= full_target.shape[0]
 
@@ -171,6 +176,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             weight_hard_loss=weight_hard_loss,
             weight_soft_loss=weight_soft_loss,
             compute_ce_loss=compute_ce_loss,
+            temperature=temperature,
             **loss_kwargs,
         )
 
@@ -224,9 +230,6 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
 
         if compiled:
             accumulate_chunk = torch.compile(accumulate_chunk)
-
-        student_input /= temperature
-        teacher_input /= temperature
 
         num_chunks = max(1, student_input.shape[0] // CHUNK_SIZE)
         _student_input_chunks = torch.chunk(student_input, chunks=num_chunks, dim=0)
