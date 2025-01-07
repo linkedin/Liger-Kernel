@@ -467,8 +467,8 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
-        kwargs["fused_linear_cross_entropy"] = False
-        kwargs["cross_entropy"] = True
+        kwargs["fused_linear_cross_entropy"] = True
+        kwargs["cross_entropy"] = False
         kwargs["model"] = model
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:

@@ -786,7 +786,7 @@ def apply_liger_kernel_to_deepseek_v2(
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
             modeling_mod.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_mod.DeepseekForCausalLM.forward = deepseek_v2_lce_forward
+        modeling_mod.DeepseekV2ForCausalLM.forward = deepseek_v2_lce_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
