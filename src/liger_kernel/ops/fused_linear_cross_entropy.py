@@ -92,9 +92,9 @@ def fused_linear_cross_entropy_forward(
             X_stride=logits_chunk.stride(-2),
             Y_ptr=target_chunk,
             Y_stride=target_chunk.stride(-1),  # always 1
-            weight_ptr=ce_weight if ce_weight is not None else _input,  # dummy if None
+            weight_ptr=ce_weight,
             loss_ptr=loss_1d_slice,
-            z_loss_ptr=loss_1d_slice,  # dummy ptr, not used
+            z_loss_ptr=None,
             loss_stride=loss_1d_slice.stride(-1),  # always 1
             n_cols=V,
             n_non_ignore=total_n_non_ignore,
@@ -104,8 +104,8 @@ def fused_linear_cross_entropy_forward(
             lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
             reduction=reduction,
-            softcap=softcap if softcap is not None else 0.0,
-            RETURN_Z_LOSS=0,  # False
+            softcap=softcap,
+            RETURN_Z_LOSS=False,
             HAS_WEIGHT=True if ce_weight is not None else False,
             HAS_SOFTCAPPING=True if softcap is not None else False,
             BLOCK_SIZE=BLOCK_SIZE,
