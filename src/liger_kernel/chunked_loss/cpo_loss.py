@@ -65,6 +65,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             beta=beta,
             label_smoothing=label_smoothing,
             compute_nll_loss=compute_nll_loss,
+            average_log_prob=False,
             compiled=compiled,
         )
 
