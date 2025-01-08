@@ -11,7 +11,6 @@ from utils import _test_memory
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
-from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -27,7 +26,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 def bench_memory_fused_linear_orpo_loss(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
-    from test.chunked_loss.test_orpo_loss import LigerLMHeadORPO, TorchLMHeadORPO
+    from test.chunked_loss.test_orpo_loss import LigerLMHeadORPO
+    from test.chunked_loss.test_orpo_loss import TorchLMHeadORPO
 
     B = input.x
     T = input.extra_benchmark_config["T"]
@@ -36,12 +36,8 @@ def bench_memory_fused_linear_orpo_loss(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    torch_lm_head_orpo = lambda x, target: TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(
-        device
-    )(x, target)[0]
-    liger_lm_head_orpo = lambda x, target: LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(
-        device
-    )(x, target)[0]
+    torch_lm_head_orpo = lambda x, target: TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(device)(x, target)[0]
+    liger_lm_head_orpo = lambda x, target: LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(device)(x, target)[0]
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
@@ -72,7 +68,8 @@ def bench_memory_fused_linear_orpo_loss(
 def bench_speed_fused_linear_orpo_loss(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
-    from test.chunked_loss.test_orpo_loss import LigerLMHeadORPO, TorchLMHeadORPO
+    from test.chunked_loss.test_orpo_loss import LigerLMHeadORPO
+    from test.chunked_loss.test_orpo_loss import TorchLMHeadORPO
 
     B = input.x
     T = input.extra_benchmark_config["T"]
@@ -82,12 +79,8 @@ def bench_speed_fused_linear_orpo_loss(
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
-    torch_lm_head_orpo = lambda x, target: TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(
-        device
-    )(x, target)[0]
-    liger_lm_head_orpo = lambda x, target: LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(
-        device
-    )(x, target)[0]
+    torch_lm_head_orpo = lambda x, target: TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(device)(x, target)[0]
+    liger_lm_head_orpo = lambda x, target: LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(device)(x, target)[0]
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
