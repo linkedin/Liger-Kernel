@@ -3,14 +3,13 @@ import sys
 
 import torch
 import triton
-from utils import (
-    QUANTILES,
-    SingleBenchmarkRunInput,
-    SingleBenchmarkRunOutput,
-    _test_memory,
-    parse_benchmark_script_args,
-    run_benchmarks,
-)
+
+from utils import QUANTILES
+from utils import SingleBenchmarkRunInput
+from utils import SingleBenchmarkRunOutput
+from utils import _test_memory
+from utils import parse_benchmark_script_args
+from utils import run_benchmarks
 
 from liger_kernel.chunked_loss.jsd_loss import LigerFusedLinearJSDFunction
 from liger_kernel.utils import infer_device
@@ -35,12 +34,8 @@ class TorchJSDLoss(torch.nn.Module):
         from test.chunked_loss.test_jsd_loss import HFJSDLoss
 
         super().__init__()
-        self.student_lin = torch.nn.Linear(
-            in_features=H // 2, out_features=V, bias=bias, dtype=dtype
-        )
-        self.teacher_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
+        self.student_lin = torch.nn.Linear(in_features=H // 2, out_features=V, bias=bias, dtype=dtype)
+        self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.jsd_loss = HFJSDLoss(
             ignore_index=ignore_index,
             weight_hard_loss=weight_hard_loss,
@@ -71,12 +66,8 @@ class LigerJSDLoss(torch.nn.Module):
         bias: bool = False,
     ):
         super().__init__()
-        self.student_lin = torch.nn.Linear(
-            in_features=H // 2, out_features=V, bias=bias, dtype=dtype
-        )
-        self.teacher_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=bias, dtype=dtype
-        )
+        self.student_lin = torch.nn.Linear(in_features=H // 2, out_features=V, bias=bias, dtype=dtype)
+        self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.weight_hard_loss = weight_hard_loss
         self.weight_soft_loss = weight_soft_loss
         self.ignore_index = ignore_index
@@ -258,7 +249,7 @@ if __name__ == "__main__":
         kernel_operation_modes=["forward", "full"],
         metric_name="speed",
         metric_unit="ms",
-        **common_configs
+        **common_configs,
     )
 
     run_benchmarks(
@@ -266,5 +257,5 @@ if __name__ == "__main__":
         kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
-        **common_configs
+        **common_configs,
     )

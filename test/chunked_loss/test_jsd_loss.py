@@ -41,7 +41,7 @@ class HFJSDLoss(HFDistillationLoss):
         Args:
             student_logits (torch.Tensor): Logits of student tokens. Shape: (batch_size * seq_len,).
             teacher_logits (torch.Tensor): Logits of teacher tokens. Shape: (batch_size * seq_len,).
-            beta (float): coefficient beta of generalized JSD in the interval [0, 1]. Default: `0.5`.
+            beta (float): Coefficient beta of generalized JSD in the interval [0, 1]. Default: `0.5`.
         Returns:
             torch.Tensor: Jensen-Shannon Divergence loss
         """
