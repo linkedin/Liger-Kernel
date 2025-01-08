@@ -35,36 +35,28 @@ class HFJSDLoss(HFDistillationLoss):
             temperature=temperature,
         )
 
-    def distillation_loss(self, student_logits, teacher_logits):
+    def distillation_loss(self, student_logits, teacher_logits, beta=0.5):
         """
         Compute JSD loss (Jensen-Shannon Divergence Loss).
         Args:
             student_logits (torch.Tensor): Logits of student tokens. Shape: (batch_size * seq_len,).
             teacher_logits (torch.Tensor): Logits of teacher tokens. Shape: (batch_size * seq_len,).
+            beta (float): coefficient beta of generalized JSD in the interval [0, 1]. Default: `0.5`.
         Returns:
             torch.Tensor: Jensen-Shannon Divergence loss
         """
-        # Convert to probabilities
-        student_probs = F.softmax(student_logits, dim=-1)
-        teacher_probs = F.softmax(teacher_logits, dim=-1)
+        student_log_probs = F.log_softmax(student_logits, dim=-1)
+        teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
 
-        log_mean_probs = torch.log((student_probs + teacher_probs) / 2)
+        # Compute probabilities (only required for mean calculation)
+        mean_probs = beta * student_log_probs.exp() + (1 - beta) * teacher_log_probs.exp()
+        log_mean_probs = mean_probs.log()
 
-        student_kl = F.kl_div(
-            log_mean_probs,
-            torch.log(student_probs),
-            reduction="batchmean",
-            log_target=True,
-        )
-        teacher_kl = F.kl_div(
-            log_mean_probs,
-            torch.log(teacher_probs),
-            reduction="batchmean",
-            log_target=True,
-        )
+        student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="batchmean", log_target=True)
+        teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="batchmean", log_target=True)
 
         # JSD is the average of the KL divergences
-        jsd_loss = (student_kl + teacher_kl) / 2
+        jsd_loss = beta * student_kl + (1 - beta) * teacher_kl
         return jsd_loss
 
 
@@ -167,7 +159,7 @@ class LigerLMHeadJSD(torch.nn.Module):
     [
         (1.0, 0.5, 0.5),
         (2.0, 0.5, 0.5),
-        (0.7, 0.5, 0.5),
+        (0.5, 0.5, 0.5),
         (1.0, 0.0, 1.0),
         (1.0, 1.0, 0.0),
     ],
