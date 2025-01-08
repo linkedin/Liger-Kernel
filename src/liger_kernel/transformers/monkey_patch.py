@@ -133,6 +133,62 @@ def apply_liger_kernel_to_llama(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_llava(
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    model: PreTrainedModel = None,
+    **kwargs,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Llava models.
+    NOTE: Llava is not available in transformers<4.45.0
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
+    from transformers.models.llava import modeling_llava
+
+    from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
+
+    if cross_entropy:
+        logger.error("Cross entropy loss is not supported in Llava models.")
+    if fused_linear_cross_entropy:
+        modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
+
+    if model is not None:
+        config = model.config
+        text_config, vision_config = config.text_config, config.vision_config
+
+        if text_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            _apply_liger_kernel_to_instance(
+                cross_entropy=cross_entropy,
+                fused_linear_cross_entropy=False,
+                model=model.language_model,
+                **kwargs,
+            )
+
+        if vision_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            _apply_liger_kernel_to_instance(
+                cross_entropy=cross_entropy,
+                fused_linear_cross_entropy=fused_linear_cross_entropy,
+                model=model.vision_model,
+                **kwargs,
+            )
+
+
 def apply_liger_kernel_to_mllama(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -740,6 +796,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
     "llama": apply_liger_kernel_to_llama,
+    "llava": apply_liger_kernel_to_llava,
     "mllama": apply_liger_kernel_to_mllama,
     "mllama_text_model": apply_liger_kernel_to_mllama,
     "mistral": apply_liger_kernel_to_mistral,
