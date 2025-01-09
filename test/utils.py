@@ -179,6 +179,13 @@ def load_tokenizer_config(config_path: str) -> dict:
     return tokenizer_config
 
 
+def load_image_processing_config(config_path: str) -> dict:
+    """Load and process image processing configuration from a JSON file."""
+    with open(config_path) as reader:
+        image_processing_config = json.load(reader)
+    return image_processing_config
+
+
 def train_bpe_tokenizer(special_tokens: List[str], unk_token: str = "<|unk|>"):
     """
     Train a tokenizer using the BPE algorithm.
@@ -329,6 +336,18 @@ def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
 
     importlib.reload(modeling_phi3)
     model_config.model_class = modeling_phi3.Phi3ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to llava.
+    """
+
+    from transformers.models.llava import modeling_llava
+
+    importlib.reload(modeling_llava)
+    model_config.model_class = modeling_llava.LlavaForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
 
