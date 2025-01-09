@@ -20,9 +20,6 @@ class LigerCrossEntropyLoss(torch.nn.Module):
         assert (label_smoothing >= 0) and (
             label_smoothing <= 1
         ), f"label_smoothing must be between 0.0 and 1.0. Got: {label_smoothing}"
-        assert (label_smoothing >= 0) and (
-            label_smoothing <= 1
-        ), f"label_smoothing must be between 0.0 and 1.0. Got: {label_smoothing}"
         assert reduction in {
             "mean",
             "sum",
