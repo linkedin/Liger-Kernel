@@ -406,8 +406,9 @@ class HFAlignmentLoss:
         _input: torch.FloatTensor,
         weight: torch.FloatTensor,
         target: torch.LongTensor,
-        bias: torch.FloatTensor = None,
+        bias: torch.FloatTensor | None = None,
         average_log_prob: bool = True,
+        nll_target: torch.LongTensor | None = None,
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
@@ -430,7 +431,7 @@ class HFAlignmentLoss:
             loss = loss_fct(logits, labels)
             return loss
 
-        labels = target
+        labels = nll_target if nll_target is not None else target
         chosen_nll_loss = torch.tensor(0.0, device=all_logits.device)
         if self.compute_nll_loss:
             chosen_nll_loss = cross_entropy_loss(all_logits[:len_chosen], labels[:len_chosen])
@@ -465,10 +466,11 @@ class HFAlignmentLoss:
         ref_weight: torch.FloatTensor = None,
         ref_bias: torch.FloatTensor = None,
         average_log_prob: bool = True,
+        nll_target: torch.LongTensor = None,
     ):
         """Compute the loss metrics for the given batch of inputs for train or test."""
 
-        forward_output = self.concatenated_forward(_input, weight, target, bias, average_log_prob)
+        forward_output = self.concatenated_forward(_input, weight, target, bias, average_log_prob, nll_target)
         (
             policy_chosen_logps,
             policy_rejected_logps,
