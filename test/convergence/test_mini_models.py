@@ -21,6 +21,7 @@ from transformers.models.qwen2 import Qwen2ForCausalLM
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
 from liger_kernel.transformers import apply_liger_kernel_to_llama
+from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mistral
 from liger_kernel.transformers import apply_liger_kernel_to_mixtral
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
@@ -33,6 +34,7 @@ from test.utils import assert_verbose_allclose
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_llama
+from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
 from test.utils import revert_liger_kernel_to_mllama
@@ -60,6 +62,15 @@ try:
     QWEN2_VL_AVAILABLE = True
 except ImportError:
     QWEN2_VL_AVAILABLE = False
+
+try:
+    # Qwen2-VL is only available in transformers>4.44.2
+    from transformers.models.llava.configuration_llava import LlavaConfig
+    from transformers.models.llava.modeling_llava import LlavaForConditionalGeneration
+
+    LLAVA_AVAILABLE = True
+except ImportError:
+    LLAVA_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -378,6 +389,61 @@ if QWEN2_VL_AVAILABLE:
                 "temporal_patch_size": 2,
             },
             attn_implementation="sdpa",
+        ),
+    )
+
+if LLAVA_AVAILABLE:
+    from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
+
+    MINI_MODEL_SETUPS["mini_llava"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_llava,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_llava,
+        model_class=LlavaForConditionalGeneration,
+        mini_model_config=LlavaConfig(
+            ignore_index=-100,
+            image_seq_length=384,
+            image_token_index=7,
+            projector_hidden_act="gelu",
+            vision_feature_layer=-2,
+            vision_feature_select_strategy="full",
+            text_config=Gemma2Config(
+                _name_or_path="google/gemma-2-9b",
+                architectures=["Gemma2ForCausalLM"],
+                attn_logit_softcapping=50.0,
+                bos_token_id=2,
+                cache_implementation="hybrid",
+                eos_token_id=1,
+                final_logit_softcapping=30.0,
+                head_dim=256,
+                hidden_act="gelu_pytorch_tanh",
+                hidden_activation="gelu_pytorch_tanh",
+                hidden_size=3584,
+                intermediate_size=14336,
+                max_position_embeddings=8192,
+                model_type="gemma2",
+                num_attention_heads=16,
+                num_hidden_layers=42,
+                num_key_value_heads=8,
+                pad_token_id=0,
+                query_pre_attn_scalar=256,
+                sliding_window=4096,
+                sliding_window_size=4096,
+                tie_word_embeddings=True,
+                torch_dtype="float32",
+                vocab_size=256000,
+            ),
+            vision_config=SiglipVisionConfig(
+                hidden_act="gelu_pytorch_tanh",
+                hidden_size=1152,
+                image_size=384,
+                intermediate_size=4304,
+                layer_norm_eps=1e-06,
+                model_type="siglip_vision_model",
+                num_attention_heads=16,
+                num_hidden_layers=27,
+                patch_size=14,
+            ),
+            attn_implementation="flash_attention_2",
         ),
     )
 
