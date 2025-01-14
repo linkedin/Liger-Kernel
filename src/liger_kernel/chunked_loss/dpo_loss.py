@@ -99,7 +99,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         beta: float = 0.1,
         compute_nll_loss: bool = False,
         compiled: bool = True,
-        use_ref_model: bool = False,
+        use_ref_model: bool = True,
     ):
         """
         Args:

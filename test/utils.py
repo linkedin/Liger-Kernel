@@ -499,6 +499,8 @@ class HFAlignmentLoss:
             policy_chosen_logits.detach().mean(),
             policy_rejected_logits.detach().mean(),
             policy_nll_loss,
+            ref_chosen_logps if self.use_ref_model else None,
+            ref_rejected_logps if self.use_ref_model else None,
         )
         return loss, (*return_vars, *aggregated_aux_outputs)
 
