@@ -1,6 +1,7 @@
 import torch
 import triton
 
+from transformers import __version__ as transformers_version
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
@@ -32,7 +33,13 @@ def bench_speed_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
 
     head_dim = hidden_size // num_q_heads
     llama_config = LlamaConfig(head_dim=head_dim)
-    rotary_emb = LlamaRotaryEmbedding(llama_config, device=device)
+
+    if transformers_version < "4.48.0":
+        # LlamaRotaryEmbedding constructor signature changed in transformers 4.48.0
+        rotary_emb = LlamaRotaryEmbedding(head_dim=head_dim, device=device)
+    else:
+        llama_config = LlamaConfig(head_dim=head_dim)
+        rotary_emb = LlamaRotaryEmbedding(llama_config, device=device)
     q = torch.randn(
         (1, seq_len, num_q_heads, head_dim),
         device=device,
@@ -107,8 +114,13 @@ def bench_memory_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
     seq_len = extra_benchmark_config["seq_len"] if "seq_len" in extra_benchmark_config else input.x
 
     head_dim = hidden_size // num_q_heads
-    llama_config = LlamaConfig(head_dim=head_dim)
-    rotary_emb = LlamaRotaryEmbedding(llama_config, device=device)
+
+    if transformers_version < "4.48.0":
+        # LlamaRotaryEmbedding constructor signature changed in transformers 4.48.0
+        rotary_emb = LlamaRotaryEmbedding(head_dim=head_dim, device=device)
+    else:
+        llama_config = LlamaConfig(head_dim=head_dim)
+        rotary_emb = LlamaRotaryEmbedding(llama_config, device=device)
     q = torch.randn(
         (1, seq_len, num_q_heads, head_dim),
         device=device,

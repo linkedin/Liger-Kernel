@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from test.utils import supports_bfloat16
+from transformers import __version__ as transformers_version
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
@@ -58,8 +59,12 @@ def test_correctness(
     atol,
     rtol,
 ):
-    llama_config = LlamaConfig(head_dim=head_dim)
-    rotary_emb = LlamaRotaryEmbedding(llama_config, device=device)
+    if transformers_version < "4.48.0":
+        # LlamaRotaryEmbedding constructor signature changed in transformers 4.48.0
+        rotary_emb = LlamaRotaryEmbedding(head_dim=head_dim, device=device)
+    else:
+        llama_config = LlamaConfig(head_dim=head_dim)
+        rotary_emb = LlamaRotaryEmbedding(llama_config, device=device)
 
     _tensor_q = torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device).transpose(1, 2).to(dtype)
 
