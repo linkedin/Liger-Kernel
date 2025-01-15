@@ -35,7 +35,7 @@ def bench_speed_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
 
     if transformers_version < "4.48.0":
         # LlamaRotaryEmbedding constructor signature changed in transformers 4.48.0
-        rotary_emb = LlamaRotaryEmbedding(head_dim=head_dim, device=device)
+        rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
     else:
         llama_config = LlamaConfig(head_dim=head_dim)
         rotary_emb = LlamaRotaryEmbedding(llama_config, device=device)
@@ -116,7 +116,7 @@ def bench_memory_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
 
     if transformers_version < "4.48.0":
         # LlamaRotaryEmbedding constructor signature changed in transformers 4.48.0
-        rotary_emb = LlamaRotaryEmbedding(head_dim=head_dim, device=device)
+        rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
     else:
         llama_config = LlamaConfig(head_dim=head_dim)
         rotary_emb = LlamaRotaryEmbedding(llama_config, device=device)
