@@ -1,49 +1,46 @@
 import pytest
 import torch
+from liger_kernel.transformers import (
+    apply_liger_kernel_to_gemma,
+    apply_liger_kernel_to_gemma2,
+    apply_liger_kernel_to_llama,
+    apply_liger_kernel_to_llava,
+    apply_liger_kernel_to_mistral,
+    apply_liger_kernel_to_mixtral,
+    apply_liger_kernel_to_mllama,
+    apply_liger_kernel_to_phi3,
+    apply_liger_kernel_to_qwen2,
+    apply_liger_kernel_to_qwen2_vl,
+)
+from torch.utils.data import DataLoader
 
 from datasets import load_from_disk
-from torch.utils.data import DataLoader
-from transformers.models.gemma import GemmaConfig
-from transformers.models.gemma import GemmaForCausalLM
-from transformers.models.gemma2 import Gemma2Config
-from transformers.models.gemma2 import Gemma2ForCausalLM
-from transformers.models.llama import LlamaConfig
-from transformers.models.llama import LlamaForCausalLM
-from transformers.models.mistral import MistralConfig
-from transformers.models.mistral import MistralForCausalLM
-from transformers.models.mixtral import MixtralConfig
-from transformers.models.mixtral import MixtralForCausalLM
-from transformers.models.phi3 import Phi3Config
-from transformers.models.phi3 import Phi3ForCausalLM
-from transformers.models.qwen2 import Qwen2Config
-from transformers.models.qwen2 import Qwen2ForCausalLM
+from test.utils import (
+    DEFAULT_DATASET_PATH,
+    MiniModelConfig,
+    assert_verbose_allclose,
+    revert_liger_kernel_to_gemma,
+    revert_liger_kernel_to_gemma2,
+    revert_liger_kernel_to_llama,
+    revert_liger_kernel_to_llava,
+    revert_liger_kernel_to_mistral,
+    revert_liger_kernel_to_mixtral,
+    revert_liger_kernel_to_mllama,
+    revert_liger_kernel_to_phi3,
+    revert_liger_kernel_to_qwen2,
+    revert_liger_kernel_to_qwen2_vl,
+    set_seed,
+    simple_collate_fn,
+    supports_bfloat16,
+)
+from transformers.models.gemma import GemmaConfig, GemmaForCausalLM
+from transformers.models.gemma2 import Gemma2Config, Gemma2ForCausalLM
+from transformers.models.llama import LlamaConfig, LlamaForCausalLM
+from transformers.models.mistral import MistralConfig, MistralForCausalLM
+from transformers.models.mixtral import MixtralConfig, MixtralForCausalLM
+from transformers.models.phi3 import Phi3Config, Phi3ForCausalLM
+from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
 
-from liger_kernel.transformers import apply_liger_kernel_to_gemma
-from liger_kernel.transformers import apply_liger_kernel_to_gemma2
-from liger_kernel.transformers import apply_liger_kernel_to_llama
-from liger_kernel.transformers import apply_liger_kernel_to_llava
-from liger_kernel.transformers import apply_liger_kernel_to_mistral
-from liger_kernel.transformers import apply_liger_kernel_to_mixtral
-from liger_kernel.transformers import apply_liger_kernel_to_mllama
-from liger_kernel.transformers import apply_liger_kernel_to_phi3
-from liger_kernel.transformers import apply_liger_kernel_to_qwen2
-from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
-from test.utils import DEFAULT_DATASET_PATH
-from test.utils import MiniModelConfig
-from test.utils import assert_verbose_allclose
-from test.utils import revert_liger_kernel_to_gemma
-from test.utils import revert_liger_kernel_to_gemma2
-from test.utils import revert_liger_kernel_to_llama
-from test.utils import revert_liger_kernel_to_llava
-from test.utils import revert_liger_kernel_to_mistral
-from test.utils import revert_liger_kernel_to_mixtral
-from test.utils import revert_liger_kernel_to_mllama
-from test.utils import revert_liger_kernel_to_phi3
-from test.utils import revert_liger_kernel_to_qwen2
-from test.utils import revert_liger_kernel_to_qwen2_vl
-from test.utils import set_seed
-from test.utils import simple_collate_fn
-from test.utils import supports_bfloat16
 
 try:
     # Mllama is only available in transformers>=4.45.0
@@ -64,7 +61,7 @@ except ImportError:
     QWEN2_VL_AVAILABLE = False
 
 try:
-    # Qwen2-VL is only available in transformers>4.44.2
+    from transformers import CLIPVisionConfig
     from transformers.models.llava.configuration_llava import LlavaConfig
     from transformers.models.llava.modeling_llava import LlavaForConditionalGeneration
 
@@ -73,6 +70,7 @@ except ImportError:
     LLAVA_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
+
 
 device = infer_device()
 
@@ -393,57 +391,57 @@ if QWEN2_VL_AVAILABLE:
     )
 
 if LLAVA_AVAILABLE:
-    from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
-
     MINI_MODEL_SETUPS["mini_llava"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_llava,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llava,
         model_class=LlavaForConditionalGeneration,
         mini_model_config=LlavaConfig(
+            text_config=LlamaConfig(
+                attention_bias=False,
+                attention_dropout=0.0,
+                # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
+                # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+                bos_token_id=1,  # 128000
+                eos_token_id=2,  # 128001
+                hidden_act="silu",
+                hidden_size=1024,  # 4096
+                initializer_range=0.02,
+                intermediate_size=2048,  # 14336
+                max_position_embeddings=8192,
+                num_attention_heads=8,  # 32
+                num_hidden_layers=4,  # 32
+                num_key_value_heads=2,  # 8
+                pretraining_tp=1,
+                rms_norm_eps=1e-5,
+                rope_scaling=None,
+                rope_theta=500000.0,
+                tie_word_embeddings=False,
+                use_cache=True,
+                vocab_size=32000,  # 128256,
+                # At rope backward
+                # Eager produces incontiguous dq and dk
+                # SDPA produces contiguous dq and incontiguous dk
+                # Flash_attn produces contiguous dq and dk
+                attn_implementation="sdpa",  # default value, pytorch native attention
+            ),
+            vision_config=CLIPVisionConfig(
+                hidden_size=1024,
+                image_size=336,
+                intermediate_size=4096,
+                model_type="clip_vision_model",
+                num_attention_heads=16,
+                num_hidden_layers=24,
+                patch_size=14,
+                projection_dim=768,
+                vocab_size=32000,
+            ),
+            vocab_size=32064,
             ignore_index=-100,
-            image_seq_length=384,
-            image_token_index=7,
+            pad_token_id=32001,
+            image_token_index=32000,
             projector_hidden_act="gelu",
             vision_feature_layer=-2,
-            vision_feature_select_strategy="full",
-            text_config=Gemma2Config(
-                _name_or_path="google/gemma-2-9b",
-                architectures=["Gemma2ForCausalLM"],
-                attn_logit_softcapping=50.0,
-                bos_token_id=2,
-                cache_implementation="hybrid",
-                eos_token_id=1,
-                final_logit_softcapping=30.0,
-                head_dim=256,
-                hidden_act="gelu_pytorch_tanh",
-                hidden_activation="gelu_pytorch_tanh",
-                hidden_size=3584,
-                intermediate_size=14336,
-                max_position_embeddings=8192,
-                model_type="gemma2",
-                num_attention_heads=16,
-                num_hidden_layers=42,
-                num_key_value_heads=8,
-                pad_token_id=0,
-                query_pre_attn_scalar=256,
-                sliding_window=4096,
-                sliding_window_size=4096,
-                tie_word_embeddings=True,
-                torch_dtype="float32",
-                vocab_size=256000,
-            ),
-            vision_config=SiglipVisionConfig(
-                hidden_act="gelu_pytorch_tanh",
-                hidden_size=1152,
-                image_size=384,
-                intermediate_size=4304,
-                layer_norm_eps=1e-06,
-                model_type="siglip_vision_model",
-                num_attention_heads=16,
-                num_hidden_layers=27,
-                patch_size=14,
-            ),
-            attn_implementation="flash_attention_2",
+            vision_feature_select_strategy="default",
         ),
     )
 
@@ -523,6 +521,41 @@ def run_mini_model(
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
+        pytest.param(
+            "mini_llava",
+            32,
+            1e-4,
+            torch.float32,
+            1e-5,
+            1e-1,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not LLAVA_AVAILABLE,
+                reason="Qwen2-VL not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_llava",  #        model_name,
+            32,  #                  num_steps,
+            1e-4,  #                lr,
+            torch.bfloat16,  #      dtype,
+            1e-3,  #                loss_atol,
+            5e-2,  #                loss_rtol,
+            1e-1,  #                logits_atol,
+            1e-2,  #                logits_rtol,
+            1e-2,  #                param_atol,
+            1e-2,  #                param_rtol,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not LLAVA_AVAILABLE,
+                    reason="LLaVa not available in this version of transformers",
+                ),
+            ],
+        ),
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_llama3",

@@ -3,27 +3,31 @@ import os
 
 import pytest
 import torch
+from liger_kernel.transformers import (
+    apply_liger_kernel_to_llava,
+    apply_liger_kernel_to_mllama,
+    apply_liger_kernel_to_qwen2_vl,
+)
+from torch.utils.data import DataLoader
 
 from datasets import load_dataset
-from torch.utils.data import DataLoader
+from test.utils import (
+    FAKE_CONFIGS_PATH,
+    UNTOKENIZED_DATASET_PATH,
+    MiniModelConfig,
+    assert_verbose_allclose,
+    load_image_processing_config,
+    load_tokenizer_config,
+    multimodal_collate_fn,
+    revert_liger_kernel_to_llava,
+    revert_liger_kernel_to_mllama,
+    revert_liger_kernel_to_qwen2_vl,
+    set_seed,
+    supports_bfloat16,
+    train_bpe_tokenizer,
+)
 from transformers import PreTrainedTokenizerFast
 
-from liger_kernel.transformers import apply_liger_kernel_to_llava
-from liger_kernel.transformers import apply_liger_kernel_to_mllama
-from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
-from test.utils import FAKE_CONFIGS_PATH
-from test.utils import UNTOKENIZED_DATASET_PATH
-from test.utils import MiniModelConfig
-from test.utils import assert_verbose_allclose
-from test.utils import load_image_processing_config
-from test.utils import load_tokenizer_config
-from test.utils import multimodal_collate_fn
-from test.utils import revert_liger_kernel_to_llava
-from test.utils import revert_liger_kernel_to_mllama
-from test.utils import revert_liger_kernel_to_qwen2_vl
-from test.utils import set_seed
-from test.utils import supports_bfloat16
-from test.utils import train_bpe_tokenizer
 
 try:
     # Qwen2-VL is only available in transformers>=4.45.0
@@ -39,9 +43,7 @@ except ImportError:
 
 try:
     # Mllama is only available in transformers>=4.45.0
-    from transformers.models.mllama.configuration_mllama import MllamaConfig
-    from transformers.models.mllama.configuration_mllama import MllamaTextConfig
-    from transformers.models.mllama.configuration_mllama import MllamaVisionConfig
+    from transformers.models.mllama.configuration_mllama import MllamaConfig, MllamaTextConfig, MllamaVisionConfig
     from transformers.models.mllama.image_processing_mllama import MllamaImageProcessor
     from transformers.models.mllama.modeling_mllama import MllamaForConditionalGeneration
     from transformers.models.mllama.processing_mllama import MllamaProcessor
@@ -51,7 +53,6 @@ except ImportError:
     MLLAMA_AVAILABLE = False
 
 try:
-    # Mllama is only available in transformers>=4.45.0
     from transformers import AutoImageProcessor
     from transformers.models.llava.configuration_llava import LlavaConfig
     from transformers.models.llava.modeling_llava import LlavaForConditionalGeneration
@@ -62,6 +63,7 @@ except ImportError:
     LLAVA_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
+
 
 device = infer_device()
 
@@ -184,58 +186,39 @@ if QWEN2_VL_AVAILABLE:
     )
 
 if LLAVA_AVAILABLE:
-    from transformers.models.gemma2 import Gemma2Config
-    from transformers.models.siglip import SiglipVisionConfig
+    from transformers import CLIPVisionConfig, LlamaConfig
 
     MINI_MODEL_SETUPS["mini_llava"] = MiniModelConfig(
-        liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_llava, fused_linear_cross_entropy=False),
+        liger_kernel_patch_func=apply_liger_kernel_to_llava,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llava,
         model_class=LlavaForConditionalGeneration,
         mini_model_config=LlavaConfig(
+            text_config=LlamaConfig(
+                _name_or_path="lmsys/vicuna-7b-v1.5",
+                max_position_embeddings=4096,
+                model_type="llama",
+                rms_norm_eps=1e-05,
+                torch_dtype="float16",
+                vocab_size=32064,
+            ),
+            vision_config=CLIPVisionConfig(
+                hidden_size=1024,
+                image_size=336,
+                intermediate_size=4096,
+                model_type="clip_vision_model",
+                num_attention_heads=16,
+                num_hidden_layers=24,
+                patch_size=14,
+                projection_dim=768,
+                vocab_size=32000,
+            ),
+            vocab_size=32064,
             ignore_index=-100,
-            image_seq_length=384,
-            image_token_index=7,
+            pad_token_id=32001,
+            image_token_index=32000,
             projector_hidden_act="gelu",
             vision_feature_layer=-2,
-            vision_feature_select_strategy="full",
-            text_config=Gemma2Config(
-                _name_or_path="google/gemma-2-9b",
-                architectures=["Gemma2ForCausalLM"],
-                attn_logit_softcapping=50.0,
-                bos_token_id=2,
-                cache_implementation="hybrid",
-                eos_token_id=1,
-                final_logit_softcapping=30.0,
-                head_dim=256,
-                hidden_act="gelu_pytorch_tanh",
-                hidden_activation="gelu_pytorch_tanh",
-                hidden_size=3584,
-                intermediate_size=14336,
-                max_position_embeddings=8192,
-                model_type="gemma2",
-                num_attention_heads=16,
-                num_hidden_layers=42,
-                num_key_value_heads=8,
-                pad_token_id=0,
-                query_pre_attn_scalar=256,
-                sliding_window=4096,
-                sliding_window_size=4096,
-                tie_word_embeddings=True,
-                torch_dtype="float32",
-                vocab_size=256000,
-            ),
-            vision_config=SiglipVisionConfig(
-                hidden_act="gelu_pytorch_tanh",
-                hidden_size=1152,
-                image_size=384,
-                intermediate_size=4304,
-                layer_norm_eps=1e-06,
-                model_type="siglip_vision_model",
-                num_attention_heads=16,
-                num_hidden_layers=27,
-                patch_size=14,
-            ),
-            attn_implementation="flash_attention_2",
+            vision_feature_select_strategy="default",
         ),
     )
 
@@ -496,6 +479,41 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not MLLAMA_AVAILABLE,
                     reason="Mllama not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_llava",
+            32,
+            1e-4,
+            torch.float32,
+            1e-5,
+            1e-1,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not LLAVA_AVAILABLE,
+                reason="Qwen2-VL not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_llava",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            5e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not LLAVA_AVAILABLE,
+                    reason="LLaVa not available in this version of transformers",
                 ),
             ],
         ),
