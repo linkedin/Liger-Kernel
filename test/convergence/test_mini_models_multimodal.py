@@ -3,31 +3,27 @@ import os
 
 import pytest
 import torch
-from liger_kernel.transformers import (
-    apply_liger_kernel_to_llava,
-    apply_liger_kernel_to_mllama,
-    apply_liger_kernel_to_qwen2_vl,
-)
-from torch.utils.data import DataLoader
 
 from datasets import load_dataset
-from test.utils import (
-    FAKE_CONFIGS_PATH,
-    UNTOKENIZED_DATASET_PATH,
-    MiniModelConfig,
-    assert_verbose_allclose,
-    load_image_processing_config,
-    load_tokenizer_config,
-    multimodal_collate_fn,
-    revert_liger_kernel_to_llava,
-    revert_liger_kernel_to_mllama,
-    revert_liger_kernel_to_qwen2_vl,
-    set_seed,
-    supports_bfloat16,
-    train_bpe_tokenizer,
-)
+from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
 
+from liger_kernel.transformers import apply_liger_kernel_to_llava
+from liger_kernel.transformers import apply_liger_kernel_to_mllama
+from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
+from test.utils import FAKE_CONFIGS_PATH
+from test.utils import UNTOKENIZED_DATASET_PATH
+from test.utils import MiniModelConfig
+from test.utils import assert_verbose_allclose
+from test.utils import load_image_processing_config
+from test.utils import load_tokenizer_config
+from test.utils import multimodal_collate_fn
+from test.utils import revert_liger_kernel_to_llava
+from test.utils import revert_liger_kernel_to_mllama
+from test.utils import revert_liger_kernel_to_qwen2_vl
+from test.utils import set_seed
+from test.utils import supports_bfloat16
+from test.utils import train_bpe_tokenizer
 
 try:
     # Qwen2-VL is only available in transformers>=4.45.0
@@ -43,7 +39,9 @@ except ImportError:
 
 try:
     # Mllama is only available in transformers>=4.45.0
-    from transformers.models.mllama.configuration_mllama import MllamaConfig, MllamaTextConfig, MllamaVisionConfig
+    from transformers.models.mllama.configuration_mllama import MllamaConfig
+    from transformers.models.mllama.configuration_mllama import MllamaTextConfig
+    from transformers.models.mllama.configuration_mllama import MllamaVisionConfig
     from transformers.models.mllama.image_processing_mllama import MllamaImageProcessor
     from transformers.models.mllama.modeling_mllama import MllamaForConditionalGeneration
     from transformers.models.mllama.processing_mllama import MllamaProcessor
@@ -63,7 +61,6 @@ except ImportError:
     LLAVA_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
-
 
 device = infer_device()
 
@@ -186,7 +183,8 @@ if QWEN2_VL_AVAILABLE:
     )
 
 if LLAVA_AVAILABLE:
-    from transformers import CLIPVisionConfig, LlamaConfig
+    from transformers import CLIPVisionConfig
+    from transformers import LlamaConfig
 
     MINI_MODEL_SETUPS["mini_llava"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_llava,
