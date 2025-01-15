@@ -140,8 +140,12 @@ def test_functional_correctness(
     k1 = _k.clone().requires_grad_(True)
     k2 = _k.clone().requires_grad_(True)
 
-    llama_config = LlamaConfig(head_dim=head_dim)
-    rotary_emb = LlamaRotaryEmbedding(llama_config, device=device)
+    if transformers_version < "4.48.0":
+        # LlamaRotaryEmbedding constructor signature changed in transformers 4.48.0
+        rotary_emb = LlamaRotaryEmbedding(head_dim=head_dim, device=device)
+    else:
+        llama_config = LlamaConfig(head_dim=head_dim)
+        rotary_emb = LlamaRotaryEmbedding(llama_config, device=device)
 
     pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
     if expand_position_ids:
