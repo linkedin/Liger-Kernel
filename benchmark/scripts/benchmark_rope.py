@@ -32,7 +32,6 @@ def bench_speed_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
     seq_len = extra_benchmark_config["seq_len"] if "seq_len" in extra_benchmark_config else input.x
 
     head_dim = hidden_size // num_q_heads
-    llama_config = LlamaConfig(head_dim=head_dim)
 
     if transformers_version < "4.48.0":
         # LlamaRotaryEmbedding constructor signature changed in transformers 4.48.0
