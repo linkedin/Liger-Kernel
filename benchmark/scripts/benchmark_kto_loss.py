@@ -24,16 +24,16 @@ class TorchLMHeadKTO(torch.nn.Module):
         H: int,
         V: int,
         dtype: torch.dtype,
-        bias: bool = False,
-        ref_bias: bool = False,
+        use_bias: bool = False,
+        use_ref_bias: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
     ):
         from test.chunked_loss.test_kto_loss import HFKTOLoss
 
         super().__init__()
-        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
-        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=use_bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=use_ref_bias, dtype=dtype)
         self.KTO_loss = HFKTOLoss(
             ignore_index=ignore_index,
             beta=beta,
@@ -60,14 +60,14 @@ class LigerLMHeadKTO(torch.nn.Module):
         H: int,
         V: int,
         dtype: torch.dtype,
-        bias: bool = False,
-        ref_bias: bool = False,
+        use_bias: bool = False,
+        use_ref_bias: bool = False,
         ignore_index: int = -100,
         beta: float = 0.1,
     ):
         super().__init__()
-        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
-        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=use_bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=use_ref_bias, dtype=dtype)
         self.KTO_loss = LigerFusedLinearKTOLoss(
             ignore_index=ignore_index,
             beta=beta,

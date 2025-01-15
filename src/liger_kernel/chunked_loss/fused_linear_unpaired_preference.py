@@ -141,11 +141,7 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
             (_ref_input_chunks if use_ref_model else [None] * len(_input_chunks)),
             _preference_labels_chunks,
         ):
-            input_chunk = input_chunk
-            ref_input_chunk = ref_input_chunk if use_ref_model else None
-            target_chunk = target_chunk
-
-            # mark input_chunk, target_chunk, and target dimension 1 as dynamic to prevent torch.compile recompilation
+            # mark input_chunk, target_chunk, and target dimension 1 (sequence length) as dynamic to prevent torch.compile recompilation
             torch._dynamo.mark_dynamic(input_chunk, 1)
             torch._dynamo.mark_dynamic(target_chunk, 1)
             torch._dynamo.mark_dynamic(target, 1)
