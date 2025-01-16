@@ -16,6 +16,7 @@ from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import load_image_processing_config
+from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
 from test.utils import revert_liger_kernel_to_llava
@@ -51,7 +52,9 @@ except ImportError:
     MLLAMA_AVAILABLE = False
 
 try:
-    from transformers import AutoImageProcessor
+    from transformers import CLIPImageProcessor
+    from transformers import CLIPVisionConfig
+    from transformers import LlamaConfig
     from transformers.models.llava.configuration_llava import LlavaConfig
     from transformers.models.llava.modeling_llava import LlavaForConditionalGeneration
     from transformers.models.llava.processing_llava import LlavaProcessor
@@ -185,27 +188,27 @@ if QWEN2_VL_AVAILABLE:
 if LLAVA_AVAILABLE:
     # https://huggingface.co/llava-hf/llava-1.5-7b-hf
     MINI_MODEL_SETUPS["mini_llava"] = MiniModelConfig(
-        liger_kernel_patch_func=apply_liger_kernel_to_llava,
+        liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_llava, fused_linear_cross_entropy=False),
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llava,
         model_class=LlavaForConditionalGeneration,
         mini_model_config=LlavaConfig(
             text_config=LlamaConfig(
                 attention_bias=False,
                 attention_dropout=0.0,
-                bos_token_id=1,  # liger-llama
-                eos_token_id=2,  # liger-llama
-                hidden_act="silu",  # liger-llama
-                hidden_size=1024,  # liger-llama
-                initializer_range=0.02,  # liger-llama
-                intermediate_size=2048,  # liger-llama
-                num_attention_heads=8,  # liger-llama
-                num_hidden_layers=4,  # liger-llama
-                num_key_value_heads=2,  # liger-llama
-                pretraining_tp=1,  # liger-llama
-                rope_scaling=None,  # liger-llama
-                rope_theta=500000.0,  # liger-llama
-                tie_word_embeddings=False,  # liger-llama
-                use_cache=True,  # liger-llama
+                bos_token_id=1,
+                eos_token_id=2,
+                hidden_act="silu",
+                hidden_size=1024,
+                initializer_range=0.02,
+                intermediate_size=2048,
+                num_attention_heads=8,
+                num_hidden_layers=4,
+                num_key_value_heads=2,
+                pretraining_tp=1,
+                rope_scaling=None,
+                rope_theta=500000.0,
+                tie_word_embeddings=False,
+                use_cache=True,
                 max_position_embeddings=4096,  # llava-1.5-7b-hf
                 rms_norm_eps=1e-05,  # llava-1.5-7b-hf
                 vocab_size=32064,  # llava-1.5-7b-hf
@@ -216,23 +219,23 @@ if LLAVA_AVAILABLE:
                 attn_implementation="sdpa",  # default value, pytorch native attention
             ),
             vision_config=CLIPVisionConfig(
-                hidden_size=1024,  # llava-1.5-7b-hf
-                image_size=336,  # llava-1.5-7b-hf
-                intermediate_size=4096,  # llava-1.5-7b-hf
-                model_type="clip_vision_model",  # llava-1.5-7b-hf
-                num_attention_heads=16,  # llava-1.5-7b-hf
-                num_hidden_layers=24,  # llava-1.5-7b-hf
-                patch_size=14,  # llava-1.5-7b-hf
-                projection_dim=768,  # llava-1.5-7b-hf
-                vocab_size=32000,  # llava-1.5-7b-hf
+                hidden_size=1024,
+                image_size=336,
+                intermediate_size=4096,
+                model_type="clip_vision_model",
+                num_attention_heads=16,
+                num_hidden_layers=24,
+                patch_size=14,
+                projection_dim=768,
+                vocab_size=32000,
             ),
-            vocab_size=32064,  # llava-1.5-7b-hf
-            ignore_index=-100,  # llava-1.5-7b-hf
-            pad_token_id=32001,  # llava-1.5-7b-hf
-            image_token_index=32000,  # llava-1.5-7b-hf
-            projector_hidden_act="gelu",  # llava-1.5-7b-hf
-            vision_feature_layer=-2,  # llava-1.5-7b-hf
-            vision_feature_select_strategy="default",  # llava-1.5-7b-hf
+            vocab_size=32064,
+            ignore_index=-100,
+            pad_token_id=4,
+            image_token_index=3,
+            projector_hidden_act="gelu",
+            vision_feature_layer=-2,
+            vision_feature_select_strategy="default",
             # At rope backward
             # Eager produces incontiguous dq and dk
             # SDPA produces contiguous dq and incontiguous dk
@@ -282,13 +285,19 @@ def create_processor(model_name):
         tokenizer_config = load_tokenizer_config(
             os.path.join(
                 FAKE_CONFIGS_PATH,
-                "Llava/KoLLaVa9b-patch14-384-stage1.0/tokenizer_config.json",
+                "Llava/llava-1.5-7b-hf/tokenizer_config.json",
             )
         )
         image_processor_config = load_image_processing_config(
             os.path.join(
                 FAKE_CONFIGS_PATH,
-                "Llava/KoLLaVa9b-patch14-384-stage1.0/preprocessor_config.json",
+                "Llava/llava-1.5-7b-hf/preprocessor_config.json",
+            )
+        )
+        processor_config = load_processor_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH,
+                "Llava/llava-1.5-7b-hf/processor_config.json",
             )
         )
         tokenizer_base = train_bpe_tokenizer(
@@ -301,8 +310,8 @@ def create_processor(model_name):
             ]
         )
         fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
-        image_processor = AutoImageProcessor.from_pretrained(config=image_processor_config)
-        return LlavaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
+        image_processor = CLIPImageProcessor(**image_processor_config)
+        return LlavaProcessor(**processor_config, image_processor=image_processor, tokenizer=fast_tokenizer)
     else:
         raise ValueError(f"Processor not available for model {model_name}")
 
@@ -506,8 +515,8 @@ def run_mini_model_multimodal(
             32,
             1e-4,
             torch.float32,
+            1e-8,
             1e-5,
-            1e-1,
             5e-3,
             1e-5,
             5e-3,
@@ -523,7 +532,7 @@ def run_mini_model_multimodal(
             1e-4,
             torch.bfloat16,
             1e-3,
-            5e-2,
+            1e-2,
             1e-1,
             1e-2,
             1e-2,

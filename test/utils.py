@@ -186,6 +186,13 @@ def load_image_processing_config(config_path: str) -> dict:
     return image_processing_config
 
 
+def load_processor_config(config_path: str) -> dict:
+    """Load and process processor configuration from a JSON file."""
+    with open(config_path) as reader:
+        processor_config = json.load(reader)
+    return processor_config
+
+
 def train_bpe_tokenizer(special_tokens: List[str], unk_token: str = "<|unk|>"):
     """
     Train a tokenizer using the BPE algorithm.

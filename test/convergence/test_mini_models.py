@@ -402,20 +402,20 @@ if LLAVA_AVAILABLE:
             text_config=LlamaConfig(
                 attention_bias=False,
                 attention_dropout=0.0,
-                bos_token_id=1,  # liger-llama
-                eos_token_id=2,  # liger-llama
-                hidden_act="silu",  # liger-llama
-                hidden_size=1024,  # liger-llama
-                initializer_range=0.02,  # liger-llama
-                intermediate_size=2048,  # liger-llama
-                num_attention_heads=8,  # liger-llama
-                num_hidden_layers=4,  # liger-llama
-                num_key_value_heads=2,  # liger-llama
-                pretraining_tp=1,  # liger-llama
-                rope_scaling=None,  # liger-llama
-                rope_theta=500000.0,  # liger-llama
-                tie_word_embeddings=False,  # liger-llama
-                use_cache=True,  # liger-llama
+                bos_token_id=1,
+                eos_token_id=2,
+                hidden_act="silu",
+                hidden_size=1024,
+                initializer_range=0.02,
+                intermediate_size=2048,
+                num_attention_heads=8,
+                num_hidden_layers=4,
+                num_key_value_heads=2,
+                pretraining_tp=1,
+                rope_scaling=None,
+                rope_theta=500000.0,
+                tie_word_embeddings=False,
+                use_cache=True,
                 max_position_embeddings=4096,  # llava-1.5-7b-hf
                 rms_norm_eps=1e-05,  # llava-1.5-7b-hf
                 vocab_size=32064,  # llava-1.5-7b-hf
@@ -426,23 +426,23 @@ if LLAVA_AVAILABLE:
                 attn_implementation="sdpa",  # default value, pytorch native attention
             ),
             vision_config=CLIPVisionConfig(
-                hidden_size=1024,  # llava-1.5-7b-hf
-                image_size=336,  # llava-1.5-7b-hf
-                intermediate_size=4096,  # llava-1.5-7b-hf
-                model_type="clip_vision_model",  # llava-1.5-7b-hf
-                num_attention_heads=16,  # llava-1.5-7b-hf
-                num_hidden_layers=24,  # llava-1.5-7b-hf
-                patch_size=14,  # llava-1.5-7b-hf
-                projection_dim=768,  # llava-1.5-7b-hf
-                vocab_size=32000,  # llava-1.5-7b-hf
+                hidden_size=1024,
+                image_size=336,
+                intermediate_size=4096,
+                model_type="clip_vision_model",
+                num_attention_heads=16,
+                num_hidden_layers=24,
+                patch_size=14,
+                projection_dim=768,
+                vocab_size=32000,
             ),
-            vocab_size=32064,  # llava-1.5-7b-hf
-            ignore_index=-100,  # llava-1.5-7b-hf
-            pad_token_id=32001,  # llava-1.5-7b-hf
-            image_token_index=32000,  # llava-1.5-7b-hf
-            projector_hidden_act="gelu",  # llava-1.5-7b-hf
-            vision_feature_layer=-2,  # llava-1.5-7b-hf
-            vision_feature_select_strategy="default",  # llava-1.5-7b-hf
+            vocab_size=32064,
+            ignore_index=-100,
+            pad_token_id=4,
+            image_token_index=3,
+            projector_hidden_act="gelu",
+            vision_feature_layer=-2,
+            vision_feature_select_strategy="default",
             # At rope backward
             # Eager produces incontiguous dq and dk
             # SDPA produces contiguous dq and incontiguous dk
@@ -476,6 +476,8 @@ def run_mini_model(
 
     set_seed(42)
 
+    model = create_model(model_name).to(dtype).to(device)
+
     revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
     if "mllama" in model_name:
         revert_kwargs["model_type"] = "causal_lm"
@@ -497,19 +499,19 @@ def run_mini_model(
 
         kwargs["fused_linear_cross_entropy"] = True
         kwargs["cross_entropy"] = False
+        if "llava" in model_name:
+            kwargs["model"] = model
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
-
-    model = create_model(model_name).to(dtype).to(device)
 
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
     loader = DataLoader(train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn)
     loader_iter = iter(loader)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
-    loss_list = []
+    loss_list, input_ls = [], []
 
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
@@ -519,9 +521,10 @@ def run_mini_model(
         optimizer.step()
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
+        input_ls.append(batch)
 
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
-    return {"loss": loss_list, "logits": output.logits, "model": model}
+    return {"loss": loss_list, "logits": output.logits, "model": model, "inputs": input_ls}
 
 
 @pytest.mark.parametrize(
@@ -544,11 +547,11 @@ def run_mini_model(
         pytest.param(
             "mini_llava",
             32,
-            2e-3,
+            1e-4,
             torch.float32,
             1e-8,
-            2e-5,
-            1e-4,
+            1e-5,
+            5e-3,
             1e-5,
             5e-3,
             1e-5,
@@ -560,7 +563,7 @@ def run_mini_model(
         pytest.param(
             "mini_llava",
             32,
-            2e-3,
+            1e-4,
             torch.bfloat16,
             1e-3,
             1e-2,
@@ -790,11 +793,9 @@ def test_mini_model(
 
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
-    for idx, (expected_param, actual_param) in enumerate(
-        zip(
-            expected_output["model"].named_parameters(),
-            actual_output["model"].named_parameters(),
-            strict=False,
-        )
+    for expected_param, actual_param in zip(
+        expected_output["model"].named_parameters(),
+        actual_output["model"].named_parameters(),
+        strict=False,
     ):
         assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)
