@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from test.utils import supports_bfloat16
+from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 
@@ -57,7 +58,7 @@ def test_correctness(
     atol,
     rtol,
 ):
-    rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
+    rotary_emb = LlamaRotaryEmbedding(LlamaConfig(head_dim=head_dim), device=device)
 
     _tensor_q = torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device).transpose(1, 2).to(dtype)
 
@@ -133,7 +134,7 @@ def test_functional_correctness(
     k1 = _k.clone().requires_grad_(True)
     k2 = _k.clone().requires_grad_(True)
 
-    rotary_emb = LlamaRotaryEmbedding(head_dim, device=device)
+    rotary_emb = LlamaRotaryEmbedding(LlamaConfig(head_dim=head_dim), device=device)
 
     pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
     if expand_position_ids:
