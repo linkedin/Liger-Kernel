@@ -2,7 +2,8 @@ import inspect
 import logging
 
 from functools import partial
-from typing import Callable
+from typing import Callable, Optional, Union, Dict
+import torch
 
 import transformers
 
@@ -32,6 +33,7 @@ from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
+from liger_kernel.transformers.llama_flex_attention import flex_attention_forward as llama_flex_attention_forward
 
 transformer_version = version.parse(transformers.__version__)
 
@@ -60,6 +62,17 @@ def _patch_layer_norm_module(module, eps=1e-6):
     _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
     _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
 
+def _autoset_attn_implementation(
+    cls,
+    config,
+    use_flash_attention_2: bool = False,
+    torch_dtype: Optional[torch.dtype] = None,
+    device_map: Optional[Union[str, Dict[str, int]]] = None,
+    check_device_map: bool = True,
+):
+    # TODO
+    return config
+
 
 def apply_liger_kernel_to_llama(
     rope: bool = True,
@@ -68,6 +81,7 @@ def apply_liger_kernel_to_llama(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = True,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Llama models (2 and 3)
@@ -115,6 +129,9 @@ def apply_liger_kernel_to_llama(
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
             modeling_llama.LlamaForCausalLM.forward = llama_lce_forward_deprecated
 
+    if flex_attn:
+        modeling_llama.ALL_ATTENTION_FUNCTIONS.update({'spda': llama_flex_attention_forward})
+
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules (e.g. LlamaRMSNorm or LlamaMLP)
@@ -131,6 +148,9 @@ def apply_liger_kernel_to_llama(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+            if flex_attn:
+                base_model.config._attn_implementation = 'flex_attention'
+
 
 
 def apply_liger_kernel_to_mllama(
