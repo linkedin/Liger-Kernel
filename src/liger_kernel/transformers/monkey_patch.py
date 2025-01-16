@@ -170,14 +170,16 @@ def apply_liger_kernel_to_llava(
 
     if model is not None:
         if model.config.text_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
-            _apply_liger_kernel_to_instance(
-                model=model.language_model,
+            MODEL_TYPE_TO_APPLY_LIGER_FN[model.config.text_config.model_type](
+                cross_entropy=False,
+                fused_linear_cross_entropy=False,
                 **kwargs,
             )
 
         if model.config.vision_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
-            _apply_liger_kernel_to_instance(
-                model=model.vision_model,
+            MODEL_TYPE_TO_APPLY_LIGER_FN[model.config.vision_config.model_type](
+                cross_entropy=False,
+                fused_linear_cross_entropy=False,
                 **kwargs,
             )
 

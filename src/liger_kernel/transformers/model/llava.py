@@ -86,9 +86,6 @@ def lce_forward(
         else self.config.vision_feature_select_strategy
     )
 
-    if num_logits_to_keep != 0:
-        logger.warning_once("llava liger-kernel does not support num_logits_to_keep. This argument is ignored.")
-
     if (input_ids is None) ^ (inputs_embeds is not None):
         raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -118,39 +115,25 @@ def lce_forward(
         image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
         inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
-    # NOTE: Doing this causes the test to fail... I don't understand why.
-    # outputs = self.language_model.model(
-    #     attention_mask=attention_mask,
-    #     position_ids=position_ids,
-    #     past_key_values=past_key_values,
-    #     inputs_embeds=inputs_embeds,
-    #     use_cache=use_cache,
-    #     output_attentions=output_attentions,
-    #     output_hidden_states=output_hidden_states,
-    #     return_dict=return_dict,
-    #     cache_position=cache_position,
-    #     # num_logits_to_keep=num_logits_to_keep,
-    # )
-
-    # hidden_states = outputs[0]
-
-    outputs = self.language_model(
+    outputs = self.language_model.model(
         attention_mask=attention_mask,
         position_ids=position_ids,
         past_key_values=past_key_values,
         inputs_embeds=inputs_embeds,
         use_cache=use_cache,
         output_attentions=output_attentions,
-        output_hidden_states=True,
+        output_hidden_states=output_hidden_states,
         return_dict=return_dict,
         cache_position=cache_position,
+        num_logits_to_keep=num_logits_to_keep,
     )
+    hidden_states = outputs[0]
 
-    hidden_states = outputs.hidden_states[-1]
-
-    logits = None
     loss = None
+    logits = None
+
     if self.training and (labels is not None):
+        # Shift so that tokens < n predict n
         if attention_mask is not None:
             # we use the input attention mask to shift the logits and labels, because it is 2D.
             # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
@@ -165,32 +148,17 @@ def lce_forward(
 
         lce = LigerFusedLinearCrossEntropyLoss()
         loss = lce(self.language_model.lm_head.weight, shift_hidden_states, shift_labels)
-    else:
-        logits = self.language_model.lm_head(hidden_states)
-        # Shift so that tokens < n predict n
-        if attention_mask is not None:
-            # we use the input attention mask to shift the logits and labels, because it is 2D.
-            # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
-            shift_attention_mask = attention_mask[:, -(logits.shape[1] - 1) :].to(logits.device)
-            shift_logits = logits[..., :-1, :][shift_attention_mask.to(logits.device) != 0].contiguous()
-            shift_labels = labels[..., 1:][shift_attention_mask.to(labels.device) != 0].contiguous()
-        else:
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-        # Flatten the tokens
-        loss_fct = nn.CrossEntropyLoss()
-        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1).to(shift_logits.device))
 
     if not return_dict:
         # NOTE: This part has not been tested.
-        output = (logits,) + outputs[1:]
-        return (loss,) + output if loss is not None else output
+        output = (outputs.logits,) + outputs[1:]
+        return (outputs.loss,) + output if outputs.loss is not None else output
 
     return LlavaCausalLMOutputWithPast(
         loss=loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
-        hidden_states=outputs.hidden_states if output_hidden_states else None,
+        hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
         image_hidden_states=image_features if pixel_values is not None else None,
     )
