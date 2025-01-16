@@ -164,9 +164,17 @@ def apply_liger_kernel_to_llava(
     from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
 
     if cross_entropy:
-        logger.error("Cross entropy loss is not supported in Llava models.")
+        logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+        modeling_llava.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
         modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
+
+    # apply_liger_kernel_to_llama(
+    #     cross_entropy=cross_entropy,
+    #     fused_linear_cross_entropy=fused_linear_cross_entropy,
+    #     # model=model,
+    #     **kwargs,
+    # )
 
     if model is not None:
         config = model.config

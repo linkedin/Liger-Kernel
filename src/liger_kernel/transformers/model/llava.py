@@ -174,30 +174,119 @@ def lce_forward(
         image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
         inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
-    outputs = self.language_model.model(
+    # outputs = self.language_model(
+    #     labels=labels,
+    #     input_ids=input_ids,
+    #     attention_mask=attention_mask,
+    #     position_ids=position_ids,
+    #     past_key_values=past_key_values,
+    #     inputs_embeds=inputs_embeds,
+    #     use_cache=use_cache,
+    #     output_attentions=output_attentions,
+    #     output_hidden_states=True,
+    #     return_dict=return_dict,
+    #     cache_position=cache_position,
+    #     num_logits_to_keep=num_logits_to_keep,
+    # )
+
+    # if not return_dict:
+    #     output = (logits,) + outputs[1:]
+    #     return (loss,) + output if loss is not None else output
+
+    # return LlavaCausalLMOutputWithPast(
+    #     loss=outputs.loss,
+    #     logits=outputs.logits,
+    #     past_key_values=outputs.past_key_values,
+    #     hidden_states=outputs.hidden_states,
+    #     attentions=outputs.attentions,
+    #     image_hidden_states=image_features if pixel_values is not None else None,
+    # )
+
+    # outputs = self.language_model.model(
+    #     attention_mask=attention_mask,
+    #     position_ids=position_ids,
+    #     past_key_values=past_key_values,
+    #     inputs_embeds=inputs_embeds,
+    #     use_cache=use_cache,
+    #     output_attentions=output_attentions,
+    #     output_hidden_states=output_hidden_states,
+    #     return_dict=return_dict,
+    #     cache_position=cache_position,
+    #     num_logits_to_keep=num_logits_to_keep,
+    # )
+
+    # hidden_states = outputs[0]
+
+    # logits = None
+    # loss = None
+    # if self.training and (labels is not None):
+    #     shift_hidden_states = hidden_states[..., :-1, :].contiguous()
+    #     shift_labels = labels[..., 1:].contiguous()
+
+    #     # Flatten tokens
+    #     shift_hidden_states = shift_hidden_states.view(-1, self.config.text_config.hidden_size)
+    #     shift_labels = shift_labels.view(-1)
+
+    #     lce = LigerFusedLinearCrossEntropyLoss()
+    #     loss = lce(self.language_model.lm_head.weight, shift_hidden_states, shift_labels)
+    # else:
+    #     logits = self.language_model.lm_head(hidden_states)
+    #     if labels is not None:
+    #         # Upcast to float if we need to compute the loss to avoid potential precision issues
+    #         logits = logits.float()
+    #         # Shift so that tokens < n predict n
+    #         shift_logits = logits[..., :-1, :].contiguous()
+    #         shift_labels = labels[..., 1:].contiguous()
+    #         # Flatten the tokens
+    #         loss_fct = CrossEntropyLoss()
+    #         shift_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
+    #         shift_labels = shift_labels.view(-1)
+    #         # Enable model parallelism
+    #         shift_labels = shift_labels.to(shift_logits.device)
+    #         loss = loss_fct(shift_logits, shift_labels)
+
+    # if not return_dict:
+    #     output = (logits,) + outputs[1:]
+    #     return (loss,) + output if loss is not None else output
+
+    # return LlavaCausalLMOutputWithPast(
+    #     loss=loss,
+    #     logits=logits,
+    #     past_key_values=outputs.past_key_values,
+    #     hidden_states=outputs.hidden_states,
+    #     attentions=outputs.attentions,
+    #     image_hidden_states=image_features if pixel_values is not None else None,
+    # )
+
+    outputs = self.language_model(
         attention_mask=attention_mask,
         position_ids=position_ids,
         past_key_values=past_key_values,
         inputs_embeds=inputs_embeds,
         use_cache=use_cache,
         output_attentions=output_attentions,
-        output_hidden_states=output_hidden_states,
+        output_hidden_states=True,
         return_dict=return_dict,
         cache_position=cache_position,
         num_logits_to_keep=num_logits_to_keep,
     )
 
-    hidden_states = outputs[0]
+    hidden_states = outputs.hidden_states[-1]
 
     logits = None
     loss = None
     if self.training and (labels is not None):
-        shift_hidden_states = hidden_states[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-
-        # Flatten tokens
-        shift_hidden_states = shift_hidden_states.view(-1, self.config.text_config.hidden_size)
-        shift_labels = shift_labels.view(-1)
+        if attention_mask is not None:
+            # we use the input attention mask to shift the logits and labels, because it is 2D.
+            # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
+            shift_attention_mask = attention_mask[:, -(hidden_states.shape[1] - 1) :].to(hidden_states.device)
+            shift_hidden_states = hidden_states[..., :-1, :][
+                shift_attention_mask.to(hidden_states.device) != 0
+            ].contiguous()
+            shift_labels = labels[..., 1:][shift_attention_mask.to(labels.device) != 0].contiguous()
+        else:
+            shift_hidden_states = hidden_states[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
 
         lce = LigerFusedLinearCrossEntropyLoss()
         loss = lce(self.language_model.lm_head.weight, shift_hidden_states, shift_labels)
