@@ -169,29 +169,15 @@ def apply_liger_kernel_to_llava(
     if fused_linear_cross_entropy:
         modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
 
-    # apply_liger_kernel_to_llama(
-    #     cross_entropy=cross_entropy,
-    #     fused_linear_cross_entropy=fused_linear_cross_entropy,
-    #     # model=model,
-    #     **kwargs,
-    # )
-
     if model is not None:
-        config = model.config
-        text_config, vision_config = config.text_config, config.vision_config
-
-        if text_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
+        if model.config.text_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
             _apply_liger_kernel_to_instance(
-                cross_entropy=cross_entropy,
-                fused_linear_cross_entropy=False,
                 model=model.language_model,
                 **kwargs,
             )
 
-        if vision_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
+        if model.config.vision_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
             _apply_liger_kernel_to_instance(
-                cross_entropy=cross_entropy,
-                fused_linear_cross_entropy=fused_linear_cross_entropy,
                 model=model.vision_model,
                 **kwargs,
             )
