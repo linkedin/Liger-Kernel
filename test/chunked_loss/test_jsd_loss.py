@@ -27,6 +27,7 @@ class HFJSDLoss(HFDistillationLoss):
         ignore_index: int = -100,
         weight_hard_loss: float = 0.5,
         weight_soft_loss: float = 0.5,
+        beta: float = 0.5,
     ):
         super().__init__(
             ignore_index=ignore_index,
@@ -34,6 +35,7 @@ class HFJSDLoss(HFDistillationLoss):
             weight_soft_loss=weight_soft_loss,
             temperature=temperature,
         )
+        self.beta = (beta,)
 
     def distillation_loss(self, student_logits, teacher_logits, beta=0.5):
         """
@@ -77,6 +79,7 @@ class TorchLMHeadJSD(torch.nn.Module):
         device: torch.device,
         weight_hard_loss: float = 0.5,
         weight_soft_loss: float = 0.5,
+        beta: float = 0.5,
         ignore_index: int = -100,
         temperature: float = 1.0,
     ):
@@ -89,6 +92,7 @@ class TorchLMHeadJSD(torch.nn.Module):
             weight_hard_loss=weight_hard_loss,
             weight_soft_loss=weight_soft_loss,
             temperature=temperature,
+            beta=beta,
         ).get_batch_loss_metrics
 
     def forward(self, student_input, teacher_input, target):
@@ -111,6 +115,7 @@ class LigerLMHeadJSD(torch.nn.Module):
         device: torch.device,
         weight_hard_loss: float = 0.5,
         weight_soft_loss: float = 0.5,
+        beta: float = 0.5,
         ignore_index: int = -100,
         temperature: float = 1.0,
     ):
@@ -155,13 +160,13 @@ class LigerLMHeadJSD(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize(
-    "temperature, weight_hard_loss, weight_soft_loss",
+    "temperature, weight_hard_loss, weight_soft_loss, beta",
     [
-        (1.0, 0.5, 0.5),
-        (2.0, 0.5, 0.5),
-        (0.5, 0.5, 0.5),
-        (1.0, 0.0, 1.0),
-        (1.0, 1.0, 0.0),
+        (1.0, 0.5, 0.5, 0.5),
+        (2.0, 0.5, 0.5, 0.5),
+        (0.5, 0.5, 0.5, 0.5),
+        (1.0, 0.0, 1.0, 0.5),
+        (1.0, 1.0, 0.0, 0.5),
     ],
 )
 def test_correctness(
@@ -176,6 +181,7 @@ def test_correctness(
     temperature,
     weight_hard_loss,
     weight_soft_loss,
+    beta,
 ):
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
@@ -185,6 +191,7 @@ def test_correctness(
         temperature=temperature,
         weight_hard_loss=weight_hard_loss,
         weight_soft_loss=weight_soft_loss,
+        beta=beta,
     )
     liger_lm_head_jsd = LigerLMHeadJSD(
         H=H,
@@ -194,6 +201,7 @@ def test_correctness(
         temperature=temperature,
         weight_hard_loss=weight_hard_loss,
         weight_soft_loss=weight_soft_loss,
+        beta=beta,
     )
 
     torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.rand(
@@ -243,8 +251,8 @@ def test_correctness(
     ],
 )
 @pytest.mark.parametrize(
-    "temperature, weight_hard_loss, weight_soft_loss, ignore_index",
-    [(1.0, 0.5, 0.5, -100), (2.0, 0.1, 0.9, 42)],
+    "temperature, weight_hard_loss, weight_soft_loss, beta, ignore_index",
+    [(1.0, 0.5, 0.5, 0.5, -100), (2.0, 0.1, 0.9, 0.5, 42)],
 )
 def test_correctness_functional(
     B,
@@ -255,6 +263,7 @@ def test_correctness_functional(
     dtype,
     weight_hard_loss,
     weight_soft_loss,
+    beta,
     ignore_index,
     temperature,
     atol,
@@ -280,6 +289,7 @@ def test_correctness_functional(
         label,
         weight_hard_loss,
         weight_soft_loss,
+        beta,
         ignore_index,
         temperature,
     )
@@ -291,6 +301,7 @@ def test_correctness_functional(
         label,
         weight_hard_loss,
         weight_soft_loss,
+        beta,
         ignore_index,
         temperature,
     )

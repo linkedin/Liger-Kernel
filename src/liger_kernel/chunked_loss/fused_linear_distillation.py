@@ -135,6 +135,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         ignore_index=-100,
         weight_hard_loss=0.5,
         weight_soft_loss=0.5,
+        beta=0.5,
         compute_ce_loss=True,
         temperature=1.0,
         compiled=True,
@@ -157,6 +158,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             ignore_index (int): Index to ignore for loss computation.
             weight_hard_loss (float): Weight for hard/task loss.
             weight_soft_loss (float): Weight for soft/distillation loss.
+            beta (float): Interpolation coefficient between 0 and 1 (default: 0.5).
             compute_ce_loss (bool): Whether to compute CE loss.
             temperature (float): Temperature to control the input probability distribution. Default: `1.0` (i.e. no scale)
             compiled (bool): Whether to use torch compile for chunk accumulation.
@@ -175,6 +177,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             ignore_index=ignore_index,
             weight_hard_loss=weight_hard_loss,
             weight_soft_loss=weight_soft_loss,
+            beta=beta,
             compute_ce_loss=compute_ce_loss,
             temperature=temperature,
             **loss_kwargs,

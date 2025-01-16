@@ -40,6 +40,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         true_labels: torch.LongTensor,
         weight_hard_loss: float = 0.5,
         weight_soft_loss: float = 0.5,
+        beta: float = 0.5,
         ignore_index: int = -100,
         temperature: float = 1.0,
         compiled: bool = True,
@@ -54,6 +55,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             true_labels (torch.LongTensor): Target tensor. Shape: (batch_size * seq_len,)
             weight_hard_loss (float): Weight for hard loss.
             weight_soft_loss (float): Weight for soft loss.
+            beta (float): Coefficient beta of generalized JSD in the interval [0, 1]. Default: `0.5`.
             ignore_index (int): Index to ignore in loss computation
             temperature (float): Temperature for softening/sharpening distributions
             compiled (bool): Whether to use torch compile
@@ -71,6 +73,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             chunk_size=1,
             weight_hard_loss=weight_hard_loss,
             weight_soft_loss=weight_soft_loss,
+            beta=beta,
             ignore_index=ignore_index,
             temperature=temperature,
             compiled=compiled,
@@ -80,7 +83,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
     def backward(ctx, grad_output):
         grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:4]
 
-        return (*grads, None, None, None, None, None, None)
+        return (*grads, None, None, None, None, None, None, None)
 
 
 class LigerFusedLinearJSDLoss(torch.nn.Module):
@@ -92,6 +95,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         self,
         weight_hard_loss: float = 0.5,
         weight_soft_loss: float = 0.5,
+        beta: float = 0.5,
         ignore_index: int = -100,
         temperature: float = 1.0,
         compiled: bool = True,
@@ -103,6 +107,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             ignore_index (int): Index to ignore in the loss
             temperature (float): Temperature for softening distributions
             compiled (bool): Whether to use torch compile
+            beta (float): Coefficient beta of generalized JSD in the interval [0, 1]. Default: `0.5`.
         """
         super().__init__()
         assert temperature != 0, "Temperature cannot be 0."
@@ -111,6 +116,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         self.ignore_index = ignore_index
         self.temperature = temperature
         self.compiled = compiled
+        self.beta = beta
 
     def forward(
         self,
@@ -141,6 +147,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             true_labels,
             self.weight_hard_loss,
             self.weight_soft_loss,
+            self.beta,
             self.ignore_index,
             self.temperature,
             self.compiled,
