@@ -26,8 +26,8 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="sum", log_target=True)
         teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="sum", log_target=True)
 
-        # JSD is the average of the KL divergences
-        jsd_loss = beta * student_kl + (1 - beta) * teacher_kl
+        # JSD is the weighted average of the KL divergences
+        jsd_loss = beta * teacher_kl + (1 - beta) * student_kl
         return jsd_loss
 
     @staticmethod
