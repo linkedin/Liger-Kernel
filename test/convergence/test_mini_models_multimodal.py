@@ -183,40 +183,61 @@ if QWEN2_VL_AVAILABLE:
     )
 
 if LLAVA_AVAILABLE:
-    from transformers import CLIPVisionConfig
-    from transformers import LlamaConfig
-
+    # https://huggingface.co/llava-hf/llava-1.5-7b-hf
     MINI_MODEL_SETUPS["mini_llava"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_llava,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llava,
         model_class=LlavaForConditionalGeneration,
         mini_model_config=LlavaConfig(
             text_config=LlamaConfig(
-                _name_or_path="lmsys/vicuna-7b-v1.5",
-                max_position_embeddings=4096,
-                model_type="llama",
-                rms_norm_eps=1e-05,
-                torch_dtype="float16",
-                vocab_size=32064,
+                attention_bias=False,
+                attention_dropout=0.0,
+                bos_token_id=1,  # liger-llama
+                eos_token_id=2,  # liger-llama
+                hidden_act="silu",  # liger-llama
+                hidden_size=1024,  # liger-llama
+                initializer_range=0.02,  # liger-llama
+                intermediate_size=2048,  # liger-llama
+                num_attention_heads=8,  # liger-llama
+                num_hidden_layers=4,  # liger-llama
+                num_key_value_heads=2,  # liger-llama
+                pretraining_tp=1,  # liger-llama
+                rope_scaling=None,  # liger-llama
+                rope_theta=500000.0,  # liger-llama
+                tie_word_embeddings=False,  # liger-llama
+                use_cache=True,  # liger-llama
+                max_position_embeddings=4096,  # llava-1.5-7b-hf
+                rms_norm_eps=1e-05,  # llava-1.5-7b-hf
+                vocab_size=32064,  # llava-1.5-7b-hf
+                # At rope backward
+                # Eager produces incontiguous dq and dk
+                # SDPA produces contiguous dq and incontiguous dk
+                # Flash_attn produces contiguous dq and dk
+                attn_implementation="sdpa",  # default value, pytorch native attention
             ),
             vision_config=CLIPVisionConfig(
-                hidden_size=1024,
-                image_size=336,
-                intermediate_size=4096,
-                model_type="clip_vision_model",
-                num_attention_heads=16,
-                num_hidden_layers=24,
-                patch_size=14,
-                projection_dim=768,
-                vocab_size=32000,
+                hidden_size=1024,  # llava-1.5-7b-hf
+                image_size=336,  # llava-1.5-7b-hf
+                intermediate_size=4096,  # llava-1.5-7b-hf
+                model_type="clip_vision_model",  # llava-1.5-7b-hf
+                num_attention_heads=16,  # llava-1.5-7b-hf
+                num_hidden_layers=24,  # llava-1.5-7b-hf
+                patch_size=14,  # llava-1.5-7b-hf
+                projection_dim=768,  # llava-1.5-7b-hf
+                vocab_size=32000,  # llava-1.5-7b-hf
             ),
-            vocab_size=32064,
-            ignore_index=-100,
-            pad_token_id=32001,
-            image_token_index=32000,
-            projector_hidden_act="gelu",
-            vision_feature_layer=-2,
-            vision_feature_select_strategy="default",
+            vocab_size=32064,  # llava-1.5-7b-hf
+            ignore_index=-100,  # llava-1.5-7b-hf
+            pad_token_id=32001,  # llava-1.5-7b-hf
+            image_token_index=32000,  # llava-1.5-7b-hf
+            projector_hidden_act="gelu",  # llava-1.5-7b-hf
+            vision_feature_layer=-2,  # llava-1.5-7b-hf
+            vision_feature_select_strategy="default",  # llava-1.5-7b-hf
+            # At rope backward
+            # Eager produces incontiguous dq and dk
+            # SDPA produces contiguous dq and incontiguous dk
+            # Flash_attn produces contiguous dq and dk
+            attn_implementation="sdpa",  # default value, pytorch native attention
         ),
     )
 

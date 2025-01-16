@@ -393,6 +393,7 @@ if QWEN2_VL_AVAILABLE:
     )
 
 if LLAVA_AVAILABLE:
+    # https://huggingface.co/llava-hf/llava-1.5-7b-hf
     MINI_MODEL_SETUPS["mini_llava"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_llava,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llava,
@@ -401,25 +402,23 @@ if LLAVA_AVAILABLE:
             text_config=LlamaConfig(
                 attention_bias=False,
                 attention_dropout=0.0,
-                # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
-                # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
-                bos_token_id=1,  # 128000
-                eos_token_id=2,  # 128001
-                hidden_act="silu",
-                hidden_size=1024,  # 4096
-                initializer_range=0.02,
-                intermediate_size=2048,  # 14336
-                max_position_embeddings=8192,
-                num_attention_heads=8,  # 32
-                num_hidden_layers=4,  # 32
-                num_key_value_heads=2,  # 8
-                pretraining_tp=1,
-                rms_norm_eps=1e-5,
-                rope_scaling=None,
-                rope_theta=500000.0,
-                tie_word_embeddings=False,
-                use_cache=True,
-                vocab_size=32000,  # 128256,
+                bos_token_id=1,  # liger-llama
+                eos_token_id=2,  # liger-llama
+                hidden_act="silu",  # liger-llama
+                hidden_size=1024,  # liger-llama
+                initializer_range=0.02,  # liger-llama
+                intermediate_size=2048,  # liger-llama
+                num_attention_heads=8,  # liger-llama
+                num_hidden_layers=4,  # liger-llama
+                num_key_value_heads=2,  # liger-llama
+                pretraining_tp=1,  # liger-llama
+                rope_scaling=None,  # liger-llama
+                rope_theta=500000.0,  # liger-llama
+                tie_word_embeddings=False,  # liger-llama
+                use_cache=True,  # liger-llama
+                max_position_embeddings=4096,  # llava-1.5-7b-hf
+                rms_norm_eps=1e-05,  # llava-1.5-7b-hf
+                vocab_size=32064,  # llava-1.5-7b-hf
                 # At rope backward
                 # Eager produces incontiguous dq and dk
                 # SDPA produces contiguous dq and incontiguous dk
@@ -427,23 +426,28 @@ if LLAVA_AVAILABLE:
                 attn_implementation="sdpa",  # default value, pytorch native attention
             ),
             vision_config=CLIPVisionConfig(
-                hidden_size=1024,
-                image_size=336,
-                intermediate_size=4096,
-                model_type="clip_vision_model",
-                num_attention_heads=16,
-                num_hidden_layers=24,
-                patch_size=14,
-                projection_dim=768,
-                vocab_size=32000,
+                hidden_size=1024,  # llava-1.5-7b-hf
+                image_size=336,  # llava-1.5-7b-hf
+                intermediate_size=4096,  # llava-1.5-7b-hf
+                model_type="clip_vision_model",  # llava-1.5-7b-hf
+                num_attention_heads=16,  # llava-1.5-7b-hf
+                num_hidden_layers=24,  # llava-1.5-7b-hf
+                patch_size=14,  # llava-1.5-7b-hf
+                projection_dim=768,  # llava-1.5-7b-hf
+                vocab_size=32000,  # llava-1.5-7b-hf
             ),
-            vocab_size=32064,
-            ignore_index=-100,
-            pad_token_id=32001,
-            image_token_index=32000,
-            projector_hidden_act="gelu",
-            vision_feature_layer=-2,
-            vision_feature_select_strategy="default",
+            vocab_size=32064,  # llava-1.5-7b-hf
+            ignore_index=-100,  # llava-1.5-7b-hf
+            pad_token_id=32001,  # llava-1.5-7b-hf
+            image_token_index=32000,  # llava-1.5-7b-hf
+            projector_hidden_act="gelu",  # llava-1.5-7b-hf
+            vision_feature_layer=-2,  # llava-1.5-7b-hf
+            vision_feature_select_strategy="default",  # llava-1.5-7b-hf
+            # At rope backward
+            # Eager produces incontiguous dq and dk
+            # SDPA produces contiguous dq and incontiguous dk
+            # Flash_attn produces contiguous dq and dk
+            attn_implementation="sdpa",  # default value, pytorch native attention
         ),
     )
 
@@ -523,41 +527,6 @@ def run_mini_model(
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
-        pytest.param(
-            "mini_llava",
-            32,
-            1e-4,
-            torch.float32,
-            1e-5,
-            1e-1,
-            5e-3,
-            1e-5,
-            5e-3,
-            1e-5,
-            marks=pytest.mark.skipif(
-                not LLAVA_AVAILABLE,
-                reason="Qwen2-VL not available in this version of transformers",
-            ),
-        ),
-        pytest.param(
-            "mini_llava",  #        model_name,
-            32,  #                  num_steps,
-            1e-4,  #                lr,
-            torch.bfloat16,  #      dtype,
-            1e-3,  #                loss_atol,
-            5e-2,  #                loss_rtol,
-            1e-1,  #                logits_atol,
-            1e-2,  #                logits_rtol,
-            1e-2,  #                param_atol,
-            1e-2,  #                param_rtol,
-            marks=[
-                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-                pytest.mark.skipif(
-                    not LLAVA_AVAILABLE,
-                    reason="LLaVa not available in this version of transformers",
-                ),
-            ],
-        ),
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_llama3",
@@ -571,6 +540,41 @@ def run_mini_model(
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        pytest.param(
+            "mini_llava",
+            32,
+            2e-3,
+            torch.float32,
+            1e-8,
+            2e-5,
+            1e-4,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not LLAVA_AVAILABLE,
+                reason="Qwen2-VL not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_llava",
+            32,
+            2e-3,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not LLAVA_AVAILABLE,
+                    reason="LLaVa not available in this version of transformers",
+                ),
+            ],
         ),
         pytest.param(
             "mini_mllama",
@@ -786,9 +790,11 @@ def test_mini_model(
 
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
-    for expected_param, actual_param in zip(
-        expected_output["model"].named_parameters(),
-        actual_output["model"].named_parameters(),
-        strict=False,
+    for idx, (expected_param, actual_param) in enumerate(
+        zip(
+            expected_output["model"].named_parameters(),
+            actual_output["model"].named_parameters(),
+            strict=False,
+        )
     ):
         assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)
