@@ -118,20 +118,35 @@ def lce_forward(
         image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
         inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
-    outputs = self.language_model.model(
+    # NOTE: Doing this causes the test to fail... I don't understand why.
+    # outputs = self.language_model.model(
+    #     attention_mask=attention_mask,
+    #     position_ids=position_ids,
+    #     past_key_values=past_key_values,
+    #     inputs_embeds=inputs_embeds,
+    #     use_cache=use_cache,
+    #     output_attentions=output_attentions,
+    #     output_hidden_states=output_hidden_states,
+    #     return_dict=return_dict,
+    #     cache_position=cache_position,
+    #     # num_logits_to_keep=num_logits_to_keep,
+    # )
+
+    # hidden_states = outputs[0]
+
+    outputs = self.language_model(
         attention_mask=attention_mask,
         position_ids=position_ids,
         past_key_values=past_key_values,
         inputs_embeds=inputs_embeds,
         use_cache=use_cache,
         output_attentions=output_attentions,
-        output_hidden_states=output_hidden_states,
+        output_hidden_states=True,
         return_dict=return_dict,
         cache_position=cache_position,
-        # num_logits_to_keep=num_logits_to_keep,
     )
 
-    hidden_states = outputs[0]
+    hidden_states = outputs.hidden_states[-1]
 
     logits = None
     loss = None
@@ -167,6 +182,7 @@ def lce_forward(
         loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1).to(shift_logits.device))
 
     if not return_dict:
+        # NOTE: This part has not been tested.
         output = (logits,) + outputs[1:]
         return (loss,) + output if loss is not None else output
 
@@ -174,7 +190,7 @@ def lce_forward(
         loss=loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
-        hidden_states=outputs.hidden_states,
+        hidden_states=outputs.hidden_states if output_hidden_states else None,
         attentions=outputs.attentions,
         image_hidden_states=image_features if pixel_values is not None else None,
     )
