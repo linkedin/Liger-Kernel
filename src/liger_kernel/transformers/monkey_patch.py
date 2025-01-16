@@ -19,6 +19,7 @@ from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_for
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
+from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
@@ -160,8 +161,6 @@ def apply_liger_kernel_to_llava(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.llava import modeling_llava
-
-    from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
 
     if cross_entropy:
         logger.warning(TRANSFORMER_DEPRECATION_WARNING)
