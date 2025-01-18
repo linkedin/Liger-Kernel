@@ -14,6 +14,7 @@ class LigerFusedLinearCrossEntropyLoss(torch.nn.Module):
         label_smoothing: float = 0.0,
         reduction: str = "mean",
         softcap: Optional[float] = None,
+        return_z_loss: bool = False,
     ):
         super().__init__()
         assert (label_smoothing >= 0) and (
@@ -31,9 +32,10 @@ class LigerFusedLinearCrossEntropyLoss(torch.nn.Module):
         self.label_smoothing = label_smoothing
         self.reduction = reduction
         self.softcap = softcap
+        self.return_z_loss = return_z_loss
 
     def forward(self, lin_weight, _input, target, bias=None):
-        return LigerFusedLinearCrossEntropyFunction.apply(
+        loss, z_loss = LigerFusedLinearCrossEntropyFunction.apply(
             _input,
             lin_weight,
             target,
@@ -44,4 +46,8 @@ class LigerFusedLinearCrossEntropyLoss(torch.nn.Module):
             self.label_smoothing,
             self.reduction,
             self.softcap,
+            self.return_z_loss,
         )
+        if not self.return_z_loss:
+            return loss
+        return loss, z_loss
