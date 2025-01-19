@@ -238,8 +238,7 @@ def transformers_version_dispatch(
         Result from either before_fn or after_fn
 
     Example:
-        >>> rotary_emb = version_dispatch(
-        ...     transformers_version,
+        >>> rotary_emb = transformers_version_dispatch(
         ...     "4.48.0",
         ...     LlamaRotaryEmbedding,
         ...     LlamaRotaryEmbedding,
