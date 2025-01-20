@@ -19,6 +19,8 @@ from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_for
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
+from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
+from liger_kernel.transformers.model.llava import lce_forward_deprecated as llava_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
@@ -131,6 +133,62 @@ def apply_liger_kernel_to_llama(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
+def apply_liger_kernel_to_llava(
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    model: PreTrainedModel = None,
+    **kwargs,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Llava models.
+    NOTE: Llava is not available in transformers<4.45.0
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
+    from transformers.models.llava import modeling_llava
+
+    if cross_entropy:
+        logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+        modeling_llava.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        if transformer_version >= version.parse("4.49.0"):
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
+        else:  # if version < 4.49.0
+            logger.warning(
+                "Support for transformers versions < 4.49.0 will soon be discontinued due to issues with incorrect legacy processing. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/35526"
+            )
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
+
+    if model is not None:
+        if model.config.text_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            MODEL_TYPE_TO_APPLY_LIGER_FN[model.config.text_config.model_type](
+                cross_entropy=False,
+                fused_linear_cross_entropy=False,
+                **kwargs,
+            )
+
+        if model.config.vision_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            MODEL_TYPE_TO_APPLY_LIGER_FN[model.config.vision_config.model_type](
+                cross_entropy=False,
+                fused_linear_cross_entropy=False,
+                **kwargs,
+            )
 
 
 def apply_liger_kernel_to_mllama(
@@ -740,6 +798,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
     "llama": apply_liger_kernel_to_llama,
+    "llava": apply_liger_kernel_to_llava,
     "mllama": apply_liger_kernel_to_mllama,
     "mllama_text_model": apply_liger_kernel_to_mllama,
     "mistral": apply_liger_kernel_to_mistral,
