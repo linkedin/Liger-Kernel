@@ -553,7 +553,7 @@ def run_mini_model(
             1e-5,
             marks=pytest.mark.skipif(
                 not LLAVA_AVAILABLE,
-                reason="Qwen2-VL not available in this version of transformers",
+                reason="LLaVa not available in this version of transformers",
             ),
         ),
         pytest.param(

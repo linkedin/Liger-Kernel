@@ -521,7 +521,6 @@ def run_mini_model(
         optimizer.step()
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
-        input_ls.append(batch)
 
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
     return {"loss": loss_list, "logits": output.logits, "model": model, "inputs": input_ls}
@@ -557,7 +556,7 @@ def run_mini_model(
             1e-5,
             marks=pytest.mark.skipif(
                 not LLAVA_AVAILABLE,
-                reason="Qwen2-VL not available in this version of transformers",
+                reason="LLaVa not available in this version of transformers",
             ),
         ),
         pytest.param(
