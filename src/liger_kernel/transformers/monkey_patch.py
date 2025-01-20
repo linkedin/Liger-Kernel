@@ -20,6 +20,7 @@ from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gem
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
 from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
+from liger_kernel.transformers.model.llava import lce_forward_deprecated as llava_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
@@ -166,7 +167,13 @@ def apply_liger_kernel_to_llava(
         logger.warning(TRANSFORMER_DEPRECATION_WARNING)
         modeling_llava.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
+        if transformer_version >= version.parse("4.49.0"):
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
+        else:  # if version < 4.49.0
+            logger.warning(
+                "Support for transformers versions < 4.49.0 will soon be discontinued due to issues with incorrect legacy processing. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/35526"
+            )
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
 
     if model is not None:
         if model.config.text_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
