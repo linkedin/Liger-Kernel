@@ -56,8 +56,9 @@ def liger_fused_linear_cross_entropy(
     label_smoothing: float = 0.0,
     reduction: str = "mean",
     softcap: Optional[float] = None,
+    return_z_loss: bool = False,
 ):
-    return LigerFusedLinearCrossEntropyFunction.apply(
+    loss, z_loss = LigerFusedLinearCrossEntropyFunction.apply(
         input,
         weight,
         target,
@@ -68,7 +69,11 @@ def liger_fused_linear_cross_entropy(
         label_smoothing,
         reduction,
         softcap,
+        return_z_loss,
     )
+    if not return_z_loss:
+        return loss
+    return loss, z_loss
 
 
 def liger_fused_linear_jsd(
