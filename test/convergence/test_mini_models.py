@@ -511,7 +511,7 @@ def run_mini_model(
     loader_iter = iter(loader)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
-    loss_list, input_ls = [], []
+    loss_list = []
 
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
@@ -523,7 +523,7 @@ def run_mini_model(
         loss_list.append(output.loss.item())
 
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
-    return {"loss": loss_list, "logits": output.logits, "model": model, "inputs": input_ls}
+    return {"loss": loss_list, "logits": output.logits, "model": model}
 
 
 @pytest.mark.parametrize(
