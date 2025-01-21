@@ -24,7 +24,9 @@ def fused_linear_cross_entropy_forward(
     label_smoothing=0.0,
     reduction="mean",
     softcap=None,
+    return_z_loss=False,
 ):
+    assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     device = _input.device
 
     # inputs have shape: BT x H
@@ -47,6 +49,7 @@ def fused_linear_cross_entropy_forward(
     grad_bias = torch.zeros_like(bias, device=device) if bias is not None else None
     # we use fp32 for loss accumulator
     loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
+    z_loss_1d = torch.zeros(BT, dtype=_input.dtype, device=_input.device) if return_z_loss else None
 
     # TODO: evaluate how CUDA synchronization caused by .item() affects the speed
     target_mask = target != ignore_index
@@ -81,6 +84,7 @@ def fused_linear_cross_entropy_forward(
 
         # unreduced loss
         loss_1d_slice = loss_1d[start_idx:end_idx]  # chunk_size,
+        z_loss_1d_slice = z_loss_1d[start_idx:end_idx] if return_z_loss else None
 
         # ensure _input and target are contiguous
         logits_chunk = logits_chunk.contiguous()
@@ -92,9 +96,9 @@ def fused_linear_cross_entropy_forward(
             X_stride=logits_chunk.stride(-2),
             Y_ptr=target_chunk,
             Y_stride=target_chunk.stride(-1),  # always 1
-            weight_ptr=ce_weight if ce_weight is not None else _input,  # dummy if None
+            weight_ptr=ce_weight,
             loss_ptr=loss_1d_slice,
-            z_loss_ptr=loss_1d_slice,  # dummy ptr, not used
+            z_loss_ptr=z_loss_1d_slice,
             loss_stride=loss_1d_slice.stride(-1),  # always 1
             n_cols=V,
             n_non_ignore=total_n_non_ignore,
@@ -104,8 +108,8 @@ def fused_linear_cross_entropy_forward(
             lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
             reduction=reduction,
-            softcap=softcap if softcap is not None else 0.0,
-            RETURN_Z_LOSS=0,  # False
+            softcap=softcap,
+            RETURN_Z_LOSS=return_z_loss,
             HAS_WEIGHT=True if ce_weight is not None else False,
             HAS_SOFTCAPPING=True if softcap is not None else False,
             BLOCK_SIZE=BLOCK_SIZE,
@@ -113,6 +117,8 @@ def fused_linear_cross_entropy_forward(
         )
 
         loss_1d[start_idx:end_idx] = loss_1d_slice
+        if return_z_loss:
+            z_loss_1d[start_idx:end_idx] = z_loss_1d_slice
         grad_logits_chunk = logits_chunk  # chunk_size x V
 
         grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
@@ -139,9 +145,12 @@ def fused_linear_cross_entropy_forward(
 
     if reduction == "none":
         loss = loss_1d
+        z_loss = z_loss_1d if return_z_loss else None
+
     else:
         loss = torch.sum(loss_1d)
-    return loss, grad_input, grad_weight, grad_bias
+        z_loss = torch.sum(z_loss_1d) if return_z_loss else None
+    return loss, z_loss, grad_input, grad_weight, grad_bias
 
 
 def fused_linear_cross_entropy_backward(grad_output, grad_input, grad_weight, grad_bias):
@@ -206,6 +215,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         label_smoothing=0.0,
         reduction="mean",
         softcap=None,
+        return_z_loss: bool = False,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -226,7 +236,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         reduction: reduction to apply
         """
 
-        loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
+        loss, z_loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
             _input=_input,
             weight=weight,
             target=target,
@@ -237,6 +247,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             label_smoothing=label_smoothing,
             reduction=reduction,
             softcap=softcap,
+            return_z_loss=return_z_loss,
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
@@ -244,11 +255,14 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             grad_weight.detach() if grad_weight is not None else None,
             grad_bias.detach() if bias is not None else None,
         )
-        return loss
+        ctx.return_z_loss = return_z_loss
+        return loss, z_loss
 
     @staticmethod
     @amp_custom_bwd
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output, grad_output2):
+        if ctx.return_z_loss:
+            del grad_output2  # z_loss is only for logging
         (grad_input, grad_weight, grad_bias) = ctx.saved_tensors
         grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_backward(
             grad_output, grad_input, grad_weight, grad_bias
@@ -258,6 +272,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             grad_weight,
             None,
             grad_bias,
+            None,
             None,
             None,
             None,
