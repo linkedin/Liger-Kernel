@@ -222,6 +222,53 @@ def supports_bfloat16():
         return False
 
 
+def transformers_version_dispatch(
+    required_version: str,
+    before_fn,
+    after_fn,
+    before_args: tuple = (),
+    after_args: tuple = (),
+    before_kwargs: dict = None,
+    after_kwargs: dict = None,
+):
+    """
+    Dispatches to different functions based on package version comparison.
+
+    Args:
+        required_version: Version to compare against (e.g. "4.48.0")
+        before_fn: Function to call if package_version < required_version
+        after_fn: Function to call if package_version >= required_version
+        before_args: Positional arguments for before_fn
+        after_args: Positional arguments for after_fn
+        before_kwargs: Keyword arguments for before_fn
+        after_kwargs: Keyword arguments for after_fn
+
+    Returns:
+        Result from either before_fn or after_fn
+
+    Example:
+        >>> rotary_emb = transformers_version_dispatch(
+        ...     "4.48.0",
+        ...     LlamaRotaryEmbedding,
+        ...     LlamaRotaryEmbedding,
+        ...     before_args=(head_dim,),
+        ...     after_args=(LlamaConfig(head_dim=head_dim),),
+        ...     before_kwargs={'device': device},
+        ...     after_kwargs={'device': device}
+        ... )
+    """
+    from packaging import version
+    from transformers import __version__ as transformers_version
+
+    before_kwargs = before_kwargs or {}
+    after_kwargs = after_kwargs or {}
+
+    if version.parse(transformers_version) < version.parse(required_version):
+        return before_fn(*before_args, **before_kwargs)
+    else:
+        return after_fn(*after_args, **after_kwargs)
+
+
 def revert_liger_kernel_to_llama(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Llama.
@@ -432,8 +479,9 @@ class HFAlignmentLoss:
         _input: torch.FloatTensor,
         weight: torch.FloatTensor,
         target: torch.LongTensor,
-        bias: torch.FloatTensor = None,
+        bias: torch.FloatTensor | None = None,
         average_log_prob: bool = True,
+        nll_target: torch.LongTensor | None = None,
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
@@ -456,7 +504,7 @@ class HFAlignmentLoss:
             loss = loss_fct(logits, labels)
             return loss
 
-        labels = target
+        labels = nll_target if nll_target is not None else target
         chosen_nll_loss = torch.tensor(0.0, device=all_logits.device)
         if self.compute_nll_loss:
             chosen_nll_loss = cross_entropy_loss(all_logits[:len_chosen], labels[:len_chosen])
@@ -491,10 +539,11 @@ class HFAlignmentLoss:
         ref_weight: torch.FloatTensor = None,
         ref_bias: torch.FloatTensor = None,
         average_log_prob: bool = True,
+        nll_target: torch.LongTensor = None,
     ):
         """Compute the loss metrics for the given batch of inputs for train or test."""
 
-        forward_output = self.concatenated_forward(_input, weight, target, bias, average_log_prob)
+        forward_output = self.concatenated_forward(_input, weight, target, bias, average_log_prob, nll_target)
         (
             policy_chosen_logps,
             policy_rejected_logps,
