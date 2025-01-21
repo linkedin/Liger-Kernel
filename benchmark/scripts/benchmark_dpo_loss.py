@@ -4,7 +4,6 @@ import sys
 import torch
 import triton
 
-from test.chunked_loss.test_dpo_loss import HF_DPO_Loss
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
@@ -12,7 +11,6 @@ from utils import _test_memory
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
-from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -21,7 +19,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 
 def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    from test.chunked_loss.test_dpo_loss import LigerLMHeadDPO, TorchLMHeadDPO
+    from test.chunked_loss.test_dpo_loss import LigerLMHeadDPO
+    from test.chunked_loss.test_dpo_loss import TorchLMHeadDPO
 
     B = input.x
     T = input.extra_benchmark_config["T"]
@@ -70,7 +69,8 @@ def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
 
 def bench_speed_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    from test.chunked_loss.test_dpo_loss import LigerLMHeadDPO, TorchLMHeadDPO
+    from test.chunked_loss.test_dpo_loss import LigerLMHeadDPO
+    from test.chunked_loss.test_dpo_loss import TorchLMHeadDPO
 
     B = input.x
     T = input.extra_benchmark_config["T"]
