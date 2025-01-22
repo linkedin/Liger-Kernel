@@ -39,19 +39,23 @@ class TorchLMHeadCE(torch.nn.Module):
         V: int,
         dtype: torch.dtype,
         bias: bool = False,
+        ce_weight: Optional[torch.FloatTensor] = None,
         ignore_index: int = -100,
         lse_square_scale: float = 0.0,
         label_smoothing: float = 0.0,
         reduction: str = "mean",
         softcap: Optional[float] = None,
+        return_z_loss: bool = False,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.ce_loss = CrossEntropyWithZLoss(
+            weight=ce_weight,
             ignore_index=ignore_index,
             lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
             reduction=reduction,
+            return_z_loss=return_z_loss,
         )
         self.softcap = softcap
 
@@ -68,21 +72,25 @@ class LigerLMHeadCE(torch.nn.Module):
         H: int,
         V: int,
         dtype: torch.dtype,
+        ce_weight: Optional[torch.FloatTensor] = None,
         bias: bool = False,
         ignore_index: int = -100,
         lse_square_scale: float = 0.0,
         label_smoothing: float = 0.0,
         reduction: str = "mean",
         softcap: Optional[float] = None,
+        return_z_loss: bool = False,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.ce_loss = LigerFusedLinearCrossEntropyLoss(
+            ce_weight=ce_weight,
             ignore_index=ignore_index,
             lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
             reduction=reduction,
             softcap=softcap,
+            return_z_loss=return_z_loss,
         )
 
     def forward(self, x, y):
@@ -108,19 +116,17 @@ class LigerLMHeadCE(torch.nn.Module):
         ("mean", 1.0, torch.float32, 1e-5, 5e-4),
         ("sum", 1.0, torch.bfloat16, 5e-0, 5e1),
         ("sum", 1.0, torch.float32, 1e-3, 5e-2),
+        ("none", 1.0, torch.bfloat16, 5e-0, 5e1),
+        ("none", 1.0, torch.float32, 1e-3, 5e-2),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize(
-    "label_smoothing, ignore_index, lse_square_scale, softcap",
+    "has_ce_weight, label_smoothing, ignore_index, lse_square_scale, softcap, return_z_loss",
     [
-        (0, -100, 0, None),
-        (
-            0.1,
-            42,
-            1e-4,
-            30.0,
-        ),  # Pass non-default values once to ensure all params work along
+        (False, 0, -100, 0, None, False),
+        # Pass non-default values once to ensure all params work along
+        (True, 0.1, 42, 1e-4, 30.0, True),
     ],
 )
 def test_correctness(
@@ -131,34 +137,44 @@ def test_correctness(
     scalar,
     dtype,
     bias,
+    has_ce_weight,
     lse_square_scale,
     label_smoothing,
     ignore_index,
     reduction,
     softcap,
+    return_z_loss,
     atol,
     rtol,
 ):
+    if has_ce_weight:
+        ce_weight = torch.rand(V, device=device, dtype=torch.float32)
+    else:
+        ce_weight = None
     torch_lm_head_ce = TorchLMHeadCE(
         H=H,
         V=V,
         bias=bias,
+        ce_weight=ce_weight,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
         ignore_index=ignore_index,
         reduction=reduction,
         softcap=softcap,
+        return_z_loss=return_z_loss,
         dtype=dtype,
     ).to(device)
     liger_lm_head_ce = LigerLMHeadCE(
         H=H,
         V=V,
         bias=bias,
+        ce_weight=ce_weight,
         lse_square_scale=lse_square_scale,
         label_smoothing=label_smoothing,
         ignore_index=ignore_index,
         reduction=reduction,
         softcap=softcap,
+        return_z_loss=return_z_loss,
         dtype=dtype,
     ).to(device)
 
@@ -180,13 +196,19 @@ def test_correctness(
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     target[indices_to_assign] = ignore_index
 
-    output1 = torch_lm_head_ce(_input1, target)
-    output2 = liger_lm_head_ce(_input2, target)
+    if return_z_loss:
+        output1, z_output1 = torch_lm_head_ce(_input1, target)
+        output2, z_output2 = liger_lm_head_ce(_input2, target)
+    else:
+        output1 = torch_lm_head_ce(_input1, target)
+        output2 = liger_lm_head_ce(_input2, target)
 
     assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
+    if return_z_loss:
+        assert_verbose_allclose(z_output1, z_output2, atol=atol, rtol=rtol)
 
-    output1.backward()
-    output2.backward()
+    output1.backward(gradient=torch.ones_like(output1))
+    output2.backward(gradient=torch.ones_like(output2))
 
     assert_verbose_allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
 
@@ -221,8 +243,9 @@ def test_correctness(
         (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )
+@pytest.mark.parametrize("ce_weight", [True, False])
 @pytest.mark.parametrize("bias", [True, False])
-def test_correctness_functional(B, T, H, V, scalar, dtype, bias, atol, rtol):
+def test_correctness_functional(B, T, H, V, scalar, dtype, bias, ce_weight, atol, rtol):
     _input = torch.randn(B * T, H, device=device, dtype=dtype) * scalar
     x1 = _input.detach().clone().requires_grad_(True)
     x2 = _input.detach().clone().requires_grad_(True)
@@ -232,15 +255,26 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, atol, rtol):
     weight = torch.randn(V, H, device=device, dtype=dtype)
     bias = torch.randn(V, device=device, dtype=dtype) if bias else None
 
-    y1 = liger_fused_linear_cross_entropy(
+    ce_weight = torch.randn(V, device=device) if ce_weight else None
+    y1, z1 = liger_fused_linear_cross_entropy(
         input=x1,
         weight=weight,
         target=target,
         bias=bias,
+        ce_weight=ce_weight,
+        ignore_index=-100,
+        lse_square_scale=1e-4,
+        label_smoothing=0.1,
+        reduction="mean",
+        softcap=30.0,
+        return_z_loss=True,
     )
-    y2 = LigerFusedLinearCrossEntropyFunction.apply(x2, weight, target, bias)
+    y2, z2 = LigerFusedLinearCrossEntropyFunction.apply(
+        x2, weight, target, bias, ce_weight, -100, 1e-4, 0.1, "mean", 30.0, True
+    )
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
+    assert torch.allclose(z1, z2, atol=atol, rtol=rtol)
 
     grad_output = torch.randn_like(y1)
 
@@ -258,18 +292,20 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, atol, rtol):
     ],
 )
 @pytest.mark.parametrize(
-    "cast_dtype, atol, rtol",
+    "bias, cast_dtype, atol, rtol",
     [
-        (torch.bfloat16, 5e-3, 5e-2),
-        (torch.float16, 5e-3, 5e-2),
+        (True, torch.bfloat16, 5e-3, 5e-2),
+        (True, torch.float16, 5e-3, 5e-2),
+        (False, torch.bfloat16, 5e-3, 5e-2),
+        (False, torch.float16, 5e-3, 5e-2),
     ],
 )
-def test_amp(B, T, H, V, cast_dtype, atol, rtol):
+def test_amp(B, T, H, V, bias, cast_dtype, atol, rtol):
     dtype = torch.float32
     torch_lm_head_ce = TorchLMHeadCE(
         H=H,
         V=V,
-        bias=True,
+        bias=bias,
         label_smoothing=0.0,
         reduction="mean",
         dtype=dtype,
@@ -277,7 +313,7 @@ def test_amp(B, T, H, V, cast_dtype, atol, rtol):
     liger_lm_head_ce = LigerLMHeadCE(
         H=H,
         V=V,
-        bias=True,
+        bias=bias,
         label_smoothing=0.0,
         reduction="mean",
         dtype=dtype,

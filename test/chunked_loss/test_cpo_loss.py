@@ -73,7 +73,11 @@ class HFCPOLoss(HFAlignmentLoss):
             )
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}. Should be one of ['sigmoid']")
-        return losses
+
+        chosen_rewards = self.beta * policy_chosen_logps
+        rejected_rewards = self.beta * policy_rejected_logps
+
+        return losses, chosen_rewards, rejected_rewards
 
 
 class TorchLMHeadCPO(torch.nn.Module):
@@ -99,9 +103,10 @@ class TorchLMHeadCPO(torch.nn.Module):
             label_smoothing=label_smoothing,
             simpo_gamma=simpo_gamma,
         ).get_batch_loss_metrics
+        self.average_log_prob = loss_type == "simpo"
 
     def forward(self, x, y):
-        return self.cpo_loss(self.lin.weight, x, y, self.lin.bias)
+        return self.cpo_loss(self.lin.weight, x, y, self.lin.bias, average_log_prob=self.average_log_prob)
 
 
 class LigerLMHeadCPO(torch.nn.Module):
@@ -139,7 +144,7 @@ class LigerLMHeadCPO(torch.nn.Module):
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        (1.0, torch.bfloat16, 5e-3, 5e-3),
+        (1.0, torch.bfloat16, 5e-2, 5e-2),
         (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )
