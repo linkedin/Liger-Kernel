@@ -12,6 +12,8 @@ from transformers.utils import replace_return_docstrings
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 
+# This docstring is ported from the DeepSeek V2 model source code.
+# Source: https://huggingface.co/deepseek-ai/DeepSeek-V2/blob/main/modeling_deepseek.py
 DeepseekV2_INPUTS_DOCSTRING = r"""
     Args:
         input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
