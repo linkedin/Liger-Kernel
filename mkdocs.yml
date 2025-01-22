@@ -1,0 +1,69 @@
+site_name: Liger-Kernel Docs
+site_url: https://ligerkernel-io.github.io/ligerkernel
+site_author: Parag Ekbote
+site_description: Efficient Triton Kernels for LLM Training
+theme:
+  name: material
+  font:
+    text: Merriweather Sans
+    code: Red Hat Mono
+  features:
+    - navigation.footer
+    - toc.follow
+    - navigation.top
+    - navigation.sections
+  nav:
+  - Home: index.md
+  - Examples: Examples.md
+  - Getting Started: Getting-Started.md
+  - High Level APIs: High-Level-APIs.md
+  - Low Level APIs: Low-Level-APIs.md
+  - Contributing: contributing.md
+  - Acknowledgment: acknowledgement.md
+  - License: license.md
+  palette:
+    # Dark Mode
+    - scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Dark mode
+      primary: green
+      accent: deep purple
+
+    # Light Mode
+    - scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Light mode
+      primary: blue
+      accent: deep purple
+
+markdown_extensions:
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+
+# Repository
+repo_name: linkedin/Liger-Kernel
+repo_url: https://github.com/linkedin/Liger-Kernel
+edit_uri: edit/main/docs/
+
+extra:
+  social:
+    - icon: simple/github
+      link: https://github.com/linkedin/Liger-Kernel

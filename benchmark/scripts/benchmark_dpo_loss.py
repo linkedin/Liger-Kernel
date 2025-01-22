@@ -1,7 +1,9 @@
+import os
+import sys
+
 import torch
 import triton
 
-from test.chunked_loss.test_dpo_loss import HF_DPO_Loss
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
@@ -9,63 +11,17 @@ from utils import _test_memory
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
-from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
 from liger_kernel.utils import infer_device
 
 device = infer_device()
 
-
-class TorchDPOLoss(torch.nn.Module):
-    def __init__(
-        self,
-        H: int,
-        V: int,
-        dtype: torch.dtype,
-        beta: float = 0.1,
-        ignore_index: int = -100,
-        bias: bool = False,
-    ):
-        super().__init__()
-        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
-        self.dpo_loss = HF_DPO_Loss(beta=beta, ignore_index=ignore_index)
-
-    def forward(self, x, target):
-        return self.dpo_loss.get_batch_loss_metrics(
-            x,
-            self.lin.weight,
-            target,
-            self.lin.bias if hasattr(self.lin, "bias") else None,
-        )
-
-
-class LigerDPOLoss(torch.nn.Module):
-    def __init__(
-        self,
-        H: int,
-        V: int,
-        dtype: torch.dtype,
-        beta: float = 0.1,
-        ignore_index: int = -100,
-        bias: bool = False,
-    ):
-        super().__init__()
-        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
-        self.beta = beta
-        self.ignore_index = ignore_index
-
-    def forward(self, x, target):
-        return LigerFusedLinearDPOFunction.apply(
-            x,
-            self.lin.weight,
-            target,
-            self.lin.bias if hasattr(self.lin, "bias") else None,
-            self.ignore_index,
-            self.beta,
-            True,
-        )
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
 def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    from test.chunked_loss.test_dpo_loss import LigerLMHeadDPO
+    from test.chunked_loss.test_dpo_loss import TorchLMHeadDPO
+
     B = input.x
     T = input.extra_benchmark_config["T"]
     H = input.extra_benchmark_config["H"]
@@ -76,11 +32,16 @@ def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     ignore_index = input.extra_benchmark_config["ignore_index"]
     provider = input.kernel_provider
 
-    torch_dpo_loss = TorchDPOLoss(H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias).to(device)
-    liger_dpo_loss = LigerDPOLoss(H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias).to(device)
+    torch_dpo_loss = lambda x, ref_x, target: TorchLMHeadDPO(
+        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
+    ).to(device)(x, ref_x, target)[0]
+    liger_dpo_loss = lambda x, ref_x, target: LigerLMHeadDPO(
+        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
+    ).to(device)(x, ref_x, target)[0]
 
     # Input shape: [B, T, H]
     _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    ref_input = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False)
     # Target shape: [B, T]
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
 
@@ -91,9 +52,9 @@ def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
     def fwd():
         if provider == "liger":
-            return liger_dpo_loss(_input, target)
+            return liger_dpo_loss(_input, ref_input, target)
         elif provider == "huggingface":
-            return torch_dpo_loss(_input, target)
+            return torch_dpo_loss(_input, ref_input, target)
 
     def full():
         y = fwd()
@@ -108,6 +69,9 @@ def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
 
 def bench_speed_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    from test.chunked_loss.test_dpo_loss import LigerLMHeadDPO
+    from test.chunked_loss.test_dpo_loss import TorchLMHeadDPO
+
     B = input.x
     T = input.extra_benchmark_config["T"]
     H = input.extra_benchmark_config["H"]
@@ -119,12 +83,16 @@ def bench_speed_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
-    torch_dpo_loss = TorchDPOLoss(H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias).to(device)
-    liger_dpo_loss = LigerDPOLoss(H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias).to(device)
+    torch_dpo_loss = lambda x, ref_x, target: TorchLMHeadDPO(
+        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
+    ).to(device)(x, ref_x, target)[0]
+    liger_dpo_loss = lambda x, ref_x, target: LigerLMHeadDPO(
+        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
+    ).to(device)(x, ref_x, target)[0]
 
     # Input shape: [B, T, H]
     _input = torch.randn(B, T, H, device=device, dtype=dtype)
-
+    ref_input = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=False)
     # Target shape: [B, T]
     target = torch.randint(V, (B, T), device=device, dtype=torch.long)
 
@@ -135,9 +103,9 @@ def bench_speed_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
 
     def fwd():
         if provider == "liger":
-            return liger_dpo_loss(_input, target)
+            return liger_dpo_loss(_input, ref_input, target)
         elif provider == "huggingface":
-            return torch_dpo_loss(_input, target)
+            return torch_dpo_loss(_input, ref_input, target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(

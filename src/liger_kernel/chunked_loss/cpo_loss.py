@@ -34,7 +34,10 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             full_target.shape[0] // 2
         )
 
-        return loss
+        chosen_rewards = beta * chosen_logps
+        rejected_rewards = beta * rejected_logps
+
+        return loss, chosen_rewards, rejected_rewards
 
     @staticmethod
     def forward(
@@ -62,6 +65,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             beta=beta,
             label_smoothing=label_smoothing,
             compute_nll_loss=compute_nll_loss,
+            average_log_prob=False,
             compiled=compiled,
         )
 
