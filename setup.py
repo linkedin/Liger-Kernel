@@ -37,6 +37,8 @@ def get_optional_dependencies():
             "pytest-rerunfailures",
             "datasets>=2.19.2",
             "seaborn",
+            "mkdocs",
+            "mkdocs-material",
         ]
     }
 
