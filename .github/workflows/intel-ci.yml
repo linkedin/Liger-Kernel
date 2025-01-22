@@ -45,7 +45,7 @@ jobs:
       run: make checkstyle
 
   tests:
-    runs-on: intel-gpu-max1550
+    runs-on: linux-max1550-gpu-8
     needs: [checkstyle]
 
     steps:
