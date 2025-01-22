@@ -430,7 +430,5 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             chosen_logits_mean,
             rejected_logits_mean,
             chosen_nll_loss,
-            ref_chosen_logps if use_ref_model else None,
-            ref_rejected_logps if use_ref_model else None,
         )
         return loss, (*return_vars, *aux_outputs)
