@@ -143,7 +143,9 @@ def apply_liger_kernel_to_llava(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Llava models.
-    NOTE: Llava is not available in transformers<4.45.0
+    Due to the characteristics of LlaVa, the model must be passed to apply Liger-Kernel's patch to other models connected to LLaVa.
+    However, if an LM not supported by Liger-Kernel is connected to LLaVa, unexpected side effects may occur.
+    NOTE: Llava is not available in transformers<4.36.0
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
