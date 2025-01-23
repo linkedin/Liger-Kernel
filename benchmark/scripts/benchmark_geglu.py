@@ -41,6 +41,8 @@ def bench_speed_geglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
         layer = LigerGEGLUMLP(config=llama_config).to(device).to(dtype)
     elif provider == "huggingface":
         layer = LlamaMLP(config=llama_config).to(device).to(dtype)
+    elif provider == "torchcompile":
+        layer = torch.compile(LlamaMLP(config=llama_config)).to(device).to(dtype)
     else:
         raise ValueError(f"Invalid provider: {provider} for GEGLU")
 
@@ -107,6 +109,8 @@ def bench_memory_geglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
         layer = LigerGEGLUMLP(config=llama_config).to(device).to(dtype)
     elif provider == "huggingface":
         layer = LlamaMLP(config=llama_config).to(device).to(dtype)
+    elif provider == "torchcompile":
+        layer = torch.compile(LlamaMLP(config=llama_config)).to(device).to(dtype)
     else:
         raise ValueError(f"Invalid provider: {provider} for GEGLU")
 
@@ -150,7 +154,7 @@ if __name__ == "__main__":
         "x_name": "T",
         "x_label": "sequence length",
         "x_values": [2**i for i in range(10, 14)],
-        "kernel_providers": ["liger", "huggingface"],
+        "kernel_providers": ["liger", "huggingface", "torchcompile"],
         "extra_benchmark_configs": [
             {
                 "bsz": 8,
@@ -165,14 +169,14 @@ if __name__ == "__main__":
 
     run_benchmarks(
         bench_test_fn=bench_speed_geglu,
-        kernel_operation_modes=["full", "forward", "backward"],
+        kernel_operation_modes=["full"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,
     )
     run_benchmarks(
         bench_test_fn=bench_memory_geglu,
-        kernel_operation_modes=["full", "forward", "backward"],
+        kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
         **common_configs,

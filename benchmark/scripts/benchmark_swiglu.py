@@ -15,7 +15,6 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
-
 def bench_speed_swiglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     seq_len = input.x
     provider = input.kernel_provider
@@ -43,6 +42,8 @@ def bench_speed_swiglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
         layer = LigerSwiGLUMLP(config=llama_config).to(device).to(dtype)
     elif provider == "huggingface":
         layer = LlamaMLP(config=llama_config).to(device).to(dtype)
+    elif provider == "torchcompile":
+        layer = torch.compile(LlamaMLP(config=llama_config)).to(device).to(dtype)
     else:
         raise ValueError(f"Invalid provider: {provider} for SwiGLU")
 
@@ -112,6 +113,8 @@ def bench_memory_swiglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOut
         layer = LigerSwiGLUMLP(config=llama_config).to(device).to(dtype)
     elif provider == "huggingface":
         layer = LlamaMLP(config=llama_config).to(device).to(dtype)
+    elif provider == "torchcompile":
+        layer = torch.compile(LlamaMLP(config=llama_config)).to(device).to(dtype)
     else:
         raise ValueError(f"Invalid provider: {provider} for SwiGLU")
 
@@ -146,7 +149,7 @@ if __name__ == "__main__":
         "x_name": "T",
         "x_label": "sequence length",
         "x_values": [2**i for i in range(10, 14)],
-        "kernel_providers": ["liger", "huggingface"],
+        "kernel_providers": ["liger", "huggingface", "torchcompile"],
         "extra_benchmark_configs": [
             {
                 "B": 4,
@@ -161,7 +164,7 @@ if __name__ == "__main__":
 
     run_benchmarks(
         bench_test_fn=bench_speed_swiglu,
-        kernel_operation_modes=["forward"],
+        kernel_operation_modes=["full"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,

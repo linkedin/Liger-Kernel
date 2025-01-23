@@ -109,34 +109,40 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
 
     plt.figure(figsize=(10, 6))
     sns.set(style="whitegrid")
+    color_map = {
+        "liger": "blue",
+        "huggingface": "orange",
+        "torchcompile": "green",
+    }
+
     ax = sns.lineplot(
         data=df,
         x="x_value",
         y="y_value_50",
         hue="kernel_provider",
         marker="o",
-        palette="tab10",
-        errorbar=("ci", None),
+        palette=color_map,
+        errorbar=None,
     )
 
     # Seaborn can't plot pre-computed error bars, so we need to do it manually
     lines = ax.get_lines()
     colors = [line.get_color() for line in lines]
 
-    for (_, group_data), color in zip(df.groupby("kernel_provider"), colors, strict=False):
-        # for i, row in group_data.iterrows():
-        y_error_lower = group_data["y_value_50"] - group_data["y_value_20"]
-        y_error_upper = group_data["y_value_80"] - group_data["y_value_50"]
-        y_error = [y_error_lower, y_error_upper]
+    # for (_, group_data), color in zip(df.groupby("kernel_provider"), colors, strict=False):
+    #     # for i, row in group_data.iterrows():
+    #     y_error_lower = group_data["y_value_50"] - group_data["y_value_20"]
+    #     y_error_upper = group_data["y_value_80"] - group_data["y_value_50"]
+    #     y_error = [y_error_lower, y_error_upper]
 
-        plt.errorbar(
-            group_data["x_value"],
-            group_data["y_value_50"],
-            yerr=y_error,
-            fmt="o",
-            color=color,
-            capsize=5,
-        )
+    #     plt.errorbar(
+    #         group_data["x_value"],
+    #         group_data["y_value_50"],
+    #         yerr=y_error,
+    #         fmt="o",
+    #         color=color,
+    #         capsize=5,
+    #     )
     plt.legend(title="Kernel Provider")
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)

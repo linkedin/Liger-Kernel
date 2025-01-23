@@ -26,6 +26,7 @@ def bench_speed_layer_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRun
     x_shape = (M, N)
     triton_ln = LigerLayerNorm(hidden_size=N).to(device)
     torch_ln = torch.nn.LayerNorm(N, eps=eps).to(device)
+    compiled_ln = torch.compile(torch_ln)
 
     x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
@@ -36,6 +37,8 @@ def bench_speed_layer_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRun
             return triton_ln(x)
         if provider == "huggingface":
             return torch_ln(x)
+        if provider == "torchcompile":
+            return compiled_ln(x)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(y_fwd, quantiles=QUANTILES, grad_to_none=[x], rep=500)
@@ -73,7 +76,7 @@ def bench_memory_layer_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRu
 
     triton_ln = LigerLayerNorm(hidden_size=N).to(device)
     torch_ln = torch.nn.LayerNorm(N, eps=eps).to(device)
-
+    compiled_ln = torch.compile(torch_ln)
     x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
     x.requires_grad_(True)
@@ -83,6 +86,8 @@ def bench_memory_layer_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRu
             return triton_ln(x)
         if provider == "huggingface":
             return torch_ln(x)
+        if provider == "torchcompile":
+            return compiled_ln(x)
 
     def full():
         y = y_fwd()
@@ -104,7 +109,7 @@ if __name__ == "__main__":
         "x_name": "N",
         "x_label": "hidden size",
         "x_values": [2**i for i in range(10, 15)],
-        "kernel_providers": ["liger", "huggingface"],
+        "kernel_providers": ["liger", "huggingface", "torchcompile"],
         "extra_benchmark_configs": [{"M": 4096, "dtype": torch.float32, "eps": 1e-6}],
         "overwrite": args.overwrite,
     }

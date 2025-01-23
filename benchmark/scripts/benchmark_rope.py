@@ -16,7 +16,7 @@ from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.utils import infer_device
 
 device = infer_device()
-
+compiled_rope = torch.compile(apply_rotary_pos_emb)
 
 def bench_speed_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     provider = input.kernel_provider
@@ -63,6 +63,8 @@ def bench_speed_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
             return liger_rotary_pos_emb(q, k, cos, sin, pos_ids)
         elif provider == "huggingface":
             return apply_rotary_pos_emb(q, k, cos, sin, pos_ids)
+        elif provider == "torchcompile":
+            return compiled_rope(q, k, cos, sin, pos_ids)
         else:
             raise ValueError(f"Invalid provider: {provider} for RoPE embedding")
 
@@ -142,6 +144,8 @@ def bench_memory_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
     def full():
         if provider == "liger":
             q_out, k_out = liger_rotary_pos_emb(q, k, cos, sin, pos_ids)
+        elif provider == "torchcompile":
+            q_out, k_out = compiled_rope(q, k, cos, sin, pos_ids)
         else:
             q_out, k_out = apply_rotary_pos_emb(q, k, cos, sin, pos_ids)
         torch.autograd.grad((q_out, k_out), (q, k), (dq, dk), allow_unused=True, retain_graph=True)
@@ -165,7 +169,7 @@ if __name__ == "__main__":
         "x_name": "H",
         "x_label": "hidden size",
         "x_values": [32 * (2**i) for i in range(4, 10, 2)],
-        "kernel_providers": ["liger", "huggingface"],
+        "kernel_providers": ["liger", "huggingface", "torchcompile"],
         "extra_benchmark_configs": [
             {
                 "dtype": torch.bfloat16,
@@ -196,7 +200,7 @@ if __name__ == "__main__":
         "x_name": "T",
         "x_label": "sequence length",
         "x_values": [2**i for i in range(10, 15)],
-        "kernel_providers": ["liger", "huggingface"],
+        "kernel_providers": ["liger", "huggingface", "torchcompile"],
         "extra_benchmark_configs": [
             {
                 "dtype": torch.bfloat16,

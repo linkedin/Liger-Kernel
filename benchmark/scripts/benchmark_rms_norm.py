@@ -14,6 +14,22 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
+@torch.compile
+class CompiledLlamaRMSNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6):
+        """
+        LlamaRMSNorm is equivalent to T5LayerNorm
+        """
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states):
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * hidden_states.to(input_dtype)
 
 class LlamaRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
@@ -46,6 +62,7 @@ def bench_speed_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
 
     triton_rms = LigerRMSNorm(hidden_size=N, eps=eps).to(device)
     llama_rms = LlamaRMSNorm(hidden_size=N, eps=eps).to(device)
+    compiled_llama_rms = CompiledLlamaRMSNorm(hidden_size=N, eps=eps).to(device)
 
     x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
@@ -56,7 +73,8 @@ def bench_speed_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     def y_fwd():
         if provider == "liger":
             return triton_rms(x)
-
+        if provider == "torchcompile":
+            return compiled_llama_rms(x)
         if provider == "huggingface":
             return llama_rms(x)
 
@@ -108,6 +126,7 @@ def bench_memory_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
     triton_rms = LigerRMSNorm(hidden_size=N, eps=eps).to(device)
     llama_rms = LlamaRMSNorm(hidden_size=N, eps=eps).to(device)
+    compiled_llama_rms = CompiledLlamaRMSNorm(hidden_size=N, eps=eps).to(device)
 
     x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
@@ -117,6 +136,8 @@ def bench_memory_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     def y_fwd():
         if provider == "liger":
             return triton_rms(x)
+        if provider == "torchcompile":
+            return compiled_llama_rms(x)
         if provider == "huggingface":
             return llama_rms(x)
 
@@ -141,7 +162,7 @@ if __name__ == "__main__":
         "x_name": "H",
         "x_label": "hidden size",
         "x_values": [2**i for i in range(10, 16)],
-        "kernel_providers": ["liger", "huggingface"],
+        "kernel_providers": ["liger", "huggingface", "torchcompile"],
         "extra_benchmark_configs": [{"M": 2048, "dtype": torch.bfloat16, "eps": 1e-6}],
         "overwrite": args.overwrite,
     }

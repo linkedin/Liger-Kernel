@@ -13,7 +13,7 @@ from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.utils import infer_device
 
 device = infer_device()
-
+compiled_ce = torch.compile(CrossEntropyLoss())
 
 def bench_memory_cross_entropy(
     input: SingleBenchmarkRunInput,
@@ -32,6 +32,8 @@ def bench_memory_cross_entropy(
     def fwd():
         if provider == "liger":
             return liger_ce(_input, target)
+        elif provider == "torchcompile":
+            return compiled_ce(_input, target)
         else:
             return torch_ce(_input, target)
 
@@ -65,6 +67,8 @@ def bench_speed_cross_entropy(
     def fwd():
         if provider == "liger":
             return liger_ce(_input, target)
+        elif provider == "torchcompile":
+            return compiled_ce(_input, target)
         else:
             return torch_ce(_input, target)
 
@@ -102,7 +106,7 @@ if __name__ == "__main__":
         "x_name": "V",
         "x_label": "vocab size",
         "x_values": [2**i for i in range(12, 18)],
-        "kernel_providers": ["liger", "huggingface"],
+        "kernel_providers": ["liger", "huggingface", "torchcompile"],
         "extra_benchmark_configs": [{"B": 8, "T": 2048}],
         "overwrite": args.overwrite,
     }
