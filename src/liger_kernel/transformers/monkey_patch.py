@@ -180,7 +180,7 @@ def apply_liger_kernel_to_llava(
         text_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(text_model_name, None)
         vision_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(vision_model_name, None)
 
-        kwargs = {"cross_entropy": False, "fused_linear_cross_entropy": False, "model": model, **kwargs}
+        kwargs = {"cross_entropy": False, "fused_linear_cross_entropy": False, **kwargs}
         if text_liger_fn:
             accept_params = inspect.signature(text_liger_fn).parameters
             remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
@@ -191,7 +191,7 @@ def apply_liger_kernel_to_llava(
                     f"These parameters are not supported by {text_model_name}. Enter the remaining {list(text_kwargs.keys())} except for {list(remain_params)}\n"
                     f"Parameters accepted by {text_model_name}: {list(accept_params.keys())}"
                 )
-
+            text_kwargs["model"] = model.language_model
             text_liger_fn(**text_kwargs)
         elif text_liger_fn is None and text_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
             logger.warning(f"{text_model_name} is not supported by Liger kernel.")
@@ -206,7 +206,7 @@ def apply_liger_kernel_to_llava(
                     f"These parameters are not supported by {vision_model_name}. Enter the remaining {list(vision_kwargs.keys())} except for {list(remain_params)}\n"
                     f"Parameters accepted by {vision_model_name}: {list(accept_params.keys())}"
                 )
-
+            vision_kwargs["model"] = model.vision_tower
             vision_liger_fn(**vision_kwargs)
         elif vision_liger_fn is None and vision_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
             logger.warning(f"{vision_model_name} is not supported by Liger kernel.")
