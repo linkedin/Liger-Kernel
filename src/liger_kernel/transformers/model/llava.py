@@ -4,7 +4,6 @@ from typing import Tuple
 from typing import Union
 
 import torch
-import torch.nn as nn
 
 from transformers.models.llava.modeling_llava import _CONFIG_FOR_DOC
 from transformers.models.llava.modeling_llava import LLAVA_INPUTS_DOCSTRING
