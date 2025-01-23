@@ -195,7 +195,7 @@ def apply_liger_kernel_to_llava(
                 )
             text_kwargs["model"] = model.language_model
             text_liger_fn(**text_kwargs)
-        elif text_liger_fn is None and text_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+        elif text_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
             logger.warning(f"{text_model_name} is not supported by Liger kernel.")
 
         if vision_liger_fn:
@@ -210,7 +210,7 @@ def apply_liger_kernel_to_llava(
                 )
             vision_kwargs["model"] = model.vision_tower
             vision_liger_fn(**vision_kwargs)
-        elif vision_liger_fn is None and vision_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+        elif vision_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
             logger.warning(f"{vision_model_name} is not supported by Liger kernel.")
 
 
