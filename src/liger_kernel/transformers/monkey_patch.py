@@ -176,19 +176,40 @@ def apply_liger_kernel_to_llava(
             modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
 
     if model is not None:
-        if model.config.text_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
-            MODEL_TYPE_TO_APPLY_LIGER_FN[model.config.text_config.model_type](
-                cross_entropy=False,
-                fused_linear_cross_entropy=False,
-                **kwargs,
-            )
+        text_model_name, vision_model_name = model.config.text_config.model_type, model.config.vision_config.model_type
+        text_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(text_model_name, None)
+        vision_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(vision_model_name, None)
 
-        if model.config.vision_config.model_type in MODEL_TYPE_TO_APPLY_LIGER_FN:
-            MODEL_TYPE_TO_APPLY_LIGER_FN[model.config.vision_config.model_type](
-                cross_entropy=False,
-                fused_linear_cross_entropy=False,
-                **kwargs,
-            )
+        kwargs = {"cross_entropy": False, "fused_linear_cross_entropy": False, "model": model, **kwargs}
+        if text_liger_fn:
+            accept_params = inspect.signature(text_liger_fn).parameters
+            remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
+            text_kwargs = {k: v for k, v in kwargs.items() if k not in remain_params}
+
+            if remain_params:
+                logger.warning(
+                    f"These parameters are not supported by {text_model_name}. Enter the remaining {list(text_kwargs.keys())} except for {list(remain_params)}\n"
+                    f"Parameters accepted by {text_model_name}: {list(accept_params.keys())}"
+                )
+
+            text_liger_fn(**text_kwargs)
+        elif text_liger_fn is None and text_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            logger.warning(f"{text_model_name} is not supported by Liger kernel.")
+
+        if vision_liger_fn:
+            accept_params = inspect.signature(vision_liger_fn).parameters
+            remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
+            vision_kwargs = {k: v for k, v in kwargs.items() if k not in remain_params}
+
+            if remain_params:
+                logger.warning(
+                    f"These parameters are not supported by {vision_model_name}. Enter the remaining {list(vision_kwargs.keys())} except for {list(remain_params)}\n"
+                    f"Parameters accepted by {vision_model_name}: {list(accept_params.keys())}"
+                )
+
+            vision_liger_fn(**vision_kwargs)
+        elif vision_liger_fn is None and vision_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            logger.warning(f"{vision_model_name} is not supported by Liger kernel.")
 
 
 def apply_liger_kernel_to_mllama(
