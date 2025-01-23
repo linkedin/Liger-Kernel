@@ -1,12 +1,12 @@
 import os
 
-import pytest
-import torch
-import torch.nn as nn
-
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
+
+import pytest
+import torch
+import torch.nn as nn
 
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.transformers.functional import liger_rms_norm
@@ -103,9 +103,7 @@ class GemmaRMSNorm(nn.Module):
     [
         (LlamaRMSNorm, 0.0, "llama"),
         (GemmaRMSNorm, 1.0, "gemma"),
-        pytest.param(
-            BaseRMSNorm, 0.0, "none", marks=pytest.mark.skipif(device="xpu", reason="core dump on xpu, skip for now")
-        ),
+        pytest.param(BaseRMSNorm, 0.0, "none", marks=pytest.mark.skipif(device="xpu", reason="skip for XPU")),
     ],
 )
 @pytest.mark.parametrize(

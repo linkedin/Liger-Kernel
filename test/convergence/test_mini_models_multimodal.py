@@ -1,15 +1,6 @@
 import functools
 import os
 
-import pytest
-import torch
-
-from datasets import load_dataset
-from torch.utils.data import DataLoader
-from transformers import PreTrainedTokenizerFast
-
-from liger_kernel.transformers import apply_liger_kernel_to_mllama
-from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from test.utils import FAKE_CONFIGS_PATH
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
@@ -21,6 +12,16 @@ from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 from test.utils import train_bpe_tokenizer
+
+import pytest
+import torch
+
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+from transformers import PreTrainedTokenizerFast
+
+from liger_kernel.transformers import apply_liger_kernel_to_mllama
+from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 
 try:
     # Qwen2-VL is only available in transformers>=4.45.0
@@ -351,7 +352,7 @@ def run_mini_model_multimodal(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
                 ),
-                pytest.mark.skipif(device == "xpu", reason="numerical issue on XPU, skip for now"),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(
@@ -371,7 +372,7 @@ def run_mini_model_multimodal(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
                 ),
-                pytest.mark.skipif(device == "xpu", reason="numerical issue on XPU, skip for now"),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(
