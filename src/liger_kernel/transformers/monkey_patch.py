@@ -149,6 +149,7 @@ def apply_liger_kernel_to_mllama(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = False,  # Not support yet.
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace MLlama models.
@@ -252,6 +253,7 @@ def apply_liger_kernel_to_mistral(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = True,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Mistral models
@@ -312,6 +314,7 @@ def apply_liger_kernel_to_mixtral(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = True,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Mixtral models
@@ -384,6 +387,7 @@ def apply_liger_kernel_to_gemma(
     rms_norm: bool = True,
     geglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = True,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Gemma
@@ -458,6 +462,7 @@ def apply_liger_kernel_to_gemma2(
     rms_norm: bool = True,
     geglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = True,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Gemma2
@@ -536,6 +541,7 @@ def apply_liger_kernel_to_qwen2(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = False,  # Not support yet.
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2 models
@@ -610,6 +616,7 @@ def apply_liger_kernel_to_qwen2_vl(
     layer_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = False,  # Not support yet.
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
@@ -681,6 +688,7 @@ def apply_liger_kernel_to_phi3(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = True,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Phi3 models.
