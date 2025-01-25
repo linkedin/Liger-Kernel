@@ -435,7 +435,6 @@ def run_mini_model(
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
     model = create_model(model_name).to(dtype).to(device)
-    print(model.config._attn_implementation)
 
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
     loader = DataLoader(train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn)

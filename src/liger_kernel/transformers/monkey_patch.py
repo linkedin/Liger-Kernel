@@ -3,11 +3,7 @@ import logging
 
 from functools import partial
 from typing import Callable
-from typing import Dict
-from typing import Optional
-from typing import Union
 
-import torch
 import transformers
 
 from packaging import version
@@ -66,18 +62,6 @@ def _patch_layer_norm_module(module, eps=1e-6):
     _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
 
 
-def _autoset_attn_implementation(
-    cls,
-    config,
-    use_flash_attention_2: bool = False,
-    torch_dtype: Optional[torch.dtype] = None,
-    device_map: Optional[Union[str, Dict[str, int]]] = None,
-    check_device_map: bool = True,
-):
-    # TODO
-    return config
-
-
 def apply_liger_kernel_to_llama(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -134,6 +118,7 @@ def apply_liger_kernel_to_llama(
             modeling_llama.LlamaForCausalLM.forward = llama_lce_forward_deprecated
 
     if flex_attn:
+        logger.warning("Patched HuggingFace default PyTorch SDPA to liger_flex_attention.")
         modeling_llama.ALL_ATTENTION_FUNCTIONS.update(
             {"sdpa": llama_flex_attention_forward, "flex_attention": llama_flex_attention_forward}
         )
