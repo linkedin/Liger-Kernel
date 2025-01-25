@@ -2,9 +2,12 @@ import inspect
 import logging
 
 from functools import partial
-from typing import Callable, Optional, Union, Dict
-import torch
+from typing import Callable
+from typing import Dict
+from typing import Optional
+from typing import Union
 
+import torch
 import transformers
 
 from packaging import version
@@ -14,6 +17,7 @@ from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
+from liger_kernel.transformers.llama_flex_attention import flex_attention_forward as llama_flex_attention_forward
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward_deprecated
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
@@ -33,7 +37,6 @@ from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
-from liger_kernel.transformers.llama_flex_attention import flex_attention_forward as llama_flex_attention_forward
 
 transformer_version = version.parse(transformers.__version__)
 
@@ -61,6 +64,7 @@ def _patch_layer_norm_module(module, eps=1e-6):
     module.hidden_size = module.normalized_shape
     _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
     _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
+
 
 def _autoset_attn_implementation(
     cls,
@@ -130,7 +134,9 @@ def apply_liger_kernel_to_llama(
             modeling_llama.LlamaForCausalLM.forward = llama_lce_forward_deprecated
 
     if flex_attn:
-        modeling_llama.ALL_ATTENTION_FUNCTIONS.update({'spda': llama_flex_attention_forward})
+        modeling_llama.ALL_ATTENTION_FUNCTIONS.update(
+            {"sdpa": llama_flex_attention_forward, "flex_attention": llama_flex_attention_forward}
+        )
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -148,9 +154,6 @@ def apply_liger_kernel_to_llama(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-            if flex_attn:
-                base_model.config._attn_implementation = 'flex_attention'
-
 
 
 def apply_liger_kernel_to_mllama(
