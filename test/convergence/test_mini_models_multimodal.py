@@ -5,6 +5,8 @@ from test.utils import FAKE_CONFIGS_PATH
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
+from test.utils import load_image_processing_config
+from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
 from test.utils import revert_liger_kernel_to_mllama
