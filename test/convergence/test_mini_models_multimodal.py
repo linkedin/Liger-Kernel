@@ -20,7 +20,6 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
 
-from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 
@@ -50,6 +49,7 @@ except ImportError:
     MLLAMA_AVAILABLE = False
 
 try:
+    from liger_kernel.transformers import apply_liger_kernel_to_llava
     from transformers import CLIPImageProcessor
     from transformers import CLIPVisionConfig
     from transformers import LlamaConfig
