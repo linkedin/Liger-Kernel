@@ -23,6 +23,8 @@ from transformers import PreTrainedTokenizerFast
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 
+from liger_kernel.transformers import apply_liger_kernel_to_llava
+
 try:
     # Qwen2-VL is only available in transformers>=4.45.0
     from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
@@ -49,7 +51,6 @@ except ImportError:
     MLLAMA_AVAILABLE = False
 
 try:
-    from liger_kernel.transformers import apply_liger_kernel_to_llava
     from transformers import CLIPImageProcessor
     from transformers import CLIPVisionConfig
     from transformers import LlamaConfig
