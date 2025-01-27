@@ -414,6 +414,7 @@ def run_mini_model(
         kwargs = {
             "rope": True,
             "rms_norm": True,
+            "flex_attn": False,
         }
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -428,7 +429,9 @@ def run_mini_model(
         kwargs["fused_linear_cross_entropy"] = True
         kwargs["cross_entropy"] = False
 
-        kwargs["flex_attn"] = True
+        model_supports_flex_attn = "llama3" in model_name  # excluding mllama
+        if model_supports_flex_attn:
+            kwargs["flex_attn"] = True
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:

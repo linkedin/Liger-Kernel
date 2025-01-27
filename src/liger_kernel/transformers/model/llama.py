@@ -8,6 +8,8 @@ import torch
 import torch.nn.functional as F
 
 from torch.nn import CrossEntropyLoss
+from torch.nn.attention.flex_attention import create_block_mask
+from torch.nn.attention.flex_attention import flex_attention
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.llama.modeling_llama import _CONFIG_FOR_DOC
 from transformers.models.llama.modeling_llama import LLAMA_INPUTS_DOCSTRING
@@ -18,6 +20,8 @@ from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinea
 
 if TYPE_CHECKING:
     from transformers.cache_utils import Cache
+
+flex_attention = torch.compile(flex_attention)
 
 
 @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
@@ -249,3 +253,62 @@ def lce_forward(
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
     )
+
+
+# Adapted from https://github.com/huggingface/transformers/blob/main/src/transformers/integrations/flex_attention.py#L12
+
+
+def flex_attention_forward(
+    module: torch.nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    scaling: Optional[float] = None,
+    softcap: Optional[float] = None,
+    **kwargs,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    causal_mask = attention_mask
+    if causal_mask is not None:
+        causal_mask = causal_mask[:, :, :, : key.shape[-2]]
+
+    def causal_mod(score, b, h, q_idx, kv_idx):
+        if softcap is not None:
+            score = softcap * torch.tanh(score / softcap)
+        if causal_mask is not None:
+            score = score + causal_mask[b][0][q_idx][kv_idx]
+        return score
+
+    # We only got `attention_mask` tensors, so we recreate `causal_mask` function as specific llama causal attention
+    # TODO: Consider other customized `attention_mask` in the future, e.g., shared prefix
+    def causal_mask_fn(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    #  To construct block attention mask that leverages sparsity.
+    sparse_causal_mask = create_block_mask(causal_mask_fn, None, None, query.shape[-2], query.shape[-2], device="cuda")
+
+    attn_output, attention_weights = flex_attention(
+        query,
+        key,
+        value,
+        score_mod=causal_mod,
+        block_mask=sparse_causal_mask,
+        enable_gqa=True,
+        scale=scaling,
+        # Last time checked on PyTorch == 2.5.1: Flex Attention always computes the lse regardless.
+        # For simplification, we thus always return it as no additional computations are introduced.
+        return_lse=True,
+        kernel_options={  # different harware might need different configs
+            "BLOCK_M": 32,
+            "BLOCK_N": 32,
+            "BLOCK_M1": 16,
+            "BLOCK_N1": 32,
+            "BLOCK_M2": 32,
+            "BLOCK_N2": 16,
+        },
+    )
+    # lse is returned in float32
+    attention_weights = attention_weights.to(value.dtype)
+    attn_output = attn_output.transpose(1, 2).contiguous()
+
+    return attn_output, attention_weights
