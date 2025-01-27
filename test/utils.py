@@ -265,8 +265,13 @@ def revert_liger_kernel_to_llama(model_config: MiniModelConfig):
     Revert all Liger kernel patches applied to Llama.
     """
 
+    from transformers import (
+        modeling_utils,  # Sets, `ALL_ATTENTION_FUNCTIONS`, are mutable, and all references point to the same object so reloading a module doesn't reset imported objects.
+    )
     from transformers.models.llama import modeling_llama
 
+    # Reload both modules in the correct order
+    importlib.reload(modeling_utils)
     importlib.reload(modeling_llama)
     model_config.model_class = modeling_llama.LlamaForCausalLM
     print("Liger kernel patches have been reverted.")
