@@ -8,7 +8,6 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
 
-from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from test.utils import FAKE_CONFIGS_PATH
@@ -58,6 +57,9 @@ try:
     from transformers.models.llava.configuration_llava import LlavaConfig
     from transformers.models.llava.modeling_llava import LlavaForConditionalGeneration
     from transformers.models.llava.processing_llava import LlavaProcessor
+
+    # fix for conflict
+    from liger_kernel.transformers import apply_liger_kernel_to_llava
 
     LLAVA_AVAILABLE = True
 except ImportError:
