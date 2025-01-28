@@ -38,8 +38,9 @@ transformer_version = version.parse(transformers.__version__)
 
 logger = logging.getLogger(__name__)
 SUPPORTED_TRANSFORMER_VERSION = "4.46.1"
+FLEXATTENTION_SUPPORTED_TRANSFORMER_VERSION = "4.48.0"
 TRANSFORMER_DEPRECATION_WARNING = "Support for transformers versions < 4.46.1 will soon be discontinued due to issues with incorrect gradient accumulation. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/34191"
-FLEX_ATTENTION_NOT_SUPPORT_WARNING = "Not support flex attention for this model yet"
+FLEX_ATTENTION_NOT_SUPPORT_WARNING = "Flex attention is not supported."
 
 
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
@@ -120,9 +121,12 @@ def apply_liger_kernel_to_llama(
 
     if flex_attn:
         # Patching HuggingFace default attn_impl from `toch.sdpa` to liger's `llama_flex_attention_forward``
-        modeling_llama.ALL_ATTENTION_FUNCTIONS.update(
-            {"sdpa": llama_flex_attention_forward, "flex_attention": llama_flex_attention_forward}
-        )
+        if transformer_version >= version.parse(FLEXATTENTION_SUPPORTED_TRANSFORMER_VERSION):
+            modeling_llama.ALL_ATTENTION_FUNCTIONS.update(
+                {"sdpa": llama_flex_attention_forward, "flex_attention": llama_flex_attention_forward}
+            )
+        else:
+            logger.warning(FLEX_ATTENTION_NOT_SUPPORT_WARNING)
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
