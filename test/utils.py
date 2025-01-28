@@ -567,7 +567,9 @@ class HFAlignmentLoss:
         **loss_kwargs,
     ):
         """Compute the loss metrics for the given batch of inputs for train or test."""
-        forward_output = self.concatenated_forward(_input, weight, target, bias, average_log_prob, preference_labels, nll_target)
+        forward_output = self.concatenated_forward(
+            _input, weight, target, bias, average_log_prob, preference_labels, nll_target
+        )
         (
             policy_chosen_logps,
             policy_rejected_logps,
