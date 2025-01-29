@@ -302,9 +302,9 @@ loss.backward()
 
 ## Contributing, Acknowledgements, and License
 
-- [Contributing Guidelines](https://github.com/linkedin/Liger-Kernel/blob/main/docs/CONTRIBUTING.md)
-- [Acknowledgements](https://github.com/linkedin/Liger-Kernel/blob/main/docs/Acknowledgement.md)
-- [License Information](https://github.com/linkedin/Liger-Kernel/blob/main/docs/License.md)
+- [Contributing Guidelines](https://github.com/linkedin/Liger-Kernel/blob/main/docs/contributing.md)
+- [Acknowledgements](https://github.com/linkedin/Liger-Kernel/blob/main/docs/acknowledgement.md)
+- [License Information](https://github.com/linkedin/Liger-Kernel/blob/main/docs/license.md)
 
 ## Sponsorship and Collaboration
 
