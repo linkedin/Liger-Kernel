@@ -903,6 +903,7 @@ def test_float32_internal():
         weight_ptr=X_fp32,  # dummy ptr, not used
         z_loss_ptr=loss_fp32,  # dummy ptr, not used
         entropy_loss_ptr=loss_fp32,  # dummy ptr, not used
+        loss_ptr=loss_fp32,
         loss_stride=loss_fp32.stride(-1),
         n_cols=n_cols,
         n_non_ignore=n_non_ignore,
@@ -914,6 +915,7 @@ def test_float32_internal():
         reduction=reduction,
         softcap=softcap,
         RETURN_Z_LOSS=0,  # False
+        RETURN_ENTROPY_LOSS=0,  # False
         HAS_WEIGHT=False,
         HAS_SOFTCAPPING=False,
         BLOCK_SIZE=BLOCK_SIZE,
