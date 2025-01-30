@@ -214,7 +214,7 @@ model = transformers.AutoModelForCausalLM("path/to/llama/model")
 
 ### 3. Compose Your Own Model
 
-You can take individual [kernels](#kernels) to compose your models.
+You can take individual [kernels](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#model-kernels) to compose your models.
 
 ```python
 from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
@@ -302,9 +302,9 @@ loss.backward()
 
 ## Contributing, Acknowledgements, and License
 
-- [Contributing Guidelines](https://github.com/linkedin/Liger-Kernel/blob/main/docs/CONTRIBUTING.md)
-- [Acknowledgements](https://github.com/linkedin/Liger-Kernel/blob/main/docs/Acknowledgement.md)
-- [License Information](https://github.com/linkedin/Liger-Kernel/blob/main/docs/License.md)
+- [Contributing Guidelines](https://github.com/linkedin/Liger-Kernel/blob/main/docs/contributing.md)
+- [Acknowledgements](https://github.com/linkedin/Liger-Kernel/blob/main/docs/acknowledgement.md)
+- [License Information](https://github.com/linkedin/Liger-Kernel/blob/main/docs/license.md)
 
 ## Sponsorship and Collaboration
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Tuple
 
 import numpy as np
@@ -467,10 +468,10 @@ class HFAlignmentLoss:
         _input: torch.FloatTensor,
         weight: torch.FloatTensor,
         target: torch.LongTensor,
-        bias: torch.FloatTensor | None = None,
+        bias: Optional[torch.FloatTensor] = None,
         average_log_prob: bool = True,
         preference_labels: torch.Tensor = None,
-        nll_target: torch.LongTensor | None = None,
+        nll_target: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
