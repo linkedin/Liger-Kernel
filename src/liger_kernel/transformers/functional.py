@@ -28,8 +28,9 @@ def liger_cross_entropy(
     lse_square_scale: float = 0.0,
     softcap: Optional[float] = None,
     return_z_loss: bool = False,
+    return_entropy_loss: bool = False,
 ):
-    loss, z_loss = LigerCrossEntropyFunction.apply(
+    loss, z_loss, entropy_loss = LigerCrossEntropyFunction.apply(
         input,
         target,
         weight,
@@ -39,10 +40,15 @@ def liger_cross_entropy(
         reduction,
         softcap,
         return_z_loss,
+        return_entropy_loss,
     )
-    if not return_z_loss:
+    if not return_z_loss and not return_entropy_loss:
         return loss
-    return loss, z_loss
+    if return_z_loss and not return_entropy_loss:
+        return loss, z_loss
+    if not return_z_loss and return_entropy_loss:
+        return loss, entropy_loss
+    return loss, z_loss, entropy_loss
 
 
 def liger_fused_linear_cross_entropy(
@@ -57,8 +63,9 @@ def liger_fused_linear_cross_entropy(
     reduction: str = "mean",
     softcap: Optional[float] = None,
     return_z_loss: bool = False,
+    return_entropy_loss: bool = False,
 ):
-    loss, z_loss = LigerFusedLinearCrossEntropyFunction.apply(
+    loss, z_loss, entropy_loss = LigerFusedLinearCrossEntropyFunction.apply(
         input,
         weight,
         target,
@@ -70,10 +77,15 @@ def liger_fused_linear_cross_entropy(
         reduction,
         softcap,
         return_z_loss,
+        return_entropy_loss,
     )
-    if not return_z_loss:
+    if not return_z_loss and not return_entropy_loss:
         return loss
-    return loss, z_loss
+    if return_z_loss and not return_entropy_loss:
+        return loss, z_loss
+    if not return_z_loss and return_entropy_loss:
+        return loss, entropy_loss
+    return loss, z_loss, entropy_loss
 
 
 def liger_fused_linear_jsd(

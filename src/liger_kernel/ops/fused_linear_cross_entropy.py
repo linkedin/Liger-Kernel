@@ -25,8 +25,10 @@ def fused_linear_cross_entropy_forward(
     reduction="mean",
     softcap=None,
     return_z_loss=False,
+    return_entropy_loss=False,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
+    assert isinstance(return_entropy_loss, bool), f"return_entropy_loss must be True or False. Got: {return_entropy_loss}"
     device = _input.device
 
     # inputs have shape: BT x H
@@ -44,12 +46,19 @@ def fused_linear_cross_entropy_forward(
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
+    # initialize the gradients w.r.s. to the cross entropy loss
     grad_weight = torch.zeros_like(weight, device=device) if weight.requires_grad else None
     grad_input = torch.zeros_like(_input, device=device)
     grad_bias = torch.zeros_like(bias, device=device) if bias is not None else None
+    # initialize the gradients w.r.s. to the entropy loss
+    grad_entropy_weight = torch.zeros_like(weight, device=device) if return_entropy_loss and weight.requires_grad else None
+    grad_entropy_input = torch.zeros_like(_input, device=device) if return_entropy_loss else None
+    grad_entropy_bias = torch.zeros_like(bias, device=device) if return_entropy_loss and bias is not None else None
+    
     # we use fp32 for loss accumulator
     loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
     z_loss_1d = torch.zeros(BT, dtype=_input.dtype, device=_input.device) if return_z_loss else None
+    entropy_loss_1d = torch.zeros(BT, dtype=torch.float32, device=device) if return_entropy_loss else None
 
     # TODO: evaluate how CUDA synchronization caused by .item() affects the speed
     target_mask = target != ignore_index
@@ -77,6 +86,9 @@ def fused_linear_cross_entropy_forward(
         logits_chunk = _input_chunk @ weight.t()  # chunk_size x V
         if bias is not None:
             logits_chunk = logits_chunk + bias
+        
+        # create a tensor to store the gradient of the input w.r.s. to the entropy loss
+        grad_entropy_logits_chunk = torch.zeros_like(logits_chunk, device=device) if return_entropy_loss else None
 
         target_chunk = target[start_idx:end_idx]  # chunk_size,
 
@@ -85,20 +97,23 @@ def fused_linear_cross_entropy_forward(
         # unreduced loss
         loss_1d_slice = loss_1d[start_idx:end_idx]  # chunk_size,
         z_loss_1d_slice = z_loss_1d[start_idx:end_idx] if return_z_loss else None
-
+        entropy_loss_1d_slice = entropy_loss_1d[start_idx:end_idx] if return_entropy_loss else None
         # ensure _input and target are contiguous
         logits_chunk = logits_chunk.contiguous()
         target_chunk = target_chunk.contiguous()
+        grad_entropy_logits_chunk = grad_entropy_logits_chunk.contiguous()
 
         # Here we calculate the gradient of logits_chunk in place so we can save memory.
         liger_cross_entropy_kernel[(n_rows,)](
             X_ptr=logits_chunk,
+            dX_entropy_ptr=grad_entropy_logits_chunk,
             X_stride=logits_chunk.stride(-2),
             Y_ptr=target_chunk,
             Y_stride=target_chunk.stride(-1),  # always 1
             weight_ptr=ce_weight,
             loss_ptr=loss_1d_slice,
             z_loss_ptr=z_loss_1d_slice,
+            entropy_loss_ptr=entropy_loss_1d_slice,
             loss_stride=loss_1d_slice.stride(-1),  # always 1
             n_cols=V,
             n_non_ignore=total_n_non_ignore,
@@ -110,6 +125,7 @@ def fused_linear_cross_entropy_forward(
             reduction=reduction,
             softcap=softcap,
             RETURN_Z_LOSS=return_z_loss,
+            RETURN_ENTROPY_LOSS=return_entropy_loss,
             HAS_WEIGHT=True if ce_weight is not None else False,
             HAS_SOFTCAPPING=True if softcap is not None else False,
             BLOCK_SIZE=BLOCK_SIZE,
@@ -119,6 +135,9 @@ def fused_linear_cross_entropy_forward(
         loss_1d[start_idx:end_idx] = loss_1d_slice
         if return_z_loss:
             z_loss_1d[start_idx:end_idx] = z_loss_1d_slice
+        if return_entropy_loss:
+            entropy_loss_1d[start_idx:end_idx] = entropy_loss_1d_slice
+
         grad_logits_chunk = logits_chunk  # chunk_size x V
 
         grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
@@ -142,62 +161,94 @@ def fused_linear_cross_entropy_forward(
                 out=grad_bias,
                 alpha=1.0,
             )
+        
+        if return_entropy_loss:
+            grad_entropy_input[start_idx:end_idx] = grad_entropy_logits_chunk @ weight
+            if grad_weight is not None:
+                torch.addmm(
+                    input=grad_entropy_weight,
+                    mat1=grad_entropy_logits_chunk.t().to(
+                        _input_chunk.dtype
+                    ),
+                    mat2=_input_chunk,
+                    out=grad_entropy_weight,
+                    alpha=1.0,
+                    beta=1.0,
+                )
+            if bias is not None:
+                torch.add(
+                    input=grad_entropy_bias,
+                    other=grad_entropy_logits_chunk.sum(dim=0),
+                    out=grad_entropy_bias,
+                    alpha=1.0,
+                )
 
     if reduction == "none":
         loss = loss_1d
         z_loss = z_loss_1d if return_z_loss else None
-
+        entropy_loss = entropy_loss_1d if return_entropy_loss else None
     else:
         loss = torch.sum(loss_1d)
         z_loss = torch.sum(z_loss_1d) if return_z_loss else None
-    return loss, z_loss, grad_input, grad_weight, grad_bias
+        entropy_loss = torch.sum(entropy_loss_1d) if return_entropy_loss else None
+    return loss, z_loss, entropy_loss, grad_input, grad_weight, grad_bias, grad_entropy_input, grad_entropy_weight, grad_entropy_bias
 
+def _fused_linear_backward_helper(grad_output, grad_input, grad_weight, grad_bias):
+    # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
+    # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
+    BT, H = grad_input.shape
+    n_rows = BT
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
 
-def fused_linear_cross_entropy_backward(grad_output, grad_input, grad_weight, grad_bias):
-    # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
-    if not torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
-        # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
-        BT, H = grad_input.shape
-        n_rows = BT
-        BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
+    element_mul_kernel[(n_rows,)](
+        grad_input,
+        grad_input.stride(-2),
+        grad_output,
+        H,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=32 if not is_hip() else 16,
+    )
+
+    # handle grad_weight
+    if grad_weight is not None:
+        V, H = grad_weight.shape
+        n_rows = V
 
         element_mul_kernel[(n_rows,)](
-            grad_input,
-            grad_input.stride(-2),
+            grad_weight,
+            grad_weight.stride(-2),
             grad_output,
             H,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32 if not is_hip() else 16,
         )
 
-        # handle grad_weight
-        if grad_weight is not None:
-            V, H = grad_weight.shape
-            n_rows = V
+    if grad_bias is not None:
+        V = grad_bias.shape[0]
+        n_rows = V
 
-            element_mul_kernel[(n_rows,)](
-                grad_weight,
-                grad_weight.stride(-2),
-                grad_output,
-                H,
-                BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32 if not is_hip() else 16,
-            )
-
-        if grad_bias is not None:
-            V = grad_bias.shape[0]
-            n_rows = V
-
-            element_mul_kernel[(n_rows,)](
-                grad_bias,
-                grad_bias.stride(-1),
-                grad_output,
-                1,
-                BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32 if not is_hip() else 16,
-            )
+        element_mul_kernel[(n_rows,)](
+            grad_bias,
+            grad_bias.stride(-1),
+            grad_output,
+            1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=32 if not is_hip() else 16,
+        )
     return grad_input, grad_weight, grad_bias
+    
+
+def fused_linear_cross_entropy_backward(grad_output, grad_input, grad_weight, grad_bias, grad_entropy_output, grad_entropy_input, grad_entropy_weight, grad_entropy_bias):
+    # Calculate the gradient with respect to the entropy losses
+    grad_entropy_input, grad_entropy_weight, grad_entropy_bias = _fused_linear_backward_helper(
+        grad_entropy_output, grad_entropy_input, grad_entropy_weight, grad_entropy_bias
+    )
+    # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
+    if not torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
+        grad_input, grad_weight, grad_bias = _fused_linear_backward_helper(
+            grad_output, grad_input, grad_weight, grad_bias
+        )
+    return grad_input + grad_entropy_input, grad_weight + grad_entropy_weight, grad_bias + grad_entropy_bias
 
 
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
@@ -216,6 +267,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         reduction="mean",
         softcap=None,
         return_z_loss: bool = False,
+        return_entropy_loss: bool = False,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -236,7 +288,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         reduction: reduction to apply
         """
 
-        loss, z_loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
+        loss, z_loss, entropy_loss, grad_input, grad_weight, grad_bias, grad_entropy_input, grad_entropy_weight, grad_entropy_bias = fused_linear_cross_entropy_forward(
             _input=_input,
             weight=weight,
             target=target,
@@ -248,25 +300,35 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             reduction=reduction,
             softcap=softcap,
             return_z_loss=return_z_loss,
+            return_entropy_loss=return_entropy_loss,
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
             grad_input.detach(),
             grad_weight.detach() if grad_weight is not None else None,
             grad_bias.detach() if bias is not None else None,
+            grad_entropy_input.detach() if grad_entropy_input is not None else None,
+            grad_entropy_weight.detach() if grad_entropy_weight is not None else None,
+            grad_entropy_bias.detach() if grad_entropy_bias is not None else None,
         )
         ctx.return_z_loss = return_z_loss
-        return loss, z_loss
+        return loss, z_loss, entropy_loss
 
     @staticmethod
     @amp_custom_bwd
-    def backward(ctx, grad_output, grad_output2):
+    def backward(ctx, grad_output, grad_output2, grad_output3):
         if ctx.return_z_loss:
             del grad_output2  # z_loss is only for logging
-        (grad_input, grad_weight, grad_bias) = ctx.saved_tensors
+        (grad_input, grad_weight, grad_bias, grad_entropy_input, grad_entropy_weight, grad_entropy_bias) = ctx.saved_tensors
         grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_backward(
-            grad_output, grad_input, grad_weight, grad_bias
+            grad_output, grad_input, grad_weight, grad_bias, grad_output3, grad_entropy_input, grad_entropy_weight, grad_entropy_bias
         )
+        # delete the tensors that are not used in remaining steps
+        del grad_output3
+        del grad_entropy_input
+        del grad_entropy_weight
+        del grad_entropy_bias
+        
         return (
             grad_input,
             grad_weight,
