@@ -105,7 +105,8 @@ def fused_linear_cross_entropy_forward(
         # ensure _input and target are contiguous
         logits_chunk = logits_chunk.contiguous()
         target_chunk = target_chunk.contiguous()
-        grad_entropy_logits_chunk = grad_entropy_logits_chunk.contiguous()
+        if return_entropy_loss:
+            grad_entropy_logits_chunk = grad_entropy_logits_chunk.contiguous()
 
         # Here we calculate the gradient of logits_chunk in place so we can save memory.
         liger_cross_entropy_kernel[(n_rows,)](
@@ -261,16 +262,21 @@ def fused_linear_cross_entropy_backward(
     grad_entropy_weight,
     grad_entropy_bias,
 ):
-    # Calculate the gradient with respect to the entropy losses
-    grad_entropy_input, grad_entropy_weight, grad_entropy_bias = _fused_linear_backward_helper(
-        grad_entropy_output, grad_entropy_input, grad_entropy_weight, grad_entropy_bias
-    )
     # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
     if not torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
         grad_input, grad_weight, grad_bias = _fused_linear_backward_helper(
             grad_output, grad_input, grad_weight, grad_bias
         )
-    return grad_input + grad_entropy_input, grad_weight + grad_entropy_weight, grad_bias + grad_entropy_bias
+    # Calculate the gradient with respect to the entropy losses
+    if grad_entropy_output is not None: 
+        grad_entropy_input, grad_entropy_weight, grad_entropy_bias = _fused_linear_backward_helper(
+            grad_entropy_output, grad_entropy_input, grad_entropy_weight, grad_entropy_bias
+        )
+        grad_input += grad_entropy_input
+        grad_weight += grad_entropy_weight
+        grad_bias += grad_entropy_bias
+        
+    return grad_input, grad_weight, grad_bias
 
 
 class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
@@ -375,6 +381,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             grad_weight,
             None,
             grad_bias,
+            None,
             None,
             None,
             None,
