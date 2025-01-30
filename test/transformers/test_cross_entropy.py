@@ -395,7 +395,7 @@ def _test_correctness_functional(
 
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
-    y1, y1_z = liger_cross_entropy(
+    y1, y1_z, y1_e = liger_cross_entropy(
         x1,
         target,
         None,
@@ -405,8 +405,9 @@ def _test_correctness_functional(
         reduction="mean",
         softcap=30.0,
         return_z_loss=True,
+        return_entropy_loss=True,
     )
-    y2, y2_z = LigerCrossEntropyFunction.apply(x2, target, None, 0, 1e-4, 0.1, "mean", 30.0, True)
+    y2, y2_z, y2_e = LigerCrossEntropyFunction.apply(x2, target, None, 0, 1e-4, 0.1, "mean", 30.0, True, True)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
     assert torch.allclose(y1_z, y2_z, atol=atol, rtol=rtol)
