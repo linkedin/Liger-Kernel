@@ -273,8 +273,10 @@ def fused_linear_cross_entropy_backward(
             grad_entropy_output, grad_entropy_input, grad_entropy_weight, grad_entropy_bias
         )
         grad_input += grad_entropy_input
-        grad_weight += grad_entropy_weight
-        grad_bias += grad_entropy_bias
+        if grad_weight is not None:
+            grad_weight += grad_entropy_weight
+        if grad_bias is not None:
+            grad_bias += grad_entropy_bias
         
     return grad_input, grad_weight, grad_bias
 
