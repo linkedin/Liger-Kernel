@@ -666,6 +666,79 @@ def apply_liger_kernel_to_qwen2_vl(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_qwen2_5_vl(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    layer_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    # TODO: Update docstring
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
+    NOTE: Qwen2-VL is not available in transformers<4.45.0
+
+    Args:
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
+    from transformers.models.qwen2_5_vl import modeling_qwen2_5_vl
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModel
+
+    from liger_kernel.transformers.model.qwen2_5_vl import lce_forward as qwen2_5_vl_lce_forward
+
+    if rope:
+        modeling_qwen2_5_vl.apply_multimodal_rotary_pos_emb = liger_multimodal_rotary_pos_emb
+    if rms_norm:
+        # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L439
+        modeling_qwen2_5_vl.Qwen2RMSNorm = LigerRMSNorm
+    # if layer_norm:
+    #     modeling_qwen2_5_vl.LayerNorm = LigerLayerNorm
+    if cross_entropy:
+        modeling_qwen2_5_vl.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        modeling_qwen2_5_vl.Qwen2_5_VLForConditionalGeneration.forward = qwen2_5_vl_lce_forward
+    if swiglu:
+        modeling_qwen2_5_vl.Qwen2MLP = LigerSwiGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: Qwen2_5_VLModel = getattr(model, model.base_model_prefix, model)
+
+        if hasattr(model, "visual"):
+            # Patch Qwen2VisionTransformerPretrainedModel
+            for vision_block in model.visual.blocks:
+                if layer_norm:
+                    _patch_rms_norm_module(vision_block.norm1)
+                    _patch_rms_norm_module(vision_block.norm2)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 def apply_liger_kernel_to_phi3(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -746,6 +819,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "mixtral": apply_liger_kernel_to_mixtral,
     "qwen2": apply_liger_kernel_to_qwen2,
     "qwen2_vl": apply_liger_kernel_to_qwen2_vl,
+    "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "phi3": apply_liger_kernel_to_phi3,
 }
 
