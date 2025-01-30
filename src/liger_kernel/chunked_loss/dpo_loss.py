@@ -45,9 +45,12 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         chosen_logratios = chosen_logps - ref_chosen_logps
         rejected_logratios = rejected_logps - ref_rejected_logps
 
+        chosen_rewards = beta * (chosen_logps - ref_chosen_logps)
+        rejected_rewards = beta * (rejected_logps - ref_rejected_logps)
+
         logits_diff = beta * (chosen_logratios - rejected_logratios)
         loss = -F.logsigmoid(logits_diff).sum() / (full_target.shape[0] // 2)
-        return loss
+        return loss, chosen_rewards, rejected_rewards
 
     @staticmethod
     def forward(
@@ -99,7 +102,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         beta: float = 0.1,
         compute_nll_loss: bool = False,
         compiled: bool = True,
-        use_ref_model: bool = False,
+        use_ref_model: bool = True,
     ):
         """
         Args:
