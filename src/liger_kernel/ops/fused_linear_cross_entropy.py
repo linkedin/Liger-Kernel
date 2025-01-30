@@ -268,7 +268,7 @@ def fused_linear_cross_entropy_backward(
             grad_output, grad_input, grad_weight, grad_bias
         )
     # Calculate the gradient with respect to the entropy losses
-    if grad_entropy_output is not None: 
+    if grad_entropy_output is not None:
         grad_entropy_input, grad_entropy_weight, grad_entropy_bias = _fused_linear_backward_helper(
             grad_entropy_output, grad_entropy_input, grad_entropy_weight, grad_entropy_bias
         )
@@ -277,7 +277,7 @@ def fused_linear_cross_entropy_backward(
             grad_weight += grad_entropy_weight
         if grad_bias is not None:
             grad_bias += grad_entropy_bias
-        
+
     return grad_input, grad_weight, grad_bias
 
 
