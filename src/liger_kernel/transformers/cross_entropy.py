@@ -47,6 +47,7 @@ class LigerCrossEntropyLoss(torch.nn.Module):
             self.reduction,
             self.softcap,
             self.return_z_loss,
+            self.return_entropy_loss,
         )
         if not self.return_z_loss and not self.return_entropy_loss:
             return loss

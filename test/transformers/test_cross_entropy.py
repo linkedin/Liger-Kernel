@@ -860,14 +860,17 @@ def test_float32_internal():
 
     # Run kernel for bfloat16
     X_bf16 = X_init.clone()
+    dX_entropy_bf16 = torch.zeros_like(X_bf16)
     loss_bf16 = torch.zeros(batch_size, dtype=torch.float32, device=device)
     liger_cross_entropy_kernel[(batch_size,)](
         X_ptr=X_bf16,
+        dX_entropy_ptr=dX_entropy_bf16,
         X_stride=X_bf16.stride(-2),
         Y_ptr=Y,
         Y_stride=Y.stride(-1),
         weight_ptr=X_bf16,  # dummy ptr, not used
         z_loss_ptr=loss_bf16,  # dummy ptr, not used
+        entropy_loss_ptr=loss_bf16,  # dummy ptr, not used
         loss_ptr=loss_bf16,
         loss_stride=loss_bf16.stride(-1),
         n_cols=n_cols,
@@ -880,6 +883,7 @@ def test_float32_internal():
         reduction=reduction,
         softcap=softcap,
         RETURN_Z_LOSS=0,  # False
+        RETURN_ENTROPY_LOSS=0,  # False
         HAS_WEIGHT=False,
         HAS_SOFTCAPPING=False,
         BLOCK_SIZE=BLOCK_SIZE,
@@ -888,15 +892,17 @@ def test_float32_internal():
 
     # Run kernel for float32
     X_fp32 = X_init.float()
+    dX_entropy_fp32 = torch.zeros_like(X_fp32)
     loss_fp32 = torch.zeros(batch_size, dtype=torch.float32, device=device)
     liger_cross_entropy_kernel[(batch_size,)](
         X_ptr=X_fp32,
+        dX_entropy_ptr=dX_entropy_fp32,
         X_stride=X_fp32.stride(-2),
         Y_ptr=Y,
         Y_stride=Y.stride(-1),
         weight_ptr=X_fp32,  # dummy ptr, not used
-        loss_ptr=loss_fp32,
         z_loss_ptr=loss_fp32,  # dummy ptr, not used
+        entropy_loss_ptr=loss_fp32,  # dummy ptr, not used
         loss_stride=loss_fp32.stride(-1),
         n_cols=n_cols,
         n_non_ignore=n_non_ignore,

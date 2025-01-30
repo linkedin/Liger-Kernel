@@ -365,6 +365,7 @@ def cross_entropy_forward(
         reduction=reduction,
         softcap=softcap,
         RETURN_Z_LOSS=return_z_loss,
+        RETURN_ENTROPY_LOSS=return_entropy_loss,
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_WEIGHT=True if weight is not None else False,
         HAS_SOFTCAPPING=True if softcap is not None else False,
@@ -386,19 +387,10 @@ def cross_entropy_forward(
 
 
 def cross_entropy_backward(_input, dX_entropy_2d, grad_output, grad_output_entropy):
-    # calculate the gradient of the input w.r.s. to the entropy loss
     BT, V = _input.shape
     n_rows = BT
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
-    element_mul_kernel[(n_rows,)](
-        dX_entropy_2d,
-        dX_entropy_2d.stride(-2),
-        grad_output_entropy,
-        V,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=32 if not is_hip() else 16,
-    )
     # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
     if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
         pass
@@ -414,8 +406,20 @@ def cross_entropy_backward(_input, dX_entropy_2d, grad_output, grad_output_entro
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32 if not is_hip() else 16,
         )
+        
+    # calculate the gradient of the input w.r.s. to the entropy loss
+    if dX_entropy_2d is not None:
+        element_mul_kernel[(n_rows,)](
+            dX_entropy_2d,
+            dX_entropy_2d.stride(-2),
+            grad_output_entropy,
+            V,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=32 if not is_hip() else 16,
+        )
+        _input += dX_entropy_2d
 
-    return _input + dX_entropy_2d
+    return _input
 
 
 class LigerCrossEntropyFunction(torch.autograd.Function):
@@ -471,7 +475,10 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         # TODO: investigation
         # If we don't detach the _input tensor, the memory will double
         # Not sure why but seems that there will be a time both grad and value exist but in different location
-        ctx.save_for_backward(_input.detach(), dX_entropy_2d.detach())
+        if return_entropy_loss:
+            ctx.save_for_backward(_input.detach(), dX_entropy_2d.detach())
+        else:
+            ctx.save_for_backward(_input.detach())
         ctx.return_z_loss = return_z_loss
         ctx.return_entropy_loss = return_entropy_loss
 
@@ -492,8 +499,12 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         """
         if ctx.return_z_loss:
             del grad_ouput2  # z_loss is only for logging
+        
+        if ctx.return_entropy_loss:
+            (_input, dX_entropy_2d) = ctx.saved_tensors
+        else:
+            (_input,), dX_entropy_2d = ctx.saved_tensors, None
 
-        (_input, dX_entropy_2d) = ctx.saved_tensors
         _input = cross_entropy_backward(_input, dX_entropy_2d, grad_output, grad_ouput3)
 
         # delete the tensors that are not used in remaining steps
@@ -502,6 +513,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
 
         return (
             _input,
+            None,
             None,
             None,
             None,
