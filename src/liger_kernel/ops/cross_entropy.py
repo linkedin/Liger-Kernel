@@ -102,7 +102,7 @@ def liger_cross_entropy_kernel(
     if RETURN_ENTROPY_LOSS:
         entropy_loss_ptr += program_id * loss_stride
         dX_entropy_ptr += program_id * X_stride
-        
+
     if HAS_WEIGHT:
         weight_y = tl.load(weight_ptr + y).cast(tl.float32)
 
@@ -112,7 +112,7 @@ def liger_cross_entropy_kernel(
     # 3. [Online softmax] first pass: find max + sum
     m = float("-inf")  # m is the max value. use the notation from the paper
     d = 0.0  # d is the sum. use the notation from the paper
-    entropy_loss = 0.0 # entropy loss
+    entropy_loss = 0.0  # entropy loss
     ori_X_y = tl.load(X_ptr + y).cast(tl.float32)  # we need to store the original value of X_y for the loss calculation
     if HAS_SOFTCAPPING:
         ori_X_y = softcap * tanh(ori_X_y / softcap)
@@ -175,7 +175,7 @@ def liger_cross_entropy_kernel(
         if HAS_SOFTCAPPING:
             intermediate = tanh(X_block / softcap)
             X_block = softcap * intermediate
-            
+
         # load the derivatives of the entropy loss
         if RETURN_ENTROPY_LOSS:
             dX_entropy_block = tl.load(
@@ -208,7 +208,7 @@ def liger_cross_entropy_kernel(
                 # entropy loss term
                 entropy_loss += tl.sum(-softmax_X * tl.log(softmax_X))
                 # derititive of the entropy loss
-                dX_entropy_block = - (tl.log(softmax_X) + 1) * weight_block
+                dX_entropy_block = -(tl.log(softmax_X) + 1) * weight_block
             # derivative of original_loss
             dloss_ori = (1 - label_smoothing) * softmax_X
             # specially handle dx_y
@@ -224,14 +224,13 @@ def liger_cross_entropy_kernel(
                 dloss_smooth = dloss_smooth / sum_non_ignore_weight
                 # TODO: Implement weighted z_loss. Currently, z_loss is not scaled by weight.
                 dz_loss = dz_loss / n_non_ignore
-                dloss_entropy = dloss_entropy / n_non_ignore
             # derivative of total_loss
             X_block = dloss_ori + dloss_smooth + dz_loss
 
         # chain rule softcapping
         # d(softcap * tanh(x / softcap)) = (1 - tanh^2(x / softcap))
         if HAS_SOFTCAPPING:
-            X_block = X_block * (1 - intermediate * intermediate) 
+            X_block = X_block * (1 - intermediate * intermediate)
 
         tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
         if RETURN_ENTROPY_LOSS:
@@ -280,7 +279,7 @@ def liger_cross_entropy_kernel(
         z_loss = z_loss / n_non_ignore
         # TODO: Implement weighted entropy loss. Currently, entropy loss is not scaled by weight.
         entropy_loss = entropy_loss / n_non_ignore
-        
+
     loss += z_loss
 
     tl.store(loss_ptr, loss)
@@ -288,6 +287,7 @@ def liger_cross_entropy_kernel(
         tl.store(z_loss_ptr, z_loss)
     if RETURN_ENTROPY_LOSS:
         tl.store(entropy_loss_ptr, entropy_loss)
+
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
@@ -308,7 +308,9 @@ def cross_entropy_forward(
     return_entropy_loss,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
-    assert isinstance(return_entropy_loss, bool), f"return_entropy_loss must be True or False. Got: {return_entropy_loss}"
+    assert isinstance(return_entropy_loss, bool), (
+        f"return_entropy_loss must be True or False. Got: {return_entropy_loss}"
+    )
 
     BT, V = _input.shape
     n_rows = BT
@@ -388,7 +390,7 @@ def cross_entropy_backward(_input, dX_entropy_2d, grad_output, grad_output_entro
     BT, V = _input.shape
     n_rows = BT
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
-    
+
     element_mul_kernel[(n_rows,)](
         dX_entropy_2d,
         dX_entropy_2d.stride(-2),
@@ -472,7 +474,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         ctx.save_for_backward(_input.detach(), dX_entropy_2d.detach())
         ctx.return_z_loss = return_z_loss
         ctx.return_entropy_loss = return_entropy_loss
-        
+
         return loss, z_loss, entropy_loss
 
     @staticmethod
@@ -493,11 +495,11 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
 
         (_input, dX_entropy_2d) = ctx.saved_tensors
         _input = cross_entropy_backward(_input, dX_entropy_2d, grad_output, grad_ouput3)
-        
+
         # delete the tensors that are not used in remaining steps
-        del grad_ouput3  
-        del dX_entropy_2d  
-        
+        del grad_ouput3
+        del dX_entropy_2d
+
         return (
             _input,
             None,

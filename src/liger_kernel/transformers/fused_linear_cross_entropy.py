@@ -35,7 +35,7 @@ class LigerFusedLinearCrossEntropyLoss(torch.nn.Module):
         self.softcap = softcap
         self.return_z_loss = return_z_loss
         self.return_entropy_loss = return_entropy_loss
-        
+
     def forward(self, lin_weight, _input, target, bias=None):
         loss, z_loss, entropy_loss = LigerFusedLinearCrossEntropyFunction.apply(
             _input,
