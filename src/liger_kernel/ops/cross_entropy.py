@@ -406,7 +406,7 @@ def cross_entropy_backward(_input, dX_entropy_2d, grad_output, grad_output_entro
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32 if not is_hip() else 16,
         )
-        
+
     # calculate the gradient of the input w.r.s. to the entropy loss
     if dX_entropy_2d is not None:
         element_mul_kernel[(n_rows,)](
@@ -499,7 +499,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         """
         if ctx.return_z_loss:
             del grad_ouput2  # z_loss is only for logging
-        
+
         if ctx.return_entropy_loss:
             (_input, dX_entropy_2d) = ctx.saved_tensors
         else:
