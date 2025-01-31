@@ -90,6 +90,20 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             if ref_bias is not None:
                 ref_logits = ref_logits + ref_bias
 
+        # Get log probabilities
+        log_probs = F.log_softmax(policy_logits, dim=-1)
+        seq_log_probs = (log_probs.max(dim=-1).values * attention_mask).sum(dim=-1)
+
+        # Get reference log probabilities
+        if ref_logits is not None:
+            ref_log_probs = F.log_softmax(ref_logits, dim=-1)
+            ref_seq_logps = (ref_log_probs.max(dim=-1).values * attention_mask).sum(dim=-1)
+        else:
+            ref_seq_logps = seq_log_probs.detach()
+
+        # Compute KL divergence
+        kl_div = seq_log_probs - ref_seq_logps
+
         # Compute loss
         loss = LigerFusedLinearGRPOFunction.preference_loss_fn(
             logits=policy_logits,
@@ -99,10 +113,24 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             beta=beta,
         )
 
-        return loss, ()
+        # Return metrics matching the PyTorch implementation
+        metrics = (
+            seq_log_probs.mean(),  # policy log probs mean
+            seq_log_probs.std(),  # policy log probs std
+            policy_logits.mean(),  # policy logits mean
+            kl_div.mean(),  # KL divergence mean
+        )
+
+        return loss, metrics
 
     @staticmethod
-    def backward(ctx, grad_output, *args):
+    def backward(ctx, grad_output, *grad_metrics):
+        """Backward pass for GRPO loss.
+
+        Args:
+            grad_output: Gradient of the loss (scalar)
+            grad_metrics: Gradients of the metrics (not used in backward computation)
+        """
         _input, weight, attention_mask, bias = ctx.saved_tensors
         beta = ctx.beta  # Retrieve beta for KL scaling
         rewards = ctx.rewards  # Retrieve rewards for advantage computation
@@ -136,9 +164,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             # Policy gradient loss with KL penalty
             policy_loss = -(advantages * seq_log_probs)
             kl_div = seq_log_probs - seq_log_probs.detach()  # KL divergence from current policy
-            loss = policy_loss + beta * kl_div  # Apply beta scaling to KL term
+            loss = (policy_loss + beta * kl_div).mean()  # Take mean to get scalar loss
 
-            # Backward pass
+            # Backward pass with scalar gradient
             loss.backward(grad_output)
             grad_input = _input.grad
             grad_weight = weight.grad
