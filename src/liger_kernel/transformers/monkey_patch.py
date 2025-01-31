@@ -671,14 +671,12 @@ def apply_liger_kernel_to_qwen2_5_vl(
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
-    layer_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
-    # TODO: Update docstring
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
-    NOTE: Qwen2-VL is not available in transformers<4.45.0
+    NOTE: Qwen2.5-VL is not available in transformers<4.48.2
 
     Args:
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
@@ -687,7 +685,6 @@ def apply_liger_kernel_to_qwen2_5_vl(
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
-        layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
@@ -704,10 +701,7 @@ def apply_liger_kernel_to_qwen2_5_vl(
     if rope:
         modeling_qwen2_5_vl.apply_multimodal_rotary_pos_emb = liger_multimodal_rotary_pos_emb
     if rms_norm:
-        # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L439
         modeling_qwen2_5_vl.Qwen2RMSNorm = LigerRMSNorm
-    # if layer_norm:
-    #     modeling_qwen2_5_vl.LayerNorm = LigerLayerNorm
     if cross_entropy:
         modeling_qwen2_5_vl.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
@@ -723,9 +717,9 @@ def apply_liger_kernel_to_qwen2_5_vl(
         base_model: Qwen2_5_VLModel = getattr(model, model.base_model_prefix, model)
 
         if hasattr(model, "visual"):
-            # Patch Qwen2VisionTransformerPretrainedModel
+            # Patch Qwen2_5_VisionTransformerPretrainedModel
             for vision_block in model.visual.blocks:
-                if layer_norm:
+                if rms_norm:
                     _patch_rms_norm_module(vision_block.norm1)
                     _patch_rms_norm_module(vision_block.norm2)
 

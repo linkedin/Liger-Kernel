@@ -442,7 +442,7 @@ if QWEN2_5_VL_AVAILABLE:
                 "window_size": 112,
                 "fullatt_block_indexes": [7, 15, 23, 31],
                 "tokens_per_second": 2,
-                "temporal_patch_size": 2
+                "temporal_patch_size": 2,
             },
             attn_implementation="sdpa",
         ),

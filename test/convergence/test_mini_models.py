@@ -442,7 +442,7 @@ if QWEN2_5_VL_AVAILABLE:
                 "window_size": 112,
                 "fullatt_block_indexes": [7, 15, 23, 31],
                 "tokens_per_second": 2,
-                "temporal_patch_size": 2
+                "temporal_patch_size": 2,
             },
             attn_implementation="sdpa",
         ),
@@ -622,7 +622,7 @@ def run_mini_model(
                 ),
             ],
         ),
-        pytest.param(  # qwen2_vl requires slightly larger tolerances to pass this test after bug fix to qwen2_vl in transformers v4.47.0
+        pytest.param(  # qwen2_5_vl requires slightly larger tolerances to pass this test after bug fix to qwen2_vl in transformers v4.47.0
             "mini_qwen2_5_vl",
             32,
             1e-4,
