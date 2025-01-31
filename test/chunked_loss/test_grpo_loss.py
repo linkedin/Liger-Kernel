@@ -97,6 +97,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.grpo_loss = LigerFusedLinearGRPOFunction.apply
+        self.beta = beta
 
     def forward(
         self,
@@ -107,20 +108,19 @@ class LigerLMHeadGRPO(torch.nn.Module):
         ref_weight=None,
         ref_bias=None,
     ):
+        # Pass only the arguments defined in LigerFusedLinearGRPOFunction.forward()
         return self.grpo_loss(
-            x,
-            self.lin.weight,
-            rewards,
-            attention_mask,
-            self.lin.bias,
-            loss_fn=LigerFusedLinearGRPOFunction.preference_loss_fn,
-            chunk_size=1,
-            beta=self.beta,
-            compiled=True,
-            use_ref_model=ref_input is not None,
-            ref_input=ref_input,
-            ref_weight=ref_weight,
-            ref_bias=ref_bias,
+            x,  # _input
+            self.lin.weight,  # weight
+            attention_mask,  # attention_mask
+            rewards,  # rewards
+            self.lin.bias,  # bias
+            ref_input,  # ref_input
+            ref_weight,  # ref_weight
+            ref_bias,  # ref_bias
+            self.beta,  # beta
+            True,  # compiled
+            ref_input is not None,  # use_ref_model
         )
 
 
