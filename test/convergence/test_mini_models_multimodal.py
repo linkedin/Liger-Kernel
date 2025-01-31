@@ -10,6 +10,7 @@ from transformers import PreTrainedTokenizerFast
 
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
+from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from test.utils import FAKE_CONFIGS_PATH
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
@@ -18,6 +19,7 @@ from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
 from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_qwen2_vl
+from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 from test.utils import train_bpe_tokenizer
@@ -33,6 +35,18 @@ try:
     QWEN2_VL_AVAILABLE = True
 except ImportError:
     QWEN2_VL_AVAILABLE = False
+
+try:
+    # Qwen2.5-VL is only available in transformers>4.48.2
+    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
+    from transformers.models.qwen2_5_vl.image_processing_qwen2_5_vl import Qwen2_5_VLImageProcessor
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
+    from transformers.models.qwen2_5_vl.processing_qwen2_5_vl import Qwen2_5_VLProcessor
+
+    QWEN2_5_VL_AVAILABLE = True
+except ImportError:
+    QWEN2_5_VL_AVAILABLE = False
 
 try:
     # Mllama is only available in transformers>=4.45.0
@@ -169,6 +183,62 @@ if QWEN2_VL_AVAILABLE:
         ),
     )
 
+if QWEN2_5_VL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen2_5_vl"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen2_5_vl,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2_5_vl,
+        model_class=Qwen2_5_VLForConditionalGeneration,
+        mini_model_config=Qwen2_5_VLConfig(
+            attention_dropout=0.0,
+            # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+            bos_token_id=1,  # 151643
+            eos_token_id=2,  # 151645
+            vision_start_token_id=32765,  # vocab_size - 5
+            vision_end_token_id=32766,  # vocab_size - 4
+            vision_token_id=32767,  # vocab_size - 3
+            image_token_id=32768,  # vocab_size - 2
+            video_token_id=32769,  # vocab_size - 1
+            hidden_act="silu",
+            hidden_size=1536,  # 8192
+            initializer_range=0.02,
+            intermediate_size=4864,  # 29568
+            max_position_embeddings=32768,
+            max_window_layers=4,  # 80
+            num_attention_heads=12,  # 64
+            num_hidden_layers=4,  # 80
+            num_key_value_heads=2,  # 8
+            rms_norm_eps=1e-6,  # 1e-5
+            rope_theta=1000000.0,
+            rope_scaling=dict(
+                type="mrope",
+                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            ),
+            sliding_window=4096,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
+            use_sliding_window=False,
+            vision_config={
+                "depth": 4,  # 32
+                "hidden_act": "silu",
+                "hidden_size": 128,  # 1280
+                "intermediate_size": 256,  # 3420
+                "num_heads": 16,
+                "in_chans": 3,
+                "out_hidden_size": 128,  # 3584
+                "patch_size": 14,
+                "spatial_merge_size": 2,
+                "spatial_patch_size": 14,
+                "window_size": 112,
+                "fullatt_block_indexes": [7, 15, 23, 31],
+                "tokens_per_second": 2,
+                "temporal_patch_size": 2
+            },
+            attn_implementation="sdpa",
+        ),
+    )
+
 
 def create_processor(model_name):
     if model_name == "mini_qwen2_vl":
@@ -187,6 +257,23 @@ def create_processor(model_name):
         qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor()
         return Qwen2VLProcessor(image_processor=image_processor, tokenizer=qwen_tokenizer)
+
+    elif model_name == "mini_qwen2_5_vl":
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(FAKE_CONFIGS_PATH, "Qwen/Qwen2.5-VL-7B-Instruct/tokenizer_config.json")
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        image_processor = Qwen2_5_VLImageProcessor()
+        return Qwen2_5_VLProcessor(image_processor=image_processor, tokenizer=qwen_tokenizer)
 
     elif model_name == "mini_mllama":
         tokenizer_config = load_tokenizer_config(
@@ -370,6 +457,45 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
+                ),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen2_5_vl",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not QWEN2_5_VL_AVAILABLE,
+                    reason="Qwen2.5-VL not available in this version of transformers",
+                ),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen2_5_vl",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN2_5_VL_AVAILABLE,
+                    reason="Qwen2.5-VL not available in this version of transformers",
                 ),
                 pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
