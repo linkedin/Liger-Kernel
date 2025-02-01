@@ -233,7 +233,7 @@ def test_correctness(
     for i in range(len(aggregated_aux_outputs1)):
         if i > 4 and dtype == torch.bfloat16:
             # numerical instability in bf16 for chosen_rewards and rejected_rewards
-            # temporary fix
+            # temporary fix. TODO: investigate how to reduce numercial instabiltiy issue
             assert_verbose_allclose(
                 aggregated_aux_outputs1[i],
                 aggregated_aux_outputs2[i],
