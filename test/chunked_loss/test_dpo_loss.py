@@ -238,7 +238,7 @@ def test_correctness(
                 aggregated_aux_outputs1[i],
                 aggregated_aux_outputs2[i],
                 atol=5e-1,
-                rtol=5e-1,
+                rtol=rtol,
             )
             continue
         assert_verbose_allclose(
