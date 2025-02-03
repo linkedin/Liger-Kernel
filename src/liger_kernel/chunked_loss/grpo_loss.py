@@ -105,8 +105,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         """
         grads = LigerFusedLinearRLHFBase.backward(ctx, grad_output)
         return (
-            *grads[:4],  # grad_input, grad_weight, grad_attention_mask, grad_rewards
-            None,  # grad_bias
+            *grads[:5],  # grad_input, grad_weight, grad_attention_mask, grad_rewards, grad_bias
             None,  # grad_ref_input
             None,  # grad_ref_weight
             None,  # grad_ref_bias

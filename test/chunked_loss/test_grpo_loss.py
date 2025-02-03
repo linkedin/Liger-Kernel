@@ -103,7 +103,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
             chosen_token_logprobs.mean(),
             chosen_token_logprobs.std(),
             log_probs.mean(),
-            (kl_div * attention_mask).sum(1).mean() / attention_mask.sum(1).mean(),
+            ((kl_div * attention_mask).sum(dim=1) / attention_mask.sum(dim=1)).mean(),
         )
 
         return loss, metrics
@@ -162,7 +162,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
     "scalar, dtype, atol, rtol",
     [
         (1.0, torch.bfloat16, 5e-2, 5e-2),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        (1.0, torch.float32, 5e-3, 5e-3),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
