@@ -1,58 +1,64 @@
 import torch
-import torch.nn.functional as F
 
 from liger_kernel.chunked_loss.fused_linear_rlhf import LigerFusedLinearRLHFBase
 
 
 class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
     @staticmethod
-    def preference_loss_fn(
-        logits,
+    def rlhf_loss_fn(
+        log_probs,
         attention_mask,
         rewards,
-        ref_logits=None,
+        ref_log_probs=None,
         beta=0.1,
         **kwargs,
     ):
-        """
-        GRPO Loss Function as implemented in GRPOTrainer.
+        """GRPO Loss Function matching GRPOTrainer implementation."""
+        # Get chosen token probabilities
+        chosen_tokens = log_probs.argmax(dim=-1)  # (batch_size, seq_len)
+        chosen_token_logprobs = log_probs.gather(dim=-1, index=chosen_tokens.unsqueeze(-1)).squeeze(
+            -1
+        )  # (batch_size, seq_len)
 
-        Args:
-            logits: Model logits (batch_size, seq_len, vocab_size)
-            attention_mask: Attention mask (batch_size, seq_len)
-            rewards: Rewards for each sequence (batch_size,)
-            ref_logits: Reference model logits (batch_size, seq_len, vocab_size) or None
-            beta: Weight for KL penalty
-        """
-        # Get log probabilities for policy
-        log_probs = F.log_softmax(logits, dim=-1)
-
-        # Get sequence-level log probs by taking max over vocab and summing over sequence
-        policy_seq_logps = (log_probs.max(dim=-1).values * attention_mask).sum(dim=-1)
-
-        # Get reference model log probabilities if provided
-        if ref_logits is not None:
+        # Get reference model probabilities
+        if ref_log_probs is not None:
             with torch.no_grad():
-                ref_log_probs = F.log_softmax(ref_logits, dim=-1)
-                ref_seq_logps = (ref_log_probs.max(dim=-1).values * attention_mask).sum(dim=-1)
+                ref_token_logprobs = ref_log_probs.gather(dim=-1, index=chosen_tokens.unsqueeze(-1)).squeeze(-1)
         else:
-            ref_seq_logps = policy_seq_logps.detach()
+            ref_token_logprobs = chosen_token_logprobs.detach()
 
         # Compute advantages
-        advantages = rewards - rewards.mean()
-        if advantages.std() > 0:
-            advantages = advantages / advantages.std()
+        mean_grouped_rewards = rewards.mean()
+        std_grouped_rewards = rewards.std()
+        advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-8)
 
-        # Policy gradient loss
-        policy_loss = -(advantages * policy_seq_logps)
+        # Compute policy gradient loss with importance sampling ratio
+        ratio = torch.exp(chosen_token_logprobs - chosen_token_logprobs.detach())
+        policy_loss = -ratio * advantages.unsqueeze(1)
 
-        # KL penalty
-        kl_div = policy_seq_logps - ref_seq_logps
+        # Compute KL penalty
+        kl_div = (
+            torch.exp(ref_token_logprobs - chosen_token_logprobs) - (ref_token_logprobs - chosen_token_logprobs) - 1.0
+        )
 
-        # Total loss
-        loss = policy_loss + beta * kl_div
+        # Combine losses
+        per_token_loss = policy_loss + beta * kl_div
 
-        return loss.mean()
+        # Apply masking and normalize
+        masked_loss = per_token_loss * attention_mask
+        seq_lengths = attention_mask.sum(dim=1, keepdim=True)
+        seq_lengths = torch.clamp(seq_lengths, min=1.0)
+        loss = (masked_loss.sum(dim=1) / seq_lengths.squeeze(-1)).mean()
+
+        # Calculate metrics
+        metrics = (
+            chosen_token_logprobs.mean(),  # mean log prob
+            chosen_token_logprobs.std(),  # std log prob
+            log_probs.mean(),  # mean all log probs
+            (kl_div * attention_mask).sum(1).mean() / attention_mask.sum(1).mean(),  # mean KL div
+        )
+
+        return loss, metrics
 
     @staticmethod
     def forward(
@@ -69,59 +75,21 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         compiled=True,
         use_ref_model=True,
     ):
-        """Forward pass for GRPO loss."""
-        # Save tensors needed for backward
-        ctx.save_for_backward(_input, weight, attention_mask, bias)
-        ctx.beta = beta
-        ctx.rewards = rewards  # Save rewards for use in backward pass
-
-        # Get policy logits
-        batch_size, seq_len, hidden_size = _input.shape
-        input_reshaped = _input.view(-1, hidden_size)
-        policy_logits = (input_reshaped @ weight.t()).view(batch_size, seq_len, -1)
-        if bias is not None:
-            policy_logits = policy_logits + bias
-
-        # Get reference logits if needed
-        ref_logits = None
-        if use_ref_model and ref_input is not None and ref_weight is not None:
-            ref_input_reshaped = ref_input.view(-1, ref_input.size(-1))
-            ref_logits = (ref_input_reshaped @ ref_weight.t()).view(batch_size, seq_len, -1)
-            if ref_bias is not None:
-                ref_logits = ref_logits + ref_bias
-
-        # Get log probabilities
-        log_probs = F.log_softmax(policy_logits, dim=-1)
-        seq_log_probs = (log_probs.max(dim=-1).values * attention_mask).sum(dim=-1)
-
-        # Get reference log probabilities
-        if ref_logits is not None:
-            ref_log_probs = F.log_softmax(ref_logits, dim=-1)
-            ref_seq_logps = (ref_log_probs.max(dim=-1).values * attention_mask).sum(dim=-1)
-        else:
-            ref_seq_logps = seq_log_probs.detach()
-
-        # Compute KL divergence
-        kl_div = seq_log_probs - ref_seq_logps
-
-        # Compute loss
-        loss = LigerFusedLinearGRPOFunction.preference_loss_fn(
-            logits=policy_logits,
+        return LigerFusedLinearRLHFBase.forward(
+            ctx=ctx,
+            _input=_input,
+            weight=weight,
             attention_mask=attention_mask,
+            loss_fn=LigerFusedLinearGRPOFunction.rlhf_loss_fn,
             rewards=rewards,
-            ref_logits=ref_logits,
+            bias=bias,
+            ref_input=ref_input,
+            ref_weight=ref_weight,
+            ref_bias=ref_bias,
             beta=beta,
+            compiled=compiled,
+            use_ref_model=use_ref_model,
         )
-
-        # Return metrics matching the PyTorch implementation
-        metrics = (
-            seq_log_probs.mean(),  # policy log probs mean
-            seq_log_probs.std(),  # policy log probs std
-            policy_logits.mean(),  # policy logits mean
-            kl_div.mean(),  # KL divergence mean
-        )
-
-        return loss, metrics
 
     @staticmethod
     def backward(ctx, grad_output, *grad_metrics):
@@ -131,53 +99,10 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             grad_output: Gradient of the loss (scalar)
             grad_metrics: Gradients of the metrics (not used in backward computation)
         """
-        _input, weight, attention_mask, bias = ctx.saved_tensors
-        beta = ctx.beta  # Retrieve beta for KL scaling
-        rewards = ctx.rewards  # Retrieve rewards for advantage computation
-
-        # Initialize gradients
-        grad_input = grad_weight = grad_bias = None
-
-        # Compute gradients using autograd
-        with torch.enable_grad():
-            _input = _input.detach().requires_grad_()
-            weight = weight.detach().requires_grad_()
-            if bias is not None:
-                bias = bias.detach().requires_grad_()
-
-            # Forward pass
-            batch_size, seq_len, hidden_size = _input.shape
-            input_reshaped = _input.view(-1, hidden_size)
-            logits = (input_reshaped @ weight.t()).view(batch_size, seq_len, -1)
-            if bias is not None:
-                logits = logits + bias
-
-            # Compute log probabilities and sequence-level scores
-            log_probs = F.log_softmax(logits, dim=-1)
-            seq_log_probs = (log_probs.max(dim=-1).values * attention_mask).sum(dim=-1)
-
-            # Compute advantages
-            advantages = rewards - rewards.mean()
-            if advantages.std() > 0:
-                advantages = advantages / advantages.std()
-
-            # Policy gradient loss with KL penalty
-            policy_loss = -(advantages * seq_log_probs)
-            kl_div = seq_log_probs - seq_log_probs.detach()  # KL divergence from current policy
-            loss = (policy_loss + beta * kl_div).mean()  # Take mean to get scalar loss
-
-            # Backward pass with scalar gradient
-            loss.backward(grad_output)
-            grad_input = _input.grad
-            grad_weight = weight.grad
-            grad_bias = bias.grad if bias is not None else None
-
+        grads = LigerFusedLinearRLHFBase.backward(ctx, grad_output)
         return (
-            grad_input,
-            grad_weight,
-            None,  # grad_attention_mask
-            None,  # grad_rewards
-            grad_bias,
+            *grads[:4],  # grad_input, grad_weight, grad_attention_mask, grad_rewards
+            None,  # grad_bias
             None,  # grad_ref_input
             None,  # grad_ref_weight
             None,  # grad_ref_bias

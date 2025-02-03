@@ -35,19 +35,21 @@ class TorchLMHeadGRPO(torch.nn.Module):
         ref_weight=None,
         ref_bias=None,
     ):
-        # Get policy logits and log probs
+        # Forward pass through linear layer
         batch_size, seq_len, hidden_size = x.shape
         input_reshaped = x.view(-1, hidden_size)
         logits = (input_reshaped @ self.lin.weight.t()).view(batch_size, seq_len, -1)
         if self.lin.bias is not None:
             logits = logits + self.lin.bias
+
+        # Get log probabilities
         log_probs = F.log_softmax(logits, dim=-1)
 
-        # Get sequence-level log probs by taking max over vocab and summing over sequence
-        seq_log_probs = log_probs.max(dim=-1).values
-        policy_seq_logps = (seq_log_probs * attention_mask).sum(dim=-1)
+        # Get chosen token probabilities
+        chosen_tokens = log_probs.argmax(dim=-1)
+        chosen_token_logprobs = log_probs.gather(dim=-1, index=chosen_tokens.unsqueeze(-1)).squeeze(-1)
 
-        # Get reference model log probs if provided
+        # Get reference model probabilities
         if ref_input is not None and ref_weight is not None:
             with torch.no_grad():
                 ref_input_reshaped = ref_input.view(-1, ref_input.size(-1))
@@ -55,34 +57,42 @@ class TorchLMHeadGRPO(torch.nn.Module):
                 if ref_bias is not None:
                     ref_logits = ref_logits + ref_bias
                 ref_log_probs = F.log_softmax(ref_logits, dim=-1)
-                ref_seq_log_probs = ref_log_probs.max(dim=-1).values
-                ref_seq_logps = (ref_seq_log_probs * attention_mask).sum(dim=-1)
+                ref_token_logprobs = ref_log_probs.gather(dim=-1, index=chosen_tokens.unsqueeze(-1)).squeeze(-1)
         else:
-            ref_seq_logps = policy_seq_logps.detach()
+            ref_token_logprobs = chosen_token_logprobs.detach()
 
-        # Compute advantages
-        advantages = rewards - rewards.mean()
-        if advantages.std() > 0:
-            advantages = advantages / advantages.std()
+        # Compute advantages (exactly as in GRPOTrainer)
+        mean_grouped_rewards = rewards.mean()
+        std_grouped_rewards = rewards.std()
+        advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-8)
 
-        # Policy gradient loss
-        policy_loss = -(advantages * policy_seq_logps)
+        # Compute policy gradient loss with importance sampling ratio
+        ratio = torch.exp(chosen_token_logprobs - chosen_token_logprobs.detach())
+        policy_loss = -ratio * advantages.unsqueeze(1)
 
-        # KL penalty
-        kl_div = policy_seq_logps - ref_seq_logps
-
-        # Total loss
-        loss = policy_loss + self.beta * kl_div
-
-        # Return metrics for logging
-        metrics = (
-            policy_seq_logps.mean(),  # policy log probs mean
-            policy_seq_logps.std(),  # policy log probs std
-            logits.mean(),  # policy logits mean
-            kl_div.mean(),  # KL divergence mean
+        # Compute KL penalty
+        kl_div = (
+            torch.exp(ref_token_logprobs - chosen_token_logprobs) - (ref_token_logprobs - chosen_token_logprobs) - 1.0
         )
 
-        return loss.mean(), metrics
+        # Combine losses
+        per_token_loss = policy_loss + self.beta * kl_div
+
+        # Apply masking and normalize
+        masked_loss = per_token_loss * attention_mask
+        seq_lengths = attention_mask.sum(dim=1, keepdim=True)
+        seq_lengths = torch.clamp(seq_lengths, min=1.0)
+        loss = (masked_loss.sum(dim=1) / seq_lengths.squeeze(-1)).mean()
+
+        # Compute metrics
+        metrics = (
+            chosen_token_logprobs.mean(),
+            chosen_token_logprobs.std(),
+            logits.mean(),
+            (kl_div * attention_mask).sum(1).mean() / attention_mask.sum(1).mean(),
+        )
+
+        return loss, metrics
 
 
 class LigerLMHeadGRPO(torch.nn.Module):
@@ -185,16 +195,29 @@ def test_correctness(
     mask_indices = torch.randperm(B * T)[:num_elements_to_mask]
     attention_mask.view(-1)[mask_indices] = 0
 
-    # Create rewards
+    # Create rewards with random values
     rewards = torch.randn(B, device=device, dtype=dtype)
 
-    # Forward pass
-    loss1, aux1 = torch_lm_head_grpo(input1, attention_mask, rewards)
-    loss2, aux2 = liger_lm_head_grpo(input2, attention_mask, rewards)
+    # Create reference inputs (optional)
+    ref_input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
+    ref_weight = torch.randn(V, H, device=device, dtype=dtype)
+    ref_bias = torch.randn(V, device=device, dtype=dtype) if bias else None
+
+    # Forward pass with reference model
+    loss1, aux1 = torch_lm_head_grpo(
+        input1, attention_mask, rewards, ref_input=ref_input, ref_weight=ref_weight, ref_bias=ref_bias
+    )
+    loss2, aux2 = liger_lm_head_grpo(
+        input2, attention_mask, rewards, ref_input=ref_input, ref_weight=ref_weight, ref_bias=ref_bias
+    )
 
     # Check losses match
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
+
+    # Check metrics match
     assert len(aux1) == len(aux2)
+    for metric1, metric2 in zip(aux1, aux2):
+        assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
 
     # Backward pass
     loss1.backward()
@@ -215,3 +238,15 @@ def test_correctness(
             atol=atol,
             rtol=rtol,
         )
+
+    # Test without reference model
+    loss1, aux1 = torch_lm_head_grpo(input1, attention_mask, rewards)
+    loss2, aux2 = liger_lm_head_grpo(input2, attention_mask, rewards)
+
+    # Check losses match (without reference model)
+    assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
+
+    # Check metrics match (without reference model)
+    assert len(aux1) == len(aux2)
+    for metric1, metric2 in zip(aux1, aux2):
+        assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
