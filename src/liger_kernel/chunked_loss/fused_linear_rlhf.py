@@ -116,6 +116,9 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
 
             accumulate_chunk(input_chunk, attention_mask_chunk, rewards_chunk, ref_input_chunk)
 
+        # Scale accumulated loss by number of chunks since we're averaging
+        loss_acc = loss_acc / chunks
+
         # Combine gradients
         grad_input = torch.cat(grad_inputs, dim=0)
 
