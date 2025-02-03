@@ -205,7 +205,7 @@ def liger_cross_entropy_kernel(
             )
         # valid mask for the entropy loss
         valid_mask = X_offsets < n_cols
-        
+
         if not HAS_WEIGHT:
             # softmax(x_i)
             X_block = tl.exp(X_block - m) / d
