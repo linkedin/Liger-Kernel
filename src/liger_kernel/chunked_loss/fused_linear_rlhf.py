@@ -47,7 +47,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         def fused_fwd_bwd(input_chunk, attention_mask_chunk, rewards_chunk, ref_input_chunk):
             """Fused forward and backward for a chunk."""
             if bias is not None:
-                return torch.func.grad_and_value(compute_loss, argnums=(0, 1, 4), has_aux=True)(
+                return torch.func.grad_and_value(compute_loss, argnums=(0, 1, 5), has_aux=True)(
                     input_chunk,  # arg 0
                     weight,  # arg 1
                     attention_mask_chunk,  # arg 2
@@ -65,15 +65,10 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
                 )
 
         def accumulate_chunk(input_chunk, attention_mask_chunk, rewards_chunk, ref_input_chunk=None):
-            # nonlocal loss_acc, grad_weight, grad_inputs, grad_bias, aggregated_metrics
-
             if bias is not None:
                 (chunk_grad_input, chunk_grad_weight, chunk_grad_bias), (chunk_loss, chunk_metrics) = fused_fwd_bwd(
                     input_chunk, attention_mask_chunk, rewards_chunk, ref_input_chunk
                 )
-                if chunk_grad_bias.shape != grad_bias.shape:
-                    # Ensure we're summing to match the vocab size dimension
-                    chunk_grad_bias = chunk_grad_bias.view(-1, grad_bias.shape[0]).sum(0)
                 grad_bias.add_(chunk_grad_bias)
             else:
                 (chunk_grad_input, chunk_grad_weight), (chunk_loss, chunk_metrics) = fused_fwd_bwd(
@@ -153,7 +148,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
     ):
         """Compute loss for a single chunk."""
         # Get policy log probabilities using chunk_forward
-        (log_probs, _, logits_mean) = LigerFusedLinearRLHFBase.chunk_forward(input_chunk, weight, bias=bias)
+        log_probs, _, logits_mean = LigerFusedLinearRLHFBase.chunk_forward(input_chunk, weight, bias=bias)
 
         # Get reference log probabilities if needed
         ref_log_probs = None
@@ -161,7 +156,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             with torch.no_grad():
                 ref_log_probs, _, _ = LigerFusedLinearRLHFBase.chunk_forward(ref_input_chunk, ref_weight, bias=ref_bias)
 
-        # Compute chunk loss and metrics
+        # Compute chunk loss and metrics using the provided loss function
         chunk_loss, chunk_metrics = rlhf_loss_fn(
             log_probs=log_probs,
             attention_mask=attention_mask_chunk,
@@ -173,16 +168,12 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         return chunk_loss, (logits_mean, *chunk_metrics)
 
     @staticmethod
-    def chunk_forward(
-        input_chunk,
-        weight,
-        bias=None,
-    ):
+    def chunk_forward(input_chunk, weight, bias=None):
         """Forward pass computation for a single chunk."""
         batch_size, seq_len, hidden_size = input_chunk.shape
         input_reshaped = input_chunk.view(-1, hidden_size)  # [B*T, H]
 
-        # Linear layer: [B*T, H] @ [V, H].T -> [B*T, V]
+        # Linear layer: [B*T, H] @ [H, V] -> [B*T, V]
         logits = F.linear(input_reshaped, weight)  # weight shape is [V, H]
         if bias is not None:
             logits = logits + bias.view(1, -1)
