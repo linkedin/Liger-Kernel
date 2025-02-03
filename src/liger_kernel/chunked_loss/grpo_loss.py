@@ -57,7 +57,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             chosen_token_logprobs.mean(),  # mean log prob
             chosen_token_logprobs.std(),  # std log prob
             log_probs.mean(),  # mean all log probs
-            (kl_div * attention_mask).sum(1).mean() / attention_mask.sum(1).mean(),  # mean KL div
+            ((kl_div * attention_mask).sum(dim=1) / attention_mask.sum(dim=1)).mean(),  # mean KL div
         )
 
         return loss, metrics
