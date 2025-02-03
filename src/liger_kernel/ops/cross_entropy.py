@@ -148,7 +148,7 @@ def liger_cross_entropy_kernel(
     #                    = log (e^(max(X)) * sum(e ^ (X_i - max(X))))
     #                    = max(X) + log (sum(e ^ (X_i - max(X)))) = m + log d
     lse = m + tl.log(d)
-    
+
     # 3.5 Calculate the entropy loss
     if RETURN_ENTROPY_LOSS:
         for i in range(0, n_cols, BLOCK_SIZE):
@@ -162,13 +162,12 @@ def liger_cross_entropy_kernel(
             if HAS_SOFTCAPPING:
                 intermediate = tanh(X_block / softcap)
                 X_block = softcap * intermediate
-            
+
             softmax_X = tl.exp(X_block - m) / d
             # Mask for valid columns and non-zero softmax
             valid_mask = (X_offsets < n_cols) & (softmax_X > 0.0)
             entropy_term = tl.where(valid_mask, -softmax_X * tl.log(softmax_X), 0.0)
             entropy_loss += tl.sum(entropy_term)
-
 
     # 4. [Online Softmax] Second pass: compute gradients
     # For 'mean' reduction, gradients are normalized by number of non-ignored elements (N)
@@ -222,7 +221,7 @@ def liger_cross_entropy_kernel(
             # reduction scale
             if reduction == "mean":
                 X_block = X_block / n_non_ignore
-                dX_entropy_block = dX_entropy_block / n_non_ignore       
+                dX_entropy_block = dX_entropy_block / n_non_ignore
         else:
             weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
             softmax_X = tl.exp(X_block - m) / d

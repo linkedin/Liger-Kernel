@@ -64,7 +64,7 @@ class CrossEntropyWithZLossWithEntropyLoss(torch.nn.Module):
         # Entropy loss term
         entropy_loss = torch.sum(-F.softmax(logits, dim=-1) * F.log_softmax(logits, dim=-1), dim=-1)
         entropy_loss = torch.where(target_mask, entropy_loss, 0.0)
-        
+
         if self.reduction == "mean":
             z_loss = z_loss.sum() / target_mask.sum()
             entropy_loss = entropy_loss.sum() / target_mask.sum()
@@ -455,7 +455,7 @@ def _test_correctness_with_entropy_loss_with_other_params_once(
         assert torch.allclose(z_output, z_output2, atol=atol, rtol=rtol)
     if return_entropy_loss:
         assert torch.allclose(entropy_output, entropy_output2, atol=atol, rtol=rtol)
-        
+
     loss1 = output + entropy_output if return_entropy_loss else output
     loss2 = output2 + entropy_output2 if return_entropy_loss else output2
 
