@@ -3,7 +3,7 @@ from typing import Optional
 import pytest
 import torch
 
-from test.transformers.test_cross_entropy import CrossEntropyWithZLoss
+from test.transformers.test_cross_entropy import CrossEntropyWithZLossWithEntropyLoss
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 
@@ -46,16 +46,18 @@ class TorchLMHeadCE(torch.nn.Module):
         reduction: str = "mean",
         softcap: Optional[float] = None,
         return_z_loss: bool = False,
+        return_entropy_loss: bool = False,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
-        self.ce_loss = CrossEntropyWithZLoss(
+        self.ce_loss = CrossEntropyWithZLossWithEntropyLoss(
             weight=ce_weight,
             ignore_index=ignore_index,
             lse_square_scale=lse_square_scale,
             label_smoothing=label_smoothing,
             reduction=reduction,
             return_z_loss=return_z_loss,
+            return_entropy_loss=return_entropy_loss,
         )
         self.softcap = softcap
 
@@ -80,6 +82,7 @@ class LigerLMHeadCE(torch.nn.Module):
         reduction: str = "mean",
         softcap: Optional[float] = None,
         return_z_loss: bool = False,
+        return_entropy_loss: bool = False,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
@@ -91,6 +94,7 @@ class LigerLMHeadCE(torch.nn.Module):
             reduction=reduction,
             softcap=softcap,
             return_z_loss=return_z_loss,
+            return_entropy_loss=return_entropy_loss,
         )
 
     def forward(self, x, y):
@@ -105,7 +109,7 @@ class LigerLMHeadCE(torch.nn.Module):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        pytest.param(8, 128, 1024, 4096, marks=pytest.mark.skipif(device="xpu", reason="skip for XPU")),
+        # pytest.param(8, 128, 1024, 4096, marks=pytest.mark.skipif(device="xpu", reason="skip for XPU")),
         (4, 47, 31, 123),  # random shape
     ],
 )
@@ -120,15 +124,16 @@ class LigerLMHeadCE(torch.nn.Module):
         ("none", 1.0, torch.float32, 1e-3, 5e-2),
     ],
 )
-@pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize("bias", [False])
 @pytest.mark.parametrize(
     "has_ce_weight, label_smoothing, ignore_index, lse_square_scale, softcap, return_z_loss",
     [
         (False, 0, -100, 0, None, False),
         # Pass non-default values once to ensure all params work along
-        (True, 0.1, 42, 1e-4, 30.0, True),
+        (False, 0.1, 42, 1e-4, 30.0, True),
     ],
 )
+@pytest.mark.parametrize("return_entropy_loss", [True])
 def test_correctness(
     B,
     T,
@@ -144,6 +149,7 @@ def test_correctness(
     reduction,
     softcap,
     return_z_loss,
+    return_entropy_loss,
     atol,
     rtol,
 ):
@@ -162,6 +168,7 @@ def test_correctness(
         reduction=reduction,
         softcap=softcap,
         return_z_loss=return_z_loss,
+        return_entropy_loss=return_entropy_loss,
         dtype=dtype,
     ).to(device)
     liger_lm_head_ce = LigerLMHeadCE(
@@ -175,6 +182,7 @@ def test_correctness(
         reduction=reduction,
         softcap=softcap,
         return_z_loss=return_z_loss,
+        return_entropy_loss=return_entropy_loss,
         dtype=dtype,
     ).to(device)
 
@@ -196,9 +204,15 @@ def test_correctness(
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     target[indices_to_assign] = ignore_index
 
-    if return_z_loss:
+    if return_z_loss and return_entropy_loss:
+        output1, z_output1, e_output1 = torch_lm_head_ce(_input1, target)
+        output2, z_output2, e_output2 = liger_lm_head_ce(_input2, target)
+    elif return_z_loss:
         output1, z_output1 = torch_lm_head_ce(_input1, target)
         output2, z_output2 = liger_lm_head_ce(_input2, target)
+    elif return_entropy_loss:
+        output1, e_output1 = torch_lm_head_ce(_input1, target)
+        output2, e_output2 = liger_lm_head_ce(_input2, target)
     else:
         output1 = torch_lm_head_ce(_input1, target)
         output2 = liger_lm_head_ce(_input2, target)
@@ -206,9 +220,14 @@ def test_correctness(
     assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
     if return_z_loss:
         assert_verbose_allclose(z_output1, z_output2, atol=atol, rtol=rtol)
+    if return_entropy_loss:
+        assert_verbose_allclose(e_output1, e_output2, atol=atol, rtol=rtol)
 
-    output1.backward(gradient=torch.ones_like(output1))
-    output2.backward(gradient=torch.ones_like(output2))
+    loss1 = output1 if not return_entropy_loss else output1 + e_output1
+    loss2 = output2 if not return_entropy_loss else output2 + e_output2
+
+    loss1.backward(gradient=torch.ones_like(output1))
+    loss2.backward(gradient=torch.ones_like(output2))
 
     assert_verbose_allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
 

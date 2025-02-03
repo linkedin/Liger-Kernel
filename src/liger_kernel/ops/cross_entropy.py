@@ -221,7 +221,8 @@ def liger_cross_entropy_kernel(
             # reduction scale
             if reduction == "mean":
                 X_block = X_block / n_non_ignore
-                dX_entropy_block = dX_entropy_block / n_non_ignore
+                if RETURN_ENTROPY_LOSS:
+                    dX_entropy_block = dX_entropy_block / n_non_ignore
         else:
             weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
             softmax_X = tl.exp(X_block - m) / d
@@ -229,8 +230,6 @@ def liger_cross_entropy_kernel(
                 # Mask for valid columns and non-zero softmax
                 valid_mask = (X_offsets < n_cols) & (softmax_X > 0.0)
                 # derititive of the entropy loss
-                # d_entropy_term = softmax_X * (-tl.log(softmax_X) - entropy_loss)
-                # dX_entropy_block = tl.where(valid_mask, d_entropy_term, 0.0)
                 dX_entropy_block = softmax_X * (-tl.log(softmax_X) - entropy_loss)
             # derivative of original_loss
             dloss_ori = (1 - label_smoothing) * softmax_X
@@ -245,9 +244,10 @@ def liger_cross_entropy_kernel(
             if reduction == "mean":
                 dloss_ori = dloss_ori / sum_non_ignore_weight
                 dloss_smooth = dloss_smooth / sum_non_ignore_weight
-                dX_entropy_block = dX_entropy_block / sum_non_ignore_weight
                 # TODO: Implement weighted z_loss. Currently, z_loss is not scaled by weight.
                 dz_loss = dz_loss / n_non_ignore
+                if RETURN_ENTROPY_LOSS:
+                    dX_entropy_block = dX_entropy_block / sum_non_ignore_weight
             # derivative of total_loss
             X_block = dloss_ori + dloss_smooth + dz_loss
 
