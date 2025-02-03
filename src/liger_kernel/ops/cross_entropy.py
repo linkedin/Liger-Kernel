@@ -54,7 +54,7 @@ def liger_cross_entropy_kernel(
 
     Parameters:
     X_ptr: Pointer to input tensor.
-    dX_entropy_ptr: Pointer to tensor to store the gradient of the input w.r.s. to the entropy loss
+    dX_entropy_ptr: Pointer to tensor to store the gradient of the input w.r.t the entropy loss
     X_stride (int): The stride of the input tensor.
     Y_ptr: Pointer to target tensor.
     Y_stride (int): The stride of the target tensor.
