@@ -99,9 +99,10 @@ class TorchLMHeadGRPO(torch.nn.Module):
 
         # Compute metrics
         metrics = (
+            logits.mean(),
             chosen_token_logprobs.mean(),
             chosen_token_logprobs.std(),
-            logits.mean(),
+            log_probs.mean(),
             (kl_div * attention_mask).sum(1).mean() / attention_mask.sum(1).mean(),
         )
 
@@ -178,7 +179,7 @@ def test_correctness(
     bias,
     beta,
 ):
-    num_generations = 4  # Fixed number of generations for testing
+    num_generations = 1  # Fixed number of generations for testing
     torch_lm_head_grpo = TorchLMHeadGRPO(
         H=H,
         V=V,

@@ -148,7 +148,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
     ):
         """Compute loss for a single chunk."""
         # Get policy log probabilities using chunk_forward
-        log_probs, _, _ = LigerFusedLinearRLHFBase.chunk_forward(input_chunk, weight, bias=bias)
+        log_probs, _, logits_mean = LigerFusedLinearRLHFBase.chunk_forward(input_chunk, weight, bias=bias)
 
         # Get reference log probabilities if needed
         ref_log_probs = None
@@ -165,7 +165,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             beta=beta,
         )
 
-        return chunk_loss, chunk_metrics
+        return chunk_loss, (logits_mean, *chunk_metrics)
 
     @staticmethod
     def chunk_forward(input_chunk, weight, bias=None):
