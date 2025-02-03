@@ -430,7 +430,7 @@ def cross_entropy_backward(_input, dX_entropy_2d, grad_output, grad_output_entro
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32 if not is_hip() else 16,
         )
-    # calculate the gradient of the input w.r.s. to the entropy loss
+    # calculate the gradient of the input w.r.t the entropy loss
     if dX_entropy_2d is not None:
         element_mul_kernel[(n_rows,)](
             dX_entropy_2d,
