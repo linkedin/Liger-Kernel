@@ -18,7 +18,7 @@ device = infer_device()
 set_seed(42)
 
 
-class CrossEntropyWithZLoss(torch.nn.Module):
+class CrossEntropyWithZLossWithEntropyLoss(torch.nn.Module):
     def __init__(
         self,
         weight=None,
@@ -27,6 +27,7 @@ class CrossEntropyWithZLoss(torch.nn.Module):
         ignore_index=-100,
         label_smoothing=0.0,
         return_z_loss=False,
+        return_entropy_loss=False,
         dtype=torch.float32,
     ):
         super().__init__()
@@ -35,6 +36,7 @@ class CrossEntropyWithZLoss(torch.nn.Module):
         self.reduction = reduction
         self.ignore_index = ignore_index
         self.return_z_loss = return_z_loss
+        self.return_entropy_loss = return_entropy_loss
         self.label_smoothing = label_smoothing
         self.dtype = dtype
 
@@ -53,26 +55,41 @@ class CrossEntropyWithZLoss(torch.nn.Module):
             label_smoothing=self.label_smoothing,
             ignore_index=self.ignore_index,
         )
-
         # Compute log-sum-exp term
         lse = torch.logsumexp(logits, dim=-1)
 
         # Z-loss term
         z_loss = torch.where(targets != self.ignore_index, self.lse_square_scale * (lse**2), 0.0)
 
+        # Entropy loss term
+        entropy_loss = torch.sum(-F.softmax(logits, dim=-1) * F.log_softmax(logits, dim=-1), dim=-1)
+        entropy_loss = torch.where(target_mask, entropy_loss, 0.0)
+        
         if self.reduction == "mean":
             z_loss = z_loss.sum() / target_mask.sum()
+            entropy_loss = entropy_loss.sum() / target_mask.sum()
         elif self.reduction == "sum":
             z_loss = z_loss.sum()
+            entropy_loss = entropy_loss.sum()
         else:
             z_loss = z_loss
+            entropy_loss = entropy_loss
+
         ce_loss = ce_loss.to(self.dtype)
         z_loss = z_loss.to(self.dtype)
+        entropy_loss = entropy_loss.to(self.dtype)
 
         # Final loss: cross-entropy loss + Z-loss
+        # Note that the entropy loss is not directly added to the total loss
         total_loss = ce_loss + z_loss
-        if self.return_z_loss:
+
+        # Return the total loss and optionally the z_loss and entropy_loss
+        if self.return_z_loss and self.return_entropy_loss:
+            return total_loss, z_loss, entropy_loss
+        elif self.return_z_loss:
             return total_loss, z_loss
+        elif self.return_entropy_loss:
+            return total_loss, entropy_loss
         else:
             return total_loss
 
@@ -204,7 +221,7 @@ def _test_correctness_with_z_loss_once(
     return_z_loss,
 ):
     torch.manual_seed(0)
-    torch_ce = CrossEntropyWithZLoss(
+    torch_ce = CrossEntropyWithZLossWithEntropyLoss(
         lse_square_scale=lse_square_scale,
         return_z_loss=return_z_loss,
         dtype=dtype,
@@ -250,7 +267,7 @@ def _test_correctness_with_z_loss_with_other_params_once(
     reduction,
 ):
     torch.manual_seed(0)
-    torch_ce = CrossEntropyWithZLoss(
+    torch_ce = CrossEntropyWithZLossWithEntropyLoss(
         lse_square_scale=lse_square_scale,
         return_z_loss=return_z_loss,
         label_smoothing=label_smoothing,
@@ -326,7 +343,7 @@ def _test_correctness_with_weight_with_other_params_once(
     rtol,
 ):
     torch.manual_seed(0)
-    torch_ce = CrossEntropyWithZLoss(
+    torch_ce = CrossEntropyWithZLossWithEntropyLoss(
         weight=weight,
         lse_square_scale=lse_square_scale,
         ignore_index=ignore_index,
@@ -377,6 +394,74 @@ def _test_correctness_not_last_layer_once(target_ce, B, T, V, reduction, scalar,
     loss1.backward(gradient=torch.ones_like(output))
     loss2.backward(gradient=torch.ones_like(output))
     assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
+
+
+def _test_correctness_with_entropy_loss_with_other_params_once(
+    target_ce,
+    B,
+    T,
+    V,
+    scalar,
+    dtype,
+    atol,
+    rtol,
+    lse_square_scale,
+    return_z_loss,
+    return_entropy_loss,
+    label_smoothing,
+    ignore_index,
+    reduction,
+):
+    torch.manual_seed(0)
+    torch_ce = CrossEntropyWithZLossWithEntropyLoss(
+        lse_square_scale=lse_square_scale,
+        return_z_loss=return_z_loss,
+        return_entropy_loss=return_entropy_loss,
+        label_smoothing=label_smoothing,
+        ignore_index=ignore_index,
+        reduction=reduction,
+        dtype=dtype,
+    )
+
+    _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
+    _input = _tensor.detach().clone().requires_grad_(True)
+    _input2 = _tensor.detach().clone().requires_grad_(True)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    # Assign some random number of elements as ignore_index
+    num_elements_to_assign = torch.randint(
+        1, B * T // 2, (1,)
+    ).item()  # Random number of elements to set to ignore_index
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
+    target[indices_to_assign] = ignore_index
+
+    if return_z_loss and return_entropy_loss:
+        output, z_output, entropy_output = torch_ce(_input, target)
+        output2, z_output2, entropy_output2 = target_ce(_input2, target)
+    elif return_z_loss:
+        output, z_output = torch_ce(_input, target)
+        output2, z_output2 = target_ce(_input2, target)
+    elif return_entropy_loss:
+        output, entropy_output = torch_ce(_input, target)
+        output2, entropy_output2 = target_ce(_input2, target)
+    else:
+        output = torch_ce(_input, target)
+        output2 = target_ce(_input2, target)
+
+    assert torch.allclose(output, output2, atol=atol, rtol=rtol)
+
+    if return_z_loss:
+        assert torch.allclose(z_output, z_output2, atol=atol, rtol=rtol)
+    if return_entropy_loss:
+        assert torch.allclose(entropy_output, entropy_output2, atol=atol, rtol=rtol)
+        
+    loss1 = output + entropy_output if return_entropy_loss else output
+    loss2 = output2 + entropy_output2 if return_entropy_loss else output2
+
+    loss1.backward()
+    loss2.backward()
+    assert_verbose_allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
 def _test_correctness_functional(
@@ -815,7 +900,7 @@ def test_correctness_with_weight_with_other_params_once(
 @pytest.mark.parametrize(
     "B, T, V",
     [
-        (2, 4096, 32000),  # llama2, mistral
+        (2, 4096, 32000),  # llama2, mistral, reduce T to 1024 to avoid OOM on torch implementation
         # # weird shapes
         (3, 423, 32000),
     ],
@@ -837,6 +922,83 @@ def test_correctness_with_weight_with_other_params_once(
 def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rtol):
     liger_ce = LigerCrossEntropyLoss(reduction=reduction)
     _test_correctness_not_last_layer_once(liger_ce, B, T, V, reduction, scalar, dtype, atol, rtol)
+
+
+@pytest.mark.parametrize(
+    "B, T, V",
+    [
+        (2, 1024, 32000),  # llama2, mistral
+        # weird shapes
+        (3, 423, 32000),
+    ],
+)
+@pytest.mark.parametrize(
+    "scalar, dtype, atol, rtol",
+    [
+        pytest.param(
+            1.0,
+            torch.bfloat16,
+            1e-8,
+            5e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        (1.0, torch.float32, 1e-8, 1e-6),
+    ],
+)
+@pytest.mark.parametrize(
+    "return_z_loss, lse_square_scale",
+    [
+        (True, 1e-4),
+        (False, 1e-5),
+    ],
+)
+@pytest.mark.parametrize(
+    "label_smoothing, ignore_index, reduction",
+    [
+        (0.1, 42, "mean"),
+        (0.2, -42, "sum"),
+    ],
+)
+@pytest.mark.parametrize("return_entropy_loss", [True])
+def test_correctness_with_entropy_loss_with_other_params_once(
+    B,
+    T,
+    V,
+    scalar,
+    dtype,
+    atol,
+    rtol,
+    lse_square_scale,
+    return_z_loss,
+    return_entropy_loss,
+    label_smoothing,
+    ignore_index,
+    reduction,
+):
+    test_ce = LigerCrossEntropyLoss(
+        lse_square_scale=lse_square_scale,
+        return_z_loss=return_z_loss,
+        return_entropy_loss=return_entropy_loss,
+        label_smoothing=label_smoothing,
+        ignore_index=ignore_index,
+        reduction=reduction,
+    )
+    _test_correctness_with_entropy_loss_with_other_params_once(
+        test_ce,
+        B,
+        T,
+        V,
+        scalar,
+        dtype,
+        atol,
+        rtol,
+        lse_square_scale,
+        return_z_loss,
+        return_entropy_loss,
+        label_smoothing,
+        ignore_index,
+        reduction,
+    )
 
 
 def test_float32_internal():

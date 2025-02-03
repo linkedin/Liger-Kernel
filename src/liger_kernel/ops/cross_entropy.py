@@ -148,6 +148,27 @@ def liger_cross_entropy_kernel(
     #                    = log (e^(max(X)) * sum(e ^ (X_i - max(X))))
     #                    = max(X) + log (sum(e ^ (X_i - max(X)))) = m + log d
     lse = m + tl.log(d)
+    
+    # 3.5 Calculate the entropy loss
+    if RETURN_ENTROPY_LOSS:
+        for i in range(0, n_cols, BLOCK_SIZE):
+            X_offsets = i + tl.arange(0, BLOCK_SIZE)
+            X_block = tl.load(
+                X_ptr + X_offsets,
+                mask=X_offsets < n_cols,
+                other=float("-inf"),
+                # Ensure float32 precision for softmax calculation
+            ).cast(tl.float32)
+            if HAS_SOFTCAPPING:
+                intermediate = tanh(X_block / softcap)
+                X_block = softcap * intermediate
+            
+            softmax_X = tl.exp(X_block - m) / d
+            # Mask for valid columns and non-zero softmax
+            valid_mask = (X_offsets < n_cols) & (softmax_X > 0.0)
+            entropy_term = tl.where(valid_mask, -softmax_X * tl.log(softmax_X), 0.0)
+            entropy_loss += tl.sum(entropy_term)
+
 
     # 4. [Online Softmax] Second pass: compute gradients
     # For 'mean' reduction, gradients are normalized by number of non-ignored elements (N)
@@ -188,10 +209,10 @@ def liger_cross_entropy_kernel(
             # softmax(x_i)
             X_block = tl.exp(X_block - m) / d
             if RETURN_ENTROPY_LOSS:
-                # entropy loss term
-                entropy_loss += tl.sum(-X_block * tl.log(X_block))
+                # Mask for valid columns and non-zero softmax
+                valid_mask = (X_offsets < n_cols) & (X_block > 0.0)
                 # derivatives of the entropy loss term
-                dX_entropy_block += -(tl.log(X_block) + 1)
+                dX_entropy_block = X_block * (-tl.log(X_block) - entropy_loss)
             # derivative of z-loss: 2 * lse_square_scale * lse * softmax(x_i)
             X_block += 2 * lse_square_scale * lse * X_block
             # smoothing term
@@ -201,14 +222,17 @@ def liger_cross_entropy_kernel(
             # reduction scale
             if reduction == "mean":
                 X_block = X_block / n_non_ignore
+                dX_entropy_block = dX_entropy_block / n_non_ignore       
         else:
             weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
             softmax_X = tl.exp(X_block - m) / d
             if RETURN_ENTROPY_LOSS:
-                # entropy loss term
-                entropy_loss += tl.sum(-softmax_X * tl.log(softmax_X))
+                # Mask for valid columns and non-zero softmax
+                valid_mask = (X_offsets < n_cols) & (softmax_X > 0.0)
                 # derititive of the entropy loss
-                dX_entropy_block = -(tl.log(softmax_X) + 1) * weight_block
+                # d_entropy_term = softmax_X * (-tl.log(softmax_X) - entropy_loss)
+                # dX_entropy_block = tl.where(valid_mask, d_entropy_term, 0.0)
+                dX_entropy_block = softmax_X * (-tl.log(softmax_X) - entropy_loss)
             # derivative of original_loss
             dloss_ori = (1 - label_smoothing) * softmax_X
             # specially handle dx_y
@@ -222,6 +246,7 @@ def liger_cross_entropy_kernel(
             if reduction == "mean":
                 dloss_ori = dloss_ori / sum_non_ignore_weight
                 dloss_smooth = dloss_smooth / sum_non_ignore_weight
+                dX_entropy_block = dX_entropy_block / sum_non_ignore_weight
                 # TODO: Implement weighted z_loss. Currently, z_loss is not scaled by weight.
                 dz_loss = dz_loss / n_non_ignore
             # derivative of total_loss
@@ -406,7 +431,6 @@ def cross_entropy_backward(_input, dX_entropy_2d, grad_output, grad_output_entro
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32 if not is_hip() else 16,
         )
-
     # calculate the gradient of the input w.r.s. to the entropy loss
     if dX_entropy_2d is not None:
         element_mul_kernel[(n_rows,)](
