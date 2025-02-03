@@ -27,9 +27,11 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         else:
             ref_token_logprobs = chosen_token_logprobs.detach()
 
-        # Compute advantages
-        mean_grouped_rewards = rewards.mean()
-        std_grouped_rewards = rewards.std()
+        # Compute advantages per batch entry in a grouped fashion
+        mean_grouped_rewards = rewards.mean()  # [batch_size,]
+        std_grouped_rewards = rewards.std()  # [batch_size,]
+
+        # Calculate advantages using the same epsilon as in GRPOTrainer
         advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-8)
 
         # Compute policy gradient loss with importance sampling ratio
@@ -74,6 +76,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         beta=0.1,
         compiled=True,
         use_ref_model=True,
+        num_generations=1,
     ):
         return LigerFusedLinearRLHFBase.forward(
             ctx=ctx,
@@ -89,6 +92,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             beta=beta,
             compiled=compiled,
             use_ref_model=use_ref_model,
+            num_generations=num_generations,
         )
 
     @staticmethod
@@ -109,6 +113,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             None,  # grad_beta
             None,  # grad_compiled
             None,  # grad_use_ref_model
+            None,  # grad_num_generations
         )
 
 
@@ -120,11 +125,13 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         beta: float = 0.1,
         compiled: bool = True,
         use_ref_model: bool = True,
+        num_generations: int = 1,
     ):
         super().__init__()
         self.beta = beta
         self.compiled = compiled
         self.use_ref_model = use_ref_model
+        self.num_generations = num_generations
 
     def forward(
         self,
@@ -149,4 +156,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.beta,
             self.compiled,
             self.use_ref_model,
+            self.num_generations,
         )

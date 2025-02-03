@@ -21,24 +21,29 @@ class TorchLMHeadGRPO(torch.nn.Module):
         dtype: torch.dtype,
         bias: bool = False,
         beta: float = 0.1,
+        num_generations: int = 4,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.beta = beta
+        self.num_generations = num_generations
 
     def forward(
         self,
-        x,
-        attention_mask,
-        rewards,
-        ref_input=None,
+        x,  # Shape: [batch_size*num_generations, seq_len, hidden_size]
+        attention_mask,  # Shape: [batch_size*num_generations, seq_len]
+        rewards,  # Shape: [batch_size*num_generations,]
+        ref_input=None,  # Shape: [batch_size*num_generations, seq_len, hidden_size]
         ref_weight=None,
         ref_bias=None,
     ):
         # Forward pass through linear layer
-        batch_size, seq_len, hidden_size = x.shape
+        batch_size = x.shape[0] // self.num_generations  # Get true batch size
+        seq_len = x.shape[1]
+        hidden_size = x.shape[2]
+
         input_reshaped = x.view(-1, hidden_size)
-        logits = (input_reshaped @ self.lin.weight.t()).view(batch_size, seq_len, -1)
+        logits = (input_reshaped @ self.lin.weight.t()).view(batch_size * self.num_generations, seq_len, -1)
         if self.lin.bias is not None:
             logits = logits + self.lin.bias
 
@@ -53,7 +58,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         if ref_input is not None and ref_weight is not None:
             with torch.no_grad():
                 ref_input_reshaped = ref_input.view(-1, ref_input.size(-1))
-                ref_logits = (ref_input_reshaped @ ref_weight.t()).view(batch_size, seq_len, -1)
+                ref_logits = (ref_input_reshaped @ ref_weight.t()).view(batch_size * self.num_generations, seq_len, -1)
                 if ref_bias is not None:
                     ref_logits = ref_logits + ref_bias
                 ref_log_probs = F.log_softmax(ref_logits, dim=-1)
@@ -61,28 +66,36 @@ class TorchLMHeadGRPO(torch.nn.Module):
         else:
             ref_token_logprobs = chosen_token_logprobs.detach()
 
-        # Compute advantages (exactly as in GRPOTrainer)
-        mean_grouped_rewards = rewards.mean()
-        std_grouped_rewards = rewards.std()
-        advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-8)
-
-        # Compute policy gradient loss with importance sampling ratio
-        ratio = torch.exp(chosen_token_logprobs - chosen_token_logprobs.detach())
-        policy_loss = -ratio * advantages.unsqueeze(1)
-
-        # Compute KL penalty
+        # Compute KL divergence between model and reference model
         kl_div = (
             torch.exp(ref_token_logprobs - chosen_token_logprobs) - (ref_token_logprobs - chosen_token_logprobs) - 1.0
         )
 
-        # Combine losses
-        per_token_loss = policy_loss + self.beta * kl_div
+        # Compute advantages per batch entry in a grouped fashion
+        # rewards shape: [batch_size, num_generations]
+        mean_grouped_rewards = rewards.view(batch_size, self.num_generations).mean(
+            dim=1, keepdim=True
+        )  # [batch_size, 1]
+        std_grouped_rewards = rewards.view(batch_size, self.num_generations).std(dim=1, keepdim=True)  # [batch_size, 1]
+
+        # Expand means and stds to match the number of generations
+        mean_grouped_rewards = mean_grouped_rewards.expand(-1, self.num_generations).reshape(
+            -1
+        )  # [batch_size * num_generations]
+        std_grouped_rewards = std_grouped_rewards.expand(-1, self.num_generations).reshape(
+            -1
+        )  # [batch_size * num_generations]
+
+        # Calculate advantages using the same epsilon as in GRPOTrainer
+        rewards_flat = rewards.view(-1)  # [batch_size * num_generations]
+        advantages = (rewards_flat - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
+
+        # Compute policy gradient loss with importance sampling ratio
+        per_token_loss = torch.exp(chosen_token_logprobs - chosen_token_logprobs.detach()) * advantages.unsqueeze(1)
+        per_token_loss = -(per_token_loss - self.beta * kl_div)
 
         # Apply masking and normalize
-        masked_loss = per_token_loss * attention_mask
-        seq_lengths = attention_mask.sum(dim=1, keepdim=True)
-        seq_lengths = torch.clamp(seq_lengths, min=1.0)
-        loss = (masked_loss.sum(dim=1) / seq_lengths.squeeze(-1)).mean()
+        loss = ((per_token_loss * attention_mask).sum(dim=1) / attention_mask.sum(dim=1)).mean()
 
         # Compute metrics
         metrics = (
@@ -103,11 +116,13 @@ class LigerLMHeadGRPO(torch.nn.Module):
         dtype: torch.dtype,
         bias: bool = False,
         beta: float = 0.1,
+        num_generations: int = 4,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.grpo_loss = LigerFusedLinearGRPOFunction.apply
         self.beta = beta
+        self.num_generations = num_generations
 
     def forward(
         self,
@@ -131,6 +146,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
             self.beta,  # beta
             True,  # compiled
             ref_input is not None,  # use_ref_model
+            self.num_generations,  # num_generations
         )
 
 
@@ -162,12 +178,14 @@ def test_correctness(
     bias,
     beta,
 ):
+    num_generations = 4  # Fixed number of generations for testing
     torch_lm_head_grpo = TorchLMHeadGRPO(
         H=H,
         V=V,
         dtype=dtype,
         bias=bias,
         beta=beta,
+        num_generations=num_generations,
     )
     liger_lm_head_grpo = LigerLMHeadGRPO(
         H=H,
@@ -175,6 +193,7 @@ def test_correctness(
         dtype=dtype,
         bias=bias,
         beta=beta,
+        num_generations=num_generations,
     )
 
     # Initialize weights
@@ -184,22 +203,22 @@ def test_correctness(
     if bias:
         torch_lm_head_grpo.lin.bias.data = liger_lm_head_grpo.lin.bias.data = torch.randn(V, device=device, dtype=dtype)
 
-    # Create inputs
-    _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
+    # Create inputs with shape [B*num_generations, T, H]
+    _input = torch.randn(B * num_generations, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
 
-    # Create attention mask with random padding
-    attention_mask = torch.ones(B, T, device=device)
-    num_elements_to_mask = torch.randint(1, B * T // 2, (1,)).item()
-    mask_indices = torch.randperm(B * T)[:num_elements_to_mask]
+    # Create attention mask with random padding [B*num_generations, T]
+    attention_mask = torch.ones(B * num_generations, T, device=device)
+    num_elements_to_mask = torch.randint(1, B * num_generations * T // 2, (1,)).item()
+    mask_indices = torch.randperm(B * num_generations * T)[:num_elements_to_mask]
     attention_mask.view(-1)[mask_indices] = 0
 
-    # Create rewards with random values
-    rewards = torch.randn(B, device=device, dtype=dtype)
+    # Create rewards with shape [B, num_generations]
+    rewards = torch.randn(B * num_generations, device=device, dtype=dtype)
 
-    # Create reference inputs (optional)
-    ref_input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
+    # Create reference inputs (optional) with shape [B*num_generations, T, H]
+    ref_input = torch.randn(B * num_generations, T, H, device=device, dtype=dtype) * scalar
     ref_weight = torch.randn(V, H, device=device, dtype=dtype)
     ref_bias = torch.randn(V, device=device, dtype=dtype) if bias else None
 
