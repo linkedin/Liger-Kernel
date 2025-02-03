@@ -206,12 +206,13 @@ def liger_cross_entropy_kernel(
         # valid mask for the entropy loss
         valid_mask = X_offsets < n_cols
 
+        softmax_X = tl.exp(X_block - m) / d
         if not HAS_WEIGHT:
             # softmax(x_i)
-            X_block = tl.exp(X_block - m) / d
+            X_block = softmax_X
             if RETURN_ENTROPY_LOSS:
                 # derivatives of the entropy loss term
-                dX_entropy_block = tl.where(valid_mask, X_block * (-tl.log(X_block) - entropy_loss), 0.0)
+                dX_entropy_block = X_block * (-tl.log(X_block) - entropy_loss)
             # derivative of z-loss: 2 * lse_square_scale * lse * softmax(x_i)
             X_block += 2 * lse_square_scale * lse * X_block
             # smoothing term
@@ -222,10 +223,9 @@ def liger_cross_entropy_kernel(
             if reduction == "mean":
                 X_block = X_block / n_non_ignore
                 if RETURN_ENTROPY_LOSS:
-                    dX_entropy_block = tl.where(valid_mask, dX_entropy_block / n_non_ignore, 0.0)
+                    dX_entropy_block = dX_entropy_block / n_non_ignore
         else:
             weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
-            softmax_X = tl.exp(X_block - m) / d
             if RETURN_ENTROPY_LOSS:
                 # derititive of the entropy loss
                 dX_entropy_block = softmax_X * (-tl.log(softmax_X) - entropy_loss)
@@ -299,8 +299,10 @@ def liger_cross_entropy_kernel(
             loss = loss / n_non_ignore
         # TODO: Implement weighted z_loss. Currently, z_loss is not scaled by weight.
         z_loss = z_loss / n_non_ignore
-        # TODO: Implement weighted entropy loss. Currently, entropy loss is not scaled by weight.
-        entropy_loss = entropy_loss / n_non_ignore
+        if HAS_WEIGHT:
+            entropy_loss = entropy_loss / sum_non_ignore_weight
+        else:
+            entropy_loss = entropy_loss / n_non_ignore
 
     loss += z_loss
 
