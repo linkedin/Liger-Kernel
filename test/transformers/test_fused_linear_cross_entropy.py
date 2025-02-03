@@ -109,7 +109,7 @@ class LigerLMHeadCE(torch.nn.Module):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        # pytest.param(8, 128, 1024, 4096, marks=pytest.mark.skipif(device="xpu", reason="skip for XPU")),
+        pytest.param(8, 128, 1024, 4096, marks=pytest.mark.skipif(device="xpu", reason="skip for XPU")),
         (4, 47, 31, 123),  # random shape
     ],
 )
@@ -124,16 +124,16 @@ class LigerLMHeadCE(torch.nn.Module):
         ("none", 1.0, torch.float32, 1e-3, 5e-2),
     ],
 )
-@pytest.mark.parametrize("bias", [False])
+@pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize(
     "has_ce_weight, label_smoothing, ignore_index, lse_square_scale, softcap, return_z_loss",
     [
-        (False, 0, -100, 0, None, False),
+        (True, 0, -100, 0, None, False),
         # Pass non-default values once to ensure all params work along
         (False, 0.1, 42, 1e-4, 30.0, True),
     ],
 )
-@pytest.mark.parametrize("return_entropy_loss", [True])
+@pytest.mark.parametrize("return_entropy_loss", [True, False])
 def test_correctness(
     B,
     T,
