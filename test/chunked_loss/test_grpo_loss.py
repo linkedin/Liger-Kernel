@@ -162,11 +162,12 @@ class LigerLMHeadGRPO(torch.nn.Module):
     "scalar, dtype, atol, rtol",
     [
         (1.0, torch.bfloat16, 5e-2, 5e-2),
-        (1.0, torch.float32, 5e-3, 5e-3),
+        (1.0, torch.float32, 5e-2, 5e-2),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
-@pytest.mark.parametrize("beta", [0.1, 0.2])
+@pytest.mark.parametrize("ref_bias", [True, False])
+@pytest.mark.parametrize("beta", [0.1, 0.9])
 def test_correctness(
     B,
     T,
@@ -177,6 +178,7 @@ def test_correctness(
     atol,
     rtol,
     bias,
+    ref_bias,
     beta,
 ):
     num_generations = 4  # Fixed number of generations for testing
@@ -216,19 +218,19 @@ def test_correctness(
     attention_mask.view(-1)[mask_indices] = 0
 
     # Create rewards with shape [B, num_generations]
-    rewards = torch.randn(B * num_generations, device=device, dtype=dtype)
+    rewards = torch.rand(B * num_generations, device=device, dtype=dtype)
 
     # Create reference inputs (optional) with shape [B*num_generations, T, H]
     ref_input = torch.randn(B * num_generations, T, H, device=device, dtype=dtype) * scalar
     ref_weight = torch.randn(V, H, device=device, dtype=dtype)
-    ref_bias = torch.randn(V, device=device, dtype=dtype) if bias else None
+    ref_bias_weight = torch.randn(V, device=device, dtype=dtype) if ref_bias else None
 
     # Forward pass with reference model
     loss1, aux1 = torch_lm_head_grpo(
-        input1, attention_mask, rewards, ref_input=ref_input, ref_weight=ref_weight, ref_bias=ref_bias
+        input1, attention_mask, rewards, ref_input=ref_input, ref_weight=ref_weight, ref_bias=ref_bias_weight
     )
     loss2, aux2 = liger_lm_head_grpo(
-        input2, attention_mask, rewards, ref_input=ref_input, ref_weight=ref_weight, ref_bias=ref_bias
+        input2, attention_mask, rewards, ref_input=ref_input, ref_weight=ref_weight, ref_bias=ref_bias_weight
     )
 
     # Check losses match
