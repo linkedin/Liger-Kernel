@@ -61,6 +61,81 @@ def _patch_layer_norm_module(module, eps=1e-6):
     _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
 
 
+def apply_liger_kernel_to_granite(
+    rope: bool = True,
+    cross_entropy: bool = True,
+    fused_linear_cross_entropy: bool = False,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Granite 3 models
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is False.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+
+
+
+    Debugging notes:
+        If LigerSwiGLUMLP is OK for Llama, it should be fine for Granite, but it's not.
+    """
+
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.granite import modeling_granite
+    from transformers.models.granite.modeling_granite import GraniteModel
+
+    if swiglu:
+        modeling_granite.GraniteMLP = LigerSwiGLUMLP
+
+    if rms_norm:
+        modeling_granite.GraniteRMSNorm = LigerRMSNorm
+
+    if rope:
+        modeling_granite.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if cross_entropy:
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_granite.CrossEntropyLoss = LigerCrossEntropyLoss
+
+    if fused_linear_cross_entropy:
+        print("Fused LinearCrossEntropy is not implemented for Granite models")
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules (e.g. GraniteRMSNorm or GraniteMLP)
+
+        # get the base model from the model instance
+        base_model: GraniteModel = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 def apply_liger_kernel_to_llama(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -85,9 +160,9 @@ def apply_liger_kernel_to_llama(
         loaded. Default is None.
     """
 
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.llama import modeling_llama
     from transformers.models.llama.modeling_llama import LlamaModel
@@ -159,9 +234,9 @@ def apply_liger_kernel_to_mllama(
         loaded. Default is None.
     """
 
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.mllama import modeling_mllama
     from transformers.models.mllama.modeling_mllama import MllamaForCausalLM
@@ -261,9 +336,9 @@ def apply_liger_kernel_to_mistral(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.mistral import modeling_mistral
     from transformers.models.mistral.modeling_mistral import MistralModel
@@ -321,9 +396,9 @@ def apply_liger_kernel_to_mixtral(
         loaded. Default is None.
     """
 
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.mixtral import modeling_mixtral
     from transformers.models.mixtral.modeling_mixtral import MixtralModel
@@ -393,9 +468,9 @@ def apply_liger_kernel_to_gemma(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.gemma import modeling_gemma
     from transformers.models.gemma.modeling_gemma import GemmaModel
@@ -467,9 +542,9 @@ def apply_liger_kernel_to_gemma2(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.gemma2 import modeling_gemma2
     from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
@@ -544,9 +619,9 @@ def apply_liger_kernel_to_qwen2(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.qwen2 import modeling_qwen2
     from transformers.models.qwen2.modeling_qwen2 import Qwen2Model
@@ -619,9 +694,9 @@ def apply_liger_kernel_to_qwen2_vl(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.qwen2_vl import modeling_qwen2_vl
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModel
@@ -689,9 +764,9 @@ def apply_liger_kernel_to_phi3(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.phi3 import modeling_phi3
     from transformers.models.phi3.modeling_phi3 import Phi3Model
@@ -740,6 +815,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
     "llama": apply_liger_kernel_to_llama,
+    "granite": apply_liger_kernel_to_granite,
     "mllama": apply_liger_kernel_to_mllama,
     "mllama_text_model": apply_liger_kernel_to_mllama,
     "mistral": apply_liger_kernel_to_mistral,
