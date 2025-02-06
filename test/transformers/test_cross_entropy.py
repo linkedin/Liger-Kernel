@@ -456,8 +456,8 @@ def _test_correctness_with_entropy_loss_with_other_params_once(
     if return_entropy_loss:
         assert torch.allclose(entropy_output, entropy_output2, atol=atol, rtol=rtol)
 
-    loss1 = 2 * output + 3 * entropy_output if return_entropy_loss else 2 * output
-    loss2 = 2 * output2 + 3 * entropy_output2 if return_entropy_loss else 2 * output2
+    loss1 = 3.0989439 * entropy_output if return_entropy_loss else 3.0 * output
+    loss2 = 3.0989439 * entropy_output2 if return_entropy_loss else 3.0 * output2
 
     loss1.backward()
     loss2.backward()

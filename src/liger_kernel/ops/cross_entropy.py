@@ -150,8 +150,8 @@ def liger_cross_entropy_kernel(
     lse = m + tl.log(d)
 
     # 3.5 Calculate the entropy loss
+    sum_p_x = 0.0  # sum of softmax(x_i) * x_i
     if RETURN_ENTROPY_LOSS:
-        sum_p_x = 0.0  # sum of softmax(x_i) * x_i
         for i in range(0, n_cols, BLOCK_SIZE):
             X_offsets = i + tl.arange(0, BLOCK_SIZE)
             X_block = tl.load(
@@ -166,7 +166,7 @@ def liger_cross_entropy_kernel(
 
             softmax_X = tl.exp(X_block - m) / d
             # Cumulate the sum of softmax(x_i) * x_i
-            sum_p_x += tl.sum(tl.where(X_offsets < n_cols, tl.math.fma(softmax_X, X_block, 0.0), 0.0))
+            sum_p_x += tl.sum(tl.where(X_offsets < n_cols, softmax_X * X_block, 0.0))
 
         entropy_loss = lse - sum_p_x
 
@@ -197,6 +197,9 @@ def liger_cross_entropy_kernel(
             intermediate = tanh(X_block / softcap)
             X_block = softcap * intermediate
 
+        # Calculate the softmax of the input
+        softmax_X = tl.exp(X_block - m) / d
+
         # load the derivatives of the entropy loss
         if RETURN_ENTROPY_LOSS:
             dX_entropy_block = tl.load(
@@ -205,9 +208,6 @@ def liger_cross_entropy_kernel(
                 other=0.0,
             ).cast(tl.float32)
 
-        # Calculate the softmax of the input
-        softmax_X = tl.exp(X_block - m) / d
-        if RETURN_ENTROPY_LOSS:
             # derivatives of the entropy loss term
             dX_entropy_block = softmax_X * sum_p_x - softmax_X * X_block
             # Note that the weight is only applied to ce loss, not for entropy loss.
@@ -429,15 +429,16 @@ def cross_entropy_backward(_input, dX_entropy_2d, grad_output, grad_output_entro
         )
     # calculate the gradient of the input w.r.t the entropy loss
     if dX_entropy_2d is not None:
-        element_mul_kernel[(n_rows,)](
-            dX_entropy_2d,
-            dX_entropy_2d.stride(-2),
-            grad_output_entropy,
-            V,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=32 if not is_hip() else 16,
-        )
-        _input += dX_entropy_2d
+        if not torch.equal(grad_output_entropy, torch.tensor(1.0, device=grad_output_entropy.device)):
+            element_mul_kernel[(n_rows,)](
+                dX_entropy_2d,
+                dX_entropy_2d.stride(-2),
+                grad_output_entropy,
+                V,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=32 if not is_hip() else 16,
+            )
+        _input = dX_entropy_2d + _input
 
     return _input
 
@@ -524,6 +525,8 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             (_input, dX_entropy_2d) = ctx.saved_tensors
         else:
             (_input,), dX_entropy_2d = ctx.saved_tensors, None
+
+        print(grad_output, grad_ouput3)
 
         _input = cross_entropy_backward(_input, dX_entropy_2d, grad_output, grad_ouput3)
 
