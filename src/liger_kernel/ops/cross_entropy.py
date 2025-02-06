@@ -203,7 +203,7 @@ def liger_cross_entropy_kernel(
                 dX_entropy_ptr + X_offsets,
                 mask=X_offsets < n_cols,
                 other=0.0,
-            )
+            ).cast(tl.float32)
 
         # Calculate the softmax of the input
         softmax_X = tl.exp(X_block - m) / d
