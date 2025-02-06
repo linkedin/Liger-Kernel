@@ -206,7 +206,7 @@ def liger_cross_entropy_kernel(
         # valid mask for the entropy loss
         valid_mask = X_offsets < n_cols
 
-        softmax_X = tl.exp(X_block - m) / d 
+        softmax_X = tl.exp(X_block - m) / d
         if RETURN_ENTROPY_LOSS:
             # derivatives of the entropy loss term
             dX_entropy_block = softmax_X * (-tl.log(softmax_X) - entropy_loss)
