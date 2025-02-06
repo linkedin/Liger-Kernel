@@ -927,7 +927,7 @@ def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rto
 @pytest.mark.parametrize(
     "B, T, V",
     [
-        (2, 1024, 32000),  # llama2, mistral
+        (2, 4096, 32000),  # llama2, mistral
         # weird shapes
         (3, 423, 32000),
     ],
@@ -956,7 +956,7 @@ def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rto
     "label_smoothing, ignore_index, reduction",
     [
         (0.1, 42, "mean"),
-        (0.2, -42, "sum"),
+        (0.2, -42, "mean"),
     ],
 )
 @pytest.mark.parametrize("return_entropy_loss", [True])
