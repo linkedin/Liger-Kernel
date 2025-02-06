@@ -206,13 +206,13 @@ def liger_cross_entropy_kernel(
         # valid mask for the entropy loss
         valid_mask = X_offsets < n_cols
 
-        softmax_X = tl.exp(X_block - m) / d
+        softmax_X = tl.exp(X_block - m) / d 
+        if RETURN_ENTROPY_LOSS:
+            # derivatives of the entropy loss term
+            dX_entropy_block = softmax_X * (-tl.log(softmax_X) - entropy_loss)
         if not HAS_WEIGHT:
             # softmax(x_i)
             X_block = softmax_X
-            if RETURN_ENTROPY_LOSS:
-                # derivatives of the entropy loss term
-                dX_entropy_block = X_block * (-tl.log(X_block) - entropy_loss)
             # derivative of z-loss: 2 * lse_square_scale * lse * softmax(x_i)
             X_block += 2 * lse_square_scale * lse * X_block
             # smoothing term
@@ -226,9 +226,6 @@ def liger_cross_entropy_kernel(
                     dX_entropy_block = dX_entropy_block / n_non_ignore
         else:
             weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
-            if RETURN_ENTROPY_LOSS:
-                # derititive of the entropy loss
-                dX_entropy_block = softmax_X * (-tl.log(softmax_X) - entropy_loss)
             # derivative of original_loss
             dloss_ori = (1 - label_smoothing) * softmax_X
             # specially handle dx_y
@@ -245,7 +242,8 @@ def liger_cross_entropy_kernel(
                 # TODO: Implement weighted z_loss. Currently, z_loss is not scaled by weight.
                 dz_loss = dz_loss / n_non_ignore
                 if RETURN_ENTROPY_LOSS:
-                    dX_entropy_block = dX_entropy_block / sum_non_ignore_weight
+                    # Note that the weight is only applied to ce loss, not for entropy loss.
+                    dX_entropy_block = dX_entropy_block / n_non_ignore
             # derivative of total_loss
             X_block = dloss_ori + dloss_smooth + dz_loss
 
@@ -253,6 +251,8 @@ def liger_cross_entropy_kernel(
         # d(softcap * tanh(x / softcap)) = (1 - tanh^2(x / softcap))
         if HAS_SOFTCAPPING:
             X_block = X_block * (1 - intermediate * intermediate)
+            if RETURN_ENTROPY_LOSS:
+                dX_entropy_block = dX_entropy_block * (1 - intermediate * intermediate)
 
         tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
         if RETURN_ENTROPY_LOSS:
@@ -299,10 +299,8 @@ def liger_cross_entropy_kernel(
             loss = loss / n_non_ignore
         # TODO: Implement weighted z_loss. Currently, z_loss is not scaled by weight.
         z_loss = z_loss / n_non_ignore
-        if HAS_WEIGHT:
-            entropy_loss = entropy_loss / sum_non_ignore_weight
-        else:
-            entropy_loss = entropy_loss / n_non_ignore
+        # Note that the weight is only applied to ce loss, not for entropy loss.
+        entropy_loss = entropy_loss / n_non_ignore
 
     loss += z_loss
 
