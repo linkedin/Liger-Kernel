@@ -85,9 +85,9 @@ def apply_liger_kernel_to_llama(
         loaded. Default is None.
     """
 
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.llama import modeling_llama
     from transformers.models.llama.modeling_llama import LlamaModel
@@ -159,9 +159,9 @@ def apply_liger_kernel_to_mllama(
         loaded. Default is None.
     """
 
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.mllama import modeling_mllama
     from transformers.models.mllama.modeling_mllama import MllamaForCausalLM
@@ -261,9 +261,9 @@ def apply_liger_kernel_to_mistral(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.mistral import modeling_mistral
     from transformers.models.mistral.modeling_mistral import MistralModel
@@ -321,9 +321,9 @@ def apply_liger_kernel_to_mixtral(
         loaded. Default is None.
     """
 
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.mixtral import modeling_mixtral
     from transformers.models.mixtral.modeling_mixtral import MixtralModel
@@ -393,9 +393,9 @@ def apply_liger_kernel_to_gemma(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.gemma import modeling_gemma
     from transformers.models.gemma.modeling_gemma import GemmaModel
@@ -467,9 +467,9 @@ def apply_liger_kernel_to_gemma2(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.gemma2 import modeling_gemma2
     from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
@@ -544,9 +544,9 @@ def apply_liger_kernel_to_qwen2(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.qwen2 import modeling_qwen2
     from transformers.models.qwen2.modeling_qwen2 import Qwen2Model
@@ -619,9 +619,9 @@ def apply_liger_kernel_to_qwen2_vl(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.qwen2_vl import modeling_qwen2_vl
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModel
@@ -689,9 +689,9 @@ def apply_liger_kernel_to_phi3(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (
-        cross_entropy and fused_linear_cross_entropy
-    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
 
     from transformers.models.phi3 import modeling_phi3
     from transformers.models.phi3.modeling_phi3 import Phi3Model

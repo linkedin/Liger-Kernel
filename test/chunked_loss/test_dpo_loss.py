@@ -56,7 +56,7 @@ class HFDPOLoss(HFAlignmentLoss):
         chosen_logratios = policy_chosen_logps - ref_chosen_logps
         rejected_logratios = policy_rejected_logps - ref_rejected_logps
 
-        chosen_rewards = self.beta * (policy_chosen_logps - ref_chosen_logps)   
+        chosen_rewards = self.beta * (policy_chosen_logps - ref_chosen_logps)
         rejected_rewards = self.beta * (policy_rejected_logps - ref_rejected_logps)
 
         logits_diff = self.beta * (chosen_logratios - rejected_logratios)
