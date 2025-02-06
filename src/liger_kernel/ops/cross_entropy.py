@@ -209,8 +209,7 @@ def liger_cross_entropy_kernel(
         softmax_X = tl.exp(X_block - m) / d
         if RETURN_ENTROPY_LOSS:
             # derivatives of the entropy loss term
-            log_softmax_X_plus_entropy = X_block - m - tl.log(d) + entropy_loss
-            dX_entropy_block = tl.math.fma(softmax_X, -log_softmax_X_plus_entropy, 0.0)
+            dX_entropy_block = softmax_X * sum_p_x - softmax_X * X_block
             # Note that the weight is only applied to ce loss, not for entropy loss.
             if reduction == "mean":
                 dX_entropy_block = dX_entropy_block / n_non_ignore
