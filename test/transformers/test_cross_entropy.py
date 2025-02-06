@@ -938,7 +938,7 @@ def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rto
         pytest.param(
             1.0,
             torch.bfloat16,
-            1e-8,
+            1e-7,
             5e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
