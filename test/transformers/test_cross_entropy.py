@@ -956,7 +956,7 @@ def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rto
     "label_smoothing, ignore_index, reduction",
     [
         (0.1, 42, "mean"),
-        (0.2, -42, "mean"),
+        (0.2, -42, "sum"),
     ],
 )
 @pytest.mark.parametrize("return_entropy_loss", [True])
