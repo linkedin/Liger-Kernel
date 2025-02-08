@@ -309,6 +309,7 @@ loss.backward()
 
 ## Sponsorship and Collaboration
 
+- [Glows.ai](https://platform.glows.ai/): Sponsoring NVIDIA GPUs for our open source developers.
 - [AMD](https://www.amd.com/en.html): Providing AMD GPUs for our AMD CI.
 - [Intel](https://www.intel.com/): Providing Intel GPUs for our Intel CI.
 - [Modal](https://modal.com/): Free 3000 credits from GPU MODE IRL for our NVIDIA CI.
