@@ -9,8 +9,8 @@ from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
 
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
-from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
+from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from test.utils import FAKE_CONFIGS_PATH
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
@@ -18,8 +18,8 @@ from test.utils import assert_verbose_allclose
 from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
 from test.utils import revert_liger_kernel_to_mllama
-from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
+from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 from test.utils import train_bpe_tokenizer
@@ -185,7 +185,7 @@ if QWEN2_VL_AVAILABLE:
 
 if QWEN2_5_VL_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen2_5_vl"] = MiniModelConfig(
-        liger_kernel_patch_func=apply_liger_kernel_to_qwen2_5_vl,
+        liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_qwen2_5_vl, fused_linear_cross_entropy=False),
         liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2_5_vl,
         model_class=Qwen2_5_VLForConditionalGeneration,
         mini_model_config=Qwen2_5_VLConfig(
@@ -374,8 +374,10 @@ def run_mini_model_multimodal(
             "rope": True,
             "rms_norm": True,
             "cross_entropy": True,
-            "layer_norm": True,
         }
+
+        if "qwen2_5_vl" not in model_name:
+            kwargs["layer_norm"] = True
 
         if "gemma" in model_name:
             kwargs["geglu"] = True
