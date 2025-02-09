@@ -21,6 +21,11 @@ def get_default_dependencies():
             "torch>=2.6.0.dev",
             "triton>=3.0.0",
         ]
+    elif platform == "xpu":
+        return [
+            "torch>=2.6.0",
+            "pytorch-triton-xpu>=3.2.0",
+        ]
 
 
 def get_optional_dependencies():
@@ -43,8 +48,7 @@ def get_optional_dependencies():
     }
 
 
-# TODO: add intel XPU
-def get_platform() -> Literal["cuda", "rocm", "cpu"]:
+def get_platform() -> Literal["cuda", "rocm", "cpu", "xpu"]:
     """
     Detect whether the system has NVIDIA or AMD GPU without torch dependency.
     """
@@ -60,8 +64,13 @@ def get_platform() -> Literal["cuda", "rocm", "cpu"]:
             print("ROCm GPU detected")
             return "rocm"
         except (subprocess.SubprocessError, FileNotFoundError):
-            print("No GPU detected")
-            return "cpu"
+            try:
+                subprocess.run(["xpu-smi"], check=True)
+                print("Intel GPU detected")
+                return "xpu"
+            except (subprocess.SubprocessError, FileNotFoundError):
+                print("No GPU detected")
+                return "cpu"
 
 
 setup(
