@@ -158,7 +158,7 @@ class DataModule(pl.LightningDataModule):
         for i in range(len(example["question"])):
             choices = ""
             for j in range(len(example["choices"][i])):
-                choices += f"{j+1}. {example['choices'][i][j]}; "
+                choices += f"{j + 1}. {example['choices'][i][j]}; "
             s = "Below is a question and multiple choice answers, choices separated by a semicolon. Please select the best answer for the question. "
             s += f"{QUESTION}{example['question'][i]} "
             s += f"{CHOICES}{choices} "
