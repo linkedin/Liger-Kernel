@@ -13,6 +13,7 @@ from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
+from liger_kernel.transformers.model.deepseekv2 import lce_forward as deepseek_v2_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward_deprecated
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
@@ -735,6 +736,80 @@ def apply_liger_kernel_to_phi3(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_deepseek_v2(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementations in DeepSeekv2 models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized, enhancing memory efficiency.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if already loaded. Default is None.
+    """
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
+    import sys
+
+    # Ensure the model is a DeepSeek model
+    if "deepseek" not in model.__class__.__module__:
+        raise ValueError("The provided model is not a DeepSeek model")
+
+    modeling_mod = sys.modules[model.__class__.__module__]
+
+    if rope:
+        pass
+        # modeling_mod.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_mod.DeepseekV2RMSNorm = LigerRMSNorm
+    if swiglu:
+        modeling_mod.DeepseekV2MLP.forward = LigerSwiGLUMLP.forward
+    if cross_entropy:
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_mod.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        modeling_mod.DeepseekV2ForCausalLM.forward = deepseek_v2_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+
+        for i, decoder_layer in enumerate(base_model.layers):
+            if swiglu:
+                if i == 0:
+                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                else:
+                    for expert in decoder_layer.mlp.experts:
+                        _bind_method_to_module(expert, "forward", LigerSwiGLUMLP.forward)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.self_attn.kv_a_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
@@ -747,6 +822,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2": apply_liger_kernel_to_qwen2,
     "qwen2_vl": apply_liger_kernel_to_qwen2_vl,
     "phi3": apply_liger_kernel_to_phi3,
+    "deepseek_v2": apply_liger_kernel_to_deepseek_v2,
 }
 
 

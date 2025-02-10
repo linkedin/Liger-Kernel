@@ -3,6 +3,8 @@ import torch
 
 from datasets import load_from_disk
 from torch.utils.data import DataLoader
+from transformers import AutoConfig
+from transformers import AutoModelForCausalLM
 from transformers.models.gemma import GemmaConfig
 from transformers.models.gemma import GemmaForCausalLM
 from transformers.models.gemma2 import Gemma2Config
@@ -18,6 +20,7 @@ from transformers.models.phi3 import Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen2 import Qwen2ForCausalLM
 
+from liger_kernel.transformers import apply_liger_kernel_to_deepseek_v2
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
 from liger_kernel.transformers import apply_liger_kernel_to_llama
@@ -29,7 +32,9 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
+from test.utils import RemoteMiniModelConfig
 from test.utils import assert_verbose_allclose
+from test.utils import revert_liger_kernel_to_deepseek_v2
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_llama
@@ -292,6 +297,31 @@ MINI_MODEL_SETUPS = {
             attn_implementation="eager",
         ),
     ),
+    "remote_mini_deepseek_v2": RemoteMiniModelConfig(
+        remote_model_path="deepseek-ai/DeepSeek-Coder-V2-Lite-Base",
+        liger_kernel_patch_func=apply_liger_kernel_to_deepseek_v2,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_deepseek_v2,
+        mini_model_config={
+            "attention_dropout": 0.0,
+            "bos_token_id": 1,  # 100000
+            "eos_token_id": 2,  # 100001
+            "hidden_act": "silu",
+            "hidden_size": 896,  # 2048
+            "initializer_range": 0.02,
+            "intermediate_size": 4864,  # 10944
+            "max_position_embeddings": 4096,  # 163840
+            "num_attention_heads": 8,  # 16
+            "num_hidden_layers": 4,  # 27
+            "num_key_value_heads": None,  # defaults to num_attention_heads
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 10000.0,
+            "sliding_window": None,
+            "tie_word_embeddings": False,
+            "use_cache": True,
+            "vocab_size": 32064,  # 102400
+            "attn_implementation": "eager",
+        },
+    ),
 }
 
 if MLLAMA_AVAILABLE:
@@ -387,9 +417,16 @@ def create_model(model_name="mini_llama3"):
     Create a mini version model
     The commented values are the original values
     """
-    model_config = MINI_MODEL_SETUPS[model_name].mini_model_config
-    model_class = MINI_MODEL_SETUPS[model_name].model_class
-    return model_class(model_config)
+    if model_name[:6] == "remote":
+        config = AutoConfig.from_pretrained(MINI_MODEL_SETUPS[model_name].remote_model_path, trust_remote_code=True)
+        config.update(MINI_MODEL_SETUPS[model_name].mini_model_config)
+        model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+        MINI_MODEL_SETUPS[model_name].remote_model_module = model.__class__.__module__
+        return model
+    else:
+        model_config = MINI_MODEL_SETUPS[model_name].mini_model_config
+        model_class = MINI_MODEL_SETUPS[model_name].model_class
+        return model_class(model_config)
 
 
 def run_mini_model(
@@ -410,6 +447,11 @@ def run_mini_model(
     if "mllama" in model_name:
         revert_kwargs["model_type"] = "causal_lm"
 
+    if model_name[:6] == "remote":
+        revert_kwargs["remote_model_module"] = MINI_MODEL_SETUPS[model_name].remote_model_module
+
+    model = create_model(model_name).to(dtype).to(device)
+
     if with_liger is True:
         kwargs = {
             "rope": True,
@@ -427,12 +469,11 @@ def run_mini_model(
 
         kwargs["fused_linear_cross_entropy"] = False
         kwargs["cross_entropy"] = True
-
+        kwargs["model"] = model
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
-    model = create_model(model_name).to(dtype).to(device)
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
     loader = DataLoader(train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn)
     loader_iter = iter(loader)
@@ -645,6 +686,20 @@ def run_mini_model(
         #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
         #     ),
         # ),
+        ("remote_mini_deepseek_v2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        pytest.param(
+            "remote_mini_deepseek_v2",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
     ],
 )
 def test_mini_model(
