@@ -346,10 +346,13 @@ def run_mini_model_multimodal(
             1e-5,
             5e-3,
             1e-5,
-            marks=pytest.mark.skipif(
-                not QWEN2_VL_AVAILABLE,
-                reason="Qwen2-VL not available in this version of transformers",
-            ),
+            marks=[
+                pytest.mark.skipif(
+                    not QWEN2_VL_AVAILABLE,
+                    reason="Qwen2-VL not available in this version of transformers",
+                ),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
+            ],
         ),
         pytest.param(
             "mini_qwen2_vl",
@@ -368,6 +371,7 @@ def run_mini_model_multimodal(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
                 ),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Tuple
 
 import numpy as np
@@ -467,10 +468,10 @@ class HFAlignmentLoss:
         _input: torch.FloatTensor,
         weight: torch.FloatTensor,
         target: torch.LongTensor,
-        bias: torch.FloatTensor | None = None,
+        bias: Optional[torch.FloatTensor] = None,
         average_log_prob: bool = True,
         preference_labels: torch.Tensor = None,
-        nll_target: torch.LongTensor | None = None,
+        nll_target: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
@@ -541,7 +542,9 @@ class HFAlignmentLoss:
         **loss_kwargs,
     ):
         """Compute the loss metrics for the given batch of inputs for train or test."""
-        forward_output = self.concatenated_forward(_input, weight, target, bias, average_log_prob, preference_labels, nll_target)
+        forward_output = self.concatenated_forward(
+            _input, weight, target, bias, average_log_prob, preference_labels, nll_target
+        )
         (
             policy_chosen_logps,
             policy_rejected_logps,
@@ -686,7 +689,10 @@ class HFDistillationLoss:
             hard_loss,
         ) = forward_output
 
+        student_logits /= self.temperature
+        teacher_logits /= self.temperature
+
         soft_loss = self.distillation_loss(student_logits, teacher_logits)
         # full loss
-        loss = self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss.mean()
+        loss = self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss
         return loss
