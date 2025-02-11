@@ -1,0 +1,71 @@
+name: Intel GPU
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "test/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "test/**"
+  schedule:
+    # Runs at 00:00 UTC daily
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # Enables manual trigger
+
+concurrency:
+  # This causes it to cancel previous in-progress actions on the same PR / branch,
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checkstyle:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r dev/fmt-requirements.txt
+
+    - name: Run checkstyle
+      run: make checkstyle
+
+  tests:
+    runs-on: linux-max1550-gpu-8
+    needs: [checkstyle]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.10'
+
+    - name: Setup Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/test/xpu
+    
+    - name: List Python Environments
+      run: python -m pip list
+    
+    - name: Run Unit Tests
+      run: |
+        make test
+        make test-convergence
