@@ -414,6 +414,7 @@ def run_mini_model(
         kwargs = {
             "rope": True,
             "rms_norm": True,
+            "flex_attn": False,
         }
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -427,6 +428,10 @@ def run_mini_model(
 
         kwargs["fused_linear_cross_entropy"] = True
         kwargs["cross_entropy"] = False
+
+        model_supports_flex_attn = "llama3" in model_name  # excluding mllama
+        if model_supports_flex_attn:
+            kwargs["flex_attn"] = True
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
@@ -457,14 +462,14 @@ def run_mini_model(
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
-        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
-        pytest.param(
+        ("mini_llama3", 32, 1e-4, torch.float32, 2e-1, 1e-1, 1e-4, 1e-5, 5e-2, 1e-5),
+        pytest.param(  # Set larger loss tol. ref: https://github.com/pytorch-labs/attention-gym/blob/41ef5bff15033269b8cd8a012214a637345c1ddd/examples/benchmark.py#L151
             "mini_llama3",
             32,
             1e-4,
             torch.bfloat16,
-            1e-3,
-            1e-2,
+            2e-1,
+            1e-1,
             1e-1,
             1e-2,
             1e-2,

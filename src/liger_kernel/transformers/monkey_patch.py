@@ -17,6 +17,7 @@ from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forwa
 from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward_deprecated
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
+from liger_kernel.transformers.model.llama import flex_attention_forward as llama_flex_attention_forward
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
@@ -37,7 +38,9 @@ transformer_version = version.parse(transformers.__version__)
 
 logger = logging.getLogger(__name__)
 SUPPORTED_TRANSFORMER_VERSION = "4.46.1"
+FLEXATTENTION_SUPPORTED_TRANSFORMER_VERSION = "4.48.0"
 TRANSFORMER_DEPRECATION_WARNING = "Support for transformers versions < 4.46.1 will soon be discontinued due to issues with incorrect gradient accumulation. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/34191"
+FLEX_ATTENTION_NOT_SUPPORT_WARNING = "Flex attention is not supported."
 
 
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
@@ -68,6 +71,7 @@ def apply_liger_kernel_to_llama(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = True,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Llama models (2 and 3)
@@ -115,6 +119,15 @@ def apply_liger_kernel_to_llama(
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
             modeling_llama.LlamaForCausalLM.forward = llama_lce_forward_deprecated
 
+    if flex_attn:
+        # Patching HuggingFace default attn_impl from `toch.sdpa` to liger's `llama_flex_attention_forward``
+        if transformer_version >= version.parse(FLEXATTENTION_SUPPORTED_TRANSFORMER_VERSION):
+            modeling_llama.ALL_ATTENTION_FUNCTIONS.update(
+                {"sdpa": llama_flex_attention_forward, "flex_attention": llama_flex_attention_forward}
+            )
+        else:
+            logger.warning(FLEX_ATTENTION_NOT_SUPPORT_WARNING)
+
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules (e.g. LlamaRMSNorm or LlamaMLP)
@@ -141,6 +154,7 @@ def apply_liger_kernel_to_mllama(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = False,  # Not support by HuggingFace
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace MLlama models.
@@ -194,6 +208,8 @@ def apply_liger_kernel_to_mllama(
         else:  # if version < 4.46.1
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
             modeling_mllama.MllamaForCausalLM.forward = mllama_lce_forward_deprecated
+    if flex_attn:
+        logger.warning(FLEX_ATTENTION_NOT_SUPPORT_WARNING)
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -244,6 +260,7 @@ def apply_liger_kernel_to_mistral(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = False,  # Not support by Liger yet
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Mistral models
@@ -278,6 +295,8 @@ def apply_liger_kernel_to_mistral(
         modeling_mistral.MistralForCausalLM.forward = mistral_lce_forward
     if swiglu:
         modeling_mistral.MistralMLP = LigerSwiGLUMLP
+    if flex_attn:
+        logger.warning(FLEX_ATTENTION_NOT_SUPPORT_WARNING)
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -304,6 +323,7 @@ def apply_liger_kernel_to_mixtral(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = False,  # Not support by Liger yet
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Mixtral models
@@ -349,6 +369,8 @@ def apply_liger_kernel_to_mixtral(
             modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward_deprecated
     if swiglu:
         modeling_mixtral.MixtralBlockSparseTop2MLP = LigerBlockSparseTop2MLP
+    if flex_attn:
+        logger.warning(FLEX_ATTENTION_NOT_SUPPORT_WARNING)
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -376,6 +398,7 @@ def apply_liger_kernel_to_gemma(
     rms_norm: bool = True,
     geglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = False,  # Not support by Liger yet
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Gemma
@@ -424,6 +447,8 @@ def apply_liger_kernel_to_gemma(
         else:  # if version < 4.46.1
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
             modeling_gemma.GemmaForCausalLM.forward = gemma_lce_forward_deprecated
+    if flex_attn:
+        logger.warning(FLEX_ATTENTION_NOT_SUPPORT_WARNING)
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -450,6 +475,7 @@ def apply_liger_kernel_to_gemma2(
     rms_norm: bool = True,
     geglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = False,  # Not support by Liger yet
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Gemma2
@@ -500,6 +526,8 @@ def apply_liger_kernel_to_gemma2(
             modeling_gemma2.Gemma2ForCausalLM.forward = gemma2_lce_forward_deprected
     if geglu:
         modeling_gemma2.Gemma2MLP = LigerGEGLUMLP
+    if flex_attn:
+        logger.warning(FLEX_ATTENTION_NOT_SUPPORT_WARNING)
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -528,6 +556,7 @@ def apply_liger_kernel_to_qwen2(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = False,  # Not support by HuggingFace
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2 models
@@ -574,6 +603,8 @@ def apply_liger_kernel_to_qwen2(
 
     if swiglu:
         modeling_qwen2.Qwen2MLP = LigerSwiGLUMLP
+    if flex_attn:
+        logger.warning(FLEX_ATTENTION_NOT_SUPPORT_WARNING)
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -602,6 +633,7 @@ def apply_liger_kernel_to_qwen2_vl(
     layer_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = False,  # Not support by HuggingFace
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
@@ -641,6 +673,8 @@ def apply_liger_kernel_to_qwen2_vl(
         modeling_qwen2_vl.Qwen2VLForConditionalGeneration.forward = qwen2_vl_lce_forward
     if swiglu:
         modeling_qwen2_vl.Qwen2MLP = LigerSwiGLUMLP
+    if flex_attn:
+        logger.warning(FLEX_ATTENTION_NOT_SUPPORT_WARNING)
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -673,6 +707,7 @@ def apply_liger_kernel_to_phi3(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    flex_attn: bool = False,  # Not support by Liger yet
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Phi3 models.
@@ -716,6 +751,8 @@ def apply_liger_kernel_to_phi3(
         else:  # if version < 4.46.1
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
             modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward_deprecated
+    if flex_attn:
+        logger.warning(FLEX_ATTENTION_NOT_SUPPORT_WARNING)
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
