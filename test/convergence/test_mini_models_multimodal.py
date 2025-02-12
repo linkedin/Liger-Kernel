@@ -340,7 +340,7 @@ def run_mini_model_multimodal(
             32,
             1e-4,
             torch.float32,
-            1e-8,
+            1e-6,
             1e-5,
             5e-3,
             1e-5,
