@@ -135,6 +135,15 @@ class MiniModelConfig:
     mini_model_config: PretrainedConfig
 
 
+@dataclass
+class RemoteMiniModelConfig:
+    remote_model_path: str
+    liger_kernel_patch_func: callable
+    liger_kernel_patch_revert_func: callable
+    mini_model_config: Dict
+    remote_model_module: str = None
+
+
 def simple_collate_fn(data: List[Dict[str, Any]]):
     """A basic collate function to use for DataLoader"""
 
@@ -378,6 +387,23 @@ def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
     importlib.reload(modeling_phi3)
     model_config.model_class = modeling_phi3.Phi3ForCausalLM
     print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_deepseek_v2(model_config: RemoteMiniModelConfig, remote_model_module: str):
+    """
+    Revert all Liger kernel patches applied to deepseek v2 model.
+    """
+    import sys
+
+    if remote_model_module:
+        parent_mod_path = remote_model_module.rpartition(".")[0]
+
+        if parent_mod_path not in sys.modules:
+            __import__(parent_mod_path)
+
+        importlib.reload(sys.modules[remote_model_module])
+
+        print("Liger kernel patches have been reverted.")
 
 
 class HFAlignmentLoss:

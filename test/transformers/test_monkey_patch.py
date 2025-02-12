@@ -1,4 +1,5 @@
 import inspect
+import sys
 
 from inspect import signature
 from unittest.mock import MagicMock
@@ -9,6 +10,7 @@ import pytest
 import torch
 import transformers
 
+from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
@@ -47,6 +49,7 @@ def is_qwen2_vl_available():
 def test_import_from_root():
     try:
         from liger_kernel.transformers import AutoLigerKernelForCausalLM  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_deepseek_v2  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma2  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_llama  # noqa: F401
@@ -693,5 +696,50 @@ def test_apply_liger_kernel_to_instance_for_phi3():
 
         try:
             print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+def test_apply_liger_kernel_to_deepseek_v2():
+    config = AutoConfig.from_pretrained("deepseek-ai/DeepSeek-Coder-V2-Lite-Base", trust_remote_code=True)
+
+    config.torch_dtype = torch.bfloat16
+    config.rms_norm_eps = 1e-5
+    config.hidden_size = 32
+    config.intermediate_size = 64
+    config.hidden_act = "silu"
+    config.num_hidden_layers = 2
+
+    dummy_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    modeling_mod_name = dummy_model.__class__.__module__
+
+    with patch.dict(sys.modules, {modeling_mod_name: Mock()}):
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for i, layer in enumerate(dummy_model.model.layers):
+            if i == 0:
+                assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for i, layer in enumerate(dummy_model.model.layers):
+            if i == 0:
+                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.self_attn.kv_a_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
