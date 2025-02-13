@@ -41,7 +41,6 @@ from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import set_seed
 from test.utils import simple_collate_fn
-from test.utils import supports_bfloat16
 
 try:
     # Mllama is only available in transformers>=4.45.0
