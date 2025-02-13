@@ -494,41 +494,10 @@ def run_mini_model(
         ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         # TODO: mixtral is flaky so disable the test for now
         # ("mini_mixtral", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
-        # pytest.param(
-        #     "mini_mixtral",
-        #     32,
-        #     1e-4,
-        #     torch.bfloat16,
-        #     1e-3,
-        #     1e-2,
-        #     1e-1,
-        #     1e-2,
-        #     1e-1,
-        #     1e-2,
-        #     marks=pytest.mark.skipif(
-        #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-        #     ),
-        # ),
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
         ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
-        # TODO: Gemma2 test for bf16 is not passing within the tolerance range, might be casting issue, need to investigate
-        # pytest.param(
-        #     "mini_gemma2",
-        #     32,
-        #     1e-4,
-        #     torch.bfloat16,
-        #     1e-3,
-        #     1e-2,
-        #     1e-1,
-        #     1e-2,
-        #     1e-2,
-        #     1e-2,
-        #     marks=pytest.mark.skipif(
-        #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-        #     ),
-        # ),
     ],
 )
 def test_mini_model(
