@@ -528,7 +528,7 @@ def test_mini_model(
 
     # No logits are materialized
     # import pdb; pdb.set_trace()
-    # Compare the logits from the last step
+    # Compare the logits.grad from the last step instead of logits, liger implementation doesn't keep logits
     assert_verbose_allclose(
         expected_output["logits"].grad,
         actual_output["logits"].grad,
