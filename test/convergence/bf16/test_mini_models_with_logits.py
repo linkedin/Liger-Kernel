@@ -444,7 +444,7 @@ def run_mini_model(
         batch = next(loader_iter).to(model.device)
         optimizer.zero_grad()
         output = model(**batch)
-        output.logits.retain_grad()  # For comparing logits.grad
+        output.logits.retain_grad()
         output.loss.backward()
         optimizer.step()
         print(f"Step {i}, Loss: {output.loss.item()}")
