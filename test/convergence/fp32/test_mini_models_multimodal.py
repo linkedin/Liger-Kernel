@@ -39,7 +39,7 @@ try:
     # Qwen2.5-VL is only available in transformers>4.48.2
     from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
     from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
-    from transformers.models.qwen2_5_vl.image_processing_qwen2_5_vl import Qwen2_5_VLImageProcessor
+    from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
     from transformers.models.qwen2_5_vl.processing_qwen2_5_vl import Qwen2_5_VLProcessor
 
@@ -261,7 +261,7 @@ def create_processor(model_name):
             ]
         )
         qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
-        image_processor = Qwen2_5_VLImageProcessor()
+        image_processor = Qwen2VLImageProcessor()
         return Qwen2_5_VLProcessor(image_processor=image_processor, tokenizer=qwen_tokenizer)
 
     elif model_name == "mini_mllama":
@@ -418,7 +418,7 @@ def run_mini_model_multimodal(
             32,
             1e-4,
             torch.float32,
-            1e-8,
+            1e-6,
             1e-5,
             5e-3,
             1e-5,
@@ -437,7 +437,7 @@ def run_mini_model_multimodal(
             32,
             1e-4,
             torch.float32,
-            1e-8,
+            1e-6,
             1e-5,
             5e-3,
             1e-5,
