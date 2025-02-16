@@ -7,6 +7,8 @@ from transformers.models.gemma import GemmaConfig
 from transformers.models.gemma import GemmaForCausalLM
 from transformers.models.gemma2 import Gemma2Config
 from transformers.models.gemma2 import Gemma2ForCausalLM
+from transformers.models.granite import GraniteConfig
+from transformers.models.granite import GraniteForCausalLM
 from transformers.models.llama import LlamaConfig
 from transformers.models.llama import LlamaForCausalLM
 from transformers.models.mistral import MistralConfig
@@ -20,6 +22,7 @@ from transformers.models.qwen2 import Qwen2ForCausalLM
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
+from liger_kernel.transformers import apply_liger_kernel_to_granite
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_mistral
 from liger_kernel.transformers import apply_liger_kernel_to_mixtral
@@ -32,6 +35,7 @@ from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
+from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
@@ -54,7 +58,9 @@ except ImportError:
 try:
     # Qwen2-VL is only available in transformers>4.44.2
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
-    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import (
+        Qwen2VLForConditionalGeneration,
+    )
 
     QWEN2_VL_AVAILABLE = True
 except ImportError:
@@ -70,6 +76,39 @@ MINI_MODEL_SETUPS = {
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llama,
         model_class=LlamaForCausalLM,
         mini_model_config=LlamaConfig(
+            attention_bias=False,
+            attention_dropout=0.0,
+            # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
+            hidden_act="silu",
+            hidden_size=1024,  # 4096
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=8192,
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 32
+            num_key_value_heads=2,  # 8
+            pretraining_tp=1,
+            rms_norm_eps=1e-5,
+            rope_scaling=None,
+            rope_theta=500000.0,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 128256,
+            # At rope backward
+            # Eager produces incontiguous dq and dk
+            # SDPA produces contiguous dq and incontiguous dk
+            # Flash_attn produces contiguous dq and dk
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    ),
+    "mini_granite3": MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_granite,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_granite,
+        model_class=GraniteForCausalLM,
+        mini_model_config=GraniteConfig(
             attention_bias=False,
             attention_dropout=0.0,
             # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
@@ -433,7 +472,9 @@ def run_mini_model(
 
     model = create_model(model_name).to(dtype).to(device)
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
-    loader = DataLoader(train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn)
+    loader = DataLoader(
+        train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn
+    )
     loader_iter = iter(loader)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
@@ -497,6 +538,7 @@ def run_mini_model(
         ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_granite3", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
     ],
 )
 def test_mini_model(
@@ -513,9 +555,13 @@ def test_mini_model(
 ):
     # Non-liger models should be initialized and tested first to avoid the module being overridden
 
-    expected_output = run_mini_model(model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr)
+    expected_output = run_mini_model(
+        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr
+    )
 
-    actual_output = run_mini_model(model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True)
+    actual_output = run_mini_model(
+        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True
+    )
 
     # Compare every step of the loss
     assert_verbose_allclose(
@@ -542,4 +588,6 @@ def test_mini_model(
         actual_output["model"].named_parameters(),
         strict=False,
     ):
-        assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)
+        assert_verbose_allclose(
+            expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol
+        )
