@@ -49,8 +49,7 @@ def calculate_settings(n):
     BLOCK_SIZE = triton.next_power_of_2(n)
     if BLOCK_SIZE > MAX_FUSED_SIZE:
         raise RuntimeError(
-            f"Cannot launch Triton kernel since n = {n} exceeds "
-            f"the recommended Triton blocksize = {MAX_FUSED_SIZE}."
+            f"Cannot launch Triton kernel since n = {n} exceeds the recommended Triton blocksize = {MAX_FUSED_SIZE}."
         )
 
     num_warps = 4

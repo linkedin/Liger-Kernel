@@ -116,7 +116,11 @@ def apply_liger_kernel_to_granite(
             modeling_granite.CrossEntropyLoss = LigerCrossEntropyLoss
 
     if fused_linear_cross_entropy:
-        print("Fused LinearCrossEntropy is not implemented for Granite models")
+        raise NotImplementedError("LigerFusedLinearCrossEntropy is not available for Granite models.")
+        # NOTE: Granite model `GraniteForCausalLM.forward` scales logits each
+        # call, so we can't sidestep logit materialization. A bit more work
+        # would be needed to add a scaling term to the `LigerFusedLinearCrossEntropyFunction`
+        # for the logit output.
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
