@@ -1,17 +1,17 @@
 import torch
 import triton
-from utils import (
-    QUANTILES,
-    SingleBenchmarkRunInput,
-    SingleBenchmarkRunOutput,
-    _test_memory,
-    parse_benchmark_script_args,
-    run_benchmarks,
-)
 
-from liger_kernel.transformers.fused_linear_cross_entropy import (
-    LigerFusedLinearCrossEntropyLoss,
-)
+from utils import QUANTILES
+from utils import SingleBenchmarkRunInput
+from utils import SingleBenchmarkRunOutput
+from utils import _test_memory
+from utils import parse_benchmark_script_args
+from utils import run_benchmarks
+
+from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 
 class TorchLMHeadCE(torch.nn.Module):
@@ -25,12 +25,8 @@ class TorchLMHeadCE(torch.nn.Module):
 
     def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype
-        )
-        self.ce_loss = torch.nn.CrossEntropyLoss(
-            ignore_index=ignore_index, reduction="mean"
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
+        self.ce_loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index, reduction="mean")
 
     def forward(self, x, y):
         logits = self.lin(x)
@@ -40,12 +36,8 @@ class TorchLMHeadCE(torch.nn.Module):
 class LigerLMHeadCE(torch.nn.Module):
     def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
         super().__init__()
-        self.lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype
-        )
-        self.ce_loss = LigerFusedLinearCrossEntropyLoss(
-            ignore_index=ignore_index, reduction="mean"
-        )
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
+        self.ce_loss = LigerFusedLinearCrossEntropyLoss(ignore_index=ignore_index, reduction="mean")
 
     def forward(self, x, y):
         return self.ce_loss(self.lin.weight, x, y)
@@ -65,7 +57,6 @@ def bench_memory_fused_linear_cross_entropy(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    device = "cuda"
     torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
 
@@ -104,8 +95,6 @@ def bench_speed_fused_linear_cross_entropy(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
-
-    device = "cuda"
 
     torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
@@ -161,9 +150,7 @@ if __name__ == "__main__":
         "x_label": "B x T",
         "x_values": [2**i for i in range(12, 16)],
         "kernel_providers": ["liger", "huggingface"],
-        "extra_benchmark_configs": [
-            {"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}
-        ],
+        "extra_benchmark_configs": [{"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}],
         "overwrite": args.overwrite,
     }
 
@@ -172,12 +159,12 @@ if __name__ == "__main__":
         kernel_operation_modes=["forward", "full"],
         metric_name="speed",
         metric_unit="ms",
-        **common_configs
+        **common_configs,
     )
     run_benchmarks(
         bench_test_fn=bench_memory_fused_linear_cross_entropy,
         kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
-        **common_configs
+        **common_configs,
     )

@@ -1,12 +1,16 @@
-from test.transformers.test_jsd import JSD as TorchJSD
-from test.utils import assert_verbose_allclose, set_seed
-
 import pytest
 import torch
+
+from test.transformers.test_jsd import JSD as TorchJSD
+from test.utils import assert_verbose_allclose
+from test.utils import set_seed
 
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
 from liger_kernel.transformers.functional import liger_fused_linear_jsd
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 set_seed(42)
 
@@ -31,12 +35,8 @@ class TorchLMHeadJSD(torch.nn.Module):
         temperature: float = 1.0,
     ):
         super().__init__()
-        self.student_lin = torch.nn.Linear(
-            in_features=H // 2, out_features=V, bias=False, dtype=dtype, device=device
-        )
-        self.teacher_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype, device=device
-        )
+        self.student_lin = torch.nn.Linear(in_features=H // 2, out_features=V, bias=False, dtype=dtype, device=device)
+        self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype, device=device)
         self.jsd = TorchJSD(beta=beta, ignore_index=ignore_index, dtype=dtype)
         self.temperature = temperature
 
@@ -61,15 +61,9 @@ class LigerLMHeadJSD(torch.nn.Module):
         temperature: float = 1.0,
     ):
         super().__init__()
-        self.student_lin = torch.nn.Linear(
-            in_features=H // 2, out_features=V, bias=False, dtype=dtype, device=device
-        )
-        self.teacher_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype, device=device
-        )
-        self.fused_jsd = LigerFusedLinearJSD(
-            jsd_beta=beta, ignore_index=ignore_index, temperature=temperature
-        )
+        self.student_lin = torch.nn.Linear(in_features=H // 2, out_features=V, bias=False, dtype=dtype, device=device)
+        self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype, device=device)
+        self.fused_jsd = LigerFusedLinearJSD(jsd_beta=beta, ignore_index=ignore_index, temperature=temperature)
 
     def forward(self, student_input, teacher_input, label=None):
         return self.fused_jsd(
@@ -105,10 +99,11 @@ class LigerLMHeadJSD(torch.nn.Module):
     [
         (1.0, 0.5),
         (2.0, 0.1),
+        (1.0, 0.0),  # FKL
+        (1.0, 1.0),  # RKL
     ],
 )
 def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
-    device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
         V=V,
@@ -127,12 +122,12 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
     ).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
-    torch_lm_head_jsd.student_lin.weight.data = (
-        liger_lm_head_jsd.student_lin.weight.data
-    ) = torch.rand(V, H // 2, device=device, dtype=dtype)
-    torch_lm_head_jsd.teacher_lin.weight.data = (
-        liger_lm_head_jsd.teacher_lin.weight.data
-    ) = torch.rand(V, H, device=device, dtype=dtype)
+    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.rand(
+        V, H // 2, device=device, dtype=dtype
+    )
+    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.rand(
+        V, H, device=device, dtype=dtype
+    )
 
     _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
@@ -177,13 +172,12 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
     "temperature, beta, ignore_index",
     [
         (1.0, 0.5, 2),
+        (1.0, 0.0, 2),
         (2.0, 0.1, 42),
+        (1.0, 1.0, 2),
     ],
 )
-def test_correctness_with_ignore_index(
-    B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
-):
-    device = "cuda"
+def test_correctness_with_ignore_index(B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol):
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
         V=V,
@@ -204,12 +198,12 @@ def test_correctness_with_ignore_index(
     ).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
-    torch_lm_head_jsd.student_lin.weight.data = (
-        liger_lm_head_jsd.student_lin.weight.data
-    ) = torch.rand(V, H // 2, device=device, dtype=dtype)
-    torch_lm_head_jsd.teacher_lin.weight.data = (
-        liger_lm_head_jsd.teacher_lin.weight.data
-    ) = torch.rand(V, H, device=device, dtype=dtype)
+    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.rand(
+        V, H // 2, device=device, dtype=dtype
+    )
+    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.rand(
+        V, H, device=device, dtype=dtype
+    )
 
     _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
@@ -223,9 +217,7 @@ def test_correctness_with_ignore_index(
     num_elements_to_assign = torch.randint(
         1, B * T // 2, (1,)
     ).item()  # Random number of elements to set to ignore_index
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]  # Randomly select indices
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     label[indices_to_assign] = ignore_index
 
     output1 = torch_lm_head_jsd(_input1, teacher_input, label)
@@ -261,14 +253,8 @@ def test_correctness_with_ignore_index(
         (0.5, torch.float32, 1e-5, 5e-4),
     ],
 )
-@pytest.mark.parametrize(
-    "temperature, beta, ignore_index", [(1.0, 0.5, -100), (2.0, 0.1, 42)]
-)
-def test_correctness_functional(
-    B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
-):
-    device = "cuda"
-
+@pytest.mark.parametrize("temperature, beta, ignore_index", [(1.0, 0.5, -100), (2.0, 0.1, 42)])
+def test_correctness_functional(B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol):
     # init the linear in all FusedLinearJSDs with the same weights
     _weight = torch.rand(V, H // 2, device=device, dtype=dtype)
     _weight1 = _weight.detach().clone().requires_grad_(True)
@@ -286,20 +272,18 @@ def test_correctness_functional(
     num_elements_to_assign = torch.randint(
         1, B * T // 2, (1,)
     ).item()  # Random number of elements to set to ignore_index
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]  # Randomly select indices
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     label[indices_to_assign] = ignore_index
 
     output1 = liger_fused_linear_jsd(
-        _input1,
-        _weight1,
-        teacher_input,
-        teacher_weight,
-        label,
-        beta,
-        ignore_index,
-        temperature,
+        student_input=_input1,
+        student_weight=_weight1,
+        teacher_input=teacher_input,
+        teacher_weight=teacher_weight,
+        shift_labels=label,
+        jsd_beta=beta,
+        ignore_index=ignore_index,
+        temperature=temperature,
     )
     output2 = LigerFusedLinearJSDFunction.apply(
         _input2,
@@ -343,10 +327,7 @@ def test_correctness_functional(
         (2.0, 0.1, 42),
     ],
 )
-def test_correctness_all_ignored(
-    B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol
-):
-    device = "cuda"
+def test_correctness_all_ignored(B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol):
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
         V=V,
@@ -367,12 +348,12 @@ def test_correctness_all_ignored(
     ).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
-    torch_lm_head_jsd.student_lin.weight.data = (
-        liger_lm_head_jsd.student_lin.weight.data
-    ) = torch.rand(V, H // 2, device=device, dtype=dtype)
-    torch_lm_head_jsd.teacher_lin.weight.data = (
-        liger_lm_head_jsd.teacher_lin.weight.data
-    ) = torch.rand(V, H, device=device, dtype=dtype)
+    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.rand(
+        V, H // 2, device=device, dtype=dtype
+    )
+    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.rand(
+        V, H, device=device, dtype=dtype
+    )
 
     _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
@@ -390,9 +371,7 @@ def test_correctness_all_ignored(
 
     output2.backward()
 
-    assert_verbose_allclose(
-        torch.zeros_like(_input2.grad), _input2.grad, atol=atol, rtol=rtol
-    )
+    assert_verbose_allclose(torch.zeros_like(_input2.grad), _input2.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize(
@@ -411,7 +390,6 @@ def test_amp(autocast_dtype, atol, rtol):
     ignore_index = -100
     temperature = 1.0
     beta = 0.5
-    device = "cuda"
     dtype = torch.float32
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
@@ -432,12 +410,12 @@ def test_amp(autocast_dtype, atol, rtol):
         beta=beta,
     ).to(device)
     # init the linear in all FusedLinearJSDs with the same weights
-    torch_lm_head_jsd.student_lin.weight.data = (
-        liger_lm_head_jsd.student_lin.weight.data
-    ) = torch.rand(V, H // 2, device=device, dtype=dtype)
-    torch_lm_head_jsd.teacher_lin.weight.data = (
-        liger_lm_head_jsd.teacher_lin.weight.data
-    ) = torch.rand(V, H, device=device, dtype=dtype)
+    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.rand(
+        V, H // 2, device=device, dtype=dtype
+    )
+    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.rand(
+        V, H, device=device, dtype=dtype
+    )
 
     _tensor = torch.rand(B * T, H // 2, device=device, dtype=autocast_dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
@@ -451,12 +429,10 @@ def test_amp(autocast_dtype, atol, rtol):
     num_elements_to_assign = torch.randint(
         1, B * T // 2, (1,)
     ).item()  # Random number of elements to set to ignore_index
-    indices_to_assign = torch.randperm(B * T)[
-        :num_elements_to_assign
-    ]  # Randomly select indices
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     label[indices_to_assign] = ignore_index
 
-    with torch.autocast(device_type="cuda", dtype=autocast_dtype):
+    with torch.autocast(device_type=device, dtype=autocast_dtype):
         output1 = torch_lm_head_jsd(_input1, teacher_input, label)
         output2 = liger_lm_head_jsd(_input2, teacher_input, label)
 

@@ -1,15 +1,17 @@
 import torch
 import triton
-from utils import (
-    QUANTILES,
-    SingleBenchmarkRunInput,
-    SingleBenchmarkRunOutput,
-    _test_memory,
-    parse_benchmark_script_args,
-    run_benchmarks,
-)
+
+from utils import QUANTILES
+from utils import SingleBenchmarkRunInput
+from utils import SingleBenchmarkRunOutput
+from utils import _test_memory
+from utils import parse_benchmark_script_args
+from utils import run_benchmarks
 
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 
 class TorchJSD(torch.nn.Module):
@@ -34,9 +36,9 @@ class TorchJSD(torch.nn.Module):
         log_p, log_q = log_p.to(torch.float), log_q.to(torch.float)
         log_p, log_q = log_p.view(-1, log_p.size(-1)), log_q.view(-1, log_q.size(-1))
         m = torch.lerp(torch.exp(log_q), torch.exp(log_p), self.beta)
-        loss = self.beta * self.kl(torch.log(m), log_p).sum(dim=-1) + (
-            1 - self.beta
-        ) * self.kl(torch.log(m), log_q).sum(dim=-1)
+        loss = self.beta * self.kl(torch.log(m), log_p).sum(dim=-1) + (1 - self.beta) * self.kl(
+            torch.log(m), log_q
+        ).sum(dim=-1)
 
         if label is not None:
             loss = torch.where(label != self.ignore_index, loss, 0.0)
@@ -70,12 +72,8 @@ class TorchLMHeadJSD(torch.nn.Module):
         temperature: float = 1.0,
     ):
         super().__init__()
-        self.student_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype, device=device
-        )
-        self.teacher_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype, device=device
-        )
+        self.student_lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype, device=device)
+        self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype, device=device)
         self.jsd = TorchJSD(beta=beta, ignore_index=ignore_index, dtype=dtype)
         self.temperature = temperature
 
@@ -100,15 +98,9 @@ class LigerLMHeadJSD(torch.nn.Module):
         temperature: float = 1.0,
     ):
         super().__init__()
-        self.student_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype, device=device
-        )
-        self.teacher_lin = torch.nn.Linear(
-            in_features=H, out_features=V, bias=False, dtype=dtype, device=device
-        )
-        self.fused_jsd = LigerFusedLinearJSD(
-            jsd_beta=beta, ignore_index=ignore_index, temperature=temperature
-        )
+        self.student_lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype, device=device)
+        self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype, device=device)
+        self.fused_jsd = LigerFusedLinearJSD(jsd_beta=beta, ignore_index=ignore_index, temperature=temperature)
 
     def forward(self, student_input, teacher_input, label=None):
         return self.fused_jsd(
@@ -134,17 +126,16 @@ def bench_memory_fused_linear_jsd(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(H=H, V=V, dtype=dtype, device=device).to(device)
     liger_lm_head_jsd = LigerLMHeadJSD(H=H, V=V, dtype=dtype, device=device).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
-    torch_lm_head_jsd.student_lin.weight.data = (
-        liger_lm_head_jsd.student_lin.weight.data
-    ) = torch.rand(V, H, device=device, dtype=dtype)
-    torch_lm_head_jsd.teacher_lin.weight.data = (
-        liger_lm_head_jsd.teacher_lin.weight.data
-    ) = torch.rand(V, H, device=device, dtype=dtype)
+    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.rand(
+        V, H, device=device, dtype=dtype
+    )
+    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.rand(
+        V, H, device=device, dtype=dtype
+    )
 
     student_input = torch.rand(BT, H, requires_grad=True, dtype=dtype, device=device)
     teacher_input = torch.rand(BT, H, dtype=dtype, device=device)
@@ -183,17 +174,16 @@ def bench_speed_fused_linear_jsd(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    device = "cuda"
     torch_lm_head_jsd = TorchLMHeadJSD(H=H, V=V, dtype=dtype, device=device).to(device)
     liger_lm_head_jsd = LigerLMHeadJSD(H=H, V=V, dtype=dtype, device=device).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
-    torch_lm_head_jsd.student_lin.weight.data = (
-        liger_lm_head_jsd.student_lin.weight.data
-    ) = torch.rand(V, H, device=device, dtype=dtype)
-    torch_lm_head_jsd.teacher_lin.weight.data = (
-        liger_lm_head_jsd.teacher_lin.weight.data
-    ) = torch.rand(V, H, device=device, dtype=dtype)
+    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.rand(
+        V, H, device=device, dtype=dtype
+    )
+    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.rand(
+        V, H, device=device, dtype=dtype
+    )
 
     student_input = torch.rand(BT, H, requires_grad=True, dtype=dtype, device=device)
     teacher_input = torch.rand(BT, H, dtype=dtype, device=device)
@@ -250,9 +240,7 @@ if __name__ == "__main__":
         "x_label": "B x T",
         "x_values": [2**i for i in range(10, 14)],
         "kernel_providers": ["liger", "torch"],
-        "extra_benchmark_configs": [
-            {"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}
-        ],
+        "extra_benchmark_configs": [{"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}],
         "overwrite": args.overwrite,
     }
 
@@ -261,12 +249,12 @@ if __name__ == "__main__":
         kernel_operation_modes=["forward", "full"],
         metric_name="speed",
         metric_unit="ms",
-        **common_configs
+        **common_configs,
     )
     run_benchmarks(
         bench_test_fn=bench_memory_fused_linear_jsd,
         kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
-        **common_configs
+        **common_configs,
     )

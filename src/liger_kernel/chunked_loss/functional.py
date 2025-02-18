@@ -1,0 +1,13 @@
+from liger_kernel.chunked_loss.cpo_loss import LigerFusedLinearCPOFunction
+from liger_kernel.chunked_loss.dpo_loss import LigerFusedLinearDPOFunction
+from liger_kernel.chunked_loss.jsd_loss import LigerFusedLinearJSDFunction
+from liger_kernel.chunked_loss.kto_loss import LigerFusedLinearKTOFunction
+from liger_kernel.chunked_loss.orpo_loss import LigerFusedLinearORPOFunction
+from liger_kernel.chunked_loss.simpo_loss import LigerFusedLinearSimPOFunction
+
+liger_fused_linear_orpo = LigerFusedLinearORPOFunction.apply
+liger_fused_linear_dpo = LigerFusedLinearDPOFunction.apply
+liger_fused_linear_jsd = LigerFusedLinearJSDFunction.apply
+liger_fused_linear_cpo = LigerFusedLinearCPOFunction.apply
+liger_fused_linear_simpo = LigerFusedLinearSimPOFunction.apply
+liger_fused_linear_kto = LigerFusedLinearKTOFunction.apply

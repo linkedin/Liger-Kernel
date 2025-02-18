@@ -13,18 +13,12 @@ class LigerLayerNorm(nn.Module):
         ], f"init_fn must be either 'ones' or 'zeros', got {init_fn}"
         self.hidden_size = hidden_size
         self.eps = eps
-        self.weight = nn.Parameter(
-            torch.ones(hidden_size) if init_fn == "ones" else torch.zeros(hidden_size)
-        )
-        self.bias = nn.Parameter(
-            torch.randn(hidden_size) if bias else torch.zeros(hidden_size)
-        )
+        self.weight = nn.Parameter(torch.ones(hidden_size) if init_fn == "ones" else torch.zeros(hidden_size))
+        self.bias = nn.Parameter(torch.randn(hidden_size) if bias else torch.zeros(hidden_size))
         self.variance_epsilon = eps
 
     def forward(self, hidden_states):
-        return LigerLayerNormFunction.apply(
-            hidden_states, self.weight, self.bias, self.variance_epsilon
-        )
+        return LigerLayerNormFunction.apply(hidden_states, self.weight, self.bias, self.variance_epsilon)
 
     def extra_repr(self):
         return f"{self.hidden_size}, eps={self.eps}"

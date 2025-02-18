@@ -1,20 +1,26 @@
 import argparse
 import math
 import os
-from dataclasses import _MISSING_TYPE, dataclass
+
+from dataclasses import _MISSING_TYPE
+from dataclasses import dataclass
 
 import datasets
 import lightning.pytorch as pl
 import torch
 import transformers
-from lightning.pytorch.strategies import DeepSpeedStrategy, FSDPStrategy
-from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision
+
+from lightning.pytorch.strategies import DeepSpeedStrategy
+from lightning.pytorch.strategies import FSDPStrategy
+from torch.distributed.fsdp import BackwardPrefetch
+from torch.distributed.fsdp import MixedPrecision
 from torch.utils.data import DataLoader
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from trl import DataCollatorForCompletionOnlyLM
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM
+from liger_kernel.utils import infer_device
 
 _RETAIN_COLUMNS = {"input_ids", "attention_mask", "labels"}
 QUESTION = "<Question>"
@@ -44,9 +50,7 @@ def warmup_cosine_schedule(warmup_steps, total_steps, min_lr=0):
             return float(current_step) / float(max(1, warmup_steps))
         else:
             # Cosine annealing
-            progress = float(current_step - warmup_steps) / float(
-                max(1, total_steps - warmup_steps)
-            )
+            progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
             return max(min_lr, 0.5 * (1 + math.cos(math.pi * progress)))
 
     return lr_lambda
@@ -57,9 +61,7 @@ def parse_args() -> Args:
     for k, v in Args.__dataclass_fields__.items():
         parser.add_argument(f"--{k}", type=v.type, default=v.default)
     parsed = parser.parse_args()
-    return Args(
-        **{k: v for k, v in vars(parsed).items() if not isinstance(v, _MISSING_TYPE)}
-    )
+    return Args(**{k: v for k, v in vars(parsed).items() if not isinstance(v, _MISSING_TYPE)})
 
 
 class LanguageModel(pl.LightningModule):
@@ -81,9 +83,7 @@ class LanguageModel(pl.LightningModule):
             self.model.gradient_checkpointing_enable()
 
     def forward(self, input_ids, attention_mask, labels=None, **kwargs):
-        return self.model(
-            input_ids=input_ids, attention_mask=attention_mask, labels=labels, **kwargs
-        )
+        return self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, **kwargs)
 
     def training_step(self, batch):
         outputs = self.model(
@@ -129,8 +129,7 @@ class LanguageModel(pl.LightningModule):
             fused=True,
         )
         lr_lambda = warmup_cosine_schedule(
-            warmup_steps=self.trainer.estimated_stepping_batches
-            * self.args.warmup_ratio,
+            warmup_steps=self.trainer.estimated_stepping_batches * self.args.warmup_ratio,
             total_steps=self.trainer.estimated_stepping_batches,
             min_lr=0,
         )
@@ -147,9 +146,7 @@ class DataModule(pl.LightningDataModule):
         self.args = args
         self.tokenizer = tokenizer
         self.response_template_str = " <Answer>"
-        response_prompt = tokenizer.encode(
-            f"{self.response_template_str}", add_special_tokens=False
-        )
+        response_prompt = tokenizer.encode(f"{self.response_template_str}", add_special_tokens=False)
         self.collator = DataCollatorForCompletionOnlyLM(
             tokenizer=tokenizer,
             response_template=response_prompt,
@@ -236,9 +233,7 @@ def train():
         layers = {Qwen2DecoderLayer}
     else:
         layers = {}
-        raise Warning(
-            f"Unimplemented layer wrap policy for {args.model} in this example"
-        )
+        raise Warning(f"Unimplemented layer wrap policy for {args.model} in this example")
 
     if args.strategy == "fsdp":
         strategy = FSDPStrategy(
@@ -247,9 +242,7 @@ def train():
             backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
             sync_module_states=True,
             activation_checkpointing_policy=layers,
-            mixed_precision=MixedPrecision(
-                param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16
-            ),
+            mixed_precision=MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16),
             forward_prefetch=True,
         )
         precision = None
@@ -263,19 +256,18 @@ def train():
         strategy = "auto"
         precision = "bf16-true"
 
+    device = infer_device()
     trainer = pl.Trainer(
-        accelerator="cuda",
+        accelerator=device,
         strategy=strategy,
-        devices=torch.cuda.device_count() if args.num_gpu is None else args.num_gpu,
+        devices=(getattr(torch, device).device_count() if args.num_gpu is None else args.num_gpu),
         default_root_dir=args.output_dir,
         log_every_n_steps=1,
         max_epochs=1,
         precision=precision,
     )
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        args.model, padding_side="left", truncation_side="left"
-    )
+    tokenizer = transformers.AutoTokenizer.from_pretrained(args.model, padding_side="left", truncation_side="left")
     tokenizer.pad_token = tokenizer.eos_token
     data_module = DataModule(
         tokenizer=tokenizer,

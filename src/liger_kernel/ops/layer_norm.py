@@ -5,11 +5,9 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import (
-    calculate_settings,
-    compare_version,
-    ensure_contiguous,
-)
+from liger_kernel.ops.utils import calculate_settings
+from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import ensure_contiguous
 
 if compare_version("triton", operator.ge, "3.0.0"):
     try:
@@ -180,8 +178,13 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     dY = dY.view(-1, dim)
     n_rows, n_cols = dY.shape
 
+    sm_count = 1
+    if X.device.type == "cuda":
+        sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
+    elif X.device.type == "xpu":
+        sm_count = torch.xpu.get_device_properties(X.device).gpu_subslice_count
+
     DX = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
-    sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
     _DW = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
     _DB = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
 

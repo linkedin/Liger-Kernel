@@ -17,12 +17,10 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import (
-    calculate_settings,
-    compare_version,
-    ensure_contiguous,
-    torch_to_triton_dtype,
-)
+from liger_kernel.ops.utils import calculate_settings
+from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import torch_to_triton_dtype
 
 if compare_version("triton", operator.ge, "3.0.0"):
     try:
@@ -35,9 +33,9 @@ else:
     from triton.language.math import rsqrt
 
 
-_CASTING_MODE_NONE = tl.constexpr(-1)
-_CASTING_MODE_LLAMA = tl.constexpr(0)
-_CASTING_MODE_GEMMA = tl.constexpr(1)
+_CASTING_MODE_NONE: tl.constexpr = tl.constexpr(-1)
+_CASTING_MODE_LLAMA: tl.constexpr = tl.constexpr(0)
+_CASTING_MODE_GEMMA: tl.constexpr = tl.constexpr(1)
 
 
 @triton.jit
@@ -116,6 +114,8 @@ def _rms_norm_forward_kernel(
 def _rms_norm_backward_kernel(
     dY_ptr,
     dY_row_stride,
+    dX_ptr,
+    dX_row_stride,
     X_ptr,
     X_row_stride,
     X_dtype: tl.constexpr,
@@ -146,6 +146,8 @@ def _rms_norm_backward_kernel(
     dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     dY_ptr += row_start * dY_row_stride
+    dX_ptr += row_start * dX_row_stride
+
     X_ptr += row_start * X_row_stride
     RSTD_ptr += row_start
 
@@ -173,9 +175,7 @@ def _rms_norm_backward_kernel(
 
         dX_row = rstd_row * m
 
-        dX_row += (rstd_row) * (
-            -(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row
-        )
+        dX_row += (rstd_row) * (-(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row)
 
         # calculate the gradient of W
         if casting_mode == _CASTING_MODE_LLAMA:
@@ -184,9 +184,10 @@ def _rms_norm_backward_kernel(
             # here X_row is already in fp32 (see previous if block)
             dW_row += dY_row * (X_row * rstd_row)
 
-        tl.store(dY_ptr + col_offsets, dX_row.to(X_dtype), mask=mask)
+        tl.store(dX_ptr + col_offsets, dX_row.to(X_dtype), mask=mask)
 
         dY_ptr += dY_row_stride
+        dX_ptr += dX_row_stride
         X_ptr += X_row_stride
         RSTD_ptr += RSTD_row_stride
 
@@ -202,14 +203,10 @@ _str_to_casting_mode = {
 
 def rms_norm_forward(X, W, eps, offset, casting_mode):
     if not isinstance(casting_mode, int):
-        assert (
-            casting_mode in _str_to_casting_mode
-        ), f"Invalid casting mode: {casting_mode}"
+        assert casting_mode in _str_to_casting_mode, f"Invalid casting mode: {casting_mode}"
         casting_mode = _str_to_casting_mode[casting_mode]
     else:
-        assert (
-            casting_mode in _str_to_casting_mode.values()
-        ), f"Invalid casting mode: {casting_mode}"
+        assert casting_mode in _str_to_casting_mode.values(), f"Invalid casting mode: {casting_mode}"
 
     shape = X.shape
     dim = shape[-1]
@@ -220,17 +217,11 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
     # RSTD is to cache rstd for each row
     # RSTD is always computed/stored in fp32 if we are using Llama or Gemma casting mode
-    rstd_dtype = (
-        torch.float32
-        if casting_mode in (_CASTING_MODE_LLAMA.value, _CASTING_MODE_GEMMA.value)
-        else X.dtype
-    )
+    rstd_dtype = torch.float32 if casting_mode in (_CASTING_MODE_LLAMA.value, _CASTING_MODE_GEMMA.value) else X.dtype
     RSTD = torch.empty(n_rows, dtype=rstd_dtype, device=X.device)
 
     # Check constraints.
-    assert (
-        X.shape[1] == W.shape[0]
-    ), "Incompatible hidden size dimension between tensor1.shape[1] and tensor2.shape[0]"
+    assert X.shape[1] == W.shape[0], "Incompatible hidden size dimension between tensor1.shape[1] and tensor2.shape[0]"
 
     _rms_norm_forward_kernel[(n_rows,)](
         Y,
@@ -251,13 +242,18 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps):
+def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
     n_rows, n_cols = dY.shape
 
-    sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
+    sm_count = 1
+    if X.device.type == "cuda":
+        sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
+    elif X.device.type == "xpu":
+        sm_count = torch.xpu.get_device_properties(X.device).gpu_subslice_count
+
     # fp32 for numerical stability especially.
     _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
 
@@ -265,10 +261,17 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
     rows_per_program = math.ceil(n_rows / sm_count)
     grid = (sm_count,)
-    # Here we use dY to store the value of dX to save memory
+
+    if in_place is True:
+        dX = dY
+    else:
+        dX = torch.zeros_like(dY)
+
     _rms_norm_backward_kernel[grid](
         dY,
         dY.stride(0),
+        dX,
+        dX.stride(0),
         X,
         X.stride(0),
         torch_to_triton_dtype[X.dtype],
@@ -286,8 +289,9 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
-    dX = dY.view(*shape)
+    dX = dX.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype)
+
     return dX, dW
 
 
@@ -307,20 +311,23 @@ class LigerRMSNormFunction(torch.autograd.Function):
     - 'llama': matches the Llama implementation, where only the inverse RMS is computed on fp32.
     - 'gemma': matches the Gemma implementation, where everything is cast to fp32, then computed, then cast back to the original dtype.
     - 'none': no casting is done. The computation is done in the original dtype. This saves memory and is slightly faster, but has more error w.r.t. the original implementation.
+
+    `in_place` option means whether to in_place modify dY to store dX. This is default to `True` to save memory. However, under certain cases, it can produce incorrect inputs.
+        For example, gemma2 uses two rmsnorm sequentially with residual in between. The resesidual part needs dY so it cannot be modified in-place.
+        Therefore, for the patching of RMSNorm in gemma2, we set `in_place` to `False`
     """
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, eps, offset=0.0, casting_mode="llama"):
+    def forward(ctx, X, W, eps, offset=0.0, casting_mode="llama", in_place=True):
         """
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
-        Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(
-            X, W, eps, offset, casting_mode
-        )
+        Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(X, W, eps, offset, casting_mode)
         ctx.offset = offset
         ctx.casting_mode = casting_mode
+        ctx.in_place = in_place
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
         ctx.save_for_backward(X, W, RSTD)
@@ -342,5 +349,6 @@ class LigerRMSNormFunction(torch.autograd.Function):
             ctx.casting_mode,
             ctx.BLOCK_SIZE,
             ctx.num_warps,
+            ctx.in_place,
         )
-        return dX, dW, None, None, None
+        return dX, dW, None, None, None, None

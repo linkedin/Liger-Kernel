@@ -1,47 +1,37 @@
 import inspect
 import logging
+
 from functools import partial
 from typing import Callable
 
 import transformers
+
 from packaging import version
 from transformers import PreTrainedModel
 
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
+from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
-from liger_kernel.transformers.model.gemma import (
-    lce_forward_deprecated as gemma_lce_forward_deprecated,
-)
+from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward_deprecated
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
-from liger_kernel.transformers.model.gemma2 import (
-    lce_forward_deprecated as gemma2_lce_forward_deprected,
-)
+from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
-from liger_kernel.transformers.model.llama import (
-    lce_forward_deprecated as llama_lce_forward_deprecated,
-)
+from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
-from liger_kernel.transformers.model.mixtral import (
-    lce_forward_deprecated as mixtral_lce_forward_deprecated,
-)
+from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
-from liger_kernel.transformers.model.phi3 import (
-    lce_forward_deprecated as phi3_lce_forward_deprecated,
-)
+from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward_deprecated
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
-from liger_kernel.transformers.model.qwen2 import (
-    lce_forward_deprecated as qwen2_lce_forward_deprecated,
-)
+from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward_deprecated
+from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
-from liger_kernel.transformers.swiglu import (
-    LigerBlockSparseTop2MLP,
-    LigerPhi3SwiGLUMLP,
-    LigerSwiGLUMLP,
-)
+from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
+from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
+from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
 transformer_version = version.parse(transformers.__version__)
 
@@ -55,20 +45,17 @@ def _bind_method_to_module(module, method_name: str, new_method: Callable):
     module.__dict__[method_name] = new_method.__get__(module, module.__class__)
 
 
-def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama"):
+def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True):
     module.offset = offset
     module.casting_mode = casting_mode
-    module.variance_epsilon = (
-        getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
-    )
+    module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+    module.in_place = in_place
     _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
     _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
 
 
 def _patch_layer_norm_module(module, eps=1e-6):
-    module.variance_epsilon = (
-        getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
-    )
+    module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
     module.hidden_size = module.normalized_shape
     _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
     _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
@@ -111,8 +98,16 @@ def apply_liger_kernel_to_llama(
         modeling_llama.LlamaRMSNorm = LigerRMSNorm
     if swiglu:
         modeling_llama.LlamaMLP = LigerSwiGLUMLP
+
     if cross_entropy:
-        modeling_llama.CrossEntropyLoss = LigerCrossEntropyLoss
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_llama.CrossEntropyLoss = LigerCrossEntropyLoss
+
     if fused_linear_cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
             modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
@@ -132,9 +127,7 @@ def apply_liger_kernel_to_llama(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(
-                    decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward
-                )
+                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -171,17 +164,13 @@ def apply_liger_kernel_to_mllama(
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.mllama import modeling_mllama
-    from transformers.models.mllama.modeling_mllama import (
-        MllamaForCausalLM,
-        MllamaForConditionalGeneration,
-        MllamaTextModel,
-        MllamaVisionModel,
-    )
+    from transformers.models.mllama.modeling_mllama import MllamaForCausalLM
+    from transformers.models.mllama.modeling_mllama import MllamaForConditionalGeneration
+    from transformers.models.mllama.modeling_mllama import MllamaTextModel
+    from transformers.models.mllama.modeling_mllama import MllamaVisionModel
 
     from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
-    from liger_kernel.transformers.model.mllama import (
-        lce_forward_deprecated as mllama_lce_forward_deprecated,
-    )
+    from liger_kernel.transformers.model.mllama import lce_forward_deprecated as mllama_lce_forward_deprecated
 
     if rope:
         modeling_mllama.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -192,7 +181,13 @@ def apply_liger_kernel_to_mllama(
     if swiglu:
         modeling_mllama.MllamaTextMLP = LigerSwiGLUMLP
     if cross_entropy:
-        modeling_mllama.CrossEntropyLoss = LigerCrossEntropyLoss
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_mllama.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
             modeling_mllama.MllamaForCausalLM.forward = mllama_lce_forward
@@ -222,9 +217,7 @@ def apply_liger_kernel_to_mllama(
                 _patch_rms_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
                 if swiglu:
-                    _bind_method_to_module(
-                        decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward
-                    )
+                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -298,9 +291,7 @@ def apply_liger_kernel_to_mistral(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(
-                    decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward
-                )
+                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -342,7 +333,14 @@ def apply_liger_kernel_to_mixtral(
     if rms_norm:
         modeling_mixtral.MixtralRMSNorm = LigerRMSNorm
     if cross_entropy:
-        modeling_mixtral.CrossEntropyLoss = LigerCrossEntropyLoss
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_mixtral.CrossEntropyLoss = LigerCrossEntropyLoss
+
     if fused_linear_cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
             modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward
@@ -365,9 +363,7 @@ def apply_liger_kernel_to_mixtral(
         for decoder_layer in base_model.layers:
             if swiglu:
                 for expert in decoder_layer.block_sparse_moe.experts:
-                    _bind_method_to_module(
-                        expert, "forward", LigerBlockSparseTop2MLP.forward
-                    )
+                    _bind_method_to_module(expert, "forward", LigerBlockSparseTop2MLP.forward)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -405,19 +401,21 @@ def apply_liger_kernel_to_gemma(
     from transformers.models.gemma.modeling_gemma import GemmaModel
 
     # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
-    LigerRMSNormForGemma = partial(
-        LigerRMSNorm, offset=1.0, init_fn="zeros", casting_mode="gemma"
-    )
-    _patch_rms_norm_module_for_gemma = partial(
-        _patch_rms_norm_module, casting_mode="gemma", offset=1.0
-    )
+    LigerRMSNormForGemma = partial(LigerRMSNorm, offset=1.0, init_fn="zeros", casting_mode="gemma")
+    _patch_rms_norm_module_for_gemma = partial(_patch_rms_norm_module, casting_mode="gemma", offset=1.0)
 
     if rope:
         modeling_gemma.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         modeling_gemma.GemmaRMSNorm = LigerRMSNormForGemma
     if cross_entropy:
-        modeling_gemma.CrossEntropyLoss = LigerCrossEntropyLoss
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_gemma.CrossEntropyLoss = LigerCrossEntropyLoss
     if geglu:
         modeling_gemma.GemmaMLP = LigerGEGLUMLP
     if fused_linear_cross_entropy:
@@ -439,9 +437,7 @@ def apply_liger_kernel_to_gemma(
 
         for decoder_layer in base_model.layers:
             if geglu:
-                _bind_method_to_module(
-                    decoder_layer.mlp, "forward", LigerGEGLUMLP.forward
-                )
+                _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
             if rms_norm:
                 _patch_rms_norm_module_for_gemma(decoder_layer.input_layernorm)
                 _patch_rms_norm_module_for_gemma(decoder_layer.post_attention_layernorm)
@@ -474,14 +470,13 @@ def apply_liger_kernel_to_gemma2(
     assert not (
         cross_entropy and fused_linear_cross_entropy
     ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
     from transformers.models.gemma2 import modeling_gemma2
     from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
 
-    LigerRMSNormForGemma2 = partial(
-        LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros"
-    )
+    LigerRMSNormForGemma2 = partial(LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False)
     _patch_rms_norm_module_for_gemma2 = partial(
-        _patch_rms_norm_module, offset=1.0, casting_mode="gemma"
+        _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
     )
 
     if rope:
@@ -490,7 +485,13 @@ def apply_liger_kernel_to_gemma2(
         # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
         modeling_gemma2.Gemma2RMSNorm = LigerRMSNormForGemma2
     if cross_entropy:
-        modeling_gemma2.CrossEntropyLoss = LigerCrossEntropyLoss
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_gemma2.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
             modeling_gemma2.Gemma2ForCausalLM.forward = gemma2_lce_forward
@@ -512,20 +513,12 @@ def apply_liger_kernel_to_gemma2(
 
         for decoder_layer in base_model.layers:
             if geglu:
-                _bind_method_to_module(
-                    decoder_layer.mlp, "forward", LigerGEGLUMLP.forward
-                )
+                _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
             if rms_norm:
                 _patch_rms_norm_module_for_gemma2(decoder_layer.input_layernorm)
-                _patch_rms_norm_module_for_gemma2(
-                    decoder_layer.post_attention_layernorm
-                )
-                _patch_rms_norm_module_for_gemma2(
-                    decoder_layer.pre_feedforward_layernorm
-                )
-                _patch_rms_norm_module_for_gemma2(
-                    decoder_layer.post_feedforward_layernorm
-                )
+                _patch_rms_norm_module_for_gemma2(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module_for_gemma2(decoder_layer.pre_feedforward_layernorm)
+                _patch_rms_norm_module_for_gemma2(decoder_layer.post_feedforward_layernorm)
 
 
 def apply_liger_kernel_to_qwen2(
@@ -562,12 +555,17 @@ def apply_liger_kernel_to_qwen2(
         modeling_qwen2.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         modeling_qwen2.Qwen2RMSNorm = LigerRMSNorm
+
     if cross_entropy:
-        modeling_qwen2.CrossEntropyLoss = LigerCrossEntropyLoss
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
 
-    # import pdb; pdb.set_trace()
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_qwen2.CrossEntropyLoss = LigerCrossEntropyLoss
+
     if fused_linear_cross_entropy:
-
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
             modeling_qwen2.Qwen2ForCausalLM.forward = qwen2_lce_forward
         else:  # if version < 4.46.1
@@ -589,9 +587,7 @@ def apply_liger_kernel_to_qwen2(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(
-                    decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward
-                )
+                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -599,6 +595,7 @@ def apply_liger_kernel_to_qwen2(
 
 
 def apply_liger_kernel_to_qwen2_vl(
+    rope: bool = True,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
@@ -629,12 +626,10 @@ def apply_liger_kernel_to_qwen2_vl(
     from transformers.models.qwen2_vl import modeling_qwen2_vl
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModel
 
-    from liger_kernel.transformers.model.qwen2_vl import (
-        lce_forward as qwen2_vl_lce_forward,
-    )
+    from liger_kernel.transformers.model.qwen2_vl import lce_forward as qwen2_vl_lce_forward
 
-    # TODO: Support Qwen2-VL's multimodal RoPE implementation
-
+    if rope:
+        modeling_qwen2_vl.apply_multimodal_rotary_pos_emb = liger_multimodal_rotary_pos_emb
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L439
         modeling_qwen2_vl.Qwen2RMSNorm = LigerRMSNorm
@@ -665,9 +660,7 @@ def apply_liger_kernel_to_qwen2_vl(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(
-                    decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward
-                )
+                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -710,7 +703,13 @@ def apply_liger_kernel_to_phi3(
     if swiglu:
         modeling_phi3.Phi3MLP = LigerPhi3SwiGLUMLP
     if cross_entropy:
-        modeling_phi3.CrossEntropyLoss = LigerCrossEntropyLoss
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_phi3.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
             modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
@@ -730,9 +729,7 @@ def apply_liger_kernel_to_phi3(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(
-                    decoder_layer.mlp, "forward", LigerPhi3SwiGLUMLP.forward
-                )
+                _bind_method_to_module(decoder_layer.mlp, "forward", LigerPhi3SwiGLUMLP.forward)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -773,24 +770,16 @@ def _apply_liger_kernel(model_type: str, **kwargs) -> None:
         return
 
     if model_type not in MODEL_TYPE_TO_APPLY_LIGER_FN.keys():
-        logger.info(
-            f"There are currently no Liger kernels supported for model type: {model_type}."
-        )
+        logger.info(f"There are currently no Liger kernels supported for model type: {model_type}.")
         return
 
     apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
     apply_fn_signature = inspect.signature(apply_fn)
 
     # Filter out the keyword arguments that are not supported by the apply function
-    applicable_kwargs = {
-        key: value
-        for key, value in kwargs.items()
-        if key in apply_fn_signature.parameters
-    }
+    applicable_kwargs = {key: value for key, value in kwargs.items() if key in apply_fn_signature.parameters}
 
-    logger.info(
-        f"Applying Liger kernels for model type: {model_type} with kwargs: {applicable_kwargs}"
-    )
+    logger.info(f"Applying Liger kernels for model type: {model_type} with kwargs: {applicable_kwargs}")
 
     # Assume this is invoked pre-model initialization, so we only need to patch transformers code
     apply_fn(**applicable_kwargs)
@@ -804,20 +793,14 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
         - model: the model instance to apply Liger kernels to
         - kwargs: keyword arguments that are passed to the corresponding apply_liger_kernel_to_* function.
     """
-    model_type = getattr(model, "config", None) and getattr(
-        model.config, "model_type", None
-    )
+    model_type = getattr(model, "config", None) and getattr(model.config, "model_type", None)
 
     if not model_type:
-        logger.info(
-            "Model type could not be determined from model config. No Liger kernels will be applied."
-        )
+        logger.info("Model type could not be determined from model config. No Liger kernels will be applied.")
         return
 
     if model_type not in MODEL_TYPE_TO_APPLY_LIGER_FN.keys():
-        logger.info(
-            f"There are currently no Liger kernels supported for model type: {model_type}."
-        )
+        logger.info(f"There are currently no Liger kernels supported for model type: {model_type}.")
         return
 
     apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
@@ -825,11 +808,7 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
     apply_fn_signature = inspect.signature(apply_fn)
 
     # Filter out the keyword arguments that are not supported by the apply function
-    applicable_kwargs = {
-        key: value
-        for key, value in kwargs.items()
-        if key in apply_fn_signature.parameters
-    }
+    applicable_kwargs = {key: value for key, value in kwargs.items() if key in apply_fn_signature.parameters}
     logger.info(
         f"Applying Liger kernels to model instance with model type: {model_type} with kwargs: {applicable_kwargs}"
     )

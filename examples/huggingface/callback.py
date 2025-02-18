@@ -1,9 +1,15 @@
 import time
+
 from dataclasses import dataclass
 
 import torch
 import transformers
-from transformers import TrainerControl, TrainerState, TrainingArguments
+
+from transformers import TrainerControl
+from transformers import TrainerState
+from transformers import TrainingArguments
+
+from liger_kernel.utils import infer_device
 
 # https://simple.wikipedia.org/wiki/Byte
 # For memory, we use binary system
@@ -99,9 +105,7 @@ class EfficiencyCallback(transformers.TrainerCallback):
         n_decimal_TPS: number of decimal points for TPS
     """
 
-    def __init__(
-        self, n_warmup_steps=2, n_decimal_time=2, n_decimal_memory=2, n_decimal_TPS=2
-    ):
+    def __init__(self, n_warmup_steps=2, n_decimal_time=2, n_decimal_memory=2, n_decimal_TPS=2):
         self.state = State(
             n_warmup_steps,
         )
@@ -111,6 +115,7 @@ class EfficiencyCallback(transformers.TrainerCallback):
         self.time = Time()
         self.memory = Memory()
         self.tps = TPS()
+        self.device = infer_device()
 
     def on_init_end(
         self,
@@ -127,9 +132,7 @@ class EfficiencyCallback(transformers.TrainerCallback):
                 'Please pass training argument "--include_num_input_tokens_seen" to track tokens per second'
             )
         if args.logging_steps != 1:
-            raise Exception(
-                "Please set logging_steps=1 to track the efficiency metrics accurately"
-            )
+            raise Exception("Please set logging_steps=1 to track the efficiency metrics accurately")
 
     def on_train_begin(
         self,
@@ -149,9 +152,7 @@ class EfficiencyCallback(transformers.TrainerCallback):
         logs: dict[str, float],
         **kwargs,
     ):
-        if state.global_step < (
-            self.state.global_start_step + self.state.n_warmup_steps
-        ):
+        if state.global_step < (self.state.global_start_step + self.state.n_warmup_steps):
             return
         else:
             # spread self.time, self.memory, self.tps to logs
@@ -171,7 +172,7 @@ class EfficiencyCallback(transformers.TrainerCallback):
         several inputs.
         """
         # memory
-        torch.cuda.reset_peak_memory_stats()
+        getattr(torch, self.device).reset_peak_memory_stats()
 
         # time
         self.state.step_start_time = time.perf_counter()
@@ -183,9 +184,7 @@ class EfficiencyCallback(transformers.TrainerCallback):
         control: TrainerControl,
         **kwargs,
     ):
-        if state.global_step < (
-            self.state.global_start_step + self.state.n_warmup_steps
-        ):
+        if state.global_step < (self.state.global_start_step + self.state.n_warmup_steps):
             # The end the current step_start_tokens_seen is the start of next iteration
 
             # tokens
@@ -203,12 +202,8 @@ class EfficiencyCallback(transformers.TrainerCallback):
         avg_step_time = self.state.elapsed_time / self.state.elapsed_step
 
         self.time.step = global_step
-        self.time.step_time_sec = round_to_n_decimal(
-            step_time, self.precision.n_decimal_time
-        )
-        self.time.avg_step_time_sec = round_to_n_decimal(
-            avg_step_time, self.precision.n_decimal_time
-        )
+        self.time.step_time_sec = round_to_n_decimal(step_time, self.precision.n_decimal_time)
+        self.time.avg_step_time_sec = round_to_n_decimal(avg_step_time, self.precision.n_decimal_time)
         self.time.time_to_completion_sec = round_to_n_decimal(
             avg_step_time * (state.max_steps - global_step),
             self.precision.n_decimal_time,
@@ -218,15 +213,13 @@ class EfficiencyCallback(transformers.TrainerCallback):
         )
 
         # memory
-        step_peak_memory_allocated = torch.cuda.memory.max_memory_allocated()
-        step_peak_memory_reserved = torch.cuda.memory.max_memory_reserved()
+        step_peak_memory_allocated = getattr(torch, self.device).memory.max_memory_allocated()
+        step_peak_memory_reserved = getattr(torch, self.device).memory.max_memory_reserved()
 
         self.memory.step_peak_memory_allocated_MB = round_to_n_decimal(
             step_peak_memory_allocated / M_BIN_UNIT, self.precision.n_decimal_memory
         )
-        self.state.total_peak_memory_allocated = max(
-            self.state.total_peak_memory_allocated, step_peak_memory_allocated
-        )
+        self.state.total_peak_memory_allocated = max(self.state.total_peak_memory_allocated, step_peak_memory_allocated)
         self.memory.total_peak_memory_allocated_MB = round_to_n_decimal(
             self.state.total_peak_memory_allocated / M_BIN_UNIT,
             self.precision.n_decimal_memory,
@@ -236,9 +229,7 @@ class EfficiencyCallback(transformers.TrainerCallback):
             step_peak_memory_reserved / M_BIN_UNIT, self.precision.n_decimal_memory
         )
 
-        self.state.total_peak_memory_reserved = max(
-            self.state.total_peak_memory_reserved, step_peak_memory_reserved
-        )
+        self.state.total_peak_memory_reserved = max(self.state.total_peak_memory_reserved, step_peak_memory_reserved)
 
         self.memory.total_peak_memory_reserved_MB = round_to_n_decimal(
             self.state.total_peak_memory_reserved / M_BIN_UNIT,
@@ -246,9 +237,7 @@ class EfficiencyCallback(transformers.TrainerCallback):
         )
 
         # tokens
-        step_tokens_seen = (
-            state.num_input_tokens_seen - self.state.step_start_tokens_seen
-        )
+        step_tokens_seen = state.num_input_tokens_seen - self.state.step_start_tokens_seen
 
         self.state.elapsed_tokens_seen += step_tokens_seen
 

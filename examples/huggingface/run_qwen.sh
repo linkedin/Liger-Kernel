@@ -1,3 +1,5 @@
+#!/bin/bash
+
 torchrun --nnodes=1 --nproc-per-node=4 training.py \
     --model_name "Qwen/Qwen2-7B" \
     --bf16 \
@@ -16,5 +18,5 @@ torchrun --nnodes=1 --nproc-per-node=4 training.py \
     --fsdp "full_shard auto_wrap" \
     --fsdp_config config/fsdp_config.json \
     --seed 42 \
-    --use_liger False \
+    --use_liger True \
     --output_dir alpaca_finetuning

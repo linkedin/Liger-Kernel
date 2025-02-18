@@ -34,9 +34,7 @@ def embedding_forward_kernel(
     )
 
     output_offsets = offsets_m[:, None] * embedding_dim + offsets_n[None, :]
-    tl.store(
-        output_ptr + output_offsets, embeddings, mask=mask_m[:, None] & mask_n[None, :]
-    )
+    tl.store(output_ptr + output_offsets, embeddings, mask=mask_m[:, None] & mask_n[None, :])
 
 
 @triton.jit

@@ -3,13 +3,24 @@ import csv
 import json
 import os
 import time
+
 from collections import OrderedDict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
+from dataclasses import dataclass
 from importlib.metadata import version
 from itertools import zip_longest
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any
+from typing import Callable
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Union
 
 import torch
+
+from liger_kernel.utils import infer_device
+
+device = infer_device()
 
 LIGER_KERNEL_VERSION = version("liger-kernel")
 
@@ -88,17 +99,15 @@ def _test_memory(
     total_mem = []
 
     for _ in range(_iter):
-        torch.cuda.memory.reset_peak_memory_stats()
+        getattr(torch, device).memory.reset_peak_memory_stats()
         func()
         # Convert to MB
-        mem = torch.cuda.max_memory_allocated() / 2**20
+        mem = getattr(torch, device).max_memory_allocated() / 2**20
         total_mem.append(mem)
 
     total_mem = torch.tensor(total_mem, dtype=torch.float)
     if quantiles is not None:
-        quantiles_data = torch.quantile(
-            total_mem, torch.tensor(quantiles, dtype=torch.float)
-        ).tolist()
+        quantiles_data = torch.quantile(total_mem, torch.tensor(quantiles, dtype=torch.float)).tolist()
         if len(quantiles_data) == 1:
             quantiles_data = quantiles_data[0]
         return quantiles_data
@@ -141,8 +150,9 @@ def get_gpu_name():
     """
     Returns the current GPU name, formatted to serve as a directory name
     """
-    if torch.cuda.is_available():
-        gpu_name = torch.cuda.get_device_name(torch.cuda.current_device())
+    torch_device = getattr(torch, device)
+    if torch_device.is_available():
+        gpu_name = torch_device.get_device_name(torch_device.current_device())
         return gpu_name
     else:
         raise Exception("Benchmarks can only be run on GPU.")
@@ -169,11 +179,7 @@ def update_benchmark_data_csv(
             row["metric_name"],
             row["x_name"],
             str(row["x_value"]),
-            (
-                row["extra_benchmark_config_str"]
-                if row["extra_benchmark_config_str"]
-                else ""
-            ),
+            (row["extra_benchmark_config_str"] if row["extra_benchmark_config_str"] else ""),
             row["gpu_name"],
         )
 
@@ -191,9 +197,7 @@ def update_benchmark_data_csv(
             for row in reader:
                 existing_data.append(row)
 
-    existing_data_dict = OrderedDict(
-        (create_unique_key(row), row) for row in existing_data
-    )
+    existing_data_dict = OrderedDict((create_unique_key(row), row) for row in existing_data)
 
     for benchmark_data in benchmark_data_list:
         benchmark_data_dict = asdict(benchmark_data)
@@ -203,9 +207,7 @@ def update_benchmark_data_csv(
         y_values_80 = benchmark_data_dict.pop("y_values_80")
 
         # Need to convert benchmark_data into multiple rows based on x_values and y_values
-        for x_value, y_value_50, y_value_20, y_value_80 in zip_longest(
-            x_values, y_values_50, y_values_20, y_values_80
-        ):
+        for x_value, y_value_50, y_value_20, y_value_80 in zip_longest(x_values, y_values_50, y_values_20, y_values_80):
             row = BenchmarkDataCSVRow(
                 x_value=x_value,
                 y_value_50=y_value_50,
@@ -301,9 +303,7 @@ def run_benchmarks(
                         kernel_operation_mode=kernel_operation_mode,
                         extra_benchmark_config=extra_benchmark_config,
                     )
-                    benchmark_result: SingleBenchmarkRunOutput = bench_test_fn(
-                        single_benchmark_run_input
-                    )
+                    benchmark_result: SingleBenchmarkRunOutput = bench_test_fn(single_benchmark_run_input)
                     y_values_50.append(benchmark_result.y_50)
                     y_values_20.append(benchmark_result.y_20)
                     y_values_80.append(benchmark_result.y_80)
@@ -321,9 +321,7 @@ def run_benchmarks(
                     y_values_50=y_values_50,
                     y_values_20=y_values_20,
                     y_values_80=y_values_80,
-                    extra_benchmark_config_str=json.dumps(
-                        extra_benchmark_config, cls=CustomEncoder
-                    ),
+                    extra_benchmark_config_str=json.dumps(extra_benchmark_config, cls=CustomEncoder),
                     timestamp=get_formatted_time(),
                     liger_version=LIGER_KERNEL_VERSION,
                 )
@@ -332,9 +330,7 @@ def run_benchmarks(
 
     print_benchmark_data(benchmark_data_list)
 
-    update_benchmark_data_csv(
-        benchmark_data_list=benchmark_data_list, overwrite=overwrite
-    )
+    update_benchmark_data_csv(benchmark_data_list=benchmark_data_list, overwrite=overwrite)
 
 
 def parse_benchmark_script_args():

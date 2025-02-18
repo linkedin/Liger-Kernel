@@ -1,3 +1,5 @@
+#!/bin/bash
+
 torchrun --nnodes=1 --nproc-per-node=4 training.py \
     --model_name "google/gemma-7b-it" \
     --bf16 \

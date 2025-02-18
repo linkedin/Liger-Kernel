@@ -15,6 +15,7 @@ def _triton_rope(
     sin_row_stride,
     sl,
     bs: tl.constexpr,
+    cos_bs: tl.constexpr,
     n_qh: tl.constexpr,
     n_kh: tl.constexpr,
     hd: tl.constexpr,
@@ -29,7 +30,7 @@ def _triton_rope(
     # k size: (bsz, seq_len, num_kv_heads, head_dim)
     # k stride: (seq_len * num_kv_heads * head_dim, num_kv_heads * head_dim, head_dim, 1)
 
-    # cos size: (1, seq_len, head_dim)
+    # cos size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
     # stride: (seq_len * head_dim, head_dim, 1)
     pid = tl.program_id(0)
 
@@ -48,9 +49,19 @@ def _triton_rope(
     # and pid % sl to get the sequence index.
     # 2. We only need the left half of cos and sin matrix because the right half is just
     # a clone of the left half.
-    cos_row_idx = pid % (sl)
-    cos = cos + cos_row_idx * cos_row_stride
-    sin = sin + cos_row_idx * sin_row_stride
+    batch_idx = pid // sl
+    cos_row_idx = pid % sl
+    cos = cos + tl.where(
+        cos_bs == 1,
+        cos_row_idx * cos_row_stride,
+        batch_idx * (sl * cos_row_stride) + cos_row_idx * cos_row_stride,
+    )
+    sin = sin + tl.where(
+        cos_bs == 1,
+        cos_row_idx * sin_row_stride,
+        batch_idx * (sl * sin_row_stride) + cos_row_idx * sin_row_stride,
+    )
+
     cos_offsets = tl.arange(0, pad_hd // 2)
     cos_mask = cos_offsets < hd // 2
     cos_row = tl.load(cos + cos_offsets, mask=cos_mask, other=0)
@@ -61,36 +72,20 @@ def _triton_rope(
     # program instance (i.e. for the current token) separately
     # ####################################################################
     # left half of the head
-    first_half_q_offsets = (
-        tl.arange(0, pad_n_qh)[:, None] * hd + tl.arange(0, pad_hd // 2)[None, :]
-    )
-    first_half_k_offsets = (
-        tl.arange(0, pad_n_kh)[:, None] * hd + tl.arange(0, pad_hd // 2)[None, :]
-    )
-    first_q_mask = (tl.arange(0, pad_n_qh)[:, None] < n_qh) & (
-        tl.arange(0, pad_hd // 2)[None, :] < hd // 2
-    )
-    first_k_mask = (tl.arange(0, pad_n_kh)[:, None] < n_kh) & (
-        tl.arange(0, pad_hd // 2)[None, :] < hd // 2
-    )
-    q_tile_1 = tl.load(q_ptr + first_half_q_offsets, mask=first_q_mask, other=0).to(
-        sin_row.dtype
-    )
-    k_tile_1 = tl.load(k_ptr + first_half_k_offsets, mask=first_k_mask, other=0).to(
-        sin_row.dtype
-    )
+    first_half_q_offsets = tl.arange(0, pad_n_qh)[:, None] * hd + tl.arange(0, pad_hd // 2)[None, :]
+    first_half_k_offsets = tl.arange(0, pad_n_kh)[:, None] * hd + tl.arange(0, pad_hd // 2)[None, :]
+    first_q_mask = (tl.arange(0, pad_n_qh)[:, None] < n_qh) & (tl.arange(0, pad_hd // 2)[None, :] < hd // 2)
+    first_k_mask = (tl.arange(0, pad_n_kh)[:, None] < n_kh) & (tl.arange(0, pad_hd // 2)[None, :] < hd // 2)
+    q_tile_1 = tl.load(q_ptr + first_half_q_offsets, mask=first_q_mask, other=0).to(sin_row.dtype)
+    k_tile_1 = tl.load(k_ptr + first_half_k_offsets, mask=first_k_mask, other=0).to(sin_row.dtype)
 
     # right half of the head
     second_half_q_offsets = first_half_q_offsets + (hd // 2)
     second_half_k_offsets = first_half_k_offsets + (hd // 2)
     second_q_mask = first_q_mask
     second_k_mask = first_k_mask
-    q_tile_2 = tl.load(q_ptr + second_half_q_offsets, mask=second_q_mask, other=0).to(
-        sin_row.dtype
-    )
-    k_tile_2 = tl.load(k_ptr + second_half_k_offsets, mask=second_k_mask, other=0).to(
-        sin_row.dtype
-    )
+    q_tile_2 = tl.load(q_ptr + second_half_q_offsets, mask=second_q_mask, other=0).to(sin_row.dtype)
+    k_tile_2 = tl.load(k_ptr + second_half_k_offsets, mask=second_k_mask, other=0).to(sin_row.dtype)
 
     if not BACKWARD_PASS:
         # y = [x1, x2] * [cos, cos] + [-x2, x1] * [sin, sin]
@@ -118,7 +113,6 @@ def _triton_rope(
 
 
 def rope_forward(q, k, cos, sin):
-
     # transpose it back to the physical shape because Triton looks at the physical storage
     # note: q and k are incontiguous before the transformation and will become contiguous after transpose
     q = q.transpose(1, 2)
@@ -138,6 +132,7 @@ def rope_forward(q, k, cos, sin):
     k = k.contiguous()
     cos = cos.contiguous()
     sin = sin.contiguous()
+    cos_batch_size = cos.shape[0]
 
     _triton_rope[(n_row,)](
         q,
@@ -150,6 +145,7 @@ def rope_forward(q, k, cos, sin):
         sin.stride(-2),
         seq_len,
         batch_size,
+        cos_batch_size,
         n_q_head,
         n_kv_head,
         head_dim,
@@ -167,6 +163,7 @@ def rope_backward(dq, dk, cos, sin):
     dk = dk.transpose(1, 2)
 
     batch_size, seq_len, n_q_head, head_dim = dq.shape
+    cos_batch_size = cos.shape[0]
     n_kv_head = dk.shape[2]
     pad_hd = triton.next_power_of_2(head_dim)
     pad_n_q_head = triton.next_power_of_2(n_q_head)
@@ -191,6 +188,7 @@ def rope_backward(dq, dk, cos, sin):
         sin.stride(-2),
         seq_len,
         batch_size,
+        cos_batch_size,
         n_q_head,
         n_kv_head,
         head_dim,
@@ -221,8 +219,8 @@ class LigerRopeFunction(torch.autograd.Function):
         """
         q size: (bsz, n_q_head, seq_len, head_dim)
         k size: (bsz, n_kv_head, seq_len, head_dim)
-        cos size: (1, seq_len, head_dim)
-        sin size: (1, seq_len, head_dim)
+        cos size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
+        sin size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
         """
         q, k, cos, sin = rope_forward(q, k, cos, sin)
         ctx.save_for_backward(cos, sin)
@@ -232,8 +230,8 @@ class LigerRopeFunction(torch.autograd.Function):
         """
         dq size: (bsz, n_q_head, seq_len, head_dim)
         dk size: (bsz, n_kv_head, seq_len, head_dim)
-        cos size: (1, seq_len, head_dim)
-        sin size: (1, seq_len, head_dim)
+        cos size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
+        sin size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
         """
 
         cos, sin = ctx.saved_tensors

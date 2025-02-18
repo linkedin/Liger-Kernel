@@ -1,45 +1,58 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=42", "wheel", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "liger_kernel"
-version = "0.4.0"
+version = "0.5.3"
 description = "Efficient Triton kernels for LLM Training"
 urls = { "Homepage" = "https://github.com/linkedin/Liger-Kernel" }
 readme = { file = "README.md", content-type = "text/markdown" }
 license = { file = "LICENSE" }
-dependencies = [
-    "torch>=2.1.2",
-    "triton>=2.3.1",
-]
+dynamic = ["dependencies", "optional-dependencies"]
 
-[project.optional-dependencies]
-transformers = [
-    "transformers~=4.0"
-]
-
-dev = [
-    "transformers>=4.44.2",
-    "matplotlib>=3.7.2",
-    "flake8>=4.0.1.1",
-    "black>=24.4.2",
-    "isort>=5.13.2",
-    "pytest>=7.1.2",
-    "datasets>=2.19.2",
-    "torchvision>=0.16.2",
-    "seaborn",
-]
+[tool.setuptools]
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["liger_kernel", "liger_kernel.*"]
+include = ["liger_kernel*"]
+namespaces = false
 
 [tool.pytest.ini_options]
-pythonpath = [
-  "src",
-  "."
-]
+pythonpath = ["src", "."]
 asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+respect-gitignore = true
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "F",  # pyflakes
+    "I",  # isort
+]
+ignore = ["E501", "B006", "E731", "A002", "E203"]
+
+exclude = [
+    ".git",
+    "__pycache__",
+    "benchmark_internal/others",
+    ".venv",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+known-first-party = ["liger_kernel"]
+force-single-line = true
+lines-between-types = 1

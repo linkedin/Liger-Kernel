@@ -18,7 +18,7 @@ def _jsd_kernel(
     dX_ptr,
     dX_stride,
     label_ptr,
-    beta,
+    beta: tl.constexpr,
     n_non_ignore: int,
     ignore_index: tl.constexpr,
     n_cols,
@@ -50,17 +50,26 @@ def _jsd_kernel(
         X = tl.load(X_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
         Y = tl.load(Y_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
 
-        Q = tl.exp(X)
-        P = tl.exp(Y)
-        M = beta * P + (1 - beta) * Q
-        log_M = tl.log(M)
+        if beta == 0.0:  # forward KL
+            Y_prob = tl.exp(Y)
+            loss = Y_prob * (Y - X)
+            dX = -Y_prob
+        elif beta == 1.0:
+            X_prob = tl.exp(X)
+            loss = X_prob * (X - Y)
+            dX = loss + X_prob
+        else:
+            Q = tl.exp(X)
+            P = tl.exp(Y)
+            M = beta * P + (1 - beta) * Q
+            log_M = tl.log(M)
 
-        loss = beta * P * Y + (1 - beta) * Q * X - M * log_M
-        # reduction == "batchmean"
+            loss = beta * P * Y + (1 - beta) * Q * X - M * log_M
+            dX = (1 - beta) * Q * (X - log_M)
+
         loss = loss / n_non_ignore
+        dX = dX / n_non_ignore
         tl.store(loss_ptr + offsets, loss, mask=mask)
-
-        dX = (1 - beta) * Q * (X - log_M) / n_non_ignore
         tl.store(dX_ptr + offsets, dX, mask=mask)
 
 
@@ -89,9 +98,7 @@ def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
         loss_stride=loss.stride(-2),
         dX_ptr=dX,
         dX_stride=dX.stride(-2),
-        label_ptr=(
-            shift_labels if has_label else torch.empty(1, device=_input.device)
-        ),  # dummy ptr if no label
+        label_ptr=(shift_labels if has_label else torch.empty(1, device=_input.device)),  # dummy ptr if no label
         beta=beta,
         n_non_ignore=n_non_ignore,
         ignore_index=ignore_index,
@@ -142,7 +149,7 @@ class LigerJSDFunction(torch.autograd.Function):
             _input (torch.Tensor): predict values with shape (BT, V) in logspace
             target (torch.Tensor): ground truth values with shape (BT, V) in logspace
             shift_labels (Optional[torch.LongTensor]): indicator of next predicted vocab with shape (BT) where each value is in [0, V-1].
-            beta (float): coefficient beta of generalized JSD in the open interval (0, 1)
+            beta (float): coefficient beta of generalized JSD in the interval [0, 1]. It implements forward/reverse KL when beta equals 0 and 1 respectively. Default: `0.5`
             ignore_index (int): the index to ignore. Default: -100
 
         Returns:
@@ -156,9 +163,7 @@ class LigerJSDFunction(torch.autograd.Function):
             shift_labels = shift_labels.contiguous()
             has_label = True
 
-        loss, dX = jsd_forward(
-            _input, target, shift_labels, beta, ignore_index, has_label
-        )
+        loss, dX = jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label)
         ctx.save_for_backward(dX)
         return loss
 
