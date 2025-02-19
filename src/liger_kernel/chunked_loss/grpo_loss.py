@@ -49,9 +49,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
 
         # Apply masking and normalize
         masked_loss = per_token_loss * attention_mask
-        seq_lengths = attention_mask.sum(dim=1, keepdim=True)
+        seq_lengths = attention_mask.sum()
         seq_lengths = torch.clamp(seq_lengths, min=1.0)
-        loss = (masked_loss.sum(dim=1) / seq_lengths.squeeze(-1)).mean()
+        loss = masked_loss.sum() / seq_lengths
 
         # Calculate metrics
         metrics = (

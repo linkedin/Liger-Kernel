@@ -88,14 +88,15 @@ class TorchLMHeadGRPO(torch.nn.Module):
 
         # Calculate advantages using the same epsilon as in GRPOTrainer
         rewards_flat = rewards.view(-1)  # [batch_size * num_generations]
-        advantages = (rewards_flat - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
+        eps = 1e-4
+        advantages = (rewards_flat - mean_grouped_rewards) / (std_grouped_rewards + eps)
 
         # Compute policy gradient loss with importance sampling ratio
         per_token_loss = torch.exp(chosen_token_logprobs - chosen_token_logprobs.detach()) * advantages.unsqueeze(1)
         per_token_loss = -(per_token_loss - self.beta * kl_div)
 
         # Apply masking and normalize
-        loss = ((per_token_loss * attention_mask).sum(dim=1) / attention_mask.sum(dim=1)).mean()
+        loss = ((per_token_loss * attention_mask).sum() / attention_mask.sum())
 
         # Compute metrics
         metrics = (
