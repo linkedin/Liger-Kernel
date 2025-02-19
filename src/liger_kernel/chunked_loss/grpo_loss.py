@@ -32,7 +32,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         std_grouped_rewards = rewards.std()  # [batch_size,]
 
         # Calculate advantages using the same epsilon as in GRPOTrainer
-        advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
+        eps = 1e-4
+        advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + eps)
 
         # Compute policy gradient loss with importance sampling ratio
         ratio = torch.exp(chosen_token_logprobs - chosen_token_logprobs.detach())
@@ -134,8 +135,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
 
     def forward(
         self,
-        lin_weight,
         _input,
+        lin_weight,
         attention_mask,
         rewards,
         bias=None,
