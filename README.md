@@ -47,6 +47,11 @@
                     <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?event=schedule" alt="Build">
                 </a>
             </div>
+            <div style="display: block;">
+                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?event=schedule" alt="Build">
+                </a>
+            </div>
         </td>
     </tr>
 </table>
@@ -214,7 +219,7 @@ model = transformers.AutoModelForCausalLM("path/to/llama/model")
 
 ### 3. Compose Your Own Model
 
-You can take individual [kernels](#kernels) to compose your models.
+You can take individual [kernels](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#model-kernels) to compose your models.
 
 ```python
 from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
@@ -302,12 +307,13 @@ loss.backward()
 
 ## Contributing, Acknowledgements, and License
 
-- [Contributing Guidelines](https://github.com/linkedin/Liger-Kernel/blob/main/docs/CONTRIBUTING.md)
-- [Acknowledgements](https://github.com/linkedin/Liger-Kernel/blob/main/docs/Acknowledgement.md)
-- [License Information](https://github.com/linkedin/Liger-Kernel/blob/main/docs/License.md)
+- [Contributing Guidelines](https://github.com/linkedin/Liger-Kernel/blob/main/docs/contributing.md)
+- [Acknowledgements](https://github.com/linkedin/Liger-Kernel/blob/main/docs/acknowledgement.md)
+- [License Information](https://github.com/linkedin/Liger-Kernel/blob/main/docs/license.md)
 
 ## Sponsorship and Collaboration
 
+- [Glows.ai](https://platform.glows.ai/): Sponsoring NVIDIA GPUs for our open source developers.
 - [AMD](https://www.amd.com/en.html): Providing AMD GPUs for our AMD CI.
 - [Intel](https://www.intel.com/): Providing Intel GPUs for our Intel CI.
 - [Modal](https://modal.com/): Free 3000 credits from GPU MODE IRL for our NVIDIA CI.
@@ -321,7 +327,7 @@ loss.backward()
 
 - For issues, create a Github ticket in this repository
 - For open discussion, join [our discord channel](https://discord.gg/gpumode)
-- For formal collaboration, send an email to byhsu@linkedin.com
+- For formal collaboration, send an email to yannchen@linkedin.com
 
 ## Cite this work
 
