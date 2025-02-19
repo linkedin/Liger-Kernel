@@ -327,7 +327,7 @@ loss.backward()
 
 - For issues, create a Github ticket in this repository
 - For open discussion, join [our discord channel](https://discord.gg/gpumode)
-- For formal collaboration, send an email to byhsu@linkedin.com
+- For formal collaboration, send an email to yannchen@linkedin.com
 
 ## Cite this work
 
