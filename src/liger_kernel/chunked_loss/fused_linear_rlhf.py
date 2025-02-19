@@ -14,7 +14,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         rewards,
         bias=None,
         loss_fn=None,
-        num_generations=1,
+        num_generations=4,
         beta=0.1,
         compiled=True,
         use_ref_model=False,
@@ -172,22 +172,18 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
 
     @staticmethod
     def chunk_forward(input_chunk, weight, bias=None):
-        """Forward pass computation for a single chunk."""
-        batch_size, seq_len, hidden_size = input_chunk.shape
-        input_reshaped = input_chunk.view(-1, hidden_size)  # [B*T, H]
-
-        # Linear layer: [B*T, H] @ [H, V] -> [B*T, V]
-        logits = F.linear(input_reshaped, weight)  # weight shape is [V, H]
+        """Forward pass computation for a single chunk without explicit reshaping."""
+        # Directly compute logits via batched matrix multiplication: [B, T, H] @ [H, V] -> [B, T, V]
+        logits = torch.matmul(input_chunk, weight.t())
         if bias is not None:
-            logits = logits + bias.view(1, -1)
+            logits = logits + bias  # Broadcasts bias to [B, T, V]
 
-        # Reshape to [B, T, V] and compute log_probs
-        logits = logits.view(batch_size, seq_len, -1)
+        # Compute log probabilities using softmax over the last dimension
         log_probs = F.log_softmax(logits.float(), dim=-1)
-
-        # Calculate mean logits for monitoring
+        
+        # Monitoring: compute mean of logits
+        batch_size, seq_len, _ = input_chunk.shape
         logits_mean = logits.sum() / (batch_size * seq_len * weight.shape[0])
-
         return log_probs, logits, logits_mean
 
     @staticmethod
