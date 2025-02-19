@@ -180,7 +180,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
 
         # Compute log probabilities using softmax over the last dimension
         log_probs = F.log_softmax(logits.float(), dim=-1)
-        
+
         # Monitoring: compute mean of logits
         batch_size, seq_len, _ = input_chunk.shape
         logits_mean = logits.sum() / (batch_size * seq_len * weight.shape[0])
