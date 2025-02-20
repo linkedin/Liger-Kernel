@@ -103,8 +103,8 @@ def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
         H=H,
         V=V,
         dtype=dtype,
-        bias=bias,
-        ref_bias=bias,
+        use_bias=bias,
+        use_ref_bias=bias,
         ignore_index=ignore_index,
         beta=beta,
     ).to(device)
@@ -113,8 +113,8 @@ def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
         H=H,
         V=V,
         dtype=dtype,
-        bias=bias,
-        ref_bias=bias,
+        use_bias=bias,
+        use_ref_bias=bias,
         ignore_index=ignore_index,
         beta=beta,
     ).to(device)
@@ -189,7 +189,7 @@ def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
         dtype=dtype,
         beta=beta,
         ignore_index=ignore_index,
-        bias=bias,
+        use_bias=bias,
     ).to(device)
     liger_kto_loss = LigerLMHeadKTO(
         H=H,
@@ -197,7 +197,7 @@ def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
         dtype=dtype,
         beta=beta,
         ignore_index=ignore_index,
-        bias=bias,
+        use_bias=bias,
     ).to(device)
 
     # Input shape: [B, T, H]
