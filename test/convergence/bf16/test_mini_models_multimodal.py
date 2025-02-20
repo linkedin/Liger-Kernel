@@ -296,7 +296,7 @@ def run_mini_model_multimodal(
         kwargs = {
             "rope": True,
             "rms_norm": True,
-            "cross_entropy": True,
+            "cross_entropy": False,
             "layer_norm": True,
         }
 
