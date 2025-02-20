@@ -334,25 +334,25 @@ def run_mini_model_multimodal(
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
-        # pytest.param(
-        #     "mini_qwen2_vl",
-        #     32,
-        #     1e-4,
-        #     torch.float32,
-        #     1e-8,
-        #     1e-5,
-        #     5e-3,
-        #     1e-5,
-        #     5e-3,
-        #     1e-5,
-        #     marks=[
-        #         pytest.mark.skipif(
-        #             not QWEN2_VL_AVAILABLE,
-        #             reason="Qwen2-VL not available in this version of transformers",
-        #         ),
-        #         pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
-        #     ],
-        # ),
+        pytest.param(
+            "mini_qwen2_vl",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not QWEN2_VL_AVAILABLE,
+                    reason="Qwen2-VL not available in this version of transformers",
+                ),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
+            ],
+        ),
         pytest.param(
             "mini_mllama",
             32,
