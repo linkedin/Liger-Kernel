@@ -33,7 +33,7 @@ def get_default_dependencies():
 def get_optional_dependencies():
     """Get optional dependency groups."""
     platform = get_platform()
-    
+
     dev_deps = [
         "transformers>=4.44.2",
         "matplotlib>=3.7.2",
@@ -48,13 +48,11 @@ def get_optional_dependencies():
         "mkdocs",
         "mkdocs-material",
     ]
-    
+
     if platform == "rocm":
         dev_deps.append("--extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2")
-    
-    return {
-        "dev": dev_deps
-    }
+
+    return {"dev": dev_deps}
 
 
 def get_platform() -> Literal["cuda", "rocm", "cpu", "xpu"]:
