@@ -4,8 +4,8 @@ import torch
 from test.utils import supports_bfloat16
 
 try:
-    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLRotaryEmbedding
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLRotaryEmbedding
     from transformers.models.qwen2_vl.modeling_qwen2_vl import apply_multimodal_rotary_pos_emb
 
     IS_QWEN_AVAILABLE = True
