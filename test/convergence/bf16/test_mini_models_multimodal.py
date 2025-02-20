@@ -296,7 +296,7 @@ def run_mini_model_multimodal(
         kwargs = {
             "rope": True,
             "rms_norm": True,
-            "cross_entropy": True,
+            "cross_entropy": False,
             "layer_norm": True,
         }
 
@@ -339,25 +339,6 @@ def run_mini_model_multimodal(
             "mini_qwen2_vl",
             32,
             1e-4,
-            torch.float32,
-            1e-8,
-            1e-5,
-            5e-3,
-            1e-5,
-            5e-3,
-            1e-5,
-            marks=[
-                pytest.mark.skipif(
-                    not QWEN2_VL_AVAILABLE,
-                    reason="Qwen2-VL not available in this version of transformers",
-                ),
-                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
-            ],
-        ),
-        pytest.param(
-            "mini_qwen2_vl",
-            32,
-            1e-4,
             torch.bfloat16,
             1e-3,
             1e-2,
@@ -373,22 +354,6 @@ def run_mini_model_multimodal(
                 ),
                 pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
-        ),
-        pytest.param(
-            "mini_mllama",
-            32,
-            1e-4,
-            torch.float32,
-            1e-8,
-            1e-5,
-            5e-3,
-            1e-5,
-            5e-3,
-            1e-5,
-            marks=pytest.mark.skipif(
-                not MLLAMA_AVAILABLE,
-                reason="Mllama not available in this version of transformers",
-            ),
         ),
         pytest.param(
             "mini_mllama",

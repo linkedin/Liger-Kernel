@@ -47,6 +47,11 @@
                     <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?event=schedule" alt="Build">
                 </a>
             </div>
+            <div style="display: block;">
+                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?event=schedule" alt="Build">
+                </a>
+            </div>
         </td>
     </tr>
 </table>
@@ -137,6 +142,11 @@ y = orpo_loss(lm_head.weight, x, target)
 
 - `torch >= 2.5.0` Install according to the instruction in Pytorch official webpage.
 - `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
+
+```bash
+# Need to pass the url when installing
+pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
+```
 
 ### Optional Dependencies
 
@@ -322,7 +332,7 @@ loss.backward()
 
 - For issues, create a Github ticket in this repository
 - For open discussion, join [our discord channel](https://discord.gg/gpumode)
-- For formal collaboration, send an email to byhsu@linkedin.com
+- For formal collaboration, send an email to yannchen@linkedin.com
 
 ## Cite this work
 
