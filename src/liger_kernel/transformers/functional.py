@@ -1,5 +1,6 @@
 from typing import Optional
 
+from liger_kernel.ops.batch_norm import LigerBatchNormFunction
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
@@ -175,3 +176,7 @@ def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 
 def liger_swiglu(a, b):
     return LigerSiLUMulFunction.apply(a, b)
+
+
+def liger_batch_norm(X, gamma, beta, eps):
+    return LigerBatchNormFunction.apply(X, gamma, beta, eps)
