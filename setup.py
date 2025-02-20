@@ -17,9 +17,11 @@ def get_default_dependencies():
             "triton>=2.3.1",
         ]
     elif platform == "rocm":
+        # Using dependency links for ROCm-specific PyTorch
         return [
             "torch>=2.6.0.dev",
             "triton>=3.0.0",
+            "--extra-index-url https://download.pytorch.org/whl/rocm6.2",
         ]
     elif platform == "xpu":
         return [
@@ -30,21 +32,28 @@ def get_default_dependencies():
 
 def get_optional_dependencies():
     """Get optional dependency groups."""
+    platform = get_platform()
+    
+    dev_deps = [
+        "transformers>=4.44.2",
+        "matplotlib>=3.7.2",
+        "flake8>=4.0.1.1",
+        "black>=24.4.2",
+        "isort>=5.13.2",
+        "pytest>=7.1.2",
+        "pytest-xdist",
+        "pytest-rerunfailures",
+        "datasets>=2.19.2",
+        "seaborn",
+        "mkdocs",
+        "mkdocs-material",
+    ]
+    
+    if platform == "rocm":
+        dev_deps.append("--extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2")
+    
     return {
-        "dev": [
-            "transformers>=4.44.2",
-            "matplotlib>=3.7.2",
-            "flake8>=4.0.1.1",
-            "black>=24.4.2",
-            "isort>=5.13.2",
-            "pytest>=7.1.2",
-            "pytest-xdist",
-            "pytest-rerunfailures",
-            "datasets>=2.19.2",
-            "seaborn",
-            "mkdocs",
-            "mkdocs-material",
-        ]
+        "dev": dev_deps
     }
 
 
