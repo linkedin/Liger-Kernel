@@ -9,8 +9,10 @@ test:
 
 # Command to run ruff for linting and formatting code
 checkstyle:
-	ruff check . --fix; ruff_check_status=$$?; \
-	ruff format .; ruff_format_status=$$?; \
+	ruff check .; ruff_check_status=$$?; \
+	ruff format --check .; ruff_format_status=$$?; \
+	ruff check . --fix; \
+	ruff format .; \
 	if [ $$ruff_check_status -ne 0 ] || [ $$ruff_format_status -ne 0 ]; then \
 		exit 1; \
 	fi
