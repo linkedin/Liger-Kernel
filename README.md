@@ -143,6 +143,11 @@ y = orpo_loss(lm_head.weight, x, target)
 - `torch >= 2.5.0` Install according to the instruction in Pytorch official webpage.
 - `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
 
+```bash
+# Need to pass the url when installing
+pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
+```
+
 ### Optional Dependencies
 
 - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
