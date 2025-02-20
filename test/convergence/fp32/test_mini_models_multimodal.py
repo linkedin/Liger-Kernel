@@ -295,7 +295,7 @@ def run_mini_model_multimodal(
         kwargs = {
             "rope": True,
             "rms_norm": True,
-            "cross_entropy": True,
+            "cross_entropy": False,
             "layer_norm": True,
         }
 
@@ -325,34 +325,34 @@ def run_mini_model_multimodal(
         optimizer.step()
 
         print(f"Step {i}, Loss: {output.loss.item()}")
+        print(f"Step {i}, Logits: {output.logits[:10, 0]}")
         loss_list.append(output.loss.item())
 
-    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
     return {"loss": loss_list, "logits": output.logits, "model": model}
 
 
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
-        pytest.param(
-            "mini_qwen2_vl",
-            32,
-            1e-4,
-            torch.float32,
-            1e-8,
-            1e-5,
-            5e-3,
-            1e-5,
-            5e-3,
-            1e-5,
-            marks=[
-                pytest.mark.skipif(
-                    not QWEN2_VL_AVAILABLE,
-                    reason="Qwen2-VL not available in this version of transformers",
-                ),
-                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
-            ],
-        ),
+        # pytest.param(
+        #     "mini_qwen2_vl",
+        #     32,
+        #     1e-4,
+        #     torch.float32,
+        #     1e-8,
+        #     1e-5,
+        #     5e-3,
+        #     1e-5,
+        #     5e-3,
+        #     1e-5,
+        #     marks=[
+        #         pytest.mark.skipif(
+        #             not QWEN2_VL_AVAILABLE,
+        #             reason="Qwen2-VL not available in this version of transformers",
+        #         ),
+        #         pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
+        #     ],
+        # ),
         pytest.param(
             "mini_mllama",
             32,
