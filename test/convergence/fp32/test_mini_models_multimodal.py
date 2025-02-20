@@ -325,7 +325,6 @@ def run_mini_model_multimodal(
         optimizer.step()
 
         print(f"Step {i}, Loss: {output.loss.item()}")
-        print(f"Step {i}, Logits: {output.logits[:10, 0]}")
         loss_list.append(output.loss.item())
 
     return {"loss": loss_list, "logits": output.logits, "model": model}
