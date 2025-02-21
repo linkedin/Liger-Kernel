@@ -1,13 +1,12 @@
 import torch
 import triton
-from utils import (
-    QUANTILES,
-    SingleBenchmarkRunInput,
-    SingleBenchmarkRunOutput,
-    _test_memory,
-    parse_benchmark_script_args,
-    run_benchmarks,
-)
+
+from utils import QUANTILES
+from utils import SingleBenchmarkRunInput
+from utils import SingleBenchmarkRunOutput
+from utils import _test_memory
+from utils import parse_benchmark_script_args
+from utils import run_benchmarks
 
 from liger_kernel.transformers.tvd import LigerTVDLoss
 
@@ -67,9 +66,7 @@ def bench_speed_tvd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
             y = fwd()
             y.backward(retain_graph=True)
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full, quantiles=QUANTILES, rep=100
-        )
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
         y_50=ms_50,
