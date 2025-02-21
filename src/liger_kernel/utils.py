@@ -9,5 +9,7 @@ def infer_device():
         return "cuda"
     elif torch.xpu.is_available():
         return "xpu"
+    elif torch.hip.is_available():
+        return "hip"
     else:
         return "cpu"
