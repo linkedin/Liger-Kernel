@@ -44,6 +44,15 @@ def is_qwen2_vl_available():
         return False
 
 
+def is_olmo2_available():
+    try:
+        import transformers.models.olmo2  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def test_import_from_root():
     try:
         from liger_kernel.transformers import AutoLigerKernelForCausalLM  # noqa: F401
@@ -697,6 +706,7 @@ def test_apply_liger_kernel_to_instance_for_phi3():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
+@pytest.mark.skipif(not is_olmo2_available(), reason="olmo2 module not available")
 def test_apply_liger_kernel_to_instance_for_olmo2():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.olmo2.modeling_olmo2"):
