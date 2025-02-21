@@ -1,4 +1,5 @@
-from typing import Literal, Optional
+from typing import Literal
+from typing import Optional
 
 import torch
 import triton
@@ -178,15 +179,13 @@ class LigerTVDLossFunction(torch.autograd.Function):
         """
         has_label = False
         if shift_labels is not None:
-            assert shift_labels.shape == (
-                p.shape[0],
-            ), f"the shape of shift_labels must be (BT,). Got: {shift_labels.shape}"
+            assert shift_labels.shape == (p.shape[0],), (
+                f"the shape of shift_labels must be (BT,). Got: {shift_labels.shape}"
+            )
             shift_labels = shift_labels.contiguous()
             has_label = True
 
-        loss, grads = tv_distance_forward_triton(
-            p, q, shift_labels, reduction, ignore_index, has_label
-        )
+        loss, grads = tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_label)
         ctx.save_for_backward(grads)
         return loss
 

@@ -1,11 +1,12 @@
-import os
+from dataclasses import dataclass
+
+import datasets
 import torch
 import transformers
-import datasets
-from dataclasses import dataclass
-from trl import SFTTrainer, SFTConfig
-from trl.trainer import ConstantLengthDataset
-from datasets import Image as ImageFeature
+
+from trl import SFTConfig
+from trl import SFTTrainer
+
 from liger_kernel.transformers import monkey_patch
 
 
@@ -90,17 +91,11 @@ def train():
     parser = transformers.HfArgumentParser((transformers.TrainingArguments, CustomArguments))
     training_args, custom_args = parser.parse_args_into_dataclasses()
 
-    model, processor, image_token_id = construct_model_and_processor(
-        custom_args.model_name, custom_args.use_liger
-    )
+    model, processor, image_token_id = construct_model_and_processor(custom_args.model_name, custom_args.use_liger)
 
-    dataset = datasets.load_dataset(
-        custom_args.dataset, 
-        custom_args.dataset_subset, 
-        split=custom_args.dataset_split
-    )
+    dataset = datasets.load_dataset(custom_args.dataset, custom_args.dataset_subset, split=custom_args.dataset_split)
 
-    train_dataset, eval_dataset = prepare_dataset(dataset, processor, image_token_id)
+    train_dataset, eval_dataset = datasets.prepare_dataset(dataset, processor, image_token_id)
 
     sft_config = SFTConfig(
         output_dir=training_args.output_dir,
