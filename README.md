@@ -47,6 +47,11 @@
                     <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?event=schedule" alt="Build">
                 </a>
             </div>
+            <div style="display: block;">
+                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?event=schedule" alt="Build">
+                </a>
+            </div>
         </td>
     </tr>
 </table>
@@ -73,7 +78,7 @@
 
 **Liger Kernel** is a collection of Triton kernels designed specifically for LLM training. It can effectively increase multi-GPU **training throughput by 20%** and reduces **memory usage by 60%**. We have implemented **Hugging Face Compatible** `RMSNorm`, `RoPE`, `SwiGLU`, `CrossEntropy`, `FusedLinearCrossEntropy`, and more to come. The kernel works out of the box with [Flash Attention](https://github.com/Dao-AILab/flash-attention), [PyTorch FSDP](https://pytorch.org/tutorials/intermediate/FSDP_tutorial.html), and [Microsoft DeepSpeed](https://github.com/microsoft/DeepSpeed). We welcome contributions from the community to gather the best kernels for LLM training.
 
-We've also added optimized Post-Training kernels that deliver **up to 80% memory savings** for alignment and distillation tasks. We support losses like DPO, CPO, ORPO, SimPO, JSD, and many more. Check out [how we optimize the memory](https://x.com/hsu_byron/status/1866577403918917655).
+We've also added optimized Post-Training kernels that deliver **up to 80% memory savings** for alignment and distillation tasks. We support losses like DPO, CPO, ORPO, SimPO, KTO, JSD, and many more. Check out [how we optimize the memory](https://x.com/hsu_byron/status/1866577403918917655).
 
 ## Supercharge Your Model with Liger Kernel
 
@@ -137,6 +142,11 @@ y = orpo_loss(lm_head.weight, x, target)
 
 - `torch >= 2.5.0` Install according to the instruction in Pytorch official webpage.
 - `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
+
+```bash
+# Need to pass the url when installing
+pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
+```
 
 ### Optional Dependencies
 
@@ -283,6 +293,7 @@ loss.backward()
 | Fused Linear DPO Loss           | `liger_kernel.chunked_loss.LigerFusedLinearDPOLoss`       |
 | Fused Linear ORPO Loss          | `liger_kernel.chunked_loss.LigerFusedLinearORPOLoss`      |
 | Fused Linear SimPO Loss         | `liger_kernel.chunked_loss.LigerFusedLinearSimPOLoss`     |
+| Fused Linear KTO Loss           | `liger_kernel.chunked_loss.LigerFusedLinearKTOLoss`     |
 
 ### Distillation Kernels
 
@@ -291,6 +302,7 @@ loss.backward()
 | KLDivergence                    | `liger_kernel.transformers.LigerKLDIVLoss`                  |
 | JSD                             | `liger_kernel.transformers.LigerJSD`                        |
 | Fused Linear JSD                  | `liger_kernel.transformers.LigerFusedLinearJSD`             |
+| TVD                             | `liger_kernel.transformers.LigerTVDLoss`                    |
 
 ### Experimental Kernels
 
@@ -322,7 +334,7 @@ loss.backward()
 
 - For issues, create a Github ticket in this repository
 - For open discussion, join [our discord channel](https://discord.gg/gpumode)
-- For formal collaboration, send an email to byhsu@linkedin.com
+- For formal collaboration, send an email to yannchen@linkedin.com
 
 ## Cite this work
 

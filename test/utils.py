@@ -275,6 +275,18 @@ def transformers_version_dispatch(
         return after_fn(*after_args, **after_kwargs)
 
 
+def revert_liger_kernel_to_granite(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Granite.
+    """
+
+    from transformers.models.granite import modeling_granite
+
+    importlib.reload(modeling_granite)
+    model_config.model_class = modeling_granite.GraniteForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_llama(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Llama.
