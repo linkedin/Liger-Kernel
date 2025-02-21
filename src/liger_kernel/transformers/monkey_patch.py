@@ -22,7 +22,6 @@ from liger_kernel.transformers.model.llama import lce_forward_deprecated as llam
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
-from liger_kernel.transformers.model.olmo2 import lce_forward as olmo2_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward_deprecated
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
@@ -844,6 +843,8 @@ def apply_liger_kernel_to_olmo2(
 
     from transformers.models.olmo2 import modeling_olmo2
     from transformers.models.olmo2.modeling_olmo2 import Olmo2Model
+
+    from liger_kernel.transformers.model.olmo2 import lce_forward as olmo2_lce_forward
 
     if rope:
         modeling_olmo2.apply_rotary_pos_emb = liger_rotary_pos_emb
