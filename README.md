@@ -301,6 +301,7 @@ loss.backward()
 | KLDivergence                    | `liger_kernel.transformers.LigerKLDIVLoss`                  |
 | JSD                             | `liger_kernel.transformers.LigerJSD`                        |
 | Fused Linear JSD                  | `liger_kernel.transformers.LigerFusedLinearJSD`             |
+| TVD                             | `liger_kernel.transformers.LigerTVDLoss`                    |
 
 ### Experimental Kernels
 
