@@ -26,7 +26,7 @@ device = infer_device()
 set_seed(42)
 
 
-def _test_correctness_flex(B, H, S, D, mask_func, dtype, atol, rtol, device="cuda"):
+def _test_correctness_flex(B, H, S, D, mask_func, dtype, atol, rtol, device=infer_device()):
     """
     Test attention mechanisms with various implementations.
 
@@ -99,8 +99,8 @@ def test_correctness_flex(B, H, S, D, dtype, atol, rtol):
     _test_correctness_flex(B, H, S, D, causal_mask, dtype, atol, rtol)
 
     # Roughly generate custom rejected and chosen indices for each batch
-    chosen_index = torch.randint(0, S // 2, (B,), device="cuda")
-    rejected_index = torch.randint(S // 2, S, (B,), device="cuda")
+    chosen_index = torch.randint(0, S // 2, (B,), device=infer_device())
+    rejected_index = torch.randint(S // 2, S, (B,), device=infer_device())
 
     def wrapped_prefix_mask(b, h, q_idx, kv_idx):
         return prefix_mask(b, h, q_idx, kv_idx, rejected_index, chosen_index)
@@ -118,7 +118,7 @@ def _test_correctness_prefix(
     dtype=torch.float32,
     atol=1e-3,
     rtol=5e-4,
-    device="cuda",
+    device=infer_device(),
 ):
     """
     Test that prefix sharing attention matches separate computations (i.e. two separate casual masked attention, prefix+chosen and prefix+rejected).
