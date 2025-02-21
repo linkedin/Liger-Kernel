@@ -90,15 +90,9 @@ def train():
     parser = transformers.HfArgumentParser((transformers.TrainingArguments, CustomArguments))
     training_args, custom_args = parser.parse_args_into_dataclasses()
 
-    model, processor, image_token_id = construct_model_and_processor(
-        custom_args.model_name, custom_args.use_liger
-    )
+    model, processor, image_token_id = construct_model_and_processor(custom_args.model_name, custom_args.use_liger)
 
-    dataset = datasets.load_dataset(
-        custom_args.dataset, 
-        custom_args.dataset_subset, 
-        split=custom_args.dataset_split
-    )
+    dataset = datasets.load_dataset(custom_args.dataset, custom_args.dataset_subset, split=custom_args.dataset_split)
 
     train_dataset, eval_dataset = prepare_dataset(dataset, processor, image_token_id)
 
