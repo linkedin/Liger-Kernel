@@ -66,6 +66,7 @@ except ImportError:
 try:
     from transformers.models.granite import GraniteConfig
     from transformers.models.granite import GraniteForCausalLM
+
     GRANITE_AVAILABLE = True
 except ImportError:
     GRANITE_AVAILABLE = False
