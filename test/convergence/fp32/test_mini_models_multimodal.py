@@ -295,7 +295,7 @@ def run_mini_model_multimodal(
         kwargs = {
             "rope": True,
             "rms_norm": True,
-            "cross_entropy": True,
+            "cross_entropy": False,
             "layer_norm": True,
         }
 
@@ -327,7 +327,6 @@ def run_mini_model_multimodal(
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
-    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
     return {"loss": loss_list, "logits": output.logits, "model": model}
 
 

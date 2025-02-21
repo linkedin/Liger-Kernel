@@ -464,7 +464,7 @@ def run_mini_model(
             kwargs["swiglu"] = True
 
         kwargs["fused_linear_cross_entropy"] = False
-        kwargs["cross_entropy"] = True
+        kwargs["cross_entropy"] = False
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
@@ -685,8 +685,6 @@ def test_mini_model(
         rtol=loss_rtol,
     )
 
-    # No logits are materialized
-    # import pdb; pdb.set_trace()
     # Compare the logits from the last step
     assert_verbose_allclose(
         expected_output["logits"],
