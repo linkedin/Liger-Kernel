@@ -461,7 +461,8 @@ def run_mini_model(
             kwargs["geglu"] = True
         else:
             kwargs["swiglu"] = True
-
+        
+        # fused_linear_cross_entropy is not supported in mini_granite3
         kwargs["fused_linear_cross_entropy"] = True if model_name != "mini_granite3" else False
         kwargs["cross_entropy"] = False
 
