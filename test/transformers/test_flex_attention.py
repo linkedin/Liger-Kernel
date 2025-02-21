@@ -75,6 +75,13 @@ def _test_correctness_flex(B, H, S, D, mask_func, dtype, atol, rtol, device=infe
     assert_verbose_allclose(value_flex.grad, value_torch.grad, atol=atol, rtol=rtol)
 
 
+def _is_flex_attention_supported():
+    """Check if flex attention is supported on the current device"""
+    device = infer_device()
+    return device in ["cuda"]
+
+
+@pytest.mark.skipif(not _is_flex_attention_supported(), reason="FlexAttention is only supported on CUDA or CPU devices")
 @pytest.mark.parametrize(
     "B, H, S, D",
     [
@@ -258,6 +265,7 @@ def _test_correctness_prefix(
     print("All attention values match between shared and separate computations!")
 
 
+@pytest.mark.skipif(not _is_flex_attention_supported(), reason="FlexAttention is only supported on CUDA or CPU devices")
 @pytest.mark.parametrize(
     "B, H, P, C, R, D",
     [
