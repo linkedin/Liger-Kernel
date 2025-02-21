@@ -65,7 +65,7 @@ def _test_correctness_flex(B, H, S, D, mask_func, dtype, atol, rtol, device="cud
     # Check forward pass
     assert_verbose_allclose(flex_out, torch_out, atol=atol, rtol=rtol)
 
-    grad_out = torch.randn_like(torch_out)
+    grad_out = torch.ones_like(torch_out)
     torch_out.backward(grad_out)
     flex_out.backward(grad_out)
 
