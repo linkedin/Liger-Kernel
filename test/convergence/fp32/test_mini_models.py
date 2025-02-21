@@ -75,39 +75,6 @@ from liger_kernel.utils import infer_device
 device = infer_device()
 
 MINI_MODEL_SETUPS = {
-    "mini_granite3": MiniModelConfig(
-        liger_kernel_patch_func=apply_liger_kernel_to_granite,
-        liger_kernel_patch_revert_func=revert_liger_kernel_to_granite,
-        model_class=GraniteForCausalLM,
-        mini_model_config=GraniteConfig(
-            attention_bias=False,
-            attention_dropout=0.1,
-            # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
-            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
-            bos_token_id=1,  # 128000
-            eos_token_id=2,  # 128001
-            hidden_act="silu",
-            hidden_size=1024,  # 4096
-            initializer_range=0.02,
-            intermediate_size=2048,  # 14336
-            max_position_embeddings=8192,
-            num_attention_heads=8,  # 32
-            num_hidden_layers=4,  # 32
-            num_key_value_heads=2,  # 8
-            pretraining_tp=1,
-            rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500000.0,
-            tie_word_embeddings=False,
-            use_cache=True,
-            vocab_size=32000,  # 128256,
-            # At rope backward
-            # Eager produces incontiguous dq and dk
-            # SDPA produces contiguous dq and incontiguous dk
-            # Flash_attn produces contiguous dq and dk
-            attn_implementation="sdpa",  # default value, pytorch native attention
-        ),
-    ),
     "mini_llama3": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_llama,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llama,
