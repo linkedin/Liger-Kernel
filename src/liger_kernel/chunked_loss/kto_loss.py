@@ -43,20 +43,20 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
         3. Maintain reasonable distance from the reference model
 
         Args:
-            chosen_logps: Log probabilities of chosen tokens (batch_size,)
-            rejected_logps: Log probabilities of rejected tokens (batch_size,)
+            average_log_prob_chunk: Log probabilities for the chunk (batch_size,)
+            preference_labels_chunk: Preference labels for the chunk (batch_size,)
             full_target: Non chunked full target tensor
-            ref_chosen_logps: Reference log probs of chosen tokens (batch_size,)
-            ref_rejected_logps: Reference log probs of rejected tokens (batch_size,)
-            beta: Weight for the direct preference loss
+            ref_average_log_prob_chunk: Reference log probs for the chunk (batch_size,)
+            beta: Weight for the KTO loss
             kl: KL divergence between the policy model and the reference model for the chosen responses. Shape: (batch_size,)
         Returns:
-            Tuple of (loss, chosen_rewards, rejected_rewards):
             - loss: The KTO loss value
-            - chosen_rewards: Reward signals for chosen responses (detached)
-            - rejected_rewards: Reward signals for rejected responses (detached)
         """
-        logratios_chunk = average_log_prob_chunk - ref_average_log_prob_chunk
+        if ref_average_log_prob_chunk is not None:
+            logratios_chunk = average_log_prob_chunk - ref_average_log_prob_chunk
+        else:
+            logratios_chunk = average_log_prob_chunk
+
         multiplier_chunk = torch.where(preference_labels_chunk, 1, -1)
         if kl is not None:
             losses = 1 - F.sigmoid(beta * (logratios_chunk - kl) * multiplier_chunk)
