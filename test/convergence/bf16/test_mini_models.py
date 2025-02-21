@@ -648,7 +648,13 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not OLMO2_AVAILABLE,
+                    reason="OLMO2 not available in this version of transformers",
+                ),
+            ],
         ),
         # TODO: mixtral is flaky so disable the test for now
         # pytest.param(

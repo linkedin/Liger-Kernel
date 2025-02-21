@@ -691,7 +691,13 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not OLMO2_AVAILABLE,
+                    reason="OLMO2 not available in this version of transformers",
+                ),
+            ],
         ),
         # TODO: Gemma2 test for bf16 is not passing within the tolerance range, might be casting issue, need to investigate
         # pytest.param(
