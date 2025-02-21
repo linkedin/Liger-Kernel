@@ -85,7 +85,7 @@ def _test_correctness_once(
     rtol,
     reduction,
     is_last_layer=True,
-    device="cuda",
+    device=infer_device(),
 ):
     torch.manual_seed(0)
     input = torch.randn(B * T, V, device=device, dtype=dtype, requires_grad=True)
@@ -124,7 +124,7 @@ def _test_correctness_with_ignore_index_once(
     atol,
     rtol,
     reduction,
-    device="cuda",
+    device=infer_device(),
 ):
     input = torch.randn(B * T, V, device=device, dtype=dtype, requires_grad=True)
 
