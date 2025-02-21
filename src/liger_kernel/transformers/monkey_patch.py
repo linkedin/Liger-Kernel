@@ -61,6 +61,85 @@ def _patch_layer_norm_module(module, eps=1e-6):
     _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
 
 
+def apply_liger_kernel_to_granite(
+    rope: bool = True,
+    cross_entropy: bool = True,
+    fused_linear_cross_entropy: bool = False,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Granite 3 models
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is False.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+
+
+
+    Debugging notes:
+        If LigerSwiGLUMLP is OK for Llama, it should be fine for Granite, but it's not.
+    """
+
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.granite import modeling_granite
+    from transformers.models.granite.modeling_granite import GraniteModel
+
+    if swiglu:
+        modeling_granite.GraniteMLP = LigerSwiGLUMLP
+
+    if rms_norm:
+        modeling_granite.GraniteRMSNorm = LigerRMSNorm
+
+    if rope:
+        modeling_granite.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if cross_entropy:
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_granite.CrossEntropyLoss = LigerCrossEntropyLoss
+
+    if fused_linear_cross_entropy:
+        raise NotImplementedError("LigerFusedLinearCrossEntropy is not available for Granite models.")
+        # NOTE: Granite model `GraniteForCausalLM.forward` scales logits each
+        # call, so we can't sidestep logit materialization. A bit more work
+        # would be needed to add a scaling term to the `LigerFusedLinearCrossEntropyFunction`
+        # for the logit output.
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules (e.g. GraniteRMSNorm or GraniteMLP)
+
+        # get the base model from the model instance
+        base_model: GraniteModel = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 def apply_liger_kernel_to_llama(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -740,6 +819,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
     "llama": apply_liger_kernel_to_llama,
+    "granite": apply_liger_kernel_to_granite,
     "mllama": apply_liger_kernel_to_mllama,
     "mllama_text_model": apply_liger_kernel_to_mllama,
     "mistral": apply_liger_kernel_to_mistral,
