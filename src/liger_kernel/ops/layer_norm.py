@@ -149,9 +149,9 @@ def layer_norm_forward(X, W, B, eps):
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
     Mean = torch.empty(n_rows, dtype=X.dtype, device=X.device)
     RSTD = torch.empty(n_rows, dtype=X.dtype, device=X.device)
-    assert (
-        X.shape[1] == W.shape[0]
-    ), f"Incompatible hidden size dimension between input tensor with shape[1] = {X.shape[1]} and weight tensor with shape[0] = {W.shape[0]}"
+    assert X.shape[1] == W.shape[0], (
+        f"Incompatible hidden size dimension between input tensor with shape[1] = {X.shape[1]} and weight tensor with shape[0] = {W.shape[0]}"
+    )
 
     _layer_norm_forward_kernel[(n_rows,)](
         Y,

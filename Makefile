@@ -1,4 +1,4 @@
-.PHONY: test checkstyle test-convergence all
+.PHONY: test checkstyle test-convergence all serve build clean
 
 
 all: checkstyle test test-convergence
@@ -7,11 +7,12 @@ all: checkstyle test test-convergence
 test:
 	python -m pytest --disable-warnings test/ --ignore=test/convergence
 
-# Command to run flake8 (code style check), isort (import ordering), and black (code formatting)
-# Subsequent commands still run if the previous fails, but return failure at the end
+# Command to run ruff for linting and formatting code
 checkstyle:
-	ruff check . --fix; ruff_check_status=$$?; \
-	ruff format .; ruff_format_status=$$?; \
+	ruff check .; ruff_check_status=$$?; \
+	ruff format --check .; ruff_format_status=$$?; \
+	ruff check . --fix; \
+	ruff format .; \
 	if [ $$ruff_check_status -ne 0 ] || [ $$ruff_format_status -ne 0 ]; then \
 		exit 1; \
 	fi
@@ -19,9 +20,13 @@ checkstyle:
 # Command to run pytest for convergence tests
 # We have to explicitly set HF_DATASETS_OFFLINE=1, or dataset will silently try to send metrics and timeout (80s) https://github.com/huggingface/datasets/blob/37a603679f451826cfafd8aae00738b01dcb9d58/src/datasets/load.py#L286
 test-convergence:
-	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/test_mini_models.py
-	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/test_mini_models_multimodal.py
-	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/test_mini_models_with_logits.py
+	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/fp32/test_mini_models.py
+	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/fp32/test_mini_models_multimodal.py
+	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/fp32/test_mini_models_with_logits.py
+
+	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/bf16/test_mini_models.py
+	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/bf16/test_mini_models_multimodal.py
+	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/bf16/test_mini_models_with_logits.py
 
 # Command to run all benchmark scripts and update benchmarking data file
 # By default this doesn't overwrite existing data for the same benchmark experiment
@@ -39,3 +44,17 @@ run-benchmarks:
 			python $$script; \
 		fi; \
 	done
+
+# MkDocs Configuration
+MKDOCS = mkdocs
+CONFIG_FILE = mkdocs.yml
+
+# MkDocs targets
+serve:
+	$(MKDOCS) serve -f $(CONFIG_FILE)
+
+build:
+	$(MKDOCS) build -f $(CONFIG_FILE)
+
+clean:
+	rm -rf site/
