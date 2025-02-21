@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from liger_kernel.transformers.tvd import LigerTVDLoss
-
+from liger_kernel.utils import infer_device
 
 class TorchTVDLoss(torch.nn.Module):
     def __init__(self, reduction="batchmean", ignore_index: int = -100):
@@ -47,8 +47,9 @@ _SHAPE_PARAMS = (
             4096,
             128256,
             marks=pytest.mark.skipif(
-                torch.cuda.get_device_properties(0).total_memory
-                < 36 * 1000 * 1000 * 1000,
+                hasattr(torch, infer_device()) and
+                getattr(torch, infer_device()).is_available() and
+                getattr(torch, infer_device()).get_device_properties(0).total_memory < 36e9,
                 reason="This test requires a GPU with at least 36GB of memory",
             ),
         ),
