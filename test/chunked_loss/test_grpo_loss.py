@@ -96,7 +96,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         per_token_loss = -(per_token_loss - self.beta * kl_div)
 
         # Apply masking and normalize
-        loss = ((per_token_loss * attention_mask).sum() / attention_mask.sum())
+        loss = (per_token_loss * attention_mask).sum() / attention_mask.sum()
 
         # Compute metrics
         metrics = (
