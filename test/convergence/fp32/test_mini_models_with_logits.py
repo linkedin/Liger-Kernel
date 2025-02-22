@@ -20,6 +20,7 @@ from transformers.models.qwen2 import Qwen2ForCausalLM
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
+from liger_kernel.transformers import apply_liger_kernel_to_granite
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_mistral
 from liger_kernel.transformers import apply_liger_kernel_to_mixtral
@@ -32,6 +33,7 @@ from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
+from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
@@ -59,6 +61,14 @@ try:
     QWEN2_VL_AVAILABLE = True
 except ImportError:
     QWEN2_VL_AVAILABLE = False
+
+try:
+    from transformers.models.granite import GraniteConfig
+    from transformers.models.granite import GraniteForCausalLM
+
+    GRANITE_AVAILABLE = True
+except ImportError:
+    GRANITE_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -380,6 +390,42 @@ if QWEN2_VL_AVAILABLE:
         ),
     )
 
+if GRANITE_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_granite3"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_granite,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_granite,
+        model_class=GraniteForCausalLM,
+        mini_model_config=GraniteConfig(
+            attention_bias=False,
+            attention_dropout=0.0,
+            # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
+            hidden_act="silu",
+            hidden_size=1024,  # 4096
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=8192,
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 32
+            num_key_value_heads=2,  # 8
+            pretraining_tp=1,
+            rms_norm_eps=1e-5,
+            rope_scaling=None,
+            rope_theta=500000.0,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 128256,
+            logits_scaling=4.0,
+            # At rope backward
+            # Eager produces incontiguous dq and dk
+            # SDPA produces contiguous dq and incontiguous dk
+            # Flash_attn produces contiguous dq and dk
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
+
 
 def create_model(model_name="mini_llama3"):
     """
@@ -425,7 +471,7 @@ def run_mini_model(
             kwargs["swiglu"] = True
 
         kwargs["fused_linear_cross_entropy"] = False
-        kwargs["cross_entropy"] = True
+        kwargs["cross_entropy"] = False
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
@@ -498,6 +544,22 @@ def run_mini_model(
         ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        pytest.param(
+            "mini_granite3",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-4,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not GRANITE_AVAILABLE,
+                reason="Granite not available in this version of transformers",
+            ),
+        ),
     ],
 )
 def test_mini_model(
