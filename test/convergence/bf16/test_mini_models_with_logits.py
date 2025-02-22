@@ -490,6 +490,7 @@ def run_mini_model(
         batch = next(loader_iter).to(model.device)
         optimizer.zero_grad()
         output = model(**batch)
+        output.logits.retain_grad()
         output.loss.backward()
         optimizer.step()
         print(f"Step {i}, Loss: {output.loss.item()}")
@@ -699,10 +700,11 @@ def test_mini_model(
         rtol=loss_rtol,
     )
 
-    # Compare the logits from the last step
+    # import pdb; pdb.set_trace()
+    # Compare the logits.grad from the last step instead of logits, liger implementation doesn't keep logits
     assert_verbose_allclose(
-        expected_output["logits"],
-        actual_output["logits"],
+        expected_output["logits"].grad,
+        actual_output["logits"].grad,
         atol=logits_atol,
         rtol=logits_rtol,
     )
