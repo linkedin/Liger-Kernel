@@ -85,10 +85,10 @@ def test_liger_layer_norm_functional(
     """Test functional layer norm interface against autograd function."""
     torch.manual_seed(0)
 
-    input_tensor = torch.randn(batch_size, seq_len, hidden_size, dtype=dtype, device=device)
+    input = torch.randn(batch_size, seq_len, hidden_size, dtype=dtype, device=device)
 
-    x1 = input_tensor.clone().requires_grad_(True)
-    x2 = input_tensor.clone().requires_grad_(True)
+    x1 = input.clone().requires_grad_(True)
+    x2 = input.clone().requires_grad_(True)
 
     w = torch.randn(hidden_size, device=device, dtype=dtype)
     w1 = w.clone().requires_grad_(True)
