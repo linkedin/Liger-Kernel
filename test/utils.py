@@ -345,6 +345,18 @@ def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_olmo2(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Olmo2.
+    """
+
+    from transformers.models.olmo2 import modeling_olmo2
+
+    importlib.reload(modeling_olmo2)
+    model_config.model_class = modeling_olmo2.Olmo2ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 class HFAlignmentLoss:
     def __init__(
         self,
