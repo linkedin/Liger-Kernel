@@ -7,8 +7,6 @@ from transformers.models.gemma import GemmaConfig
 from transformers.models.gemma import GemmaForCausalLM
 from transformers.models.gemma2 import Gemma2Config
 from transformers.models.gemma2 import Gemma2ForCausalLM
-from transformers.models.granite import GraniteConfig
-from transformers.models.granite import GraniteForCausalLM
 from transformers.models.llama import LlamaConfig
 from transformers.models.llama import LlamaForCausalLM
 from transformers.models.mistral import MistralConfig
@@ -68,6 +66,14 @@ except ImportError:
     QWEN2_VL_AVAILABLE = False
 
 try:
+    from transformers.models.granite import GraniteConfig
+    from transformers.models.granite import GraniteForCausalLM
+
+    GRANITE_AVAILABLE = True
+except ImportError:
+    GRANITE_AVAILABLE = False
+
+try:
     # OLMO2 is only available in transformers>=4.47.0
     from transformers.models.olmo2.configuration_olmo2 import Olmo2Config
     from transformers.models.olmo2.modeling_olmo2 import Olmo2ForCausalLM
@@ -81,39 +87,6 @@ from liger_kernel.utils import infer_device
 device = infer_device()
 
 MINI_MODEL_SETUPS = {
-    "mini_granite3": MiniModelConfig(
-        liger_kernel_patch_func=apply_liger_kernel_to_granite,
-        liger_kernel_patch_revert_func=revert_liger_kernel_to_granite,
-        model_class=GraniteForCausalLM,
-        mini_model_config=GraniteConfig(
-            attention_bias=False,
-            attention_dropout=0.1,
-            # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
-            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
-            bos_token_id=1,  # 128000
-            eos_token_id=2,  # 128001
-            hidden_act="silu",
-            hidden_size=1024,  # 4096
-            initializer_range=0.02,
-            intermediate_size=2048,  # 14336
-            max_position_embeddings=8192,
-            num_attention_heads=8,  # 32
-            num_hidden_layers=4,  # 32
-            num_key_value_heads=2,  # 8
-            pretraining_tp=1,
-            rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500000.0,
-            tie_word_embeddings=False,
-            use_cache=True,
-            vocab_size=32000,  # 128256,
-            # At rope backward
-            # Eager produces incontiguous dq and dk
-            # SDPA produces contiguous dq and incontiguous dk
-            # Flash_attn produces contiguous dq and dk
-            attn_implementation="sdpa",  # default value, pytorch native attention
-        ),
-    ),
     "mini_llama3": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_llama,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llama,
@@ -429,6 +402,41 @@ if QWEN2_VL_AVAILABLE:
         ),
     )
 
+if GRANITE_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_granite3"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_granite,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_granite,
+        model_class=GraniteForCausalLM,
+        mini_model_config=GraniteConfig(
+            attention_bias=False,
+            attention_dropout=0.1,
+            # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
+            hidden_act="silu",
+            hidden_size=1024,  # 4096
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=8192,
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 32
+            num_key_value_heads=2,  # 8
+            pretraining_tp=1,
+            rms_norm_eps=1e-5,
+            rope_scaling=None,
+            rope_theta=500000.0,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 128256,
+            # At rope backward
+            # Eager produces incontiguous dq and dk
+            # SDPA produces contiguous dq and incontiguous dk
+            # Flash_attn produces contiguous dq and dk
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
+
 if OLMO2_AVAILABLE:
     MINI_MODEL_SETUPS["mini_olmo2"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_olmo2,
@@ -502,7 +510,8 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
-        kwargs["fused_linear_cross_entropy"] = True
+        # fused_linear_cross_entropy is not supported in mini_granite3
+        kwargs["fused_linear_cross_entropy"] = True if model_name != "mini_granite3" else False
         kwargs["cross_entropy"] = False
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
@@ -558,7 +567,13 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not GRANITE_AVAILABLE,
+                    reason="Granite not available in this version of transformers",
+                ),
+            ],
         ),
         pytest.param(
             "mini_mllama",
