@@ -152,7 +152,10 @@ def test_liger_layer_norm_weird_shapes(
     torch_output = torch_ln(torch_x)
 
     assert torch.allclose(
-        liger_output, torch_output, atol=atol, rtol=rtol
+        liger_output,
+        torch_output,
+        atol=atol,
+        rtol=rtol,
     ), f"Forward pass mismatch for shape {shape}"
 
     grad_output = torch.randn_like(x)
@@ -160,11 +163,20 @@ def test_liger_layer_norm_weird_shapes(
     torch_output.backward(grad_output, retain_graph=True)
 
     assert torch.allclose(
-        liger_x.grad, torch_x.grad, atol=atol, rtol=rtol
+        liger_x.grad,
+        torch_x.grad,
+        atol=atol,
+        rtol=rtol,
     ), f"Input gradient mismatch for shape {shape}"
     assert torch.allclose(
-        liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol
+        liger_ln.weight.grad,
+        torch_ln.weight.grad,
+        atol=atol,
+        rtol=rtol,
     ), f"Weight gradient mismatch for shape {shape}"
     assert torch.allclose(
-        liger_ln.bias.grad, torch_ln.bias.grad, atol=atol, rtol=rtol
+        liger_ln.bias.grad,
+        torch_ln.bias.grad,
+        atol=atol,
+        rtol=rtol,
     ), f"Bias gradient mismatch for shape {shape}"
