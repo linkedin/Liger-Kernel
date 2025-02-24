@@ -25,6 +25,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_mistral
 from liger_kernel.transformers import apply_liger_kernel_to_mixtral
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
+from liger_kernel.transformers import apply_liger_kernel_to_olmo2
 from liger_kernel.transformers import apply_liger_kernel_to_phi3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
@@ -38,6 +39,7 @@ from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
 from test.utils import revert_liger_kernel_to_mllama
+from test.utils import revert_liger_kernel_to_olmo2
 from test.utils import revert_liger_kernel_to_phi3
 from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_vl
@@ -70,6 +72,15 @@ try:
     GRANITE_AVAILABLE = True
 except ImportError:
     GRANITE_AVAILABLE = False
+
+try:
+    # OLMO2 is only available in transformers>=4.47.0
+    from transformers.models.olmo2.configuration_olmo2 import Olmo2Config
+    from transformers.models.olmo2.modeling_olmo2 import Olmo2ForCausalLM
+
+    OLMO2_AVAILABLE = True
+except ImportError:
+    OLMO2_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -426,6 +437,35 @@ if GRANITE_AVAILABLE:
         ),
     )
 
+if OLMO2_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_olmo2"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_olmo2,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_olmo2,
+        model_class=Olmo2ForCausalLM,
+        mini_model_config=Olmo2Config(
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
+            pad_token_id=2,
+            cross_attention_layers=None,
+            dropout=0,
+            hidden_act="silu",
+            hidden_size=1024,  # 4096
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=4096,
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 40
+            num_key_value_heads=2,  # 8
+            rms_norm_eps=1e-5,
+            rope_scaling=None,
+            rope_theta=500_000,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 128256,
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
+
 
 def create_model(model_name="mini_llama3"):
     """
@@ -611,6 +651,25 @@ def run_mini_model(
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        pytest.param(
+            "mini_olmo2",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not OLMO2_AVAILABLE,
+                    reason="OLMO2 not available in this version of transformers",
+                ),
+            ],
         ),
         # TODO: mixtral is flaky so disable the test for now
         # pytest.param(
