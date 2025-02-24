@@ -14,6 +14,8 @@ device = infer_device()
     [
         (2, 8, 64),
         (4, 16, 128),
+        (1, 1, 1023),  # Minimal batch/seq with near power-of-2 hidden
+        (3, 7, 256),  # Prime numbers for batch/seq
     ],
 )
 @pytest.mark.parametrize(
@@ -22,7 +24,15 @@ device = infer_device()
         (torch.float32, 1e-5, 1e-5),
     ],
 )
-def test_liger_layer_norm(batch_size, seq_len, hidden_size, dtype, atol, rtol):
+def test_liger_layer_norm(
+    batch_size: int,
+    seq_len: int,
+    hidden_size: int,
+    dtype: torch.dtype,
+    atol: float,
+    rtol: float,
+) -> None:
+    """Test basic layer norm functionality against PyTorch implementation."""
     torch.manual_seed(0)
 
     x = torch.randn(batch_size, seq_len, hidden_size, dtype=dtype, device=device)
@@ -64,7 +74,15 @@ def test_liger_layer_norm(batch_size, seq_len, hidden_size, dtype, atol, rtol):
         (torch.float32, 1e-5, 1e-5),
     ],
 )
-def test_liger_layer_norm_functional(hidden_size, batch_size, seq_len, dtype, atol, rtol):
+def test_liger_layer_norm_functional(
+    hidden_size: int,
+    batch_size: int,
+    seq_len: int,
+    dtype: torch.dtype,
+    atol: float,
+    rtol: float,
+) -> None:
+    """Test functional layer norm interface against autograd function."""
     torch.manual_seed(0)
 
     input = torch.randn(batch_size, seq_len, hidden_size, dtype=dtype, device=device)
@@ -73,12 +91,10 @@ def test_liger_layer_norm_functional(hidden_size, batch_size, seq_len, dtype, at
     x2 = input.clone().requires_grad_(True)
 
     w = torch.randn(hidden_size, device=device, dtype=dtype)
-
     w1 = w.clone().requires_grad_(True)
     w2 = w.clone().requires_grad_(True)
 
     b = torch.randn(hidden_size, device=device, dtype=dtype)
-
     b1 = b.clone().requires_grad_(True)
     b2 = b.clone().requires_grad_(True)
 
@@ -88,7 +104,6 @@ def test_liger_layer_norm_functional(hidden_size, batch_size, seq_len, dtype, at
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
 
     grad_output = torch.randn_like(y2)
-
     y1.backward(grad_output, retain_graph=True)
     y2.backward(grad_output, retain_graph=True)
 
