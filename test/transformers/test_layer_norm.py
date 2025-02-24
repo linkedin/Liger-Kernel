@@ -118,39 +118,41 @@ def test_liger_layer_norm_functional(hidden_size, batch_size, seq_len, dtype, at
 def test_liger_layer_norm_weird_shapes(shape, hidden_size, dtype, atol, rtol):
     """Test layer norm with unusual input shapes and sizes."""
     torch.manual_seed(42)
-    
+
     # Create input tensor with weird shape
     x = torch.randn(*shape, dtype=dtype, device=device)
-    
+
     liger_x = x.clone().requires_grad_(True)
     torch_x = x.clone().requires_grad_(True)
-    
+
     # Initialize both implementations
     liger_ln = LigerLayerNorm(hidden_size, eps=1e-6).to(dtype).to(device)
     torch_ln = torch.nn.LayerNorm(hidden_size, eps=1e-6).to(dtype).to(device)
-    
+
     # Ensure same weights
     with torch.no_grad():
         torch_ln.weight.copy_(liger_ln.weight)
         torch_ln.bias.copy_(liger_ln.bias)
-    
+
     # Forward pass
     liger_output = liger_ln(liger_x)
     torch_output = torch_ln(torch_x)
-    
+
     # Check forward pass results
-    assert torch.allclose(liger_output, torch_output, atol=atol, rtol=rtol), \
-        f"Forward pass mismatch for shape {shape}"
-    
+    assert torch.allclose(liger_output, torch_output, atol=atol, rtol=rtol), f"Forward pass mismatch for shape {shape}"
+
     # Backward pass with gradient of same shape
     grad_output = torch.randn_like(x)
     liger_output.backward(grad_output, retain_graph=True)
     torch_output.backward(grad_output, retain_graph=True)
-    
+
     # Check gradients
-    assert torch.allclose(liger_x.grad, torch_x.grad, atol=atol, rtol=rtol), \
-        f"Input gradient mismatch for shape {shape}"
-    assert torch.allclose(liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol), \
-        f"Weight gradient mismatch for shape {shape}"
-    assert torch.allclose(liger_ln.bias.grad, torch_ln.bias.grad, atol=atol, rtol=rtol), \
-        f"Bias gradient mismatch for shape {shape}"
+    assert torch.allclose(
+        liger_x.grad, torch_x.grad, atol=atol, rtol=rtol
+    ), f"Input gradient mismatch for shape {shape}"
+    assert torch.allclose(
+        liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol
+    ), f"Weight gradient mismatch for shape {shape}"
+    assert torch.allclose(
+        liger_ln.bias.grad, torch_ln.bias.grad, atol=atol, rtol=rtol
+    ), f"Bias gradient mismatch for shape {shape}"

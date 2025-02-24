@@ -193,14 +193,19 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
 
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     if n_cols > BLOCK_SIZE:
-        raise RuntimeError(f"Feature dimension {n_cols} exceeds maximum supported size of {BLOCK_SIZE}. Consider using a smaller feature dimension.")
+        raise RuntimeError(
+            f"Feature dimension {n_cols} exceeds maximum supported size of {BLOCK_SIZE}. Consider using a smaller feature dimension."
+        )
 
     rows_per_program = math.ceil(n_rows / sm_count)
     grid = (sm_count,)
     triton_dtype = (
-        tl.float32 if X.dtype == torch.float32 
-        else tl.bfloat16 if X.dtype == torch.bfloat16
-        else tl.float16 if X.dtype == torch.float16
+        tl.float32
+        if X.dtype == torch.float32
+        else tl.bfloat16
+        if X.dtype == torch.bfloat16
+        else tl.float16
+        if X.dtype == torch.float16
         else tl.float32  # fallback to float32 for other types
     )
     _layer_norm_backward_kernel[grid](
