@@ -10,6 +10,4 @@ class LigerTVDLoss(nn.Module):
         self.ignore_index = ignore_index
 
     def forward(self, p, q, shift_labels=None):
-        return LigerTVDLossFunction.apply(
-            p, q, shift_labels, self.reduction, self.ignore_index
-        )
+        return LigerTVDLossFunction.apply(p, q, shift_labels, self.reduction, self.ignore_index)
