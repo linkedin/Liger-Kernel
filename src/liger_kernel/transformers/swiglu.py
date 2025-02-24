@@ -36,6 +36,27 @@ class LigerBlockSparseTop2MLP(nn.Module):
         return self.w2(LigerSiLUMulFunction.apply(self.w1(x), self.w3(x)))
 
 
+class LigerDeepseekV3MLP(nn.Module):
+    def __init__(self, config, hidden_size=None, intermediate_size=None):
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.hidden_size if hidden_size is None else hidden_size
+        self.intermediate_size = (
+            config.intermediate_size if intermediate_size is None else intermediate_size
+        )
+
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        
+        if config.hidden_act not in ["silu", "swish"]:
+            raise ValueError(f"Activation function {config.hidden_act} not supported.")
+
+    def forward(self, x):
+        down_proj = self.down_proj(LigerSiLUMulFunction.apply(self.gate_proj(x)) * self.up_proj(x))
+        return down_proj
+    
+
 class LigerPhi3SwiGLUMLP(nn.Module):
     """
     Patch Phi3MLP to use LigerSiLUMulFunction
