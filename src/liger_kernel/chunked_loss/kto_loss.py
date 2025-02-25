@@ -63,7 +63,15 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
         else:
             losses = 1 - F.sigmoid(beta * logratios_chunk * multiplier_chunk)
 
-        return losses.sum() / (full_target.shape[0])
+        chosen_idx = torch.nonzero(preference_labels_chunk).squeeze().to(preference_labels_chunk.device)
+        rejected_idx = torch.nonzero(~preference_labels_chunk).squeeze().to(preference_labels_chunk.device)
+
+        print("average_log_prob_chunk: ", average_log_prob_chunk)
+        print("preference_labels_chunk: ", preference_labels_chunk)
+        print("chosen_idx: ", chosen_idx)
+        print("rejected_idx: ", rejected_idx)
+        print("losses: ",losses)
+        return losses.sum() / (full_target.shape[0]), chosen_idx, rejected_idx
 
     @staticmethod
     def forward(
