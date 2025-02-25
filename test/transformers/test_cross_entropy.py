@@ -290,6 +290,32 @@ def _test_correctness_with_z_loss_with_other_params_once(
     assert_verbose_allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
+def _test_correctness_with_out_of_bounds_target_once(target_ce, B, T, V, ignore_index):
+    torch.manual_seed(0)
+
+    _tensor = torch.randn(B * T, V, device=device, dtype=torch.bfloat16)
+    _input = _tensor.detach().clone().requires_grad_(True)
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    # Assign some random number of elements as ignore_index
+    num_elements_to_assign = torch.randint(
+        1, B * T // 2, (1,)
+    ).item()  # Random number of elements to set to ignore_index
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
+    target[indices_to_assign] = ignore_index
+
+    # Assign out of bounds target
+    num_out_of_bounds = torch.randint(1, B * T // 2, (1,)).item()
+    indices_to_assign = torch.randperm(B * T)[:num_out_of_bounds]  # Randomly select indices
+    target[indices_to_assign] = torch.randint(V, 2 * V, (num_out_of_bounds,)).to(device)
+
+    try:
+        output = target_ce(_input, target)
+        assert False, "Should have thrown an error"
+    except AssertionError as e:
+        assert "out of bounds" in str(e)
+
+
 def _test_correctness_with_weight_once(target_ce, B, T, V, reduction, weight, scalar, dtype, atol, rtol):
     torch.manual_seed(0)
     torch_ce = CrossEntropyLoss(weight=weight, reduction=reduction)
@@ -916,3 +942,15 @@ def test_float32_internal():
 
     torch.allclose(X_bf16, X_fp32.bfloat16())
     torch.allclose(loss_bf16, loss_fp32)
+
+@pytest.mark.parametrize(
+    "B, T, V, ignore_index",
+    [
+        (2, 4096, 32000, 2),
+        # weird shapes
+        (3, 423, 32000, -123),
+    ],
+)
+def test_correctness_with_out_of_bounds_target_once(B, T, V, ignore_index):
+    liger_ce = LigerCrossEntropyLoss(ignore_index=ignore_index)
+    _test_correctness_with_out_of_bounds_target_once(liger_ce, B, T, V, ignore_index)
