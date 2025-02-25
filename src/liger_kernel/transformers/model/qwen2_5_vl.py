@@ -5,9 +5,7 @@ from typing import Union
 
 import torch
 
-from packaging import version
 from torch.nn import CrossEntropyLoss
-from transformers import __version__ as transformers_version
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import _CONFIG_FOR_DOC
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import QWEN2_5_VL_INPUTS_DOCSTRING
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLCausalLMOutputWithPast
