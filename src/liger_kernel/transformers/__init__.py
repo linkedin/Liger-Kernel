@@ -9,10 +9,12 @@ from liger_kernel.transformers.monkey_patch import _apply_liger_kernel  # noqa: 
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma2  # noqa: F401
+from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_granite  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mistral  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mixtral  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mllama  # noqa: F401
+from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo2  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_phi3  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2_vl  # noqa: F401
@@ -22,3 +24,4 @@ from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP  # noqa: F401
+from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401

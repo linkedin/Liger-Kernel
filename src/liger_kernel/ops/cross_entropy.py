@@ -285,13 +285,17 @@ def cross_entropy_forward(
 
     target_mask = target != ignore_index
     n_non_ignore = target_mask.sum().item()
+    assert (target * target_mask).max() < _input.shape[-1], (
+        f"Target {target.max()} is out of bounds. Expected < {_input.shape[-1]}"
+    )
+    assert (target * target_mask).min() >= 0, f"Target {target.min()} is out of bounds. Expected >= 0"
     sum_non_ignore_weight = n_non_ignore
     weight_sum = 0.0
     if weight is not None:
         assert weight.shape[0] == V, f"If given, weight has to be a Tensor of size V. Got: {weight.shape}"
-        assert torch.is_floating_point(
-            weight
-        ), f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
+        assert torch.is_floating_point(weight), (
+            f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
+        )
         sum_non_ignore_weight = torch.gather(weight, dim=0, index=target.masked_select(target_mask)).sum().item()
         weight_sum = weight.sum().item()
         # ensure weight is contiguous

@@ -12,6 +12,7 @@ from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.rope import LigerRopeFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+from liger_kernel.ops.tvd import LigerTVDLossFunction
 
 
 # conform to the function signature in https://pytorch.org/docs/stable/generated/torch.nn.functional.cross_entropy.html
@@ -154,6 +155,22 @@ def liger_kl_div(
         reduction,
         log_target,
         eps,
+    )
+
+
+def liger_tvd(
+    input,
+    target,
+    shift_labels=None,
+    reduction: str = "mean",
+    ignore_index: int = -100,
+):
+    return LigerTVDLossFunction.apply(
+        input,
+        target,
+        shift_labels,
+        reduction,
+        ignore_index,
     )
 
 
