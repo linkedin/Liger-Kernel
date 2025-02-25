@@ -5,12 +5,10 @@ def infer_device():
     """
     Get current device name based on available devices
     """
-    if torch.cuda.is_available():
+    if torch.cuda.is_available():  # Works for both Nvidia and AMD
         return "cuda"
     elif torch.xpu.is_available():
         return "xpu"
-    elif torch.hip.is_available():
-        return "hip"
     else:
         return "cpu"
 
