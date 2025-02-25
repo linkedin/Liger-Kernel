@@ -310,7 +310,7 @@ def _test_correctness_with_out_of_bounds_target_once(target_ce, B, T, V, ignore_
     target[indices_to_assign] = torch.randint(V, 2 * V, (num_out_of_bounds,)).to(device)
 
     try:
-        output = target_ce(_input, target)
+        _ = target_ce(_input, target)
         assert False, "Should have thrown an error"
     except AssertionError as e:
         assert "out of bounds" in str(e)
@@ -942,6 +942,7 @@ def test_float32_internal():
 
     torch.allclose(X_bf16, X_fp32.bfloat16())
     torch.allclose(loss_bf16, loss_fp32)
+
 
 @pytest.mark.parametrize(
     "B, T, V, ignore_index",
