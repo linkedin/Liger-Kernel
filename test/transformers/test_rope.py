@@ -2,7 +2,6 @@ import pytest
 import torch
 
 from test.utils import supports_bfloat16
-from test.utils import transformers_version_dispatch
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
@@ -11,6 +10,7 @@ from liger_kernel.ops.rope import LigerRopeFunction
 from liger_kernel.transformers.functional import liger_rope
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.utils import infer_device
+from liger_kernel.utils import transformers_version_dispatch
 
 device = infer_device()
 
