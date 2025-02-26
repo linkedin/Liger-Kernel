@@ -32,8 +32,6 @@ def get_default_dependencies():
 
 def get_optional_dependencies():
     """Get optional dependency groups."""
-    platform = get_platform()
-
     dev_deps = [
         "transformers>=4.44.2",
         "matplotlib>=3.7.2",
@@ -48,9 +46,6 @@ def get_optional_dependencies():
         "mkdocs",
         "mkdocs-material",
     ]
-
-    if platform == "rocm":
-        dev_deps.append("--extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2")
 
     return {"dev": dev_deps}
 
@@ -86,4 +81,5 @@ setup(
     packages=["liger_kernel"],
     install_requires=get_default_dependencies(),
     extras_require=get_optional_dependencies(),
+    dependency_links=["https://download.pytorch.org/whl/nightly/rocm6.2"] if get_platform() == "rocm" else [],
 )
