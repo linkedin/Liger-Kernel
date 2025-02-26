@@ -56,22 +56,19 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
             logratios_chunk = average_log_prob_chunk - ref_average_log_prob_chunk
         else:
             logratios_chunk = average_log_prob_chunk
-
         multiplier_chunk = torch.where(preference_labels_chunk, 1, -1)
         if kl is not None:
             losses = 1 - F.sigmoid(beta * (logratios_chunk - kl) * multiplier_chunk)
         else:
             losses = 1 - F.sigmoid(beta * logratios_chunk * multiplier_chunk)
 
-        chosen_idx = torch.nonzero(preference_labels_chunk).squeeze().to(preference_labels_chunk.device)
-        rejected_idx = torch.nonzero(~preference_labels_chunk).squeeze().to(preference_labels_chunk.device)
-
-        print("average_log_prob_chunk: ", average_log_prob_chunk)
-        print("preference_labels_chunk: ", preference_labels_chunk)
-        print("chosen_idx: ", chosen_idx)
-        print("rejected_idx: ", rejected_idx)
-        print("losses: ",losses)
-        return losses.sum() / (full_target.shape[0]), chosen_idx, rejected_idx
+        chosen_logps = average_log_prob_chunk[preference_labels_chunk]
+        rejected_logps = average_log_prob_chunk[~preference_labels_chunk]
+        rewards = beta*logratios_chunk
+        chosen_rewards = rewards[preference_labels_chunk]
+        rejected_rewards = rewards[~preference_labels_chunk] 
+        
+        return losses.sum() / (full_target.shape[0]), chosen_logps, rejected_logps, chosen_rewards, rejected_rewards
 
     @staticmethod
     def forward(
@@ -105,6 +102,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
             ref_input=ref_input,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
+            average_log_prob=False,
             kl=kl,
         )
 
