@@ -754,7 +754,7 @@ def apply_liger_kernel_to_qwen2_5_vl(
     model: PreTrainedModel = None,
 ) -> None:
     """
-    Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
+    Apply Liger kernels to replace original implementation in HuggingFace Qwen2.5-VL models.
     NOTE: Qwen2.5-VL is not available in transformers<4.48.2
 
     Args:
