@@ -329,7 +329,6 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
                 )
             loss_kwargs["ref_log_prob_chunk"] = ref_log_prob_chunk
 
-        # print("average_log_prob_chunk", average_log_prob_chunk)
         preference_loss_outputs = preference_loss_fn(
             log_prob_chunk, preference_labels_chunk, full_target, **loss_kwargs
         )
