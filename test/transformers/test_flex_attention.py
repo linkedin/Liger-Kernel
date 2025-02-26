@@ -247,20 +247,20 @@ def _test_correctness_prefix(
     separate_rejected = pr_out[:, :, P:, P:]
 
     # Verify prefix outputs are identical
-    assert torch.allclose(shared_prefix, separate_prefix_c, atol=atol, rtol=rtol), (
-        "Prefix attention from shared computation doesn't match prefix+chosen computation"
-    )
-    assert torch.allclose(shared_prefix, separate_prefix_r, atol=atol, rtol=rtol), (
-        "Prefix attention from shared computation doesn't match prefix+rejected computation"
-    )
+    assert torch.allclose(
+        shared_prefix, separate_prefix_c, atol=atol, rtol=rtol
+    ), "Prefix attention from shared computation doesn't match prefix+chosen computation"
+    assert torch.allclose(
+        shared_prefix, separate_prefix_r, atol=atol, rtol=rtol
+    ), "Prefix attention from shared computation doesn't match prefix+rejected computation"
 
     # Verify chosen and rejected outputs
-    assert torch.allclose(shared_chosen, separate_chosen, atol=atol, rtol=rtol), (
-        "Chosen response attention doesn't match between shared and separate computation"
-    )
-    assert torch.allclose(shared_rejected, separate_rejected, atol=atol, rtol=rtol), (
-        "Rejected response attention doesn't match between shared and separate computation"
-    )
+    assert torch.allclose(
+        shared_chosen, separate_chosen, atol=atol, rtol=rtol
+    ), "Chosen response attention doesn't match between shared and separate computation"
+    assert torch.allclose(
+        shared_rejected, separate_rejected, atol=atol, rtol=rtol
+    ), "Rejected response attention doesn't match between shared and separate computation"
 
     print("All attention values match between shared and separate computations!")
 

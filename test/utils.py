@@ -370,6 +370,7 @@ def revert_liger_kernel_to_olmo2(model_config: MiniModelConfig):
     model_config.model_class = modeling_olmo2.Olmo2ForCausalLM
     print("Liger kernel patches have been reverted.")
 
+
 def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to llava.
@@ -380,6 +381,7 @@ def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
     importlib.reload(modeling_llava)
     model_config.model_class = modeling_llava.LlavaForConditionalGeneration
     print("Liger kernel patches have been reverted.")
+
 
 class HFAlignmentLoss:
     def __init__(
