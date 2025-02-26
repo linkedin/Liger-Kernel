@@ -7,10 +7,10 @@ from liger_kernel.chunked_loss.fused_linear_unpaired_preference import LigerFuse
 class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
     @staticmethod
     def preference_loss_fn(
-        average_log_prob_chunk,
+        log_prob_chunk,
         preference_labels_chunk,
         full_target,
-        ref_average_log_prob_chunk=None,
+        ref_log_prob_chunk=None,
         beta=0.1,
         kl=None,
     ):
@@ -52,23 +52,21 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
         Returns:
             - loss: The KTO loss value
         """
-        if ref_average_log_prob_chunk is not None:
-            logratios_chunk = average_log_prob_chunk - ref_average_log_prob_chunk
+        if ref_log_prob_chunk is not None:
+            logratios_chunk = log_prob_chunk - ref_log_prob_chunk
         else:
-            logratios_chunk = average_log_prob_chunk
+            logratios_chunk = log_prob_chunk
         multiplier_chunk = torch.where(preference_labels_chunk, 1, -1)
         if kl is not None:
             losses = 1 - F.sigmoid(beta * (logratios_chunk - kl) * multiplier_chunk)
         else:
             losses = 1 - F.sigmoid(beta * logratios_chunk * multiplier_chunk)
 
-        chosen_logps = average_log_prob_chunk[preference_labels_chunk]
-        rejected_logps = average_log_prob_chunk[~preference_labels_chunk]
         rewards = beta*logratios_chunk
         chosen_rewards = rewards[preference_labels_chunk]
         rejected_rewards = rewards[~preference_labels_chunk] 
         
-        return losses.sum() / (full_target.shape[0]), chosen_logps, rejected_logps, chosen_rewards, rejected_rewards
+        return losses.sum() / (full_target.shape[0]), chosen_rewards, rejected_rewards
 
     @staticmethod
     def forward(
