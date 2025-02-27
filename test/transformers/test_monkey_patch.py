@@ -44,6 +44,15 @@ def is_qwen2_vl_available():
         return False
 
 
+def is_qwen2_5_vl_available():
+    try:
+        import transformers.models.qwen2_5_vl  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_olmo2_available():
     try:
         import transformers.models.olmo2  # noqa: F401
@@ -64,6 +73,7 @@ def test_import_from_root():
         from liger_kernel.transformers import apply_liger_kernel_to_mllama  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_phi3  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_qwen2  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl  # noqa: F401
     except Exception:
         pytest.fail("Import kernel patch from root fails")
@@ -662,6 +672,64 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl():
         for vision_block in dummy_model_instance.visual.blocks:
             assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen2_5_vl_available(), reason="qwen2_5_vl module not available")
+def test_apply_liger_kernel_to_instance_for_qwen2_5_vl():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl"):
+        from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
+
+        # Instantiate a dummy model
+        config = transformers.models.qwen2_5_vl.configuration_qwen2_5_vl.Qwen2_5_VLConfig(
+            torch_dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=48,
+            embed_dim=16,
+            hidden_act="silu",
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=128,
+            vocab_size=1000,
+            vision_config={
+                "depth": 4,
+                "embed_dim": 128,
+                "num_heads": 8,
+                "hidden_size": 1024,
+            },
+        )
+        dummy_model_instance = Qwen2_5_VLForConditionalGeneration._from_config(config)
+
+        assert isinstance(dummy_model_instance, Qwen2_5_VLForConditionalGeneration)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for vision_block in dummy_model_instance.visual.blocks:
+            assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for vision_block in dummy_model_instance.visual.blocks:
+            assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerRMSNorm.forward)
 
         try:
             print(dummy_model_instance)
