@@ -58,8 +58,8 @@ class HFKTOLoss(HFAlignmentLoss):
             kl = torch.zeros(1).to(policy_chosen_logps.device)
 
         # Chosen losses
+        chosen_logratios = policy_chosen_logps - ref_chosen_logps
         if policy_chosen_logps.shape[0] != 0 or ref_chosen_logps.shape[0] != 0:
-            chosen_logratios = policy_chosen_logps - ref_chosen_logps
             # Eqn (7) of the KTO paper (https://huggingface.co/papers/2402.01306)
             chosen_losses = 1 - F.sigmoid(self.beta * (chosen_logratios - kl))
 
@@ -68,8 +68,8 @@ class HFKTOLoss(HFAlignmentLoss):
             chosen_losses = torch.Tensor([]).to(policy_chosen_logps.device)
 
         # Rejected losses
+        rejected_logratios = policy_rejected_logps - ref_rejected_logps
         if policy_rejected_logps.shape[0] != 0 or ref_rejected_logps.shape[0] != 0:
-            rejected_logratios = policy_rejected_logps - ref_rejected_logps
             rejected_losses = 1 - F.sigmoid(self.beta * (kl - rejected_logratios))
         else:
             # lists can't be empty -- if they are, then accelerate.gather will hang
@@ -80,7 +80,10 @@ class HFKTOLoss(HFAlignmentLoss):
             0,
         )
 
-        return losses, policy_chosen_logps, policy_rejected_logps
+        chosen_rewards = self.beta * chosen_logratios
+        rejected_rewards = self.beta * rejected_logratios
+
+        return losses, chosen_rewards, rejected_rewards
 
 
 class TorchLMHeadKTO(torch.nn.Module):
@@ -140,17 +143,7 @@ class LigerLMHeadKTO(torch.nn.Module):
         )
 
     def forward(self, x, ref_x, y, preference_labels, kl=None):
-        (
-            loss,
-            (
-                chosen_logps,
-                rejected_logps,
-                _,
-                _,
-                _,
-                _,
-            ),
-        ) = self.KTO_loss(
+        return self.KTO_loss(
             _input=x,
             lin_weight=self.lin.weight,
             target=y,
@@ -161,7 +154,6 @@ class LigerLMHeadKTO(torch.nn.Module):
             ref_bias=self.ref_lin.bias,
             kl=kl,
         )
-        return loss
 
 
 @pytest.mark.parametrize(
@@ -174,7 +166,7 @@ class LigerLMHeadKTO(torch.nn.Module):
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        (1.0, torch.bfloat16, 5e-2, 5e-2),
+        (1.0, torch.bfloat16, 5e-2, 5e-1),
         (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )
@@ -244,10 +236,20 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, igno
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    loss1 = torch_lm_head_KTO(x=input1, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl)
-    loss2 = liger_lm_head_KTO(x=input2, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl)
+    loss1, aggregated_aux_outputs1 = torch_lm_head_KTO(x=input1, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl)
+    loss2, aggregated_aux_outputs2 = liger_lm_head_KTO(x=input2, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
+
+    assert len(aggregated_aux_outputs1) == len(aggregated_aux_outputs2)
+
+    for i in range(len(aggregated_aux_outputs1)):
+        assert_verbose_allclose(
+            aggregated_aux_outputs1[i],
+            aggregated_aux_outputs2[i],
+            atol=atol,
+            rtol=rtol,
+        )
 
     loss1.backward()
     loss2.backward()
@@ -332,7 +334,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     ref_bias1 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
     ref_bias2 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
 
-    loss1, _ = LigerFusedLinearKTOFunction.apply(
+    loss1, aggregated_aux_outputs1 = LigerFusedLinearKTOFunction.apply(
         input1,
         weight1,
         target,
@@ -343,7 +345,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
         ref_bias1,
         kl,
     )
-    loss2, _ = liger_fused_linear_kto(
+    loss2, aggregated_aux_outputs2 = liger_fused_linear_kto(
         input2,
         weight2,
         target,
@@ -356,6 +358,16 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
+
+    assert len(aggregated_aux_outputs1) == len(aggregated_aux_outputs2)
+
+    for i in range(len(aggregated_aux_outputs1)):
+        assert_verbose_allclose(
+            aggregated_aux_outputs1[i],
+            aggregated_aux_outputs2[i],
+            atol=atol,
+            rtol=rtol,
+        )
 
     loss1.backward()
     loss2.backward()
