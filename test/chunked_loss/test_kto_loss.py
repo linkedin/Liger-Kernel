@@ -236,8 +236,12 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, igno
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target.view(-1)[indices_to_assign] = ignore_index
 
-    loss1, aggregated_aux_outputs1 = torch_lm_head_KTO(x=input1, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl)
-    loss2, aggregated_aux_outputs2 = liger_lm_head_KTO(x=input2, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl)
+    loss1, aggregated_aux_outputs1 = torch_lm_head_KTO(
+        x=input1, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl
+    )
+    loss2, aggregated_aux_outputs2 = liger_lm_head_KTO(
+        x=input2, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl
+    )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
