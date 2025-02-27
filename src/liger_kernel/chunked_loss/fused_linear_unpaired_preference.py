@@ -122,7 +122,7 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
                         chunk_chosen_logits_sum,
                         chunk_rejected_logits_sum,
                         *aux_outputs,
-                    )
+                    ),
                 ),
             ) = fused_fwd_bwd(input_chunk, target_chunk, preference_labels_chunk, ref_input_chunk)
             if bias is not None:
@@ -191,7 +191,7 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
 
             # accumulate loss, gradients, and metrics
             accumulate_chunk(input_chunk, target_chunk, preference_labels_chunk, ref_input_chunk)
-        
+
         # Aggregate aux outputs lists into tensors
         for i, aux in enumerate(aggregated_aux_outputs):
             if isinstance(aux, list):

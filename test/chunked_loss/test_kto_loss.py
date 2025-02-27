@@ -80,7 +80,7 @@ class HFKTOLoss(HFAlignmentLoss):
             0,
         )
 
-        return losses
+        return losses, policy_chosen_logps, policy_rejected_logps
 
 
 class TorchLMHeadKTO(torch.nn.Module):
@@ -114,6 +114,7 @@ class TorchLMHeadKTO(torch.nn.Module):
             ref_bias=self.ref_lin.bias,
             preference_labels=preference_labels,
             kl=kl,
+            average_log_prob=True,
         )
 
 
@@ -135,10 +136,21 @@ class LigerLMHeadKTO(torch.nn.Module):
             ignore_index=ignore_index,
             beta=beta,
             use_ref_model=True,
+            average_log_prob=True,
         )
 
     def forward(self, x, ref_x, y, preference_labels, kl=None):
-        return self.KTO_loss(
+        (
+            loss,
+            (
+                chosen_logps,
+                rejected_logps,
+                _,
+                _,
+                _,
+                _,
+            ),
+        ) = self.KTO_loss(
             _input=x,
             lin_weight=self.lin.weight,
             target=y,
@@ -149,6 +161,7 @@ class LigerLMHeadKTO(torch.nn.Module):
             ref_bias=self.ref_lin.bias,
             kl=kl,
         )
+        return loss
 
 
 @pytest.mark.parametrize(
@@ -161,7 +174,7 @@ class LigerLMHeadKTO(torch.nn.Module):
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        (1.0, torch.bfloat16, 5e-2, 5e-1),
+        (1.0, torch.bfloat16, 5e-2, 5e-2),
         (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )
@@ -319,7 +332,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     ref_bias1 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
     ref_bias2 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
 
-    loss1 = LigerFusedLinearKTOFunction.apply(
+    loss1, _ = LigerFusedLinearKTOFunction.apply(
         input1,
         weight1,
         target,
@@ -330,7 +343,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
         ref_bias1,
         kl,
     )
-    loss2 = liger_fused_linear_kto(
+    loss2, _ = liger_fused_linear_kto(
         input2,
         weight2,
         target,

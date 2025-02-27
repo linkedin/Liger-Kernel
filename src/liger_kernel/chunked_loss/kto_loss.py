@@ -62,10 +62,10 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
         else:
             losses = 1 - F.sigmoid(beta * logratios_chunk * multiplier_chunk)
 
-        rewards = beta*logratios_chunk
+        rewards = beta * logratios_chunk
         chosen_rewards = rewards[preference_labels_chunk]
-        rejected_rewards = rewards[~preference_labels_chunk] 
-        
+        rejected_rewards = rewards[~preference_labels_chunk]
+
         return losses.sum() / (full_target.shape[0]), chosen_rewards, rejected_rewards
 
     @staticmethod
@@ -84,6 +84,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
         beta=0.1,
         compiled=True,
         use_ref_model=True,
+        average_log_prob=False,
     ):
         return LigerFusedLinearUnpairedPreferenceBase.forward(
             ctx=ctx,
@@ -100,7 +101,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
             ref_input=ref_input,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
-            average_log_prob=False,
+            average_log_prob=average_log_prob,
             kl=kl,
         )
 
@@ -133,6 +134,7 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
         beta: float = 0.1,
         compiled: bool = True,
         use_ref_model: bool = False,
+        average_log_prob: bool = False,
     ):
         """
         Args:
@@ -146,6 +148,7 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
         self.beta = beta
         self.compiled = compiled
         self.use_ref_model = use_ref_model
+        self.average_log_prob = average_log_prob
 
     def forward(
         self,
@@ -173,4 +176,5 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
             self.beta,
             self.compiled,
             self.use_ref_model,
+            self.average_log_prob,
         )
