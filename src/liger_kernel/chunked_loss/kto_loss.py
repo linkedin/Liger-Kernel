@@ -43,10 +43,10 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
         3. Maintain reasonable distance from the reference model
 
         Args:
-            average_log_prob_chunk: Log probabilities for the chunk (batch_size,)
+            log_prob_chunk: Log probabilities for the chunk (batch_size,)
             preference_labels_chunk: Preference labels for the chunk (batch_size,)
             full_target: Non chunked full target tensor
-            ref_average_log_prob_chunk: Reference log probs for the chunk (batch_size,)
+            ref_log_prob_chunk: Reference log probs for the chunk (batch_size,)
             beta: Weight for the KTO loss
             kl: KL divergence between the policy model and the reference model for the chosen responses. Shape: (batch_size,)
         Returns:
@@ -142,6 +142,7 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
             beta (float): Temperature parameter for the KTO loss
             compiled (bool): Whether to use compiled operations
             use_ref_model (bool): Whether to use a reference model for the DPO loss.
+            average_log_prob (bool): Whether to average the log probability per non-masked token.
         """
         super().__init__()
         self.ignore_index = ignore_index
