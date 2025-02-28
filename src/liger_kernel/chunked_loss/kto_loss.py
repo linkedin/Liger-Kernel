@@ -84,6 +84,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
         use_ref_model=True,
     ):
         return super().forward(
+            cls=cls,
             ctx=ctx,
             _input=_input,
             weight=weight,
