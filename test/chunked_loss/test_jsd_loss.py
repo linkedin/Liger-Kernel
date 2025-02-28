@@ -121,7 +121,7 @@ class LigerLMHeadJSD(torch.nn.Module):
         weight_soft_loss: float = 0.5,
         beta: float = 0.5,
         ignore_index: int = -100,
-        temperature: float = 1.0, 
+        temperature: float = 1.0,
     ):
         super().__init__()
         # smaller student model weights
@@ -220,8 +220,12 @@ def test_correctness(
     )
 
     if bias:
-        torch_lm_head_jsd.student_lin.bias.data = liger_lm_head_jsd.student_lin.bias.data = torch.rand(V, device=device, dtype=dtype)
-        torch_lm_head_jsd.teacher_lin.bias.data = liger_lm_head_jsd.teacher_lin.bias.data = torch.rand(V, device=device, dtype=dtype)
+        torch_lm_head_jsd.student_lin.bias.data = liger_lm_head_jsd.student_lin.bias.data = torch.rand(
+            V, device=device, dtype=dtype
+        )
+        torch_lm_head_jsd.teacher_lin.bias.data = liger_lm_head_jsd.teacher_lin.bias.data = torch.rand(
+            V, device=device, dtype=dtype
+        )
 
     _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
     student_input1 = _tensor.detach().clone().requires_grad_(True)

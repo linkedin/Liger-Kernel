@@ -89,14 +89,14 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:6]
 
         return (
-            *grads, 
-            None, # teacher_bias
-            None, # weight_hard_loss
-            None, # weight_soft_loss
-            None, # beta
-            None, # ignore_index
-            None, # temperature
-            None, # compiled
+            *grads,
+            None,  # teacher_bias
+            None,  # weight_hard_loss
+            None,  # weight_soft_loss
+            None,  # beta
+            None,  # ignore_index
+            None,  # temperature
+            None,  # compiled
         )
 
 
