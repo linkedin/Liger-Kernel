@@ -28,6 +28,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_olmo2
 from liger_kernel.transformers import apply_liger_kernel_to_phi3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2
+from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
@@ -42,6 +43,7 @@ from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_olmo2
 from test.utils import revert_liger_kernel_to_phi3
 from test.utils import revert_liger_kernel_to_qwen2
+from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import set_seed
 from test.utils import simple_collate_fn
@@ -63,6 +65,15 @@ try:
     QWEN2_VL_AVAILABLE = True
 except ImportError:
     QWEN2_VL_AVAILABLE = False
+
+try:
+    # Qwen2.5-VL is only available in transformers>4.48.2
+    from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
+
+    QWEN2_5_VL_AVAILABLE = True
+except ImportError:
+    QWEN2_5_VL_AVAILABLE = False
 
 try:
     from transformers.models.granite import GraniteConfig
@@ -401,6 +412,62 @@ if QWEN2_VL_AVAILABLE:
         ),
     )
 
+if QWEN2_5_VL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen2_5_vl"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen2_5_vl,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2_5_vl,
+        model_class=Qwen2_5_VLForConditionalGeneration,
+        mini_model_config=Qwen2_5_VLConfig(
+            attention_dropout=0.0,
+            # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+            bos_token_id=1,  # 151643
+            eos_token_id=2,  # 151645
+            vision_start_token_id=32765,  # vocab_size - 5
+            vision_end_token_id=32766,  # vocab_size - 4
+            vision_token_id=32767,  # vocab_size - 3
+            image_token_id=32768,  # vocab_size - 2
+            video_token_id=32769,  # vocab_size - 1
+            hidden_act="silu",
+            hidden_size=1536,  # 8192
+            initializer_range=0.02,
+            intermediate_size=4864,  # 29568
+            max_position_embeddings=32768,
+            max_window_layers=4,  # 80
+            num_attention_heads=12,  # 64
+            num_hidden_layers=4,  # 80
+            num_key_value_heads=2,  # 8
+            rms_norm_eps=1e-6,  # 1e-5
+            rope_theta=1000000.0,
+            rope_scaling=dict(
+                type="mrope",
+                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            ),
+            sliding_window=4096,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
+            use_sliding_window=False,
+            vision_config={
+                "depth": 4,  # 32
+                "hidden_act": "silu",
+                "hidden_size": 128,  # 1280
+                "intermediate_size": 256,  # 3420
+                "num_heads": 16,
+                "in_chans": 3,
+                "out_hidden_size": 128,  # 3584
+                "patch_size": 14,
+                "spatial_merge_size": 2,
+                "spatial_patch_size": 14,
+                "window_size": 112,
+                "fullatt_block_indexes": [7, 15, 23, 31],
+                "tokens_per_second": 2,
+                "temporal_patch_size": 2,
+            },
+            attn_implementation="sdpa",
+        ),
+    )
+
 if GRANITE_AVAILABLE:
     MINI_MODEL_SETUPS["mini_granite3"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_granite,
@@ -573,6 +640,22 @@ def run_mini_model(
             marks=pytest.mark.skipif(
                 not QWEN2_VL_AVAILABLE,
                 reason="Qwen2-VL not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_qwen2_5_vl",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not QWEN2_5_VL_AVAILABLE,
+                reason="Qwen2.5-VL not available in this version of transformers",
             ),
         ),
         pytest.param(
