@@ -47,8 +47,9 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
 
         return loss, chosen_rewards, rejected_rewards
 
-    @staticmethod
+    @classmethod
     def forward(
+        cls,
         ctx,
         _input,
         weight,
@@ -62,13 +63,13 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
         compiled=True,
         gamma=0.5,
     ):
-        return LigerFusedLinearPreferenceBase.forward(
+        return super().forward(
+            cls,
             ctx,
             _input,
             weight,
             target,
             bias,
-            loss_fn=LigerFusedLinearSimPOFunction.preference_loss_fn,
             compute_nll_loss=compute_nll_loss,
             ignore_index=ignore_index,
             alpha=alpha,

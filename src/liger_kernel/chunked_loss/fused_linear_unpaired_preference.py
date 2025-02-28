@@ -16,13 +16,13 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
 
     @staticmethod
     def forward(
+        cls,
         ctx,
         _input,
         weight,
         target,
         preference_labels,
         bias=None,
-        loss_fn=None,
         chunk_size=1,
         ignore_index=-100,
         compiled=True,
@@ -74,7 +74,7 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
 
         compute_loss = partial(
             LigerFusedLinearUnpairedPreferenceBase._compute_loss,
-            preference_loss_fn=loss_fn,
+            preference_loss_fn=cls.preference_loss_fn,
             full_target=target,
             ignore_index=ignore_index,
             use_ref_model=use_ref_model,
