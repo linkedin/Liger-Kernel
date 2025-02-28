@@ -149,7 +149,7 @@ def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
                 y=target,
                 preference_labels=preference_labels,
                 kl=kl,
-            )
+            )[0]
         elif provider == "huggingface":
             return torch_kto_loss(
                 x=_input,
@@ -157,7 +157,7 @@ def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
                 y=target,
                 preference_labels=preference_labels,
                 kl=kl,
-            )
+            )[0]
 
     def full():
         y = fwd()
@@ -230,7 +230,7 @@ def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
                 y=target,
                 preference_labels=preference_labels,
                 kl=kl,
-            )
+            )[0]
         elif provider == "huggingface":
             return torch_kto_loss(
                 x=_input,
@@ -238,7 +238,7 @@ def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
                 y=target,
                 preference_labels=preference_labels,
                 kl=kl,
-            )
+            )[0]
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
