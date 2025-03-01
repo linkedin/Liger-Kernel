@@ -52,8 +52,9 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         loss = -F.logsigmoid(logits_diff).sum() / (full_target.shape[0] // 2)
         return loss, chosen_rewards, rejected_rewards
 
-    @staticmethod
+    @classmethod
     def forward(
+        cls,
         ctx,
         _input,
         weight,
@@ -68,13 +69,13 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         compiled=True,
         use_ref_model=True,
     ):
-        return LigerFusedLinearPreferenceBase.forward(
+        return super().forward(
+            cls=cls,
             ctx=ctx,
             _input=_input,
             weight=weight,
             target=target,
             bias=bias,
-            loss_fn=LigerFusedLinearDPOFunction.preference_loss_fn,
             ignore_index=ignore_index,
             beta=beta,
             compute_nll_loss=compute_nll_loss,

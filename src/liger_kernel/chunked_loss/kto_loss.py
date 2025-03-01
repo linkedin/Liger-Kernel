@@ -68,8 +68,9 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
 
         return losses.sum() / (full_target.shape[0]), chosen_rewards_sum, rejected_rewards_sum
 
-    @staticmethod
+    @classmethod
     def forward(
+        cls,
         ctx,
         _input,
         weight,
@@ -86,14 +87,14 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
         use_ref_model=True,
         average_log_prob=False,
     ):
-        return LigerFusedLinearUnpairedPreferenceBase.forward(
+        return super().forward(
+            cls=cls,
             ctx=ctx,
             _input=_input,
             weight=weight,
             target=target,
             preference_labels=preference_labels,
             bias=bias,
-            loss_fn=LigerFusedLinearKTOFunction.preference_loss_fn,
             ignore_index=ignore_index,
             beta=beta,
             compiled=compiled,

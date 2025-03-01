@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from functools import partial
 
 import torch
@@ -5,15 +6,22 @@ import torch.nn.functional as F
 
 
 class LigerFusedLinearRLHFBase(torch.autograd.Function):
+    @abstractmethod
+    def rlhf_loss_fn(*args, **kwargs):
+        """
+        To be extended by subclasses.
+        """
+        raise NotImplementedError("RLHF loss function must be implemented.")
+
     @staticmethod
     def forward(
+        cls,
         ctx,
         _input,
         weight,
         attention_mask,
         rewards,
         bias=None,
-        loss_fn=None,
         num_generations=4,
         beta=0.1,
         compiled=True,
@@ -41,7 +49,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             use_ref_model=use_ref_model,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
-            rlhf_loss_fn=loss_fn,
+            rlhf_loss_fn=cls.rlhf_loss_fn,
         )
 
         def fused_fwd_bwd(input_chunk, attention_mask_chunk, rewards_chunk, ref_input_chunk):
@@ -202,7 +210,6 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             None,  # grad_attention_mask
             None,  # grad_rewards
             grad_bias,
-            None,  # grad_loss_fn
             None,  # grad_chunk_size
             None,  # grad_beta
             None,  # grad_compiled

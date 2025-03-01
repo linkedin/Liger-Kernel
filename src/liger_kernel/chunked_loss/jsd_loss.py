@@ -30,14 +30,17 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         jsd_loss = beta * teacher_kl + (1 - beta) * student_kl
         return jsd_loss
 
-    @staticmethod
+    @classmethod
     def forward(
+        cls,
         ctx,
         student_input: torch.Tensor,
         student_weight: torch.Tensor,
         teacher_input: torch.Tensor,
         teacher_weight: torch.Tensor,
         true_labels: torch.LongTensor,
+        student_bias: torch.Tensor,
+        teacher_bias: torch.Tensor,
         weight_hard_loss: float = 0.5,
         weight_soft_loss: float = 0.5,
         beta: float = 0.5,
@@ -62,15 +65,17 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         Returns:
             torch.Tensor: Computed loss
         """
-        return LigerFusedLinearDistillationBase.forward(
+        return super().forward(
+            cls=cls,
             ctx=ctx,
             student_input=student_input,
             student_weight=student_weight,
             teacher_input=teacher_input,
             teacher_weight=teacher_weight,
             target=true_labels,
-            loss_fn=LigerFusedLinearJSDFunction.distillation_loss_fn,
-            chunk_size=1,
+            student_bias=student_bias,
+            teacher_bias=teacher_bias,
+            chunk_size=1024,
             weight_hard_loss=weight_hard_loss,
             weight_soft_loss=weight_soft_loss,
             beta=beta,
@@ -81,9 +86,18 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
 
     @staticmethod
     def backward(ctx, grad_output):
-        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:4]
+        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:6]
 
-        return (*grads, None, None, None, None, None, None, None)
+        return (
+            *grads,
+            None,  # teacher_bias
+            None,  # weight_hard_loss
+            None,  # weight_soft_loss
+            None,  # beta
+            None,  # ignore_index
+            None,  # temperature
+            None,  # compiled
+        )
 
 
 class LigerFusedLinearJSDLoss(torch.nn.Module):
@@ -125,6 +139,8 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         teacher_input: torch.Tensor,
         teacher_weight: torch.Tensor,
         true_labels: torch.LongTensor,
+        student_bias: torch.Tensor,
+        teacher_bias: torch.Tensor,
     ) -> torch.Tensor:
         """
         Compute the JSD distillation loss.
@@ -145,6 +161,8 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             teacher_input,
             teacher_weight,
             true_labels,
+            student_bias,
+            teacher_bias,
             self.weight_hard_loss,
             self.weight_soft_loss,
             self.beta,
