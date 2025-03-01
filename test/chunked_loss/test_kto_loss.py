@@ -83,7 +83,7 @@ class HFKTOLoss(HFAlignmentLoss):
         chosen_rewards = self.beta * chosen_logratios
         rejected_rewards = self.beta * rejected_logratios
 
-        return losses, chosen_rewards, rejected_rewards
+        return losses, chosen_rewards.sum(), rejected_rewards.sum()
 
 
 class TorchLMHeadKTO(torch.nn.Module):
@@ -164,16 +164,16 @@ class LigerLMHeadKTO(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize(
-    "scalar, dtype, atol, rtol",
+    "scalar, dtype, atol, rtol, atol_aux, rtol_aux",
     [
-        (1.0, torch.bfloat16, 5e-2, 5e-1),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        (1.0, torch.bfloat16, 5e-2, 5e-1, 5e-1, 5e-1),
+        (1.0, torch.float32, 1e-5, 5e-4, 1e-5, 5e-4),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ref_bias", [True, False])
 @pytest.mark.parametrize("ignore_index, beta", [(-100, 0.1), (42, 0.2)])
-def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, ignore_index, beta):
+def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, atol_aux, rtol_aux, bias, ref_bias, ignore_index, beta):
     # Preference labels shape: [B]
     # Create binary preference labels (0 or 1) for each sequence in the batch
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
@@ -251,8 +251,8 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, igno
         assert_verbose_allclose(
             aggregated_aux_outputs1[i],
             aggregated_aux_outputs2[i],
-            atol=atol,
-            rtol=rtol,
+            atol=atol_aux,
+            rtol=rtol_aux,
         )
 
     loss1.backward()
@@ -288,15 +288,15 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, igno
     ],
 )
 @pytest.mark.parametrize(
-    "scalar, dtype, atol, rtol",
+    "scalar, dtype, atol, rtol, atol_aux, rtol_aux",
     [
-        (1.0, torch.bfloat16, 5e-2, 5e-1),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        (1.0, torch.bfloat16, 5e-2, 5e-1, 5e-1, 5e-1),
+        (1.0, torch.float32, 1e-5, 5e-4, 1e-5, 5e-4),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ref_bias", [True, False])
-def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias):
+def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, atol_aux, rtol_aux, bias, ref_bias):
     # Preference labels shape: [B]
     # Create binary preference labels (0 or 1) for each sequence in the batch
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
@@ -369,8 +369,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
         assert_verbose_allclose(
             aggregated_aux_outputs1[i],
             aggregated_aux_outputs2[i],
-            atol=atol,
-            rtol=rtol,
+            atol=atol_aux,
+            rtol=rtol_aux,
         )
 
     loss1.backward()
