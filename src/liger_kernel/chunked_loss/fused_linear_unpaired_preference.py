@@ -241,11 +241,11 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
         else:
             log_probs = (per_token_logps_chunk * loss_mask_chunk).sum(-1)
 
-        chosen_logps_sum = log_probs[preference_labels_chunk].nansum()
-        rejected_logps_sum = log_probs[~preference_labels_chunk].nansum()
+        chosen_logps_sum = log_probs[preference_labels_chunk].sum()
+        rejected_logps_sum = log_probs[~preference_labels_chunk].sum()
 
-        chosen_logits_sum = logits_chunk[preference_labels_chunk].nansum()
-        rejected_logits_sum = logits_chunk[~preference_labels_chunk].nansum()
+        chosen_logits_sum = logits_chunk[preference_labels_chunk].sum()
+        rejected_logits_sum = logits_chunk[~preference_labels_chunk].sum()
 
         return (
             log_probs,

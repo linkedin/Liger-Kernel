@@ -83,7 +83,7 @@ class HFKTOLoss(HFAlignmentLoss):
         chosen_rewards = self.beta * chosen_logratios
         rejected_rewards = self.beta * rejected_logratios
 
-        return losses, chosen_rewards.nansum(), rejected_rewards.nansum()
+        return losses, chosen_rewards.sum(), rejected_rewards.sum()
 
 
 class TorchLMHeadKTO(torch.nn.Module):
