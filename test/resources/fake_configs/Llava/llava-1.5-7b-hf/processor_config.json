@@ -1,0 +1,7 @@
+{
+    "image_token": "<image>",
+    "num_additional_image_tokens": 1,
+    "patch_size": 14,
+    "processor_class": "LlavaProcessor",
+    "vision_feature_select_strategy": "default"
+}
