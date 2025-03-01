@@ -571,8 +571,8 @@ class HFAlignmentLoss:
             return loss, (*return_vars, *aggregated_aux_outputs)
         else:
             return_vars = (
-                policy_chosen_logps,
-                policy_rejected_logps,
+                policy_chosen_logps.detach().sum(),
+                policy_rejected_logps.detach().sum(),
                 policy_chosen_logits.detach().sum(),
                 policy_rejected_logits.detach().sum(),
             )

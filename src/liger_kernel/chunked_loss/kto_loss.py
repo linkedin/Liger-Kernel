@@ -63,10 +63,10 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
             losses = 1 - F.sigmoid(beta * logratios_chunk * multiplier_chunk)
 
         rewards = beta * logratios_chunk
-        chosen_rewards = rewards[preference_labels_chunk]
-        rejected_rewards = rewards[~preference_labels_chunk]
+        chosen_rewards_sum = rewards[preference_labels_chunk].nansum()
+        rejected_rewards_sum = rewards[~preference_labels_chunk].nansum()
 
-        return losses.sum() / (full_target.shape[0]), chosen_rewards, rejected_rewards
+        return losses.sum() / (full_target.shape[0]), chosen_rewards_sum, rejected_rewards_sum
 
     @staticmethod
     def forward(
