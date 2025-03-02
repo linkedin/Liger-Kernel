@@ -19,6 +19,8 @@ from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_for
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
+from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
+from liger_kernel.transformers.model.llava import lce_forward_deprecated as llava_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
@@ -90,9 +92,9 @@ def apply_liger_kernel_to_granite(
         If LigerSwiGLUMLP is OK for Llama, it should be fine for Granite, but it's not.
     """
 
-    assert not (cross_entropy and fused_linear_cross_entropy), (
-        "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    )
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.granite import modeling_granite
     from transformers.models.granite.modeling_granite import GraniteModel
@@ -164,9 +166,9 @@ def apply_liger_kernel_to_llama(
         loaded. Default is None.
     """
 
-    assert not (cross_entropy and fused_linear_cross_entropy), (
-        "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    )
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.llama import modeling_llama
     from transformers.models.llama.modeling_llama import LlamaModel
@@ -212,6 +214,85 @@ def apply_liger_kernel_to_llama(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_llava(
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    model: PreTrainedModel = None,
+    **kwargs,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Llava models.
+    Due to the characteristics of LlaVa, the model must be passed to apply Liger-Kernel's patch to other models connected to LLaVa.
+    However, if an LM not supported by Liger-Kernel is connected to LLaVa, unexpected side effects may occur.
+    NOTE: Llava is not available in transformers<4.36.0
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
+
+    from transformers.models.llava import modeling_llava
+
+    if cross_entropy:
+        logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+        modeling_llava.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        if transformer_version >= version.parse("4.49.0"):
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
+        else:  # if version < 4.49.0
+            logger.warning(
+                "Support for transformers versions < 4.49.0 will soon be discontinued due to issues with incorrect legacy processing. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/35526"
+            )
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
+
+    if model is not None:
+        text_model_name, vision_model_name = model.config.text_config.model_type, model.config.vision_config.model_type
+        text_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(text_model_name, None)
+        vision_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(vision_model_name, None)
+
+        kwargs = {"cross_entropy": False, "fused_linear_cross_entropy": False, **kwargs}
+        if text_liger_fn:
+            accept_params = inspect.signature(text_liger_fn).parameters
+            remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
+            text_kwargs = {k: v for k, v in kwargs.items() if k not in remain_params}
+
+            if remain_params:
+                logger.warning(
+                    f"These parameters are not supported by {text_model_name}. Enter the remaining {list(text_kwargs.keys())} except for {list(remain_params)}\n"
+                    f"Parameters accepted by {text_model_name}: {list(accept_params.keys())}"
+                )
+            text_kwargs["model"] = model.language_model
+            text_liger_fn(**text_kwargs)
+        elif text_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            logger.warning(f"{text_model_name} is not supported by Liger kernel.")
+
+        if vision_liger_fn:
+            accept_params = inspect.signature(vision_liger_fn).parameters
+            remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
+            vision_kwargs = {k: v for k, v in kwargs.items() if k not in remain_params}
+
+            if remain_params:
+                logger.warning(
+                    f"These parameters are not supported by {vision_model_name}. Enter the remaining {list(vision_kwargs.keys())} except for {list(remain_params)}\n"
+                    f"Parameters accepted by {vision_model_name}: {list(accept_params.keys())}"
+                )
+            vision_kwargs["model"] = model.vision_tower
+            vision_liger_fn(**vision_kwargs)
+        elif vision_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            logger.warning(f"{vision_model_name} is not supported by Liger kernel.")
+
+
 def apply_liger_kernel_to_mllama(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -238,9 +319,9 @@ def apply_liger_kernel_to_mllama(
         loaded. Default is None.
     """
 
-    assert not (cross_entropy and fused_linear_cross_entropy), (
-        "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    )
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.mllama import modeling_mllama
     from transformers.models.mllama.modeling_mllama import MllamaForCausalLM
@@ -340,9 +421,9 @@ def apply_liger_kernel_to_mistral(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (cross_entropy and fused_linear_cross_entropy), (
-        "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    )
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.mistral import modeling_mistral
     from transformers.models.mistral.modeling_mistral import MistralModel
@@ -400,9 +481,9 @@ def apply_liger_kernel_to_mixtral(
         loaded. Default is None.
     """
 
-    assert not (cross_entropy and fused_linear_cross_entropy), (
-        "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    )
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.mixtral import modeling_mixtral
     from transformers.models.mixtral.modeling_mixtral import MixtralModel
@@ -472,9 +553,9 @@ def apply_liger_kernel_to_gemma(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (cross_entropy and fused_linear_cross_entropy), (
-        "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    )
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.gemma import modeling_gemma
     from transformers.models.gemma.modeling_gemma import GemmaModel
@@ -546,9 +627,9 @@ def apply_liger_kernel_to_gemma2(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (cross_entropy and fused_linear_cross_entropy), (
-        "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    )
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.gemma2 import modeling_gemma2
     from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
@@ -623,9 +704,9 @@ def apply_liger_kernel_to_qwen2(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (cross_entropy and fused_linear_cross_entropy), (
-        "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    )
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.qwen2 import modeling_qwen2
     from transformers.models.qwen2.modeling_qwen2 import Qwen2Model
@@ -698,9 +779,9 @@ def apply_liger_kernel_to_qwen2_vl(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (cross_entropy and fused_linear_cross_entropy), (
-        "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    )
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.qwen2_vl import modeling_qwen2_vl
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModel
@@ -835,9 +916,9 @@ def apply_liger_kernel_to_phi3(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (cross_entropy and fused_linear_cross_entropy), (
-        "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    )
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.phi3 import modeling_phi3
     from transformers.models.phi3.modeling_phi3 import Phi3Model
@@ -904,9 +985,9 @@ def apply_liger_kernel_to_olmo2(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
-    assert not (cross_entropy and fused_linear_cross_entropy), (
-        "cross_entropy and fused_linear_cross_entropy cannot both be True."
-    )
+    assert not (
+        cross_entropy and fused_linear_cross_entropy
+    ), "cross_entropy and fused_linear_cross_entropy cannot both be True."
 
     from transformers.models.olmo2 import modeling_olmo2
     from transformers.models.olmo2.modeling_olmo2 import Olmo2Model
@@ -959,6 +1040,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2_vl": apply_liger_kernel_to_qwen2_vl,
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "phi3": apply_liger_kernel_to_phi3,
+    "llava": apply_liger_kernel_to_llava,
 }
 
 
