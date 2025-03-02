@@ -42,8 +42,9 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
 
         return loss, chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen
 
-    @staticmethod
+    @classmethod
     def forward(
+        cls,
         ctx,
         _input,
         weight,
@@ -55,13 +56,13 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         nll_target=None,
         compiled=True,
     ):
-        return LigerFusedLinearPreferenceBase.forward(
+        return super().forward(
+            cls=cls,
             ctx=ctx,
             _input=_input,
             weight=weight,
             target=target,
             bias=bias,
-            loss_fn=LigerFusedLinearORPOFunction.preference_loss_fn,
             ignore_index=ignore_index,
             beta=beta,
             compute_nll_loss=compute_nll_loss,

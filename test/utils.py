@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Tuple
 
 import numpy as np
@@ -213,51 +214,16 @@ def supports_bfloat16():
         return False
 
 
-def transformers_version_dispatch(
-    required_version: str,
-    before_fn,
-    after_fn,
-    before_args: tuple = (),
-    after_args: tuple = (),
-    before_kwargs: dict = None,
-    after_kwargs: dict = None,
-):
+def revert_liger_kernel_to_granite(model_config: MiniModelConfig):
     """
-    Dispatches to different functions based on package version comparison.
-
-    Args:
-        required_version: Version to compare against (e.g. "4.48.0")
-        before_fn: Function to call if package_version < required_version
-        after_fn: Function to call if package_version >= required_version
-        before_args: Positional arguments for before_fn
-        after_args: Positional arguments for after_fn
-        before_kwargs: Keyword arguments for before_fn
-        after_kwargs: Keyword arguments for after_fn
-
-    Returns:
-        Result from either before_fn or after_fn
-
-    Example:
-        >>> rotary_emb = transformers_version_dispatch(
-        ...     "4.48.0",
-        ...     LlamaRotaryEmbedding,
-        ...     LlamaRotaryEmbedding,
-        ...     before_args=(head_dim,),
-        ...     after_args=(LlamaConfig(head_dim=head_dim),),
-        ...     before_kwargs={'device': device},
-        ...     after_kwargs={'device': device}
-        ... )
+    Revert all Liger kernel patches applied to Granite.
     """
-    from packaging import version
-    from transformers import __version__ as transformers_version
 
-    before_kwargs = before_kwargs or {}
-    after_kwargs = after_kwargs or {}
+    from transformers.models.granite import modeling_granite
 
-    if version.parse(transformers_version) < version.parse(required_version):
-        return before_fn(*before_args, **before_kwargs)
-    else:
-        return after_fn(*after_args, **after_kwargs)
+    importlib.reload(modeling_granite)
+    model_config.model_class = modeling_granite.GraniteForCausalLM
+    print("Liger kernel patches have been reverted.")
 
 
 def revert_liger_kernel_to_llama(model_config: MiniModelConfig):
@@ -367,6 +333,17 @@ def revert_liger_kernel_to_qwen2_vl(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_qwen2_5_vl(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Qwen2.5-VL.
+    """
+    from transformers.models.qwen2_5_vl import modeling_qwen2_5_vl
+
+    importlib.reload(modeling_qwen2_5_vl)
+    model_config.model_class = modeling_qwen2_5_vl.Qwen2_5_VLForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Phi3.
@@ -379,6 +356,18 @@ def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_olmo2(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Olmo2.
+    """
+
+    from transformers.models.olmo2 import modeling_olmo2
+
+    importlib.reload(modeling_olmo2)
+    model_config.model_class = modeling_olmo2.Olmo2ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 class HFAlignmentLoss:
     def __init__(
         self,
@@ -386,12 +375,15 @@ class HFAlignmentLoss:
         beta: float = 0.1,
         ignore_index: int = -100,
         use_ref_model: bool = False,
+        unpaired: bool = False,
         compute_nll_loss: bool = True,
+        **kwargs,
     ):
         self.alpha = alpha
         self.beta = beta
         self.ignore_index = ignore_index
         self.use_ref_model = use_ref_model
+        self.unpaired = unpaired
         self.compute_nll_loss = compute_nll_loss
 
     @abstractmethod
@@ -431,31 +423,43 @@ class HFAlignmentLoss:
 
     def get_ref_logps(
         self,
-        _input: torch.FloatTensor,
+        ref_input: torch.FloatTensor,
         ref_weight: torch.FloatTensor,
         target: torch.LongTensor,
         ref_bias: torch.FloatTensor,
         average_log_prob: bool = True,
+        preference_labels: torch.Tensor = None,
     ):
         """Compute the log probabilities of the given labels under the given reference model."""
 
-        ref_logits = _input @ ref_weight.t()
-        if ref_bias is not None:
-            ref_logits = ref_logits + ref_bias
-        ref_all_logps = self.get_batch_logps(ref_logits, target, average_log_prob=average_log_prob)
-        return (
-            ref_all_logps[: _input.shape[0] // 2],
-            ref_all_logps[_input.shape[0] // 2 :],
-        )
+        with torch.no_grad():
+            ref_logits = ref_input @ ref_weight.t()
+            if ref_bias is not None:
+                ref_logits = ref_logits + ref_bias
+            ref_all_logps = self.get_batch_logps(ref_logits, target, average_log_prob=average_log_prob)
+
+            if self.unpaired and preference_labels is not None:
+                # Split based on preference labels
+                return (
+                    ref_all_logps[preference_labels],
+                    ref_all_logps[~preference_labels],
+                )
+            else:
+                # Original paired behavior - split in half
+                return (
+                    ref_all_logps[: ref_input.shape[0] // 2],
+                    ref_all_logps[ref_input.shape[0] // 2 :],
+                )
 
     def concatenated_forward(
         self,
         _input: torch.FloatTensor,
         weight: torch.FloatTensor,
         target: torch.LongTensor,
-        bias: torch.FloatTensor | None = None,
+        bias: Optional[torch.FloatTensor] = None,
         average_log_prob: bool = True,
-        nll_target: torch.LongTensor | None = None,
+        preference_labels: torch.Tensor = None,
+        nll_target: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
@@ -489,11 +493,19 @@ class HFAlignmentLoss:
             average_log_prob=average_log_prob,
         )
 
-        chosen_logps = all_logps[:len_chosen]
-        rejected_logps = all_logps[len_chosen:]
-
-        chosen_logits = all_logits[:len_chosen]
-        rejected_logits = all_logits[len_chosen:]
+        if self.unpaired and preference_labels is not None:
+            # Split based on labels tensor
+            chosen_logps = all_logps[preference_labels]
+            rejected_logps = all_logps[~preference_labels]
+            chosen_logits = all_logits[preference_labels]
+            rejected_logits = all_logits[~preference_labels]
+        else:
+            # Original paired behavior - split in half
+            len_chosen = _input.shape[0] // 2
+            chosen_logps = all_logps[:len_chosen]
+            rejected_logps = all_logps[len_chosen:]
+            chosen_logits = all_logits[:len_chosen]
+            rejected_logits = all_logits[len_chosen:]
 
         return (
             chosen_logps,
@@ -513,11 +525,14 @@ class HFAlignmentLoss:
         ref_weight: torch.FloatTensor = None,
         ref_bias: torch.FloatTensor = None,
         average_log_prob: bool = True,
+        preference_labels: torch.Tensor = None,
         nll_target: torch.LongTensor = None,
+        **loss_kwargs,
     ):
         """Compute the loss metrics for the given batch of inputs for train or test."""
-
-        forward_output = self.concatenated_forward(_input, weight, target, bias, average_log_prob, nll_target)
+        forward_output = self.concatenated_forward(
+            _input, weight, target, bias, average_log_prob, preference_labels, nll_target
+        )
         (
             policy_chosen_logps,
             policy_rejected_logps,
@@ -526,10 +541,14 @@ class HFAlignmentLoss:
             policy_nll_loss,
         ) = forward_output[:5]
 
-        loss_kwargs = {}
         if self.use_ref_model:
             ref_chosen_logps, ref_rejected_logps = self.get_ref_logps(
-                ref_input, ref_weight, target, ref_bias, average_log_prob
+                ref_input,
+                ref_weight,
+                target,
+                ref_bias,
+                average_log_prob,
+                preference_labels,
             )
             loss_kwargs["ref_chosen_logps"] = ref_chosen_logps
             loss_kwargs["ref_rejected_logps"] = ref_rejected_logps
@@ -538,16 +557,26 @@ class HFAlignmentLoss:
             losses, *aggregated_aux_outputs = alignment_loss_outputs
         else:
             losses, aggregated_aux_outputs = alignment_loss_outputs, []
-        # full loss
+
         loss = policy_nll_loss * self.alpha + losses.mean()
-        return_vars = (
-            policy_chosen_logps,
-            policy_rejected_logps,
-            policy_chosen_logits.detach().mean(),
-            policy_rejected_logits.detach().mean(),
-            policy_nll_loss,
-        )
-        return loss, (*return_vars, *aggregated_aux_outputs)
+
+        if not self.unpaired:
+            return_vars = (
+                policy_chosen_logps,
+                policy_rejected_logps,
+                policy_chosen_logits.detach().mean(),
+                policy_rejected_logits.detach().mean(),
+                policy_nll_loss,
+            )
+            return loss, (*return_vars, *aggregated_aux_outputs)
+        else:
+            return_vars = (
+                policy_chosen_logps.detach().sum(),
+                policy_rejected_logps.detach().sum(),
+                policy_chosen_logits.detach().sum(),
+                policy_rejected_logits.detach().sum(),
+            )
+            return loss, (*return_vars, *aggregated_aux_outputs)
 
 
 class HFDistillationLoss:
@@ -654,7 +683,10 @@ class HFDistillationLoss:
             hard_loss,
         ) = forward_output
 
+        student_logits /= self.temperature
+        teacher_logits /= self.temperature
+
         soft_loss = self.distillation_loss(student_logits, teacher_logits)
         # full loss
-        loss = self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss.mean()
+        loss = self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss
         return loss

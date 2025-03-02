@@ -103,7 +103,7 @@ class GemmaRMSNorm(nn.Module):
     [
         (LlamaRMSNorm, 0.0, "llama"),
         (GemmaRMSNorm, 1.0, "gemma"),
-        (BaseRMSNorm, 0.0, "none"),
+        pytest.param(BaseRMSNorm, 0.0, "none", marks=pytest.mark.skipif(device="xpu", reason="skip for XPU")),
     ],
 )
 @pytest.mark.parametrize(
