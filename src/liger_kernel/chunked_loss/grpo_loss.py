@@ -63,8 +63,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
 
         return loss, metrics
 
-    @staticmethod
+    @classmethod
     def forward(
+        cls,
         ctx,
         _input,
         weight,
@@ -79,12 +80,12 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         use_ref_model=True,
         num_generations=1,
     ):
-        return LigerFusedLinearRLHFBase.forward(
+        return super().forward(
+            cls=cls,
             ctx=ctx,
             _input=_input,
             weight=weight,
             attention_mask=attention_mask,
-            loss_fn=LigerFusedLinearGRPOFunction.rlhf_loss_fn,
             rewards=rewards,
             bias=bias,
             ref_input=ref_input,
