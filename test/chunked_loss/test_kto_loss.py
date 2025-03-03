@@ -13,7 +13,7 @@ from test.utils import set_seed
 device = infer_device()
 
 # set random seed globally
-set_seed(42)
+set_seed(0)
 
 
 class HFKTOLoss(HFAlignmentLoss):
