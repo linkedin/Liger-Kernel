@@ -325,7 +325,9 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     # Create binary preference labels (0 or 1) for each sequence in the batch
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
     preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
-
+    num_chosen_samples = preference_labels.sum()
+    num_rejected_samples =  len(preference_labels) - num_chosen_samples
+    
     # Precomputed KL divergence between policy and reference distributions
     kl = torch.randn(1, device=device, dtype=dtype)
 
