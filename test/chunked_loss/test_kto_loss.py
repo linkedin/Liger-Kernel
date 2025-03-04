@@ -179,7 +179,7 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, igno
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
     preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device, requires_grad=False)
     num_chosen_samples = preference_labels.sum()
-    num_rejected_samples =  len(preference_labels) - num_chosen_samples
+    num_rejected_samples = len(preference_labels) - num_chosen_samples
 
     # Precomputed KL divergence between policy and reference distributions
     kl = torch.randn(1, device=device, dtype=dtype)
@@ -248,7 +248,7 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, igno
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
     assert len(aggregated_aux_outputs1) == len(aggregated_aux_outputs2)
-    
+
     # chosen_logps
     chosen_logps_mean1 = aggregated_aux_outputs1[0] / ((num_chosen_samples * T * V) + 1e-20)
     chosen_logps_mean2 = aggregated_aux_outputs2[0] / ((num_chosen_samples * T * V) + 1e-20)
@@ -326,8 +326,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
     preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
     num_chosen_samples = preference_labels.sum()
-    num_rejected_samples =  len(preference_labels) - num_chosen_samples
-    
+    num_rejected_samples = len(preference_labels) - num_chosen_samples
+
     # Precomputed KL divergence between policy and reference distributions
     kl = torch.randn(1, device=device, dtype=dtype)
 
