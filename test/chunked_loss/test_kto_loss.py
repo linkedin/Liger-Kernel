@@ -250,8 +250,8 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, igno
     assert len(aggregated_aux_outputs1) == len(aggregated_aux_outputs2)
 
     # chosen_logps
-    chosen_logps_mean1 = aggregated_aux_outputs1[0] / ((num_chosen_samples * T * V) + 1e-20)
-    chosen_logps_mean2 = aggregated_aux_outputs2[0] / ((num_chosen_samples * T * V) + 1e-20)
+    chosen_logps_mean1 = aggregated_aux_outputs1[0] / ((num_chosen_samples) + 1e-20)
+    chosen_logps_mean2 = aggregated_aux_outputs2[0] / ((num_chosen_samples) + 1e-20)
     assert_verbose_allclose(chosen_logps_mean1, chosen_logps_mean2, atol=atol, rtol=rtol)
 
     # chosen_logits
@@ -260,13 +260,13 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, igno
     assert_verbose_allclose(chosen_logits_mean1, chosen_logits_mean2, atol=atol, rtol=rtol)
 
     # chosen_rewards
-    chosen_rewards_mean1 = aggregated_aux_outputs1[4] / ((num_chosen_samples * T * V) + 1e-20)
-    chosen_rewards_mean2 = aggregated_aux_outputs2[4] / ((num_chosen_samples * T * V) + 1e-20)
+    chosen_rewards_mean1 = aggregated_aux_outputs1[4] / ((num_chosen_samples) + 1e-20)
+    chosen_rewards_mean2 = aggregated_aux_outputs2[4] / ((num_chosen_samples) + 1e-20)
     assert_verbose_allclose(chosen_rewards_mean1, chosen_rewards_mean2, atol=atol, rtol=rtol)
 
     # rejected_logps
-    rejected_logps_mean1 = aggregated_aux_outputs1[1] / ((num_rejected_samples * T * V) + 1e-20)
-    rejected_logps_mean2 = aggregated_aux_outputs2[1] / ((num_rejected_samples * T * V) + 1e-20)
+    rejected_logps_mean1 = aggregated_aux_outputs1[1] / ((num_rejected_samples) + 1e-20)
+    rejected_logps_mean2 = aggregated_aux_outputs2[1] / ((num_rejected_samples) + 1e-20)
     assert_verbose_allclose(rejected_logps_mean1, rejected_logps_mean2, atol=atol, rtol=rtol)
 
     # rejected_logits
@@ -275,8 +275,8 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, igno
     assert_verbose_allclose(rejected_logits_mean1, rejected_logits_mean2, atol=atol, rtol=rtol)
 
     # rejected_rewards
-    rejected_rewards_mean1 = aggregated_aux_outputs1[5] / ((num_rejected_samples * T * V) + 1e-20)
-    rejected_rewards_mean2 = aggregated_aux_outputs2[5] / ((num_rejected_samples * T * V) + 1e-20)
+    rejected_rewards_mean1 = aggregated_aux_outputs1[5] / ((num_rejected_samples) + 1e-20)
+    rejected_rewards_mean2 = aggregated_aux_outputs2[5] / ((num_rejected_samples) + 1e-20)
     assert_verbose_allclose(rejected_rewards_mean1, rejected_rewards_mean2, atol=atol, rtol=rtol)
 
     loss1.backward()
@@ -392,8 +392,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     assert len(aggregated_aux_outputs1) == len(aggregated_aux_outputs2)
 
     # chosen_logps
-    chosen_logps_mean1 = aggregated_aux_outputs1[0] / ((num_chosen_samples * T * V) + 1e-20)
-    chosen_logps_mean2 = aggregated_aux_outputs2[0] / ((num_chosen_samples * T * V) + 1e-20)
+    chosen_logps_mean1 = aggregated_aux_outputs1[0] / ((num_chosen_samples) + 1e-20)
+    chosen_logps_mean2 = aggregated_aux_outputs2[0] / ((num_chosen_samples) + 1e-20)
     assert_verbose_allclose(chosen_logps_mean1, chosen_logps_mean2, atol=atol, rtol=rtol)
 
     # chosen_logits
@@ -402,13 +402,13 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     assert_verbose_allclose(chosen_logits_mean1, chosen_logits_mean2, atol=atol, rtol=rtol)
 
     # chosen_rewards
-    chosen_rewards_mean1 = aggregated_aux_outputs1[4] / ((num_chosen_samples * T * V) + 1e-20)
-    chosen_rewards_mean2 = aggregated_aux_outputs2[4] / ((num_chosen_samples * T * V) + 1e-20)
+    chosen_rewards_mean1 = aggregated_aux_outputs1[4] / ((num_chosen_samples) + 1e-20)
+    chosen_rewards_mean2 = aggregated_aux_outputs2[4] / ((num_chosen_samples) + 1e-20)
     assert_verbose_allclose(chosen_rewards_mean1, chosen_rewards_mean2, atol=atol, rtol=rtol)
 
     # rejected_logps
-    rejected_logps_mean1 = aggregated_aux_outputs1[1] / ((num_rejected_samples * T * V) + 1e-20)
-    rejected_logps_mean2 = aggregated_aux_outputs2[1] / ((num_rejected_samples * T * V) + 1e-20)
+    rejected_logps_mean1 = aggregated_aux_outputs1[1] / ((num_rejected_samples) + 1e-20)
+    rejected_logps_mean2 = aggregated_aux_outputs2[1] / ((num_rejected_samples) + 1e-20)
     assert_verbose_allclose(rejected_logps_mean1, rejected_logps_mean2, atol=atol, rtol=rtol)
 
     # rejected_logits
@@ -417,8 +417,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     assert_verbose_allclose(rejected_logits_mean1, rejected_logits_mean2, atol=atol, rtol=rtol)
 
     # rejected_rewards
-    rejected_rewards_mean1 = aggregated_aux_outputs1[5] / ((num_rejected_samples * T * V) + 1e-20)
-    rejected_rewards_mean2 = aggregated_aux_outputs2[5] / ((num_rejected_samples * T * V) + 1e-20)
+    rejected_rewards_mean1 = aggregated_aux_outputs1[5] / ((num_rejected_samples) + 1e-20)
+    rejected_rewards_mean2 = aggregated_aux_outputs2[5] / ((num_rejected_samples) + 1e-20)
     assert_verbose_allclose(rejected_rewards_mean1, rejected_rewards_mean2, atol=atol, rtol=rtol)
 
     loss1.backward()
