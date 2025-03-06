@@ -41,6 +41,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         true_labels: torch.LongTensor,
         student_bias: torch.Tensor,
         teacher_bias: torch.Tensor,
+        chunk_size: int = 1024,
         weight_hard_loss: float = 0.5,
         weight_soft_loss: float = 0.5,
         beta: float = 0.5,
@@ -75,7 +76,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             target=true_labels,
             student_bias=student_bias,
             teacher_bias=teacher_bias,
-            chunk_size=1024,
+            chunk_size=chunk_size,
             weight_hard_loss=weight_hard_loss,
             weight_soft_loss=weight_soft_loss,
             beta=beta,
@@ -113,6 +114,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         ignore_index: int = -100,
         temperature: float = 1.0,
         compiled: bool = True,
+        chunk_size: int = 1024,
     ):
         """
         Args:
@@ -131,6 +133,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         self.temperature = temperature
         self.compiled = compiled
         self.beta = beta
+        self.chunk_size = chunk_size
 
     def forward(
         self,
@@ -141,6 +144,8 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         true_labels: torch.LongTensor,
         student_bias: torch.Tensor,
         teacher_bias: torch.Tensor,
+        
+
     ) -> torch.Tensor:
         """
         Compute the JSD distillation loss.
@@ -163,6 +168,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             true_labels,
             student_bias,
             teacher_bias,
+            self.chunk_size,
             self.weight_hard_loss,
             self.weight_soft_loss,
             self.beta,
