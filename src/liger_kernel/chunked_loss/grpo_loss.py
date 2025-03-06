@@ -79,7 +79,27 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         compiled=True,
         use_ref_model=True,
         num_generations=1,
+        chunk_size=1024,
     ):
+        """
+        Fused linear layer with GRPO loss.
+        Args:
+            _input (torch.Tensor): Input tensor. Shape: (batch_size * seq_len, hidden_size)
+            weight (torch.Tensor): Weight tensor. Shape: (vocab_size, hidden_size)
+            attention_mask (torch.Tensor): Attention mask tensor. Shape: (batch_size, seq_len)
+            rewards (torch.Tensor): Rewards tensor. Shape: (batch_size,)
+            bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,)
+            ref_input (torch.Tensor, optional): Reference model input tensor. Shape: (batch_size * seq_len, hidden_size)
+            ref_weight (torch.Tensor, optional): Reference model weight tensor. Shape: (vocab_size, hidden_size)
+            ref_bias (torch.Tensor, optional): Reference model bias tensor. Shape: (vocab_size,)
+            beta (float): Weight for the KL penalty
+            compiled (bool): Whether to use torch compile
+            use_ref_model (bool): Whether to use a reference model
+            num_generations (int): Number of generations per prompt
+            chunk_size (int): Size of chunks for processing. Default: `1024`.
+        Returns:
+            torch.Tensor: Computed loss
+        """
         return super().forward(
             cls=cls,
             ctx=ctx,
@@ -95,31 +115,19 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             compiled=compiled,
             use_ref_model=use_ref_model,
             num_generations=num_generations,
+            chunk_size=chunk_size,
         )
 
     @staticmethod
     def backward(ctx, grad_output, *grad_metrics):
-        """Backward pass for GRPO loss.
-
-        Args:
-            grad_output: Gradient of the loss (scalar)
-            grad_metrics: Gradients of the metrics (not used in backward computation)
-        """
-        grads = LigerFusedLinearRLHFBase.backward(ctx, grad_output)
-        return (
-            *grads[:5],  # grad_input, grad_weight, grad_attention_mask, grad_rewards, grad_bias
-            None,  # grad_ref_input
-            None,  # grad_ref_weight
-            None,  # grad_ref_bias
-            None,  # grad_beta
-            None,  # grad_compiled
-            None,  # grad_use_ref_model
-            None,  # grad_num_generations
-        )
+        grads = LigerFusedLinearRLHFBase.backward(ctx, grad_output, *grad_metrics)[:4]
+        return *grads, None, None, None, None, None, None, None, None, None
 
 
 class LigerFusedLinearGRPOLoss(torch.nn.Module):
-    """Fused linear layer with GRPO loss."""
+    """
+    Fused linear layer with GRPO loss.
+    """
 
     def __init__(
         self,
@@ -127,12 +135,22 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         compiled: bool = True,
         use_ref_model: bool = True,
         num_generations: int = 1,
+        chunk_size: int = 1024,
     ):
+        """
+        Args:
+            beta (float): Weight for the KL penalty.
+            compiled (bool): Whether to use torch compile.
+            use_ref_model (bool): Whether to use a reference model.
+            num_generations (int): Number of generations per prompt.
+            chunk_size (int): Size of chunks for processing. Default: `1024`.
+        """
         super().__init__()
         self.beta = beta
         self.compiled = compiled
         self.use_ref_model = use_ref_model
         self.num_generations = num_generations
+        self.chunk_size = chunk_size
 
     def forward(
         self,
@@ -158,4 +176,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.compiled,
             self.use_ref_model,
             self.num_generations,
+            self.chunk_size,
         )
