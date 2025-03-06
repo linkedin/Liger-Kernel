@@ -164,20 +164,22 @@ class LigerLMHeadKTO(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize(
-    "scalar, dtype, atol, rtol, atol_aux, rtol_aux",
+    "scalar, dtype, atol, rtol",
     [
-        (1.0, torch.bfloat16, 5e-2, 5e-1, 5e-1, 5e-1),
-        (1.0, torch.float32, 1e-5, 5e-4, 1e-5, 5e-4),
+        (1.0, torch.bfloat16, 5e-2, 5e-1),
+        (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ref_bias", [True, False])
 @pytest.mark.parametrize("ignore_index, beta", [(-100, 0.1), (42, 0.2)])
-def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, atol_aux, rtol_aux, bias, ref_bias, ignore_index, beta):
+def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, ignore_index, beta):
     # Preference labels shape: [B]
     # Create binary preference labels (0 or 1) for each sequence in the batch
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
     preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device, requires_grad=False)
+    num_chosen_samples = preference_labels.sum()
+    num_rejected_samples = len(preference_labels) - num_chosen_samples
 
     # Precomputed KL divergence between policy and reference distributions
     kl = torch.randn(1, device=device, dtype=dtype)
@@ -247,13 +249,35 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, atol_aux, rtol_aux, 
 
     assert len(aggregated_aux_outputs1) == len(aggregated_aux_outputs2)
 
-    for i in range(len(aggregated_aux_outputs1)):
-        assert_verbose_allclose(
-            aggregated_aux_outputs1[i],
-            aggregated_aux_outputs2[i],
-            atol=atol_aux,
-            rtol=rtol_aux,
-        )
+    # chosen_logps
+    chosen_logps_mean1 = aggregated_aux_outputs1[0] / ((num_chosen_samples) + 1e-20)
+    chosen_logps_mean2 = aggregated_aux_outputs2[0] / ((num_chosen_samples) + 1e-20)
+    assert_verbose_allclose(chosen_logps_mean1, chosen_logps_mean2, atol=atol, rtol=rtol)
+
+    # chosen_logits
+    chosen_logits_mean1 = aggregated_aux_outputs1[2] / ((num_chosen_samples * T * V) + 1e-20)
+    chosen_logits_mean2 = aggregated_aux_outputs2[2] / ((num_chosen_samples * T * V) + 1e-20)
+    assert_verbose_allclose(chosen_logits_mean1, chosen_logits_mean2, atol=atol, rtol=rtol)
+
+    # chosen_rewards
+    chosen_rewards_mean1 = aggregated_aux_outputs1[4] / ((num_chosen_samples) + 1e-20)
+    chosen_rewards_mean2 = aggregated_aux_outputs2[4] / ((num_chosen_samples) + 1e-20)
+    assert_verbose_allclose(chosen_rewards_mean1, chosen_rewards_mean2, atol=atol, rtol=rtol)
+
+    # rejected_logps
+    rejected_logps_mean1 = aggregated_aux_outputs1[1] / ((num_rejected_samples) + 1e-20)
+    rejected_logps_mean2 = aggregated_aux_outputs2[1] / ((num_rejected_samples) + 1e-20)
+    assert_verbose_allclose(rejected_logps_mean1, rejected_logps_mean2, atol=atol, rtol=rtol)
+
+    # rejected_logits
+    rejected_logits_mean1 = aggregated_aux_outputs1[3] / ((num_rejected_samples * T * V) + 1e-20)
+    rejected_logits_mean2 = aggregated_aux_outputs2[3] / ((num_rejected_samples * T * V) + 1e-20)
+    assert_verbose_allclose(rejected_logits_mean1, rejected_logits_mean2, atol=atol, rtol=rtol)
+
+    # rejected_rewards
+    rejected_rewards_mean1 = aggregated_aux_outputs1[5] / ((num_rejected_samples) + 1e-20)
+    rejected_rewards_mean2 = aggregated_aux_outputs2[5] / ((num_rejected_samples) + 1e-20)
+    assert_verbose_allclose(rejected_rewards_mean1, rejected_rewards_mean2, atol=atol, rtol=rtol)
 
     loss1.backward()
     loss2.backward()
@@ -288,19 +312,21 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, atol_aux, rtol_aux, 
     ],
 )
 @pytest.mark.parametrize(
-    "scalar, dtype, atol, rtol, atol_aux, rtol_aux",
+    "scalar, dtype, atol, rtol",
     [
-        (1.0, torch.bfloat16, 5e-2, 5e-1, 5e-1, 5e-1),
-        (1.0, torch.float32, 1e-5, 5e-4, 1e-5, 5e-4),
+        (1.0, torch.bfloat16, 5e-2, 5e-1),
+        (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ref_bias", [True, False])
-def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, atol_aux, rtol_aux, bias, ref_bias):
+def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias):
     # Preference labels shape: [B]
     # Create binary preference labels (0 or 1) for each sequence in the batch
     # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
     preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
+    num_chosen_samples = preference_labels.sum()
+    num_rejected_samples = len(preference_labels) - num_chosen_samples
 
     # Precomputed KL divergence between policy and reference distributions
     kl = torch.randn(1, device=device, dtype=dtype)
@@ -365,13 +391,35 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, atol_aux,
 
     assert len(aggregated_aux_outputs1) == len(aggregated_aux_outputs2)
 
-    for i in range(len(aggregated_aux_outputs1)):
-        assert_verbose_allclose(
-            aggregated_aux_outputs1[i],
-            aggregated_aux_outputs2[i],
-            atol=atol_aux,
-            rtol=rtol_aux,
-        )
+    # chosen_logps
+    chosen_logps_mean1 = aggregated_aux_outputs1[0] / ((num_chosen_samples) + 1e-20)
+    chosen_logps_mean2 = aggregated_aux_outputs2[0] / ((num_chosen_samples) + 1e-20)
+    assert_verbose_allclose(chosen_logps_mean1, chosen_logps_mean2, atol=atol, rtol=rtol)
+
+    # chosen_logits
+    chosen_logits_mean1 = aggregated_aux_outputs1[2] / ((num_chosen_samples * T * V) + 1e-20)
+    chosen_logits_mean2 = aggregated_aux_outputs2[2] / ((num_chosen_samples * T * V) + 1e-20)
+    assert_verbose_allclose(chosen_logits_mean1, chosen_logits_mean2, atol=atol, rtol=rtol)
+
+    # chosen_rewards
+    chosen_rewards_mean1 = aggregated_aux_outputs1[4] / ((num_chosen_samples) + 1e-20)
+    chosen_rewards_mean2 = aggregated_aux_outputs2[4] / ((num_chosen_samples) + 1e-20)
+    assert_verbose_allclose(chosen_rewards_mean1, chosen_rewards_mean2, atol=atol, rtol=rtol)
+
+    # rejected_logps
+    rejected_logps_mean1 = aggregated_aux_outputs1[1] / ((num_rejected_samples) + 1e-20)
+    rejected_logps_mean2 = aggregated_aux_outputs2[1] / ((num_rejected_samples) + 1e-20)
+    assert_verbose_allclose(rejected_logps_mean1, rejected_logps_mean2, atol=atol, rtol=rtol)
+
+    # rejected_logits
+    rejected_logits_mean1 = aggregated_aux_outputs1[3] / ((num_rejected_samples * T * V) + 1e-20)
+    rejected_logits_mean2 = aggregated_aux_outputs2[3] / ((num_rejected_samples * T * V) + 1e-20)
+    assert_verbose_allclose(rejected_logits_mean1, rejected_logits_mean2, atol=atol, rtol=rtol)
+
+    # rejected_rewards
+    rejected_rewards_mean1 = aggregated_aux_outputs1[5] / ((num_rejected_samples) + 1e-20)
+    rejected_rewards_mean2 = aggregated_aux_outputs2[5] / ((num_rejected_samples) + 1e-20)
+    assert_verbose_allclose(rejected_rewards_mean1, rejected_rewards_mean2, atol=atol, rtol=rtol)
 
     loss1.backward()
     loss2.backward()
