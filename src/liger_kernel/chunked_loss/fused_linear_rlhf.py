@@ -41,14 +41,14 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             attention_mask: Attention mask tensor
             rewards: Rewards tensor
             bias: Bias tensor
-            num_generations: Number of generations per prompt
+            num_generations: Number of generations per prompt. Used for chunking in RLHF.
             beta: Weight for the KL penalty
             compiled: Whether to use torch compile
             use_ref_model: Whether to use a reference model
             ref_input: Reference model input tensor
             ref_weight: Reference model weight tensor
             ref_bias: Reference model bias tensor
-            chunk_size: Size of chunks for processing. Default: `1024`.
+            chunk_size: Size of chunks for processing in other loss modules. Not used for chunking in RLHF.
         """
         # Save for backward
         ctx.beta = beta
@@ -125,8 +125,8 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         if compiled:
             accumulate_chunk = torch.compile(accumulate_chunk)
 
-        # Process input in chunks based on chunk_size
-        chunks = max(1, _input.shape[0] // chunk_size)
+        # Process input in chunks based on num_generations
+        chunks = max(1, _input.shape[0] // num_generations)
         _input_chunks = torch.chunk(_input, chunks=chunks, dim=0)
         _attention_mask_chunks = torch.chunk(attention_mask, chunks=chunks, dim=0)
         _rewards_chunks = torch.chunk(rewards, chunks=chunks, dim=0)
