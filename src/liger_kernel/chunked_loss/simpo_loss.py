@@ -62,27 +62,47 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=False,
         compiled=True,
         gamma=0.5,
+        chunk_size=1,
     ):
+        """
+        Fused linear layer with SimPO loss.
+        Args:
+            _input (torch.Tensor): Input tensor. Shape: (batch_size * seq_len, hidden_size)
+            weight (torch.Tensor): Weight tensor. Shape: (vocab_size, hidden_size)
+            target (torch.LongTensor): Target tensor. Shape: (batch_size * seq_len,)
+            bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,)
+            ignore_index (int): Index to ignore in loss computation
+            beta (float): Weight for the odds ratio loss
+            alpha (float): Weight for the alpha parameter
+            label_smoothing (float): Label smoothing factor
+            compute_nll_loss (bool): Whether to compute the NLL loss
+            compiled (bool): Whether to use torch compile
+            gamma (float): Weight for the gamma parameter
+            chunk_size (int): Size of chunks for processing
+        Returns:
+            torch.Tensor: Computed loss
+        """
         return super().forward(
-            cls,
-            ctx,
-            _input,
-            weight,
-            target,
-            bias,
-            compute_nll_loss=compute_nll_loss,
+            cls=cls,
+            ctx=ctx,
+            _input=_input,
+            weight=weight,
+            target=target,
+            bias=bias,
             ignore_index=ignore_index,
             alpha=alpha,
             beta=beta,
             label_smoothing=label_smoothing,
+            compute_nll_loss=compute_nll_loss,
             compiled=compiled,
             gamma=gamma,
+            chunk_size=chunk_size,
         )
 
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None, None, None, None
+        return *grads, None, None, None, None, None, None, None, None
 
 
 class LigerFusedLinearSimPOLoss(torch.nn.Module):
@@ -99,11 +119,18 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
         compute_nll_loss: bool = True,
         compiled: bool = True,
         gamma: float = 0.5,
+        chunk_size: int = 1,
     ):
         """
         Args:
             ignore_index (int): Index to ignore in the loss.
             beta (float): Weight for the odds ratio loss.
+            alpha (float): Weight for the alpha parameter.
+            label_smoothing (float): Label smoothing factor.
+            compute_nll_loss (bool): Whether to compute the NLL loss.
+            compiled (bool): Whether to use the torch compiled kernel.
+            gamma (float): Weight for the gamma parameter.
+            chunk_size (int): Size of chunks for processing.
         """
         super().__init__()
         self.ignore_index = ignore_index
@@ -113,8 +140,15 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
         self.gamma = gamma
+        self.chunk_size = chunk_size
 
-    def forward(self, lin_weight, _input, target, bias=None):
+    def forward(
+        self,
+        lin_weight,
+        _input,
+        target,
+        bias=None,
+    ):
         return LigerFusedLinearSimPOFunction.apply(
             _input,
             lin_weight,
@@ -127,4 +161,5 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
             self.compute_nll_loss,
             self.compiled,
             self.gamma,
+            self.chunk_size,
         )
