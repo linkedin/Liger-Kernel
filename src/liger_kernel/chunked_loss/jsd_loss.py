@@ -47,6 +47,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         ignore_index: int = -100,
         temperature: float = 1.0,
         compiled: bool = True,
+        chunk_size: int = 1024,
     ):
         """
         Fused linear layer with JSD distillation loss.
@@ -62,6 +63,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             ignore_index (int): Index to ignore in loss computation
             temperature (float): Temperature for softening/sharpening distributions
             compiled (bool): Whether to use torch compile
+            chunk_size (int): Size of chunks for processing.
         Returns:
             torch.Tensor: Computed loss
         """
@@ -75,7 +77,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             target=true_labels,
             student_bias=student_bias,
             teacher_bias=teacher_bias,
-            chunk_size=1024,
+            chunk_size=chunk_size,
             weight_hard_loss=weight_hard_loss,
             weight_soft_loss=weight_soft_loss,
             beta=beta,
@@ -97,6 +99,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             None,  # ignore_index
             None,  # temperature
             None,  # compiled
+            None,  # chunk_size
         )
 
 
@@ -113,6 +116,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         ignore_index: int = -100,
         temperature: float = 1.0,
         compiled: bool = True,
+        chunk_size: int = 1024,
     ):
         """
         Args:
@@ -122,6 +126,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             temperature (float): Temperature for softening distributions
             compiled (bool): Whether to use torch compile
             beta (float): Coefficient beta of generalized JSD in the interval [0, 1]. Default: `0.5`.
+            chunk_size (int): Size of chunks for processing.
         """
         super().__init__()
         assert temperature != 0, "Temperature cannot be 0."
@@ -131,6 +136,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         self.temperature = temperature
         self.compiled = compiled
         self.beta = beta
+        self.chunk_size = chunk_size
 
     def forward(
         self,
@@ -169,4 +175,5 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             self.ignore_index,
             self.temperature,
             self.compiled,
+            self.chunk_size,
         )
