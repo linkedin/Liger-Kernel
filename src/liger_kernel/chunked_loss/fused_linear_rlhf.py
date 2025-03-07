@@ -29,8 +29,27 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
+        chunk_size=1024,
     ):
-        """Chunked forward pass for RLHF loss computation."""
+        """Chunked forward pass for RLHF loss computation.
+        
+        Args:
+            cls: The class
+            ctx: Context for backward
+            _input: Input tensor
+            weight: Weight tensor
+            attention_mask: Attention mask tensor
+            rewards: Rewards tensor
+            bias: Bias tensor
+            num_generations: Number of generations per prompt
+            beta: Weight for the KL penalty
+            compiled: Whether to use torch compile
+            use_ref_model: Whether to use a reference model
+            ref_input: Reference model input tensor
+            ref_weight: Reference model weight tensor
+            ref_bias: Reference model bias tensor
+            chunk_size: Size of chunks for processing. Default: `1024`.
+        """
         # Save for backward
         ctx.beta = beta
         ctx.rewards = rewards
@@ -106,8 +125,8 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         if compiled:
             accumulate_chunk = torch.compile(accumulate_chunk)
 
-        # Process input in chunks
-        chunks = max(1, _input.shape[0] // num_generations)
+        # Process input in chunks based on chunk_size
+        chunks = max(1, _input.shape[0] // chunk_size)
         _input_chunks = torch.chunk(_input, chunks=chunks, dim=0)
         _attention_mask_chunks = torch.chunk(attention_mask, chunks=chunks, dim=0)
         _rewards_chunks = torch.chunk(rewards, chunks=chunks, dim=0)
@@ -210,11 +229,12 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             None,  # grad_attention_mask
             None,  # grad_rewards
             grad_bias,
-            None,  # grad_chunk_size
+            None,  # grad_num_generations
             None,  # grad_beta
             None,  # grad_compiled
             None,  # grad_use_ref_model
             None,  # grad_ref_input
             None,  # grad_ref_weight
             None,  # grad_ref_bias
+            None,  # grad_chunk_size
         )
