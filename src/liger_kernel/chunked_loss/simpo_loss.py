@@ -116,7 +116,7 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
         beta: float = 0.1,
         alpha: float = 1.0,
         label_smoothing: float = 0.0,
-        compute_nll_loss: bool = False,
+        compute_nll_loss: bool = True,
         compiled: bool = True,
         gamma: float = 0.5,
         chunk_size: int = 1024,
