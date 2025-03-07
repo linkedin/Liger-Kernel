@@ -86,7 +86,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
         compiled=True,
         use_ref_model=True,
         average_log_prob=False,
-        chunk_size=1024,
+        chunk_size=1,
     ):
         """
         Fused linear layer with KTO loss.
@@ -105,7 +105,7 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
             compiled (bool): Whether to use torch compile
             use_ref_model (bool): Whether to use a reference model
             average_log_prob (bool): Whether to average the log probability per non-masked token
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing
         Returns:
             torch.Tensor: Computed loss
         """
@@ -160,7 +160,7 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
         compiled: bool = True,
         use_ref_model: bool = False,
         average_log_prob: bool = False,
-        chunk_size: int = 1024,
+        chunk_size: int = 1,
     ):
         """
         Args:
@@ -168,8 +168,8 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
             beta (float): Temperature parameter for the KTO loss
             compiled (bool): Whether to use compiled operations
             use_ref_model (bool): Whether to use a reference model for the DPO loss.
-            average_log_prob (bool): Whether to average the log probability per non-masked token.
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            average_log_prob (bool): Whether to average the log probability per non-masked token
+            chunk_size (int): Size of chunks for processing
         """
         super().__init__()
         self.ignore_index = ignore_index

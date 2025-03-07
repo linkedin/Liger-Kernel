@@ -55,7 +55,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=True,
         nll_target=None,
         compiled=True,
-        chunk_size=1024,
+        chunk_size=1,
     ):
         """
         Fused linear layer with ORPO loss.
@@ -69,7 +69,7 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
             compute_nll_loss (bool): Whether to compute the NLL loss
             nll_target (torch.LongTensor, optional): Target tensor for NLL loss. Shape: (batch_size * seq_len,)
             compiled (bool): Whether to use torch compile
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing
         Returns:
             torch.Tensor: Computed loss
         """
@@ -105,7 +105,7 @@ class LigerFusedLinearORPOLoss(torch.nn.Module):
         beta: float = 0.1,
         compute_nll_loss: bool = True,
         compiled: bool = True,
-        chunk_size: int = 1024,
+        chunk_size: int = 1,
     ):
         """
         Args:
@@ -113,7 +113,7 @@ class LigerFusedLinearORPOLoss(torch.nn.Module):
             beta (float): Weight for the odds ratio loss.
             compute_nll_loss (bool): Whether to compute the NLL loss.
             compiled (bool): Whether to use the torch compiled kernel.
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing.
         """
         super().__init__()
         self.ignore_index = ignore_index

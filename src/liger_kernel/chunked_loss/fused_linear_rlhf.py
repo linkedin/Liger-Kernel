@@ -29,10 +29,10 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
-        chunk_size=1024,
+        chunk_size=1,
     ):
         """Chunked forward pass for RLHF loss computation.
-        
+
         Args:
             cls: The class
             ctx: Context for backward
@@ -41,14 +41,14 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             attention_mask: Attention mask tensor
             rewards: Rewards tensor
             bias: Bias tensor
-            num_generations: Number of generations per prompt. Used for chunking in RLHF.
+            num_generations: Number of generations per prompt
             beta: Weight for the KL penalty
             compiled: Whether to use torch compile
             use_ref_model: Whether to use a reference model
             ref_input: Reference model input tensor
             ref_weight: Reference model weight tensor
             ref_bias: Reference model bias tensor
-            chunk_size: Size of chunks for processing in other loss modules. Not used for chunking in RLHF.
+            chunk_size: Size of chunks for processing in other loss modules
         """
         # Save for backward
         ctx.beta = beta

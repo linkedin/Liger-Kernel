@@ -79,7 +79,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         compiled=True,
         use_ref_model=True,
         num_generations=1,
-        chunk_size=1024,
+        chunk_size=1,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -96,7 +96,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             compiled (bool): Whether to use torch compile
             use_ref_model (bool): Whether to use a reference model
             num_generations (int): Number of generations per prompt
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing.
         Returns:
             torch.Tensor: Computed loss
         """
@@ -149,7 +149,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         compiled: bool = True,
         use_ref_model: bool = True,
         num_generations: int = 1,
-        chunk_size: int = 1024,
+        chunk_size: int = 1,
     ):
         """
         Args:
@@ -157,7 +157,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             compiled (bool): Whether to use torch compile.
             use_ref_model (bool): Whether to use a reference model.
             num_generations (int): Number of generations per prompt.
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing.
         """
         super().__init__()
         self.beta = beta

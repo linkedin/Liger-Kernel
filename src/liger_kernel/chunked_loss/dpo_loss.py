@@ -68,7 +68,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=False,
         compiled=True,
         use_ref_model=True,
-        chunk_size=1024,
+        chunk_size=1,
     ):
         """
         Fused linear layer with DPO loss.
@@ -85,7 +85,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             compute_nll_loss (bool): Whether to compute the NLL loss
             compiled (bool): Whether to use torch compile
             use_ref_model (bool): Whether to use a reference model
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing.
         Returns:
             torch.Tensor: Computed loss
         """
@@ -125,7 +125,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         compute_nll_loss: bool = False,
         compiled: bool = True,
         use_ref_model: bool = True,
-        chunk_size: int = 1024,
+        chunk_size: int = 1,
     ):
         """
         Args:
@@ -134,7 +134,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             compute_nll_loss (bool): Whether to compute the NLL loss.
             compiled (bool): Whether to use the torch compiled kernel.
             use_ref_model (bool): Whether to use a reference model for the DPO loss.
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing.
         """
         super().__init__()
         self.ignore_index = ignore_index

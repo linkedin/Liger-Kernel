@@ -63,7 +63,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             ignore_index (int): Index to ignore in loss computation
             temperature (float): Temperature for softening/sharpening distributions
             compiled (bool): Whether to use torch compile
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing.
         Returns:
             torch.Tensor: Computed loss
         """
@@ -126,7 +126,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             temperature (float): Temperature for softening distributions
             compiled (bool): Whether to use torch compile
             beta (float): Coefficient beta of generalized JSD in the interval [0, 1]. Default: `0.5`.
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing.
         """
         super().__init__()
         assert temperature != 0, "Temperature cannot be 0."

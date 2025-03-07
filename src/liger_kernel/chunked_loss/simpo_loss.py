@@ -62,7 +62,7 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=False,
         compiled=True,
         gamma=0.5,
-        chunk_size=1024,
+        chunk_size=1,
     ):
         """
         Fused linear layer with SimPO loss.
@@ -78,7 +78,7 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
             compute_nll_loss (bool): Whether to compute the NLL loss
             compiled (bool): Whether to use torch compile
             gamma (float): Weight for the gamma parameter
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing
         Returns:
             torch.Tensor: Computed loss
         """
@@ -119,7 +119,7 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
         compute_nll_loss: bool = True,
         compiled: bool = True,
         gamma: float = 0.5,
-        chunk_size: int = 1024,
+        chunk_size: int = 1,
     ):
         """
         Args:
@@ -130,7 +130,7 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
             compute_nll_loss (bool): Whether to compute the NLL loss.
             compiled (bool): Whether to use the torch compiled kernel.
             gamma (float): Weight for the gamma parameter.
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing.
         """
         super().__init__()
         self.ignore_index = ignore_index

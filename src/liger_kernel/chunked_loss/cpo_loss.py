@@ -54,7 +54,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=True,
         compiled=True,
         average_log_prob=False,
-        chunk_size=1024,
+        chunk_size=1,
     ):
         """
         Fused linear layer with CPO loss.
@@ -70,7 +70,7 @@ class LigerFusedLinearCPOFunction(LigerFusedLinearPreferenceBase):
             compute_nll_loss (bool): Whether to compute the NLL loss
             compiled (bool): Whether to use torch compile
             average_log_prob (bool): Whether to average the log probability per non-masked token
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing.
         Returns:
             torch.Tensor: Computed loss
         """
@@ -111,7 +111,7 @@ class LigerFusedLinearCPOLoss(torch.nn.Module):
         compute_nll_loss: bool = True,
         compiled: bool = True,
         average_log_prob: bool = False,
-        chunk_size: int = 1024,
+        chunk_size: int = 1,
     ):
         """
         Args:
@@ -122,7 +122,7 @@ class LigerFusedLinearCPOLoss(torch.nn.Module):
             compute_nll_loss (bool): Whether to compute the NLL loss.
             compiled (bool): Whether to use the torch compiled kernel.
             average_log_prob (bool): Whether to average the log probability per non-masked token.
-            chunk_size (int): Size of chunks for processing. Default: `1024`.
+            chunk_size (int): Size of chunks for processing.
         """
         super().__init__()
         self.ignore_index = ignore_index
