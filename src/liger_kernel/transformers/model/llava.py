@@ -10,6 +10,7 @@ from transformers.models.llava.modeling_llava import LLAVA_INPUTS_DOCSTRING
 from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast
 from transformers.models.llava.modeling_llava import logger
 from transformers.utils import add_start_docstrings_to_model_forward
+from transformers.utils import is_torchdynamo_compiling
 from transformers.utils import replace_return_docstrings
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
@@ -241,6 +242,8 @@ def lce_forward(
     return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
+    image_sizes: torch.Tensor = None,
+    **lm_kwargs,
 ) -> Union[Tuple, LlavaCausalLMOutputWithPast]:
     r"""
     Args:
@@ -308,16 +311,17 @@ def lce_forward(
             pixel_values=pixel_values,
             vision_feature_layer=vision_feature_layer,
             vision_feature_select_strategy=vision_feature_select_strategy,
+            image_sizes=image_sizes,
         )
 
-        n_image_tokens = (input_ids == self.config.image_token_index).sum().item()
-        n_image_features = image_features.shape[0] * image_features.shape[1]
-        if n_image_tokens != n_image_features:
+        special_image_mask = (input_ids == self.config.image_token_index).unsqueeze(-1)
+        special_image_mask = special_image_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
+        if not is_torchdynamo_compiling() and inputs_embeds[special_image_mask].numel() != image_features.numel():
+            n_image_tokens = (input_ids == self.config.image_token_index).sum()
+            n_image_features = image_features.shape[0] * image_features.shape[1]
             raise ValueError(
                 f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
             )
-        special_image_mask = (input_ids == self.config.image_token_index).unsqueeze(-1)
-        special_image_mask = special_image_mask.expand_as(inputs_embeds).to(inputs_embeds.device)
         image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
         inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
@@ -332,6 +336,7 @@ def lce_forward(
         return_dict=return_dict,
         cache_position=cache_position,
         num_logits_to_keep=logits_to_keep,
+        **lm_kwargs,
     )
     hidden_states = outputs[0]
 
