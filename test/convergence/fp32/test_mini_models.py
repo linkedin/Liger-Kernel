@@ -22,6 +22,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
 from liger_kernel.transformers import apply_liger_kernel_to_granite
 from liger_kernel.transformers import apply_liger_kernel_to_llama
+from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mistral
 from liger_kernel.transformers import apply_liger_kernel_to_mixtral
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
@@ -37,6 +38,7 @@ from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_llama
+from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
 from test.utils import revert_liger_kernel_to_mllama
@@ -91,6 +93,15 @@ try:
     OLMO2_AVAILABLE = True
 except ImportError:
     OLMO2_AVAILABLE = False
+
+try:
+    from transformers import CLIPVisionConfig
+    from transformers.models.llava.configuration_llava import LlavaConfig
+    from transformers.models.llava.modeling_llava import LlavaForConditionalGeneration
+
+    LLAVA_AVAILABLE = True
+except ImportError:
+    LLAVA_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -532,6 +543,65 @@ if OLMO2_AVAILABLE:
         ),
     )
 
+if LLAVA_AVAILABLE:
+    # https://huggingface.co/llava-hf/llava-1.5-7b-hf
+    MINI_MODEL_SETUPS["mini_llava"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_llava,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_llava,
+        model_class=LlavaForConditionalGeneration,
+        mini_model_config=LlavaConfig(
+            text_config=LlamaConfig(
+                attention_bias=False,
+                attention_dropout=0.0,
+                bos_token_id=1,
+                eos_token_id=2,
+                hidden_act="silu",
+                hidden_size=1024,
+                initializer_range=0.02,
+                intermediate_size=2048,
+                num_attention_heads=8,
+                num_hidden_layers=4,
+                num_key_value_heads=2,
+                pretraining_tp=1,
+                rope_scaling=None,
+                rope_theta=500000.0,
+                tie_word_embeddings=False,
+                use_cache=True,
+                max_position_embeddings=4096,  # llava-1.5-7b-hf
+                rms_norm_eps=1e-05,  # llava-1.5-7b-hf
+                vocab_size=32064,  # llava-1.5-7b-hf
+                # At rope backward
+                # Eager produces incontiguous dq and dk
+                # SDPA produces contiguous dq and incontiguous dk
+                # Flash_attn produces contiguous dq and dk
+                attn_implementation="sdpa",  # default value, pytorch native attention
+            ),
+            vision_config=CLIPVisionConfig(
+                hidden_size=1024,
+                image_size=336,
+                intermediate_size=4096,
+                model_type="clip_vision_model",
+                num_attention_heads=16,
+                num_hidden_layers=24,
+                patch_size=14,
+                projection_dim=768,
+                vocab_size=32000,
+            ),
+            vocab_size=32064,
+            ignore_index=-100,
+            pad_token_id=4,
+            image_token_index=3,
+            projector_hidden_act="gelu",
+            vision_feature_layer=-2,
+            vision_feature_select_strategy="default",
+            # At rope backward
+            # Eager produces incontiguous dq and dk
+            # SDPA produces contiguous dq and incontiguous dk
+            # Flash_attn produces contiguous dq and dk
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
+
 
 def create_model(model_name="mini_llama3"):
     """
@@ -610,6 +680,22 @@ def run_mini_model(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
+        pytest.param(
+            "mini_llava",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not LLAVA_AVAILABLE,
+                reason="LLaVa not available in this version of transformers",
+            ),
+        ),
         pytest.param(
             "mini_mllama",
             32,
