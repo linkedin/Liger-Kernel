@@ -24,6 +24,6 @@ def test_import_custom_cache_manager():
     cache_manager = get_cache_manager(key=random_hex_key)
     from liger_kernel.triton.monkey_patch import LigerTritonFileCacheManager
 
-    assert isinstance(
-        cache_manager, LigerTritonFileCacheManager
-    ), "Cache manager should have been LigerTritonFileCacheManager"
+    assert isinstance(cache_manager, LigerTritonFileCacheManager), (
+        "Cache manager should have been LigerTritonFileCacheManager"
+    )
