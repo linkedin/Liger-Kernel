@@ -81,6 +81,8 @@ class LigerJSDLoss(torch.nn.Module):
             teacher,
             self.teacher_lin.weight,
             target,
+            self.student_lin.bias,
+            self.teacher_lin.bias,
             self.weight_hard_loss,
             self.weight_soft_loss,
         )

@@ -285,6 +285,10 @@ def cross_entropy_forward(
 
     target_mask = target != ignore_index
     n_non_ignore = target_mask.sum().item()
+    assert (target * target_mask).max() < _input.shape[-1], (
+        f"Target {target.max()} is out of bounds. Expected < {_input.shape[-1]}"
+    )
+    assert (target * target_mask).min() >= 0, f"Target {target.min()} is out of bounds. Expected >= 0"
     sum_non_ignore_weight = n_non_ignore
     weight_sum = 0.0
     if weight is not None:

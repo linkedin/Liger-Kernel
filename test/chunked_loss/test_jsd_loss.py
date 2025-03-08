@@ -76,6 +76,7 @@ class TorchLMHeadJSD(torch.nn.Module):
         H: int,
         V: int,
         dtype: torch.dtype,
+        bias: bool,
         device: torch.device,
         weight_hard_loss: float = 0.5,
         weight_soft_loss: float = 0.5,
@@ -85,8 +86,8 @@ class TorchLMHeadJSD(torch.nn.Module):
     ):
         super().__init__()
         # smaller student model weights
-        self.student_lin = torch.nn.Linear(in_features=H // 2, out_features=V, bias=False, dtype=dtype, device=device)
-        self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype, device=device)
+        self.student_lin = torch.nn.Linear(in_features=H // 2, out_features=V, bias=bias, dtype=dtype, device=device)
+        self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype, device=device)
         self.jsd = HFJSDLoss(
             ignore_index=ignore_index,
             weight_hard_loss=weight_hard_loss,
@@ -102,6 +103,8 @@ class TorchLMHeadJSD(torch.nn.Module):
             teacher_input,
             self.teacher_lin.weight,
             target,
+            self.student_lin.bias,
+            self.teacher_lin.bias,
         )
         return jsd_loss
 
@@ -112,6 +115,7 @@ class LigerLMHeadJSD(torch.nn.Module):
         H: int,
         V: int,
         dtype: torch.dtype,
+        bias: bool,
         device: torch.device,
         weight_hard_loss: float = 0.5,
         weight_soft_loss: float = 0.5,
@@ -121,8 +125,8 @@ class LigerLMHeadJSD(torch.nn.Module):
     ):
         super().__init__()
         # smaller student model weights
-        self.student_lin = torch.nn.Linear(in_features=H // 2, out_features=V, bias=False, dtype=dtype, device=device)
-        self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype, device=device)
+        self.student_lin = torch.nn.Linear(in_features=H // 2, out_features=V, bias=bias, dtype=dtype, device=device)
+        self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype, device=device)
         self.chunked_jsd = LigerFusedLinearJSDLoss(
             weight_hard_loss=weight_hard_loss,
             weight_soft_loss=weight_soft_loss,
@@ -137,6 +141,8 @@ class LigerLMHeadJSD(torch.nn.Module):
             teacher_input,
             self.teacher_lin.weight,
             target,
+            self.student_lin.bias,
+            self.teacher_lin.bias,
         )
 
 
@@ -159,16 +165,13 @@ class LigerLMHeadJSD(torch.nn.Module):
         (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )
+@pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize(
     "temperature, weight_hard_loss, weight_soft_loss, beta",
     [
         (1.0, 0.5, 0.5, 0.5),
-        (2.0, 0.5, 0.5, 0.5),
-        (0.5, 0.5, 0.5, 0.5),
-        (1.0, 0.0, 1.0, 0.5),
-        (1.0, 1.0, 0.0, 0.5),
-        (1.0, 0.5, 0.5, 0.3),
-        (2.0, 0.5, 0.5, 0.7),
+        (2.0, 0.0, 1.0, 0.8),
+        (0.5, 1.0, 0.0, 0.2),
     ],
 )
 def test_correctness(
@@ -180,6 +183,7 @@ def test_correctness(
     dtype,
     atol,
     rtol,
+    bias,
     temperature,
     weight_hard_loss,
     weight_soft_loss,
@@ -189,6 +193,7 @@ def test_correctness(
         H=H,
         V=V,
         dtype=dtype,
+        bias=bias,
         device=device,
         temperature=temperature,
         weight_hard_loss=weight_hard_loss,
@@ -199,6 +204,7 @@ def test_correctness(
         H=H,
         V=V,
         dtype=dtype,
+        bias=bias,
         device=device,
         temperature=temperature,
         weight_hard_loss=weight_hard_loss,
@@ -212,6 +218,14 @@ def test_correctness(
     torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.rand(
         V, H, device=device, dtype=dtype
     )
+
+    if bias:
+        torch_lm_head_jsd.student_lin.bias.data = liger_lm_head_jsd.student_lin.bias.data = torch.rand(
+            V, device=device, dtype=dtype
+        )
+        torch_lm_head_jsd.teacher_lin.bias.data = liger_lm_head_jsd.teacher_lin.bias.data = torch.rand(
+            V, device=device, dtype=dtype
+        )
 
     _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
     student_input1 = _tensor.detach().clone().requires_grad_(True)
@@ -237,6 +251,14 @@ def test_correctness(
         rtol=rtol,
     )
 
+    if bias:
+        assert_verbose_allclose(
+            torch_lm_head_jsd.student_lin.bias.grad,
+            liger_lm_head_jsd.student_lin.bias.grad,
+            atol=atol,
+            rtol=rtol,
+        )
+
 
 @pytest.mark.parametrize(
     "B, T, H, V",
@@ -252,6 +274,7 @@ def test_correctness(
         (1.0, torch.float32, 1e-4, 5e-3),
     ],
 )
+@pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize(
     "temperature, weight_hard_loss, weight_soft_loss, beta, ignore_index",
     [(1.0, 0.5, 0.5, 0.5, -100), (2.0, 0.1, 0.9, 0.5, 42)],
@@ -263,6 +286,7 @@ def test_correctness_functional(
     V,
     scalar,
     dtype,
+    bias,
     weight_hard_loss,
     weight_soft_loss,
     beta,
@@ -275,6 +299,14 @@ def test_correctness_functional(
     student_weight1 = _weight.detach().clone().requires_grad_(True)
     student_weight2 = _weight.detach().clone().requires_grad_(True)
     teacher_weight = torch.rand(V, H, device=device, dtype=dtype)
+
+    if bias:
+        _bias = torch.rand(V, device=device, dtype=dtype)
+        student_bias1 = _bias.detach().clone().requires_grad_(True)
+        student_bias2 = _bias.detach().clone().requires_grad_(True)
+        teacher_bias = torch.rand(V, device=device, dtype=dtype)
+    else:
+        student_bias1 = student_bias2 = teacher_bias = None
 
     _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
     student_input1 = _tensor.detach().clone().requires_grad_(True)
@@ -289,6 +321,8 @@ def test_correctness_functional(
         teacher_input,
         teacher_weight,
         label,
+        student_bias1,
+        teacher_bias,
         weight_hard_loss,
         weight_soft_loss,
         beta,
@@ -301,6 +335,8 @@ def test_correctness_functional(
         teacher_input,
         teacher_weight,
         label,
+        student_bias2,
+        teacher_bias,
         weight_hard_loss,
         weight_soft_loss,
         beta,
@@ -316,3 +352,6 @@ def test_correctness_functional(
     assert_verbose_allclose(student_input1.grad, student_input2.grad, atol=atol, rtol=rtol)
 
     assert_verbose_allclose(student_weight1.grad, student_weight2.grad, atol=atol, rtol=rtol)
+
+    if bias:
+        assert_verbose_allclose(student_bias1.grad, student_bias2.grad, atol=atol, rtol=rtol)

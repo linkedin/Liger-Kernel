@@ -125,6 +125,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
 
     @staticmethod
     def forward(
+        cls,
         ctx,
         student_input,
         student_weight,
@@ -133,7 +134,6 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         target,
         student_bias=None,
         teacher_bias=None,
-        loss_fn=None,
         chunk_size=1024,
         ignore_index=-100,
         weight_hard_loss=0.5,
@@ -175,7 +175,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
 
         loss_func_to_call = partial(
             LigerFusedLinearDistillationBase._compute_loss,
-            distillation_loss_fn=loss_fn,
+            distillation_loss_fn=cls.distillation_loss_fn,
             full_target=target,
             ignore_index=ignore_index,
             weight_hard_loss=weight_hard_loss,
@@ -263,4 +263,4 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             grad_weight = grad_weight * grad_output
             grad_bias = grad_bias * grad_output if grad_bias is not None else None
 
-        return grad_input, grad_weight, None, grad_bias
+        return grad_input, grad_weight, None, None, None, grad_bias

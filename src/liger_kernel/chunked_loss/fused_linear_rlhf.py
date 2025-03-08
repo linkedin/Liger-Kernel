@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from functools import partial
 
 import torch
@@ -5,15 +6,22 @@ import torch.nn.functional as F
 
 
 class LigerFusedLinearRLHFBase(torch.autograd.Function):
+    @abstractmethod
+    def rlhf_loss_fn(*args, **kwargs):
+        """
+        To be extended by subclasses.
+        """
+        raise NotImplementedError("RLHF loss function must be implemented.")
+
     @staticmethod
     def forward(
+        cls,
         ctx,
         _input,
         weight,
         attention_mask,
         rewards,
         bias=None,
-        loss_fn=None,
         num_generations=4,
         beta=0.1,
         compiled=True,
@@ -21,8 +29,27 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
+        chunk_size=1,
     ):
-        """Chunked forward pass for RLHF loss computation."""
+        """Chunked forward pass for RLHF loss computation.
+
+        Args:
+            cls: The class
+            ctx: Context for backward
+            _input: Input tensor
+            weight: Weight tensor
+            attention_mask: Attention mask tensor
+            rewards: Rewards tensor
+            bias: Bias tensor
+            num_generations: Number of generations per prompt
+            beta: Weight for the KL penalty
+            compiled: Whether to use torch compile
+            use_ref_model: Whether to use a reference model
+            ref_input: Reference model input tensor
+            ref_weight: Reference model weight tensor
+            ref_bias: Reference model bias tensor
+            chunk_size: Size of chunks for processing in other loss modules
+        """
         # Save for backward
         ctx.beta = beta
         ctx.rewards = rewards
@@ -41,7 +68,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             use_ref_model=use_ref_model,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
-            rlhf_loss_fn=loss_fn,
+            rlhf_loss_fn=cls.rlhf_loss_fn,
         )
 
         def fused_fwd_bwd(input_chunk, attention_mask_chunk, rewards_chunk, ref_input_chunk):
@@ -98,7 +125,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         if compiled:
             accumulate_chunk = torch.compile(accumulate_chunk)
 
-        # Process input in chunks
+        # Process input in chunks based on num_generations
         chunks = max(1, _input.shape[0] // num_generations)
         _input_chunks = torch.chunk(_input, chunks=chunks, dim=0)
         _attention_mask_chunks = torch.chunk(attention_mask, chunks=chunks, dim=0)
@@ -202,12 +229,12 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             None,  # grad_attention_mask
             None,  # grad_rewards
             grad_bias,
-            None,  # grad_loss_fn
-            None,  # grad_chunk_size
+            None,  # grad_num_generations
             None,  # grad_beta
             None,  # grad_compiled
             None,  # grad_use_ref_model
             None,  # grad_ref_input
             None,  # grad_ref_weight
             None,  # grad_ref_bias
+            None,  # grad_chunk_size
         )
