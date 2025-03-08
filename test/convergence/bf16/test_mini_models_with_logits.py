@@ -507,7 +507,7 @@ if GRANITE_AVAILABLE:
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 128256,
-            logits_scaling=4.0,
+            logits_scaling=8.0,
             # At rope backward
             # Eager produces incontiguous dq and dk
             # SDPA produces contiguous dq and incontiguous dk
