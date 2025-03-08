@@ -33,7 +33,7 @@ def lce_forward_deprecated(
     output_hidden_states: Optional[bool] = None,
     return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
-    num_logits_to_keep: int = 0,
+    logits_to_keep: Union[int, torch.Tensor] = 0,
 ) -> Union[Tuple, LlavaCausalLMOutputWithPast]:
     r"""
     Args:
@@ -183,7 +183,7 @@ def lce_forward_deprecated(
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
         cache_position=cache_position,
-        num_logits_to_keep=num_logits_to_keep,
+        num_logits_to_keep=logits_to_keep,
     )
     hidden_states = outputs[0]
 
@@ -240,7 +240,7 @@ def lce_forward(
     output_hidden_states: Optional[bool] = None,
     return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
-    num_logits_to_keep: int = 0,
+    logits_to_keep: Union[int, torch.Tensor] = 0,
 ) -> Union[Tuple, LlavaCausalLMOutputWithPast]:
     r"""
     Args:
@@ -331,7 +331,7 @@ def lce_forward(
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
         cache_position=cache_position,
-        num_logits_to_keep=num_logits_to_keep,
+        num_logits_to_keep=logits_to_keep,
     )
     hidden_states = outputs[0]
 
