@@ -246,7 +246,7 @@ def apply_liger_kernel_to_llava(
 
     if cross_entropy:
         logger.warning(TRANSFORMER_DEPRECATION_WARNING)
-        modeling_llava.CrossEntropyLoss = LigerCrossEntropyLoss
+        modeling_llava.nn.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
         if transformer_version >= version.parse("4.49.0"):
             modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
