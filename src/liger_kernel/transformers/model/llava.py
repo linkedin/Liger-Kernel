@@ -339,7 +339,7 @@ def lce_forward(
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
         cache_position=cache_position,
-        num_logits_to_keep=logits_to_keep,
+        logits_to_keep=logits_to_keep,
         **lm_kwargs,
     )
     hidden_states = outputs[0]
