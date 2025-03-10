@@ -18,7 +18,6 @@ from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinea
 
 
 @add_start_docstrings_to_model_forward(LLAVA_INPUTS_DOCSTRING)
-@deprecate_kwarg("num_logits_to_keep", new_name="logits_to_keep", version="4.50")
 @replace_return_docstrings(output_type=LlavaCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward_deprecated(
     self,
@@ -226,6 +225,7 @@ def lce_forward_deprecated(
 
 
 @add_start_docstrings_to_model_forward(LLAVA_INPUTS_DOCSTRING)
+@deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
 @replace_return_docstrings(output_type=LlavaCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward(
     self,
