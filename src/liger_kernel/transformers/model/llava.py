@@ -362,7 +362,11 @@ def lce_forward(
             shift_labels = labels[..., 1:].contiguous()
 
         lce = LigerFusedLinearCrossEntropyLoss()
-        loss = lce(self.language_model.lm_head.weight, shift_hidden_states, shift_labels)
+        loss = lce(
+            self.language_model.lm_head.weight,
+            shift_hidden_states.view(-1, shift_hidden_states.size(-1)),
+            shift_labels.view(-1).to(shift_hidden_states.device),
+        )
 
     if not return_dict:
         # NOTE: This part has not been tested.
