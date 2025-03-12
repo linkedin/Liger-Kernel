@@ -17,6 +17,8 @@ from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forwa
 from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward_deprecated
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
+from liger_kernel.transformers.model.gemma3 import lce_forward_deprecated as gemma3_lce_forward_deprected
+from liger_kernel.transformers.model.gemma3 import lce_forward as gemma3_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
@@ -599,6 +601,82 @@ def apply_liger_kernel_to_gemma2(
                 _patch_rms_norm_module_for_gemma2(decoder_layer.pre_feedforward_layernorm)
                 _patch_rms_norm_module_for_gemma2(decoder_layer.post_feedforward_layernorm)
 
+def apply_liger_kernel_to_gemma3(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    geglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma2
+    (for Gemma1 please use `apply_liger_kernel_to_gemma`) to make GPU go burrr.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.gemma3 import modeling_gemma3
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3TextModel
+
+    LigerRMSNormForGemma3 = partial(LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False)
+    _patch_rms_norm_module_for_gemma3 = partial(
+        _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+    )
+
+    if rope:
+        modeling_gemma3.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
+        modeling_gemma3.Gemma3RMSNorm = LigerRMSNormForGemma3
+    if cross_entropy:
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_gemma3.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_gemma3.Gemma3ForCausalLM.forward = gemma3_lce_forward
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_gemma3.Gemma3ForCausalLM.forward = gemma3_lce_forward_deprected
+    if geglu:
+        modeling_gemma3.Gemma3MLP = LigerGEGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: Gemma3TextModel = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module_for_gemma3(base_model.norm)
+
+        for decoder_layer in base_model.layers:
+            if geglu:
+                _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+            if rms_norm:
+                _patch_rms_norm_module_for_gemma3(decoder_layer.input_layernorm)
+                _patch_rms_norm_module_for_gemma3(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module_for_gemma3(decoder_layer.pre_feedforward_layernorm)
+                _patch_rms_norm_module_for_gemma3(decoder_layer.post_feedforward_layernorm)
 
 def apply_liger_kernel_to_qwen2(
     rope: bool = True,
