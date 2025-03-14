@@ -8,6 +8,7 @@ from transformers.models.gemma import GemmaForCausalLM
 from transformers.models.gemma2 import Gemma2Config
 from transformers.models.gemma2 import Gemma2ForCausalLM
 from transformers.models.gemma3 import Gemma3ForCausalLM
+from transformers.models.gemma3 import Gemma3TextConfig
 from transformers.models.llama import LlamaConfig
 from transformers.models.llama import LlamaForCausalLM
 from transformers.models.mistral import MistralConfig
@@ -75,8 +76,8 @@ except ImportError:
     GRANITE_AVAILABLE = False
 
 try:
-    from transformers.models.gemma3 import Gemma3Config
     from transformers.models.gemma3 import Gemma3ForCausalLM
+    from transformers.models.gemma3 import Gemma3TextConfig
 
     GEMMA3_AVAILABLE = True
 except ImportError:
@@ -316,11 +317,11 @@ MINI_MODEL_SETUPS = {
 }
 
 if GEMMA3_AVAILABLE:
-    MINI_MODEL_SETUPS["mini_gemma3"]= MiniModelConfig(
+    MINI_MODEL_SETUPS["mini_gemma3"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_gemma3,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma3,
         model_class=Gemma3ForCausalLM,
-        mini_model_config=Gemma3Config(
+        mini_model_config=Gemma3TextConfig(
             vocab_size=32000,  # 256000
             hidden_size=1024,  # 3072
             intermediate_size=2048,  # 24576
@@ -722,9 +723,7 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
 )
