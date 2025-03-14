@@ -69,7 +69,7 @@ try:
     from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
     from transformers.models.paligemma.processing_paligemma import PaliGemmaProcessor
     from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
-    from transformers.models.siglip.image_processing_siglip_fast import SiglipImageProcessorFast
+    from transformers.models.siglip.image_processing_siglip import SiglipImageProcessor
 
     PALIGEMMA_AVAILABLE = True
 except ImportError:
@@ -365,7 +365,7 @@ def create_processor(model_name):
             ]
         )
         fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
-        image_processor = SiglipImageProcessorFast(size={"height": 224, "width": 224})
+        image_processor = SiglipImageProcessor(size={"height": 224, "width": 224},image_seq_length=265)
         return PaliGemmaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
     
     else:
