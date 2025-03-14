@@ -47,9 +47,11 @@ def is_qwen2_vl_available():
 def is_gemma3_available():
     try:
         import transformers.models.gemma3  # noqa: F401
+
         return True
     except ImportError:
         return False
+
 
 def is_qwen2_5_vl_available():
     try:

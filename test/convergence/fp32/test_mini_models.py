@@ -543,7 +543,7 @@ if GEMMA3_AVAILABLE:
             attn_implementation="eager",
         ),
     )
-    
+
 if OLMO2_AVAILABLE:
     MINI_MODEL_SETUPS["mini_olmo2"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_olmo2,
