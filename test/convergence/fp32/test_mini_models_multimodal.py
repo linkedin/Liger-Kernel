@@ -193,7 +193,7 @@ if PALIGEMMA_AVAILABLE:
                 attention_bias=False,
                 attention_dropout=0.0,
             ),
-            image_token_index=1,  # NOTE: outside the vocab size
+            image_token_index=4,  # NOTE: outside the vocab size
             attn_implementation="eager",
         ),
     )
