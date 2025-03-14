@@ -17,8 +17,8 @@ from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forwa
 from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward_deprecated
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
-from liger_kernel.transformers.model.gemma3 import lce_forward_deprecated as gemma3_lce_forward_deprected
 from liger_kernel.transformers.model.gemma3 import lce_forward as gemma3_lce_forward
+from liger_kernel.transformers.model.gemma3 import lce_forward_deprecated as gemma3_lce_forward_deprected
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
@@ -29,6 +29,7 @@ from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward_deprecated
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
+from liger_kernel.transformers.rms_norm import Gemma3LigerRMSNorm
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
@@ -601,6 +602,7 @@ def apply_liger_kernel_to_gemma2(
                 _patch_rms_norm_module_for_gemma2(decoder_layer.pre_feedforward_layernorm)
                 _patch_rms_norm_module_for_gemma2(decoder_layer.post_feedforward_layernorm)
 
+
 def apply_liger_kernel_to_gemma3(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -632,7 +634,9 @@ def apply_liger_kernel_to_gemma3(
     from transformers.models.gemma3 import modeling_gemma3
     from transformers.models.gemma3.modeling_gemma3 import Gemma3TextModel
 
-    LigerRMSNormForGemma3 = partial(LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False)
+    LigerRMSNormForGemma3 = partial(
+        Gemma3LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False
+    )
     _patch_rms_norm_module_for_gemma3 = partial(
         _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
     )
@@ -652,24 +656,22 @@ def apply_liger_kernel_to_gemma3(
             modeling_gemma3.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
-            modeling_gemma3.Gemma3ForCausalLM.forward = gemma3_lce_forward
+            modeling_gemma3.Gemma3ForConditionalGeneration.forward = gemma3_lce_forward
         else:
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
-            modeling_gemma3.Gemma3ForCausalLM.forward = gemma3_lce_forward_deprected
+            modeling_gemma3.Gemma3ForConditionalGeneration.forward = gemma3_lce_forward_deprected
     if geglu:
         modeling_gemma3.Gemma3MLP = LigerGEGLUMLP
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
-
         # get the base model from the model instance
         base_model: Gemma3TextModel = getattr(model, model.base_model_prefix, model)
-
         if rms_norm:
-            _patch_rms_norm_module_for_gemma3(base_model.norm)
+            _patch_rms_norm_module_for_gemma3(base_model.model.norm)
 
-        for decoder_layer in base_model.layers:
+        for decoder_layer in base_model.model.layers:
             if geglu:
                 _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
             if rms_norm:
@@ -677,6 +679,9 @@ def apply_liger_kernel_to_gemma3(
                 _patch_rms_norm_module_for_gemma3(decoder_layer.post_attention_layernorm)
                 _patch_rms_norm_module_for_gemma3(decoder_layer.pre_feedforward_layernorm)
                 _patch_rms_norm_module_for_gemma3(decoder_layer.post_feedforward_layernorm)
+                _patch_rms_norm_module_for_gemma3(decoder_layer.self_attn.q_norm)
+                _patch_rms_norm_module_for_gemma3(decoder_layer.self_attn.k_norm)
+
 
 def apply_liger_kernel_to_qwen2(
     rope: bool = True,
@@ -896,6 +901,7 @@ def apply_liger_kernel_to_phi3(
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
+    "gemma3": apply_liger_kernel_to_gemma3,
     "llama": apply_liger_kernel_to_llama,
     "granite": apply_liger_kernel_to_granite,
     "mllama": apply_liger_kernel_to_mllama,
