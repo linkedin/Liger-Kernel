@@ -550,6 +550,22 @@ def run_mini_model_multimodal(
                 reason="Mllama not available in this version of transformers",
             ),
         ),
+        pytest.param(
+            "mini_paligemma",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not PALIGEMMA_AVAILABLE,
+                reason="Paligemma not available in this version of transformers",
+            ),
+        ),
     ],
 )
 def test_mini_model_multimodal(
