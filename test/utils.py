@@ -345,6 +345,17 @@ def revert_liger_kernel_to_qwen2_vl(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_qwen2_5_vl(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Qwen2.5-VL.
+    """
+    from transformers.models.qwen2_5_vl import modeling_qwen2_5_vl
+
+    importlib.reload(modeling_qwen2_5_vl)
+    model_config.model_class = modeling_qwen2_5_vl.Qwen2_5_VLForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Phi3.
@@ -354,6 +365,18 @@ def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
 
     importlib.reload(modeling_phi3)
     model_config.model_class = modeling_phi3.Phi3ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_olmo2(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Olmo2.
+    """
+
+    from transformers.models.olmo2 import modeling_olmo2
+
+    importlib.reload(modeling_olmo2)
+    model_config.model_class = modeling_olmo2.Olmo2ForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
@@ -559,7 +582,13 @@ class HFAlignmentLoss:
             )
             return loss, (*return_vars, *aggregated_aux_outputs)
         else:
-            return loss
+            return_vars = (
+                policy_chosen_logps.detach().sum(),
+                policy_rejected_logps.detach().sum(),
+                policy_chosen_logits.detach().sum(),
+                policy_rejected_logits.detach().sum(),
+            )
+            return loss, (*return_vars, *aggregated_aux_outputs)
 
 
 class HFDistillationLoss:

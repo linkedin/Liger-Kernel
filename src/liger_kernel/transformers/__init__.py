@@ -15,8 +15,10 @@ from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mistral  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mixtral  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mllama  # noqa: F401
+from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo2  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_phi3  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2  # noqa: F401
+from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2_5_vl  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2_vl  # noqa: F401
 from liger_kernel.transformers.rms_norm import Gemma3LigerRMSNorm  # noqa: F401
 from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401

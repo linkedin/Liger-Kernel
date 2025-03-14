@@ -30,20 +30,24 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         jsd_loss = beta * teacher_kl + (1 - beta) * student_kl
         return jsd_loss
 
-    @staticmethod
+    @classmethod
     def forward(
+        cls,
         ctx,
         student_input: torch.Tensor,
         student_weight: torch.Tensor,
         teacher_input: torch.Tensor,
         teacher_weight: torch.Tensor,
         true_labels: torch.LongTensor,
+        student_bias: torch.Tensor,
+        teacher_bias: torch.Tensor,
         weight_hard_loss: float = 0.5,
         weight_soft_loss: float = 0.5,
         beta: float = 0.5,
         ignore_index: int = -100,
         temperature: float = 1.0,
         compiled: bool = True,
+        chunk_size: int = 1024,
     ):
         """
         Fused linear layer with JSD distillation loss.
@@ -59,18 +63,21 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             ignore_index (int): Index to ignore in loss computation
             temperature (float): Temperature for softening/sharpening distributions
             compiled (bool): Whether to use torch compile
+            chunk_size (int): Size of chunks for processing.
         Returns:
             torch.Tensor: Computed loss
         """
-        return LigerFusedLinearDistillationBase.forward(
+        return super().forward(
+            cls=cls,
             ctx=ctx,
             student_input=student_input,
             student_weight=student_weight,
             teacher_input=teacher_input,
             teacher_weight=teacher_weight,
             target=true_labels,
-            loss_fn=LigerFusedLinearJSDFunction.distillation_loss_fn,
-            chunk_size=1,
+            student_bias=student_bias,
+            teacher_bias=teacher_bias,
+            chunk_size=chunk_size,
             weight_hard_loss=weight_hard_loss,
             weight_soft_loss=weight_soft_loss,
             beta=beta,
@@ -81,9 +88,19 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
 
     @staticmethod
     def backward(ctx, grad_output):
-        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:4]
+        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:6]
 
-        return (*grads, None, None, None, None, None, None, None)
+        return (
+            *grads,
+            None,  # teacher_bias
+            None,  # weight_hard_loss
+            None,  # weight_soft_loss
+            None,  # beta
+            None,  # ignore_index
+            None,  # temperature
+            None,  # compiled
+            None,  # chunk_size
+        )
 
 
 class LigerFusedLinearJSDLoss(torch.nn.Module):
@@ -99,6 +116,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         ignore_index: int = -100,
         temperature: float = 1.0,
         compiled: bool = True,
+        chunk_size: int = 1024,
     ):
         """
         Args:
@@ -108,6 +126,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             temperature (float): Temperature for softening distributions
             compiled (bool): Whether to use torch compile
             beta (float): Coefficient beta of generalized JSD in the interval [0, 1]. Default: `0.5`.
+            chunk_size (int): Size of chunks for processing.
         """
         super().__init__()
         assert temperature != 0, "Temperature cannot be 0."
@@ -117,6 +136,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         self.temperature = temperature
         self.compiled = compiled
         self.beta = beta
+        self.chunk_size = chunk_size
 
     def forward(
         self,
@@ -125,6 +145,8 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         teacher_input: torch.Tensor,
         teacher_weight: torch.Tensor,
         true_labels: torch.LongTensor,
+        student_bias: torch.Tensor,
+        teacher_bias: torch.Tensor,
     ) -> torch.Tensor:
         """
         Compute the JSD distillation loss.
@@ -145,10 +167,13 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             teacher_input,
             teacher_weight,
             true_labels,
+            student_bias,
+            teacher_bias,
             self.weight_hard_loss,
             self.weight_soft_loss,
             self.beta,
             self.ignore_index,
             self.temperature,
             self.compiled,
+            self.chunk_size,
         )

@@ -42,8 +42,9 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
 
         return loss, chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen
 
-    @staticmethod
+    @classmethod
     def forward(
+        cls,
         ctx,
         _input,
         weight,
@@ -54,25 +55,43 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=True,
         nll_target=None,
         compiled=True,
+        chunk_size=1,
     ):
-        return LigerFusedLinearPreferenceBase.forward(
+        """
+        Fused linear layer with ORPO loss.
+        Args:
+            _input (torch.Tensor): Input tensor. Shape: (batch_size * seq_len, hidden_size)
+            weight (torch.Tensor): Weight tensor. Shape: (vocab_size, hidden_size)
+            target (torch.LongTensor): Target tensor. Shape: (batch_size * seq_len,)
+            bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,)
+            ignore_index (int): Index to ignore in loss computation
+            beta (float): Weight for the odds ratio loss
+            compute_nll_loss (bool): Whether to compute the NLL loss
+            nll_target (torch.LongTensor, optional): Target tensor for NLL loss. Shape: (batch_size * seq_len,)
+            compiled (bool): Whether to use torch compile
+            chunk_size (int): Size of chunks for processing
+        Returns:
+            torch.Tensor: Computed loss
+        """
+        return super().forward(
+            cls=cls,
             ctx=ctx,
             _input=_input,
             weight=weight,
             target=target,
             bias=bias,
-            loss_fn=LigerFusedLinearORPOFunction.preference_loss_fn,
             ignore_index=ignore_index,
             beta=beta,
             compute_nll_loss=compute_nll_loss,
             nll_target=nll_target,
             compiled=compiled,
+            chunk_size=chunk_size,
         )
 
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None, None
+        return *grads, None, None, None, None, None, None
 
 
 class LigerFusedLinearORPOLoss(torch.nn.Module):
@@ -86,19 +105,31 @@ class LigerFusedLinearORPOLoss(torch.nn.Module):
         beta: float = 0.1,
         compute_nll_loss: bool = True,
         compiled: bool = True,
+        chunk_size: int = 1,
     ):
         """
         Args:
             ignore_index (int): Index to ignore in the loss.
             beta (float): Weight for the odds ratio loss.
+            compute_nll_loss (bool): Whether to compute the NLL loss.
+            compiled (bool): Whether to use the torch compiled kernel.
+            chunk_size (int): Size of chunks for processing.
         """
         super().__init__()
         self.ignore_index = ignore_index
         self.beta = beta
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
+        self.chunk_size = chunk_size
 
-    def forward(self, lin_weight, _input, target, bias=None, nll_target=None):
+    def forward(
+        self,
+        lin_weight,
+        _input,
+        target,
+        bias=None,
+        nll_target=None,
+    ):
         return LigerFusedLinearORPOFunction.apply(
             _input,
             lin_weight,
@@ -109,4 +140,5 @@ class LigerFusedLinearORPOLoss(torch.nn.Module):
             self.compute_nll_loss,
             nll_target,
             self.compiled,
+            self.chunk_size,
         )

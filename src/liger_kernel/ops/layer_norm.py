@@ -57,13 +57,14 @@ def _layer_norm_forward_kernel(
     B_row = tl.load(B_ptr + col_offsets, mask=mask, other=0)
 
     mean = tl.sum(X_row, axis=0) / n_cols
-    var = tl.sum((X_row - mean) * (X_row - mean), axis=0) / n_cols
+    Xmm = tl.where(mask, X_row - mean, 0)
+    var = tl.sum(Xmm * Xmm, axis=0) / n_cols
     rstd = rsqrt(var + eps)
 
     tl.store(Mean_ptr, mean)
     tl.store(RSTD_ptr, rstd)
 
-    Y_row = (X_row - mean) * rstd * W_row + B_row
+    Y_row = Xmm * rstd * W_row + B_row
 
     tl.store(Y_ptr + col_offsets, Y_row, mask=mask)
 
@@ -147,9 +148,11 @@ def layer_norm_forward(X, W, B, eps):
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
     Mean = torch.empty(n_rows, dtype=X.dtype, device=X.device)
     RSTD = torch.empty(n_rows, dtype=X.dtype, device=X.device)
-    assert X.shape[1] == W.shape[0], (
-        f"Incompatible hidden size dimension between input tensor with shape[1] = {X.shape[1]} and weight tensor with shape[0] = {W.shape[0]}"
-    )
+    if X.shape[1] != W.shape[0]:
+        raise ValueError(
+            f"Incompatible dimensions: input feature size (X.shape[1]={X.shape[1]}) "
+            f"must match weight size (W.shape[0]={W.shape[0]})"
+        )
 
     _layer_norm_forward_kernel[(n_rows,)](
         Y,
@@ -190,11 +193,21 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
 
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     if n_cols > BLOCK_SIZE:
-        raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
+        raise RuntimeError(
+            f"Feature dimension {n_cols} exceeds maximum supported size of {BLOCK_SIZE}. Consider using a smaller feature dimension."
+        )
 
     rows_per_program = math.ceil(n_rows / sm_count)
     grid = (sm_count,)
-    triton_dtype = tl.float32 if X.dtype == torch.float32 else tl.bfloat16
+    triton_dtype = (
+        tl.float32
+        if X.dtype == torch.float32
+        else tl.bfloat16
+        if X.dtype == torch.bfloat16
+        else tl.float16
+        if X.dtype == torch.float16
+        else tl.float32  # fallback to float32 for other types
+    )
     _layer_norm_backward_kernel[grid](
         X,
         W,
