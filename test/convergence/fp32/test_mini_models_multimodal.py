@@ -352,7 +352,7 @@ def create_processor(model_name):
         tokenizer_config = load_tokenizer_config(
             os.path.join(
                 FAKE_CONFIGS_PATH,
-                "paligemma/paligemma-3b-pt-224/tokenizer_config.json",
+                "Google/Paligemma/paligemma-3b-pt-224/tokenizer_config.json",
             )
         )
         tokenizer_base = train_bpe_tokenizer(
@@ -367,6 +367,7 @@ def create_processor(model_name):
         fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = SiglipImageProcessorFast(size={"height": 224, "width": 224})
         return PaliGemmaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
+    
     else:
         raise ValueError(f"Processor not available for model {model_name}")
 
