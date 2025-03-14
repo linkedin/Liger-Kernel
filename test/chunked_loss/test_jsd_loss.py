@@ -27,7 +27,6 @@ class HFJSDLoss(HFDistillationLoss):
         ignore_index: int = -100,
         weight_hard_loss: float = 0.5,
         weight_soft_loss: float = 0.5,
-        beta: float = 0.5,
     ):
         super().__init__(
             ignore_index=ignore_index,
@@ -35,7 +34,6 @@ class HFJSDLoss(HFDistillationLoss):
             weight_soft_loss=weight_soft_loss,
             temperature=temperature,
         )
-        self.beta = (beta,)
 
     def distillation_loss(self, student_logits, teacher_logits, beta=0.5):
         """
@@ -50,15 +48,20 @@ class HFJSDLoss(HFDistillationLoss):
         student_log_probs = F.log_softmax(student_logits, dim=-1)
         teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
 
-        # Compute probabilities (only required for mean calculation)
-        mean_probs = beta * student_log_probs.exp() + (1 - beta) * teacher_log_probs.exp()
-        log_mean_probs = mean_probs.log()
+        if beta == 0:
+            jsd_loss = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)
+        elif beta == 1:
+            jsd_loss = F.kl_div(teacher_log_probs, student_log_probs, reduction="none", log_target=True)
+        else:
+            # Compute probabilities (only required for mean calculation)
+            mean_probs = (1 - beta) * student_log_probs.exp() + beta * teacher_log_probs.exp()
+            log_mean_probs = mean_probs.log()
 
-        student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="batchmean", log_target=True)
-        teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="batchmean", log_target=True)
+            student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="batchmean", log_target=True)
+            teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="batchmean", log_target=True)
 
-        # JSD is the weighted average of the KL divergences
-        jsd_loss = beta * teacher_kl + (1 - beta) * student_kl
+            # JSD is the weighted average of the KL divergences
+            jsd_loss = beta * teacher_kl + (1 - beta) * student_kl
         return jsd_loss
 
 
@@ -88,12 +91,12 @@ class TorchLMHeadJSD(torch.nn.Module):
         # smaller student model weights
         self.student_lin = torch.nn.Linear(in_features=H // 2, out_features=V, bias=bias, dtype=dtype, device=device)
         self.teacher_lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype, device=device)
+        self.beta = beta
         self.jsd = HFJSDLoss(
             ignore_index=ignore_index,
             weight_hard_loss=weight_hard_loss,
             weight_soft_loss=weight_soft_loss,
             temperature=temperature,
-            beta=beta,
         ).get_batch_loss_metrics
 
     def forward(self, student_input, teacher_input, target):
@@ -105,6 +108,7 @@ class TorchLMHeadJSD(torch.nn.Module):
             target,
             self.student_lin.bias,
             self.teacher_lin.bias,
+            beta=self.beta,
         )
         return jsd_loss
 
@@ -132,6 +136,7 @@ class LigerLMHeadJSD(torch.nn.Module):
             weight_soft_loss=weight_soft_loss,
             ignore_index=ignore_index,
             temperature=temperature,
+            beta=beta,
         )
 
     def forward(self, student_input, teacher_input, target):
