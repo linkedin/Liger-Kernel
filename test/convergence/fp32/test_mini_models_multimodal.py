@@ -159,7 +159,7 @@ if PALIGEMMA_AVAILABLE:
                 attention_dropout=0.0,
                 hidden_act="gelu_pytorch_tanh",
                 hidden_size=1152,
-                image_size=1024,  # 224,
+                image_size=224,
                 intermediate_size=2048,  # 4304
                 layer_norm_eps=1e-06,
                 num_attention_heads=4,  # 16
@@ -167,7 +167,7 @@ if PALIGEMMA_AVAILABLE:
                 num_hidden_layers=4,  # 27
                 num_image_tokens=256,
                 num_positions=256,
-                patch_size=140,  # 14
+                patch_size=14,
                 projection_dim=1024,  # 2304
             ),
             text_config=Gemma2Config(
@@ -195,6 +195,9 @@ if PALIGEMMA_AVAILABLE:
             ),
             image_token_index=4,  # NOTE: outside the vocab size
             attn_implementation="eager",
+            vocab_size=32000,
+            projection_dim=1024,
+            hidden_size=1024,
         ),
     )
 
@@ -365,9 +368,9 @@ def create_processor(model_name):
             ]
         )
         fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
-        image_processor = SiglipImageProcessor(size={"height": 224, "width": 224},image_seq_length=265)
+        image_processor = SiglipImageProcessor(size={"height": 224, "width": 224}, image_seq_length=256)
         return PaliGemmaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
-    
+
     else:
         raise ValueError(f"Processor not available for model {model_name}")
 

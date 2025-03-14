@@ -70,7 +70,7 @@ try:
     from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
     from transformers.models.paligemma.processing_paligemma import PaliGemmaProcessor
     from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
-    from transformers.models.siglip.image_processing_siglip_fast import SiglipImageProcessorFast
+    from transformers.models.siglip.image_processing_siglip import SiglipImageProcessor
 
     PALIGEMMA_AVAILABLE = True
 except ImportError:
@@ -160,7 +160,7 @@ if PALIGEMMA_AVAILABLE:
                 attention_dropout=0.0,
                 hidden_act="gelu_pytorch_tanh",
                 hidden_size=1152,
-                image_size=1024,  # 224,
+                image_size=224,
                 intermediate_size=2048,  # 4304
                 layer_norm_eps=1e-06,
                 num_attention_heads=4,  # 16
@@ -168,7 +168,7 @@ if PALIGEMMA_AVAILABLE:
                 num_hidden_layers=4,  # 27
                 num_image_tokens=256,
                 num_positions=256,
-                patch_size=140,  # 14
+                patch_size=14,
                 projection_dim=1024,  # 2304
             ),
             text_config=Gemma2Config(
@@ -196,6 +196,9 @@ if PALIGEMMA_AVAILABLE:
             ),
             image_token_index=4,  # NOTE: outside the vocab size
             attn_implementation="eager",
+            vocab_size=32000,
+            projection_dim=1024,
+            hidden_size=1024,
         ),
     )
 
@@ -349,7 +352,7 @@ def create_processor(model_name):
         fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = MllamaImageProcessor(size={"height": 560, "width": 560})
         return MllamaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
-    
+
     elif model_name == "mini_paligemma":
         tokenizer_config = load_tokenizer_config(
             os.path.join(
@@ -367,9 +370,9 @@ def create_processor(model_name):
             ]
         )
         fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
-        image_processor = SiglipImageProcessorFast(size={"height": 224, "width": 224})
+        image_processor = SiglipImageProcessor(size={"height": 224, "width": 224}, image_seq_length=256)
         return PaliGemmaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
-    
+
     else:
         raise ValueError(f"Processor not available for model {model_name}")
 
@@ -576,7 +579,7 @@ def run_mini_model_multimodal(
                     not PALIGEMMA_AVAILABLE,
                     reason="Paligemma not available in this version of transformers",
                 ),
-            ]
+            ],
         ),
     ],
 )
