@@ -19,15 +19,20 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         student_log_probs = F.log_softmax(student_logits, dim=-1)
         teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
 
-        # Compute probabilities (only required for mean calculation)
-        mean_probs = beta * student_log_probs.exp() + (1 - beta) * teacher_log_probs.exp()
-        log_mean_probs = mean_probs.log()
+        if beta == 0:
+            jsd_loss = F.kl_div(student_log_probs, teacher_log_probs, reduction="sum", log_target=True)
+        elif beta == 1:
+            jsd_loss = F.kl_div(teacher_log_probs, student_log_probs, reduction="sum", log_target=True)
+        else:
+            # Compute probabilities (only required for mean calculation)
+            mean_probs = (1 - beta) * student_log_probs.exp() + beta * teacher_log_probs.exp()
+            log_mean_probs = mean_probs.log()
 
-        student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="sum", log_target=True)
-        teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="sum", log_target=True)
+            student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="sum", log_target=True)
+            teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="sum", log_target=True)
 
-        # JSD is the weighted average of the KL divergences
-        jsd_loss = beta * teacher_kl + (1 - beta) * student_kl
+            # JSD is the weighted average of the KL divergences
+            jsd_loss = beta * teacher_kl + (1 - beta) * student_kl
         return jsd_loss
 
     @classmethod
