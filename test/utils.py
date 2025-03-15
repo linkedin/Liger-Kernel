@@ -605,7 +605,7 @@ class HFDistillationLoss:
         self.temperature = temperature
 
     @abstractmethod
-    def distillation_loss(self, student_logits, teacher_logits):
+    def distillation_loss(self, student_logits, teacher_logits, **loss_kwargs):
         """Abstract method for computing distillation loss."""
         pass
 
@@ -678,6 +678,7 @@ class HFDistillationLoss:
         target: torch.LongTensor,
         student_bias: torch.FloatTensor = None,
         teacher_bias: torch.FloatTensor = None,
+        **loss_kwargs,
     ):
         """Compute the distillation loss metrics for the given batch."""
         forward_output = self.concatenated_forward(
@@ -698,7 +699,7 @@ class HFDistillationLoss:
         student_logits /= self.temperature
         teacher_logits /= self.temperature
 
-        soft_loss = self.distillation_loss(student_logits, teacher_logits)
+        soft_loss = self.distillation_loss(student_logits, teacher_logits, **loss_kwargs)
         # full loss
         loss = self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss
         return loss

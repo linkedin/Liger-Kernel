@@ -33,13 +33,13 @@ class JSD(torch.nn.Module):
 
     def forward(
         self,
-        log_q: torch.Tensor,  # input
+        log_q: torch.Tensor,  # input student logits
         log_p: torch.Tensor,  # target
         label: Optional[torch.Tensor] = None,
     ):
-        if self.beta == 0.0:
+        if self.beta == 0.0:  # KL(p||q) -> kl(q, p)
             loss = self.kl(log_q, log_p).sum(dim=-1)
-        elif self.beta == 1.0:
+        elif self.beta == 1.0:  # KL(q||p) -> kl(p, q)
             loss = self.kl(log_p, log_q).sum(dim=-1)
         else:
             log_p, log_q = log_p.to(torch.float), log_q.to(torch.float)
