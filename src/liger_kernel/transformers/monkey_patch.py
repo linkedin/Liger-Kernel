@@ -17,8 +17,6 @@ from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forwa
 from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward_deprecated
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
-from liger_kernel.transformers.model.gemma3 import lce_forward as gemma3_lce_forward
-from liger_kernel.transformers.model.gemma3 import lce_forward_deprecated as gemma3_lce_forward_deprected
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
@@ -612,8 +610,8 @@ def apply_liger_kernel_to_gemma3(
     model: PreTrainedModel = None,
 ) -> None:
     """
-    Apply Liger kernels to replace original implementation in HuggingFace Gemma2
-    (for Gemma1 please use `apply_liger_kernel_to_gemma`) to make GPU go burrr.
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma3
+    (for Gemma1 please use `apply_liger_kernel_to_gemma3`) to make GPU go burrr.
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
@@ -632,7 +630,12 @@ def apply_liger_kernel_to_gemma3(
     )
 
     from transformers.models.gemma3 import modeling_gemma3
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForConditionalGeneration
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3MultiModalProjector
     from transformers.models.gemma3.modeling_gemma3 import Gemma3TextModel
+
+    from liger_kernel.transformers.model.gemma3 import lce_forward as gemma3_lce_forward
 
     LigerRMSNormForGemma3 = partial(
         Gemma3LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False
@@ -644,22 +647,15 @@ def apply_liger_kernel_to_gemma3(
     if rope:
         modeling_gemma3.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
         modeling_gemma3.Gemma3RMSNorm = LigerRMSNormForGemma3
     if cross_entropy:
-        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
-            from transformers.loss.loss_utils import nn
+        from transformers.loss.loss_utils import nn
 
-            nn.functional.cross_entropy = liger_cross_entropy
-        else:
-            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
-            modeling_gemma3.CrossEntropyLoss = LigerCrossEntropyLoss
+        nn.functional.cross_entropy = liger_cross_entropy
+
     if fused_linear_cross_entropy:
-        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
-            modeling_gemma3.Gemma3ForConditionalGeneration.forward = gemma3_lce_forward
-        else:
-            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
-            modeling_gemma3.Gemma3ForConditionalGeneration.forward = gemma3_lce_forward_deprected
+        modeling_gemma3.Gemma3ForConditionalGeneration.forward = gemma3_lce_forward
+
     if geglu:
         modeling_gemma3.Gemma3MLP = LigerGEGLUMLP
 
@@ -667,20 +663,40 @@ def apply_liger_kernel_to_gemma3(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
         # get the base model from the model instance
-        base_model: Gemma3TextModel = getattr(model, model.base_model_prefix, model)
-        if rms_norm:
-            _patch_rms_norm_module_for_gemma3(base_model.model.norm)
+        if isinstance(model, Gemma3ForConditionalGeneration):
+            language_model: Gemma3ForCausalLM = model.language_model
+            multimodal_projector: Gemma3MultiModalProjector = model.multi_modal_projector
+            text_model: Gemma3TextModel = language_model.model
 
-        for decoder_layer in base_model.model.layers:
-            if geglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+        elif isinstance(model, Gemma3ForCausalLM):
+            text_model: Gemma3TextModel = model.model
+            multimodal_projector = None
+
+        elif isinstance(model, Gemma3TextModel):
+            text_model = model
+            multimodal_projector = None
+
+        else:
+            raise ValueError(f"Unsupported Gemma3 model type: {type(model)}")
+
+        if text_model:
             if rms_norm:
-                _patch_rms_norm_module_for_gemma3(decoder_layer.input_layernorm)
-                _patch_rms_norm_module_for_gemma3(decoder_layer.post_attention_layernorm)
-                _patch_rms_norm_module_for_gemma3(decoder_layer.pre_feedforward_layernorm)
-                _patch_rms_norm_module_for_gemma3(decoder_layer.post_feedforward_layernorm)
-                _patch_rms_norm_module_for_gemma3(decoder_layer.self_attn.q_norm)
-                _patch_rms_norm_module_for_gemma3(decoder_layer.self_attn.k_norm)
+                _patch_rms_norm_module_for_gemma3(text_model.norm)
+
+            for decoder_layer in text_model.layers:
+                if geglu:
+                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                if rms_norm:
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.post_attention_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.pre_feedforward_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.post_feedforward_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.self_attn.q_norm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.self_attn.k_norm)
+
+        if multimodal_projector:
+            if rms_norm:
+                _patch_rms_norm_module_for_gemma3(multimodal_projector.mm_soft_emb_norm)
 
 
 def apply_liger_kernel_to_qwen2(
@@ -1032,6 +1048,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
     "gemma3": apply_liger_kernel_to_gemma3,
+    "gemma3_text": apply_liger_kernel_to_gemma3,
     "llama": apply_liger_kernel_to_llama,
     "granite": apply_liger_kernel_to_granite,
     "mllama": apply_liger_kernel_to_mllama,
