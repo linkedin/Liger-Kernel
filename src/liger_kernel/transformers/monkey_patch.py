@@ -19,6 +19,8 @@ from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_for
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
+from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
+from liger_kernel.transformers.model.llava import lce_forward_deprecated as llava_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
@@ -210,6 +212,85 @@ def apply_liger_kernel_to_llama(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
+def apply_liger_kernel_to_llava(
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    model: PreTrainedModel = None,
+    **kwargs,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Llava models.
+    Due to the characteristics of LlaVa, the model must be passed to apply Liger-Kernel's patch to other models connected to LLaVa.
+    However, if an LM not supported by Liger-Kernel is connected to LLaVa, unexpected side effects may occur.
+    NOTE: Llava is not available in transformers<4.36.0
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.llava import modeling_llava
+
+    if cross_entropy:
+        logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+        modeling_llava.nn.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        if transformer_version >= version.parse("4.49.0"):
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
+        else:  # if version < 4.49.0
+            logger.warning(
+                "Support for transformers versions < 4.49.0 will soon be discontinued due to issues with incorrect legacy processing. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/35526"
+            )
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
+
+    if model is not None:
+        text_model_name, vision_model_name = model.config.text_config.model_type, model.config.vision_config.model_type
+        text_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(text_model_name, None)
+        vision_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(vision_model_name, None)
+
+        kwargs = {"cross_entropy": False, "fused_linear_cross_entropy": False, **kwargs}
+        if text_liger_fn:
+            accept_params = inspect.signature(text_liger_fn).parameters
+            remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
+            text_kwargs = {k: v for k, v in kwargs.items() if k not in remain_params}
+
+            if remain_params:
+                logger.warning(
+                    f"These parameters are not supported by {text_model_name}. Enter the remaining {list(text_kwargs.keys())} except for {list(remain_params)}\n"
+                    f"Parameters accepted by {text_model_name}: {list(accept_params.keys())}"
+                )
+            text_kwargs["model"] = model.language_model
+            text_liger_fn(**text_kwargs)
+        elif text_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            logger.warning(f"{text_model_name} is not supported by Liger kernel.")
+
+        if vision_liger_fn:
+            accept_params = inspect.signature(vision_liger_fn).parameters
+            remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
+            vision_kwargs = {k: v for k, v in kwargs.items() if k not in remain_params}
+
+            if remain_params:
+                logger.warning(
+                    f"These parameters are not supported by {vision_model_name}. Enter the remaining {list(vision_kwargs.keys())} except for {list(remain_params)}\n"
+                    f"Parameters accepted by {vision_model_name}: {list(accept_params.keys())}"
+                )
+            vision_kwargs["model"] = model.vision_tower
+            vision_liger_fn(**vision_kwargs)
+        elif vision_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            logger.warning(f"{vision_model_name} is not supported by Liger kernel.")
 
 
 def apply_liger_kernel_to_mllama(
@@ -959,6 +1040,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2_vl": apply_liger_kernel_to_qwen2_vl,
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "phi3": apply_liger_kernel_to_phi3,
+    "llava": apply_liger_kernel_to_llava,
 }
 
 
