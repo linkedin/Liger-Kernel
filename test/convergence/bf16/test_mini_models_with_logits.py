@@ -629,6 +629,8 @@ def run_mini_model(
 
     set_seed(42)
 
+    model = create_model(model_name).to(dtype).to(device)
+
     revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
     if "mllama" in model_name:
         revert_kwargs["model_type"] = "causal_lm"
@@ -648,6 +650,9 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
+        if "llava" in model_name:
+            kwargs["model"] = model
+
         kwargs["fused_linear_cross_entropy"] = False
         kwargs["cross_entropy"] = False
 
@@ -655,7 +660,6 @@ def run_mini_model(
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
-    model = create_model(model_name).to(dtype).to(device)
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
     loader = DataLoader(train_dataset, batch_size=16, shuffle=False, collate_fn=simple_collate_fn)
     loader_iter = iter(loader)

@@ -472,6 +472,8 @@ def run_mini_model_multimodal(
 
     set_seed(42)
 
+    model = create_model(model_name).to(dtype).to(device)
+
     revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
     if "mllama" in model_name:
         revert_kwargs["model_type"] = "conditional_generation"
@@ -490,11 +492,14 @@ def run_mini_model_multimodal(
             kwargs["geglu"] = True
         else:
             kwargs["swiglu"] = True
+
+        if "llava" in model_name:
+            kwargs["model"] = model
+
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
-    model = create_model(model_name).to(dtype).to(device)
     model.gradient_checkpointing_enable()
 
     train_dataset = create_multimodal_dataset(model_name)
