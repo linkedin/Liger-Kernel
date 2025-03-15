@@ -15,7 +15,6 @@ from liger_kernel.transformers import AutoLigerKernelForCausalLM
 class CustomArguments:
     model_name: str = "meta-llama/Meta-Llama-3-8B"
     dataset: str = "tatsu-lab/alpaca"
-    max_seq_length: int = 512
     use_liger: bool = False
 
 
@@ -66,7 +65,6 @@ def train():
         model=model,
         args=training_args,
         data_collator=collator,
-        max_seq_length=custom_args.max_seq_length,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         formatting_func=formatting_prompts_func,
