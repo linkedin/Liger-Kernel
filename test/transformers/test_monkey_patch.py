@@ -13,6 +13,7 @@ from transformers import AutoModelForCausalLM
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
 
+from liger_kernel.transformers import Gemma3LigerRMSNorm
 from liger_kernel.transformers import LigerBlockSparseTop2MLP
 from liger_kernel.transformers import LigerGEGLUMLP
 from liger_kernel.transformers import LigerPhi3SwiGLUMLP
@@ -44,6 +45,15 @@ def is_qwen2_vl_available():
         return False
 
 
+def is_gemma3_available():
+    try:
+        import transformers.models.gemma3  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_qwen2_5_vl_available():
     try:
         import transformers.models.qwen2_5_vl  # noqa: F401
@@ -67,6 +77,7 @@ def test_import_from_root():
         from liger_kernel.transformers import AutoLigerKernelForCausalLM  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma2  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_gemma3  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_llama  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_mistral  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_mixtral  # noqa: F401
@@ -577,6 +588,154 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
             assert inspect.getsource(layer.post_feedforward_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
             )
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_gemma3_available(), reason="gemma3 module not available")
+def test_apply_liger_kernel_to_instance_for_gemma3_for_conditional_generation():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.gemma3.modeling_gemma3"):
+        from transformers.models.gemma3.modeling_gemma3 import Gemma3ForConditionalGeneration
+
+        # Instantiate a dummy model
+        config = transformers.models.gemma3.configuration_gemma3.Gemma3Config(
+            text_config=transformers.models.gemma3.configuration_gemma3.Gemma3TextConfig(
+                torch_dtype=torch.bfloat16,
+                rms_norm_eps=1e-5,
+                hidden_size=32,
+                intermediate_size=64,
+                hidden_act="gelu_pytorch_tanh",
+                num_hidden_layers=2,
+            ),
+            vision_config=transformers.models.siglip.configuration_siglip.SiglipVisionConfig(
+                hidden_size=32,
+                image_size=64,
+                intermediate_size=64,
+                model_type="siglip_vision_model",
+                num_attention_heads=16,
+                num_hidden_layers=2,
+                patch_size=14,
+                vision_use_head=False,
+            ),
+        )
+        dummy_model_instance = Gemma3ForConditionalGeneration._from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) != inspect.getsource(
+            Gemma3LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.language_model.model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(Gemma3LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
+                Gemma3LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(
+                Gemma3LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.post_feedforward_layernorm.forward) != inspect.getsource(
+                Gemma3LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.self_attn.q_norm.forward) != inspect.getsource(Gemma3LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.k_norm.forward) != inspect.getsource(Gemma3LigerRMSNorm.forward)
+
+        assert inspect.getsource(
+            dummy_model_instance.multi_modal_projector.mm_soft_emb_norm.forward
+        ) != inspect.getsource(Gemma3LigerRMSNorm.forward)
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) == inspect.getsource(
+            Gemma3LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.language_model.model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(Gemma3LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(
+                Gemma3LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(
+                Gemma3LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.post_feedforward_layernorm.forward) == inspect.getsource(
+                Gemma3LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.self_attn.q_norm.forward) == inspect.getsource(Gemma3LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.k_norm.forward) == inspect.getsource(Gemma3LigerRMSNorm.forward)
+
+        assert inspect.getsource(
+            dummy_model_instance.multi_modal_projector.mm_soft_emb_norm.forward
+        ) == inspect.getsource(Gemma3LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_gemma3_available(), reason="gemma3 module not available")
+def test_apply_liger_kernel_to_instance_for_gemma3_for_causal_lm():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.gemma3.modeling_gemma3"):
+        # Instantiate a dummy model
+        config = transformers.models.gemma3.configuration_gemma3.Gemma3TextConfig(
+            #            text_config=transformers.models.gemma3.configuration_gemma3.Gemma3TextConfig(
+            torch_dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="gelu_pytorch_tanh",
+            num_hidden_layers=2,
+        )
+        #      )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(
+            Gemma3LigerRMSNorm.forward
+        )
+
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(Gemma3LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
+                Gemma3LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(
+                Gemma3LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.post_feedforward_layernorm.forward) != inspect.getsource(
+                Gemma3LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.self_attn.q_norm.forward) != inspect.getsource(Gemma3LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.k_norm.forward) != inspect.getsource(Gemma3LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(
+            Gemma3LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(Gemma3LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(
+                Gemma3LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(
+                Gemma3LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.post_feedforward_layernorm.forward) == inspect.getsource(
+                Gemma3LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.self_attn.q_norm.forward) == inspect.getsource(Gemma3LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.k_norm.forward) == inspect.getsource(Gemma3LigerRMSNorm.forward)
 
         try:
             print(dummy_model_instance)

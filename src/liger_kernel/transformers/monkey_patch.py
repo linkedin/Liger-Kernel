@@ -27,6 +27,7 @@ from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward_deprecated
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
+from liger_kernel.transformers.rms_norm import Gemma3LigerRMSNorm
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
@@ -600,6 +601,104 @@ def apply_liger_kernel_to_gemma2(
                 _patch_rms_norm_module_for_gemma2(decoder_layer.post_feedforward_layernorm)
 
 
+def apply_liger_kernel_to_gemma3(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    geglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma3
+    (for Gemma1 please use `apply_liger_kernel_to_gemma3`) to make GPU go burrr.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.gemma3 import modeling_gemma3
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForConditionalGeneration
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3MultiModalProjector
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3TextModel
+
+    from liger_kernel.transformers.model.gemma3 import lce_forward as gemma3_lce_forward
+
+    LigerRMSNormForGemma3 = partial(
+        Gemma3LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False
+    )
+    _patch_rms_norm_module_for_gemma3 = partial(
+        _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+    )
+
+    if rope:
+        modeling_gemma3.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_gemma3.Gemma3RMSNorm = LigerRMSNormForGemma3
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        modeling_gemma3.Gemma3ForConditionalGeneration.forward = gemma3_lce_forward
+
+    if geglu:
+        modeling_gemma3.Gemma3MLP = LigerGEGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        # get the base model from the model instance
+        if isinstance(model, Gemma3ForConditionalGeneration):
+            language_model: Gemma3ForCausalLM = model.language_model
+            multimodal_projector: Gemma3MultiModalProjector = model.multi_modal_projector
+            text_model: Gemma3TextModel = language_model.model
+
+        elif isinstance(model, Gemma3ForCausalLM):
+            text_model: Gemma3TextModel = model.model
+            multimodal_projector = None
+
+        elif isinstance(model, Gemma3TextModel):
+            text_model = model
+            multimodal_projector = None
+
+        else:
+            raise ValueError(f"Unsupported Gemma3 model type: {type(model)}")
+
+        if text_model:
+            if rms_norm:
+                _patch_rms_norm_module_for_gemma3(text_model.norm)
+
+            for decoder_layer in text_model.layers:
+                if geglu:
+                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                if rms_norm:
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.post_attention_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.pre_feedforward_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.post_feedforward_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.self_attn.q_norm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.self_attn.k_norm)
+
+        if multimodal_projector:
+            if rms_norm:
+                _patch_rms_norm_module_for_gemma3(multimodal_projector.mm_soft_emb_norm)
+
+
 def apply_liger_kernel_to_qwen2(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -948,6 +1047,8 @@ def apply_liger_kernel_to_olmo2(
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
+    "gemma3": apply_liger_kernel_to_gemma3,
+    "gemma3_text": apply_liger_kernel_to_gemma3,
     "llama": apply_liger_kernel_to_llama,
     "granite": apply_liger_kernel_to_granite,
     "mllama": apply_liger_kernel_to_mllama,
