@@ -323,6 +323,22 @@ def revert_liger_kernel_to_gemma2(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_Paligemma(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Gemma2.
+    """
+
+    from transformers.models.gemma2 import modeling_gemma2
+    from transformers.models.paligemma import modeling_paligemma
+    from transformers.models.siglip import modeling_siglip
+
+    importlib.reload(modeling_siglip)
+    importlib.reload(modeling_gemma2)
+    importlib.reload(modeling_paligemma)
+    model_config.model_class = modeling_paligemma.PaliGemmaForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_qwen2(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Qwen2.

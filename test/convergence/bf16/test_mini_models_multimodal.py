@@ -10,6 +10,7 @@ from transformers import PreTrainedTokenizerFast
 
 from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
+from liger_kernel.transformers import apply_liger_kernel_to_paligemma
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from test.utils import FAKE_CONFIGS_PATH
@@ -22,6 +23,7 @@ from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
 from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mllama
+from test.utils import revert_liger_kernel_to_Paligemma
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import set_seed
@@ -66,6 +68,19 @@ except ImportError:
     MLLAMA_AVAILABLE = False
 
 try:
+    from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
+    from transformers.models.gemma2.configuration_gemma2 import Gemma2Config
+    from transformers.models.paligemma.configuration_paligemma import PaliGemmaConfig
+    from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
+    from transformers.models.paligemma.processing_paligemma import PaliGemmaProcessor
+    from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
+    from transformers.models.siglip.image_processing_siglip import SiglipImageProcessor
+
+    PALIGEMMA_AVAILABLE = True
+except ImportError:
+    PALIGEMMA_AVAILABLE = False
+
+try:
     from transformers import CLIPImageProcessor
     from transformers import CLIPVisionConfig
     from transformers import LlamaConfig
@@ -76,7 +91,7 @@ try:
     LLAVA_AVAILABLE = True
 except ImportError:
     LLAVA_AVAILABLE = False
-
+    
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -150,6 +165,59 @@ if MLLAMA_AVAILABLE:
             attn_implementation="sdpa",
         ),
     )
+
+if PALIGEMMA_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_paligemma"] = MiniModelConfig(
+        liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_paligemma, fused_linear_cross_entropy=False),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_Paligemma,
+        model_class=PaliGemmaForConditionalGeneration,
+        mini_model_config=PaliGemmaConfig(
+            vision_config=SiglipVisionConfig(
+                attention_dropout=0.0,
+                hidden_act="gelu_pytorch_tanh",
+                hidden_size=1152,
+                image_size=224,
+                intermediate_size=2048,  # 4304
+                layer_norm_eps=1e-06,
+                num_attention_heads=4,  # 16
+                num_channels=3,
+                num_hidden_layers=4,  # 27
+                num_image_tokens=256,
+                num_positions=256,
+                patch_size=14,
+                projection_dim=1024,  # 2304
+            ),
+            text_config=Gemma2Config(
+                vocab_size=32000,  # 256000
+                hidden_size=1024,  # 3072
+                intermediate_size=2048,  # 24576
+                num_hidden_layers=4,  # 28
+                num_attention_heads=4,  # 16
+                num_key_value_heads=4,  # 16
+                head_dim=256,
+                hidden_activation="gelu_pytorch_tanh",
+                max_position_embeddings=8192,
+                initializer_range=0.02,
+                rms_norm_eps=1e-06,
+                use_cache=True,
+                pad_token_id=0,
+                # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
+                # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+                bos_token_id=1,  # 128000
+                eos_token_id=2,  # 128001
+                tie_word_embeddings=True,
+                rope_theta=10000.0,
+                attention_bias=False,
+                attention_dropout=0.0,
+            ),
+            image_token_index=4,  # NOTE: outside the vocab size
+            attn_implementation="eager",
+            vocab_size=32000,
+            projection_dim=1024,
+            hidden_size=1024,
+        ),
+    )
+
 
 if QWEN2_VL_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen2_vl"] = MiniModelConfig(
@@ -359,6 +427,7 @@ def create_processor(model_name):
         fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = MllamaImageProcessor(size={"height": 560, "width": 560})
         return MllamaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
+
     elif model_name == "mini_llava":
         tokenizer_config = load_tokenizer_config(
             os.path.join(
@@ -378,6 +447,19 @@ def create_processor(model_name):
                 "Llava/llava-1.5-7b-hf/processor_config.json",
             )
         )
+        
+        fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        image_processor = CLIPImageProcessor(**image_processor_config)
+
+        return LlavaProcessor(**processor_config, image_processor=image_processor, tokenizer=fast_tokenizer)
+
+    elif model_name == "mini_paligemma":
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH,
+                "Google/Paligemma/paligemma-3b-pt-224/tokenizer_config.json",
+            )
+        )
         tokenizer_base = train_bpe_tokenizer(
             [
                 token.content
@@ -387,11 +469,11 @@ def create_processor(model_name):
                 )
             ]
         )
+        
+        fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        image_processor = SiglipImageProcessor(size={"height": 224, "width": 224}, image_seq_length=256)
+        return PaliGemmaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
 
-        fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
-        image_processor = CLIPImageProcessor(**image_processor_config)
-
-        return LlavaProcessor(**processor_config, image_processor=image_processor, tokenizer=fast_tokenizer)
     else:
         raise ValueError(f"Processor not available for model {model_name}")
 
@@ -583,6 +665,25 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not MLLAMA_AVAILABLE,
                     reason="Mllama not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_paligemma",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not PALIGEMMA_AVAILABLE,
+                    reason="Paligemma not available in this version of transformers",
                 ),
             ],
         ),
