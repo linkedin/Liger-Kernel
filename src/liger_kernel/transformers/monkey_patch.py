@@ -631,6 +631,7 @@ def apply_liger_kernel_to_paligemma(
 
     # PaliGemma submodules are ['vision_tower', 'multi_modal_projector', 'language_model']
 
+    from transformers.models.gemma.modeling_gemma import GemmaForCausalLM
     from transformers.models.gemma2.modeling_gemma2 import Gemma2ForCausalLM
     from transformers.models.paligemma import modeling_paligemma
     from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
@@ -647,8 +648,13 @@ def apply_liger_kernel_to_paligemma(
     # SiglipMLP is standard FFN so LigerGEGLUMLP is not compatible
     # The multi_modal_projector is Linear, nothing to do
 
-    # The language_model is Gemma2ForCausalLM
-    apply_liger_kernel_to_gemma2(rope=rope, cross_entropy=False, fused_linear_cross_entropy=False, geglu=geglu)
+    # The language_model is GemmaForCausalLM or Gemma2ForCausalLM
+    apply_liger_kernel_to_gemma(
+        rope=rope, cross_entropy=False, fused_linear_cross_entropy=False, rms_norm=rms_norm, geglu=geglu
+    )
+    apply_liger_kernel_to_gemma2(
+        rope=rope, cross_entropy=False, fused_linear_cross_entropy=False, rms_norm=rms_norm, geglu=geglu
+    )
     # Handle loss function
     if cross_entropy:
         modeling_paligemma.nn.CrossEntropyLoss = LigerCrossEntropyLoss
@@ -672,16 +678,31 @@ def apply_liger_kernel_to_paligemma(
                 _patch_layer_norm_module(layer.layer_norm1)
                 _patch_layer_norm_module(layer.layer_norm2)
 
-        language_model: Gemma2ForCausalLM = model.language_model
+        language_model = model.language_model
 
-        apply_liger_kernel_to_gemma2(
-            rope=rope,
-            cross_entropy=False,
-            fused_linear_cross_entropy=False,
-            rms_norm=rms_norm,
-            geglu=geglu,
-            model=language_model,
-        )
+        if isinstance(language_model, GemmaForCausalLM):
+            apply_liger_kernel_to_gemma(
+                rope=rope,
+                cross_entropy=False,
+                fused_linear_cross_entropy=False,
+                rms_norm=rms_norm,
+                geglu=geglu,
+                model=language_model,
+            )
+
+        elif isinstance(language_model, Gemma2ForCausalLM):
+            apply_liger_kernel_to_gemma2(
+                rope=rope,
+                cross_entropy=False,
+                fused_linear_cross_entropy=False,
+                rms_norm=rms_norm,
+                geglu=geglu,
+                model=language_model,
+            )
+        else:
+            raise TypeError(
+                "The language_model of a PaliGemma model must be either GemmaForCausalLM or Gemma2ForCausalLM."
+            )
 
 
 def apply_liger_kernel_to_qwen2(
