@@ -14,6 +14,7 @@ from transformers.models.llama.modeling_llama import LLAMA_INPUTS_DOCSTRING
 from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import replace_return_docstrings
 
+from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 if TYPE_CHECKING:
