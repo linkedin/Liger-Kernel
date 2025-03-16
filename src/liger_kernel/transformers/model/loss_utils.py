@@ -18,6 +18,7 @@ def fixed_fused_lienar_cross_entropy(
         target,
         reduction=reduction,
         ignore_index=ignore_index,
+        **kwargs,
     )
     if reduction == "sum":
         loss = loss / num_items_in_batch

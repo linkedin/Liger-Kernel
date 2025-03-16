@@ -14,7 +14,7 @@ from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLCausalLMOutput
 from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import replace_return_docstrings
 
-from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
+from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 
 @add_start_docstrings_to_model_forward(QWEN2_VL_INPUTS_DOCSTRING)
@@ -37,6 +37,7 @@ def lce_forward(
     video_grid_thw: Optional[torch.LongTensor] = None,
     rope_deltas: Optional[torch.LongTensor] = None,
     cache_position: Optional[torch.LongTensor] = None,
+    **loss_kwargs,
 ) -> Union[Tuple, Qwen2VLCausalLMOutputWithPast]:
     r"""
     Copy paste Qwen2VL's forward but replace torch cross entropy with liger fused linear cross entropy
@@ -170,15 +171,13 @@ def lce_forward(
     logits = None
 
     if self.training and (labels is not None):
-        shift_hidden_states = hidden_states[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-
-        # Flatten tokens
-        shift_hidden_states = shift_hidden_states.view(-1, self.config.hidden_size)
-        shift_labels = shift_labels.view(-1)
-
-        lce = LigerFusedLinearCrossEntropyLoss()
-        loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
+        loss = LigerForCausalLMLoss(
+            hidden_states=hidden_states,
+            lm_head_weight=self.lm_head.weight,
+            labels=labels,
+            hidden_size=self.config.hidden_size,
+            **loss_kwargs,
+        )
     else:
         logits = self.lm_head(hidden_states)
         if labels is not None:
