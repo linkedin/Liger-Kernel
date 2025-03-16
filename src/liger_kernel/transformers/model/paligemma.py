@@ -172,7 +172,7 @@ def lce_forward(
             shift_labels = shift_labels.contiguous()
 
         # Flatten hidden state
-        shift_hidden_states = shift_hidden_states.view(-1, self.config.hidden_size)
+        shift_hidden_states = shift_hidden_states.view(-1, self.config.text_config.hidden_size)
         shift_labels = shift_labels.view(-1).to(hidden_device)
 
         lce = LigerFusedLinearCrossEntropyLoss()
