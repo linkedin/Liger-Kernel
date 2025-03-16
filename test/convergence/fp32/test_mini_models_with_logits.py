@@ -649,9 +649,7 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
-        if "llava" in model_name:
-            kwargs["model"] = model
-
+        kwargs["model"] = model
         kwargs["fused_linear_cross_entropy"] = False
         kwargs["cross_entropy"] = False
 

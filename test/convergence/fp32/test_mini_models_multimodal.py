@@ -581,8 +581,7 @@ def run_mini_model_multimodal(
         else:
             kwargs["swiglu"] = True
 
-        if "llava" in model_name:
-            kwargs["model"] = model
+        kwargs["model"] = model
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:

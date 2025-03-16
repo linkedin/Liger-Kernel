@@ -648,9 +648,7 @@ def run_mini_model(
         else:
             kwargs["swiglu"] = True
 
-        if "llava" in model_name:
-            kwargs["model"] = model
-
+        kwargs["model"] = model
         # fused_linear_cross_entropy is not supported in mini_granite3
         kwargs["fused_linear_cross_entropy"] = True if model_name != "mini_granite3" else False
         kwargs["cross_entropy"] = False
