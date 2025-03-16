@@ -1,3 +1,5 @@
+import torch.nn as nn
+
 import liger_kernel.transformers.functional as F
 
 
@@ -20,6 +22,8 @@ def fixed_fused_lienar_cross_entropy(
     if reduction == "sum":
         loss = loss / num_items_in_batch
 
+    return loss
+
 
 def LigerForCausalLMLoss(
     hidden_states,
@@ -33,7 +37,7 @@ def LigerForCausalLMLoss(
     # Skip upcast since intermediate values for the loss are all fp32 in kernel
     labels = labels.to(hidden_states.device)
     # Shift so that token < n predict n
-    labels = F.pad(labels, (0, 1), value=ignore_index)
+    labels = nn.functional.pad(labels, (0, 1), value=ignore_index)
     shift_labels = labels[..., 1:].contiguous()
 
     # Flatten the tokens
@@ -44,6 +48,7 @@ def LigerForCausalLMLoss(
     loss = fixed_fused_lienar_cross_entropy(
         hidden_states,
         lm_head_weight,
+        shift_labels,
         num_items_in_batch,
         ignore_index,
         **kwargs,
