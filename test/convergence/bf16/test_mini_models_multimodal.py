@@ -446,7 +446,16 @@ def create_processor(model_name):
                 "Llava/llava-1.5-7b-hf/processor_config.json",
             )
         )
-        
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+
         fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = CLIPImageProcessor(**image_processor_config)
 
