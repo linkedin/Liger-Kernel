@@ -3,7 +3,7 @@ import torch.nn as nn
 import liger_kernel.transformers.functional as F
 
 
-def fixed_fused_lienar_cross_entropy(
+def fixed_fused_linear_cross_entropy(
     hidden_states,
     lm_head_weight,
     target,
@@ -46,7 +46,7 @@ def LigerForCausalLMLoss(
     shift_labels = shift_labels.view(-1)
     # Enable model parallelism
     shift_labels = shift_labels.to(hidden_states.device)
-    loss = fixed_fused_lienar_cross_entropy(
+    loss = fixed_fused_linear_cross_entropy(
         hidden_states,
         lm_head_weight,
         shift_labels,
