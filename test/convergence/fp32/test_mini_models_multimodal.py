@@ -197,7 +197,6 @@ if PALIGEMMA_AVAILABLE:
             attn_implementation="eager",
             vocab_size=32000,
             projection_dim=1024,
-            hidden_size=1024,
         ),
     )
 
