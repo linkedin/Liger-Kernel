@@ -63,6 +63,9 @@ except ImportError:
     MLLAMA_AVAILABLE = False
 
 try:
+    import transformers
+
+    from packaging import version
     from transformers.models.gemma.configuration_gemma import GemmaConfig
     from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
     from transformers.models.gemma2.configuration_gemma2 import Gemma2Config
@@ -72,7 +75,7 @@ try:
     from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
     from transformers.models.siglip.image_processing_siglip import SiglipImageProcessor
 
-    PALIGEMMA_AVAILABLE = True
+    PALIGEMMA_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.46.0")
 except ImportError:
     PALIGEMMA_AVAILABLE = False
 

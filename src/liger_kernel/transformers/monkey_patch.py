@@ -640,6 +640,7 @@ def apply_liger_kernel_to_paligemma(
     from transformers.models.siglip.modeling_siglip import SiglipVisionModel
 
     from liger_kernel.transformers.model.paligemma import lce_forward
+    from liger_kernel.transformers.model.paligemma import lce_forward_deprecated
 
     # The vision_tower is a SiglipVisionModel
     if layer_norm:
@@ -659,7 +660,11 @@ def apply_liger_kernel_to_paligemma(
     if cross_entropy:
         modeling_paligemma.nn.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        modeling_paligemma.PaliGemmaForConditionalGeneration.forward = lce_forward
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_paligemma.PaliGemmaForConditionalGeneration.forward = lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_paligemma.PaliGemmaForConditionalGeneration.forward = lce_forward_deprecated
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
