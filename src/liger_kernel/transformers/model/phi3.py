@@ -13,6 +13,7 @@ from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import replace_return_docstrings
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
+from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 
 @add_start_docstrings_to_model_forward(PHI3_INPUTS_DOCSTRING)
@@ -213,21 +214,13 @@ def lce_forward(
     loss = None
     # if in training mode, don't materialize logits
     if self.training and (labels is not None):
-        # We do the same thing as ForCausalLMLoss but using Liger FLCE
-
-        shift_hidden_states = hidden_states[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-
-        # flatten tokens
-        shift_hidden_states = shift_hidden_states.view(-1, self.config.hidden_size)
-        shift_labels = shift_labels.view(-1)
-
-        reduction = "sum" if "num_items_in_batch" in loss_kwargs else "mean"
-        lce = LigerFusedLinearCrossEntropyLoss(reduction=reduction)
-
-        loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
-        if reduction == "sum":
-            loss /= loss_kwargs["num_items_in_batch"]
+        loss = LigerForCausalLMLoss(
+            hidden_states=hidden_states,
+            lm_head_weight=self.lm_head.weight,
+            labels=labels,
+            hidden_size=self.config.hidden_size,
+            **loss_kwargs,
+        )
 
     else:  # if in inference mode materialize logits
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
