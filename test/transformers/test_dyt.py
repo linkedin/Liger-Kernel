@@ -19,9 +19,7 @@ class TorchDyT(nn.Module):
         self.dtype = dtype
 
     def forward(self, x):
-        return (
-            self.gamma * torch.tanh((self.alpha * x).to(torch.float32)) + self.beta
-        ).to(self.dtype)
+        return (self.gamma * torch.tanh((self.alpha * x).to(torch.float32)) + self.beta).to(self.dtype)
 
 
 set_seed(42)
@@ -48,9 +46,7 @@ device = infer_device()
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
 )
@@ -85,12 +81,6 @@ def test_correctness(B, T, C, init_alpha, dtype, atol, rtol):
     liger_output.backward(grad_output)
 
     assert_verbose_allclose(x1.grad, x2.grad, rtol=rtol, atol=atol)
-    assert_verbose_allclose(
-        torch_dyt.alpha.grad, liger_dyt.alpha.grad, rtol=rtol, atol=atol
-    )
-    assert_verbose_allclose(
-        torch_dyt.gamma.grad, liger_dyt.gamma.grad, rtol=rtol, atol=atol
-    )
-    assert_verbose_allclose(
-        torch_dyt.beta.grad, liger_dyt.beta.grad, rtol=rtol, atol=atol
-    )
+    assert_verbose_allclose(torch_dyt.alpha.grad, liger_dyt.alpha.grad, rtol=rtol, atol=atol)
+    assert_verbose_allclose(torch_dyt.gamma.grad, liger_dyt.gamma.grad, rtol=rtol, atol=atol)
+    assert_verbose_allclose(torch_dyt.beta.grad, liger_dyt.beta.grad, rtol=rtol, atol=atol)
