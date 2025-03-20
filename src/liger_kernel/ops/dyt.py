@@ -8,7 +8,6 @@ from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import infer_device
-from liger_kernel.ops.utils import is_hip
 
 if compare_version("triton", operator.ge, "3.0.0"):
     try:
@@ -78,7 +77,6 @@ def _dyt_bwd_kernel(
         - x: (BT, C)
         - alpha: (1)
         - gamma: (C)
-        - beta: (C)
         - dx: (BT, C)
         - dy: (BT, C)
         - dgamma: (sm_count, C)
