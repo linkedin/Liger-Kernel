@@ -80,7 +80,6 @@ def test_correctness(B, T, C, init_alpha, dtype, atol, rtol):
 
     assert_verbose_allclose(torch_output, liger_output, rtol=rtol, atol=atol)
 
-    return
     grad_output = torch.randn_like(_input)
     torch_output.backward(grad_output)
     liger_output.backward(grad_output)
