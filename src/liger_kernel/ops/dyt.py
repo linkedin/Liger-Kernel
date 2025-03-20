@@ -69,6 +69,7 @@ def _dyt_bwd_kernel(
     dgamma_ptr,
     dgamma_row_stride,
     n_cols,
+    n_rows,
     ROWS_PER_PROGRAM: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -78,6 +79,10 @@ def _dyt_bwd_kernel(
         - alpha: (1)
         - gamma: (C)
         - beta: (C)
+        - dx: (BT, C)
+        - dy: (BT, C)
+        - dgamma: (sm_count, C)
+        - dalpha: (sm_count,)
     """
     # d(gamma * tanh(alpha * x) + beta) / dx
     # = gamma * (1 - tanh^2(alpha * x)) * alpha
@@ -89,14 +94,15 @@ def _dyt_bwd_kernel(
     pid = tl.program_id(0)
 
     row_start = pid * ROWS_PER_PROGRAM
-    row_end = min((pid + 1) * ROWS_PER_PROGRAM, tl.num_programs(0))
+    row_end = min((pid + 1) * ROWS_PER_PROGRAM, n_rows)
     offsets = tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_cols
 
-    dalpha = tl.zeros((1,), dtype=tl.float32)
+    dalpha = 0.0
     dgamma = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     x_ptr += row_start * x_row_stride
+    dx_ptr += row_start * dx_row_stride
     dy_ptr += row_start * dy_row_stride
     alpha = tl.load(alpha_ptr)
     gamma = tl.load(gamma_ptr + offsets, mask=mask, other=0.0)
@@ -157,15 +163,15 @@ def liger_dyt_bwd(dy, x, alpha, gamma):
     if device == "cuda":
         sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
     elif device == "xpu":
-        sm_count = torch.xpu.get_device_properties(X.device).gpu_subslice_count
+        sm_count = torch.xpu.get_device_properties(x.device).gpu_subslice_count
     if n_cols > BLOCK_SIZE:
         raise RuntimeError(
             f"Feature dimension {dim} exceeds maximum supported size of {BLOCK_SIZE}. Consider using a smaller feature dimension."
         )
 
     dx = torch.empty_like(x, dtype=torch.float32)
-    _dalpha = torch.empty((sm_count,), dtype=torch.float32)
-    _dgamma = torch.empty((sm_count, n_cols), dtype=torch.float32)
+    _dalpha = torch.empty((sm_count,), dtype=torch.float32, device=x.device)
+    _dgamma = torch.empty((sm_count, n_cols), dtype=torch.float32, device=x.device)
 
     grid = (sm_count,)
     rows_per_program = triton.cdiv(n_rows, sm_count)
@@ -182,11 +188,12 @@ def liger_dyt_bwd(dy, x, alpha, gamma):
         dgamma_ptr=_dgamma,
         dgamma_row_stride=_dgamma.stride(0),
         n_cols=n_cols,
+        n_rows=n_rows,
         ROWS_PER_PROGRAM=rows_per_program,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
-    dalpha = _dalpha.sum().to(dtype)
+    dalpha = _dalpha.sum(dim=0, keepdim=True).to(dtype)
     dgamma = _dgamma.sum(dim=0).to(dtype)
     dbeta = dy.sum(dim=0).to(dtype)
     return dx.view(*shape), dalpha, dgamma, dbeta
