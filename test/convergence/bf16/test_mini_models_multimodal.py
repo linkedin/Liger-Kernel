@@ -64,6 +64,10 @@ except ImportError:
     MLLAMA_AVAILABLE = False
 
 try:
+    import transformers
+
+    from packaging import version
+    from transformers.models.gemma.configuration_gemma import GemmaConfig
     from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
     from transformers.models.gemma2.configuration_gemma2 import Gemma2Config
     from transformers.models.paligemma.configuration_paligemma import PaliGemmaConfig
@@ -72,7 +76,7 @@ try:
     from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
     from transformers.models.siglip.image_processing_siglip import SiglipImageProcessor
 
-    PALIGEMMA_AVAILABLE = True
+    PALIGEMMA_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.46.0")
 except ImportError:
     PALIGEMMA_AVAILABLE = False
 
@@ -152,6 +156,55 @@ if MLLAMA_AVAILABLE:
 
 if PALIGEMMA_AVAILABLE:
     MINI_MODEL_SETUPS["mini_paligemma"] = MiniModelConfig(
+        liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_paligemma, fused_linear_cross_entropy=False),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_Paligemma,
+        model_class=PaliGemmaForConditionalGeneration,
+        mini_model_config=PaliGemmaConfig(
+            vision_config=SiglipVisionConfig(
+                attention_dropout=0.0,
+                hidden_act="gelu_pytorch_tanh",
+                hidden_size=1152,
+                image_size=224,
+                intermediate_size=2048,  # 4304
+                layer_norm_eps=1e-06,
+                num_attention_heads=4,  # 16
+                num_channels=3,
+                num_hidden_layers=4,  # 27
+                num_image_tokens=256,
+                num_positions=256,
+                patch_size=14,
+                projection_dim=1024,  # 2304
+            ),
+            text_config=GemmaConfig(
+                vocab_size=32000,  # 256000
+                hidden_size=1024,  # 3072
+                intermediate_size=2048,  # 24576
+                num_hidden_layers=4,  # 28
+                num_attention_heads=4,  # 16
+                num_key_value_heads=4,  # 16
+                head_dim=256,
+                hidden_activation="gelu_pytorch_tanh",
+                max_position_embeddings=8192,
+                initializer_range=0.02,
+                rms_norm_eps=1e-06,
+                use_cache=True,
+                pad_token_id=0,
+                # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
+                # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+                bos_token_id=1,  # 128000
+                eos_token_id=2,  # 128001
+                tie_word_embeddings=True,
+                rope_theta=10000.0,
+                attention_bias=False,
+                attention_dropout=0.0,
+            ),
+            image_token_index=4,  # NOTE: outside the vocab size
+            attn_implementation="eager",
+            vocab_size=32000,
+            projection_dim=1024,
+        ),
+    )
+    MINI_MODEL_SETUPS["mini_paligemma2"] = MiniModelConfig(
         liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_paligemma, fused_linear_cross_entropy=False),
         liger_kernel_patch_revert_func=revert_liger_kernel_to_Paligemma,
         model_class=PaliGemmaForConditionalGeneration,
@@ -297,7 +350,7 @@ if QWEN2_5_VL_AVAILABLE:
     )
 
 
-def create_processor(model_name):
+def create_processor(model_name: str):
     if model_name == "mini_qwen2_vl":
         tokenizer_config = load_tokenizer_config(
             os.path.join(FAKE_CONFIGS_PATH, "Qwen/Qwen2-VL-7B-Instruct/tokenizer_config.json")
@@ -352,7 +405,7 @@ def create_processor(model_name):
         image_processor = MllamaImageProcessor(size={"height": 560, "width": 560})
         return MllamaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
 
-    elif model_name == "mini_paligemma":
+    elif model_name.startswith("mini_paligemma"):
         tokenizer_config = load_tokenizer_config(
             os.path.join(
                 FAKE_CONFIGS_PATH,
@@ -577,6 +630,25 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not PALIGEMMA_AVAILABLE,
                     reason="Paligemma not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_paligemma2",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not PALIGEMMA_AVAILABLE,
+                    reason="Paligemma2 not available in this version of transformers",
                 ),
             ],
         ),
