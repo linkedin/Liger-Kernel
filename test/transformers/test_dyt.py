@@ -32,10 +32,10 @@ device = infer_device()
 @pytest.mark.parametrize(
     "B, T, C",
     [
-        (2, 16, 32),
-        # (2, 2048, 2048),
-        # # weird shapes
-        # (9, 41, 341),
+        (2, 8, 4096),
+        (4, 16, 2048),
+        (1, 1, 1023),  # Minimal batch/seq with near power-of-2 hidden
+        (3, 7, 256),  # Prime numbers for batch/seq
     ],
 )
 @pytest.mark.parametrize(
