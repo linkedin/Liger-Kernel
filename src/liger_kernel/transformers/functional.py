@@ -1,6 +1,7 @@
 from typing import Optional
 
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
+from liger_kernel.ops.dyt import LigerDyTFunction
 from liger_kernel.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
 from liger_kernel.ops.geglu import LigerGELUMulFunction
@@ -192,3 +193,7 @@ def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 
 def liger_swiglu(a, b):
     return LigerSiLUMulFunction.apply(a, b)
+
+
+def liger_dyt(x, alpha, gamma, beta):
+    return LigerDyTFunction.apply(x, alpha, gamma, beta)
