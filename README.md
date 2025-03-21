@@ -338,7 +338,7 @@ loss.backward()
 ## Contact
 
 - For issues, create a Github ticket in this repository
-- For open discussion, join [our discord channel](https://discord.com/channels/1189498204333543425/1275130785933951039)
+- For open discussion, join [our discord channel on GPUMode](https://discord.com/channels/1189498204333543425/1275130785933951039)
 - For formal collaboration, send an email to yannchen@linkedin.com and hning@linkedin.com
 
 ## Cite this work
