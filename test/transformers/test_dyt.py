@@ -54,16 +54,12 @@ def test_liger_dyt_correctness(B, T, hidden_size, init_alpha, dtype, atol, rtol)
     gamma = torch.randn(hidden_size, device=device, dtype=dtype)
     beta = torch.randn(hidden_size, device=device, dtype=dtype)
 
-    torch_dyt = (
-        TorchDyT(hidden_size=hidden_size, init_alpha=init_alpha).to(device).to(dtype)
-    )
+    torch_dyt = TorchDyT(hidden_size=hidden_size, init_alpha=init_alpha).to(device).to(dtype)
     torch_dyt.alpha.data = alpha.clone()
     torch_dyt.gamma.data = gamma.clone()
     torch_dyt.beta.data = beta.clone()
 
-    liger_dyt = (
-        LigerDyT(hidden_size=hidden_size, init_alpha=init_alpha).to(device).to(dtype)
-    )
+    liger_dyt = LigerDyT(hidden_size=hidden_size, init_alpha=init_alpha).to(device).to(dtype)
     liger_dyt.alpha.data = alpha.clone()
     liger_dyt.gamma.data = gamma.clone()
     liger_dyt.beta.data = beta.clone()
@@ -78,15 +74,9 @@ def test_liger_dyt_correctness(B, T, hidden_size, init_alpha, dtype, atol, rtol)
     liger_output.backward(grad_output)
 
     assert_verbose_allclose(x1.grad, x2.grad, rtol=rtol, atol=atol)
-    assert_verbose_allclose(
-        torch_dyt.alpha.grad, liger_dyt.alpha.grad, rtol=rtol, atol=atol
-    )
-    assert_verbose_allclose(
-        torch_dyt.gamma.grad, liger_dyt.gamma.grad, rtol=rtol, atol=atol
-    )
-    assert_verbose_allclose(
-        torch_dyt.beta.grad, liger_dyt.beta.grad, rtol=rtol, atol=atol
-    )
+    assert_verbose_allclose(torch_dyt.alpha.grad, liger_dyt.alpha.grad, rtol=rtol, atol=atol)
+    assert_verbose_allclose(torch_dyt.gamma.grad, liger_dyt.gamma.grad, rtol=rtol, atol=atol)
+    assert_verbose_allclose(torch_dyt.beta.grad, liger_dyt.beta.grad, rtol=rtol, atol=atol)
 
 
 @pytest.mark.parametrize(
@@ -108,9 +98,7 @@ def test_liger_dyt_correctness(B, T, hidden_size, init_alpha, dtype, atol, rtol)
             torch.bfloat16,
             1e-8,
             5e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
 )

@@ -47,9 +47,7 @@ def bench_speed_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
             return torch_compile_dyt(x)
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            fwd, quantiles=QUANTILES, grad_to_none=[x], rep=500
-        )
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, grad_to_none=[x], rep=500)
     elif mode == "backward":
         y = fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -64,9 +62,7 @@ def bench_speed_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
             y = fwd()
             y.backward(dy)
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full, quantiles=QUANTILES, grad_to_none=[x], rep=500
-        )
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, grad_to_none=[x], rep=500)
 
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
