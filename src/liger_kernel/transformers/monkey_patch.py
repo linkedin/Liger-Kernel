@@ -600,6 +600,115 @@ def apply_liger_kernel_to_gemma2(
                 _patch_rms_norm_module_for_gemma2(decoder_layer.post_feedforward_layernorm)
 
 
+def apply_liger_kernel_to_gemma3(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    layer_norm: bool = True,
+    rms_norm: bool = True,
+    geglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace PaliGemma
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.gemma3 import modeling_gemma3
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3DecoderLayer
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForConditionalGeneration
+    from transformers.models.siglip import modeling_siglip
+    from transformers.models.siglip.modeling_siglip import SiglipEncoderLayer
+    from transformers.models.siglip.modeling_siglip import SiglipVisionModel
+
+    from liger_kernel.transformers.model.gemma3 import causal_forward
+    from liger_kernel.transformers.model.gemma3 import multimodal_forward
+
+    LigerRMSNormForGemma3 = partial(LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False)
+    _patch_rms_norm_module_for_gemma3 = partial(
+        _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+    )
+
+    if rope:
+        modeling_gemma3.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if rms_norm:
+        modeling_gemma3.Gemma3RMSNorm = LigerRMSNormForGemma3
+
+    if layer_norm:
+        modeling_siglip.nn.LayerNorm = LigerLayerNorm
+
+    if geglu:
+        modeling_gemma3.Gemma3MLP = LigerGEGLUMLP
+
+    # Handle loss function
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+        modeling_gemma3.nn.CrossEntropyLoss = LigerCrossEntropyLoss
+
+    if fused_linear_cross_entropy:
+        modeling_gemma3.Gemma3ForCausalLM.forward = causal_forward
+        modeling_gemma3.Gemma3ForConditionalGeneration.forward = multimodal_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        if isinstance(model, Gemma3ForConditionalGeneration):
+            vision_tower: SiglipVisionModel = model.vision_tower
+
+            _patch_layer_norm_module(vision_tower.vision_model.post_layernorm)
+
+            for layer in vision_tower.vision_model.encoder.layers:
+                layer: SiglipEncoderLayer
+                if layer_norm:
+                    _patch_layer_norm_module(layer.layer_norm1)
+                    _patch_layer_norm_module(layer.layer_norm2)
+
+            if rms_norm:
+                _patch_rms_norm_module_for_gemma3(model.multi_modal_projector.mm_soft_emb_norm)
+
+            model = model.language_model
+
+        if isinstance(model, Gemma3ForCausalLM):
+            # get the base model from the model instance
+            base_model = model.model
+
+            if rms_norm:
+                _patch_rms_norm_module_for_gemma3(base_model.norm)
+
+            for decoder_layer in base_model.layers:
+                decoder_layer: Gemma3DecoderLayer
+                if geglu:
+                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                if rms_norm:
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.post_attention_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.pre_feedforward_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.post_feedforward_layernorm)
+
+        else:
+            raise TypeError("The model must be either Gemma3ForCausalLM or Gemma3ForConditionalGeneration.")
+
+
 def apply_liger_kernel_to_paligemma(
     rope: bool = True,
     cross_entropy: bool = False,
