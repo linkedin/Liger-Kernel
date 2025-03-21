@@ -30,11 +30,9 @@ def bench_speed_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     dtype = extra_benchmark_config["dtype"]
 
     x_shape = (BT, hidden_size)
-    torch_y = lambda x: TorchDyT(hidden_size=hidden_size).to(device)(x)
-    torch_compile_y = lambda x: torch.compile(
-        TorchDyT(hidden_size=hidden_size).to(device)
-    )(x)
-    triton_y = lambda x: LigerDyT(hidden_size=hidden_size).to(device)(x)
+    torch_dyt = TorchDyT(hidden_size=hidden_size).to(device)
+    torch_compile_dyt = torch.compile(TorchDyT(hidden_size=hidden_size).to(device))
+    triton_dyt = LigerDyT(hidden_size=hidden_size).to(device)
 
     x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
@@ -42,11 +40,11 @@ def bench_speed_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
 
     def fwd():
         if provider == "liger":
-            return triton_y(x)
+            return triton_dyt(x)
         elif provider == "torch":
-            return torch_y(x)
+            return torch_dyt(x)
         elif provider == "torch_compile":
-            return torch_compile_y(x)
+            return torch_compile_dyt(x)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -88,11 +86,9 @@ def bench_memory_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
     dtype = extra_benchmark_config["dtype"]
 
     x_shape = (BT, hidden_size)
-    torch_y = lambda x: TorchDyT(hidden_size=hidden_size).to(device)(x)
-    torch_compile_y = lambda x: torch.compile(
-        TorchDyT(hidden_size=hidden_size).to(device)
-    )(x)
-    triton_y = lambda x: LigerDyT(hidden_size=hidden_size).to(device)(x)
+    torch_dyt = TorchDyT(hidden_size=hidden_size).to(device)
+    torch_compile_dyt = torch.compile(TorchDyT(hidden_size=hidden_size).to(device))
+    triton_dyt = LigerDyT(hidden_size=hidden_size).to(device)
 
     x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
@@ -100,11 +96,11 @@ def bench_memory_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
 
     def fwd():
         if provider == "liger":
-            return triton_y(x)
+            return triton_dyt(x)
         elif provider == "torch":
-            return torch_y(x)
+            return torch_dyt(x)
         elif provider == "torch_compile":
-            return torch_compile_y(x)
+            return torch_compile_dyt(x)
 
     def full():
         y = fwd()
