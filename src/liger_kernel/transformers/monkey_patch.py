@@ -1169,6 +1169,7 @@ def apply_liger_kernel_to_olmo2(
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
+    "gemma3": apply_liger_kernel_to_gemma3,
     "llama": apply_liger_kernel_to_llama,
     "granite": apply_liger_kernel_to_granite,
     "mllama": apply_liger_kernel_to_mllama,
