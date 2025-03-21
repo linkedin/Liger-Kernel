@@ -317,7 +317,7 @@ def revert_liger_kernel_to_gemma3(model_config: MiniModelConfig):
     from transformers.models.gemma3 import modeling_gemma3
     from transformers.models.siglip import modeling_siglip
 
-    if isinstance(model_config.model_class, modeling_gemma3.Gemma3ForConditionalGeneration):
+    if issubclass(model_config.model_class, modeling_gemma3.Gemma3ForConditionalGeneration):
         multimodal = True
         print("model to revert is Gemma3ForConditionalGeneration")
     else:
