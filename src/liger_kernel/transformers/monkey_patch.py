@@ -637,10 +637,10 @@ def apply_liger_kernel_to_gemma3(
     from transformers.models.siglip.modeling_siglip import SiglipEncoderLayer
     from transformers.models.siglip.modeling_siglip import SiglipVisionModel
 
+    from liger_kernel.transformers.gema3_rms import LigerRMSNormForGemma3
     from liger_kernel.transformers.model.gemma3 import causal_forward
     from liger_kernel.transformers.model.gemma3 import multimodal_forward
 
-    LigerRMSNormForGemma3 = partial(LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False)
     _patch_rms_norm_module_for_gemma3 = partial(
         _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
     )
@@ -704,6 +704,8 @@ def apply_liger_kernel_to_gemma3(
                     _patch_rms_norm_module_for_gemma3(decoder_layer.post_attention_layernorm)
                     _patch_rms_norm_module_for_gemma3(decoder_layer.pre_feedforward_layernorm)
                     _patch_rms_norm_module_for_gemma3(decoder_layer.post_feedforward_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.self_attn.q_norm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.self_attn.k_norm)
 
         else:
             raise TypeError("The model must be either Gemma3ForCausalLM or Gemma3ForConditionalGeneration.")

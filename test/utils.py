@@ -319,8 +319,10 @@ def revert_liger_kernel_to_gemma3(model_config: MiniModelConfig):
 
     if isinstance(model_config.model_class, modeling_gemma3.Gemma3ForConditionalGeneration):
         multimodal = True
+        print("model to revert is Gemma3ForConditionalGeneration")
     else:
         multimodal = False
+        print("model to revert is Gemma3ForCausalLM")
 
     importlib.reload(modeling_gemma3)
     importlib.reload(modeling_siglip)
