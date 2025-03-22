@@ -1,5 +1,6 @@
 from liger_kernel.transformers.auto_model import AutoLigerKernelForCausalLM  # noqa: F401
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss  # noqa: F401
+from liger_kernel.transformers.dyt import LigerDyT  # noqa: F401
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss  # noqa: F401
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # noqa: F401
 from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
