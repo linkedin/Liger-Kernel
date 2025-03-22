@@ -20,6 +20,7 @@ from transformers.models.qwen2 import Qwen2ForCausalLM
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
+from liger_kernel.transformers import apply_liger_kernel_to_gemma3
 from liger_kernel.transformers import apply_liger_kernel_to_granite
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_mistral
@@ -35,6 +36,7 @@ from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
+from test.utils import revert_liger_kernel_to_gemma3
 from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_mistral
@@ -92,6 +94,14 @@ try:
     OLMO2_AVAILABLE = True
 except ImportError:
     OLMO2_AVAILABLE = False
+
+try:
+    from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
+
+    GEMMA3_AVAILABLE = True
+except ImportError:
+    GEMMA3_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -325,6 +335,36 @@ MINI_MODEL_SETUPS = {
         ),
     ),
 }
+
+if GEMMA3_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_gemma3"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_gemma3,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma3,
+        model_class=Gemma3ForCausalLM,
+        mini_model_config=Gemma3TextConfig(
+            vocab_size=32000,  # 262144
+            hidden_size=1024,  # 1152
+            intermediate_size=2048,  # 6912
+            num_hidden_layers=4,  # 26
+            num_attention_heads=4,
+            num_key_value_heads=1,
+            head_dim=256,
+            hidden_activation="gelu_pytorch_tanh",
+            max_position_embeddings=8192,  # 32768
+            initializer_range=0.02,
+            rms_norm_eps=1e-06,
+            use_cache=True,
+            pad_token_id=0,
+            bos_token_id=2,
+            eos_token_id=1,
+            tie_word_embeddings=True,
+            rope_theta=10000.0,  # 1000000
+            attention_bias=False,
+            attention_dropout=0.0,
+            attn_implementation="eager",
+        ),
+    )
+
 
 if MLLAMA_AVAILABLE:
     MINI_MODEL_SETUPS["mini_mllama"] = MiniModelConfig(
@@ -816,6 +856,25 @@ def run_mini_model(
         #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
         #     ),
         # ),
+        pytest.param(
+            "mini_gemma3",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not GEMMA3_AVAILABLE,
+                    reason="Gemma3 not available in this version of transformers",
+                ),
+            ],
+        ),
     ],
 )
 def test_mini_model(
