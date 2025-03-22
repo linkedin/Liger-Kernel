@@ -19,7 +19,6 @@ class CustomArguments:
     dataset: str = "HuggingFaceM4/the_cauldron"
     dataset_subset: str = "ai2d"
     dataset_split: str = "train"
-    max_seq_length: int = 512
     dataset_text_field: str = "texts"
     use_liger: bool = False
 
@@ -155,7 +154,6 @@ def train():
         model=model,
         args=training_args,
         data_collator=collate_fn,
-        max_seq_length=custom_args.max_seq_length,
         dataset_text_field=custom_args.dataset_text_field,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
