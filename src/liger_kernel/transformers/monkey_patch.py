@@ -610,7 +610,7 @@ def apply_liger_kernel_to_gemma3(
     model: PreTrainedModel = None,
 ) -> None:
     """
-    Apply Liger kernels to replace original implementation in HuggingFace PaliGemma
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma3
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
