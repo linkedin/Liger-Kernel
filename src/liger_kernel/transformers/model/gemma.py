@@ -4,7 +4,6 @@ from typing import Tuple
 from typing import Union
 
 import torch
-import torch.nn.functional as F
 
 from torch.nn import CrossEntropyLoss
 from transformers.cache_utils import Cache
