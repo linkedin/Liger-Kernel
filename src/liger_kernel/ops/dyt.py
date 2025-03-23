@@ -33,6 +33,9 @@ def _dyt_fwd_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
+    Reference:
+    https://arxiv.org/abs/2503.10622
+
     Shapes:
         - x: (BT, C)
         - alpha: (1)
@@ -73,6 +76,9 @@ def _dyt_bwd_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
+    Reference:
+    https://arxiv.org/abs/2503.10622
+
     Shapes:
         - x: (BT, C)
         - alpha: (1)
