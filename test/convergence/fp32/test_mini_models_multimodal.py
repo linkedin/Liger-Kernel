@@ -77,7 +77,7 @@ try:
     LLAVA_AVAILABLE = True
 except ImportError:
     LLAVA_AVAILABLE = False
-    
+
 try:
     from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
     from transformers.models.gemma2.configuration_gemma2 import Gemma2Config
@@ -264,52 +264,6 @@ if QWEN2_VL_AVAILABLE:
         ),
     )
 
-if QWEN2_5_VL_AVAILABLE:
-    MINI_MODEL_SETUPS["mini_qwen2_5_vl"] = MiniModelConfig(
-        liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_qwen2_5_vl, fused_linear_cross_entropy=False),
-        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2_5_vl,
-        model_class=Qwen2_5_VLForConditionalGeneration,
-        mini_model_config=Qwen2_5_VLConfig(
-            attention_dropout=0.0,
-            # Token Ids and vocab size must match those in the tokenizer/processor
-            # test/resources/fake_configs/Qwen/Qwen2-VL-7B-Instruct/tokenizer_config.json
-            bos_token_id=0,
-            eos_token_id=0,
-            vision_start_token_id=1,
-            vision_end_token_id=2,
-            vision_token_id=3,
-            image_token_id=4,
-            video_token_id=5,
-            hidden_act="silu",
-            hidden_size=1024,  # 8192
-            initializer_range=0.02,
-            intermediate_size=1024,  # 29568
-            max_position_embeddings=32768,
-            max_window_layers=4,  # 80
-            num_attention_heads=8,  # 64
-            num_hidden_layers=4,  # 80
-            num_key_value_heads=2,  # 8
-            rms_norm_eps=1e-6,  # 1e-5
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
-            ),
-            sliding_window=4096,
-            tie_word_embeddings=True,
-            use_cache=False,  # True
-            vocab_size=32000,  # 152064,
-            use_sliding_window=False,
-            vision_config={
-                "depth": 4,  # 32
-                "hidden_size": 128,  # 1280
-                "num_heads": 16,
-                "in_chans": 3,
-            },
-            attn_implementation="sdpa",
-        ),
-    )
-
 if LLAVA_AVAILABLE:
     # https://huggingface.co/llava-hf/llava-1.5-7b-hf
     MINI_MODEL_SETUPS["mini_llava"] = MiniModelConfig(
@@ -369,6 +323,52 @@ if LLAVA_AVAILABLE:
         ),
     )
 
+if QWEN2_5_VL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen2_5_vl"] = MiniModelConfig(
+        liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_qwen2_5_vl, fused_linear_cross_entropy=False),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2_5_vl,
+        model_class=Qwen2_5_VLForConditionalGeneration,
+        mini_model_config=Qwen2_5_VLConfig(
+            attention_dropout=0.0,
+            # Token Ids and vocab size must match those in the tokenizer/processor
+            # test/resources/fake_configs/Qwen/Qwen2-VL-7B-Instruct/tokenizer_config.json
+            bos_token_id=0,
+            eos_token_id=0,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            vision_token_id=3,
+            image_token_id=4,
+            video_token_id=5,
+            hidden_act="silu",
+            hidden_size=1024,  # 8192
+            initializer_range=0.02,
+            intermediate_size=1024,  # 29568
+            max_position_embeddings=32768,
+            max_window_layers=4,  # 80
+            num_attention_heads=8,  # 64
+            num_hidden_layers=4,  # 80
+            num_key_value_heads=2,  # 8
+            rms_norm_eps=1e-6,  # 1e-5
+            rope_theta=1000000.0,
+            rope_scaling=dict(
+                type="mrope",
+                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            ),
+            sliding_window=4096,
+            tie_word_embeddings=True,
+            use_cache=False,  # True
+            vocab_size=32000,  # 152064,
+            use_sliding_window=False,
+            vision_config={
+                "depth": 4,  # 32
+                "hidden_size": 128,  # 1280
+                "num_heads": 16,
+                "in_chans": 3,
+            },
+            attn_implementation="sdpa",
+        ),
+    )
+
 
 def create_processor(model_name):
     if model_name == "mini_qwen2_vl":
@@ -405,26 +405,6 @@ def create_processor(model_name):
         image_processor = Qwen2VLImageProcessor()
         return Qwen2_5_VLProcessor(image_processor=image_processor, tokenizer=qwen_tokenizer)
 
-    elif model_name == "mini_mllama":
-        tokenizer_config = load_tokenizer_config(
-            os.path.join(
-                FAKE_CONFIGS_PATH,
-                "meta-llama/Llama-3.2-11B-Vision-Instruct/tokenizer_config.json",
-            )
-        )
-        tokenizer_base = train_bpe_tokenizer(
-            [
-                token.content
-                for key, token in sorted(
-                    tokenizer_config["added_tokens_decoder"].items(),
-                    key=lambda x: int(x[0]),
-                )
-            ]
-        )
-        fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
-        image_processor = MllamaImageProcessor(size={"height": 560, "width": 560})
-        return MllamaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
-
     elif model_name == "mini_llava":
         tokenizer_config = load_tokenizer_config(
             os.path.join(
@@ -458,7 +438,27 @@ def create_processor(model_name):
         image_processor = CLIPImageProcessor(**image_processor_config)
 
         return LlavaProcessor(**processor_config, image_processor=image_processor, tokenizer=fast_tokenizer)
-      
+
+    elif model_name == "mini_mllama":
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH,
+                "meta-llama/Llama-3.2-11B-Vision-Instruct/tokenizer_config.json",
+            )
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        image_processor = MllamaImageProcessor(size={"height": 560, "width": 560})
+        return MllamaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
+
     elif model_name == "mini_paligemma":
         tokenizer_config = load_tokenizer_config(
             os.path.join(
@@ -478,7 +478,7 @@ def create_processor(model_name):
         fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = SiglipImageProcessor(size={"height": 224, "width": 224}, image_seq_length=256)
         return PaliGemmaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
-      
+
     else:
         raise ValueError(f"Processor not available for model {model_name}")
 
@@ -560,6 +560,8 @@ def run_mini_model_multimodal(
 
     set_seed(42)
 
+    model = create_model(model_name).to(dtype).to(device)
+
     revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
     if "mllama" in model_name:
         revert_kwargs["model_type"] = "conditional_generation"
@@ -579,13 +581,12 @@ def run_mini_model_multimodal(
         else:
             kwargs["swiglu"] = True
 
-        kwargs["model"] = create_model(model_name)
+        kwargs["model"] = model
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
-    model = create_model(model_name).to(dtype).to(device)
     model.gradient_checkpointing_enable()
 
     train_dataset = create_multimodal_dataset(model_name)
@@ -631,6 +632,22 @@ def run_mini_model_multimodal(
             ],
         ),
         pytest.param(
+            "mini_llava",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not LLAVA_AVAILABLE,
+                reason="LLaVa not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
             "mini_qwen2_5_vl",
             32,
             1e-4,
@@ -663,22 +680,6 @@ def run_mini_model_multimodal(
             marks=pytest.mark.skipif(
                 not MLLAMA_AVAILABLE,
                 reason="Mllama not available in this version of transformers",
-            ),
-        ),
-        pytest.param(
-            "mini_llava",
-            32,
-            1e-4,
-            torch.float32,
-            1e-8,
-            1e-5,
-            5e-3,
-            1e-5,
-            5e-3,
-            1e-5,
-            marks=pytest.mark.skipif(
-                not LLAVA_AVAILABLE,
-                reason="LLaVa not available in this version of transformers",
             ),
         ),
         pytest.param(
