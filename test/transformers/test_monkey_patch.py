@@ -77,6 +77,7 @@ def test_import_from_root():
         from liger_kernel.transformers import apply_liger_kernel_to_gemma  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma2  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma3  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_llama  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_mistral  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_mixtral  # noqa: F401
