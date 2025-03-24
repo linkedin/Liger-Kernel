@@ -20,7 +20,7 @@ from transformers.models.qwen2 import Qwen2ForCausalLM
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
-from liger_kernel.transformers import apply_liger_kernel_to_gemma3
+from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text
 from liger_kernel.transformers import apply_liger_kernel_to_granite
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_mistral
@@ -36,7 +36,7 @@ from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
-from test.utils import revert_liger_kernel_to_gemma3
+from test.utils import revert_liger_kernel_to_gemma3_text
 from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_mistral
@@ -337,9 +337,9 @@ MINI_MODEL_SETUPS = {
 }
 
 if GEMMA3_AVAILABLE:
-    MINI_MODEL_SETUPS["mini_gemma3"] = MiniModelConfig(
-        liger_kernel_patch_func=apply_liger_kernel_to_gemma3,
-        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma3,
+    MINI_MODEL_SETUPS["mini_gemma3_text"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_gemma3_text,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma3_text,
         model_class=Gemma3ForCausalLM,
         mini_model_config=Gemma3TextConfig(
             vocab_size=32000,  # 262144
@@ -856,7 +856,7 @@ def run_mini_model(
         #     ),
         # ),
         pytest.param(
-            "mini_gemma3",
+            "mini_gemma3_text",
             32,
             1e-4,
             torch.bfloat16,

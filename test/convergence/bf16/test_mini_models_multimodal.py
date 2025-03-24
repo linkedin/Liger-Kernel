@@ -289,7 +289,6 @@ if GEMMA3_AVAILABLE:
                 num_image_tokens=256,
                 num_positions=256,
                 patch_size=14,
-                projection_dim=1024,  # 2304
             ).to_dict(),
             text_config=Gemma3TextConfig(
                 vocab_size=32000,  # 256000
@@ -313,8 +312,6 @@ if GEMMA3_AVAILABLE:
             boi_token_index=4,
             eoi_token_index=6,
             attn_implementation="eager",
-            vocab_size=32000,
-            projection_dim=1024,
         ),
     )
 
