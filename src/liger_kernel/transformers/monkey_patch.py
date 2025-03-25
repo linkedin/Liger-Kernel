@@ -667,6 +667,8 @@ def apply_liger_kernel_to_paligemma(
             modeling_paligemma.PaliGemmaForConditionalGeneration.forward = lce_forward_deprecated
 
     if model is not None:
+        text_model_name = model.config.text_config.model_type
+        text_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(text_model_name, None)
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
@@ -683,31 +685,29 @@ def apply_liger_kernel_to_paligemma(
                 _patch_layer_norm_module(layer.layer_norm1)
                 _patch_layer_norm_module(layer.layer_norm2)
 
-        language_model = model.language_model
+        kwargs = {
+            "rope": rope,
+            "cross_entropy": False,
+            "fused_linear_cross_entropy": False,
+            "rms_norm": rms_norm,
+            "geglu": geglu,
+            "model": model.language_model,
+        }
+        if text_liger_fn:
+            accept_params = inspect.signature(text_liger_fn).parameters
+            remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
+            text_kwargs = {k: v for k, v in kwargs.items() if k not in remain_params}
 
-        if isinstance(language_model, GemmaForCausalLM):
-            apply_liger_kernel_to_gemma(
-                rope=rope,
-                cross_entropy=False,
-                fused_linear_cross_entropy=False,
-                rms_norm=rms_norm,
-                geglu=geglu,
-                model=language_model,
-            )
+            if remain_params:
+                logger.warning(
+                    f"These parameters are not supported by {text_model_name}. Enter the remaining {list(text_kwargs.keys())} except for {list(remain_params)}\n"
+                    f"Parameters accepted by {text_model_name}: {list(accept_params.keys())}"
+                )
+            text_kwargs["model"] = model.language_model
+            text_liger_fn(**text_kwargs)
 
-        elif isinstance(language_model, Gemma2ForCausalLM):
-            apply_liger_kernel_to_gemma2(
-                rope=rope,
-                cross_entropy=False,
-                fused_linear_cross_entropy=False,
-                rms_norm=rms_norm,
-                geglu=geglu,
-                model=language_model,
-            )
-        else:
-            raise TypeError(
-                "The language_model of a PaliGemma model must be either GemmaForCausalLM or Gemma2ForCausalLM."
-            )
+        elif text_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            logger.warning(f"{text_model_name} is not supported by Liger kernel.")
 
 
 def apply_liger_kernel_to_qwen2(
