@@ -58,7 +58,8 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
 
 def _patch_layer_norm_module(module, eps=1e-6):
     module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
-    module.hidden_size = module.normalized_shape
+    module.hidden_size = getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
+
     _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
     _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
 
