@@ -631,8 +631,6 @@ def apply_liger_kernel_to_paligemma(
 
     # PaliGemma submodules are ['vision_tower', 'multi_modal_projector', 'language_model']
 
-    from transformers.models.gemma.modeling_gemma import GemmaForCausalLM
-    from transformers.models.gemma2.modeling_gemma2 import Gemma2ForCausalLM
     from transformers.models.paligemma import modeling_paligemma
     from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
     from transformers.models.siglip import modeling_siglip
