@@ -652,7 +652,6 @@ def apply_liger_kernel_to_gemma3_text(
         from transformers.loss.loss_utils import nn
 
         nn.functional.cross_entropy = liger_cross_entropy
-        modeling_gemma3.nn.CrossEntropyLoss = LigerCrossEntropyLoss
 
     if fused_linear_cross_entropy:
         modeling_gemma3.Gemma3ForCausalLM.forward = causal_forward
@@ -729,8 +728,11 @@ def apply_liger_kernel_to_gemma3(
         modeling_siglip.nn.LayerNorm = LigerLayerNorm
 
     apply_liger_kernel_to_gemma3_text(
-        rope=rope, cross_entropy=cross_entropy, fused_linear_cross_entropy=False, rms_norm=rms_norm, geglu=geglu
+        rope=rope, cross_entropy=False, fused_linear_cross_entropy=False, rms_norm=rms_norm, geglu=geglu
     )
+
+    if cross_entropy:
+        modeling_gemma3.nn.CrossEntropyLoss = LigerCrossEntropyLoss
 
     if fused_linear_cross_entropy:
         modeling_gemma3.Gemma3ForConditionalGeneration.forward = multimodal_forward
@@ -740,15 +742,18 @@ def apply_liger_kernel_to_gemma3(
         # instance variables that reference already-instantiated modules
 
         if isinstance(model, Gemma3ForConditionalGeneration):
-            vision_tower: SiglipVisionModel = model.vision_tower
+            if isinstance(model.vision_tower, SiglipVisionModel):
+                vision_tower = model.vision_tower
 
-            _patch_layer_norm_module(vision_tower.vision_model.post_layernorm)
+                _patch_layer_norm_module(vision_tower.vision_model.post_layernorm)
 
-            for layer in vision_tower.vision_model.encoder.layers:
-                layer: SiglipEncoderLayer
-                if layer_norm:
-                    _patch_layer_norm_module(layer.layer_norm1)
-                    _patch_layer_norm_module(layer.layer_norm2)
+                for layer in vision_tower.vision_model.encoder.layers:
+                    layer: SiglipEncoderLayer
+                    if layer_norm:
+                        _patch_layer_norm_module(layer.layer_norm1)
+                        _patch_layer_norm_module(layer.layer_norm2)
+            else:
+                raise TypeError("The vision tower must be SiglipVisionModel")
 
             if rms_norm:
                 _patch_rms_norm_module_for_gemma3(model.multi_modal_projector.mm_soft_emb_norm)
