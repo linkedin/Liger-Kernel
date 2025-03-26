@@ -33,6 +33,12 @@ from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
+try:
+    import peft
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
+
 transformer_version = version.parse(transformers.__version__)
 
 logger = logging.getLogger(__name__)
@@ -46,21 +52,52 @@ def _bind_method_to_module(module, method_name: str, new_method: Callable):
 
 
 def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True):
-    module.offset = offset
-    module.casting_mode = casting_mode
-    module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
-    module.in_place = in_place
-    _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
-    _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
-    module.__class__.__name__ = LigerRMSNorm.__name__
+    if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
+        module.modules_to_save.default.offset = offset
+        module.modules_to_save.default.casting_mode = casting_mode
+        module.modules_to_save.default.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.modules_to_save.default.in_place = in_place
+        module.original_module.offset = offset
+        module.original_module.casting_mode = casting_mode
+        module.original_module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.original_module.in_place = in_place
+        _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
+        _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module.original_module, "extra_repr", LigerRMSNorm.extra_repr)
+        module.modules_to_save.default.__class__.__name__ = LigerRMSNorm.__name__
+        module.original_module.__class__.__name__ = LigerRMSNorm.__name__
+    else:
+        module.offset = offset
+        module.casting_mode = casting_mode
+        module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.in_place = in_place
+        _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
+        module.__class__.__name__ = LigerRMSNorm.__name__
 
 
 def _patch_layer_norm_module(module, eps=1e-6):
-    module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
-    module.hidden_size = module.normalized_shape
-    _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
-    _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
-    module.__class__.__name__ = LigerLayerNorm.__name__
+    if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
+        module.hidden_size = module.normalized_shape
+        _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
+        _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
+        module.modules_to_save.default.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.original_module.hidden_size = module.normalized_shape
+        module.original_module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.original_module.hidden_size = module.normalized_shape
+        _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
+        _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module.original_module, "extra_repr", LigerRMSNorm.extra_repr)
+        module.modules_to_save.default.__class__.__name__ = LigerLayerNorm.__name__
+        module.original_module.__class__.__name__ = LigerLayerNorm.__name__
+    else:
+        module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.hidden_size = module.normalized_shape
+        _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
+        _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
+        module.__class__.__name__ = LigerLayerNorm.__name__
 
 
 def _patch_swiglu_module(module, liger_module):
