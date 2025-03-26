@@ -30,6 +30,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         ref_weight=None,
         ref_bias=None,
         chunk_size=1,
+        **loss_kwargs,
     ):
         """Chunked forward pass for RLHF loss computation.
 
@@ -49,6 +50,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             ref_weight: Reference model weight tensor
             ref_bias: Reference model bias tensor
             chunk_size: Size of chunks for processing in other loss modules
+            loss_kwargs: Additional arguments for the loss function
         """
         # Save for backward
         ctx.beta = beta
@@ -69,6 +71,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             ref_weight=ref_weight,
             ref_bias=ref_bias,
             rlhf_loss_fn=cls.rlhf_loss_fn,
+            **loss_kwargs,
         )
 
         def fused_fwd_bwd(input_chunk, attention_mask_chunk, rewards_chunk, ref_input_chunk):
@@ -175,6 +178,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         ref_weight=None,
         ref_bias=None,
         rlhf_loss_fn=None,
+        **loss_kwargs,
     ):
         """Compute loss for a single chunk."""
         # Get policy log probabilities using chunk_forward
@@ -193,6 +197,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             rewards=rewards_chunk,
             ref_log_probs=ref_log_probs,
             beta=beta,
+            **loss_kwargs,
         )
 
         return chunk_loss, (logits_mean, *chunk_metrics)

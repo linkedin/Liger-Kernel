@@ -1,3 +1,6 @@
+from typing import Callable
+from typing import Optional
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -119,12 +122,16 @@ class LigerLMHeadGRPO(torch.nn.Module):
         bias: bool = False,
         beta: float = 0.1,
         num_generations: int = 4,
+        use_kl_loss: bool = True,
+        advantage_fn: Optional[Callable] = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.grpo_loss = LigerFusedLinearGRPOFunction.apply
         self.beta = beta
         self.num_generations = num_generations
+        self.use_kl_loss = use_kl_loss
+        self.advantage_fn = advantage_fn
 
     def forward(
         self,
@@ -149,6 +156,9 @@ class LigerLMHeadGRPO(torch.nn.Module):
             True,  # compiled
             ref_input is not None,  # use_ref_model
             self.num_generations,  # num_generations
+            1,  # chunk_size
+            self.use_kl_loss,  # whether add kl div
+            self.advantage_fn,  # advantage calculation function
         )
 
 
@@ -191,6 +201,13 @@ def test_correctness(
         beta=beta,
         num_generations=num_generations,
     )
+
+    def normalize_advantage(rewards):
+        mean_grouped_rewards = rewards.mean()  # [batch_size,]
+        std_grouped_rewards = rewards.std()  # [batch_size,]
+        eps = 1e-4
+        return (rewards - mean_grouped_rewards) / (std_grouped_rewards + eps)
+
     liger_lm_head_grpo = LigerLMHeadGRPO(
         H=H,
         V=V,
@@ -198,6 +215,8 @@ def test_correctness(
         bias=bias,
         beta=beta,
         num_generations=num_generations,
+        use_kl_loss=True,
+        advantage_fn=normalize_advantage,
     )
 
     # Initialize weights

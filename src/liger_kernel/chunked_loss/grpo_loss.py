@@ -1,3 +1,6 @@
+from typing import Callable
+from typing import Optional
+
 import torch
 
 from liger_kernel.chunked_loss.fused_linear_rlhf import LigerFusedLinearRLHFBase
@@ -11,6 +14,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         rewards,
         ref_log_probs=None,
         beta=0.1,
+        use_kl_loss=True,
+        advantage_fn=None,
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -27,38 +32,46 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         else:
             ref_token_logprobs = chosen_token_logprobs.detach()
 
-        # Compute advantages per batch entry in a grouped fashion
-        mean_grouped_rewards = rewards.mean()  # [batch_size,]
-        std_grouped_rewards = rewards.std()  # [batch_size,]
+        if not callable(advantage_fn):
 
-        # Calculate advantages using the same epsilon as in GRPOTrainer
-        eps = 1e-4
-        advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + eps)
+            def advantage_fn(rewards):
+                # Compute advantages per batch entry in a grouped fashion
+                mean_grouped_rewards = rewards.mean()  # [batch_size,]
+                std_grouped_rewards = rewards.std()  # [batch_size,]
+
+                # Calculate advantages using the same epsilon as in GRPOTrainer
+                eps = 1e-4
+                return (rewards - mean_grouped_rewards) / (std_grouped_rewards + eps)
+
+        advantages = advantage_fn(rewards)
 
         # Compute policy gradient loss with importance sampling ratio
         ratio = torch.exp(chosen_token_logprobs - chosen_token_logprobs.detach())
         policy_loss = -ratio * advantages.unsqueeze(1)
 
-        # Compute KL penalty
-        kl_div = (
-            torch.exp(ref_token_logprobs - chosen_token_logprobs) - (ref_token_logprobs - chosen_token_logprobs) - 1.0
-        )
-
-        # Combine losses
-        per_token_loss = policy_loss + beta * kl_div
-
+        if use_kl_loss:
+            # Compute KL penalty
+            kl_div = (
+                torch.exp(ref_token_logprobs - chosen_token_logprobs)
+                - (ref_token_logprobs - chosen_token_logprobs)
+                - 1.0
+            )
+            # Combine losses
+            per_token_loss = policy_loss + beta * kl_div
+        else:
+            per_token_loss = policy_loss
         # Apply masking and normalize
         masked_loss = per_token_loss * attention_mask
         seq_lengths = attention_mask.sum()
         seq_lengths = torch.clamp(seq_lengths, min=1.0)
         loss = masked_loss.sum() / seq_lengths
-
+        mean_kl_div = ((kl_div * attention_mask).sum(dim=1) / attention_mask.sum(dim=1)).mean() if use_kl_loss else 0
         # Calculate metrics
         metrics = (
             chosen_token_logprobs.mean(),  # mean log prob
             chosen_token_logprobs.std(),  # std log prob
             log_probs.mean(),  # mean all log probs
-            ((kl_div * attention_mask).sum(dim=1) / attention_mask.sum(dim=1)).mean(),  # mean KL div
+            mean_kl_div,
         )
 
         return loss, metrics
@@ -80,6 +93,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         use_ref_model=True,
         num_generations=1,
         chunk_size=1,
+        use_kl_loss=True,
+        advantage_fn=None,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -116,6 +131,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             use_ref_model=use_ref_model,
             num_generations=num_generations,
             chunk_size=chunk_size,
+            use_kl_loss=use_kl_loss,
+            advantage_fn=advantage_fn,
         )
 
     @staticmethod
@@ -137,6 +154,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             None,  # grad_use_ref_model
             None,  # grad_num_generations
             None,  # grad_chunk_size
+            None,  # grad_use_kl_loss
+            None,  # grad_advantage_fn
         )
 
 
@@ -150,6 +169,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         use_ref_model: bool = True,
         num_generations: int = 1,
         chunk_size: int = 1,
+        use_kl_loss: bool = True,
+        advantage_fn: Optional[Callable] = None,
     ):
         """
         Args:
@@ -165,6 +186,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         self.use_ref_model = use_ref_model
         self.num_generations = num_generations
         self.chunk_size = chunk_size
+        self.use_kl_loss = use_kl_loss
+        self.advantage_fn = advantage_fn
 
     def forward(
         self,
@@ -191,4 +214,6 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.use_ref_model,
             self.num_generations,
             self.chunk_size,
+            self.use_kl_loss,
+            self.advantage_fn,
         )
