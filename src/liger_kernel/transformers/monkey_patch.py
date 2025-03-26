@@ -52,6 +52,8 @@ def _bind_method_to_module(module, method_name: str, new_method: Callable):
 
 
 def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True):
+    # Check if the module is a PEFT ModulesToSaveWrapper
+    # If it is, we need to patch the modules_to_save.default and original_modules
     if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
         module.modules_to_save.default.offset = offset
         module.modules_to_save.default.casting_mode = casting_mode
@@ -78,6 +80,8 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
 
 
 def _patch_layer_norm_module(module, eps=1e-6):
+    # Check if the module is a PEFT ModulesToSaveWrapper
+    # If it is, we need to patch the modules_to_save.default and original_modules
     if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
         module.hidden_size = module.normalized_shape
         _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
