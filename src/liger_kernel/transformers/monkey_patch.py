@@ -35,6 +35,7 @@ from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
 try:
     import peft
+
     PEFT_AVAILABLE = True
 except ImportError:
     PEFT_AVAILABLE = False
@@ -57,11 +58,15 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
     if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
         module.modules_to_save.default.offset = offset
         module.modules_to_save.default.casting_mode = casting_mode
-        module.modules_to_save.default.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.modules_to_save.default.variance_epsilon = (
+            getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        )
         module.modules_to_save.default.in_place = in_place
         module.original_module.offset = offset
         module.original_module.casting_mode = casting_mode
-        module.original_module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.original_module.variance_epsilon = (
+            getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        )
         module.original_module.in_place = in_place
         _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
         _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
@@ -86,9 +91,13 @@ def _patch_layer_norm_module(module, eps=1e-6):
         module.hidden_size = module.normalized_shape
         _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
         _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
-        module.modules_to_save.default.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.modules_to_save.default.variance_epsilon = (
+            getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        )
         module.original_module.hidden_size = module.normalized_shape
-        module.original_module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.original_module.variance_epsilon = (
+            getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        )
         module.original_module.hidden_size = module.normalized_shape
         _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
         _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
