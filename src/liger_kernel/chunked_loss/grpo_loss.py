@@ -57,7 +57,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         ]
         if beta != 0.0:
             metrics.append(
-                ((kl_div * attention_mask).sum(dim=1) / torch.clamp(attention_mask.sum(dim=1), min=1.0)).sum() / full_batch_size
+                ((kl_div * attention_mask).sum(dim=1) / torch.clamp(attention_mask.sum(dim=1), min=1.0)).sum()
+                / full_batch_size
             )
         return loss, metrics
 
