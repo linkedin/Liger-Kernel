@@ -41,7 +41,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         if beta != 0.0:
             # Compute KL penalty
             kl_div = (
-                torch.exp(ref_token_logprobs - chosen_token_logprobs) - (ref_token_logprobs - chosen_token_logprobs) - 1.0
+                torch.exp(ref_token_logprobs - chosen_token_logprobs)
+                - (ref_token_logprobs - chosen_token_logprobs)
+                - 1.0
             )
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
@@ -58,7 +60,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         ]
         if beta != 0.0:
             metrics.append(
-                ((kl_div * attention_mask).sum(dim=1) / torch.clamp(attention_mask.sum(dim=1), min=1.0)).sum() / full_batch_size
+                ((kl_div * attention_mask).sum(dim=1) / torch.clamp(attention_mask.sum(dim=1), min=1.0)).sum()
+                / full_batch_size
             )
         return loss, metrics
 

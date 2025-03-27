@@ -80,7 +80,14 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             rlhf_loss_fn=cls.rlhf_loss_fn,
         )
 
-        def fused_fwd_bwd(input_chunk, selected_token_ids_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk, old_per_token_logps_chunk):
+        def fused_fwd_bwd(
+            input_chunk,
+            selected_token_ids_chunk,
+            attention_mask_chunk,
+            advantages_chunk,
+            ref_input_chunk,
+            old_per_token_logps_chunk,
+        ):
             """Fused forward and backward for a chunk."""
             argnums = (0, 1, 5) if bias is not None else (0, 1)
             return torch.func.grad_and_value(compute_loss, argnums=argnums, has_aux=True)(
@@ -94,9 +101,21 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
                 old_per_token_logps_chunk=old_per_token_logps_chunk,  # arg 7
             )
 
-        def accumulate_chunk(input_chunk, selected_token_ids_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk=None, old_per_token_logps_chunk=None):
+        def accumulate_chunk(
+            input_chunk,
+            selected_token_ids_chunk,
+            attention_mask_chunk,
+            advantages_chunk,
+            ref_input_chunk=None,
+            old_per_token_logps_chunk=None,
+        ):
             (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (chunk_loss, chunk_metrics) = fused_fwd_bwd(
-                input_chunk, selected_token_ids_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk, old_per_token_logps_chunk
+                input_chunk,
+                selected_token_ids_chunk,
+                attention_mask_chunk,
+                advantages_chunk,
+                ref_input_chunk,
+                old_per_token_logps_chunk,
             )
             if bias is not None:
                 grad_bias.add_(chunk_grad_bias[0])
@@ -132,10 +151,26 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         _attention_mask_chunks = torch.chunk(attention_mask, chunks=chunks, dim=0)
         _advantages_chunks = torch.chunk(advantages, chunks=chunks, dim=0)
         _ref_input_chunks = torch.chunk(ref_input, chunks=chunks, dim=0) if use_ref_model else [None] * chunks
-        _old_per_token_logps_chunks = torch.chunk(old_per_token_logps, chunks=chunks, dim=0) if old_per_token_logps is not None else [None] * chunks
+        _old_per_token_logps_chunks = (
+            torch.chunk(old_per_token_logps, chunks=chunks, dim=0)
+            if old_per_token_logps is not None
+            else [None] * chunks
+        )
 
-        for input_chunk, selected_token_ids_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk, old_per_token_logps_chunk in zip(
-            _input_chunks, _selected_token_ids_chunks, _attention_mask_chunks, _advantages_chunks, _ref_input_chunks, _old_per_token_logps_chunks
+        for (
+            input_chunk,
+            selected_token_ids_chunk,
+            attention_mask_chunk,
+            advantages_chunk,
+            ref_input_chunk,
+            old_per_token_logps_chunk,
+        ) in zip(
+            _input_chunks,
+            _selected_token_ids_chunks,
+            _attention_mask_chunks,
+            _advantages_chunks,
+            _ref_input_chunks,
+            _old_per_token_logps_chunks,
         ):
             # Mark dynamic dimensions
             torch._dynamo.mark_dynamic(input_chunk, 1)
@@ -150,7 +185,14 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             else:
                 old_per_token_logps_chunk = None
 
-            accumulate_chunk(input_chunk, selected_token_ids_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk, old_per_token_logps_chunk)
+            accumulate_chunk(
+                input_chunk,
+                selected_token_ids_chunk,
+                attention_mask_chunk,
+                advantages_chunk,
+                ref_input_chunk,
+                old_per_token_logps_chunk,
+            )
 
         # Combine gradients
         grad_input = torch.cat(grad_inputs, dim=0)
@@ -196,7 +238,9 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         ref_log_probs = None
         if use_ref_model and ref_input_chunk is not None:
             with torch.no_grad():
-                ref_log_probs, _ = LigerFusedLinearRLHFBase.chunk_forward(ref_input_chunk, ref_weight, bias=ref_bias, temperature=temperature)
+                ref_log_probs, _ = LigerFusedLinearRLHFBase.chunk_forward(
+                    ref_input_chunk, ref_weight, bias=ref_bias, temperature=temperature
+                )
 
         # Compute chunk loss and metrics using the provided loss function
         chunk_loss, chunk_metrics = rlhf_loss_fn(
