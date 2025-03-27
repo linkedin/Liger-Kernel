@@ -20,6 +20,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         ctx,
         _input,
         weight,
+        selected_token_ids,
         attention_mask,
         advantages,
         bias=None,
@@ -29,7 +30,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         old_per_token_logps=None,
         epsilon_low=0.2,
         epsilon_high=0.2,
-        beta=0.1,
+        beta=0.04,
         temperature=1.0,
         compiled=True,
         use_ref_model=False,
@@ -42,6 +43,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             ctx: Context for backward
             _input: Input tensor
             weight: Weight tensor
+            selected_token_ids: Selected token ids tensor
             attention_mask: Attention mask tensor
             advantages: Advantages tensor
             bias: Bias tensor
@@ -78,22 +80,23 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             rlhf_loss_fn=cls.rlhf_loss_fn,
         )
 
-        def fused_fwd_bwd(input_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk, old_per_token_logps_chunk):
+        def fused_fwd_bwd(input_chunk, selected_token_ids_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk, old_per_token_logps_chunk):
             """Fused forward and backward for a chunk."""
-            argnums = (0, 1, 4) if bias is not None else (0, 1)
+            argnums = (0, 1, 5) if bias is not None else (0, 1)
             return torch.func.grad_and_value(compute_loss, argnums=argnums, has_aux=True)(
                 input_chunk,  # arg 0
                 weight,  # arg 1
-                attention_mask_chunk,  # arg 2
-                advantages_chunk,  # arg 3
-                bias,  # arg 4
-                ref_input_chunk=ref_input_chunk,  # arg 5
-                old_per_token_logps_chunk=old_per_token_logps_chunk,  # arg 6
+                selected_token_ids_chunk,  # arg 2
+                attention_mask_chunk,  # arg 3
+                advantages_chunk,  # arg 4
+                bias,  # arg 5
+                ref_input_chunk=ref_input_chunk,  # arg 6
+                old_per_token_logps_chunk=old_per_token_logps_chunk,  # arg 7
             )
 
-        def accumulate_chunk(input_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk=None, old_per_token_logps_chunk=None):
+        def accumulate_chunk(input_chunk, selected_token_ids_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk=None, old_per_token_logps_chunk=None):
             (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (chunk_loss, chunk_metrics) = fused_fwd_bwd(
-                input_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk, old_per_token_logps_chunk
+                input_chunk, selected_token_ids_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk, old_per_token_logps_chunk
             )
             if bias is not None:
                 grad_bias.add_(chunk_grad_bias[0])
@@ -102,7 +105,6 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             grad_weight.add_(chunk_grad_weight)
             grad_inputs.append(chunk_grad_input)
             loss_acc.add_(chunk_loss)
-
             # Initialize storage for metrics on first chunk
             if len(aggregated_metrics) == 0:
                 for metric in chunk_metrics:
@@ -126,16 +128,18 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         # Process input in chunks based on chunk_size
         chunks = max(1, _input.shape[0] // chunk_size)
         _input_chunks = torch.chunk(_input, chunks=chunks, dim=0)
+        _selected_token_ids_chunks = torch.chunk(selected_token_ids, chunks=chunks, dim=0)
         _attention_mask_chunks = torch.chunk(attention_mask, chunks=chunks, dim=0)
         _advantages_chunks = torch.chunk(advantages, chunks=chunks, dim=0)
         _ref_input_chunks = torch.chunk(ref_input, chunks=chunks, dim=0) if use_ref_model else [None] * chunks
         _old_per_token_logps_chunks = torch.chunk(old_per_token_logps, chunks=chunks, dim=0) if old_per_token_logps is not None else [None] * chunks
 
-        for input_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk, old_per_token_logps_chunk in zip(
-            _input_chunks, _attention_mask_chunks, _advantages_chunks, _ref_input_chunks, _old_per_token_logps_chunks
+        for input_chunk, selected_token_ids_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk, old_per_token_logps_chunk in zip(
+            _input_chunks, _selected_token_ids_chunks, _attention_mask_chunks, _advantages_chunks, _ref_input_chunks, _old_per_token_logps_chunks
         ):
             # Mark dynamic dimensions
             torch._dynamo.mark_dynamic(input_chunk, 1)
+            torch._dynamo.mark_dynamic(selected_token_ids_chunk, 1)
             torch._dynamo.mark_dynamic(attention_mask_chunk, 1)
             if use_ref_model:
                 torch._dynamo.mark_dynamic(ref_input_chunk, 1)
@@ -146,7 +150,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             else:
                 old_per_token_logps_chunk = None
 
-            accumulate_chunk(input_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk, old_per_token_logps_chunk)
+            accumulate_chunk(input_chunk, selected_token_ids_chunk, attention_mask_chunk, advantages_chunk, ref_input_chunk, old_per_token_logps_chunk)
 
         # Combine gradients
         grad_input = torch.cat(grad_inputs, dim=0)
@@ -168,6 +172,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
     def _compute_chunk_loss(
         input_chunk,
         weight,
+        selected_token_ids_chunk,
         attention_mask_chunk,
         advantages_chunk,
         bias=None,
@@ -178,7 +183,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         full_attention_mask=None,
         epsilon_low=0.2,
         epsilon_high=0.2,
-        beta=0.1,
+        beta=0.04,
         temperature=1.0,
         use_ref_model=False,
         rlhf_loss_fn=None,
@@ -196,6 +201,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         # Compute chunk loss and metrics using the provided loss function
         chunk_loss, chunk_metrics = rlhf_loss_fn(
             log_probs=log_probs,
+            selected_token_ids=selected_token_ids_chunk,
             attention_mask=attention_mask_chunk,
             advantages=advantages_chunk,
             full_attention_mask=full_attention_mask,
@@ -236,6 +242,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         return (
             grad_input,
             grad_weight,
+            None,  # grad_selected_token_ids
             None,  # grad_attention_mask
             None,  # grad_advantages
             grad_bias,

@@ -7,6 +7,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
     @staticmethod
     def rlhf_loss_fn(
         log_probs,
+        selected_token_ids,
         attention_mask,
         advantages,
         full_attention_mask,
@@ -14,26 +15,25 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         old_per_token_logps=None,
         epsilon_low=0.2,
         epsilon_high=0.2,
-        beta=0.1,
+        beta=0.04,
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
-        # Get chosen token probabilities
-        chosen_tokens = log_probs.argmax(dim=-1)  # (batch_size, seq_len)
-        chosen_token_logprobs = log_probs.gather(dim=-1, index=chosen_tokens.unsqueeze(-1)).squeeze(
+
+        per_token_logps = log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(
             -1
         )  # (batch_size, seq_len)
 
         # Get reference model probabilities
         if ref_log_probs is not None:
             with torch.no_grad():
-                ref_token_logprobs = ref_log_probs.gather(dim=-1, index=chosen_tokens.unsqueeze(-1)).squeeze(-1)
+                ref_per_token_logps = ref_log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
         else:
-            ref_token_logprobs = chosen_token_logprobs.detach()
+            ref_per_token_logps = per_token_logps.detach()
 
         # Compute policy gradient loss with importance sampling ratio
-        old_per_token_logps = old_per_token_logps if old_per_token_logps is not None else chosen_token_logprobs.detach()
-        coef_1 = torch.exp(chosen_token_logprobs - old_per_token_logps)
+        old_per_token_logps = old_per_token_logps if old_per_token_logps is not None else per_token_logps.detach()
+        coef_1 = torch.exp(per_token_logps - old_per_token_logps)
         coef_2 = torch.clamp(coef_1, 1 - epsilon_low, 1 + epsilon_high)
         per_token_loss1 = coef_1 * advantages.unsqueeze(1)
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
@@ -41,11 +41,10 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         if beta != 0.0:
             # Compute KL penalty
             kl_div = (
-                torch.exp(ref_token_logprobs - chosen_token_logprobs) - (ref_token_logprobs - chosen_token_logprobs) - 1.0
+                torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
             )
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
-
         # Apply mask and compute average loss
         loss = (per_token_loss * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
 
@@ -53,7 +52,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         full_batch_size, seq_len = full_attention_mask.shape
         vocab_size = log_probs.shape[2]
         metrics = [
-            chosen_token_logprobs.sum() / (full_batch_size * seq_len),  # mean log prob
+            per_token_logps.sum() / (full_batch_size * seq_len),  # mean log prob
             log_probs.sum() / (full_batch_size * seq_len * vocab_size),  # mean all log probs
         ]
         if beta != 0.0:
@@ -68,6 +67,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         ctx,
         _input,
         weight,
+        selected_token_ids,
         attention_mask,
         advantages,
         bias=None,
@@ -75,7 +75,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         ref_weight=None,
         ref_bias=None,
         old_per_token_logps=None,
-        beta=0.1,
+        beta=0.04,
         epsilon_low=0.2,
         epsilon_high=0.2,
         temperature=1.0,
@@ -88,6 +88,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         Args:
             _input (torch.Tensor): Input tensor. Shape: (batch_size * seq_len, hidden_size)
             weight (torch.Tensor): Weight tensor. Shape: (vocab_size, hidden_size)
+            selected_token_ids (torch.Tensor): Selected token ids tensor. Shape: (batch_size, seq_len)
             attention_mask (torch.Tensor): Attention mask tensor. Shape: (batch_size, seq_len)
             advantages (torch.Tensor): Advantages tensor. Shape: (batch_size,)
             bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,)
@@ -107,6 +108,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             ctx=ctx,
             _input=_input,
             weight=weight,
+            selected_token_ids=selected_token_ids,
             attention_mask=attention_mask,
             advantages=advantages,
             bias=bias,
@@ -133,7 +135,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         """
         grads = LigerFusedLinearRLHFBase.backward(ctx, grad_output)
         return (
-            *grads[:5],  # grad_input, grad_weight, grad_attention_mask, grad_advantages, grad_bias
+            *grads[:6],  # grad_input, grad_weight, grad_selected_token_ids, grad_attention_mask, grad_advantages, grad_bias
             None,  # grad_ref_input
             None,  # grad_ref_weight
             None,  # grad_ref_bias
@@ -153,7 +155,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
 
     def __init__(
         self,
-        beta: float = 0.1,
+        beta: float = 0.04,
         compiled: bool = True,
         use_ref_model: bool = True,
         chunk_size: int = 1,
@@ -184,6 +186,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         self,
         _input,
         lin_weight,
+        selected_token_ids,
         attention_mask,
         advantages,
         bias=None,
@@ -195,6 +198,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         return LigerFusedLinearGRPOFunction.apply(
             _input,
             lin_weight,
+            selected_token_ids,
             attention_mask,
             advantages,
             bias,
@@ -202,9 +206,9 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             ref_weight,
             ref_bias,
             old_per_token_logps,
+            self.beta,
             self.epsilon_low,
             self.epsilon_high,
-            self.beta,
             self.temperature,
             self.compiled,
             self.use_ref_model,
