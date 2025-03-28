@@ -40,9 +40,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         if beta != 0.0:
             # Compute KL penalty
-            kl_div = (
-                torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
-            )
+            kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
         # Apply mask and compute average loss
@@ -57,7 +55,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         ]
         if beta != 0.0:
             metrics.append(
-                ((kl_div * attention_mask).sum(dim=1) / torch.clamp(attention_mask.sum(dim=1), min=1.0)).sum() / full_batch_size
+                ((kl_div * attention_mask).sum(dim=1) / torch.clamp(attention_mask.sum(dim=1), min=1.0)).sum()
+                / full_batch_size
             )
         return loss, metrics
 
@@ -135,7 +134,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         """
         grads = LigerFusedLinearRLHFBase.backward(ctx, grad_output)
         return (
-            *grads[:6],  # grad_input, grad_weight, grad_selected_token_ids, grad_attention_mask, grad_advantages, grad_bias
+            *grads[
+                :6
+            ],  # grad_input, grad_weight, grad_selected_token_ids, grad_attention_mask, grad_advantages, grad_bias
             None,  # grad_ref_input
             None,  # grad_ref_weight
             None,  # grad_ref_bias
