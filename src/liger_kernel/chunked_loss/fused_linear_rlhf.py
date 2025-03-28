@@ -100,7 +100,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
                 attention_mask_chunk,  # arg 3
                 advantages_chunk,  # arg 4
                 bias,  # arg 5
-                ref_log_probs_chunk=ref_log_probs_chunk, # arg 6
+                ref_log_probs_chunk=ref_log_probs_chunk,  # arg 6
                 ref_input_chunk=ref_input_chunk,  # arg 7
                 old_per_token_logps_chunk=old_per_token_logps_chunk,  # arg 8
             )
@@ -156,9 +156,15 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         _selected_token_ids_chunks = torch.chunk(selected_token_ids, chunks=chunks, dim=0)
         _attention_mask_chunks = torch.chunk(attention_mask, chunks=chunks, dim=0)
         _advantages_chunks = torch.chunk(advantages, chunks=chunks, dim=0)
-        _ref_log_probs_chunks = torch.chunk(ref_log_probs, chunks=chunks, dim=0) if use_ref_model and ref_log_probs is not None else [None] * chunks
+        _ref_log_probs_chunks = (
+            torch.chunk(ref_log_probs, chunks=chunks, dim=0)
+            if use_ref_model and ref_log_probs is not None
+            else [None] * chunks
+        )
         # if ref_log_probs is not none, then we don't need ref_input to calculate the log probs
-        _ref_input_chunks = torch.chunk(ref_input, chunks=chunks, dim=0) if use_ref_model and ref_log_probs is None else [None] * chunks
+        _ref_input_chunks = (
+            torch.chunk(ref_input, chunks=chunks, dim=0) if use_ref_model and ref_log_probs is None else [None] * chunks
+        )
         _old_per_token_logps_chunks = (
             torch.chunk(old_per_token_logps, chunks=chunks, dim=0)
             if old_per_token_logps is not None

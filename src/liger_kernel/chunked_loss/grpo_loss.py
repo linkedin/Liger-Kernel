@@ -15,11 +15,10 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         old_per_token_logps=None,
         epsilon_low=0.2,
         epsilon_high=0.2,
-        beta=0.1,
+        beta=0.04,
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
-        # Get chosen token probabilities
         per_token_logps = log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(
             -1
         )  # (batch_size, seq_len)
@@ -27,9 +26,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         # Get reference model probabilities
         if ref_log_probs is not None:
             with torch.no_grad():
-                ref_token_logprobs = ref_log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
+                ref_per_token_logps = ref_log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
         else:
-            ref_token_logprobs = per_token_logps.detach()
+            ref_per_token_logps = per_token_logps.detach()
 
         # Compute policy gradient loss with importance sampling ratio
         old_per_token_logps = old_per_token_logps if old_per_token_logps is not None else per_token_logps.detach()
@@ -40,14 +39,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         if beta != 0.0:
             # Compute KL penalty
-            kl_div = (
-                torch.exp(ref_token_logprobs - per_token_logps)
-                - (ref_token_logprobs - per_token_logps)
-                - 1.0
-            )
+            kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
-
         # Apply mask and compute average loss
         loss = (per_token_loss * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
 
@@ -142,7 +136,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         """
         grads = LigerFusedLinearRLHFBase.backward(ctx, grad_output)
         return (
-            *grads[:6],  # grad_input, grad_weight, grad_selected_token_ids, grad_attention_mask, grad_advantages, grad_bias
+            *grads[
+                :6
+            ],  # grad_input, grad_weight, grad_selected_token_ids, grad_attention_mask, grad_advantages, grad_bias
             None,  # grad_ref_log_probs
             None,  # grad_ref_input
             None,  # grad_ref_weight
@@ -207,6 +203,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         return LigerFusedLinearGRPOFunction.apply(
             _input,
             lin_weight,
+            selected_token_ids,
             attention_mask,
             advantages,
             bias,

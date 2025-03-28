@@ -46,7 +46,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         selected_token_ids,  # Shape: [batch_size, seq_len]
         attention_mask,  # Shape: [batch_size, seq_len]
         advantages,  # Shape: [batch_size,]
-        ref_log_probs=None, #Shape: [batch_size, seq_len, vocab_size]
+        ref_log_probs=None,  # Shape: [batch_size, seq_len, vocab_size]
         ref_input=None,  # Shape: [batch_size, seq_len, hidden_size]
         old_per_token_logps=None,
     ):
@@ -61,8 +61,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
         # Get chosen token probabilities
         per_token_logps = log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
 
-        # Get reference model probabilities
-        if self.use_ref_model:
+        # Get reference model probabilities,
+        if self.use_ref_model and ref_log_probs is None:
             with torch.no_grad():
                 ref_logits = ref_input @ self.ref_lin.weight.t()
                 if self.ref_lin.bias is not None:
@@ -71,6 +71,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
                     ref_logits = ref_logits / self.temperature
                 ref_log_probs = F.log_softmax(ref_logits, dim=-1)
                 ref_per_token_logps = ref_log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
+        elif ref_log_probs is not None:
+            ref_per_token_logps = ref_log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
         else:
             ref_per_token_logps = per_token_logps.detach()
 
@@ -145,7 +147,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
             attention_mask,  # attention_mask
             advantages,  # advantages
             self.lin.bias,  # bias
-            ref_log_probs, # ref_log_probs
+            ref_log_probs,  # ref_log_probs
             ref_input,  # ref_input
             self.ref_lin.weight,  # ref_weight
             self.ref_lin.bias,  # ref_bias
@@ -178,6 +180,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize("use_ref_model", [True, False])
+@pytest.mark.parametrize("use_ref_log_probs", [True, False])
 @pytest.mark.parametrize("old_per_token_logps", [True, False])
 def test_correctness(
     B,
@@ -194,6 +197,7 @@ def test_correctness(
     epsilon_low,
     epsilon_high,
     temperature,
+    use_ref_log_probs,
     use_ref_model,
     old_per_token_logps,
 ):
@@ -254,9 +258,15 @@ def test_correctness(
     # Create advantages with shape [B]
     advantages = torch.rand(B, device=device, dtype=dtype)
 
-    # Create reference inputs (optional) with shape [B, T, H]
-    ref_input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
-
+    ref_log_probs = None
+    ref_input = None
+    if use_ref_model and use_ref_log_probs:
+        # Create reference log probs with shape [B, T, V]
+        ref_raw_logits = torch.randn(B, T, V, device=device, dtype=dtype)
+        ref_log_probs = F.log_softmax(ref_raw_logits.float(), dim=-1)
+    elif use_ref_model:
+        # Create reference inputs (optional) with shape [B, T, H] if ref_log_probs is None
+        ref_input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     if old_per_token_logps:
         old_per_token_logps = torch.randn(B, T, device=device, dtype=dtype) * scalar
     else:
@@ -268,7 +278,7 @@ def test_correctness(
         selected_token_ids,
         attention_mask,
         advantages,
-        ref_log_probs=None,
+        ref_log_probs=ref_log_probs,
         ref_input=ref_input,
         old_per_token_logps=old_per_token_logps,
     )
@@ -277,7 +287,7 @@ def test_correctness(
         selected_token_ids,
         attention_mask,
         advantages,
-        ref_log_probs=None,
+        ref_log_probs=ref_log_probs,
         ref_input=ref_input,
         old_per_token_logps=old_per_token_logps,
     )
