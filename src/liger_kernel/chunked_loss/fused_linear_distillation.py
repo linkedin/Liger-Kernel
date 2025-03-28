@@ -126,7 +126,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             pad_tensor = torch.zeros(
                 (*student_logits_chunk.shape[:-1], pad_size),
                 dtype=student_logits_chunk.dtype,
-                device=student_logits_chunk.device
+                device=student_logits_chunk.device,
             )
             student_logits_chunk = torch.cat([student_logits_chunk, pad_tensor], dim=-1)
 
