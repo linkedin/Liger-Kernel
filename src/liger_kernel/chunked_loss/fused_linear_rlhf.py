@@ -24,6 +24,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         attention_mask,
         advantages,
         bias=None,
+        ref_log_probs=None,
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
@@ -47,6 +48,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             attention_mask: Attention mask tensor
             advantages: Advantages tensor
             bias: Bias tensor
+            ref_log_probs: Reference model log probs tensor
             ref_input: Reference model input tensor
             ref_weight: Reference model weight tensor
             ref_bias: Reference model bias tensor
@@ -85,6 +87,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             selected_token_ids_chunk,
             attention_mask_chunk,
             advantages_chunk,
+            ref_log_probs_chunk,
             ref_input_chunk,
             old_per_token_logps_chunk,
         ):
@@ -97,8 +100,9 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
                 attention_mask_chunk,  # arg 3
                 advantages_chunk,  # arg 4
                 bias,  # arg 5
-                ref_input_chunk=ref_input_chunk,  # arg 6
-                old_per_token_logps_chunk=old_per_token_logps_chunk,  # arg 7
+                ref_log_probs_chunk=ref_log_probs_chunk,  # arg 6
+                ref_input_chunk=ref_input_chunk,  # arg 7
+                old_per_token_logps_chunk=old_per_token_logps_chunk,  # arg 8
             )
 
         def accumulate_chunk(
@@ -106,6 +110,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             selected_token_ids_chunk,
             attention_mask_chunk,
             advantages_chunk,
+            ref_log_probs_chunk=None,
             ref_input_chunk=None,
             old_per_token_logps_chunk=None,
         ):
@@ -114,6 +119,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
                 selected_token_ids_chunk,
                 attention_mask_chunk,
                 advantages_chunk,
+                ref_log_probs_chunk,
                 ref_input_chunk,
                 old_per_token_logps_chunk,
             )
@@ -150,7 +156,15 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         _selected_token_ids_chunks = torch.chunk(selected_token_ids, chunks=chunks, dim=0)
         _attention_mask_chunks = torch.chunk(attention_mask, chunks=chunks, dim=0)
         _advantages_chunks = torch.chunk(advantages, chunks=chunks, dim=0)
-        _ref_input_chunks = torch.chunk(ref_input, chunks=chunks, dim=0) if use_ref_model else [None] * chunks
+        _ref_log_probs_chunks = (
+            torch.chunk(ref_log_probs, chunks=chunks, dim=0)
+            if use_ref_model and ref_log_probs is not None
+            else [None] * chunks
+        )
+        # if ref_log_probs is not none, then we don't need ref_input to calculate the log probs
+        _ref_input_chunks = (
+            torch.chunk(ref_input, chunks=chunks, dim=0) if use_ref_model and ref_log_probs is None else [None] * chunks
+        )
         _old_per_token_logps_chunks = (
             torch.chunk(old_per_token_logps, chunks=chunks, dim=0)
             if old_per_token_logps is not None
@@ -162,6 +176,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             selected_token_ids_chunk,
             attention_mask_chunk,
             advantages_chunk,
+            ref_log_probs_chunk,
             ref_input_chunk,
             old_per_token_logps_chunk,
         ) in zip(
@@ -169,6 +184,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             _selected_token_ids_chunks,
             _attention_mask_chunks,
             _advantages_chunks,
+            _ref_log_probs_chunks,
             _ref_input_chunks,
             _old_per_token_logps_chunks,
         ):
@@ -176,7 +192,9 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             torch._dynamo.mark_dynamic(input_chunk, 1)
             torch._dynamo.mark_dynamic(selected_token_ids_chunk, 1)
             torch._dynamo.mark_dynamic(attention_mask_chunk, 1)
-            if use_ref_model:
+            if use_ref_model and ref_log_probs_chunk is not None:
+                torch._dynamo.mark_dynamic(ref_log_probs_chunk, 1)
+            elif use_ref_model:
                 torch._dynamo.mark_dynamic(ref_input_chunk, 1)
             else:
                 ref_input_chunk = None
@@ -190,6 +208,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
                 selected_token_ids_chunk,
                 attention_mask_chunk,
                 advantages_chunk,
+                ref_log_probs_chunk,
                 ref_input_chunk,
                 old_per_token_logps_chunk,
             )
@@ -218,6 +237,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         attention_mask_chunk,
         advantages_chunk,
         bias=None,
+        ref_log_probs_chunk=None,
         ref_input_chunk=None,
         ref_weight=None,
         ref_bias=None,
@@ -236,11 +256,14 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
 
         # Get reference log probabilities if needed
         ref_log_probs = None
-        if use_ref_model and ref_input_chunk is not None:
-            with torch.no_grad():
-                ref_log_probs, _ = LigerFusedLinearRLHFBase.chunk_forward(
-                    ref_input_chunk, ref_weight, bias=ref_bias, temperature=temperature
-                )
+        if use_ref_model:
+            if ref_log_probs_chunk is not None:
+                ref_log_probs = ref_log_probs_chunk
+            elif ref_input_chunk is not None:
+                with torch.no_grad():
+                    ref_log_probs, _ = LigerFusedLinearRLHFBase.chunk_forward(
+                        ref_input_chunk, ref_weight, bias=ref_bias, temperature=temperature
+                    )
 
         # Compute chunk loss and metrics using the provided loss function
         chunk_loss, chunk_metrics = rlhf_loss_fn(
@@ -290,6 +313,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             None,  # grad_attention_mask
             None,  # grad_advantages
             grad_bias,
+            None,  # grad_ref_log_probs
             None,  # grad_ref_input
             None,  # grad_ref_weight
             None,  # grad_ref_bias

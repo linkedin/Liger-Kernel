@@ -19,7 +19,6 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
-
         per_token_logps = log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(
             -1
         )  # (batch_size, seq_len)
@@ -70,6 +69,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         attention_mask,
         advantages,
         bias=None,
+        ref_log_probs=None,
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
@@ -91,6 +91,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             attention_mask (torch.Tensor): Attention mask tensor. Shape: (batch_size, seq_len)
             advantages (torch.Tensor): Advantages tensor. Shape: (batch_size,)
             bias (torch.Tensor, optional): Bias tensor. Shape: (vocab_size,)
+            ref_log_probs:  Reference model log probs tensor. Shape:(batch_size * seq_len, vocab_size)
             ref_input (torch.Tensor, optional): Reference model input tensor. Shape: (batch_size * seq_len, hidden_size)
             ref_weight (torch.Tensor, optional): Reference model weight tensor. Shape: (vocab_size, hidden_size)
             ref_bias (torch.Tensor, optional): Reference model bias tensor. Shape: (vocab_size,)
@@ -111,6 +112,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             attention_mask=attention_mask,
             advantages=advantages,
             bias=bias,
+            ref_log_probs=ref_log_probs,
             ref_input=ref_input,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
@@ -137,6 +139,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             *grads[
                 :6
             ],  # grad_input, grad_weight, grad_selected_token_ids, grad_attention_mask, grad_advantages, grad_bias
+            None,  # grad_ref_log_probs
             None,  # grad_ref_input
             None,  # grad_ref_weight
             None,  # grad_ref_bias
@@ -191,6 +194,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         attention_mask,
         advantages,
         bias=None,
+        ref_log_probs=None,
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
@@ -203,6 +207,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             attention_mask,
             advantages,
             bias,
+            ref_log_probs,
             ref_input,
             ref_weight,
             ref_bias,
