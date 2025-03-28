@@ -125,6 +125,9 @@ class LigerLMHeadORPO(torch.nn.Module):
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ignore_index, beta", [(-100, 0.1), (42, 0.2)])
 def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, beta):
+    # reset torch compiler cache
+    torch.compiler.reset()
+
     B = 2 * B  # orpo loss requires B to be even
     torch_lm_head_orpo = TorchLMHeadORPO(
         H=H,
@@ -221,6 +224,9 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ignore_index, 
 )
 @pytest.mark.parametrize("bias", [True, False])
 def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias):
+    # reset torch compiler cache
+    torch.compiler.reset()
+
     B = 2 * B
 
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
