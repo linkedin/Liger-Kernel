@@ -46,6 +46,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         selected_token_ids,  # Shape: [batch_size, seq_len]
         attention_mask,  # Shape: [batch_size, seq_len]
         advantages,  # Shape: [batch_size,]
+        ref_log_probs=None, #Shape: [batch_size, seq_len, vocab_size]
         ref_input=None,  # Shape: [batch_size, seq_len, hidden_size]
         old_per_token_logps=None,
     ):
@@ -132,6 +133,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         selected_token_ids,
         attention_mask,
         advantages,
+        ref_log_probs=None,
         ref_input=None,
         old_per_token_logps=None,
     ):
@@ -143,6 +145,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
             attention_mask,  # attention_mask
             advantages,  # advantages
             self.lin.bias,  # bias
+            ref_log_probs, # ref_log_probs
             ref_input,  # ref_input
             self.ref_lin.weight,  # ref_weight
             self.ref_lin.bias,  # ref_bias
@@ -265,6 +268,7 @@ def test_correctness(
         selected_token_ids,
         attention_mask,
         advantages,
+        ref_log_probs=None,
         ref_input=ref_input,
         old_per_token_logps=old_per_token_logps,
     )
@@ -273,6 +277,7 @@ def test_correctness(
         selected_token_ids,
         attention_mask,
         advantages,
+        ref_log_probs=None,
         ref_input=ref_input,
         old_per_token_logps=old_per_token_logps,
     )
@@ -393,6 +398,7 @@ def test_functional_correctness(
     else:
         old_per_token_logps = None
 
+    ref_log_probs = None
     loss1, aux1 = liger_fused_linear_grpo(
         input1,
         weight1,
@@ -400,6 +406,7 @@ def test_functional_correctness(
         attention_mask,
         advantages,
         bias1,
+        ref_log_probs,
         ref_input,
         ref_weight1,
         ref_bias1,
@@ -420,6 +427,7 @@ def test_functional_correctness(
         attention_mask,
         advantages,
         bias2,
+        ref_log_probs,
         ref_input,
         ref_weight2,
         ref_bias2,
