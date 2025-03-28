@@ -13,8 +13,6 @@ device = infer_device()
 
 # set random seed globally
 set_seed()
-# reset torch compiler cache
-torch.compiler.reset()
 
 
 class TorchLMHeadGRPO(torch.nn.Module):
@@ -194,6 +192,8 @@ def test_correctness(
     use_ref_model,
     old_per_token_logps,
 ):
+    # reset torch compiler cache
+    torch.compiler.reset()
     torch_lm_head_grpo = TorchLMHeadGRPO(
         H=H,
         V=V,
@@ -352,6 +352,8 @@ def test_functional_correctness(
     use_ref_model,
     old_per_token_logps,
 ):
+    # reset torch compiler cache
+    torch.compiler.reset()
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
