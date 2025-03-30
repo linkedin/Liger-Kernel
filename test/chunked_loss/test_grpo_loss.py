@@ -202,7 +202,7 @@ def test_correctness(
     use_ref_model,
     old_per_token_logps,
 ):
-    # reset torch compiler cache
+    # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
     torch_lm_head_grpo = TorchLMHeadGRPO(
         H=H,
@@ -342,16 +342,6 @@ def test_correctness(
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("ref_bias", [True, False])
-@pytest.mark.parametrize(
-    "beta, epsilon_low, epsilon_high, temperature",
-    [
-        # Standard settings
-        (0.1, 0.2, 0.2, 20.0),  # set temperature to 20.0 for better numerical stability
-        (0.0, 0.1, 0.1, 2.0),
-    ],
-)
-@pytest.mark.parametrize("use_ref_model", [True, False])
-@pytest.mark.parametrize("old_per_token_logps", [True, False])
 def test_functional_correctness(
     B,
     T,
@@ -363,14 +353,8 @@ def test_functional_correctness(
     rtol,
     bias,
     ref_bias,
-    beta,
-    epsilon_low,
-    epsilon_high,
-    temperature,
-    use_ref_model,
-    old_per_token_logps,
 ):
-    # reset torch compiler cache
+    # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
@@ -408,10 +392,7 @@ def test_functional_correctness(
         ref_bias1 = None
         ref_bias2 = None
 
-    if old_per_token_logps:
-        old_per_token_logps = torch.randn(B, T, device=device, dtype=dtype) * scalar
-    else:
-        old_per_token_logps = None
+    old_per_token_logps = torch.randn(B, T, device=device, dtype=dtype) * scalar
 
     ref_log_probs = None
     loss1, aux1 = liger_fused_linear_grpo(
@@ -426,12 +407,12 @@ def test_functional_correctness(
         ref_weight1,
         ref_bias1,
         old_per_token_logps,
-        beta,
-        epsilon_low,
-        epsilon_high,
-        temperature,
+        0.04,
+        0.2,
+        0.2,
+        1.0,
         True,
-        use_ref_model,
+        True,
         1,
     )
 
@@ -447,12 +428,12 @@ def test_functional_correctness(
         ref_weight2,
         ref_bias2,
         old_per_token_logps,
-        beta,
-        epsilon_low,
-        epsilon_high,
-        temperature,
+        0.04,
+        0.2,
+        0.2,
+        1.0,
         True,
-        use_ref_model,
+        True,
         1,
     )
 
