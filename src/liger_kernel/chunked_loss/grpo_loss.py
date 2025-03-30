@@ -49,16 +49,16 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
 
         # Calculate metrics
         full_batch_size, seq_len = full_attention_mask.shape
-        vocab_size = log_probs.shape[2]
-        metrics = [
-            per_token_logps.sum() / (full_batch_size * seq_len),  # mean log prob
-            log_probs.sum() / (full_batch_size * seq_len * vocab_size),  # mean all log probs
-        ]
+        metrics = []
         if beta != 0.0:
             metrics.append(
                 ((kl_div * attention_mask).sum(dim=1) / torch.clamp(attention_mask.sum(dim=1), min=1.0)).sum()
                 / full_batch_size
             )
+        is_clipped = (per_token_loss1 < per_token_loss2).float()
+        metrics.append(
+            (is_clipped * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
+        )
         return loss, metrics
 
     @classmethod

@@ -92,15 +92,15 @@ class TorchLMHeadGRPO(torch.nn.Module):
         loss = (per_token_loss * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0)
 
         # Compute metrics
-        metrics = [
-            per_token_logps.mean(),
-            log_probs.mean(),
-        ]
+        metrics = []
         if self.beta != 0.0:
             metrics.append(
                 ((kl_div * attention_mask).sum(dim=1) / torch.clamp(attention_mask.sum(dim=1), min=1.0)).mean()
             )
-
+        is_clipped = (per_token_loss1 < per_token_loss2).float()
+        metrics.append(
+            (is_clipped * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0)
+        )
         return loss, metrics
 
 
