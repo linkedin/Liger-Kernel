@@ -75,6 +75,8 @@ try:
     from transformers.models.llava.modeling_llava import LlavaForConditionalGeneration
     from transformers.models.llava.processing_llava import LlavaProcessor
 
+    from liger_kernel.transformers import apply_liger_kernel_to_llama
+
     LLAVA_AVAILABLE = True
 except ImportError:
     LLAVA_AVAILABLE = False
@@ -616,8 +618,6 @@ def run_mini_model_multimodal(
 
     set_seed(42)
 
-    model = create_model(model_name).to(dtype).to(device)
-
     revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
     if "mllama" in model_name:
         revert_kwargs["model_type"] = "conditional_generation"
@@ -629,7 +629,7 @@ def run_mini_model_multimodal(
             "cross_entropy": False,
         }
 
-        if "qwen2_5_vl" not in model_name:
+        if "qwen2_5_vl" not in model_name and "llava" not in model_name:
             kwargs["layer_norm"] = True
 
         if "gemma" in model_name:
@@ -637,12 +637,14 @@ def run_mini_model_multimodal(
         else:
             kwargs["swiglu"] = True
 
-        kwargs["model"] = model
+        if "llava" in model_name:
+            apply_liger_kernel_to_llama(**kwargs)
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
+    model = create_model(model_name).to(dtype).to(device)
     model.gradient_checkpointing_enable()
 
     train_dataset = create_multimodal_dataset(model_name)

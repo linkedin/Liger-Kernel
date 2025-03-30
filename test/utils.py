@@ -409,9 +409,11 @@ def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
     from transformers.models.llama import modeling_llama
     from transformers.models.llava import modeling_llava
 
+    importlib.reload(modeling_llama)
     importlib.reload(modeling_clip)
     importlib.reload(modeling_llava)
     importlib.reload(modeling_llama)
+
     model_config.model_class = modeling_llava.LlavaForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
