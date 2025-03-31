@@ -97,7 +97,9 @@ class TorchLMHeadGRPO(torch.nn.Module):
         metrics = []
         if self.beta != 0.0:
             metrics.append(((kl_div * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0)))
-        is_clipped = (per_token_loss1 < per_token_loss2).float()
+        is_clipped = ((coef_1 < 1 - self.epsilon_low) & (advantages.unsqueeze(1) < 0)) | (
+            (coef_1 > 1 + self.epsilon_high) & (advantages.unsqueeze(1) > 0)
+        )
         metrics.append((is_clipped * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0))
         return loss, metrics
 
