@@ -185,9 +185,9 @@ class LigerKLDivLossFunction(torch.autograd.Function):
     Class implementing the forward and backward pass for the KL Divergence Loss using Triton, as defined by the following formula:
     ```python
     if log_target:
-        loss = target * (target.log() - input)
-    else:
         loss = target.exp() * (target - input)
+    else:
+        loss = target * (target.log() - input)
     ```,
     then the loss is reduced according to the `reduction` parameter.
     as defined in the PyTorch documentation: https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
