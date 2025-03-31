@@ -8,7 +8,6 @@ import torch
 from transformers.models.llava.modeling_llava import _CONFIG_FOR_DOC
 from transformers.models.llava.modeling_llava import LLAVA_INPUTS_DOCSTRING
 from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast
-from transformers.models.llava.modeling_llava import logger
 from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import is_torchdynamo_compiling
 from transformers.utils import replace_return_docstrings
