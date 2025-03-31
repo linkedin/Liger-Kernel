@@ -8,7 +8,6 @@ import torch
 from transformers.models.llava.modeling_llava import _CONFIG_FOR_DOC
 from transformers.models.llava.modeling_llava import LLAVA_INPUTS_DOCSTRING
 from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast
-from transformers.models.llava.modeling_llava import logger
 from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import is_torchdynamo_compiling
 from transformers.utils import replace_return_docstrings
@@ -34,8 +33,6 @@ def lce_forward_deprecated(
     output_attentions: Optional[bool] = None,
     output_hidden_states: Optional[bool] = None,
     return_dict: Optional[bool] = None,
-    cache_position: Optional[torch.LongTensor] = None,
-    num_logits_to_keep: int = 0,
 ) -> Union[Tuple, LlavaCausalLMOutputWithPast]:
     r"""
     Args:
@@ -96,39 +93,32 @@ def lce_forward_deprecated(
             "You cannot specify both pixel_values and inputs_embeds at the same time, and must specify either one"
         )
 
-    legacy_processing = False
     if inputs_embeds is None:
+        # 1. Extra the input embeddings
         inputs_embeds = self.get_input_embeddings()(input_ids)
 
-        # if the number of image tokens is more than image embeddings seq length, then prob we expanded it in processing
-        # not very reliable, but we don't expect one to actually pass 500+ images for one prompt
-        # In case we're in decoding stage, legacy behavior is checked by presence of pixel values even if use_cache=True
-        legacy_processing = (
-            (input_ids == self.config.image_token_index).sum(1).max() < self.config.image_seq_length
-        ) or (input_ids.shape[-1] == 1 and pixel_values is not None)
+        # 2. Merge text and images
+        if pixel_values is not None and input_ids.shape[1] != 1:
+            image_outputs = self.vision_tower(pixel_values, output_hidden_states=True)
+            # this is not memory efficient at all (output_hidden_states=True) will save all the hidden stated.
+            selected_image_feature = image_outputs.hidden_states[vision_feature_layer]
 
-    image_features = None
-    if pixel_values is not None:
-        image_features = self.get_image_features(
-            pixel_values=pixel_values,
-            vision_feature_layer=vision_feature_layer,
-            vision_feature_select_strategy=vision_feature_select_strategy,
-        )
+            if vision_feature_select_strategy == "default":
+                selected_image_feature = selected_image_feature[:, 1:]
+            elif vision_feature_select_strategy == "full":
+                selected_image_feature = selected_image_feature
+            else:
+                raise ValueError(f"Unexpected select feature strategy: {self.config.vision_feature_select_strategy}")
 
-    if legacy_processing and image_features is not None:
-        logger.warning_once(
-            "Expanding inputs for image tokens in LLaVa should be done in processing. "
-            "Please add `patch_size` and `vision_feature_select_strategy` to the model's processing config or set directly "
-            "with `processor.patch_size = {{patch_size}}` and processor.vision_feature_select_strategy = {{vision_feature_select_strategy}}`. "
-            "Using processors without these attributes in the config is deprecated and will throw an error in v4.50."
-        )
-        # prefill stage vs decoding stage (legacy behavior copied)
-        if input_ids.shape[1] != 1:
+            image_features = self.multi_modal_projector(selected_image_feature)
+            inputs_embeds = inputs_embeds.to(image_features.dtype)
             inputs_embeds, attention_mask, labels, position_ids = self._merge_input_ids_with_image_features(
                 image_features, inputs_embeds, input_ids, attention_mask, labels
             )
-            cache_position = torch.arange(attention_mask.shape[1], device=attention_mask.device)
-        else:
+
+        # In case input_ids.shape[1] == 1 & pixel_values==None & past_key_values != None, we are in the case of
+        # generation with cache
+        elif past_key_values is not None and pixel_values is not None and input_ids.shape[1] == 1:
             # Retrieve the first layer to inspect the logits and mask out the hidden states
             # that are set to 0
             first_layer_past_key_value = past_key_values[0][0][:, :, :, 0]
@@ -158,7 +148,6 @@ def lce_forward_deprecated(
 
             attention_mask = torch.cat((extended_attention_mask, attention_mask[:, -target_length:]), dim=1)
             position_ids = torch.sum(attention_mask, dim=1).unsqueeze(-1) - 1
-            cache_position = torch.arange(attention_mask.shape[1], device=attention_mask.device)[-target_length:]
 
     # TODO: @raushan retain only the new behavior after v4.47
     elif image_features is not None:
@@ -184,8 +173,6 @@ def lce_forward_deprecated(
         output_attentions=output_attentions,
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
-        cache_position=cache_position,
-        num_logits_to_keep=num_logits_to_keep,
     )
     hidden_states = outputs[0]
 
@@ -220,7 +207,6 @@ def lce_forward_deprecated(
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
-        image_hidden_states=image_features if pixel_values is not None else None,
     )
 
 
