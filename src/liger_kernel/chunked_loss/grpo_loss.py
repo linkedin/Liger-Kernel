@@ -46,17 +46,17 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
-        # Apply mask and compute average loss
+
+        # Note: We normalize by the number of tokens in the batch (using full_attention_mask),
+        # which is consistent with the DAPO loss implementation (https://arxiv.org/html/2503.14476v1)
+        # and TRL GRPO implementation
+        # (https://github.com/huggingface/trl/blob/e751a16df56e70190fb94bed4a2035eec3303777/trl/trainer/grpo_trainer.py#L966)
         loss = (per_token_loss * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
 
         # Calculate metrics
-        full_batch_size, seq_len = full_attention_mask.shape
         metrics = []
         if beta != 0.0:
-            metrics.append(
-                ((kl_div * attention_mask).sum(dim=1) / torch.clamp(attention_mask.sum(dim=1), min=1.0)).sum()
-                / full_batch_size
-            )
+            metrics.append(((kl_div * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)))
         is_clipped = (per_token_loss1 < per_token_loss2).float()
         metrics.append((is_clipped * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0))
         return loss, metrics
