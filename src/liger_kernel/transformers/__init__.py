@@ -14,6 +14,7 @@ from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3 
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3_text  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_granite  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
+from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llava  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mistral  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mixtral  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mllama  # noqa: F401
