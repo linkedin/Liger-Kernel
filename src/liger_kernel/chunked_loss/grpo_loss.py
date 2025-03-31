@@ -28,7 +28,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         if ref_per_token_logps is None:
             if ref_log_probs is not None:
                 with torch.no_grad():
-                    ref_per_token_logps = ref_log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
+                    ref_per_token_logps = ref_log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(
+                        -1
+                    )
             else:
                 ref_per_token_logps = per_token_logps.detach()
 
@@ -56,9 +58,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
                 / full_batch_size
             )
         is_clipped = (per_token_loss1 < per_token_loss2).float()
-        metrics.append(
-            (is_clipped * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
-        )
+        metrics.append((is_clipped * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0))
         return loss, metrics
 
     @classmethod
