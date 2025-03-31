@@ -357,10 +357,10 @@ if LLAVA_AVAILABLE:
             vision_config=CLIPVisionConfig(
                 hidden_size=1024,
                 image_size=336,
-                intermediate_size=4096,
+                intermediate_size=2048,  # 4096
                 model_type="clip_vision_model",
-                num_attention_heads=16,
-                num_hidden_layers=24,
+                num_attention_heads=4,  # 16
+                num_hidden_layers=4,  # 24
                 patch_size=14,
                 projection_dim=768,
                 vocab_size=32000,
