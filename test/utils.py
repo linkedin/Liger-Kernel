@@ -180,6 +180,20 @@ def load_tokenizer_config(config_path: str) -> dict:
     return tokenizer_config
 
 
+def load_image_processing_config(config_path: str) -> dict:
+    """Load and process image processing configuration from a JSON file."""
+    with open(config_path) as reader:
+        image_processing_config = json.load(reader)
+    return image_processing_config
+
+
+def load_processor_config(config_path: str) -> dict:
+    """Load and process processor configuration from a JSON file."""
+    with open(config_path) as reader:
+        processor_config = json.load(reader)
+    return processor_config
+
+
 def train_bpe_tokenizer(special_tokens: List[str], unk_token: str = "<|unk|>"):
     """
     Train a tokenizer using the BPE algorithm.
@@ -314,13 +328,15 @@ def revert_liger_kernel_to_Paligemma(model_config: MiniModelConfig):
     Revert all Liger kernel patches applied to Gemma2.
     """
 
+    from transformers.models.gemma import modeling_gemma
     from transformers.models.gemma2 import modeling_gemma2
     from transformers.models.paligemma import modeling_paligemma
     from transformers.models.siglip import modeling_siglip
 
-    importlib.reload(modeling_siglip)
+    importlib.reload(modeling_gemma)
     importlib.reload(modeling_gemma2)
     importlib.reload(modeling_paligemma)
+    importlib.reload(modeling_siglip)
     model_config.model_class = modeling_paligemma.PaliGemmaForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
@@ -381,6 +397,23 @@ def revert_liger_kernel_to_olmo2(model_config: MiniModelConfig):
 
     importlib.reload(modeling_olmo2)
     model_config.model_class = modeling_olmo2.Olmo2ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to llava.
+    """
+
+    from transformers.models.clip import modeling_clip
+    from transformers.models.llama import modeling_llama
+    from transformers.models.llava import modeling_llava
+
+    importlib.reload(modeling_clip)
+    importlib.reload(modeling_llava)
+    importlib.reload(modeling_llama)
+
+    model_config.model_class = modeling_llava.LlavaForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
 

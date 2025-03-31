@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-DATA_PATH = "data/all_benchmark_data.csv"
-VISUALIZATIONS_PATH = "visualizations/"
+DATA_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "data/all_benchmark_data.csv"))
+VISUALIZATIONS_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "visualizations/"))
 
 
 @dataclass
