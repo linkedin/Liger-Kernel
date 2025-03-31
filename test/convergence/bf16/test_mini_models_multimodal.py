@@ -10,8 +10,8 @@ from transformers import PreTrainedTokenizerFast
 from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
 from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
 
-from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3
+from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_paligemma
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
@@ -24,8 +24,8 @@ from test.utils import load_image_processing_config
 from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
-from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_gemma3
+from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_Paligemma
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
