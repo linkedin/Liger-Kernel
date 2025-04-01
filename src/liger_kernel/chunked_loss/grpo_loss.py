@@ -8,6 +8,11 @@ def k3_loss_fn(log_p, log_q):
     # ref: http://joschu.net/blog/kl-approx.html
     return torch.exp(log_p - log_q) - (log_p - log_q) - 1.0
 
+
+def clip_coef_fn(coef, epsilon_low, epsilon_high):
+    return torch.clamp(coef, 1 - epsilon_low, 1 + epsilon_high)
+
+
 class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
     @staticmethod
     def rlhf_loss_fn(
@@ -42,7 +47,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         # Compute policy gradient loss with importance sampling ratio
         old_per_token_logps = old_per_token_logps if old_per_token_logps is not None else per_token_logps.detach()
         coef_1 = torch.exp(per_token_logps - old_per_token_logps)
-        coef_2 = torch.clamp(coef_1, 1 - epsilon_low, 1 + epsilon_high)
+        coef_2 = clip_coef_fn(coef_1, epsilon_low, epsilon_high)
         per_token_loss1 = coef_1 * advantages.unsqueeze(1)
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
