@@ -6,13 +6,13 @@ import torch._dynamo.config
 import torch.nn.functional as F
 
 
-class LigerFusedLinearRLHFBase(torch.autograd.Function):
+class LigerFusedLinearPPOBase(torch.autograd.Function):
     @abstractmethod
-    def rlhf_loss_fn(*args, **kwargs):
+    def ppo_loss_fn(*args, **kwargs):
         """
         To be extended by subclasses.
         """
-        raise NotImplementedError("RLHF loss function must be implemented.")
+        raise NotImplementedError("PPO loss function must be implemented.")
 
     @staticmethod
     def forward(
@@ -76,7 +76,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
 
         # Create a partial function with fixed arguments
         compute_loss = partial(
-            LigerFusedLinearRLHFBase._compute_chunk_loss,
+            LigerFusedLinearPPOBase._compute_chunk_loss,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
             full_attention_mask=attention_mask,
@@ -85,7 +85,7 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
             beta=beta,
             temperature=temperature,
             use_ref_model=use_ref_model,
-            rlhf_loss_fn=cls.rlhf_loss_fn,
+            ppo_loss_fn=cls.ppo_loss_fn,
         )
 
         def fused_fwd_bwd(
@@ -252,22 +252,22 @@ class LigerFusedLinearRLHFBase(torch.autograd.Function):
         beta=0.04,
         temperature=1.0,
         use_ref_model=False,
-        rlhf_loss_fn=None,
+        ppo_loss_fn=None,
     ):
         """Compute loss for a single chunk."""
         # Get policy log probabilities using chunk_forward
-        log_probs, _ = LigerFusedLinearRLHFBase.chunk_forward(input_chunk, weight, bias=bias, temperature=temperature)
+        log_probs, _ = LigerFusedLinearPPOBase.chunk_forward(input_chunk, weight, bias=bias, temperature=temperature)
 
         # Get reference log probabilities if needed
         ref_log_probs = None
         if use_ref_model and ref_per_token_logps_chunk is None:
             with torch.no_grad():
-                ref_log_probs, _ = LigerFusedLinearRLHFBase.chunk_forward(
+                ref_log_probs, _ = LigerFusedLinearPPOBase.chunk_forward(
                     ref_input_chunk, ref_weight, bias=ref_bias, temperature=temperature
                 )
 
         # Compute chunk loss and metrics using the provided loss function
-        chunk_loss, chunk_metrics = rlhf_loss_fn(
+        chunk_loss, chunk_metrics = ppo_loss_fn(
             log_probs=log_probs,
             selected_token_ids=selected_token_ids_chunk,
             attention_mask=attention_mask_chunk,

@@ -1,6 +1,6 @@
 import torch
 
-from liger_kernel.chunked_loss.fused_linear_rlhf import LigerFusedLinearRLHFBase
+from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
 
 
 def k3_loss_fn(log_p, log_q):
@@ -13,9 +13,9 @@ def clip_coef_fn(coef, epsilon_low, epsilon_high):
     return torch.clamp(coef, 1 - epsilon_low, 1 + epsilon_high)
 
 
-class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
+class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
     @staticmethod
-    def rlhf_loss_fn(
+    def ppo_loss_fn(
         log_probs,
         selected_token_ids,
         attention_mask,
@@ -148,7 +148,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
             grad_output: Gradient of the loss (scalar)
             grad_metrics: Gradients of the metrics (not used in backward computation)
         """
-        grads = LigerFusedLinearRLHFBase.backward(ctx, grad_output)
+        grads = LigerFusedLinearPPOBase.backward(ctx, grad_output)
         return (
             *grads[
                 :6
