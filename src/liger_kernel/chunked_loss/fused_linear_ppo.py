@@ -68,7 +68,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             if ref_per_token_logps is not None and ref_input is not None:
                 raise Warning("Both ref_per_token_logps and ref_input are provided. Using ref_per_token_logps.")
         # Initialize accumulators
-        loss_acc = torch.zeros((), device=_input.device)
+        loss_acc = torch.zeros((), device=_input.device, dtype=torch.float32)
         grad_weight = torch.zeros_like(weight)  # [V, H]
         grad_inputs = []
         grad_bias = torch.zeros_like(bias) if bias is not None else None  # [V]
@@ -273,8 +273,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             attention_mask=attention_mask_chunk,
             advantages=advantages_chunk,
             full_attention_mask=full_attention_mask,
-            ref_per_token_logps=ref_per_token_logps_chunk,
-            old_per_token_logps=old_per_token_logps_chunk,
+            ref_per_token_logps=ref_per_token_logps_chunk.float(),
+            old_per_token_logps=old_per_token_logps_chunk.float(),
             ref_log_probs=ref_log_probs,  # used when ref_per_token_logps is None
             epsilon_low=epsilon_low,
             epsilon_high=epsilon_high,
