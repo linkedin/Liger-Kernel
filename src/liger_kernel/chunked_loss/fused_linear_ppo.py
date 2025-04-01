@@ -273,8 +273,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             attention_mask=attention_mask_chunk,
             advantages=advantages_chunk,
             full_attention_mask=full_attention_mask,
-            ref_per_token_logps=ref_per_token_logps_chunk.float(),
-            old_per_token_logps=old_per_token_logps_chunk.float(),
+            ref_per_token_logps=ref_per_token_logps_chunk.float() if ref_per_token_logps_chunk is not None else None,
+            old_per_token_logps=old_per_token_logps_chunk.float() if old_per_token_logps_chunk is not None else None,
             ref_log_probs=ref_log_probs,  # used when ref_per_token_logps is None
             epsilon_low=epsilon_low,
             epsilon_high=epsilon_high,
