@@ -3,6 +3,11 @@ import torch
 from liger_kernel.chunked_loss.fused_linear_rlhf import LigerFusedLinearRLHFBase
 
 
+def k3_loss_fn(log_p, log_q):
+    # computes k3 estimate of KL[q, p]
+    # ref: http://joschu.net/blog/kl-approx.html
+    return torch.exp(log_p - log_q) - (log_p - log_q) - 1.0
+
 class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
     @staticmethod
     def rlhf_loss_fn(
@@ -43,7 +48,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearRLHFBase):
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         if beta != 0.0:
             # Compute KL penalty
-            kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
+            kl_div = k3_loss_fn(ref_per_token_logps, per_token_logps)
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
 
