@@ -37,7 +37,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         use_ref_model=False,
         chunk_size=1,
     ):
-        """Chunked forward pass for RLHF loss computation.
+        """Chunked forward pass for PPO loss computation.
 
         Args:
             cls: The class
@@ -300,7 +300,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output, *grad_metrics):
-        """Backward pass for RLHF loss."""
+        """Backward pass for PPO loss."""
         grad_input, grad_weight, grad_bias = ctx.saved_tensors
         if grad_output != 1.0:
             grad_input = grad_input * grad_output
