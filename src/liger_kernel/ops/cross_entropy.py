@@ -9,6 +9,7 @@ import triton.language as tl
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import element_mul_kernel
 from liger_kernel.ops.utils import is_hip
+from liger_kernel.utils import infer_device
 
 if compare_version("triton", operator.ge, "3.0.0"):
     try:
@@ -59,7 +60,7 @@ def liger_cross_entropy_kernel(
     z_loss_ptr: Pointer to tensor to store the z loss. No operation if RETURN_Z_LOSS is 0.
     loss_stride (int): The stride of the loss tensor.
     n_cols (int): The number of columns in the input tensor.
-    n_non_ignore (flaot): The number of non-ignored elements in the batch.
+    n_non_ignore (float): The number of non-ignored elements in the batch.
     sum_non_ignore_weight (float): The sum of non-ignored target's weights in the batch.
     weight_sum (float): The sum of weight tensor.
     ignore_index (int): The index to ignore in the target.
@@ -258,7 +259,7 @@ def liger_cross_entropy_kernel(
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
-MAX_FUSED_SIZE = 65536 // 2  # the best size we found by manually tuning
+MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536 // 2  # the best size we found by manually tuning
 
 
 def cross_entropy_forward(
