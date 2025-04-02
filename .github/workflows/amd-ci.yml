@@ -63,6 +63,8 @@ jobs:
     - name: Setup Dependencies
       run: |
         sudo apt install -y rocm-dev
+        rocm-smi
+        lspci | grep -i amd
         python -m pip install --upgrade pip
         pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/nightly/rocm${{ matrix.rocm_version }}
     
