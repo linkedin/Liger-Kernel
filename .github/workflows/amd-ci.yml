@@ -49,7 +49,7 @@ jobs:
     needs: [checkstyle]
     strategy:
       matrix:
-        rocm_version: ['6.2', '6.3']
+        rocm_version: ['6.3']
 
     steps:
     - name: Checkout code
@@ -64,7 +64,6 @@ jobs:
       run: |
         sudo apt install -y rocm-dev
         rocm-smi
-        lspci | grep -i amd
         python -m pip install --upgrade pip
         pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/nightly/rocm${{ matrix.rocm_version }}
     
