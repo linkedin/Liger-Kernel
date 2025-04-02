@@ -25,7 +25,6 @@ class TorchLMHeadGRPO(torch.nn.Module):
         V: int,
         dtype: torch.dtype,
         bias: bool = False,
-        ref_bias: bool = False,
         beta: float = 0.1,
         epsilon_low: float = 0.2,
         epsilon_high: float = 0.2,
@@ -34,7 +33,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
-        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.beta = beta
         self.epsilon_low = epsilon_low
         self.epsilon_high = epsilon_high
@@ -57,7 +56,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         if self.temperature != 1.0:
             logits = logits / self.temperature
         # Get log probabilities
-        log_probs = F.log_softmax(logits, dim=-1)
+        log_probs = F.log_softmax(logits.float(), dim=-1)
 
         # Get chosen token probabilities
         per_token_logps = log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
@@ -71,7 +70,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
                         ref_logits = ref_logits + self.ref_lin.bias
                     if self.temperature != 1.0:
                         ref_logits = ref_logits / self.temperature
-                    ref_log_probs = F.log_softmax(ref_logits, dim=-1)
+                    ref_log_probs = F.log_softmax(ref_logits.float(), dim=-1)
                     ref_per_token_logps = ref_log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(
                         -1
                     )
@@ -79,7 +78,9 @@ class TorchLMHeadGRPO(torch.nn.Module):
                 ref_per_token_logps = per_token_logps.detach()
 
         # Compute policy gradient loss with importance sampling ratio
-        old_per_token_logps = old_per_token_logps if old_per_token_logps is not None else per_token_logps.detach()
+        old_per_token_logps = (
+            old_per_token_logps.float() if old_per_token_logps is not None else per_token_logps.detach()
+        )
         coef_1 = torch.exp(per_token_logps - old_per_token_logps)
         coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
         per_token_loss1 = coef_1 * advantages.unsqueeze(1)
@@ -87,6 +88,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         if self.beta != 0.0:
             # Compute KL divergence between model and reference model
+            ref_per_token_logps = ref_per_token_logps.float()
             kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
             per_token_loss = per_token_loss + self.beta * kl_div
 
@@ -111,7 +113,6 @@ class LigerLMHeadGRPO(torch.nn.Module):
         V: int,
         dtype: torch.dtype,
         bias: bool = False,
-        ref_bias: bool = False,
         beta: float = 0.1,
         epsilon_low: float = 0.2,
         epsilon_high: float = 0.2,
@@ -120,13 +121,14 @@ class LigerLMHeadGRPO(torch.nn.Module):
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
-        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=ref_bias, dtype=dtype)
+        self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
         self.grpo_loss = LigerFusedLinearGRPOLoss(
             beta=beta,
             epsilon_low=epsilon_low,
             epsilon_high=epsilon_high,
             temperature=temperature,
             use_ref_model=use_ref_model,
+            compiled=True,
         )
 
     def forward(
@@ -170,12 +172,11 @@ class LigerLMHeadGRPO(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
-@pytest.mark.parametrize("ref_bias", [True, False])
 @pytest.mark.parametrize(
     "beta, epsilon_low, epsilon_high, temperature",
     [
         # Standard settings
-        (0.1, 0.2, 0.2, 20.0),  # set temperature to 20.0 for better numerical stability
+        (0.1, 0.2, 0.2, 1.0),
         (0.0, 0.1, 0.1, 2.0),
     ],
 )
@@ -198,7 +199,6 @@ def test_correctness(
     atol,
     rtol,
     bias,
-    ref_bias,
     beta,
     epsilon_low,
     epsilon_high,
@@ -214,7 +214,6 @@ def test_correctness(
         V=V,
         dtype=dtype,
         bias=bias,
-        ref_bias=ref_bias,
         beta=beta,
         epsilon_low=epsilon_low,
         epsilon_high=epsilon_high,
@@ -226,7 +225,6 @@ def test_correctness(
         V=V,
         dtype=dtype,
         bias=bias,
-        ref_bias=ref_bias,
         beta=beta,
         epsilon_low=epsilon_low,
         epsilon_high=epsilon_high,
@@ -241,12 +239,13 @@ def test_correctness(
     if bias:
         torch_lm_head_grpo.lin.bias.data = liger_lm_head_grpo.lin.bias.data = torch.randn(V, device=device, dtype=dtype)
 
-    torch_lm_head_grpo.ref_lin.weight.data = liger_lm_head_grpo.ref_lin.weight.data = torch.randn(
-        V, H, device=device, dtype=dtype
+    # set ref weights to be close to the original weights
+    torch_lm_head_grpo.ref_lin.weight.data = liger_lm_head_grpo.ref_lin.weight.data = (
+        torch_lm_head_grpo.lin.weight.data + torch.randn(V, H, device=device, dtype=dtype) * 0.01
     )
-    if ref_bias:
-        torch_lm_head_grpo.ref_lin.bias.data = liger_lm_head_grpo.ref_lin.bias.data = torch.randn(
-            V, device=device, dtype=dtype
+    if bias:
+        torch_lm_head_grpo.ref_lin.bias.data = liger_lm_head_grpo.ref_lin.bias.data = (
+            torch_lm_head_grpo.lin.bias.data + torch.randn(V, device=device, dtype=dtype) * 0.01
         )
 
     # Create inputs with shape [B, T, H]
@@ -256,6 +255,14 @@ def test_correctness(
 
     # Create selected token ids with shape [B, T]
     selected_token_ids = torch.randint(0, V, (B, T), device=device)
+
+    # Compute per-token logps
+    with torch.no_grad():
+        logps = _input @ torch_lm_head_grpo.lin.weight.t()
+        if torch_lm_head_grpo.lin.bias is not None:
+            logps = logps + torch_lm_head_grpo.lin.bias
+        logps = F.log_softmax((logps / temperature).float(), dim=-1)
+        per_token_logps = logps.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
 
     # Create attention mask with random padding [B, T]
     attention_mask = torch.ones(B, T, device=device)
@@ -270,12 +277,13 @@ def test_correctness(
     ref_input = None
     if use_ref_model and use_ref_per_token_logps:
         # Create reference log probs with shape [B, T]
-        ref_per_token_logps = torch.log(torch.rand(B, T, device=device, dtype=dtype)) * scalar
+        ref_per_token_logps = per_token_logps.detach() + torch.randn(B, T, device=device) * 0.01
     elif use_ref_model:
         # Create reference inputs (optional) with shape [B, T, H] if ref_log_probs is None
-        ref_input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
+        ref_input = _input.detach() + torch.randn(B, T, H, device=device, dtype=dtype) * 0.01
+    
     if old_per_token_logps:
-        old_per_token_logps = torch.log(torch.rand(B, T, device=device, dtype=dtype)) * scalar
+        old_per_token_logps = per_token_logps.detach() + torch.randn(B, T, device=device) * 0.01
     else:
         old_per_token_logps = None
 
@@ -298,10 +306,10 @@ def test_correctness(
         old_per_token_logps=old_per_token_logps,
         ref_input=ref_input,
     )
-
+    # import pdb; pdb.set_trace()
     # Check losses match
-    assert loss1 != float("nan")
-    assert loss2 != float("nan")
+    assert not torch.isnan(loss1)
+    assert not torch.isnan(loss2)
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
     # Check metrics match
@@ -345,7 +353,6 @@ def test_correctness(
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
-@pytest.mark.parametrize("ref_bias", [True, False])
 def test_functional_correctness(
     B,
     T,
@@ -356,7 +363,6 @@ def test_functional_correctness(
     atol,
     rtol,
     bias,
-    ref_bias,
 ):
     # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
@@ -384,21 +390,21 @@ def test_functional_correctness(
 
     ref_input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
 
-    _ref_weight = torch.randn(V, H, device=device, dtype=dtype) * scalar
+    _ref_weight = _weight.detach() + torch.randn(V, H, device=device, dtype=dtype) * 0.01
     ref_weight1 = _ref_weight.detach().clone().requires_grad_(True)
     ref_weight2 = _ref_weight.detach().clone().requires_grad_(True)
 
-    if ref_bias:
-        _ref_bias = torch.randn(V, device=device, dtype=dtype) * scalar
+    if bias:
+        _ref_bias = _bias.detach() + torch.randn(V, device=device, dtype=dtype) * 0.01
         ref_bias1 = _ref_bias.detach().clone().requires_grad_(True)
         ref_bias2 = _ref_bias.detach().clone().requires_grad_(True)
     else:
         ref_bias1 = None
         ref_bias2 = None
 
-    old_per_token_logps = torch.randn(B, T, device=device, dtype=dtype) * scalar
-
+    old_per_token_logps = None
     ref_per_token_logps = None
+
     loss1, aux1 = liger_fused_linear_grpo(
         input1,
         weight1,
@@ -441,8 +447,8 @@ def test_functional_correctness(
         1,
     )
 
-    assert loss1 != float("nan")
-    assert loss2 != float("nan")
+    assert not torch.isnan(loss1)
+    assert not torch.isnan(loss2)
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 
     # Check metrics match

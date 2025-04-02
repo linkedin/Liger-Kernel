@@ -52,7 +52,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         if beta != 0.0:
-            # Compute KL penalty
+            # Compute KL penalty (approximates KL[per_token_logps, ref_per_token_logps])
             kl_div = k3_loss_fn(ref_per_token_logps, per_token_logps)
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
