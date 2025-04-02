@@ -281,7 +281,7 @@ def test_correctness(
     elif use_ref_model:
         # Create reference inputs (optional) with shape [B, T, H] if ref_log_probs is None
         ref_input = _input.detach() + torch.randn(B, T, H, device=device, dtype=dtype) * 0.01
-    
+
     if old_per_token_logps:
         old_per_token_logps = per_token_logps.detach() + torch.randn(B, T, device=device) * 0.01
     else:
