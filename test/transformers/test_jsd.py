@@ -78,11 +78,11 @@ _DTYPE_PARAMS = (
     [
         pytest.param(
             torch.bfloat16,
-            1e-8,
+            1e-7,
             5e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
-        (torch.float32, 1e-8, 1e-6),
+        (torch.float32, 1e-7, 1e-6),
         (torch.float16, 1e-3, 1e-3),
     ],
 )

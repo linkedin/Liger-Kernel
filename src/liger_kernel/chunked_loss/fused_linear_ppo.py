@@ -37,6 +37,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         use_ref_model=False,
         chunk_size=1,
     ):
+        # TODO: check torch compile matmul
         """Chunked forward pass for PPO loss computation.
 
         Args:
