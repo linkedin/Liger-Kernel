@@ -20,11 +20,6 @@ def get_num_warps(BLOCK_SIZE):
 
     return num_warps
 
-# Tuning for XPU and CUDA devices
-def _get_block_and_warp_sizes():
-    BLOCK_SIZE = 8192 if infer_device() == "xpu" else min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
-    num_warps = 32 if infer_device() == "xpu" else triton.next_power_of_2(V)
-    return BLOCK_SIZE, num_warps   
 
 MAX_FUSED_SIZE = 65536 // 4  # 65536 // 4 or 8 works the best
 
@@ -121,7 +116,8 @@ def _kldiv_kernel_backward(
 
 def kldiv_forward_triton(y_pred, y_true, log_target, reduction, eps):  # [BT, V]
     BT, V = y_pred.shape
-    BLOCK_SIZE, num_warps = _get_block_and_warp_sizes()
+    BLOCK_SIZE = 8192 if infer_device() == "xpu" else min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+    num_warps = 32 if infer_device() == "xpu" else triton.next_power_of_2(V)
 
     grid = (BT,)
     reduction = _str_to_reduction_mode[reduction]
@@ -159,7 +155,8 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction, eps):  # [BT, V]
 
 def kldiv_backward_triton(target, grad_output, new_grads, log_target):
     BT, V = target.shape
-    BLOCK_SIZE, num_warps = _get_block_and_warp_sizes()
+    BLOCK_SIZE = 8192 if infer_device() == "xpu" else min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+    num_warps = 32 if infer_device() == "xpu" else triton.next_power_of_2(V)
 
     grid = (BT,)
 
