@@ -218,7 +218,7 @@ def lce_forward(
             lm_head_weight=self.lm_head.weight,
             labels=labels,
             hidden_size=self.config.hidden_size,
-            softcap=self.config.final_logit_softcapping,
+            final_logit_softcapping=self.config.final_logit_softcapping,
             **loss_kwargs,
         )
 

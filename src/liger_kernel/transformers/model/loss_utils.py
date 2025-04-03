@@ -12,6 +12,7 @@ def fixed_fused_linear_cross_entropy(
     target: torch.Tensor,
     num_items_in_batch: Optional[int] = None,
     ignore_index: int = -100,
+    final_logit_softcapping: Optional[float] = None,
     **kwargs,
 ):
     reduction = "sum" if num_items_in_batch is not None else "mean"
@@ -21,6 +22,7 @@ def fixed_fused_linear_cross_entropy(
         target,
         reduction=reduction,
         ignore_index=ignore_index,
+        softcap=final_logit_softcapping,
     )
     if reduction == "sum":
         loss = loss / num_items_in_batch
@@ -36,6 +38,7 @@ def LigerForCausalLMLoss(
     num_items_in_batch: Optional[int] = None,
     ignore_index: int = -100,
     shift_labels: Optional[torch.Tensor] = None,
+    final_logit_softcapping: Optional[float] = None,
     **kwargs,
 ):
     # Skip upcast since intermediate values for the loss are all fp32 in kernel
@@ -55,6 +58,7 @@ def LigerForCausalLMLoss(
         shift_labels,
         num_items_in_batch,
         ignore_index,
+        final_logit_softcapping,
         **kwargs,
     )
     return loss
