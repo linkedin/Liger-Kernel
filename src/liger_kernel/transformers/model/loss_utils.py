@@ -39,7 +39,6 @@ def LigerForCausalLMLoss(
     **kwargs,
 ):
     # Skip upcast since intermediate values for the loss are all fp32 in kernel
-    labels = labels.to(hidden_states.device)
     if shift_labels is None:
         # Shift so that token < n predict n
         labels = nn.functional.pad(labels, (0, 1), value=ignore_index)
