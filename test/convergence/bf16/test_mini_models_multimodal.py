@@ -7,7 +7,10 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
+from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
+from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
 
+from liger_kernel.transformers import apply_liger_kernel_to_gemma3
 from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_paligemma
@@ -21,6 +24,7 @@ from test.utils import load_image_processing_config
 from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
+from test.utils import revert_liger_kernel_to_gemma3
 from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_Paligemma
@@ -98,6 +102,18 @@ try:
 except ImportError:
     PALIGEMMA_AVAILABLE = False
 
+
+try:
+    # Gemma3 is only available in transformers>=4.50.0
+    from transformers.models.gemma3.configuration_gemma3 import Gemma3Config
+    from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
+    from transformers.models.gemma3.image_processing_gemma3 import Gemma3ImageProcessor
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForConditionalGeneration
+    from transformers.models.gemma3.processing_gemma3 import Gemma3Processor
+
+    GEMMA3_AVAILABLE = True
+except ImportError:
+    GEMMA3_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -270,6 +286,51 @@ if PALIGEMMA_AVAILABLE:
             attn_implementation="eager",
             vocab_size=32000,
             projection_dim=1024,
+        ),
+    )
+
+if GEMMA3_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_gemma3"] = MiniModelConfig(
+        liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_gemma3, fused_linear_cross_entropy=False),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma3,
+        model_class=Gemma3ForConditionalGeneration,
+        mini_model_config=Gemma3Config(
+            vision_config=SiglipVisionConfig(
+                attention_dropout=0.0,
+                hidden_act="gelu_pytorch_tanh",
+                hidden_size=1152,
+                image_size=224,
+                intermediate_size=2048,  # 4304
+                layer_norm_eps=1e-06,
+                num_attention_heads=4,  # 16
+                num_channels=3,
+                num_hidden_layers=4,  # 27
+                num_image_tokens=256,
+                num_positions=256,
+                patch_size=14,
+            ).to_dict(),
+            text_config=Gemma3TextConfig(
+                vocab_size=32000,  # 256000
+                hidden_size=1024,  # 3072
+                intermediate_size=2048,  # 24576
+                num_hidden_layers=4,  # 28
+                num_attention_heads=4,  # 16
+                num_key_value_heads=4,  # 16
+                head_dim=256,
+                hidden_activation="gelu_pytorch_tanh",
+                max_position_embeddings=8192,
+                initializer_range=0.02,
+                rms_norm_eps=1e-06,
+                use_cache=True,
+                tie_word_embeddings=True,
+                rope_theta=10000.0,
+                attention_bias=False,
+                attention_dropout=0.0,
+            ).to_dict(),
+            image_token_index=5,  # NOTE: outside the vocab size
+            boi_token_index=4,
+            eoi_token_index=6,
+            attn_implementation="eager",
         ),
     )
 
@@ -538,6 +599,26 @@ def create_processor(model_name: str):
         image_processor = SiglipImageProcessor(size={"height": 224, "width": 224}, image_seq_length=256)
         return PaliGemmaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
 
+    elif model_name.startswith("mini_gemma3"):
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH,
+                "Google/Gemma3/gemma-3-4b-it/tokenizer_config.json",
+            )
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        image_processor = Gemma3ImageProcessor()
+        return Gemma3Processor(image_processor=image_processor, tokenizer=fast_tokenizer)
+
     else:
         raise ValueError(f"Processor not available for model {model_name}")
 
@@ -785,6 +866,25 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not PALIGEMMA_AVAILABLE,
                     reason="Paligemma2 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_gemma3",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            2e-1,  # Double the absolute tolerance for the logits of Gemma-3.
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not GEMMA3_AVAILABLE,
+                    reason="Gemma3 not available in this version of transformers",
                 ),
             ],
         ),
