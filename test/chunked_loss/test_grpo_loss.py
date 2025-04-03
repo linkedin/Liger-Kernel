@@ -14,9 +14,6 @@ device = infer_device()
 # set random seed globally
 set_seed()
 
-# reset torch compiler cache
-torch.compiler.reset()
-
 
 class TorchLMHeadGRPO(torch.nn.Module):
     def __init__(
@@ -52,7 +49,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
     ):
         logits = x @ self.lin.weight.t()
         if self.lin.bias is not None:
-            logits = logits + self.lin.bias
+            logits = logits + self.lin.bias.float()
         if self.temperature != 1.0:
             logits = logits / self.temperature
         # Get log probabilities
@@ -258,10 +255,11 @@ def test_correctness(
 
     # Compute per-token logps
     with torch.no_grad():
-        logps = _input @ torch_lm_head_grpo.lin.weight.t()
+        logits = _input @ torch_lm_head_grpo.lin.weight.t()
         if torch_lm_head_grpo.lin.bias is not None:
-            logps = logps + torch_lm_head_grpo.lin.bias
-        logps = F.log_softmax((logps / temperature).float(), dim=-1)
+            logits = logits + torch_lm_head_grpo.lin.bias
+        logits = logits / temperature
+        logps = F.log_softmax(logits.float(), dim=-1)
         per_token_logps = logps.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
 
     # Create attention mask with random padding [B, T]
@@ -314,9 +312,8 @@ def test_correctness(
     # Check metrics match
     assert len(aux1) == len(aux2)
     # aggregated metrics are unstable for bfloat16
-    if dtype != torch.bfloat16:
-        for metric1, metric2 in zip(aux1, aux2):
-            assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
+    for metric1, metric2 in zip(aux1, aux2):
+        assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
 
     # Backward pass
     loss1.backward()
@@ -455,9 +452,8 @@ def test_functional_correctness(
     # Check metrics match
     assert len(aux1) == len(aux2)
     # aggregated metrics are unstable for bfloat16
-    if dtype != torch.bfloat16:
-        for metric1, metric2 in zip(aux1, aux2):
-            assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
+    for metric1, metric2 in zip(aux1, aux2):
+        assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
 
     # Backward pass
     loss1.backward()
