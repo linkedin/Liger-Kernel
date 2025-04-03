@@ -5,7 +5,7 @@ import triton
 import triton.language as tl
 
 from liger_kernel.ops.utils import ensure_contiguous
-
+from liger_kernel.utils import infer_device
 
 @triton.jit
 def _jsd_kernel(
@@ -92,7 +92,7 @@ def _jsd_kernel(
         tl.store(dX_ptr + offsets, dX, mask=mask)
 
 
-MAX_FUSED_SIZE = 65536
+MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536
 
 
 def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
