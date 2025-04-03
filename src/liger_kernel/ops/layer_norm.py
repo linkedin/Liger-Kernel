@@ -154,6 +154,14 @@ def layer_norm_forward(X, W, B, eps):
             f"must match weight size (W.shape[0]={W.shape[0]})"
         )
 
+    # XPU-specific optimization
+    kernel_args = {
+        'BLOCK_SIZE': BLOCK_SIZE,
+        'num_warps': num_warps,
+    }
+    if X.device.type == "xpu":
+        kernel_args['grf_mode'] = 'large'
+
     _layer_norm_forward_kernel[(n_rows,)](
         Y,
         Y.stride(0),
@@ -169,8 +177,9 @@ def layer_norm_forward(X, W, B, eps):
         RSTD.stride(0),
         n_cols,
         eps,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
+        BLOCK_SIZE = BLOCK_SIZE,
+        num_warps = num_warps,
+        **kernel_args               # XPU-specific optimization
     )
     return Y.view(*shape), X, Mean, RSTD, BLOCK_SIZE, num_warps
 
@@ -185,7 +194,7 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     if X.device.type == "cuda":
         sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
     elif X.device.type == "xpu":
-        sm_count = torch.xpu.get_device_properties(X.device).gpu_subslice_count
+        sm_count = torch.xpu.get_device_properties(X.device).gpu_eu_count
 
     DX = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
     _DW = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
@@ -208,6 +217,16 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         if X.dtype == torch.float16
         else tl.float32  # fallback to float32 for other types
     )
+
+    # XPU-specific optimization
+    kernel_args = {}
+    if X.device.type == "xpu":
+        kernel_args.update({
+            'grf_mode': 'large',
+            'num_warps': 32,
+            'num_stages': 4
+        })
+
     _layer_norm_backward_kernel[grid](
         X,
         W,
@@ -227,6 +246,7 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         rows_per_program,
         BLOCK_SIZE=BLOCK_SIZE,
         dtype=triton_dtype,
+        **kernel_args               # XPU-specific optimization
     )
 
     DW = _DW.sum(dim=0).to(W.dtype)
