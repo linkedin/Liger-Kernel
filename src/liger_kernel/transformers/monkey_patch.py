@@ -19,6 +19,8 @@ from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_for
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
+from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
+from liger_kernel.transformers.model.llava import lce_forward_deprecated as llava_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
@@ -52,13 +54,26 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
     module.in_place = in_place
     _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
     _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
+    module.__class__.__name__ = LigerRMSNorm.__name__
 
 
 def _patch_layer_norm_module(module, eps=1e-6):
     module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
-    module.hidden_size = module.normalized_shape
+    module.hidden_size = getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
+
     _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
     _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
+    module.__class__.__name__ = LigerLayerNorm.__name__
+
+
+def _patch_swiglu_module(module, liger_module):
+    _bind_method_to_module(module, "forward", liger_module.forward)
+    module.__class__.__name__ = liger_module.__name__
+
+
+def _patch_geglu_module(module):
+    _bind_method_to_module(module, "forward", LigerGEGLUMLP.forward)
+    module.__class__.__name__ = LigerGEGLUMLP.__name__
 
 
 def apply_liger_kernel_to_granite(
@@ -134,7 +149,7 @@ def apply_liger_kernel_to_granite(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -206,10 +221,89 @@ def apply_liger_kernel_to_llama(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
+def apply_liger_kernel_to_llava(
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    model: PreTrainedModel = None,
+    **kwargs,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Llava models.
+    Due to the characteristics of LlaVa, the model must be passed to apply Liger-Kernel's patch to other models connected to LLaVa.
+    However, if an LM not supported by Liger-Kernel is connected to LLaVa, unexpected side effects may occur.
+    NOTE: Llava is not available in transformers<4.36.0
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.llava import modeling_llava
+
+    if cross_entropy:
+        logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+        modeling_llava.nn.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        if transformer_version >= version.parse("4.49.0"):
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
+        else:  # if version < 4.49.0
+            logger.warning(
+                "Support for transformers versions < 4.49.0 will soon be discontinued due to issues with incorrect legacy processing. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/35526"
+            )
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
+
+    if model is not None:
+        text_model_name, vision_model_name = model.config.text_config.model_type, model.config.vision_config.model_type
+        text_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(text_model_name, None)
+        vision_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(vision_model_name, None)
+
+        kwargs = {"cross_entropy": False, "fused_linear_cross_entropy": False, **kwargs}
+        if text_liger_fn:
+            accept_params = inspect.signature(text_liger_fn).parameters
+            remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
+            text_kwargs = {k: v for k, v in kwargs.items() if k not in remain_params}
+
+            if remain_params:
+                logger.warning(
+                    f"These parameters are not supported by {text_model_name}. Enter the remaining {list(text_kwargs.keys())} except for {list(remain_params)}\n"
+                    f"Parameters accepted by {text_model_name}: {list(accept_params.keys())}"
+                )
+            text_kwargs["model"] = model.language_model
+            text_liger_fn(**text_kwargs)
+        elif text_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            logger.warning(f"{text_model_name} is not supported by Liger kernel.")
+
+        if vision_liger_fn:
+            accept_params = inspect.signature(vision_liger_fn).parameters
+            remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
+            vision_kwargs = {k: v for k, v in kwargs.items() if k not in remain_params}
+
+            if remain_params:
+                logger.warning(
+                    f"These parameters are not supported by {vision_model_name}. Enter the remaining {list(vision_kwargs.keys())} except for {list(remain_params)}\n"
+                    f"Parameters accepted by {vision_model_name}: {list(accept_params.keys())}"
+                )
+            vision_kwargs["model"] = model.vision_tower
+            vision_liger_fn(**vision_kwargs)
+        elif vision_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            logger.warning(f"{vision_model_name} is not supported by Liger kernel.")
 
 
 def apply_liger_kernel_to_mllama(
@@ -296,7 +390,7 @@ def apply_liger_kernel_to_mllama(
                 _patch_rms_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
                 if swiglu:
-                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -370,7 +464,7 @@ def apply_liger_kernel_to_mistral(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -442,7 +536,7 @@ def apply_liger_kernel_to_mixtral(
         for decoder_layer in base_model.layers:
             if swiglu:
                 for expert in decoder_layer.block_sparse_moe.experts:
-                    _bind_method_to_module(expert, "forward", LigerBlockSparseTop2MLP.forward)
+                    _patch_swiglu_module(expert, LigerBlockSparseTop2MLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -516,7 +610,7 @@ def apply_liger_kernel_to_gemma(
 
         for decoder_layer in base_model.layers:
             if geglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                _patch_geglu_module(decoder_layer.mlp)
             if rms_norm:
                 _patch_rms_norm_module_for_gemma(decoder_layer.input_layernorm)
                 _patch_rms_norm_module_for_gemma(decoder_layer.post_attention_layernorm)
@@ -592,7 +686,7 @@ def apply_liger_kernel_to_gemma2(
 
         for decoder_layer in base_model.layers:
             if geglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                _patch_geglu_module(decoder_layer.mlp)
             if rms_norm:
                 _patch_rms_norm_module_for_gemma2(decoder_layer.input_layernorm)
                 _patch_rms_norm_module_for_gemma2(decoder_layer.post_attention_layernorm)
@@ -776,7 +870,7 @@ def apply_liger_kernel_to_qwen2(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -849,7 +943,7 @@ def apply_liger_kernel_to_qwen2_vl(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -916,7 +1010,7 @@ def apply_liger_kernel_to_qwen2_5_vl(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -985,7 +1079,7 @@ def apply_liger_kernel_to_phi3(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerPhi3SwiGLUMLP.forward)
+                _patch_swiglu_module(decoder_layer.mlp, LigerPhi3SwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -1048,7 +1142,7 @@ def apply_liger_kernel_to_olmo2(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm, in_place=False)
                 _patch_rms_norm_module(decoder_layer.post_feedforward_layernorm, in_place=False)
@@ -1059,6 +1153,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
     "llama": apply_liger_kernel_to_llama,
+    "llava": apply_liger_kernel_to_llava,
     "granite": apply_liger_kernel_to_granite,
     "mllama": apply_liger_kernel_to_mllama,
     "mllama_text_model": apply_liger_kernel_to_mllama,

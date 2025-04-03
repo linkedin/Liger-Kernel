@@ -1,5 +1,6 @@
 from liger_kernel.transformers.auto_model import AutoLigerKernelForCausalLM  # noqa: F401
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss  # noqa: F401
+from liger_kernel.transformers.dyt import LigerDyT  # noqa: F401
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss  # noqa: F401
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # noqa: F401
 from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
@@ -11,6 +12,7 @@ from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma  
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma2  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_granite  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
+from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llava  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mistral  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mixtral  # noqa: F401
 from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mllama  # noqa: F401
