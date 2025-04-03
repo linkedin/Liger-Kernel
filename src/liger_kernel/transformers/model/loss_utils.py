@@ -7,10 +7,10 @@ import liger_kernel.transformers.functional as F
 
 
 def fixed_fused_linear_cross_entropy(
-    hidden_states,
-    lm_head_weight,
-    target,
-    num_items_in_batch: int = None,
+    hidden_states: torch.Tensor,
+    lm_head_weight: torch.Tensor,
+    target: torch.Tensor,
+    num_items_in_batch: Optional[int] = None,
     ignore_index: int = -100,
     **kwargs,
 ):
@@ -33,7 +33,7 @@ def LigerForCausalLMLoss(
     lm_head_weight,
     labels,
     hidden_size: int,
-    num_items_in_batch: int = None,
+    num_items_in_batch: Optional[int] = None,
     ignore_index: int = -100,
     shift_labels: Optional[torch.Tensor] = None,
     **kwargs,
