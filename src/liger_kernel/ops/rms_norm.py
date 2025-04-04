@@ -226,7 +226,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
     # XPU-specific optimization
     kernel_args = {}
     if X.device.type == "xpu":
-        kernel_args['grf_mode'] = 'large'
+        kernel_args["grf_mode"] = "large"
     _rms_norm_forward_kernel[(n_rows,)](
         Y,
         Y.stride(0),
@@ -242,7 +242,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
         casting_mode,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
-        **kernel_args               # XPU-specific optimization
+        **kernel_args,  # XPU-specific optimization
     )
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
@@ -275,7 +275,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     # XPU-specific optimization
     kernel_args = {}
     if X.device.type == "xpu":
-        kernel_args['grf_mode'] = 'large'
+        kernel_args["grf_mode"] = "large"
 
     _rms_norm_backward_kernel[grid](
         dY,
@@ -298,7 +298,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         casting_mode,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
-        **kernel_args               # XPU-specific optimization
+        **kernel_args,  # XPU-specific optimization
     )
     dX = dX.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype)
