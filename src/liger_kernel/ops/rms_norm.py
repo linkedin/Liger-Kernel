@@ -223,6 +223,10 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
     # Check constraints.
     assert X.shape[1] == W.shape[0], "Incompatible hidden size dimension between tensor1.shape[1] and tensor2.shape[0]"
 
+    # XPU-specific optimization
+    kernel_args = {}
+    if X.device.type == "xpu":
+        kernel_args["grf_mode"] = "large"
     _rms_norm_forward_kernel[(n_rows,)](
         Y,
         Y.stride(0),
@@ -238,6 +242,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
         casting_mode,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
+        **kernel_args,  # XPU-specific optimization
     )
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
@@ -252,7 +257,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     if X.device.type == "cuda":
         sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
     elif X.device.type == "xpu":
-        sm_count = torch.xpu.get_device_properties(X.device).gpu_subslice_count
+        sm_count = torch.xpu.get_device_properties(X.device).gpu_eu_count
 
     # fp32 for numerical stability especially.
     _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
@@ -266,6 +271,11 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         dX = dY
     else:
         dX = torch.zeros_like(dY)
+
+    # XPU-specific optimization
+    kernel_args = {}
+    if X.device.type == "xpu":
+        kernel_args["grf_mode"] = "large"
 
     _rms_norm_backward_kernel[grid](
         dY,
@@ -288,6 +298,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         casting_mode,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
+        **kernel_args,  # XPU-specific optimization
     )
     dX = dX.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype)
