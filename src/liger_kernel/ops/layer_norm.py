@@ -155,12 +155,9 @@ def layer_norm_forward(X, W, B, eps):
         )
 
     # XPU-specific optimization
-    kernel_args = {
-        'BLOCK_SIZE': BLOCK_SIZE,
-        'num_warps': num_warps,
-    }
+    kernel_args = {}
     if X.device.type == "xpu":
-        kernel_args['grf_mode'] = 'large'
+        kernel_args["grf_mode"] = "large"
 
     _layer_norm_forward_kernel[(n_rows,)](
         Y,
@@ -177,9 +174,9 @@ def layer_norm_forward(X, W, B, eps):
         RSTD.stride(0),
         n_cols,
         eps,
-        BLOCK_SIZE = BLOCK_SIZE,
-        num_warps = num_warps,
-        **kernel_args               # XPU-specific optimization
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
+        **kernel_args,  # XPU-specific optimization
     )
     return Y.view(*shape), X, Mean, RSTD, BLOCK_SIZE, num_warps
 
@@ -221,11 +218,7 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     # XPU-specific optimization
     kernel_args = {}
     if X.device.type == "xpu":
-        kernel_args.update({
-            'grf_mode': 'large',
-            'num_warps': 32,
-            'num_stages': 4
-        })
+        kernel_args.update({"grf_mode": "large", "num_warps": 32, "num_stages": 4})
 
     _layer_norm_backward_kernel[grid](
         X,
@@ -246,7 +239,7 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         rows_per_program,
         BLOCK_SIZE=BLOCK_SIZE,
         dtype=triton_dtype,
-        **kernel_args               # XPU-specific optimization
+        **kernel_args,  # XPU-specific optimization
     )
 
     DW = _DW.sum(dim=0).to(W.dtype)
