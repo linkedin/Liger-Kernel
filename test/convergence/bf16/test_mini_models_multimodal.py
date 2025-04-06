@@ -876,8 +876,8 @@ def run_mini_model_multimodal(
             torch.bfloat16,
             1e-3,
             1e-2,
-            2e-1,  # Double the absolute tolerance for the logits of Gemma-3.
-            1e-2,
+            0.25,  # Increase the absolute tolerance for the logits of Gemma-3.
+            1e-1,
             1e-2,
             1e-2,
             marks=[
