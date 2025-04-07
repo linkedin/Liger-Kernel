@@ -7,6 +7,7 @@ import triton.language as tl
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.utils import infer_device
 
+
 @triton.jit
 def _jsd_kernel(
     X_ptr,  # input in logspace, X = log Q
