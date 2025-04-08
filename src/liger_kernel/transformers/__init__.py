@@ -1,8 +1,24 @@
 import importlib
 
+# Always-safe imports (independent of 'transformers')
+from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss  # noqa: F401
+from liger_kernel.transformers.dyt import LigerDyT  # noqa: F401
+from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss  # noqa: F401
+from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # noqa: F401
+from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
+from liger_kernel.transformers.jsd import LigerJSD  # noqa: F401
+from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
+from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401
+from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
+from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP  # noqa: F401
+from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP  # noqa: F401
+from liger_kernel.transformers.swiglu import LigerSwiGLUMLP  # noqa: F401
+from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401
+
 # Check if 'transformers' is installed
 try:
     import transformers  # noqa: F401
+
     _TRANSFORMERS_AVAILABLE = True
 except ImportError:
     _TRANSFORMERS_AVAILABLE = False
@@ -14,24 +30,6 @@ def is_transformers_available() -> bool:
     Useful for conditional logic in downstream code.
     """
     return _TRANSFORMERS_AVAILABLE
-
-
-# Always-safe imports (independent of 'transformers')
-from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss  # noqa: F401
-from liger_kernel.transformers.dyt import LigerDyT  # noqa: F401
-from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss  # noqa: F401
-from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # noqa: F401
-from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
-from liger_kernel.transformers.jsd import LigerJSD  # noqa: F401
-from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
-from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401
-from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
-from liger_kernel.transformers.swiglu import (
-    LigerBlockSparseTop2MLP,  # noqa: F401
-    LigerPhi3SwiGLUMLP,       # noqa: F401
-    LigerSwiGLUMLP            # noqa: F401
-)
-from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401
 
 
 def __getattr__(name: str):
@@ -97,24 +95,26 @@ __all__ = [
 
 # Add transformer-dependent symbols only if available
 if _TRANSFORMERS_AVAILABLE:
-    __all__.extend([
-        "AutoLigerKernelForCausalLM",
-        "_apply_liger_kernel",
-        "_apply_liger_kernel_to_instance",
-        "apply_liger_kernel_to_gemma",
-        "apply_liger_kernel_to_gemma2",
-        "apply_liger_kernel_to_gemma3",
-        "apply_liger_kernel_to_gemma3_text",
-        "apply_liger_kernel_to_granite",
-        "apply_liger_kernel_to_llama",
-        "apply_liger_kernel_to_llava",
-        "apply_liger_kernel_to_mistral",
-        "apply_liger_kernel_to_mixtral",
-        "apply_liger_kernel_to_mllama",
-        "apply_liger_kernel_to_olmo2",
-        "apply_liger_kernel_to_paligemma",
-        "apply_liger_kernel_to_phi3",
-        "apply_liger_kernel_to_qwen2",
-        "apply_liger_kernel_to_qwen2_5_vl",
-        "apply_liger_kernel_to_qwen2_vl",
-    ])
+    __all__.extend(
+        [
+            "AutoLigerKernelForCausalLM",
+            "_apply_liger_kernel",
+            "_apply_liger_kernel_to_instance",
+            "apply_liger_kernel_to_gemma",
+            "apply_liger_kernel_to_gemma2",
+            "apply_liger_kernel_to_gemma3",
+            "apply_liger_kernel_to_gemma3_text",
+            "apply_liger_kernel_to_granite",
+            "apply_liger_kernel_to_llama",
+            "apply_liger_kernel_to_llava",
+            "apply_liger_kernel_to_mistral",
+            "apply_liger_kernel_to_mixtral",
+            "apply_liger_kernel_to_mllama",
+            "apply_liger_kernel_to_olmo2",
+            "apply_liger_kernel_to_paligemma",
+            "apply_liger_kernel_to_phi3",
+            "apply_liger_kernel_to_qwen2",
+            "apply_liger_kernel_to_qwen2_5_vl",
+            "apply_liger_kernel_to_qwen2_vl",
+        ]
+    )
