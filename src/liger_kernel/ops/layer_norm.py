@@ -199,7 +199,6 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
 
     if X.device.type == "xpu":  # XPU-specific optimization
         BLOCK_SIZE = torch.xpu.get_device_properties(X.device).max_work_group_size
-        num_warps = 4
     else:
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
@@ -229,7 +228,7 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     # XPU-specific optimization
     kernel_args = {}
     if X.device.type == "xpu":
-        kernel_args.update({"grf_mode": "large", "num_warps": 32, "num_stages": 4})
+        kernel_args.update({"grf_mode": "large", "num_warps": 4, "num_stages": 4})
 
     _layer_norm_backward_kernel[grid](
         X,
