@@ -197,11 +197,22 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     _DW = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
     _DB = torch.empty((sm_count, n_cols), dtype=W.dtype, device=W.device)
 
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-    if n_cols > BLOCK_SIZE:
-        raise RuntimeError(
-            f"Feature dimension {n_cols} exceeds maximum supported size of {BLOCK_SIZE}. Consider using a smaller feature dimension."
-        )
+    if X.device.type == "xpu":  # XPU-specific optimization
+        BLOCK_SIZE = torch.xpu.get_device_properties(X.device).max_work_group_size
+        num_warps = 4
+    else:
+        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+
+    if X.device.type == "xpu":  # XPU-specific optimization
+        if n_cols > 65536:
+            raise RuntimeError(
+                f"Feature dimension {n_cols} exceeds maximum supported size of {BLOCK_SIZE}. Consider using a smaller feature dimension."
+            )
+    else:
+        if n_cols > BLOCK_SIZE:
+            raise RuntimeError(
+                f"Feature dimension {n_cols} exceeds maximum supported size of {BLOCK_SIZE}. Consider using a smaller feature dimension."
+            )
 
     rows_per_program = math.ceil(n_rows / sm_count)
     grid = (sm_count,)
