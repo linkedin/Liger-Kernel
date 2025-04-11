@@ -661,7 +661,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3():
         )
         vision_config = transformers.models.siglip.configuration_siglip.SiglipVisionConfig(
             layer_norm_eps=1e-5,
-            hidden_size=32,
+            hidden_size=48,
             intermediate_size=64,
         )
         config = transformers.models.gemma3.configuration_gemma3.Gemma3Config(text_config, vision_config)
