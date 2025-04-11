@@ -14,6 +14,7 @@ device = infer_device()
 # set random seed globally
 set_seed()
 
+
 # Module-level fixture to reset the flag after all tests in this file complete
 @pytest.fixture(scope="module", autouse=True)
 def apply_emulate_precision_casts():
