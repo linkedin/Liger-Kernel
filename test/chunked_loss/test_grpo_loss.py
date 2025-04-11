@@ -223,9 +223,10 @@ def test_correctness(
     old_per_token_logps,
     loss_type,
 ):
-    max_completion_length = T if loss_type == "dr_grpo" else None
     # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
+    max_completion_length = T if loss_type == "dr_grpo" else None
+
     torch_lm_head_grpo = TorchLMHeadGRPO(
         H=H,
         V=V,

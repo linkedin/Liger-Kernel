@@ -65,7 +65,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         # (https://github.com/huggingface/trl/blob/e751a16df56e70190fb94bed4a2035eec3303777/trl/trainer/grpo_trainer.py#L966)
         if loss_type == "grpo":
             # Average per-sequence loss
-            loss = ((per_token_loss * attention_mask).sum(-1) / torch.clamp(attention_mask.sum(-1), min=1.0)).sum()
+            loss = (
+                (per_token_loss * attention_mask).sum(-1) / torch.clamp(attention_mask.sum(-1), min=1.0)
+            ).sum() / full_attention_mask.shape[0]
         elif loss_type == "bnpo":
             # Batch Normalized Per-token loss (original implementation)
             loss = (per_token_loss * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
@@ -73,7 +75,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             # Dimension-Reduced GRPO (normalize by batch_size * max_completion_length)
             if max_completion_length is None:
                 raise ValueError("max_completion_length must be provided for loss_type 'dr_grpo'")
-            loss = (per_token_loss * attention_mask).sum()
+            loss = (per_token_loss * attention_mask).sum() / (full_attention_mask.shape[0] * max_completion_length)
         else:
             raise ValueError(f"Unknown loss type: {loss_type}")
 
