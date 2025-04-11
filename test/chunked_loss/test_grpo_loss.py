@@ -375,6 +375,7 @@ def test_correctness(
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo"])
 def test_functional_correctness(
     B,
     T,
@@ -385,9 +386,11 @@ def test_functional_correctness(
     atol,
     rtol,
     bias,
+    loss_type,
 ):
     # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
+    max_completion_length = T if loss_type == "dr_grpo" else None
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
@@ -442,15 +445,14 @@ def test_functional_correctness(
         0.04,
         0.2,
         0.2,
-        "bnpo",
-        None,
+        loss_type,
+        max_completion_length,
         1.0,
         True,
         True,
-        1,
     )
 
-    loss2, aux2 = LigerFusedLinearGRPOFunction.apply(
+    loss2, aux2 = liger_fused_linear_grpo(
         input2,
         weight2,
         selected_token_ids,
@@ -465,12 +467,11 @@ def test_functional_correctness(
         0.04,
         0.2,
         0.2,
-        "bnpo",
-        None,
+        loss_type,
+        max_completion_length,
         1.0,
         True,
         True,
-        1,
     )
 
     assert not torch.isnan(loss1)
