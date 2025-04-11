@@ -15,19 +15,6 @@ device = infer_device()
 set_seed()
 
 
-# Module-level fixture to reset the flag after all tests in this file complete
-@pytest.fixture(scope="module", autouse=True)
-def apply_emulate_precision_casts():
-    # Pytorch eager computes bf16/fp16 by upcasting inputs to fp32 and downcasting after
-    # For multiple, fused pointwise nodes, inductor will elide the intermediary upcasts and downcasts
-    # Typically this should be closer to fp64 ref numerics.
-    # Setting this flag to True will force inductor to use eager numerics (required for tests)
-    # Set emulate_precision_casts to True for this test file
-    torch._inductor.config.emulate_precision_casts = True
-    yield
-    torch._inductor.config.emulate_precision_casts = False
-
-
 class TorchLMHeadGRPO(torch.nn.Module):
     def __init__(
         self,
@@ -68,7 +55,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
     ):
         logits = x @ self.lin.weight.t()
         if self.lin.bias is not None:
-            logits = logits + self.lin.bias
+            logits = logits + self.lin.bias.float()
         if self.temperature != 1.0:
             logits = logits / self.temperature
         # Get log probabilities
@@ -83,7 +70,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
                 with torch.no_grad():
                     ref_logits = ref_input @ self.ref_lin.weight.t()
                     if self.ref_lin.bias is not None:
-                        ref_logits = ref_logits + self.ref_lin.bias
+                        ref_logits = ref_logits + self.ref_lin.bias.float()
                     if self.temperature != 1.0:
                         ref_logits = ref_logits / self.temperature
                     ref_log_probs = F.log_softmax(ref_logits.float(), dim=-1)
