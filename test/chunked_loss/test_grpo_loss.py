@@ -200,8 +200,8 @@ class LigerLMHeadGRPO(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize(
-    "use_ref_model, use_ref_per_token_logps",
-    "old_per_token_logps"[
+    "use_ref_model, use_ref_per_token_logps, old_per_token_logps",
+    [
         (True, True, True),
         (True, False, False),
         (False, False, True),
