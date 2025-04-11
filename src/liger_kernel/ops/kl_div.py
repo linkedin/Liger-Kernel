@@ -116,7 +116,11 @@ def _kldiv_kernel_backward(
 
 def kldiv_forward_triton(y_pred, y_true, log_target, reduction, eps):  # [BT, V]
     BT, V = y_pred.shape
-    BLOCK_SIZE = min(8192, triton.next_power_of_2(V)) if infer_device() == "xpu" else min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+    BLOCK_SIZE = (
+        min(8192, triton.next_power_of_2(V))
+        if infer_device() == "xpu"
+        else min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+    )
     num_warps = 32 if infer_device() == "xpu" else get_num_warps(BLOCK_SIZE)
 
     grid = (BT,)
@@ -155,7 +159,11 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction, eps):  # [BT, V]
 
 def kldiv_backward_triton(target, grad_output, new_grads, log_target):
     BT, V = target.shape
-    BLOCK_SIZE = min(8192, triton.next_power_of_2(V)) if infer_device() == "xpu" else min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+    BLOCK_SIZE = (
+        min(8192, triton.next_power_of_2(V))
+        if infer_device() == "xpu"
+        else min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+    )
     num_warps = 32 if infer_device() == "xpu" else get_num_warps(BLOCK_SIZE)
 
     grid = (BT,)
