@@ -32,6 +32,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         epsilon_low=0.2,
         epsilon_high=0.2,
         beta=0.04,
+        loss_type="bnpo",
+        max_completion_length=None,
         temperature=1.0,
         compiled=True,
         use_ref_model=False,
@@ -57,6 +59,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             epsilon_low: Lower bound for clipping the importance sampling ratio
             epsilon_high: Upper bound for clipping the importance sampling ratio
             beta: Weight for the KL penalty
+            loss_type: Type of loss calculation ("grpo", "bnpo", "dr_grpo")
+            max_completion_length: Maximum completion length required for "dr_grpo"
             temperature: Temperature for the logits
             compiled: Whether to use torch compile
             use_ref_model: Whether to use a reference model
@@ -84,6 +88,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             epsilon_low=epsilon_low,
             epsilon_high=epsilon_high,
             beta=beta,
+            loss_type=loss_type,
+            max_completion_length=max_completion_length,
             temperature=temperature,
             use_ref_model=use_ref_model,
             ppo_loss_fn=cls.ppo_loss_fn,
@@ -251,6 +257,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         epsilon_low=0.2,
         epsilon_high=0.2,
         beta=0.04,
+        loss_type="bnpo",
+        max_completion_length=None,
         temperature=1.0,
         use_ref_model=False,
         ppo_loss_fn=None,
@@ -280,6 +288,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             epsilon_low=epsilon_low,
             epsilon_high=epsilon_high,
             beta=beta,
+            loss_type=loss_type,
+            max_completion_length=max_completion_length,
         )
 
         return chunk_loss, chunk_metrics
@@ -328,4 +338,6 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             None,  # grad_compiled
             None,  # grad_use_ref_model
             None,  # grad_chunk_size
+            None,  # grad_loss_type
+            None,  # grad_max_completion_length
         )

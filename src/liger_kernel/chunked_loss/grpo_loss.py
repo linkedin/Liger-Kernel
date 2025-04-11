@@ -27,6 +27,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         epsilon_low=0.2,
         epsilon_high=0.2,
         beta=0.04,
+        loss_type="bnpo",  # ["grpo", "bnpo", "dr_grpo"]
+        max_completion_length=None,  # Required for dr_grpo
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -61,7 +63,19 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         # which is consistent with the DAPO loss implementation (https://arxiv.org/html/2503.14476v1)
         # and TRL GRPO implementation
         # (https://github.com/huggingface/trl/blob/e751a16df56e70190fb94bed4a2035eec3303777/trl/trainer/grpo_trainer.py#L966)
-        loss = (per_token_loss * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
+        if loss_type == "grpo":
+            # Average per-sequence loss
+            loss = ((per_token_loss * attention_mask).sum(-1) / torch.clamp(attention_mask.sum(-1), min=1.0)).mean()
+        elif loss_type == "bnpo":
+            # Batch Normalized Per-token loss (original implementation)
+            loss = (per_token_loss * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
+        elif loss_type == "dr_grpo":
+            # Dimension-Reduced GRPO (normalize by batch_size * max_completion_length)
+            if max_completion_length is None:
+                raise ValueError("max_completion_length must be provided for loss_type 'dr_grpo'")
+            loss = (per_token_loss * attention_mask).sum() / (per_token_loss.size(0) * max_completion_length)
+        else:
+            raise ValueError(f"Unknown loss type: {loss_type}")
 
         # Calculate metrics
         metrics = []
@@ -91,6 +105,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         beta=0.04,
         epsilon_low=0.2,
         epsilon_high=0.2,
+        loss_type="bnpo",
+        max_completion_length=None,
         temperature=1.0,
         compiled=True,
         use_ref_model=True,
@@ -110,6 +126,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             ref_weight (torch.Tensor, optional): Reference model weight tensor. Shape: (vocab_size, hidden_size)
             ref_bias (torch.Tensor, optional): Reference model bias tensor. Shape: (vocab_size,)
             beta (float): Weight for the KL penalty
+            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo"). Defaults to "bnpo".
+            max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
             temperature (float): Temperature for the logits
             compiled (bool): Whether to use torch compile
             use_ref_model (bool): Whether to use a reference model
@@ -134,6 +152,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             beta=beta,
             epsilon_low=epsilon_low,
             epsilon_high=epsilon_high,
+            loss_type=loss_type,
+            max_completion_length=max_completion_length,
             temperature=temperature,
             compiled=compiled,
             use_ref_model=use_ref_model,
@@ -161,6 +181,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_beta
             None,  # grad_epsilon_low
             None,  # grad_epsilon_high
+            None,  # grad_loss_type (string, not differentiable)
+            None,  # grad_max_completion_length (int, not differentiable)
             None,  # grad_temperature
             None,  # grad_compiled
             None,  # grad_use_ref_model
@@ -179,6 +201,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         chunk_size: int = 1,
         epsilon_low: float = 0.2,
         epsilon_high: float = 0.2,
+        loss_type: str = "bnpo",
+        max_completion_length: int | None = None,
         temperature: float = 1.0,
     ):
         """
@@ -189,6 +213,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             chunk_size (int): Size of chunks for processing.
             epsilon_low (float): Lower bound for the importance sampling ratio.
             epsilon_high (float): Upper bound for the importance sampling ratio.
+            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo"). Defaults to "bnpo".
+            max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
             temperature (float): Temperature for the logits.
         """
         super().__init__()
@@ -198,6 +224,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         self.chunk_size = chunk_size
         self.epsilon_low = epsilon_low
         self.epsilon_high = epsilon_high
+        self.loss_type = loss_type
+        self.max_completion_length = max_completion_length
         self.temperature = temperature
 
     def forward(
@@ -229,6 +257,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.beta,
             self.epsilon_low,
             self.epsilon_high,
+            self.loss_type,
+            self.max_completion_length,
             self.temperature,
             self.compiled,
             self.use_ref_model,
