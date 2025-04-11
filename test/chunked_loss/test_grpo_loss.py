@@ -451,6 +451,7 @@ def test_functional_correctness(
         1.0,
         True,
         True,
+        1,
     )
 
     loss2, aux2 = LigerFusedLinearGRPOFunction.apply(
