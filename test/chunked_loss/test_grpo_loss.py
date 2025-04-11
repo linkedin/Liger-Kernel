@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
 from liger_kernel.chunked_loss.functional import liger_fused_linear_grpo
+from liger_kernel.chunked_loss.grpo_loss import LigerFusedLinearGRPOFunction
 from liger_kernel.utils import infer_device
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
@@ -451,7 +452,7 @@ def test_functional_correctness(
         True,
     )
 
-    loss2, aux2 = liger_fused_linear_grpo(
+    loss2, aux2 = LigerFusedLinearGRPOFunction.apply(
         input2,
         weight2,
         selected_token_ids,
@@ -471,6 +472,7 @@ def test_functional_correctness(
         1.0,
         True,
         True,
+        1,
     )
 
     assert not torch.isnan(loss1)
