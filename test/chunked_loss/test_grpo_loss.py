@@ -343,7 +343,7 @@ def test_correctness(
     loss1.backward()
     loss2.backward()
 
-    # Check gradients match for bnpo
+    # Check gradients match for loss_type
     assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
     assert_verbose_allclose(
         torch_lm_head_grpo.lin.weight.grad,

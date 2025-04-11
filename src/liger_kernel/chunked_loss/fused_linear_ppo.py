@@ -228,7 +228,12 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         grad_input = torch.cat(grad_inputs, dim=0)
 
         # Save for backward
+        batch_size = selected_token_ids.shape[0]
         ctx.save_for_backward(grad_input, grad_weight, grad_bias)
+        ctx.loss_type = loss_type
+        ctx.batch_size = batch_size
+        if loss_type == "dr_grpo":
+            ctx.max_completion_length = max_completion_length
 
         # Finalize metrics
         final_metrics = []
@@ -237,6 +242,15 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 final_metrics.append(torch.cat(metric, dim=0))
             else:
                 final_metrics.append(metric)
+
+        # For grpo or dr_grpo loss, normalize the accumulated sum
+        if loss_type == "grpo":
+            loss_acc = loss_acc / batch_size
+        elif loss_type == "dr_grpo":
+            if max_completion_length is None:
+                # This check is also in ppo_loss_fn, but added here for safety
+                raise ValueError("max_completion_length must be provided for loss_type 'dr_grpo'")
+            loss_acc = loss_acc / (batch_size * max_completion_length)
 
         return loss_acc, tuple(final_metrics)
 
@@ -313,11 +327,30 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
     def backward(ctx, grad_output, *grad_metrics):
         """Backward pass for PPO loss."""
         grad_input, grad_weight, grad_bias = ctx.saved_tensors
+        loss_type = ctx.loss_type
+        batch_size = ctx.batch_size
+        max_completion_length = getattr(ctx, "max_completion_length", None)
+
         if grad_output != 1.0:
             grad_input = grad_input * grad_output
             grad_weight = grad_weight * grad_output
             if grad_bias is not None:
                 grad_bias = grad_bias * grad_output
+
+        # Scale gradients based on loss type
+        if loss_type == "grpo":
+            grad_input = grad_input / batch_size
+            grad_weight = grad_weight / batch_size
+            if grad_bias is not None:
+                grad_bias = grad_bias / batch_size
+        elif loss_type == "dr_grpo":
+            if max_completion_length is None:
+                raise ValueError("max_completion_length should have been saved in ctx for loss_type 'dr_grpo'")
+            norm_factor = batch_size * max_completion_length
+            grad_input = grad_input / norm_factor
+            grad_weight = grad_weight / norm_factor
+            if grad_bias is not None:
+                grad_bias = grad_bias / norm_factor
 
         return (
             grad_input,
