@@ -13,11 +13,18 @@ device = infer_device()
 
 # set random seed globally
 set_seed()
-# Pytorch eager computes bf16/fp16 by upcasting inputs to fp32 and downcasting after
-# For multiple, fused pointwise nodes, inductor will elide the intermediary upcasts and downcasts
-# Typically this should be closer to fp64 ref numerics.
-# Setting this flag to True will force inductor to use eager numerics (required for tests)
-torch._inductor.config.emulate_precision_casts = True
+
+# Module-level fixture to reset the flag after all tests in this file complete
+@pytest.fixture(scope="module", autouse=True)
+def apply_emulate_precision_casts():
+    # Pytorch eager computes bf16/fp16 by upcasting inputs to fp32 and downcasting after
+    # For multiple, fused pointwise nodes, inductor will elide the intermediary upcasts and downcasts
+    # Typically this should be closer to fp64 ref numerics.
+    # Setting this flag to True will force inductor to use eager numerics (required for tests)
+    # Set emulate_precision_casts to True for this test file
+    torch._inductor.config.emulate_precision_casts = True
+    yield
+    torch._inductor.config.emulate_precision_casts = False
 
 
 class TorchLMHeadGRPO(torch.nn.Module):
