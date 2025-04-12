@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 
 from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
@@ -204,7 +206,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         epsilon_low: float = 0.2,
         epsilon_high: float = 0.2,
         loss_type: str = "bnpo",
-        max_completion_length: int | None = None,
+        max_completion_length: Optional[int] = None,
         temperature: float = 1.0,
     ):
         """
