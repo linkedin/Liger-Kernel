@@ -250,7 +250,7 @@ def test_correctness(B, T, H, V, scalar, dtype, atol, rtol, bias, ref_bias, igno
     assert len(aggregated_aux_outputs1) == len(aggregated_aux_outputs2)
 
     # Metrics tests are flaky for bf16 due to precision issues
-    if dtype==torch.float32:
+    if dtype == torch.float32:
         # chosen_logps
         chosen_logps_mean1 = aggregated_aux_outputs1[0] / ((num_chosen_samples) + 1e-20)
         chosen_logps_mean2 = aggregated_aux_outputs2[0] / ((num_chosen_samples) + 1e-20)
@@ -394,7 +394,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     assert len(aggregated_aux_outputs1) == len(aggregated_aux_outputs2)
 
     # Metrics tests are flaky for bf16 due to precision issues
-    if dtype==torch.float32:
+    if dtype == torch.float32:
         # chosen_logps
         chosen_logps_mean1 = aggregated_aux_outputs1[0] / ((num_chosen_samples) + 1e-20)
         chosen_logps_mean2 = aggregated_aux_outputs2[0] / ((num_chosen_samples) + 1e-20)
