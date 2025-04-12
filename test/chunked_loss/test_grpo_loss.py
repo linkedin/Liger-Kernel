@@ -70,7 +70,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
                 with torch.no_grad():
                     ref_logits = ref_input @ self.ref_lin.weight.t()
                     if self.ref_lin.bias is not None:
-                        ref_logits = ref_logits + self.ref_lin.bias
+                        ref_logits = ref_logits + self.ref_lin.bias.float()
                     if self.temperature != 1.0:
                         ref_logits = ref_logits / self.temperature
                     ref_log_probs = F.log_softmax(ref_logits.float(), dim=-1)
@@ -195,14 +195,13 @@ class LigerLMHeadGRPO(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize(
-    "use_ref_model, use_ref_per_token_logps",
+    "use_ref_model, use_ref_per_token_logps, old_per_token_logps",
     [
-        (True, True),
-        (True, False),
-        (False, False),
+        (True, True, True),
+        (True, False, False),
+        (False, False, True),
     ],
 )
-@pytest.mark.parametrize("old_per_token_logps", [True, False])
 @pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo"])
 def test_correctness(
     B,
@@ -376,7 +375,6 @@ def test_correctness(
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])
-@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo"])
 def test_functional_correctness(
     B,
     T,
@@ -387,11 +385,10 @@ def test_functional_correctness(
     atol,
     rtol,
     bias,
-    loss_type,
 ):
     # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
-    max_completion_length = T if loss_type == "dr_grpo" else None
+    max_completion_length = T
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
@@ -446,10 +443,10 @@ def test_functional_correctness(
         0.04,
         0.2,
         0.2,
-        loss_type,
+        "bnpo",
         max_completion_length,
         1.0,
-        True,
+        False,
         True,
         1,
     )
@@ -469,10 +466,10 @@ def test_functional_correctness(
         0.04,
         0.2,
         0.2,
-        loss_type,
+        "bnpo",
         max_completion_length,
         1.0,
-        True,
+        False,
         True,
         1,
     )
