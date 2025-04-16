@@ -45,7 +45,7 @@ jobs:
       run: make checkstyle
 
   tests:
-    runs-on: linux-max1550-gpu-8
+    runs-on: linux-max1550-pvc-8
     needs: [checkstyle]
     container:
       image: intel/oneapi-basekit:2025.0.1-0-devel-ubuntu22.04
