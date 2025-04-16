@@ -48,7 +48,7 @@ jobs:
     runs-on: pvc-hf-1550-02
     needs: [checkstyle]
     container:
-      image: intel/oneapi-basekit:2025.1.0-0-devel-ubuntu22.04
+      image: intel/oneapi-basekit:2025.0.1-0-devel-ubuntu22.04
       options: --privileged -v /dev/dri/by-path:/dev/dri/by-path --device=/dev/dri --ipc=host
     steps:
     - name: Set up python
