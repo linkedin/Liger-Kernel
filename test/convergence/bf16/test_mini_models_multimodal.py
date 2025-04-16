@@ -886,6 +886,7 @@ def run_mini_model_multimodal(
                     not GEMMA3_AVAILABLE,
                     reason="Gemma3 not available in this version of transformers",
                 ),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
     ],
@@ -901,7 +902,7 @@ def test_mini_model_multimodal(
     logits_rtol,
     param_atol,
     param_rtol,
-):
+)
     # Non-liger models should be initialized and tested first to avoid the module being overridden
     expected_output = run_mini_model_multimodal(model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr)
 
