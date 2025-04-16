@@ -7,6 +7,7 @@ from typing import Union
 import torch
 import torch.nn.functional as F
 
+from torch.distributed.fsdp import FullyShardedDataParallel
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.llama.modeling_llama import _CONFIG_FOR_DOC
@@ -15,11 +16,16 @@ from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import replace_return_docstrings
 from transformers.utils.deprecation import deprecate_kwarg
 
+from liger_kernel.transformers.fsdp import _FSDPForwardRedirection
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
+from liger_kernel.utils import PEFT_AVAILABLE
 
 if TYPE_CHECKING:
     from transformers.cache_utils import Cache
+
+if PEFT_AVAILABLE:
+    from peft.utils.other import ModulesToSaveWrapper
 
 
 @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
@@ -221,12 +227,12 @@ def lce_forward(
     loss = None
     # if in training mode, don't materialize logits
     if self.training and (labels is not None or shift_labels is not None):
-        loss = LigerForCausalLMLoss(
+        loss = lce_maybe_trainable_lm_head(
+            self,
             hidden_states=kept_hidden_states,
-            lm_head_weight=self.lm_head.weight,
+            hidden_size=self.config.hidden_size,
             labels=labels,
             shift_labels=shift_labels,
-            hidden_size=self.config.hidden_size,
             **loss_kwargs,
         )
 
@@ -250,4 +256,51 @@ def lce_forward(
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
+    )
+
+
+def lce_maybe_trainable_lm_head(self, hidden_states, hidden_size, labels, shift_labels, **loss_kwargs):
+    lm_head = self.lm_head
+
+    # Unwrap the module if lm_head has been added as trainable module in PEFT LoRA configuration,
+    # i.e. listed in the modules_to_save field of LoraConfig, so the lm_head weights are read
+    # from the unwrapped module.
+    # See https://huggingface.co/docs/peft/package_reference/lora for reference.
+    if PEFT_AVAILABLE and isinstance(lm_head, ModulesToSaveWrapper):
+        lm_head = lm_head.modules_to_save.default
+
+    # If FSDP is used and lm_head is trainable, e.g., during full fine-tuning or with LoRA,
+    # reading the lm_head module weights and calling the kernel must be done within FSDP forward pass
+    # so the module entire parameters are summoned and kept in memory during the kernel execution.
+    if isinstance(lm_head, FullyShardedDataParallel):
+        return _FSDPForwardRedirection()(
+            lm_head,
+            _liger_for_causal_lm_loss,
+            lm_head.module,
+            hidden_states,
+            hidden_size,
+            labels,
+            shift_labels,
+            **loss_kwargs,
+        )
+
+    # FSDP is not used so we can read the lm_head weights and call the kernel directly
+    return _liger_for_causal_lm_loss(
+        lm_head=self.lm_head,
+        hidden_states=hidden_states,
+        hidden_size=hidden_size,
+        labels=labels,
+        shift_labels=shift_labels,
+        **loss_kwargs,
+    )
+
+
+def _liger_for_causal_lm_loss(lm_head, hidden_states, hidden_size, labels, shift_labels, **loss_kwargs):
+    return LigerForCausalLMLoss(
+        hidden_states=hidden_states,
+        lm_head_weight=lm_head.weight,
+        labels=labels,
+        hidden_size=hidden_size,
+        shift_labels=shift_labels,
+        **loss_kwargs,
     )
