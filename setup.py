@@ -24,7 +24,6 @@ def get_default_dependencies():
     elif platform == "xpu":
         return [
             "torch>=2.6.0",
-            "pytorch-triton-xpu>=3.2.0",
         ]
 
 
