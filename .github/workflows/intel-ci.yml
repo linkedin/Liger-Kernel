@@ -47,6 +47,7 @@ jobs:
   tests:
     runs-on: linux-max1550-pvc-8
     needs: [checkstyle]
+    if: success()
     container:
       image: intel/oneapi-basekit:2025.0.1-0-devel-ubuntu24.04
       options: --privileged -v /dev/dri/by-path:/dev/dri/by-path --device=/dev/dri --ipc=host
@@ -54,7 +55,10 @@ jobs:
     - name: Set up python
       shell: bash
       run: |
-        apt-get update && apt-get install -y python3.12-venv python3-pip && ln -sf /usr/bin/python3 /usr/bin/python && apt-get clean && rm -rf /var/lib/apt/lists/*
+        apt-get update && \
+        apt-get install -y python3.12-venv python3-pip && \
+        ln -sf /usr/bin/python3 /usr/bin/python && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*
 
     - name: Checkout code
       uses: actions/checkout@v3
@@ -62,13 +66,20 @@ jobs:
     - name: Setup Dependencies
       shell: bash
       run: |
-        python -m venv test-env && source test-env/bin/activate
+        python -m venv test-env
+        . test-env/bin/activate
         pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/test/xpu
-    
+        echo ". $(pwd)/test-env/bin/activate" >> $GITHUB_ENV
+
     - name: List Python Environments
-      run: python -m pip list
+      shell: bash
+      run: |
+        source $GITHUB_ENV
+        python -m pip list
     
     - name: Run Unit Tests
+      shell: bash
       run: |
+        source $GITHUB_ENV
         make test
         make test-convergence
