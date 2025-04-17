@@ -60,6 +60,7 @@ jobs:
       uses: actions/checkout@v3
       
     - name: Setup Dependencies
+      shell: bash
       run: |
         python -m venv test-env && source test-env/bin/activate
         pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/test/xpu
