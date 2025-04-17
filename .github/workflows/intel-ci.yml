@@ -67,9 +67,9 @@ jobs:
       shell: bash
       run: |
         python -m venv test-env
-        . test-env/bin/activate
+        source test-env/bin/activate
         pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/test/xpu
-        echo ". $(pwd)/test-env/bin/activate" >> $GITHUB_ENV
+        echo "source $(pwd)/test-env/bin/activate" >> $GITHUB_ENV
 
     - name: List Python Environments
       shell: bash
