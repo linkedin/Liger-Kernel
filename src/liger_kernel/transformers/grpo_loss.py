@@ -34,8 +34,6 @@ import trl
 assert trl.__version__.startswith("0.16"), "please pip install trl==0.16"
 from trl.extras.profiling import profiling_decorator
 
-from .core import fused_selective_log_softmax, triton_grpo_loss
-
 @profiling_decorator
 def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
     # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
@@ -88,4 +86,8 @@ trl.GRPOTrainer.compute_loss = compute_loss
 trigger = None
 '''
 
+# add this line at grpo.py in open-r1
+"""
+from liger_kernel.transformers.grpo_loss import trigger
+"""
 

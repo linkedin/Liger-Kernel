@@ -48,7 +48,7 @@ def torch_grpo_loss(logits, old_logp, ref_logp, completion_ids, advantages, comp
     assert logits.is_contiguous() and completion_ids.is_contiguous()
     assert old_logp is None or old_logp.is_contiguous()
     assert (ref_logp is not None and ref_logp.is_contiguous()) if beta != 0.0 else True
-    logits = logits[:, :-1] # 错一位，对应下一个输入token的概率  
+    logits = logits[:, :-1]
 
     def get_log_probs(logits, input_ids):
         per_token_logps = []
@@ -58,7 +58,7 @@ def torch_grpo_loss(logits, old_logp, ref_logp, completion_ids, advantages, comp
             per_token_logps.append(token_log_prob)
         return torch.stack(per_token_logps)   
         
-    per_token_logps = get_log_probs(logits / temperature, completion_ids) # logits是需要计算梯度，因此会保存中间结果log_probs
+    per_token_logps = get_log_probs(logits / temperature, completion_ids)
     # return per_token_logps, None, None
     ref_per_token_logps = ref_logp
 
@@ -118,9 +118,6 @@ def test_selective_log_softmax(B, T, V, temperature, dtype, atol, rtol):
     print("\n" + "=" * 20 + " selective_log_softmax " + "=" * 20)
     compare(torch_bf16_logp, torch_fp32_logp, "torch-bf16 vs torch-fp32, ")
     compare(triton_bf16_logp, torch_fp32_logp, "triton-bf16 vs torch-fp32, ")
-
-
-
 
 
 @pytest.mark.parametrize(
