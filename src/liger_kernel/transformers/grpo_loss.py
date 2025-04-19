@@ -86,7 +86,7 @@ trl.GRPOTrainer.compute_loss = compute_loss
 trigger = None
 '''
 
-# add this line at grpo.py in open-r1
+# add this line at the first line of grpo.py in open-r1
 """
 from liger_kernel.transformers.grpo_loss import trigger
 """
