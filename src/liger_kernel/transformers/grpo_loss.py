@@ -27,7 +27,7 @@ def triton_grpo_loss(logits,
                                     inplace
                                     )
 
-# This is a demo how to use grpo_loss in GRPOTrainer. The Trl version is must 0.16
+# This is a demo how to use grpo_loss in GRPOTrainer. The Trl version must be 0.16
 '''
 import torch
 import trl
