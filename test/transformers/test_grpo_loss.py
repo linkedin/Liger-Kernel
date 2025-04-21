@@ -8,7 +8,8 @@ from test.utils import infer_device
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
-from liger_kernel.transformers.grpo_loss import fused_selective_log_softmax, triton_grpo_loss
+from liger_kernel.transformers.grpo_loss import triton_grpo_loss
+from liger_kernel.ops.grpo_loss import fused_selective_log_softmax
 
 def compare(x, y, extra_str=""):
     if x is None or y is None:

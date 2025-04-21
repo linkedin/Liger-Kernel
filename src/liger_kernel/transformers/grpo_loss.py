@@ -1,4 +1,4 @@
-from liger_kernel.ops.grpo_loss import GrpoLossFunction, fused_selective_log_softmax
+from liger_kernel.ops.grpo_loss import GrpoLossFunction
 
 def triton_grpo_loss(logits, 
                      old_logp, 
