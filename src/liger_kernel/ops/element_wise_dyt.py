@@ -31,7 +31,7 @@ else:
 def _dyt_fwd_kernel(X,
                     Y,
                     Alpha,
-                    gamma,
+                    Gamma,
                     Beta,
                     HAVE_BETA:tl.constexpr,
                     N:tl.constexpr,
@@ -45,7 +45,7 @@ def _dyt_fwd_kernel(X,
     Y += row_id * N
     alpha = tl.load(Alpha).to(tl.float32)
     
-    gamma = tl.load(gamma + col, mask=mask, other=0.).to(tl.float32)  
+    gamma = tl.load(Gamma + col, mask=mask, other=0.).to(tl.float32)  
      
     x = tl.load(X + col, mask=mask, other=0.).to(tl.float32) 
 
@@ -72,7 +72,7 @@ def _dyt_bwd_kernel(DY,
                     DB,
                     X,
                     Alpha,
-                    gamma,
+                    Gamma,
                     HAVE_BETA: tl.constexpr,
                     M,
                     N:tl.constexpr,
@@ -84,7 +84,7 @@ def _dyt_bwd_kernel(DY,
 
     alpha = tl.load(Alpha).to(tl.float32)
     da = 0.
-    gamma = tl.load(gamma + col, mask=mask, other=0.).to(tl.float32)  
+    gamma = tl.load(Gamma + col, mask=mask, other=0.).to(tl.float32)  
     dg = tl.zeros((BLOCK_N,), dtype=tl.float32)
     if HAVE_BETA:
         db = tl.zeros((BLOCK_N,), dtype=tl.float32)
