@@ -862,10 +862,13 @@ def run_mini_model_multimodal(
             1e-5,
             5e-3,
             1e-5,
-            marks=pytest.mark.skipif(
-                not GEMMA3_AVAILABLE,
-                reason="Gemma3 not available in this version of transformers",
-            ),
+            marks=[
+                pytest.mark.skipif(
+                    not GEMMA3_AVAILABLE,
+                    reason="Gemma3 not available in this version of transformers",
+                ),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
+            ],
         ),
     ],
 )
