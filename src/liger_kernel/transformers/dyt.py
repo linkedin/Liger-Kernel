@@ -17,6 +17,6 @@ class LigerDyT(nn.Module):
 
     def forward(self, x):
         return LigerDyTFunction.apply(x, self.alpha, self.gamma, self.beta)
-    
+
     def extra_repr(self):
         return f"{self.hidden_size}, init_alpha={self.init_alpha}, beta={self.beta}"

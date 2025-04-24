@@ -18,53 +18,9 @@ device = infer_device()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
-from test.transformers.test_dyt import LigerDyT
-
-def torch_dyt_with_beta(x, alpha, gamma, beta):
-    return gamma * torch.tanh(x * alpha) + beta
-
-   
-def torch_dyt_without_beta(x, alpha, gamma):
-    return gamma * torch.tanh(x * alpha)
-
-@torch.compile    
-def torch_dyt_with_beta_compiled(x, alpha, gamma, beta):
-    return gamma * torch.tanh(x * alpha) + beta
-
-@torch.compile    
-def torch_dyt_without_beta_compiled(x, alpha, gamma):
-    return gamma * torch.tanh(x * alpha)
-
-class TorchDyT(torch.nn.Module):
-    def __init__(self, hidden_size, beta=True, init_alpha=0.5):
-        super().__init__()
-        self.alpha = torch.nn.Parameter(torch.ones(1) * init_alpha)
-        self.gamma = torch.nn.Parameter(torch.ones(hidden_size))
-        self.beta = None
-        if beta:
-            self.beta = torch.nn.Parameter(torch.zeros(hidden_size))
-
-    def forward(self, x):
-        if self.beta is None:
-            return torch_dyt_without_beta(x, self.alpha, self.gamma)
-        return torch_dyt_with_beta(x, self.alpha, self.gamma, self.beta)
-    
-class TorchDyTCompiled(torch.nn.Module):
-    def __init__(self, hidden_size, beta=True, init_alpha=0.5):
-        super().__init__()
-        self.alpha = torch.nn.Parameter(torch.ones(1) * init_alpha)
-        self.gamma = torch.nn.Parameter(torch.ones(hidden_size))
-        self.beta = None
-        if beta:
-            self.beta = torch.nn.Parameter(torch.zeros(hidden_size))
-
-    def forward(self, x):
-        if self.beta is None:
-            return torch_dyt_without_beta_compiled(x, self.alpha, self.gamma)
-        return torch_dyt_with_beta_compiled(x, self.alpha, self.gamma, self.beta)
-    
-
 def bench_speed_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    from test.transformers.test_dyt import LigerDyT
+    from test.transformers.test_dyt import TorchDyT
 
     hidden_size = input.x
     provider = input.kernel_provider
@@ -76,7 +32,7 @@ def bench_speed_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
 
     x_shape = (BT, hidden_size)
     torch_dyt = TorchDyT(hidden_size=hidden_size, beta=beta).to(device)
-    torch_compile_dyt = TorchDyTCompiled(hidden_size=hidden_size, beta=beta).to(device)
+    torch_compile_dyt = torch.compile(TorchDyT(hidden_size=hidden_size, beta=beta).to(device))
     triton_dyt = LigerDyT(hidden_size=hidden_size, beta=beta).to(device)
 
     x = torch.randn(x_shape, dtype=dtype, device=device)
@@ -117,7 +73,8 @@ def bench_speed_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
 
 
 def bench_memory_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-
+    from test.transformers.test_dyt import LigerDyT
+    from test.transformers.test_dyt import TorchDyT
 
     hidden_size = input.x
     provider = input.kernel_provider
@@ -128,7 +85,7 @@ def bench_memory_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
 
     x_shape = (BT, hidden_size)
     torch_dyt = TorchDyT(hidden_size=hidden_size, beta=beta).to(device)
-    torch_compile_dyt = TorchDyTCompiled(hidden_size=hidden_size, beta=beta).to(device)
+    torch_compile_dyt = torch.compile(TorchDyT(hidden_size=hidden_size, beta=beta).to(device))
     triton_dyt = LigerDyT(hidden_size=hidden_size, beta=beta).to(device)
 
     x = torch.randn(x_shape, dtype=dtype, device=device)
