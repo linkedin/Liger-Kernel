@@ -400,8 +400,58 @@ def _test_correctness_not_last_layer_once(target_ce, B, T, V, reduction, scalar,
     loss1 = output * 3
     loss2 = output2 * 3
 
-    loss1.backward(gradient=torch.ones_like(output))
-    loss2.backward(gradient=torch.ones_like(output))
+    grad_output = torch.rand_like(output)
+    loss1.backward(gradient=grad_output)
+    loss2.backward(gradient=grad_output)
+    assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
+
+
+def _test_correctness_not_last_layer_with_other_params_once(
+    target_ce,
+    B,
+    T,
+    V,
+    reduction,
+    ignore_index,
+    lse_square_scale,
+    label_smoothing,
+    softcap,
+    scalar,
+    dtype,
+    atol,
+    rtol,
+):
+    torch_ce = CrossEntropyWithZLoss(
+        reduction=reduction,
+        ignore_index=ignore_index,
+        lse_square_scale=lse_square_scale,
+        label_smoothing=label_smoothing,
+    )
+
+    _tensor = torch.randn(B * T, V, device=device, dtype=dtype) * scalar
+    _input = _tensor.detach().clone().requires_grad_(True)
+    _input2 = _tensor.detach().clone().requires_grad_(True)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    # Assign some random number of elements as ignore_index
+    num_elements_to_assign = torch.randint(
+        1, B * T // 2, (1,)
+    ).item()  # Random number of elements to set to ignore_index
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
+    target[indices_to_assign] = ignore_index
+
+    # upcasting to match liger's casting strategy
+    # and downcasting to original dtype
+    output = torch_ce(softcap * torch.tanh(_input.to(torch.float32) / softcap), target).to(dtype)
+    output2 = target_ce(_input2, target)
+    assert torch.allclose(output, output2, atol=atol, rtol=rtol)
+
+    loss1 = output * 3
+    loss2 = output2 * 3
+
+    grad_output = torch.rand_like(output)
+    loss1.backward(gradient=grad_output)
+    loss2.backward(gradient=grad_output)
     assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
 
@@ -862,6 +912,62 @@ def test_correctness_with_weight_with_other_params_once(
 def test_correctness_not_last_layer(B, T, V, reduction, scalar, dtype, atol, rtol):
     liger_ce = LigerCrossEntropyLoss(reduction=reduction)
     _test_correctness_not_last_layer_once(liger_ce, B, T, V, reduction, scalar, dtype, atol, rtol)
+
+
+@pytest.mark.parametrize(
+    "B, T, V",
+    [
+        (2, 1024, 32000),  # llama2, mistral
+        # # weird shapes
+        (3, 423, 32000),
+    ],
+)
+@pytest.mark.parametrize(
+    "ignore_index, lse_square_scale, label_smoothing, softcap",
+    [
+        (-100, 1e-4, 0.1, 30.0),
+        (42, 1e-5, 0.2, 40.0),
+    ],
+)
+@pytest.mark.parametrize("reduction", ["sum", "mean"])
+@pytest.mark.parametrize(
+    "scalar, dtype, atol, rtol",
+    [
+        pytest.param(
+            1.0,
+            torch.bfloat16,
+            1e-8,
+            5e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        (1.0, torch.float32, 1e-8, 1e-5),
+    ],
+)
+def test_correctness_not_last_layer_with_other_params(
+    B, T, V, reduction, ignore_index, lse_square_scale, label_smoothing, softcap, scalar, dtype, atol, rtol
+):
+    liger_ce = LigerCrossEntropyLoss(
+        reduction=reduction,
+        ignore_index=ignore_index,
+        lse_square_scale=lse_square_scale,
+        label_smoothing=label_smoothing,
+        softcap=softcap,
+    )
+    _test_correctness_not_last_layer_with_other_params_once(
+        liger_ce,
+        B,
+        T,
+        V,
+        reduction,
+        ignore_index,
+        lse_square_scale,
+        label_smoothing,
+        softcap,
+        scalar,
+        dtype,
+        atol,
+        rtol,
+    )
 
 
 def test_float32_internal():
