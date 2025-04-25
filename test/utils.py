@@ -428,6 +428,18 @@ def revert_liger_kernel_to_olmo2(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_glm4(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Glm4.
+    """
+
+    from transformers.models.glm4 import modeling_glm4
+
+    importlib.reload(modeling_glm4)
+    model_config.model_class = modeling_glm4.Glm4ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to llava.

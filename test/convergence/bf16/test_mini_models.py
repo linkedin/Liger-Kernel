@@ -21,6 +21,7 @@ from transformers.models.qwen2 import Qwen2ForCausalLM
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text
+from liger_kernel.transformers import apply_liger_kernel_to_glm4
 from liger_kernel.transformers import apply_liger_kernel_to_granite
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_llava
@@ -38,6 +39,7 @@ from test.utils import assert_verbose_allclose
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_gemma3_text
+from test.utils import revert_liger_kernel_to_glm4
 from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_llava
@@ -106,6 +108,14 @@ try:
 except ImportError:
     OLMO2_AVAILABLE = False
 
+try:
+    # Glm4 is only available in transformers>=4.51.3
+    from transformers.models.glm4.configuration_glm4 import Glm4Config
+    from transformers.models.glm4.modeling_glm4 import Glm4ForCausalLM
+
+    GLM4_AVAILABLE = True
+except ImportError:
+    GLM4_AVAILABLE = False
 
 try:
     from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
@@ -644,6 +654,37 @@ if OLMO2_AVAILABLE:
         ),
     )
 
+if GLM4_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_glm4"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_glm4,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_glm4,
+        model_class=Glm4ForCausalLM,
+        mini_model_config=Glm4Config(
+            bos_token_id=1,  # None
+            eos_token_id=2,  # 151329, 151336, 151338
+            pad_token_id=2,  # 151329
+            partial_rotary_factor=0.5,
+            cross_attention_layers=None,
+            dropout=0,
+            hidden_act="silu",
+            hidden_size=1024,  # 6144
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=4096,  # 32768
+            num_attention_heads=8,  # 48
+            num_hidden_layers=4,  # 61
+            num_key_value_heads=2,
+            rms_norm_eps=1e-5,
+            rope_scaling=None,
+            rope_theta=500_000,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 151552
+            attention_bias=True,
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
+
 
 def create_model(model_name="mini_llama3"):
     """
@@ -678,6 +719,9 @@ def run_mini_model(
             "rope": True,
             "rms_norm": True,
         }
+
+        if "glm4" in model_name:
+            kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
         if model_supports_layer_norm:
@@ -887,6 +931,25 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not OLMO2_AVAILABLE,
                     reason="OLMO2 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_glm4",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not GLM4_AVAILABLE,
+                    reason="Glm4 not available in this version of transformers",
                 ),
             ],
         ),
