@@ -215,7 +215,7 @@ def _grpo_loss_bwd_kernel(DLOSS,
         dlogp += BETA * (1 - tl.exp(ref_logp - logp))
     
     dlogp = dlogp * dloss / TEMPERATURE
-    
+    tl.debug_barrier()
     for start_n in tl.range(0, N, BLOCK_N):
         cols = start_n + tl.arange(0, BLOCK_N)
         logits = tl.load(LOGITS+cols, mask=cols < N, other=-float('inf')).to(tl.float32) / TEMPERATURE
