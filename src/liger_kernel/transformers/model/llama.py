@@ -213,14 +213,16 @@ def lce_forward(
     if self.config.pretraining_tp > 1:
         raise Exception("Liger Kernel does not support pretraining_tp!!")
 
+    shift_labels = loss_kwargs.pop("shift_labels", None)
     logits = None
     loss = None
     # if in training mode, don't materialize logits
-    if self.training and (labels is not None):
+    if self.training and (labels is not None or shift_labels is not None):
         loss = LigerForCausalLMLoss(
             hidden_states=hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
+            shift_labels=shift_labels,
             hidden_size=self.config.hidden_size,
             **loss_kwargs,
         )
