@@ -18,7 +18,7 @@ def _sparsemax_forward_kernel(
     tau = tl.load(tau_row).to(tl.float32)
     out_ty = o_row.dtype.element_ty
 
-    for i in range(0, tl.cdiv(n_cols, block_size)):
+    for i in tl.range(0, tl.cdiv(n_cols, block_size)):
         offs = i * block_size + tl.arange(0, block_size)
         mask = offs < n_cols
 
@@ -41,7 +41,7 @@ def _sparsemax_backward_kernel(
     acc_cnt = tl.zeros((), dtype=tl.float32)
     out_ty = o_row.dtype.element_ty
 
-    for i in range(0, tl.cdiv(n_cols, block_size)):
+    for i in tl.range(0, tl.cdiv(n_cols, block_size)):
         offs = i * block_size + tl.arange(0, block_size)
         mask = offs < n_cols
 
@@ -56,7 +56,7 @@ def _sparsemax_backward_kernel(
     v_hat_q = tl.cast(v_hat_fp32, out_ty)
     v_hat = v_hat_q.to(tl.float32)
 
-    for i in range(0, tl.cdiv(n_cols, block_size)):
+    for i in tl.range(0, tl.cdiv(n_cols, block_size)):
         offs = i * block_size + tl.arange(0, block_size)
         mask = offs < n_cols
 
