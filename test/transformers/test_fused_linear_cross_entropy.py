@@ -105,7 +105,7 @@ class LigerLMHeadCE(torch.nn.Module):
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        pytest.param(8, 128, 1024, 4096, marks=pytest.mark.skipif(device="xpu", reason="skip for XPU")),
+        (8, 128, 1024, 4096),
         (4, 47, 31, 123),  # random shape
     ],
 )
@@ -287,7 +287,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, ce_weight, atol
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
-        pytest.param(8, 128, 1024, 4096, marks=pytest.mark.skipif(device="xpu", reason="skip for XPU")),
+        (8, 128, 1024, 4096),
         (4, 47, 31, 123),  # random shape
     ],
 )
