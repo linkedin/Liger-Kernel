@@ -13,6 +13,7 @@ from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.rope import LigerRopeFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+from liger_kernel.ops.sparsemax import LigerSparsemaxFunction
 from liger_kernel.ops.tvd import LigerTVDLossFunction
 
 
@@ -156,6 +157,15 @@ def liger_kl_div(
         reduction,
         log_target,
         eps,
+    )
+
+def liger_sparsemax(
+    input,
+    dim: int = -1,
+):
+    return LigerSparsemaxFunction.apply(
+        input, 
+        dim
     )
 
 
