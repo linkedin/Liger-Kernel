@@ -9,6 +9,7 @@ from liger_kernel.ops.group_norm import LigerGroupNormFunction
 from liger_kernel.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.kl_div import LigerKLDivLossFunction
 from liger_kernel.ops.layer_norm import LigerLayerNormFunction
+from liger_kernel.ops.multi_token_attention import LigerMultiTokenAttentionFunction
 from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.rope import LigerRopeFunction
@@ -174,6 +175,30 @@ def liger_sparsemax(
     dim: int = -1,
 ):
     return LigerSparsemaxFunction.apply(input, dim)
+
+
+def liger_multi_token_attention(
+    scores,
+    weight,
+    bias=None,
+    stride=1,
+    padding=0,
+    groups=1,
+):
+    """
+    Functional interface for multi-token attention.
+
+    Args:
+        scores: Input tensor of shape (B, C_in, L, L)
+        weight: Convolution weight tensor of shape (C_out, C_in // groups, K, K)
+        bias: Optional bias tensor of shape (C_out,)
+        stride: Stride for the convolution (default: 1)
+        padding: Padding for the convolution (default: 0)
+        groups: Number of groups for the convolution (default: 1)
+    Returns:
+        Output tensor after applying multi-token attention.
+    """
+    return LigerMultiTokenAttentionFunction.apply(scores, weight, bias, stride, padding, groups)
 
 
 def liger_tvd(
