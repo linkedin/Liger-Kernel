@@ -67,9 +67,9 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             chunk_size: Size of chunks for processing in other loss modules
         """
         if use_ref_model:
-            assert (
-                ref_per_token_logps is not None or ref_input is not None
-            ), "If use_ref_model is True, ref_per_token_logps or ref_input must be provided"
+            assert ref_per_token_logps is not None or ref_input is not None, (
+                "If use_ref_model is True, ref_per_token_logps or ref_input must be provided"
+            )
             if ref_per_token_logps is not None and ref_input is not None:
                 raise Warning("Both ref_per_token_logps and ref_input are provided. Using ref_per_token_logps.")
         if loss_type == "dr_grpo":
