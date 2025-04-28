@@ -246,9 +246,9 @@ def test_patching_apis_support_patching_model_instance():
     for func in patching_functions:
         sig = inspect.signature(func)
         # Ensure 'model' is in the parameters
-        assert (
-            "model" in sig.parameters
-        ), f"{func.__name__} does not have 'model' as an argument. All patching methods must support patching an existing model instance."
+        assert "model" in sig.parameters, (
+            f"{func.__name__} does not have 'model' as an argument. All patching methods must support patching an existing model instance."
+        )
 
 
 def test_apply_liger_kernel_to_instance_for_llama():
