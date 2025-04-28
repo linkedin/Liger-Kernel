@@ -71,6 +71,7 @@ def test_liger_sparsemax_correctness(batch_size, seq_len, features, dim, dtype, 
     out_t.backward(g)
     assert_verbose_allclose(lx.grad, tx.grad, atol=atol, rtol=rtol)
 
+
 @pytest.mark.parametrize(
     "batch_size, seq_len, features",
     [

@@ -8,15 +8,7 @@ from liger_kernel.ops.utils import ensure_contiguous
 
 @triton.jit
 def _sparsemax_forward_kernel(
-    x_ptr,
-    x_stride, 
-    tau_ptr, 
-    tau_stride, 
-    o_ptr, 
-    o_stride, 
-    n_cols, 
-    block_size: tl.constexpr, 
-    num_warps: tl.constexpr
+    x_ptr, x_stride, tau_ptr, tau_stride, o_ptr, o_stride, n_cols, block_size: tl.constexpr, num_warps: tl.constexpr
 ):
     row = tl.program_id(0)
     x_row = x_ptr + row * x_stride
@@ -38,15 +30,7 @@ def _sparsemax_forward_kernel(
 
 @triton.jit
 def _sparsemax_backward_kernel(
-    o_ptr,
-    o_stride,
-    go_ptr,
-    go_stride,
-    gi_ptr,
-    gi_stride,
-    n_cols,
-    block_size: tl.constexpr,
-    num_warps: tl.constexpr
+    o_ptr, o_stride, go_ptr, go_stride, gi_ptr, gi_stride, n_cols, block_size: tl.constexpr, num_warps: tl.constexpr
 ):
     row = tl.program_id(0)
     o_row = o_ptr + row * o_stride

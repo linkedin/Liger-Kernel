@@ -85,6 +85,7 @@ def bench_speed_sparsemax(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
             quantiles=QUANTILES,
         )
     elif mode == "full":
+
         def full():
             y = y_fwd()
             y.backward(dy, retain_graph=True)
