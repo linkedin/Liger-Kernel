@@ -182,9 +182,11 @@ def liger_multi_token_attention(
     scores,
     weight,
     bias=None,
-    stride=1,
-    padding=0,
-    groups=1,
+    stride: int = 1,
+    padding: int = 0,
+    dilation: int = 1,
+    groups: int = 1,
+    sparse: bool = False,
 ):
     """
     Functional interface for multi-token attention.
@@ -195,11 +197,13 @@ def liger_multi_token_attention(
         bias: Optional bias tensor of shape (C_out,)
         stride: Stride for the convolution (default: 1)
         padding: Padding for the convolution (default: 0)
+        dilation: Dilation factor for the convolution (default: 1)
         groups: Number of groups for the convolution (default: 1)
+        sparse: Specifies if input tensors are expected to be sparse (default: False)
     Returns:
         Output tensor after applying multi-token attention.
     """
-    return LigerMultiTokenAttentionFunction.apply(scores, weight, bias, stride, padding, groups)
+    return LigerMultiTokenAttentionFunction.apply(scores, weight, bias, stride, padding, dilation, groups, sparse)
 
 
 def liger_tvd(

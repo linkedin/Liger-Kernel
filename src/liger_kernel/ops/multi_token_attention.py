@@ -6,6 +6,8 @@ import triton.language as tl
 from torch.nn.modules.utils import _pair
 
 from liger_kernel.ops.softmax import _softmax_forward
+from liger_kernel.ops.sparsemax import _sparsemax_backward
+from liger_kernel.ops.sparsemax import _sparsemax_forward
 
 
 @triton.jit
@@ -145,28 +147,67 @@ def _mask_zero_backward(grad: torch.Tensor) -> torch.Tensor:
 
 class LigerMultiTokenAttentionFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, scores, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
+    def forward(ctx, scores, weight, bias=None, stride=1, padding=0, dilation=1, groups=1, sparse=False):
         scores_inf = _mask_inf_forward(scores)
-        probs, _, _, _ = _softmax_forward(scores_inf)
-        out_conv = F.conv2d(probs, weight, bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
+
+        out_flat_sparse = None
+        activation_output = None
+
+        ctx.sparse = sparse
+
+        if sparse:
+            if scores_inf.dtype != torch.float32:
+                raise RuntimeError("Liger sparse multi-token attention currently only supports fp32 input scores")
+            probs_sparse, out_flat_sparse = _sparsemax_forward(scores_inf.contiguous(), dim=-1)
+            activation_output = probs_sparse
+            ctx.save_for_backward(scores_inf, activation_output, out_flat_sparse, weight, bias)
+            ctx.out_flat_sparse_saved = True
+        else:
+            probs_softmax, _, _, _ = _softmax_forward(scores_inf.contiguous())
+            activation_output = probs_softmax
+            ctx.save_for_backward(scores_inf, activation_output, weight, bias)
+            ctx.out_flat_sparse_saved = False
+
+        out_conv = F.conv2d(
+            activation_output.contiguous(),
+            weight,
+            bias,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+        )
+
         out = _mask_zero_forward(out_conv)
-        ctx.save_for_backward(scores_inf, probs, weight, bias)
+
         ctx.stride = _pair(stride)
         ctx.padding = _pair(padding)
         ctx.dilation = _pair(dilation)
         ctx.groups = groups
+        ctx.dim = -1
+
         return out
 
     @staticmethod
     def backward(ctx, grad_out):
-        scores_inf, probs, weight, bias = ctx.saved_tensors
+        if ctx.out_flat_sparse_saved:
+            scores_inf, activation_output, out_flat_sparse, weight, bias = ctx.saved_tensors
+        else:
+            scores_inf, activation_output, weight, bias = ctx.saved_tensors
+            out_flat_sparse = None
+
+        use_sparsemax = ctx.sparse
+        dim = ctx.dim
         stride, padding, dilation, groups = (ctx.stride, ctx.padding, ctx.dilation, ctx.groups)
-        grad_conv = _mask_zero_backward(grad_out)
+
+        grad_conv = _mask_zero_backward(grad_out.contiguous())
+
         grad_probs = F.conv_transpose2d(
             grad_conv, weight, None, stride=stride, padding=padding, dilation=dilation, groups=groups
         )
+
         grad_weight = torch.nn.grad.conv2d_weight(
-            input=probs,
+            input=activation_output.contiguous(),
             weight_size=weight.shape,
             grad_output=grad_conv,
             stride=stride,
@@ -176,8 +217,19 @@ class LigerMultiTokenAttentionFunction(torch.autograd.Function):
         )
         grad_bias = None
         if bias is not None:
-            grad_bias = grad_conv.sum(dim=(0, 2, 3))
-        dot = (grad_probs * probs).sum(dim=-1, keepdim=True)
-        grad_scores_inf = probs * (grad_probs - dot)
-        grad_scores = _mask_inf_backward(grad_scores_inf)
-        return (grad_scores, grad_weight, grad_bias, None, None, None, None)
+            grad_bias = grad_conv.contiguous().sum(dim=(0, 2, 3))
+
+        grad_scores_inf = None
+        if use_sparsemax:
+            if not ctx.out_flat_sparse_saved or out_flat_sparse is None:
+                raise RuntimeError("Internal error: Sparse flag is set but sparse tensor was not saved.")
+            grad_scores_inf = _sparsemax_backward(grad_probs.contiguous(), out_flat_sparse.contiguous(), dim=dim)
+        else:
+            grad_probs_cont = grad_probs.contiguous()
+            probs_cont = activation_output.contiguous()
+            dot = (grad_probs_cont * probs_cont).sum(dim=-1, keepdim=True)
+            grad_scores_inf = probs_cont * (grad_probs_cont - dot)
+
+        grad_scores = _mask_inf_backward(grad_scores_inf.contiguous())
+
+        return (grad_scores, grad_weight, grad_bias, None, None, None, None, None)
