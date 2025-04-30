@@ -13,8 +13,8 @@ from liger_kernel.ops.multi_token_attention import LigerMultiTokenAttentionFunct
 from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.rope import LigerRopeFunction
-from liger_kernel.ops.sparsemax import LigerSparsemaxFunction
 from liger_kernel.ops.softmax import LigerSoftmaxFunction
+from liger_kernel.ops.sparsemax import LigerSparsemaxFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.sparsemax import LigerSparsemaxFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
