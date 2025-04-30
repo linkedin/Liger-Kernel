@@ -5,6 +5,8 @@ import triton.language as tl
 
 from torch.nn.modules.utils import _pair
 
+from liger_kernel.ops.softmax import _softmax_forward
+
 
 @triton.jit
 def _mask_inf_fwd_kernel(scores_ptr, out_ptr, stride_b, stride_m, stride_n, L, BLOCK: tl.constexpr):
@@ -145,7 +147,7 @@ class LigerMultiTokenAttentionFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, scores, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
         scores_inf = _mask_inf_forward(scores)
-        probs = F.softmax(scores_inf, dim=-1)
+        probs, _, _, _ = _softmax_forward(scores_inf)
         out_conv = F.conv2d(probs, weight, bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
         out = _mask_zero_forward(out_conv)
         ctx.save_for_backward(scores_inf, probs, weight, bias)

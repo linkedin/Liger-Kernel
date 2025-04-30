@@ -14,6 +14,7 @@ from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.rope import LigerRopeFunction
 from liger_kernel.ops.sparsemax import LigerSparsemaxFunction
+from liger_kernel.ops.softmax import LigerSoftmaxFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.sparsemax import LigerSparsemaxFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
@@ -235,6 +236,10 @@ def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 
 def liger_swiglu(a, b):
     return LigerSiLUMulFunction.apply(a, b)
+
+
+def liger_softmax(x):
+    return LigerSoftmaxFunction.apply(x)
 
 
 def liger_dyt(x, alpha, gamma, beta):
