@@ -65,7 +65,79 @@ def _sparsemax_backward_kernel(
         supp = o_f32 > 0.0
 
         gi_f32 = tl.where(supp, go_f32 - v_hat, 0.0)
-        tl.store(gi_row + offs, gi_f32.to(out_ty), mask=mask)
+        tl.store(gi_row + offs, gi_f32.to(gi_row.dtype.element_ty), mask=mask)
+
+
+def _sparsemax_forward(x: torch.Tensor, dim: int):
+    if dim < 0:
+        dim = x.dim() + dim
+
+    x_sw = x.transpose(dim, -1)
+    transposed_shape = x_sw.shape
+    n_cols = x_sw.size(-1)
+    n_rows = x_sw.numel() // n_cols
+    x_flat = x_sw.reshape(n_rows, n_cols).contiguous()
+
+    x_f32 = x_flat.to(torch.float32)
+    x_sorted, _ = torch.sort(x_f32, dim=-1, descending=True)
+    csum = torch.cumsum(x_sorted, dim=-1)
+    r = torch.arange(1, n_cols + 1, device=x.device, dtype=torch.float32).view(1, -1)
+    bound = 1 + r * x_sorted
+    support = bound > csum
+    k = support.sum(dim=-1, keepdim=True).clamp(min=1)
+    s = (x_sorted * support).sum(dim=-1, keepdim=True)
+    tau_f32 = (s - 1) / k
+
+    tau_q = tau_f32.to(x_flat.dtype)
+    tau_e = tau_q.expand(n_rows, n_cols).contiguous()
+
+    out_flat = torch.empty_like(x_flat)
+    grid = (n_rows,)
+    block_size, num_warps = calculate_settings(n_cols)
+    _sparsemax_forward_kernel[grid](
+        x_flat,
+        x_flat.stride(0),
+        tau_e,
+        tau_e.stride(0),
+        out_flat,
+        out_flat.stride(0),
+        n_cols,
+        block_size=block_size,
+        num_warps=num_warps,
+    )
+
+    out = out_flat.reshape(transposed_shape).transpose(dim, -1).contiguous()
+    return out, out_flat
+
+
+def _sparsemax_backward(grad_out: torch.Tensor, out_flat: torch.Tensor, dim: int):
+    if dim < 0:
+        dim = grad_out.dim() + dim
+
+    go_sw = grad_out.transpose(dim, -1)
+    transposed_shape = go_sw.shape
+    n_cols = go_sw.size(-1)
+    n_rows = go_sw.numel() // n_cols
+    go_flat = go_sw.reshape(n_rows, n_cols).contiguous()
+
+    out_flat = out_flat.contiguous()
+    gi_flat = torch.empty_like(go_flat)
+    grid = (n_rows,)
+    block_size, num_warps = calculate_settings(n_cols)
+    _sparsemax_backward_kernel[grid](
+        out_flat,
+        out_flat.stride(0),
+        go_flat,
+        go_flat.stride(0),
+        gi_flat,
+        gi_flat.stride(0),
+        n_cols,
+        block_size=block_size,
+        num_warps=num_warps,
+    )
+
+    gi = gi_flat.reshape(transposed_shape).transpose(dim, -1).contiguous()
+    return gi
 
 
 class LigerSparsemaxFunction(torch.autograd.Function):
@@ -75,43 +147,10 @@ class LigerSparsemaxFunction(torch.autograd.Function):
         if dim < 0:
             dim = x.dim() + dim
         ctx.dim = dim
-        ctx.orig_shape = x.shape
 
-        x_sw = x.transpose(dim, -1)
-        n_cols = x_sw.size(-1)
-        n_rows = x_sw.numel() // n_cols
-        x_flat = x_sw.reshape(n_rows, n_cols).contiguous()
-
-        x_f32 = x_flat.to(torch.float32)
-        x_sorted, _ = torch.sort(x_f32, dim=-1, descending=True)
-        csum = torch.cumsum(x_sorted, dim=-1)
-        r = torch.arange(1, n_cols + 1, device=x.device, dtype=torch.float32).view(1, -1)
-        bound = 1 + r * x_sorted
-        support = bound > csum
-        k = support.sum(dim=-1, keepdim=True).clamp(min=1)
-        s = (x_sorted * support).sum(dim=-1, keepdim=True)
-        tau_f32 = (s - 1) / k
-
-        tau_q = tau_f32.to(x_flat.dtype)
-        tau_e = tau_q.expand(n_rows, n_cols).contiguous()
-
-        out_flat = torch.empty_like(x_flat)
-        grid = (n_rows,)
-        block_size, num_warps = calculate_settings(n_cols)
-        _sparsemax_forward_kernel[grid](
-            x_flat,
-            x_flat.stride(0),
-            tau_e,
-            tau_e.stride(0),
-            out_flat,
-            out_flat.stride(0),
-            n_cols,
-            block_size=block_size,
-            num_warps=num_warps,
-        )
+        out, out_flat = _sparsemax_forward(x, ctx.dim)
 
         ctx.save_for_backward(out_flat)
-        out = out_flat.reshape(x_sw.shape).transpose(dim, -1)
         return out
 
     @staticmethod
@@ -120,25 +159,6 @@ class LigerSparsemaxFunction(torch.autograd.Function):
         (out_flat,) = ctx.saved_tensors
         dim = ctx.dim
 
-        go_sw = grad_out.transpose(dim, -1)
-        n_cols = go_sw.size(-1)
-        n_rows = go_sw.numel() // n_cols
-        go_flat = go_sw.reshape(n_rows, n_cols).contiguous()
-        gi_flat = torch.empty_like(go_flat)
+        gi = _sparsemax_backward(grad_out, out_flat, dim)
 
-        grid = (n_rows,)
-        block_size, num_warps = calculate_settings(n_cols)
-        _sparsemax_backward_kernel[grid](
-            out_flat,
-            out_flat.stride(0),
-            go_flat,
-            go_flat.stride(0),
-            gi_flat,
-            gi_flat.stride(0),
-            n_cols,
-            block_size=block_size,
-            num_warps=num_warps,
-        )
-
-        gi = gi_flat.reshape(go_sw.shape).transpose(dim, -1)
         return gi, None
