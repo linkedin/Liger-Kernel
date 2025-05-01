@@ -96,14 +96,14 @@ def _patch_layer_norm_module(module, eps=1e-6):
         module.modules_to_save.default.variance_epsilon = (
             getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         )
-        module.original_module.hidden_size = (
-            getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
+        module.original_module.hidden_size = getattr(module, "hidden_size", None) or getattr(
+            module, "normalized_shape", None
         )
         module.original_module.variance_epsilon = (
             getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         )
-        module.original_module.hidden_size = (
-            getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
+        module.original_module.hidden_size = getattr(module, "hidden_size", None) or getattr(
+            module, "normalized_shape", None
         )
         _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
         _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
