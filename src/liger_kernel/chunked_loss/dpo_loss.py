@@ -68,6 +68,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         compute_nll_loss=False,
         compiled=True,
         use_ref_model=True,
+        average_log_prob=False,
         chunk_size=1,
     ):
         """
@@ -85,6 +86,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             compute_nll_loss (bool): Whether to compute the NLL loss
             compiled (bool): Whether to use torch compile
             use_ref_model (bool): Whether to use a reference model
+            average_log_prob (bool): Whether to average the log probability per non-masked token
             chunk_size (int): Size of chunks for processing.
         Returns:
             torch.Tensor: Computed loss
@@ -104,13 +106,14 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             ref_input=ref_input,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
+            average_log_prob=average_log_prob,
             chunk_size=chunk_size,
         )
 
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None, None, None, None, None, None
+        return *grads, None, None, None, None, None, None, None, None, None, None
 
 
 class LigerFusedLinearDPOLoss(torch.nn.Module):
@@ -125,6 +128,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         compute_nll_loss: bool = False,
         compiled: bool = True,
         use_ref_model: bool = True,
+        average_log_prob: bool = True,
         chunk_size: int = 1,
     ):
         """
@@ -134,6 +138,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             compute_nll_loss (bool): Whether to compute the NLL loss.
             compiled (bool): Whether to use the torch compiled kernel.
             use_ref_model (bool): Whether to use a reference model for the DPO loss.
+            average_log_prob (bool): Whether to average the log probability per non-masked token.
             chunk_size (int): Size of chunks for processing.
         """
         super().__init__()
@@ -142,6 +147,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
         self.use_ref_model = use_ref_model
+        self.average_log_prob = average_log_prob
         self.chunk_size = chunk_size
 
     def forward(
@@ -167,5 +173,6 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             self.compute_nll_loss,
             self.compiled,
             self.use_ref_model,
+            self.average_log_prob,
             self.chunk_size,
         )

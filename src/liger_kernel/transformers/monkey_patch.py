@@ -19,6 +19,8 @@ from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_for
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
+from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
+from liger_kernel.transformers.model.llava import lce_forward_deprecated as llava_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
@@ -94,11 +96,15 @@ def _patch_layer_norm_module(module, eps=1e-6):
         module.modules_to_save.default.variance_epsilon = (
             getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         )
-        module.original_module.hidden_size = module.normalized_shape
+        module.original_module.hidden_size = (
+            getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
+        )
         module.original_module.variance_epsilon = (
             getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         )
-        module.original_module.hidden_size = module.normalized_shape
+        module.original_module.hidden_size = (
+            getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
+        )
         _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
         _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
         _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
@@ -107,7 +113,7 @@ def _patch_layer_norm_module(module, eps=1e-6):
         module.original_module.__class__.__name__ = LigerLayerNorm.__name__
     else:
         module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
-        module.hidden_size = module.normalized_shape
+        module.hidden_size = getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
         _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
         _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
         module.__class__.__name__ = LigerLayerNorm.__name__
@@ -272,6 +278,85 @@ def apply_liger_kernel_to_llama(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
+def apply_liger_kernel_to_llava(
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    model: PreTrainedModel = None,
+    **kwargs,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Llava models.
+    Due to the characteristics of LlaVa, the model must be passed to apply Liger-Kernel's patch to other models connected to LLaVa.
+    However, if an LM not supported by Liger-Kernel is connected to LLaVa, unexpected side effects may occur.
+    NOTE: Llava is not available in transformers<4.36.0
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.llava import modeling_llava
+
+    if cross_entropy:
+        logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+        modeling_llava.nn.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        if transformer_version >= version.parse("4.49.0"):
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
+        else:  # if version < 4.49.0
+            logger.warning(
+                "Support for transformers versions < 4.49.0 will soon be discontinued due to issues with incorrect legacy processing. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/35526"
+            )
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
+
+    if model is not None:
+        text_model_name, vision_model_name = model.config.text_config.model_type, model.config.vision_config.model_type
+        text_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(text_model_name, None)
+        vision_liger_fn = MODEL_TYPE_TO_APPLY_LIGER_FN.get(vision_model_name, None)
+
+        kwargs = {"cross_entropy": False, "fused_linear_cross_entropy": False, **kwargs}
+        if text_liger_fn:
+            accept_params = inspect.signature(text_liger_fn).parameters
+            remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
+            text_kwargs = {k: v for k, v in kwargs.items() if k not in remain_params}
+
+            if remain_params:
+                logger.warning(
+                    f"These parameters are not supported by {text_model_name}. Enter the remaining {list(text_kwargs.keys())} except for {list(remain_params)}\n"
+                    f"Parameters accepted by {text_model_name}: {list(accept_params.keys())}"
+                )
+            text_kwargs["model"] = model.language_model
+            text_liger_fn(**text_kwargs)
+        elif text_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            logger.warning(f"{text_model_name} is not supported by Liger kernel.")
+
+        if vision_liger_fn:
+            accept_params = inspect.signature(vision_liger_fn).parameters
+            remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
+            vision_kwargs = {k: v for k, v in kwargs.items() if k not in remain_params}
+
+            if remain_params:
+                logger.warning(
+                    f"These parameters are not supported by {vision_model_name}. Enter the remaining {list(vision_kwargs.keys())} except for {list(remain_params)}\n"
+                    f"Parameters accepted by {vision_model_name}: {list(accept_params.keys())}"
+                )
+            vision_kwargs["model"] = model.vision_tower
+            vision_liger_fn(**vision_kwargs)
+        elif vision_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
+            logger.warning(f"{vision_model_name} is not supported by Liger kernel.")
 
 
 def apply_liger_kernel_to_mllama(
@@ -660,6 +745,177 @@ def apply_liger_kernel_to_gemma2(
                 _patch_rms_norm_module_for_gemma2(decoder_layer.post_attention_layernorm)
                 _patch_rms_norm_module_for_gemma2(decoder_layer.pre_feedforward_layernorm)
                 _patch_rms_norm_module_for_gemma2(decoder_layer.post_feedforward_layernorm)
+
+
+def apply_liger_kernel_to_gemma3_text(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    geglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma3
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.gemma3 import modeling_gemma3
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3DecoderLayer
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
+
+    from liger_kernel.transformers.gema3_rms import LigerRMSNormForGemma3
+    from liger_kernel.transformers.model.gemma3 import causal_forward
+
+    _patch_rms_norm_module_for_gemma3 = partial(
+        _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+    )
+
+    if rope:
+        modeling_gemma3.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if rms_norm:
+        modeling_gemma3.Gemma3RMSNorm = LigerRMSNormForGemma3
+
+    if geglu:
+        modeling_gemma3.Gemma3MLP = LigerGEGLUMLP
+
+    # Handle loss function
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        modeling_gemma3.Gemma3ForCausalLM.forward = causal_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        if isinstance(model, Gemma3ForCausalLM):
+            # get the base model from the model instance
+            base_model = model.model
+
+            if rms_norm:
+                _patch_rms_norm_module_for_gemma3(base_model.norm)
+
+            for decoder_layer in base_model.layers:
+                decoder_layer: Gemma3DecoderLayer
+                if geglu:
+                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                if rms_norm:
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.post_attention_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.pre_feedforward_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.post_feedforward_layernorm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.self_attn.q_norm)
+                    _patch_rms_norm_module_for_gemma3(decoder_layer.self_attn.k_norm)
+
+        else:
+            raise TypeError("The model must be Gemma3ForCausalLM.")
+
+
+def apply_liger_kernel_to_gemma3(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    layer_norm: bool = True,
+    rms_norm: bool = True,
+    geglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma3
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.gemma3 import modeling_gemma3
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForConditionalGeneration
+    from transformers.models.siglip import modeling_siglip
+    from transformers.models.siglip.modeling_siglip import SiglipEncoderLayer
+    from transformers.models.siglip.modeling_siglip import SiglipVisionModel
+
+    from liger_kernel.transformers.model.gemma3 import multimodal_forward
+
+    _patch_rms_norm_module_for_gemma3 = partial(
+        _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+    )
+
+    if layer_norm:
+        modeling_siglip.nn.LayerNorm = LigerLayerNorm
+
+    apply_liger_kernel_to_gemma3_text(
+        rope=rope, cross_entropy=False, fused_linear_cross_entropy=False, rms_norm=rms_norm, geglu=geglu
+    )
+
+    if cross_entropy:
+        modeling_gemma3.nn.CrossEntropyLoss = LigerCrossEntropyLoss
+
+    if fused_linear_cross_entropy:
+        modeling_gemma3.Gemma3ForConditionalGeneration.forward = multimodal_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        if isinstance(model, Gemma3ForConditionalGeneration):
+            if isinstance(model.vision_tower, SiglipVisionModel):
+                vision_tower = model.vision_tower
+
+                _patch_layer_norm_module(vision_tower.vision_model.post_layernorm)
+
+                for layer in vision_tower.vision_model.encoder.layers:
+                    layer: SiglipEncoderLayer
+                    if layer_norm:
+                        _patch_layer_norm_module(layer.layer_norm1)
+                        _patch_layer_norm_module(layer.layer_norm2)
+            else:
+                raise TypeError("The vision tower must be SiglipVisionModel")
+
+            if rms_norm:
+                _patch_rms_norm_module_for_gemma3(model.multi_modal_projector.mm_soft_emb_norm)
+
+            apply_liger_kernel_to_gemma3_text(
+                rope=rope,
+                cross_entropy=False,
+                fused_linear_cross_entropy=False,
+                rms_norm=rms_norm,
+                geglu=geglu,
+                model=model.language_model,
+            )
+
+        else:
+            raise TypeError("The model must be Gemma3ForConditionalGeneration.")
 
 
 def apply_liger_kernel_to_paligemma(
@@ -1120,7 +1376,10 @@ def apply_liger_kernel_to_olmo2(
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
+    "gemma3_text": apply_liger_kernel_to_gemma3_text,
+    "gemma3": apply_liger_kernel_to_gemma3,
     "llama": apply_liger_kernel_to_llama,
+    "llava": apply_liger_kernel_to_llava,
     "granite": apply_liger_kernel_to_granite,
     "mllama": apply_liger_kernel_to_mllama,
     "mllama_text_model": apply_liger_kernel_to_mllama,

@@ -11,6 +11,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.mllama.modeling_mllama import MLLAMA_INPUTS_DOCSTRING
 from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import replace_return_docstrings
+from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
@@ -133,6 +134,7 @@ def lce_forward_deprecated(
     )
 
 
+@deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
 @add_start_docstrings_to_model_forward(MLLAMA_INPUTS_DOCSTRING)
 @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class="MllamaTextConfig")
 def lce_forward(
@@ -151,7 +153,7 @@ def lce_forward(
     output_hidden_states: Optional[bool] = None,
     return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
-    num_logits_to_keep: int = 0,
+    logits_to_keep: Union[int, torch.Tensor] = 0,
     **loss_kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
     r"""
@@ -161,10 +163,12 @@ def lce_forward(
             config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
             (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
 
-        num_logits_to_keep (`int`, *optional*):
-            Calculate logits for the last `num_logits_to_keep` tokens. If `0`, calculate logits for all
+        logits_to_keep (`int` or `torch.Tensor`, *optional*):
+            If an `int`, compute logits for the last `logits_to_keep` tokens. If `0`, calculate logits for all
             `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
             token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
+            If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
+            This is useful when using packed tensor format (single dimension for batch and sequence length).
 
     Returns:
 
@@ -212,20 +216,23 @@ def lce_forward(
 
     hidden_states = outputs[0]
 
+    shift_labels = loss_kwargs.pop("shift_labels", None)
     logits = None
     loss = None
     # if in training mode, don't materialize logits
-    if self.training and (labels is not None):
+    if self.training and (labels is not None or shift_labels is not None):
         loss = LigerForCausalLMLoss(
             hidden_states=hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
+            shift_labels=shift_labels,
             hidden_size=self.config.hidden_size,
             **loss_kwargs,
         )
 
     else:  # if in inference mode materialize logits
-        logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        logits = self.lm_head(hidden_states[:, slice_indices, :])
         if labels is not None:
             loss = self.loss_function(
                 logits=logits,
