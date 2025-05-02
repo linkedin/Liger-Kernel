@@ -1,6 +1,6 @@
 site_name: Liger-Kernel Docs
-site_url: https://ligerkernel-io.github.io/ligerkernel
-site_author: Parag Ekbote
+# site_url: ...
+# site_author: LinkedIn
 site_description: Efficient Triton Kernels for LLM Training
 theme:
   name: material
