@@ -1386,6 +1386,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "mixtral": apply_liger_kernel_to_mixtral,
     "olmo2": apply_liger_kernel_to_olmo2,
     "qwen2": apply_liger_kernel_to_qwen2,
+    "qwen3": apply_liger_kernel_to_qwen3,
     "qwen2_vl": apply_liger_kernel_to_qwen2_vl,
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "phi3": apply_liger_kernel_to_phi3,
