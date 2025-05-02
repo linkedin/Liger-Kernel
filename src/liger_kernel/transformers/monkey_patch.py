@@ -28,7 +28,6 @@ from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward_deprecated
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward_deprecated
-from liger_kernel.transformers.model.qwen3 import lce_forward as qwen3_lce_forward
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
@@ -1066,6 +1065,8 @@ def apply_liger_kernel_to_qwen3(
 
     from transformers.models.qwen3 import modeling_qwen3
     from transformers.models.qwen3.modeling_qwen3 import Qwen3Model
+
+    from liger_kernel.transformers.model.qwen3 import lce_forward as qwen3_lce_forward
 
     if rope:
         modeling_qwen3.apply_rotary_pos_emb = liger_rotary_pos_emb
