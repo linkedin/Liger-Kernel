@@ -1,11 +1,9 @@
 from typing import List
 from typing import Optional
-from typing import Tuple
 from typing import Union
 
 import torch
 
-from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.qwen3.modeling_qwen3 import _CONFIG_FOR_DOC
 from transformers.models.qwen3.modeling_qwen3 import QWEN3_INPUTS_DOCSTRING
@@ -81,7 +79,6 @@ def lce_forward(
         cache_position=cache_position,
         **kwargs,
     )
-
 
     hidden_states = outputs[0]
 

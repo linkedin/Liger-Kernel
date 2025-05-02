@@ -1075,6 +1075,7 @@ def apply_liger_kernel_to_qwen3(
 
     if cross_entropy:
         from transformers.loss.loss_utils import nn
+
         nn.functional.cross_entropy = liger_cross_entropy
 
     if fused_linear_cross_entropy:
@@ -1085,7 +1086,7 @@ def apply_liger_kernel_to_qwen3(
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
-        # instance variables that reference already-instantiated modules    
+        # instance variables that reference already-instantiated modules
 
         # get the base model from the model instance
         base_model: Qwen3Model = getattr(model, model.base_model_prefix, model)

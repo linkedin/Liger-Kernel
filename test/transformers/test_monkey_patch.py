@@ -52,6 +52,7 @@ def is_qwen2_5_vl_available():
     except ImportError:
         return False
 
+
 def is_qwen3_available():
     try:
         import transformers.models.qwen3  # noqa: F401
@@ -59,6 +60,7 @@ def is_qwen3_available():
         return True
     except ImportError:
         return False
+
 
 def is_olmo2_available():
     try:
@@ -815,6 +817,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
 
 @pytest.mark.skipif(not is_qwen2_vl_available(), reason="qwen2_vl module not available")
 def test_apply_liger_kernel_to_instance_for_qwen2_vl():
