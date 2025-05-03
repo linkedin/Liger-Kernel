@@ -53,6 +53,15 @@ def is_qwen2_5_vl_available():
         return False
 
 
+def is_qwen3_available():
+    try:
+        import transformers.models.qwen3  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_olmo2_available():
     try:
         import transformers.models.olmo2  # noqa: F401
@@ -96,6 +105,7 @@ def test_import_from_root():
         from liger_kernel.transformers import apply_liger_kernel_to_qwen2  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_qwen3  # noqa: F401
     except Exception:
         pytest.fail("Import kernel patch from root fails")
 
@@ -749,6 +759,44 @@ def test_apply_liger_kernel_to_instance_for_qwen2():
     with patch("transformers.models.qwen2.modeling_qwen2"):
         # Instantiate a dummy model
         config = transformers.models.qwen2.configuration_qwen2.Qwen2Config(
+            torch_dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="silu",
+            num_hidden_layers=2,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_available(), reason="qwen3 module not available")
+def test_apply_liger_kernel_to_instance_for_qwen3():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3.modeling_qwen3"):
+        # Instantiate a dummy model
+        config = transformers.models.qwen3.configuration_qwen3.Qwen3Config(
             torch_dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
