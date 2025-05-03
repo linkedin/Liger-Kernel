@@ -33,6 +33,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_phi3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
@@ -51,6 +52,7 @@ from test.utils import revert_liger_kernel_to_phi3
 from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
+from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 from test.utils import supports_bfloat16
@@ -81,6 +83,14 @@ try:
     QWEN2_5_VL_AVAILABLE = True
 except ImportError:
     QWEN2_5_VL_AVAILABLE = False
+
+try:
+    from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+
+    QWEN3_AVAILABLE = True
+except ImportError:
+    QWEN3_AVAILABLE = False
 
 try:
     from transformers.models.granite import GraniteConfig
@@ -357,6 +367,33 @@ MINI_MODEL_SETUPS = {
         ),
     ),
 }
+
+if QWEN3_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3,
+        model_class=Qwen3ForCausalLM,
+        mini_model_config=Qwen3Config(
+            attention_dropout=0.0,
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            hidden_size=896,
+            initializer_range=0.02,
+            intermediate_size=4864,
+            max_position_embeddings=32768,
+            num_attention_heads=8,
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            rms_norm_eps=1e-6,
+            rope_theta=1000000.0,
+            sliding_window=131072,
+            tie_word_embeddings=True,
+            use_cache=True,
+            vocab_size=32000,
+            attn_implementation="sdpa",
+        ),
+    )
 
 if GEMMA3_AVAILABLE:
     MINI_MODEL_SETUPS["mini_gemma3_text"] = MiniModelConfig(
@@ -850,6 +887,25 @@ def run_mini_model(
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        pytest.param(
+            "mini_qwen3",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN3_AVAILABLE,
+                    reason="Qwen3 not available in this version of transformers",
+                ),
+            ],
         ),
         pytest.param(
             "mini_qwen2_vl",
