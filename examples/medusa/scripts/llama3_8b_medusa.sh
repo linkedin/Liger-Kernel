@@ -22,9 +22,6 @@ export MEDUSA_LR_MULTIPLIER=4.0
 accelerate launch --config_file fsdp/acc-fsdp.conf \
     --num_machines $NUM_NODES \
     --num_processes $WORLD_SIZE \
-    --main_process_ip $MASTER_ADDR \
-    --main_process_port $MASTER_PORT \
-    --machine_rank $RANK \
     train.py \
     --bf16 True \
     --output_dir $OUTPUT_DIR \
@@ -32,7 +29,7 @@ accelerate launch --config_file fsdp/acc-fsdp.conf \
     --per_device_train_batch_size $LOCAL_TRAIN_BATCH_SIZE \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps $GRADIENT_ACCUMULATION_STEPS \
-    --evaluation_strategy "no" \
+    --eval_strategy "no" \
     --save_strategy "no" \
     --prediction_loss_only \
     --learning_rate $LR \
