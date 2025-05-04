@@ -28,6 +28,7 @@ from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward_deprecated
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward_deprecated
+from liger_kernel.transformers.model.solar import lce_forward as solar_lce_forward
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
@@ -1437,6 +1438,67 @@ def apply_liger_kernel_to_glm4(
                 _patch_rms_norm_module(decoder_layer.post_self_attn_layernorm, in_place=False)
                 _patch_rms_norm_module(decoder_layer.post_mlp_layernorm, in_place=False)
 
+def apply_liger_kernel_to_solar(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Solar models (2 and 3)
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from liger_kernel.transformers.models import modeling_solar
+    from liger_kernel.transformers.models.modeling_solar import SolarModel
+
+    if rope:
+        modeling_solar.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_solar.SolarRMSNorm = LigerRMSNorm
+    if swiglu:
+        modeling_solar.SolarMLP = LigerSwiGLUMLP
+
+    if cross_entropy:
+        logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+        modeling_solar.CrossEntropyLoss = LigerCrossEntropyLoss
+
+    if fused_linear_cross_entropy:
+        modeling_solar.SolarForCausalLM.forward = solar_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules (e.g. SolarRMSNorm or SolarMLP)
+
+        # get the base model from the model instance
+        base_model: SolarModel = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
@@ -1459,6 +1521,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "phi3": apply_liger_kernel_to_phi3,
     "paligemma": apply_liger_kernel_to_paligemma,
+    "solar": apply_liger_kernel_to_solar,
 }
 
 
