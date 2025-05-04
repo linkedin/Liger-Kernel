@@ -18,48 +18,59 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """PyTorch Solar model."""
+
 import math
-from typing import List, Optional, Tuple, Union
+
+from typing import List
+from typing import Optional
+from typing import Tuple
+from typing import Union
 
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
-from torch import nn
-from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
+from torch import nn
+from torch.nn import BCEWithLogitsLoss
+from torch.nn import CrossEntropyLoss
+from torch.nn import MSELoss
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache, SlidingWindowCache, StaticCache
+from transformers.cache_utils import Cache
+from transformers.cache_utils import DynamicCache
+from transformers.cache_utils import SlidingWindowCache
+from transformers.cache_utils import StaticCache
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-from transformers.modeling_outputs import (
-    BaseModelOutputWithPast,
-    CausalLMOutputWithPast,
-    QuestionAnsweringModelOutput,
-    SequenceClassifierOutputWithPast,
-    TokenClassifierOutput,
-)
+from transformers.modeling_outputs import BaseModelOutputWithPast
+from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.modeling_outputs import QuestionAnsweringModelOutput
+from transformers.modeling_outputs import SequenceClassifierOutputWithPast
+from transformers.modeling_outputs import TokenClassifierOutput
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
-from transformers.utils import (
-    add_start_docstrings,
-    add_start_docstrings_to_model_forward,
-    is_flash_attn_2_available,
-    is_flash_attn_greater_or_equal_2_10,
-    logging,
-    replace_return_docstrings,
-)
+from transformers.utils import add_start_docstrings
+from transformers.utils import add_start_docstrings_to_model_forward
+from transformers.utils import is_flash_attn_2_available
+from transformers.utils import is_flash_attn_greater_or_equal_2_10
+from transformers.utils import logging
+from transformers.utils import replace_return_docstrings
+
 from .configuration_solar import SolarConfig
 
-
 if is_flash_attn_2_available():
-    from flash_attn import flash_attn_func, flash_attn_varlen_func
-    from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
     import inspect
-    
+
+    from flash_attn import flash_attn_func
+    from flash_attn import flash_attn_varlen_func
+    from flash_attn.bert_padding import index_first_axis  # noqa
+    from flash_attn.bert_padding import pad_input  # noqa
+    from flash_attn.bert_padding import unpad_input  # noqa
+
     _flash_supports_window_size = "window_size" in list(inspect.signature(flash_attn_func).parameters)
 
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "SolarConfig"
+
 
 # Copied from transformers.models.llama.modeling_llama._get_unpad_data
 def _get_unpad_data(attention_mask):
@@ -72,6 +83,7 @@ def _get_unpad_data(attention_mask):
         cu_seqlens,
         max_seqlen_in_batch,
     )
+
 
 # Copied from transformers.models.llama.modeling_llama.LlamaRMSNorm
 class SolarRMSNorm(nn.Module):
@@ -143,9 +155,7 @@ class SolarDynamicNTKScalingRotaryEmbedding(SolarRotaryEmbedding):
             base = self.base * (
                 (self.scaling_factor * seq_len / self.max_position_embeddings) - (self.scaling_factor - 1)
             ) ** (self.dim / (self.dim - 2))
-            inv_freq = 1.0 / (
-                base ** (torch.arange(0, self.dim, 2, dtype=torch.int64).float().to(x.device) / self.dim)
-            )
+            inv_freq = 1.0 / (base ** (torch.arange(0, self.dim, 2, dtype=torch.int64).float().to(x.device) / self.dim))
             self.register_buffer("inv_freq", inv_freq, persistent=False)  # TODO joao: this may break with compilation
 
         cos, sin = super().forward(x, position_ids)
@@ -204,9 +214,7 @@ class SolarMLP(nn.Module):
             up_proj_slices = self.up_proj.weight.split(slice, dim=0)
             down_proj_slices = self.down_proj.weight.split(slice, dim=1)
 
-            gate_proj = torch.cat(
-                [F.linear(x, gate_proj_slices[i]) for i in range(self.config.pretraining_tp)], dim=-1
-            )
+            gate_proj = torch.cat([F.linear(x, gate_proj_slices[i]) for i in range(self.config.pretraining_tp)], dim=-1)
             up_proj = torch.cat([F.linear(x, up_proj_slices[i]) for i in range(self.config.pretraining_tp)], dim=-1)
 
             intermediate_states = (self.act_fn(gate_proj) * up_proj).split(slice, dim=2)
@@ -377,6 +385,7 @@ class SolarAttention(nn.Module):
             attn_weights = None
 
         return attn_output, attn_weights, past_key_value
+
 
 # Copied from transformers.models.mistral.modeling_mistal.MistralFlashAttention2
 class SolarFlashAttention2(SolarAttention):
@@ -637,9 +646,7 @@ class SolarFlashAttention2(SolarAttention):
         value_layer = index_first_axis(value_layer.reshape(batch_size * kv_seq_len, num_heads, head_dim), indices_k)
 
         if query_length == kv_seq_len:
-            query_layer = index_first_axis(
-                query_layer.reshape(batch_size * kv_seq_len, num_heads, head_dim), indices_k
-            )
+            query_layer = index_first_axis(query_layer.reshape(batch_size * kv_seq_len, num_heads, head_dim), indices_k)
             cu_seqlens_q = cu_seqlens_k
             max_seqlen_in_batch_q = max_seqlen_in_batch_k
             indices_q = indices_k
@@ -1062,10 +1069,10 @@ class SolarModel(SolarPreTrainedModel):
             if layer_idx in self.config.bskcn_2:
                 bskcn_2 = hidden_states
             if layer_idx in self.config.bskcn_3:
-                hidden_states = (bskcn_1*bskcn_tv).to(hidden_states.device) + hidden_states*(1-bskcn_tv)
+                hidden_states = (bskcn_1 * bskcn_tv).to(hidden_states.device) + hidden_states * (1 - bskcn_tv)
             if layer_idx in self.config.bskcn_4:
-                hidden_states = (bskcn_2*bskcn_tv).to(hidden_states.device) + hidden_states*(1-bskcn_tv)
-            
+                hidden_states = (bskcn_2 * bskcn_tv).to(hidden_states.device) + hidden_states * (1 - bskcn_tv)
+
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
@@ -1191,9 +1198,7 @@ class SolarModel(SolarPreTrainedModel):
                 raise ValueError("Custom 4D attention mask should be passed in inverted form with max==0`")
             causal_mask = attention_mask
         else:
-            causal_mask = torch.full(
-                (sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device
-            )
+            causal_mask = torch.full((sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device)
             exclude_mask = torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
             if self.config.sliding_window is not None:
                 if not using_sliding_window_cache or sequence_length > self.config.sliding_window:
@@ -1224,6 +1229,7 @@ class SolarModel(SolarPreTrainedModel):
             causal_mask = AttentionMaskConverter._unmask_unattended(causal_mask, min_dtype)
 
         return causal_mask
+
 
 # Copied from transformers.models.mistral.modeling_mistal.SolarCasualLM
 class SolarForCausalLM(SolarPreTrainedModel):

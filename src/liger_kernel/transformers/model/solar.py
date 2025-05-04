@@ -9,17 +9,16 @@ import torch.nn.functional as F
 
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from liger_kernel.transformers.model.modeling_solar import _CONFIG_FOR_DOC
-from liger_kernel.transformers.model.modeling_solar import SOLAR_INPUTS_DOCSTRING
 from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import replace_return_docstrings
-from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
-from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
+from liger_kernel.transformers.model.modeling_solar import _CONFIG_FOR_DOC
+from liger_kernel.transformers.model.modeling_solar import SOLAR_INPUTS_DOCSTRING
 
 if TYPE_CHECKING:
     from transformers.cache_utils import Cache
+
 
 @add_start_docstrings_to_model_forward(SOLAR_INPUTS_DOCSTRING)
 @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
@@ -28,7 +27,7 @@ def lce_forward(
     input_ids: torch.LongTensor = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+    past_key_values: Optional[Union["Cache", List[torch.FloatTensor]]] = None,
     inputs_embeds: Optional[torch.FloatTensor] = None,
     labels: Optional[torch.LongTensor] = None,
     use_cache: Optional[bool] = None,
@@ -65,12 +64,12 @@ def lce_forward(
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-    output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions       
+    output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
- 
+
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs = self.model(
         input_ids=input_ids,
@@ -84,9 +83,9 @@ def lce_forward(
         return_dict=return_dict,
         cache_position=cache_position,
     )
- 
+
     hidden_states = outputs[0]
- 
+
     loss = None
     logits = None
 
@@ -98,7 +97,7 @@ def lce_forward(
         shift_hidden_states = shift_hidden_states.view(-1, self.config.hidden_size)
         shift_labels = shift_labels.view(-1)
         # Ensure tensors are on the same device
-        shift_labels = shift_labels.to(shift_logits.device)
+        shift_labels = shift_labels.to(shift_hidden_states.device)
         lce = LigerFusedLinearCrossEntropyLoss()
         loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
 
@@ -126,7 +125,7 @@ def lce_forward(
     if not return_dict:
         output = (logits,) + outputs[1:]
         return (loss,) + output if loss is not None else output
- 
+
     return CausalLMOutputWithPast(
         loss=loss,
         logits=logits,

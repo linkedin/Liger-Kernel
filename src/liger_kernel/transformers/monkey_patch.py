@@ -1438,6 +1438,7 @@ def apply_liger_kernel_to_glm4(
                 _patch_rms_norm_module(decoder_layer.post_self_attn_layernorm, in_place=False)
                 _patch_rms_norm_module(decoder_layer.post_mlp_layernorm, in_place=False)
 
+
 def apply_liger_kernel_to_solar(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -1499,6 +1500,7 @@ def apply_liger_kernel_to_solar(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
