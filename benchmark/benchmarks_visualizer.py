@@ -123,7 +123,7 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
     lines = ax.get_lines()
     colors = [line.get_color() for line in lines]
 
-    for (_, group_data), color in zip(df.groupby("kernel_provider"), colors, strict=False):
+    for (_, group_data), color in zip(df.groupby("kernel_provider"), colors):
         # for i, row in group_data.iterrows():
         y_error_lower = group_data["y_value_50"] - group_data["y_value_20"]
         y_error_upper = group_data["y_value_80"] - group_data["y_value_50"]
