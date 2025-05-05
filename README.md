@@ -343,9 +343,9 @@ loss.backward()
 
 - For issues, create a Github ticket in this repository
 - For open discussion, join [our discord channel on GPUMode](https://discord.com/channels/1189498204333543425/1275130785933951039)
-- For formal collaboration, send an email to yannchen@linkedin.com and hning@linkedin.com
+<!-- - For formal collaboration, send an email to yannchen@linkedin.com and hning@linkedin.com -->
 
-## Cite this work
+<!-- ## Cite this work
 
 Biblatex entry:
 ```bib
@@ -359,7 +359,7 @@ Biblatex entry:
       url={https://arxiv.org/abs/2410.10989},
       journal={arXiv preprint arXiv:2410.10989},
 }
-```
+``` -->
 
 ## Star History
 [![Star History Chart](https://api.star-history.com/svg?repos=linkedin/Liger-Kernel&type=Date)](https://www.star-history.com/#linkedin/Liger-Kernel&Date)
