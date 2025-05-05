@@ -175,7 +175,7 @@ def preprocess(
     input_ids = encoding.input_ids
 
     # Mask targets. Only compute loss on the assistant outputs.
-    for conv_index, (conversation, target, prompt) in enumerate(zip(conversations, targets, prompts, strict=False)):
+    for conv_index, (conversation, target, prompt) in enumerate(zip(conversations, targets, prompts)):
         # print(conv_index)
         for turn in conversation:
             if turn["role"] == "assistant":
