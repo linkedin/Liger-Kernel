@@ -68,7 +68,7 @@ def construct_model_and_processor(model_name: str, use_liger: bool) -> torch.nn.
 def _validate_and_extract_the_cauldron(examples) -> dict[str, list]:
     batch_texts = []
     batch_images = []
-    for images, texts in zip(examples["images"], examples["texts"], strict=False):
+    for images, texts in zip(examples["images"], examples["texts"]):
         if not images:
             raise ValueError("No image found in example from the_cauldron dataset")
         if len(images) > 1:
