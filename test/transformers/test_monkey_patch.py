@@ -8,11 +8,12 @@ from unittest.mock import patch
 import pytest
 import torch
 import transformers
-import liger_kernel
 
 from transformers import AutoModelForCausalLM
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
+
+import liger_kernel
 
 from liger_kernel.transformers import LigerBlockSparseTop2MLP
 from liger_kernel.transformers import LigerGEGLUMLP
@@ -830,6 +831,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3():
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
+
 def test_apply_liger_kernel_to_instance_for_solar():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("liger_kernel.transformers.model.modeling_solar"):
@@ -843,6 +845,7 @@ def test_apply_liger_kernel_to_instance_for_solar():
             num_hidden_layers=2,
         )
         from liger_kernel.transformers.model.modeling_solar import SolarForCausalLM
+
         dummy_model_instance = SolarForCausalLM._from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
@@ -866,6 +869,7 @@ def test_apply_liger_kernel_to_instance_for_solar():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
 
 @pytest.mark.skipif(not is_qwen2_vl_available(), reason="qwen2_vl module not available")
 def test_apply_liger_kernel_to_instance_for_qwen2_vl():
