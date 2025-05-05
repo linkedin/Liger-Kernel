@@ -225,22 +225,26 @@ def lce_forward(
     )
 
     hidden_states = outputs[0]
+    # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+    slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+    kept_hidden_states = hidden_states[:, slice_indices, :]
 
+    shift_labels = loss_kwargs.pop("shift_labels", None)
     logits = None
     loss = None
     # if in training mode, don't materialize logits
-    if self.training and (labels is not None):
+    if self.training and (labels is not None or shift_labels is not None):
         loss = LigerForCausalLMLoss(
-            hidden_states=hidden_states,
+            hidden_states=kept_hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
+            shift_labels=shift_labels,
             hidden_size=self.config.hidden_size,
             **loss_kwargs,
         )
 
     else:  # if in inference mode materialize logits
-        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :])
+        logits = self.lm_head(kept_hidden_states)
 
         loss = None
         if labels is not None:

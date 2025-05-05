@@ -27,6 +27,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
         epsilon_high: float = 0.2,
         temperature: float = 1.0,
         use_ref_model: bool = True,
+        loss_type: str = "bnpo",
+        max_completion_length: int | None = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
@@ -36,6 +38,10 @@ class TorchLMHeadGRPO(torch.nn.Module):
         self.epsilon_high = epsilon_high
         self.temperature = temperature
         self.use_ref_model = use_ref_model
+        self.loss_type = loss_type
+        self.max_completion_length = max_completion_length
+        if self.loss_type == "dr_grpo":
+            assert self.max_completion_length is not None, "max_completion_length must be provided for dr_grpo"
 
     def forward(
         self,
@@ -64,7 +70,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
                 with torch.no_grad():
                     ref_logits = ref_input @ self.ref_lin.weight.t()
                     if self.ref_lin.bias is not None:
-                        ref_logits = ref_logits + self.ref_lin.bias
+                        ref_logits = ref_logits + self.ref_lin.bias.float()
                     if self.temperature != 1.0:
                         ref_logits = ref_logits / self.temperature
                     ref_log_probs = F.log_softmax(ref_logits.float(), dim=-1)
@@ -89,8 +95,15 @@ class TorchLMHeadGRPO(torch.nn.Module):
             kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
             per_token_loss = per_token_loss + self.beta * kl_div
 
-        # Apply masking and normalize
-        loss = (per_token_loss * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0)
+        # Apply masking and calculate loss based on loss_type
+        if self.loss_type == "grpo":
+            loss = ((per_token_loss * attention_mask).sum(-1) / torch.clamp(attention_mask.sum(-1), min=1.0)).mean()
+        elif self.loss_type == "bnpo":
+            loss = (per_token_loss * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0)
+        elif self.loss_type == "dr_grpo":
+            loss = (per_token_loss * attention_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
+        else:
+            raise ValueError(f"Unknown loss type: {self.loss_type}")
 
         # Compute metrics
         metrics = []
@@ -115,6 +128,8 @@ class LigerLMHeadGRPO(torch.nn.Module):
         epsilon_high: float = 0.2,
         temperature: float = 1.0,
         use_ref_model: bool = True,
+        loss_type: str = "bnpo",
+        max_completion_length: int | None = None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
@@ -126,6 +141,8 @@ class LigerLMHeadGRPO(torch.nn.Module):
             temperature=temperature,
             use_ref_model=use_ref_model,
             compiled=True,
+            loss_type=loss_type,
+            max_completion_length=max_completion_length,
         )
 
     def forward(
@@ -178,14 +195,14 @@ class LigerLMHeadGRPO(torch.nn.Module):
     ],
 )
 @pytest.mark.parametrize(
-    "use_ref_model, use_ref_per_token_logps",
+    "use_ref_model, use_ref_per_token_logps, old_per_token_logps",
     [
-        (True, True),
-        (True, False),
-        (False, False),
+        (True, True, True),
+        (True, False, False),
+        (False, False, True),
     ],
 )
-@pytest.mark.parametrize("old_per_token_logps", [True, False])
+@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo"])
 def test_correctness(
     B,
     T,
@@ -203,9 +220,12 @@ def test_correctness(
     use_ref_per_token_logps,
     use_ref_model,
     old_per_token_logps,
+    loss_type,
 ):
     # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
+    max_completion_length = T if loss_type == "dr_grpo" else None
+
     torch_lm_head_grpo = TorchLMHeadGRPO(
         H=H,
         V=V,
@@ -216,6 +236,8 @@ def test_correctness(
         epsilon_high=epsilon_high,
         temperature=temperature,
         use_ref_model=use_ref_model,
+        loss_type=loss_type,
+        max_completion_length=max_completion_length,
     )
     liger_lm_head_grpo = LigerLMHeadGRPO(
         H=H,
@@ -227,6 +249,8 @@ def test_correctness(
         epsilon_high=epsilon_high,
         temperature=temperature,
         use_ref_model=use_ref_model,
+        loss_type=loss_type,
+        max_completion_length=max_completion_length,
     )
 
     # Initialize weights
@@ -319,7 +343,7 @@ def test_correctness(
     loss1.backward()
     loss2.backward()
 
-    # Check gradients match
+    # Check gradients match for loss_type
     assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
     assert_verbose_allclose(
         torch_lm_head_grpo.lin.weight.grad,
@@ -364,6 +388,7 @@ def test_functional_correctness(
 ):
     # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
+    max_completion_length = T
     _input = torch.randn(B, T, H, device=device, dtype=dtype) * scalar
     input1 = _input.detach().clone().requires_grad_(True)
     input2 = _input.detach().clone().requires_grad_(True)
@@ -418,8 +443,10 @@ def test_functional_correctness(
         0.04,
         0.2,
         0.2,
+        "bnpo",
+        max_completion_length,
         1.0,
-        True,
+        False,
         True,
         1,
     )
@@ -439,8 +466,10 @@ def test_functional_correctness(
         0.04,
         0.2,
         0.2,
+        "bnpo",
+        max_completion_length,
         1.0,
-        True,
+        False,
         True,
         1,
     )
