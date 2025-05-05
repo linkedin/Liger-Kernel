@@ -1467,8 +1467,8 @@ def apply_liger_kernel_to_solar(
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
 
-    from liger_kernel.transformers.models import modeling_solar
-    from liger_kernel.transformers.models.modeling_solar import SolarModel
+    from liger_kernel.transformers.model import modeling_solar
+    from liger_kernel.transformers.model.modeling_solar import SolarModel
 
     if rope:
         modeling_solar.apply_rotary_pos_emb = liger_rotary_pos_emb
