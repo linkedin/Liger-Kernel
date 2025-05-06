@@ -5,6 +5,34 @@ import torch
 from torch.nn import functional as F
 
 
+class ChunkMatmul(torch.autograd.Function):
+    buf: dict[str, torch.Tensor | int] = {"count": 0}
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        if weight.requires_grad:
+            ctx.save_for_backward(x, weight)
+            ChunkMatmul.buf["count"] += 1
+        return x.matmul(weight.T)
+
+    @staticmethod
+    def backward(ctx, grad_out: torch.Tensor):
+        x, weight = ctx.saved_tensors
+        grad_x = grad_out.matmul(weight)
+        grad_out_flat = grad_out.view(-1, grad_out.shape[-1])
+        x_flat = x.view(-1, x.shape[-1])
+        if "grad" not in ChunkMatmul.buf:
+            ChunkMatmul.buf["grad"] = torch.zeros_like(weight)
+        ChunkMatmul.buf["grad"].addmm_(grad_out_flat.T, x_flat)
+        ChunkMatmul.buf["count"] -= 1
+        if ChunkMatmul.buf["count"] == 0:
+            grad_w = ChunkMatmul.buf["grad"]
+            del ChunkMatmul.buf["grad"]
+        else:
+            grad_w = None
+        return grad_x, grad_w
+
+
 class LigerChunkedLinearPreferenceBase(torch.nn.Module):
     def __init__(
         self,
@@ -240,10 +268,10 @@ class LigerChunkedLinearPreferenceBase(torch.nn.Module):
     ):
         ignore_index = self.ignore_index
 
-        logits_chunk = input_chunk @ weight.t()
+        logits_chunk = ChunkMatmul.apply(input_chunk, weight)
         if bias is not None:
             logits_chunk = logits_chunk + bias
-        log_probs_chunk = F.log_softmax(logits_chunk.float(), dim=-1)
+        log_probs_chunk = F.log_softmax(logits_chunk, dim=-1, dtype=torch.float32)
 
         chosen_nll_loss = 0.0
         if compute_nll_loss:
