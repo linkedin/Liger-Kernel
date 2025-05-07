@@ -1129,6 +1129,5 @@ def test_mini_model(
     for expected_param, actual_param in zip(
         expected_output["model"].named_parameters(),
         actual_output["model"].named_parameters(),
-        strict=False,
     ):
         assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)
