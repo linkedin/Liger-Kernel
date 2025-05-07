@@ -17,8 +17,6 @@ from transformers.models.phi3 import Phi3Config
 from transformers.models.phi3 import Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen2 import Qwen2ForCausalLM
-from liger_kernel.transformers.model.configuration_solar import SolarConfig
-from liger_kernel.transformers.model.modeling_solar import SolarForCausalLM
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
@@ -37,6 +35,8 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
 from liger_kernel.transformers import apply_liger_kernel_to_solar
+from liger_kernel.transformers.model.configuration_solar import SolarConfig
+from liger_kernel.transformers.model.modeling_solar import SolarForCausalLM
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
