@@ -34,6 +34,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
@@ -53,6 +54,7 @@ from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
+from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 from test.utils import supports_bfloat16
@@ -87,6 +89,8 @@ except ImportError:
 try:
     from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
     from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+    from transformers.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
+    from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeForCausalLM
 
     QWEN3_AVAILABLE = True
 except ImportError:
@@ -392,6 +396,41 @@ if QWEN3_AVAILABLE:
             use_cache=True,
             vocab_size=32000,
             attn_implementation="sdpa",
+        ),
+    )
+
+    MINI_MODEL_SETUPS["mini_qwen3_moe"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_moe,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_moe,
+        model_class=Qwen3MoeForCausalLM,
+        mini_model_config=Qwen3MoeConfig(
+            vocab_size=151936,
+            hidden_size=896,
+            intermediate_size=4864,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=True,
+            tie_word_embeddings=False,
+            rope_theta=10000.0,
+            rope_scaling=None,
+            attention_bias=False,
+            use_sliding_window=False,
+            sliding_window=4096,
+            max_window_layers=28,
+            attention_dropout=0.0,
+            decoder_sparse_step=1,
+            moe_intermediate_size=768,
+            num_experts_per_tok=2,
+            num_experts=8,
+            norm_topk_prob=False,
+            output_router_logits=False,
+            router_aux_loss_coef=0.001,
+            mlp_only_layers=None,
         ),
     )
 
@@ -890,6 +929,25 @@ def run_mini_model(
         ),
         pytest.param(
             "mini_qwen3",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN3_AVAILABLE,
+                    reason="Qwen3 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_moe",
             32,
             1e-4,
             torch.bfloat16,
