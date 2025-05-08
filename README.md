@@ -8,7 +8,6 @@
         <th style="padding: 10px;" colspan="2">Stable</th>
         <th style="padding: 10px;" colspan="2">Nightly</th>
         <th style="padding: 10px;">Discord</th>
-        <th style="padding: 10px;">Build</th>
     </tr>
     <tr>
         <td style="padding: 10px;">
@@ -35,23 +34,6 @@
             <a href="https://discord.gg/gpumode">
                 <img src="https://dcbadge.vercel.app/api/server/gpumode?style=flat" alt="Join Our Discord">
             </a>
-        </td>
-        <td style="padding: 10px;">
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml/badge.svg?event=schedule" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?event=schedule" alt="Build">
-                </a>
-            </div>
-            <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?event=schedule" alt="Build">
-                </a>
-            </div>
         </td>
     </tr>
 </table>
@@ -338,6 +320,36 @@ loss.backward()
 - [Lightning AI](https://lightning.ai/): Integrating Liger Kernel into Lightning Thunder.
 - [Axolotl](https://axolotl.ai/): Integrating Liger Kernel into Axolotl.
 - [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory): Integrating Liger Kernel into Llama-Factory.
+
+
+## CI status
+
+<table style="width: 100%; text-align: center; border-collapse: collapse;">
+    <tr>
+        <th style="padding: 10px;">Build</th>
+    </tr>
+    <tr>
+        <td style="padding: 10px;">
+            <div style="display: block;">
+                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml/badge.svg?event=schedule" alt="Build">
+                </a>
+            </div>
+            <div style="display: block;">
+                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?event=schedule" alt="Build">
+                </a>
+            </div>
+            <div style="display: block;">
+                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?event=schedule" alt="Build">
+                </a>
+            </div>
+        </td>
+    </tr>
+</table>
+
+
 
 ## Contact
 
