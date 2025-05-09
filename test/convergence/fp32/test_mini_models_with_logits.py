@@ -403,7 +403,7 @@ if QWEN3_AVAILABLE:
         liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_moe,
         model_class=Qwen3MoeForCausalLM,
         mini_model_config=Qwen3MoeConfig(
-            vocab_size=151936,
+            vocab_size=32000,  # 151936
             hidden_size=896,
             intermediate_size=4864,
             num_hidden_layers=4,
