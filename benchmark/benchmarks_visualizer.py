@@ -102,6 +102,10 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
         df (pd.DataFrame): Filtered benchmark dataframe.
         config (VisualizationsConfig): Configuration object for the visualizations script.
     """
+    for col in ["y_value_20", "y_value_50", "y_value_80"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
     xlabel = df["x_label"].iloc[0]
     ylabel = f"{config.metric_name} ({df['metric_unit'].iloc[0]})"
     # Sort by "kernel_provider" to ensure consistent color assignment
@@ -109,15 +113,26 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
 
     plt.figure(figsize=(10, 6))
     sns.set(style="whitegrid")
-    ax = sns.lineplot(
-        data=df,
-        x="x_value",
-        y="y_value_50",
-        hue="kernel_provider",
-        marker="o",
-        palette="tab10",
-        errorbar=("ci", None),
-    )
+    try:
+        ax = sns.lineplot(
+            data=df,
+            x="x_value",
+            y="y_value_50",
+            hue="kernel_provider",
+            marker="o",
+            palette="tab10",
+            errorbar=("ci", None),
+        )
+    except Exception:
+        ax = sns.lineplot(
+            data=df,
+            x="x_value",
+            y="y_value_50",
+            hue="kernel_provider",
+            marker="o",
+            palette="tab10",
+            errorbar=None,
+        )
 
     # Seaborn can't plot pre-computed error bars, so we need to do it manually
     lines = ax.get_lines()
