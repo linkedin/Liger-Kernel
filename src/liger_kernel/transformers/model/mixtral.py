@@ -164,7 +164,7 @@ def lce_forward(
     return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
-    **loss_kwargs,
+    **kwargs,
 ) -> Union[Tuple, MoeCausalLMOutputWithPast]:
     r"""
     Args:
@@ -222,6 +222,7 @@ def lce_forward(
         output_router_logits=output_router_logits,
         return_dict=return_dict,
         cache_position=cache_position,
+        **kwargs,
     )
 
     hidden_states = outputs[0]
@@ -229,7 +230,7 @@ def lce_forward(
     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
     kept_hidden_states = hidden_states[:, slice_indices, :]
 
-    shift_labels = loss_kwargs.pop("shift_labels", None)
+    shift_labels = kwargs.pop("shift_labels", None)
     logits = None
     loss = None
     # if in training mode, don't materialize logits
@@ -240,7 +241,7 @@ def lce_forward(
             labels=labels,
             shift_labels=shift_labels,
             hidden_size=self.config.hidden_size,
-            **loss_kwargs,
+            **kwargs,
         )
 
     else:  # if in inference mode materialize logits
@@ -248,7 +249,7 @@ def lce_forward(
 
         loss = None
         if labels is not None:
-            loss = self.loss_function(logits, labels, self.vocab_size, **loss_kwargs)
+            loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
     aux_loss = None
     if output_router_logits:
         aux_loss = load_balancing_loss_func(
