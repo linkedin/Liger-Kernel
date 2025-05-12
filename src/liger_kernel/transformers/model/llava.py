@@ -223,6 +223,7 @@ def lce_forward(
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
     image_sizes: torch.Tensor = None,
+    skip_logits: Optional[bool] = None,
     **lm_kwargs,
 ) -> Union[Tuple, LlavaCausalLMOutputWithPast]:
     r"""
@@ -325,7 +326,10 @@ def lce_forward(
     loss = None
     logits = None
 
-    if self.training and (labels is not None):
+    # Overwrite skip_logits, since llava never materializes logits
+    skip_logits = self.training and labels is not None
+
+    if skip_logits:
         # Shift so that tokens < n predict n
         if attention_mask is not None:
             # we use the input attention mask to shift the logits and labels, because it is 2D.
