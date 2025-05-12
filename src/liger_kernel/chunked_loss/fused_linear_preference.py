@@ -222,7 +222,6 @@ class LigerFusedLinearPreferenceBase(torch.autograd.Function):
             (_ref_chosen_input_chunks if use_ref_model else [None] * len(_chosen_input_chunks)),
             (_ref_rejected_input_chunks if use_ref_model else [None] * len(_rejected_input_chunks)),
             (_chosen_nll_target_chunks if nll_target is not None else [None] * len(_chosen_input_chunks)),
-            strict=False,
         ):
             input_chunk = torch.cat([chosen_input_chunk, rejected_input_chunk], dim=0)
             ref_input_chunk = (

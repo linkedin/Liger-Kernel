@@ -128,7 +128,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         compute_nll_loss: bool = False,
         compiled: bool = True,
         use_ref_model: bool = True,
-        average_log_prob: bool = True,
+        average_log_prob: bool = False,
         chunk_size: int = 1,
     ):
         """
