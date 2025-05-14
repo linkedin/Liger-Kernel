@@ -5,16 +5,10 @@ from typing import Union
 import torch
 
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.qwen3.modeling_qwen3 import _CONFIG_FOR_DOC
-from transformers.models.qwen3.modeling_qwen3 import QWEN3_INPUTS_DOCSTRING
-from transformers.utils import add_start_docstrings_to_model_forward
-from transformers.utils import replace_return_docstrings
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 
-@add_start_docstrings_to_model_forward(QWEN3_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward(
     self,
     input_ids: Optional[torch.LongTensor] = None,
