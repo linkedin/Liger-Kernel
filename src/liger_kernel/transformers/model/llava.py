@@ -327,7 +327,7 @@ def lce_forward(
     logits = None
 
     # Overwrite skip_logits, since llava never materializes logits
-    skip_logits = self.training and labels is not None
+    skip_logits = labels is not None
 
     if skip_logits:
         # Shift so that tokens < n predict n
