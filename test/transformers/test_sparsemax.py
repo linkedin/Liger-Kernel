@@ -33,16 +33,14 @@ def torch_sparsemax(input_tensor: torch.Tensor, dim: int = -1) -> torch.Tensor:
 @pytest.mark.parametrize(
     "batch_size, seq_len, features",
     [
-        # (2, 128, 512),
+        (2, 128, 512),
         (5, 123, 123),
     ],
 )
 @pytest.mark.parametrize("dim", [-1, 1])
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
-    [
-        (torch.float32, 1e-5, 1e-5),
-    ],
+    [(torch.float32, 1e-5, 1e-5)],
 )
 def test_liger_sparsemax_correctness(batch_size, seq_len, features, dim, dtype, atol, rtol):
     set_seed(0)
@@ -75,8 +73,8 @@ def test_liger_sparsemax_correctness(batch_size, seq_len, features, dim, dtype, 
 @pytest.mark.parametrize(
     "batch_size, seq_len, features",
     [
-        # (2, 128, 512),
-        # (5, 123, 123),
+        (2, 128, 512),
+        (5, 123, 123),
     ],
 )
 @pytest.mark.parametrize("dim", [-1, 1])

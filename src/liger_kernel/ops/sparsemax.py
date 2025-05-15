@@ -7,74 +7,65 @@ from liger_kernel.ops.utils import ensure_contiguous
 
 
 @triton.jit
-def _sparsemax_forward_kernel_sort(
+def _sparsemax_forward_kernel(
     x_ptr,
-    x_stride,
+    x_stride_row,
+    sorted_x_ptr,
+    sorted_x_stride_row,
     o_ptr,
-    o_stride,
+    o_stride_row,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
     num_warps: tl.constexpr,
 ):
-    row = tl.program_id(0)
-
-    x_row = x_ptr + row * x_stride
-    o_row = o_ptr + row * o_stride
+    pid_row = tl.program_id(0)
+    ptr_x_data_row = x_ptr + pid_row * x_stride_row
+    ptr_sorted_x_data_row = sorted_x_ptr + pid_row * sorted_x_stride_row
+    ptr_output_row = o_ptr + pid_row * o_stride_row
 
     offs = tl.arange(0, BLOCK_SIZE)
     mask = offs < n_cols
 
-    x = tl.load(x_row + offs, mask=mask, other=-float("inf")).to(tl.float32)
+    z_sorted_block = tl.load(
+        ptr_sorted_x_data_row + offs,
+        mask=mask,
+        other=-float("inf"),
+        cache_modifier=".ca",
+    ).to(tl.float32)
 
-    z_sorted, _ = tl.sort(x, 0, descending=True)
-
-    z_valid = tl.where(mask, z_sorted, 0.0)
+    z_valid = tl.where(mask, z_sorted_block, 0.0)
     cssv = tl.cumsum(z_valid, 0)
 
     r = (offs + 1).to(tl.float32)
     safe_r = tl.where(mask, r, 1.0)
+
     t_vec = (cssv - 1.0) / safe_r
 
-    support = (z_sorted > t_vec) & mask
+    support = (z_sorted_block > t_vec) & mask
 
-    k = tl.sum(support.to(tl.float32), 0)
-    k = tl.maximum(k, 1.0)
+    k_int = tl.sum(support.to(tl.int32), 0)
+    k_clamped_int = tl.maximum(k_int, 1)
+    k = k_clamped_int.to(tl.float32)
 
-    s = tl.sum(tl.where(support, z_sorted, 0.0), 0)
+    s = tl.sum(tl.where(support, z_sorted_block, 0.0), 0)
+
     tau = (s - 1.0) / k
-    y = tl.maximum(x - tau, 0.0)
 
-    tl.store(o_row + offs, y.to(o_row.dtype.element_ty), mask=mask)
+    x_block = tl.load(
+        ptr_x_data_row + offs,
+        mask=mask,
+        other=0.0,
+        cache_modifier=".ca",
+    ).to(tl.float32)
 
+    y = tl.maximum(x_block - tau, 0.0)
 
-@triton.jit
-def _sparsemax_forward_kernel_no_sort(
-    x_ptr,
-    x_stride,
-    tau_ptr,
-    tau_stride,
-    o_ptr,
-    o_stride,
-    n_cols,
-    BLOCK_SIZE: tl.constexpr,
-    num_warps: tl.constexpr,
-):
-    row = tl.program_id(0)
-    x_row = x_ptr + row * x_stride
-    tau_row = tau_ptr + row * tau_stride
-    o_row = o_ptr + row * o_stride
-
-    tau = tl.load(tau_row).to(tl.float32)
-    out_ty = o_row.dtype.element_ty
-
-    for i in tl.range(0, tl.cdiv(n_cols, BLOCK_SIZE)):
-        offs = i * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        mask = offs < n_cols
-
-        x_fp32 = tl.load(x_row + offs, mask=mask, other=0.0).to(tl.float32)
-        y = x_fp32 - tau
-        y = tl.where(y > 0.0, y, 0.0)
-        tl.store(o_row + offs, y.to(out_ty), mask=mask)
+    tl.store(
+        ptr_output_row + offs,
+        y.to(ptr_output_row.dtype.element_ty),
+        mask=mask,
+        cache_modifier=".cs",
+    )
 
 
 @triton.jit
@@ -94,22 +85,24 @@ def _sparsemax_backward_kernel(
     for i in tl.range(0, tl.cdiv(n_cols, BLOCK_SIZE)):
         offs_iter = i * BLOCK_SIZE + offs
         mask_iter = offs_iter < n_cols
-        o_val = tl.load(o_row + offs_iter, mask=mask_iter, other=0.0).to(tl.float32)
+        o_val = tl.load(o_row + offs_iter, mask=mask_iter, other=0.0, cache_modifier=".ca").to(tl.float32)
         go_val = tl.load(go_row + offs_iter, mask=mask_iter, other=0.0).to(tl.float32)
         supp = o_val > 0.0
         go_sum += tl.sum(tl.where(supp, go_val, 0.0))
         supp_cnt += tl.sum(supp.to(tl.float32))
 
-    v_hat = go_sum / tl.maximum(supp_cnt, 1e-9)
-
     for i in tl.range(0, tl.cdiv(n_cols, BLOCK_SIZE)):
         offs_iter = i * BLOCK_SIZE + offs
         mask_iter = offs_iter < n_cols
-        o_val = tl.load(o_row + offs_iter, mask=mask_iter, other=0.0).to(tl.float32)
+        o_val = tl.load(o_row + offs_iter, mask=mask_iter, other=0.0, cache_modifier=".ca").to(tl.float32)
         go_val = tl.load(go_row + offs_iter, mask=mask_iter, other=0.0).to(tl.float32)
         supp = o_val > 0.0
-        gi_val = tl.where(supp, go_val - v_hat, 0.0)
-        tl.store(gi_row + offs_iter, gi_val.to(gi_row.dtype.element_ty), mask=mask_iter)
+        gi_val = tl.where(
+            supp,
+            go_val - tl.cast(go_sum / tl.maximum(supp_cnt, 1e-6), gi_row.dtype.element_ty).to(tl.float32),
+            0.0,
+        )
+        tl.store(gi_row + offs_iter, gi_val.to(gi_row.dtype.element_ty), mask=mask_iter, cache_modifier=".wb")
 
 
 class LigerSparsemaxFunction(torch.autograd.Function):
@@ -129,37 +122,19 @@ class LigerSparsemaxFunction(torch.autograd.Function):
         out_flat = torch.empty_like(x_flat)
         grid = (n_rows,)
 
-        if n_cols <= BLOCK_SIZE:
-            _sparsemax_forward_kernel_sort[grid](
-                x_flat,
-                x_flat.stride(0),
-                out_flat,
-                out_flat.stride(0),
-                n_cols,
-                BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=num_warps,
-            )
-        else:
-            x_f32 = x_flat.to(torch.float32)
-            x_sorted, _ = torch.sort(x_f32, dim=-1, descending=True)
-            csum = torch.cumsum(x_sorted, dim=-1)
-            r = torch.arange(1, n_cols + 1, device=x.device, dtype=torch.float32).view(1, -1)
-            bound = 1 + r * x_sorted
-            support = bound > csum
-            k = support.sum(dim=-1, keepdim=True).clamp(min=1)
-            s = (x_sorted * support).sum(dim=-1, keepdim=True)
-            tau = ((s - 1) / k).to(x.dtype).contiguous()  # [n_rows, 1]
-            _sparsemax_forward_kernel_no_sort[grid](
-                x_flat,
-                x_flat.stride(0),
-                tau,
-                tau.stride(0),
-                out_flat,
-                out_flat.stride(0),
-                n_cols,
-                BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=num_warps,
-            )
+        x_sorted_flat = torch.sort(x_flat.float(), dim=-1, descending=True).values
+
+        _sparsemax_forward_kernel[grid](
+            x_flat,
+            x_flat.stride(0),
+            x_sorted_flat,
+            x_sorted_flat.stride(0),
+            out_flat,
+            out_flat.stride(0),
+            n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
 
         ctx.save_for_backward(out_flat)
         return out_flat.view_as(x_sw).transpose(dim, -1)
