@@ -5,6 +5,7 @@ from typing import Union
 
 import torch
 
+from torch.nn import CrossEntropyLoss
 from transformers.models.llava.modeling_llava import _CONFIG_FOR_DOC
 from transformers.models.llava.modeling_llava import LLAVA_INPUTS_DOCSTRING
 from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast
@@ -195,7 +196,22 @@ def lce_forward_deprecated(
 
         lce = LigerFusedLinearCrossEntropyLoss()
         loss = lce(self.language_model.lm_head.weight, shift_hidden_states, shift_labels)
-
+    else:
+        logits = self.language_model.lm_head(hidden_states)
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            if attention_mask is not None:
+                shift_attention_mask = attention_mask[..., 1:]
+                shift_logits = logits[..., :-1, :][shift_attention_mask.to(logits.device) != 0].contiguous()
+                shift_labels = labels[..., 1:][shift_attention_mask.to(labels.device) != 0].contiguous()
+            else:
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1).to(shift_logits.device)
+            )
     if not return_dict:
         # NOTE: This part has not been tested.
         output = outputs[1:]
@@ -353,6 +369,29 @@ def lce_forward(
             shift_hidden_states.view(-1, shift_hidden_states.size(-1)),
             shift_labels.view(-1).to(shift_hidden_states.device),
         )
+    else:
+        logits = self.language_model.lm_head(hidden_states)
+        if labels is not None:
+            # Upcast to float if we need to compute the loss to avoid potential precision issues
+            logits = logits.float()
+            shift_logits = logits[..., :-1, :]
+            shift_labels = labels[..., 1:]
+            if attention_mask is not None:
+                # we use the input attention mask to shift the logits and labels, because it is 2D.
+                # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
+                shift_attention_mask = attention_mask[:, -shift_logits.shape[1] :].to(logits.device)
+                shift_logits = shift_logits[shift_attention_mask.to(logits.device) != 0].contiguous()
+                shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
+            else:
+                shift_logits = shift_logits.contiguous()
+                shift_labels = shift_labels.contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+
+            flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
+            flat_labels = shift_labels.view(-1).to(shift_logits.device)
+            loss = loss_fct(flat_logits, flat_labels)
+
 
     if not return_dict:
         # NOTE: This part has not been tested.
