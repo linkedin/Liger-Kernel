@@ -7,19 +7,13 @@ import torch
 
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
-from transformers.models.mixtral.modeling_mixtral import _CONFIG_FOR_DOC
-from transformers.models.mixtral.modeling_mixtral import MIXTRAL_INPUTS_DOCSTRING
 from transformers.models.mixtral.modeling_mixtral import load_balancing_loss_func
-from transformers.utils import add_start_docstrings_to_model_forward
-from transformers.utils import replace_return_docstrings
 from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 
-@add_start_docstrings_to_model_forward(MIXTRAL_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward_deprecated(
     self,
     input_ids: torch.LongTensor = None,
@@ -146,8 +140,6 @@ def lce_forward_deprecated(
 
 
 @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-@add_start_docstrings_to_model_forward(MIXTRAL_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 # Ignore copy
 def lce_forward(
     self,
