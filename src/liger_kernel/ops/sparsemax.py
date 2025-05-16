@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import torch
 import triton
 import triton.language as tl
@@ -105,63 +107,75 @@ def _sparsemax_backward_kernel(
         tl.store(gi_row + offs_iter, gi_val.to(gi_row.dtype.element_ty), mask=mask_iter, cache_modifier=".wb")
 
 
+def _sparsemax_forward(x: torch.Tensor, dim: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    if dim < 0:
+        dim += x.dim()
+    x_sw = x.transpose(dim, -1).contiguous()
+    n_cols = x_sw.size(-1)
+    n_rows = x_sw.numel() // n_cols
+    x_flat = x_sw.view(n_rows, n_cols)
+
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    out_flat = torch.empty_like(x_flat)
+    grid = (n_rows,)
+
+    x_sorted_flat = torch.sort(x_flat.float(), dim=-1, descending=True).values
+
+    _sparsemax_forward_kernel[grid](
+        x_flat,
+        x_flat.stride(0),
+        x_sorted_flat,
+        x_sorted_flat.stride(0),
+        out_flat,
+        out_flat.stride(0),
+        n_cols,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
+    )
+
+    y = out_flat.view_as(x_sw).transpose(dim, -1)
+    return y, out_flat
+
+
+def _sparsemax_backward(
+    grad_out: torch.Tensor,
+    out_flat: torch.Tensor,
+    dim: int,
+) -> torch.Tensor:
+    grad_sw = grad_out.transpose(dim, -1).contiguous()
+    n_cols = grad_sw.size(-1)
+    n_rows = grad_sw.numel() // n_cols
+    go_flat = grad_sw.view(n_rows, n_cols)
+
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    dx_flat = torch.empty_like(go_flat)
+    grid = (n_rows,)
+    _sparsemax_backward_kernel[grid](
+        out_flat,
+        go_flat,
+        dx_flat,
+        out_flat.stride(0),
+        n_cols,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
+    )
+
+    dx = dx_flat.view_as(grad_sw).transpose(dim, -1)
+    return dx
+
+
 class LigerSparsemaxFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(ctx, x: torch.Tensor, dim: int):
-        if dim < 0:
-            dim += x.dim()
-        ctx.dim = dim
-
-        x_sw = x.transpose(dim, -1).contiguous()
-        n_cols = x_sw.size(-1)
-        n_rows = x_sw.numel() // n_cols
-        x_flat = x_sw.view(n_rows, n_cols)
-
-        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-        out_flat = torch.empty_like(x_flat)
-        grid = (n_rows,)
-
-        x_sorted_flat = torch.sort(x_flat.float(), dim=-1, descending=True).values
-
-        _sparsemax_forward_kernel[grid](
-            x_flat,
-            x_flat.stride(0),
-            x_sorted_flat,
-            x_sorted_flat.stride(0),
-            out_flat,
-            out_flat.stride(0),
-            n_cols,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-        )
-
+        y, out_flat = _sparsemax_forward(x, dim)
         ctx.save_for_backward(out_flat)
-        return out_flat.view_as(x_sw).transpose(dim, -1)
+        ctx.dim = dim
+        return y
 
     @staticmethod
     @ensure_contiguous
     def backward(ctx, grad_out: torch.Tensor):
         (out_flat,) = ctx.saved_tensors
-        dim = ctx.dim
-
-        go_sw = grad_out.transpose(dim, -1).contiguous()
-        n_cols = go_sw.size(-1)
-        n_rows = go_sw.numel() // n_cols
-        go_flat = go_sw.view(n_rows, n_cols)
-
-        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-        gi_flat = torch.empty_like(go_flat)
-        grid = (n_rows,)
-
-        _sparsemax_backward_kernel[grid](
-            out_flat,
-            go_flat,
-            gi_flat,
-            out_flat.stride(0),
-            n_cols,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-        )
-
-        return gi_flat.view_as(go_sw).transpose(dim, -1), None
+        dx = _sparsemax_backward(grad_out, out_flat, ctx.dim)
+        return dx, None
