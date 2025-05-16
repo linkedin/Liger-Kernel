@@ -118,10 +118,16 @@ def bench_speed_sparse_multi_token_attention(input: SingleBenchmarkRunInput) -> 
         elif provider == "torch":
             return torch_attn(x)
 
+    print(f"Starting Warmup for input size: {x_shape}")
+    _ = fwd()
+    if mode in ("backward", "full"):
+        y = _
+        y.backward(dy, retain_graph=True)
+    print("Done Warmup")
+
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, grad_to_none=[x], rep=100, quantiles=QUANTILES)
     elif mode == "backward":
-        y = fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(dy, retain_graph=True),
             grad_to_none=[x],
@@ -216,7 +222,7 @@ if __name__ == "__main__":
         "kernel_name": "sparse_multi_token_attention",
         "x_name": "L",
         "x_label": "sequence length",
-        "x_values": [2**i for i in range(5, 11)],
+        "x_values": [2**i for i in range(5, 10)],
         "kernel_providers": ["liger", "torch"],
         "extra_benchmark_configs": [
             {
