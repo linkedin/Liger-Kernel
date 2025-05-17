@@ -12,22 +12,35 @@ from liger_kernel.transformers.dyt import LigerDyT
 from liger_kernel.transformers.functional import liger_dyt
 
 
-class TorchDyT(nn.Module):
-    def __init__(self, hidden_size, init_alpha=0.5):
+# @torch.compile    
+def torch_dyt_with_beta(x, alpha, gamma, beta):
+    return gamma * torch.tanh(x * alpha) + beta
+
+# @torch.compile    
+def torch_dyt_without_beta(x, alpha, gamma):
+    return gamma * torch.tanh(x * alpha)
+
+class TorchDyT(torch.nn.Module):
+    def __init__(self, hidden_size, beta=True, init_alpha=0.5):
         super().__init__()
-        self.alpha = nn.Parameter(torch.ones(1) * init_alpha)
-        self.gamma = nn.Parameter(torch.ones(hidden_size))
-        self.beta = nn.Parameter(torch.zeros(hidden_size))
+        self.alpha = torch.nn.Parameter(torch.ones(1) * init_alpha)
+        self.gamma = torch.nn.Parameter(torch.ones(hidden_size))
+        self.beta = None
+        if beta:
+            self.beta = torch.nn.Parameter(torch.zeros(hidden_size))
 
     def forward(self, x):
-        return self.gamma * torch.tanh(self.alpha * x) + self.beta
+        if self.beta is None:
+            return torch_dyt_without_beta(x, self.alpha, self.gamma)
+        return torch_dyt_with_beta(x, self.alpha, self.gamma, self.beta)
 
 
 set_seed(42)
 device = infer_device()
 
 
-@pytest.mark.parametrize("init_alpha", [0.5, 0.2, 1.0])
+@pytest.mark.parametrize("beta", [False, True])
+@pytest.mark.parametrize("init_alpha", [0.5])
 @pytest.mark.parametrize(
     "B, T, hidden_size",
     [
@@ -43,7 +56,7 @@ device = infer_device()
         (torch.float32, 1e-5, 1e-5),
     ],
 )
-def test_liger_dyt_correctness(B, T, hidden_size, init_alpha, dtype, atol, rtol):
+def test_liger_dyt_correctness(B, T, hidden_size, beta, init_alpha, dtype, atol, rtol):
     _input = torch.randn(B, T, hidden_size, device=device, dtype=dtype)
 
     x1 = _input.clone().requires_grad_(True)
@@ -52,17 +65,19 @@ def test_liger_dyt_correctness(B, T, hidden_size, init_alpha, dtype, atol, rtol)
     # initialize weights
     alpha = torch.randn(1, device=device, dtype=dtype)
     gamma = torch.randn(hidden_size, device=device, dtype=dtype)
-    beta = torch.randn(hidden_size, device=device, dtype=dtype)
+    beta_data = torch.randn(hidden_size, device=device, dtype=dtype)
 
-    torch_dyt = TorchDyT(hidden_size=hidden_size, init_alpha=init_alpha).to(device).to(dtype)
+    torch_dyt = TorchDyT(hidden_size=hidden_size, beta=beta, init_alpha=init_alpha).to(device).to(dtype)
     torch_dyt.alpha.data = alpha.clone()
     torch_dyt.gamma.data = gamma.clone()
-    torch_dyt.beta.data = beta.clone()
+    if beta:
+        torch_dyt.beta.data = beta_data.clone()
 
-    liger_dyt = LigerDyT(hidden_size=hidden_size, init_alpha=init_alpha).to(device).to(dtype)
+    liger_dyt = LigerDyT(hidden_size=hidden_size, beta=beta, init_alpha=init_alpha).to(device).to(dtype)
     liger_dyt.alpha.data = alpha.clone()
     liger_dyt.gamma.data = gamma.clone()
-    liger_dyt.beta.data = beta.clone()
+    if beta:
+        liger_dyt.beta.data = beta_data.clone()
 
     torch_output = torch_dyt(x1)
     liger_output = liger_dyt(x2)
@@ -76,9 +91,10 @@ def test_liger_dyt_correctness(B, T, hidden_size, init_alpha, dtype, atol, rtol)
     assert_verbose_allclose(x1.grad, x2.grad, rtol=rtol, atol=atol)
     assert_verbose_allclose(torch_dyt.alpha.grad, liger_dyt.alpha.grad, rtol=rtol, atol=atol)
     assert_verbose_allclose(torch_dyt.gamma.grad, liger_dyt.gamma.grad, rtol=rtol, atol=atol)
-    assert_verbose_allclose(torch_dyt.beta.grad, liger_dyt.beta.grad, rtol=rtol, atol=atol)
+    if beta:
+        assert_verbose_allclose(torch_dyt.beta.grad, liger_dyt.beta.grad, rtol=rtol, atol=atol)
 
-
+@pytest.mark.parametrize("beta", [False, True])
 @pytest.mark.parametrize(
     "B, T, hidden_size",
     [
@@ -102,7 +118,7 @@ def test_liger_dyt_correctness(B, T, hidden_size, init_alpha, dtype, atol, rtol)
         ),
     ],
 )
-def test_liger_dyt_functional(B, T, hidden_size, dtype, atol, rtol):
+def test_liger_dyt_functional(B, T, hidden_size, beta, dtype, atol, rtol):
     _input = torch.randn(B, T, hidden_size, device=device, dtype=dtype)
 
     x1 = _input.clone().requires_grad_(True)
@@ -111,15 +127,16 @@ def test_liger_dyt_functional(B, T, hidden_size, dtype, atol, rtol):
     # initialize weights
     alpha = torch.randn(1, device=device, dtype=dtype)
     gamma = torch.randn(hidden_size, device=device, dtype=dtype)
-    beta = torch.randn(hidden_size, device=device, dtype=dtype)
+    beta_data = torch.randn(hidden_size, device=device, dtype=dtype)
 
     alpha1 = alpha.clone().requires_grad_(True)
     gamma1 = gamma.clone().requires_grad_(True)
-    beta1 = beta.clone().requires_grad_(True)
+    beta1 = beta_data.clone().requires_grad_(True) if beta else None
 
     alpha2 = alpha.clone().requires_grad_(True)
     gamma2 = gamma.clone().requires_grad_(True)
-    beta2 = beta.clone().requires_grad_(True)
+    
+    beta2 = beta_data.clone().requires_grad_(True) if beta else None
 
     output1 = liger_dyt(x1, alpha=alpha1, gamma=gamma1, beta=beta1)
     output2 = LigerDyTFunction.apply(x2, alpha2, gamma2, beta2)
@@ -133,4 +150,5 @@ def test_liger_dyt_functional(B, T, hidden_size, dtype, atol, rtol):
     assert_verbose_allclose(x1.grad, x2.grad, rtol=rtol, atol=atol)
     assert_verbose_allclose(alpha1.grad, alpha2.grad, rtol=rtol, atol=atol)
     assert_verbose_allclose(gamma1.grad, gamma2.grad, rtol=rtol, atol=atol)
-    assert_verbose_allclose(beta1.grad, beta2.grad, rtol=rtol, atol=atol)
+    if beta:
+        assert_verbose_allclose(beta1.grad, beta2.grad, rtol=rtol, atol=atol)
