@@ -6,18 +6,12 @@ from typing import Union
 import torch
 
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.glm4.modeling_glm4 import _CONFIG_FOR_DOC
-from transformers.models.glm4.modeling_glm4 import GLM4_INPUTS_DOCSTRING
-from transformers.utils import add_start_docstrings_to_model_forward
-from transformers.utils import replace_return_docstrings
 from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 
 @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-@add_start_docstrings_to_model_forward(GLM4_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,

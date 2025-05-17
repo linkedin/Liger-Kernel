@@ -9,13 +9,9 @@ import torch.nn as nn
 from transformers.cache_utils import Cache
 from transformers.cache_utils import HybridCache
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.gemma3.modeling_gemma3 import _CONFIG_FOR_DOC
-from transformers.models.gemma3.modeling_gemma3 import GEMMA3_INPUTS_DOCSTRING
 from transformers.models.gemma3.modeling_gemma3 import Gemma3CausalLMOutputWithPast
-from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import is_torchdynamo_compiling
 from transformers.utils import logging
-from transformers.utils import replace_return_docstrings
 from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
@@ -25,8 +21,6 @@ logger = logging.get_logger(__name__)
 
 
 @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-@add_start_docstrings_to_model_forward(GEMMA3_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def causal_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -141,8 +135,6 @@ def causal_forward(
 
 
 @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-@add_start_docstrings_to_model_forward(GEMMA3_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=Gemma3CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def multimodal_forward(
     self,
     input_ids: torch.LongTensor = None,

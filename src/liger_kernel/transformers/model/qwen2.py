@@ -7,18 +7,12 @@ import torch
 
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.qwen2.modeling_qwen2 import _CONFIG_FOR_DOC
-from transformers.models.qwen2.modeling_qwen2 import QWEN2_INPUTS_DOCSTRING
-from transformers.utils import add_start_docstrings_to_model_forward
-from transformers.utils import replace_return_docstrings
 from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 
-@add_start_docstrings_to_model_forward(QWEN2_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward_deprecated(
     self,
     input_ids: torch.LongTensor = None,
@@ -127,8 +121,6 @@ def lce_forward_deprecated(
 
 
 @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-@add_start_docstrings_to_model_forward(QWEN2_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
