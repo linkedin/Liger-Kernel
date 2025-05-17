@@ -5,7 +5,6 @@ from typing import Union
 
 import torch
 
-from transformers.cache_utils import Cache
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.utils.deprecation import deprecate_kwarg
 
@@ -18,7 +17,7 @@ def lce_forward(
     input_ids: torch.LongTensor = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+    past_key_values: Optional[List[torch.FloatTensor]] = None,
     inputs_embeds: Optional[torch.FloatTensor] = None,
     labels: Optional[torch.LongTensor] = None,
     use_cache: Optional[bool] = None,
@@ -30,9 +29,6 @@ def lce_forward(
     **loss_kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
     r"""
-    Copy paste Mistral's forward but replace torch cross entropy with liger fused linear cross entropy
-
-
     Args:
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
@@ -45,15 +41,16 @@ def lce_forward(
             token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
             If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
             This is useful when using packed tensor format (single dimension for batch and sequence length).
+
     Returns:
 
     Example:
 
     ```python
-    >>> from transformers import AutoTokenizer, MistralForCausalLM
+    >>> from transformers import AutoTokenizer, Glm4ForCausalLM
 
-    >>> model = MistralForCausalLM.from_pretrained("mistralai/Mistral-7B-v0.1")
-    >>> tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
+    >>> model = Glm4ForCausalLM.from_pretrained("THUDM/GLM-4-9B-0414")
+    >>> tokenizer = AutoTokenizer.from_pretrained("THUDM/GLM-4-9B-0414")
 
     >>> prompt = "Hey, are you conscious? Can you talk to me?"
     >>> inputs = tokenizer(prompt, return_tensors="pt")
@@ -61,9 +58,9 @@ def lce_forward(
     >>> # Generate
     >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
     >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-    ```"""
-
+    'Hey, are you conscious? Can you talk to me?\nI’m not sure if you’re conscious of this, but I’m'
+    ```
+    """
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -90,9 +87,9 @@ def lce_forward(
     kept_hidden_states = hidden_states[:, slice_indices, :]
 
     shift_labels = loss_kwargs.pop("shift_labels", None)
-    loss = None
     logits = None
-
+    loss = None
+    # if in training mode, don't materialize logits
     if self.training and (labels is not None or shift_labels is not None):
         loss = LigerForCausalLMLoss(
             hidden_states=kept_hidden_states,
@@ -103,10 +100,8 @@ def lce_forward(
             **loss_kwargs,
         )
 
-    else:
+    else:  # if in inference mode materialize logits
         logits = self.lm_head(kept_hidden_states)
-
-        loss = None
         if labels is not None:
             loss = self.loss_function(
                 logits=logits,
@@ -114,9 +109,6 @@ def lce_forward(
                 vocab_size=self.config.vocab_size,
                 **loss_kwargs,
             )
-    if not return_dict:
-        output = (logits,) + outputs[1:]
-        return (loss,) + output if loss is not None else output
 
     return CausalLMOutputWithPast(
         loss=loss,
@@ -125,6 +117,3 @@ def lce_forward(
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
     )
-
-
-# Note: Grad Acc is not fixed in mistral at transformer 4.46.1
