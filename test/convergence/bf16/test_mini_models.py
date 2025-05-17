@@ -61,6 +61,7 @@ from test.utils import supports_bfloat16
 
 try:
     # Mllama is only available in transformers>=4.45.0
+    #
     from transformers.models.mllama.configuration_mllama import MllamaTextConfig
     from transformers.models.mllama.modeling_mllama import MllamaForCausalLM
 
