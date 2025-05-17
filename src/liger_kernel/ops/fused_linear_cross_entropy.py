@@ -143,9 +143,10 @@ def fused_linear_cross_entropy_forward(
                 alpha=1.0,
             )
 
-    if reduction == "none":
-        loss = loss_1d
-        z_loss = z_loss_1d if return_z_loss else None
+    # Need extra calculations for backward if reduction=='none'. Not supporting reduction='none' now.
+    # if reduction == "none":
+    #     loss = loss_1d
+    #     z_loss = z_loss_1d if return_z_loss else None
 
     else:
         loss = torch.sum(loss_1d)

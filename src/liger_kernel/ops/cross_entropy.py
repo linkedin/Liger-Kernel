@@ -351,7 +351,10 @@ def cross_entropy_backward(_input, grad_output):
     # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
     if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
         pass
-
+    # If reduction is 'none'
+    elif grad_output.ndim > 0:
+        _input = _input * grad_output.unsqueeze(dim=1)
+    # If reduction is ['mean', 'sum'], grad_output is just a scalar
     # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
     # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
     else:
