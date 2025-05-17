@@ -16,14 +16,32 @@ Follow these steps to benchmark and visualize kernel performance:
    ```
 
 3. Visualize results
-   - Use the visualization script with appropriate parameters
-   
-   Example: Visualizing KTO Loss benchmark results
+   - Use the visualization script with optional modes:
+
+     * To target specific mode(s), pass `--kernel-operation-mode` one or more values.
+     * If you omit `--kernel-operation-mode`, the script will:
+       - For `speed` metrics: generate plots for all available modes (forward/backward/full).
+       - For `memory` metrics: generate only the `full` plot.
+
+   Examples:
+   1. Specific modes (speed):
    ```bash
    python benchmarks_visualizer.py \
        --kernel-name kto_loss \
-       --metric-name memory \
-       --kernel-operation-mode full
+       --metric-name speed \
+       --kernel-operation-mode forward backward
+   ```
+   2. All modes (speed):
+   ```bash
+   python benchmarks_visualizer.py \
+       --kernel-name kto_loss \
+       --metric-name speed
+   ```
+   3. Memory (always full):
+   ```bash
+   python benchmarks_visualizer.py \
+       --kernel-name kto_loss \
+       --metric-name memory
    ```
 
 4. View results

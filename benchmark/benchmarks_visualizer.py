@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 
 from argparse import ArgumentParser
 from dataclasses import dataclass
@@ -50,8 +51,9 @@ def parse_args() -> VisualizationsConfig:
     parser.add_argument(
         "--kernel-operation-mode",
         type=str,
-        required=True,
-        help="Kernel operation mode to visualize (forward/backward/full)",
+        nargs="*",
+        default=None,
+        help="Kernel operation modes to visualize (forward/backward/full). If not provided, generate for all available modes.",
     )
     parser.add_argument("--display", action="store_true", help="Display the visualization")
     parser.add_argument(
@@ -61,8 +63,7 @@ def parse_args() -> VisualizationsConfig:
     )
 
     args = parser.parse_args()
-
-    return VisualizationsConfig(**dict(args._get_kwargs()))
+    return args
 
 
 def load_data(config: VisualizationsConfig) -> pd.DataFrame:
@@ -141,7 +142,10 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
     plt.ylabel(ylabel)
     plt.tight_layout()
 
-    out_path = os.path.join(VISUALIZATIONS_PATH, f"{config.kernel_name}_{config.metric_name}.png")
+    out_path = os.path.join(
+        VISUALIZATIONS_PATH,
+        f"{config.kernel_name}_{config.metric_name}_{config.kernel_operation_mode}.png",
+    )
 
     if config.display:
         plt.show()
@@ -154,9 +158,31 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
 
 
 def main():
-    config = parse_args()
-    df = load_data(config)
-    plot_data(df, config)
+    args = parse_args()
+    all_df = pd.read_csv(DATA_PATH)
+    all_df["extra_benchmark_config"] = all_df["extra_benchmark_config_str"].apply(json.loads)
+
+    if args.metric_name == "memory":
+        modes = ["full"]
+    elif args.kernel_operation_mode:
+        modes = args.kernel_operation_mode
+    else:
+        filtered = all_df[(all_df["kernel_name"] == args.kernel_name) & (all_df["metric_name"] == args.metric_name)]
+        modes = filtered["kernel_operation_mode"].unique().tolist()
+        if not modes:
+            print(f"No data found for kernel '{args.kernel_name}' and metric '{args.metric_name}'.", file=sys.stderr)
+            sys.exit(1)
+
+    for mode in modes:
+        config = VisualizationsConfig(
+            kernel_name=args.kernel_name,
+            metric_name=args.metric_name,
+            kernel_operation_mode=mode,
+            display=args.display,
+            overwrite=args.overwrite,
+        )
+        df = load_data(config)
+        plot_data(df, config)
 
 
 if __name__ == "__main__":
