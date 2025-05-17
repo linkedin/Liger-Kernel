@@ -117,7 +117,6 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
         hue="kernel_provider",
         marker="o",
         palette="tab10",
-        errorbar=("ci", None),
     )
 
     # Seaborn can't plot pre-computed error bars, so we need to do it manually
