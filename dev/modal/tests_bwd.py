@@ -11,7 +11,7 @@ image = modal.Image.debian_slim(python_version=PYTHON_VERSION).pip_install("uv")
 app = modal.App("liger_tests_bwd", image=image)
 
 # mount: add local files to the remote container
-repo = modal.Mount.from_local_dir(ROOT_PATH, remote_path=REMOTE_ROOT_PATH)
+repo = image.add_local_dir(ROOT_PATH, remote_path=REMOTE_ROOT_PATH)
 
 
 @app.function(gpu="A10G", mounts=[repo], timeout=60 * 30)
