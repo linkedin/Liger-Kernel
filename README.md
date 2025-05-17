@@ -274,7 +274,8 @@ loss.backward()
 | SwiGLU                          | `liger_kernel.transformers.LigerSwiGLUMLP`                  |
 | GeGLU                           | `liger_kernel.transformers.LigerGEGLUMLP`                   |
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
-| Fused Linear CrossEntropy         | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
+| Fused Linear CrossEntropy       | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
+| Sparsemax                       | `liger_kernel.transformers.LigerSparsemax`                  |
 
 
 ### Alignment Kernels
