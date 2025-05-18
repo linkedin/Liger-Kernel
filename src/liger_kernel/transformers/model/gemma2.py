@@ -9,10 +9,6 @@ import torch
 from torch.nn import CrossEntropyLoss
 from transformers.cache_utils import HybridCache
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.gemma2.modeling_gemma2 import _CONFIG_FOR_DOC
-from transformers.models.gemma2.modeling_gemma2 import GEMMA2_INPUTS_DOCSTRING
-from transformers.utils import add_start_docstrings_to_model_forward
-from transformers.utils import replace_return_docstrings
 from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
@@ -136,8 +132,6 @@ def lce_forward_deprecated(
 
 
 @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-@add_start_docstrings_to_model_forward(GEMMA2_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -212,6 +206,9 @@ def lce_forward(
     )
 
     hidden_states = outputs[0]
+    # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+    slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+    kept_hidden_states = hidden_states[:, slice_indices, :]
 
     shift_labels = loss_kwargs.pop("shift_labels", None)
     logits = None
@@ -219,7 +216,7 @@ def lce_forward(
     # if in training mode, don't materialize logits
     if self.training and (labels is not None or shift_labels is not None):
         loss = LigerForCausalLMLoss(
-            hidden_states=hidden_states,
+            hidden_states=kept_hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
             shift_labels=shift_labels,
@@ -229,8 +226,7 @@ def lce_forward(
         )
 
     else:  # if in inference mode materialize logits
-        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :])
+        logits = self.lm_head(kept_hidden_states)
         if self.config.final_logit_softcapping is not None:
             logits = logits / self.config.final_logit_softcapping
             logits = torch.tanh(logits)

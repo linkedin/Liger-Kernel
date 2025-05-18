@@ -95,6 +95,7 @@ class TorchLMHeadDPO(torch.nn.Module):
             ref_x,
             self.ref_lin.weight,
             self.ref_lin.bias,
+            average_log_prob=True,
         )
 
 
@@ -118,6 +119,7 @@ class LigerLMHeadDPO(torch.nn.Module):
             beta=beta,
             use_ref_model=True,
             compute_nll_loss=compute_nll_loss,
+            average_log_prob=True,
         )
 
     def forward(self, x, ref_x, y):
