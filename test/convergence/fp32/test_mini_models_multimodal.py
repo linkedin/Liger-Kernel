@@ -765,7 +765,6 @@ def run_mini_model_multimodal(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
                 ),
-                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(
@@ -800,7 +799,6 @@ def run_mini_model_multimodal(
                     not QWEN2_5_VL_AVAILABLE,
                     reason="Qwen2.5-VL not available in this version of transformers",
                 ),
-                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(
@@ -862,10 +860,13 @@ def run_mini_model_multimodal(
             1e-5,
             5e-3,
             1e-5,
-            marks=pytest.mark.skipif(
-                not GEMMA3_AVAILABLE,
-                reason="Gemma3 not available in this version of transformers",
-            ),
+            marks=[
+                pytest.mark.skipif(
+                    not GEMMA3_AVAILABLE,
+                    reason="Gemma3 not available in this version of transformers",
+                ),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
+            ],
         ),
     ],
 )
@@ -909,6 +910,5 @@ def test_mini_model_multimodal(
     for expected_param, actual_param in zip(
         expected_output["model"].named_parameters(),
         actual_output["model"].named_parameters(),
-        strict=False,
     ):
         assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)

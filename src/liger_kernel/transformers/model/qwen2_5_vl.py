@@ -6,17 +6,11 @@ from typing import Union
 import torch
 
 from torch.nn import CrossEntropyLoss
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import _CONFIG_FOR_DOC
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import QWEN2_5_VL_INPUTS_DOCSTRING
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLCausalLMOutputWithPast
-from transformers.utils import add_start_docstrings_to_model_forward
-from transformers.utils import replace_return_docstrings
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 
-@add_start_docstrings_to_model_forward(QWEN2_5_VL_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=Qwen2_5_VLCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -163,14 +157,16 @@ def lce_forward(
 
     hidden_states = outputs[0]
 
+    shift_labels = loss_kwargs.pop("shift_labels", None)
     loss = None
     logits = None
 
-    if self.training and (labels is not None):
+    if self.training and (labels is not None or shift_labels is not None):
         loss = LigerForCausalLMLoss(
             hidden_states=hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
+            shift_labels=shift_labels,
             hidden_size=self.config.hidden_size,
             **loss_kwargs,
         )

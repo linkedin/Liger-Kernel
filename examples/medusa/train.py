@@ -32,21 +32,18 @@ from callback import EfficiencyCallback
 from medusa_util import add_medusa_heads
 from safetensors.torch import save_file
 from sklearn.model_selection import train_test_split
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp.fully_sharded_data_parallel import FullStateDictConfig
-from torch.distributed.fsdp.fully_sharded_data_parallel import StateDictType
 from torch.utils.data import Dataset
 from transformers import Trainer
 from transformers.trainer_pt_utils import LabelSmoother
 
-from liger_kernel.transformers import apply_liger_kernel_to_llama
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
 
 @dataclass
 class ModelArguments:
-    model_name_or_path: Optional[str] = field(default="meta-llama/Meta-Llama-3-8B")
+    model_name_or_path: Optional[str] = field(default="meta-llama/Meta-Llama-3-8B-Instruct")
 
 
 @dataclass
@@ -175,7 +172,7 @@ def preprocess(
     input_ids = encoding.input_ids
 
     # Mask targets. Only compute loss on the assistant outputs.
-    for conv_index, (conversation, target, prompt) in enumerate(zip(conversations, targets, prompts, strict=False)):
+    for conv_index, (conversation, target, prompt) in enumerate(zip(conversations, targets, prompts)):
         # print(conv_index)
         for turn in conversation:
             if turn["role"] == "assistant":
@@ -310,29 +307,36 @@ def train():
     print(tokenizer(["This is a test", "secondary"], padding=True))
     print(tokenizer.apply_chat_template([{"role": "user", "content": "This is a test"}]))
 
-    # Load model and tokenizer
-    model = transformers.AutoModelForCausalLM.from_pretrained(
-        model_args.model_name_or_path,
-        # config=config,
-        cache_dir=training_args.cache_dir,
-        torch_dtype=torch.bfloat16,
-    )
+    def _model_loader():
+        # we use a customized model loader to inject medusa heads to FSDP-wrapped model variables properly.
+        # see https://github.com/linkedin/Liger-Kernel/issues/309#issuecomment-2455077623 for details.
 
-    if training_args.use_liger is True:
-        apply_liger_kernel_to_llama()
+        # Load model
+        if training_args.use_liger:
+            model_builder = AutoLigerKernelForCausalLM.from_pretrained
+        else:
+            model_builder = transformers.AutoModelForCausalLM.from_pretrained
+        model = model_builder(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            torch_dtype=torch.bfloat16,
+        )
 
-    # Freeze the base model
-    for param in model.base_model.parameters():
-        param.requires_grad = False
+        # Freeze the base model
+        for param in model.base_model.parameters():
+            param.requires_grad = False
 
-    add_medusa_heads(
-        model,
-        training_args.medusa_num_heads,
-        training_args.medusa_num_layers,
-        training_args.medusa_return,
-        training_args.medusa_only_heads,
-        training_args.use_liger,
-    )
+        # Inject Medusa heads
+        add_medusa_heads(
+            model,
+            training_args.medusa_num_heads,
+            training_args.medusa_num_layers,
+            training_args.medusa_return,
+            training_args.medusa_only_heads,
+            training_args.use_liger,
+        )
+        return model
+
     # Format output dir
     training_args.output_dir = f"{training_args.output_dir}_medusa_mlp_{model_args.model_name_or_path.split('/')[-1]}_medusa_{training_args.medusa_num_heads}_lr_{training_args.learning_rate}_layers_{training_args.medusa_num_layers}"
 
@@ -341,7 +345,7 @@ def train():
 
     # Start trainner
     trainer = Trainer(
-        model=model,
+        model_init=_model_loader,
         tokenizer=tokenizer,
         args=training_args,
         callbacks=[EfficiencyCallback()],
@@ -355,17 +359,11 @@ def train():
 
     if training_args.medusa_return and training_args.medusa_only_heads:
         # Save only the updated head without saving the backbone model
-        if hasattr(model, "module"):
-            lm_head = model.module.medusa_head
-        else:
-            lm_head = model.medusa_head
-
-        with FSDP.state_dict_type(
-            model,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(offload_to_cpu=True),
-        ):
-            state_dict = lm_head.state_dict()
+        state_dict = {
+            k.replace("medusa_head.", ""): v.to(torch.bfloat16)
+            for k, v in trainer.accelerator.get_state_dict(trainer.model).items()
+            if "medusa_head" in k
+        }
 
         # Save Medusa heads
         if local_rank == 0:
@@ -373,9 +371,9 @@ def train():
                 state_dict,
                 os.path.join(training_args.output_dir, "medusa_lm_head.safetensors"),
             )
+        trainer.accelerator.wait_for_everyone()
     else:
         # Save the whole model weight
-        trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
         trainer.save_model(training_args.output_dir)
 
 

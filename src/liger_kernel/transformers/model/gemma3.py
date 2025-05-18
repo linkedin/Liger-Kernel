@@ -9,13 +9,9 @@ import torch.nn as nn
 from transformers.cache_utils import Cache
 from transformers.cache_utils import HybridCache
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.gemma3.modeling_gemma3 import _CONFIG_FOR_DOC
-from transformers.models.gemma3.modeling_gemma3 import GEMMA3_INPUTS_DOCSTRING
 from transformers.models.gemma3.modeling_gemma3 import Gemma3CausalLMOutputWithPast
-from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import is_torchdynamo_compiling
 from transformers.utils import logging
-from transformers.utils import replace_return_docstrings
 from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
@@ -25,8 +21,6 @@ logger = logging.get_logger(__name__)
 
 
 @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-@add_start_docstrings_to_model_forward(GEMMA3_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def causal_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -104,15 +98,17 @@ def causal_forward(
     # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
     kept_hidden_states = hidden_states[:, slice_indices, :]
+    shift_labels = loss_kwargs.pop("shift_labels", None)
     loss = None
     logits = None
-    if self.training and (labels is not None):
+    if self.training and (labels is not None or shift_labels is not None):
         loss = LigerForCausalLMLoss(
             hidden_states=kept_hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
+            shift_labels=shift_labels,
             hidden_size=self.config.hidden_size,
-            softcap=self.config.final_logit_softcapping,
+            final_logit_softcapping=self.config.final_logit_softcapping,
             **loss_kwargs,
         )
 
@@ -139,8 +135,6 @@ def causal_forward(
 
 
 @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-@add_start_docstrings_to_model_forward(GEMMA3_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=Gemma3CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def multimodal_forward(
     self,
     input_ids: torch.LongTensor = None,

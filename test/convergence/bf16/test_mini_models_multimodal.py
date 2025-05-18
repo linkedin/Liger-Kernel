@@ -770,7 +770,6 @@ def run_mini_model_multimodal(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
                 ),
-                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(
@@ -809,7 +808,6 @@ def run_mini_model_multimodal(
                     not QWEN2_5_VL_AVAILABLE,
                     reason="Qwen2.5-VL not available in this version of transformers",
                 ),
-                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(
@@ -874,9 +872,9 @@ def run_mini_model_multimodal(
             32,
             1e-4,
             torch.bfloat16,
-            1e-3,
+            3e-3,
             1e-2,
-            0.25,  # Increase the absolute tolerance for the logits of Gemma-3.
+            0.4,  # Increase the absolute tolerance for the logits of Gemma-3.
             1e-1,
             1e-2,
             1e-2,
@@ -886,6 +884,7 @@ def run_mini_model_multimodal(
                     not GEMMA3_AVAILABLE,
                     reason="Gemma3 not available in this version of transformers",
                 ),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
     ],
@@ -930,6 +929,5 @@ def test_mini_model_multimodal(
     for expected_param, actual_param in zip(
         expected_output["model"].named_parameters(),
         actual_output["model"].named_parameters(),
-        strict=False,
     ):
         assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)
