@@ -122,7 +122,7 @@ if __name__ == "__main__":
             "x_label": "hidden_size",
             "x_values": [1024 * i for i in range(1, 17)],
             "kernel_providers": ["liger", "torch", "torch_compile"],
-            "extra_benchmark_configs": [{"BT": 4096, "dtype": torch.bfloat16, 'beta':beta}],
+            "extra_benchmark_configs": [{"BT": 4096, "dtype": torch.bfloat16, "beta": beta}],
             "overwrite": args.overwrite,
         }
 

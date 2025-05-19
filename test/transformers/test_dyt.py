@@ -1,6 +1,5 @@
 import pytest
 import torch
-import torch.nn as nn
 
 from test.utils import assert_verbose_allclose
 from test.utils import infer_device
@@ -12,13 +11,15 @@ from liger_kernel.transformers.dyt import LigerDyT
 from liger_kernel.transformers.functional import liger_dyt
 
 
-# @torch.compile    
+# @torch.compile
 def torch_dyt_with_beta(x, alpha, gamma, beta):
     return gamma * torch.tanh(x * alpha) + beta
 
-# @torch.compile    
+
+# @torch.compile
 def torch_dyt_without_beta(x, alpha, gamma):
     return gamma * torch.tanh(x * alpha)
+
 
 class TorchDyT(torch.nn.Module):
     def __init__(self, hidden_size, beta=True, init_alpha=0.5):
@@ -94,6 +95,7 @@ def test_liger_dyt_correctness(B, T, hidden_size, beta, init_alpha, dtype, atol,
     if beta:
         assert_verbose_allclose(torch_dyt.beta.grad, liger_dyt.beta.grad, rtol=rtol, atol=atol)
 
+
 @pytest.mark.parametrize("beta", [False, True])
 @pytest.mark.parametrize(
     "B, T, hidden_size",
@@ -135,7 +137,7 @@ def test_liger_dyt_functional(B, T, hidden_size, beta, dtype, atol, rtol):
 
     alpha2 = alpha.clone().requires_grad_(True)
     gamma2 = gamma.clone().requires_grad_(True)
-    
+
     beta2 = beta_data.clone().requires_grad_(True) if beta else None
 
     output1 = liger_dyt(x1, alpha=alpha1, gamma=gamma1, beta=beta1)

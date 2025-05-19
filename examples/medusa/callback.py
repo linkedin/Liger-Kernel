@@ -352,9 +352,9 @@ class EfficiencyCallback(transformers.TrainerCallback):
             else:
                 return world_size
 
-        assert world_size != 0, (
-            "WORLD_SIZE should be set to a positive integer. For single GPU training, please explicitly set WORLD_SIZE=1."
-        )
+        assert (
+            world_size != 0
+        ), "WORLD_SIZE should be set to a positive integer. For single GPU training, please explicitly set WORLD_SIZE=1."
 
         # TODO: add deepspeed support
         return world_size
