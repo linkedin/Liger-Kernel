@@ -2,13 +2,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-
 from test.utils import infer_device
 from test.utils import set_seed
 
-
-from liger_kernel.transformers.grpo_loss import triton_grpo_loss
 from liger_kernel.ops.grpo_loss import fused_selective_log_softmax
+from liger_kernel.transformers.grpo_loss import triton_grpo_loss
+
 
 def compare(x, y, extra_str=""):
     if x is None or y is None:
@@ -18,6 +17,7 @@ def compare(x, y, extra_str=""):
     diff = (x - y).abs()
     diff = diff / (torch.max(x.abs(), y.abs()) + 1e-5)
     print(f"{extra_str}Max difference: {diff.max().item()}, Mean difference: {diff.mean().item()}")
+
 
 @torch.no_grad
 def selective_log_softmax(logits, input_ids, temperature=0.9):
@@ -43,8 +43,9 @@ def selective_log_softmax(logits, input_ids, temperature=0.9):
     return per_token_logps
 
 
-
-def torch_grpo_loss(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, temperature, beta, eps_low, eps_high):
+def torch_grpo_loss(
+    logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, temperature, beta, eps_low, eps_high
+):
     assert logits.is_contiguous() and completion_ids.is_contiguous()
     assert old_logp is None or old_logp.is_contiguous()
     assert (ref_logp is not None and ref_logp.is_contiguous()) if beta != 0.0 else True
@@ -52,12 +53,12 @@ def torch_grpo_loss(logits, old_logp, ref_logp, completion_ids, advantages, comp
 
     def get_log_probs(logits, input_ids):
         per_token_logps = []
-        for logits_row, input_ids_row in zip(logits, input_ids[:, -logits.size(1):]):
+        for logits_row, input_ids_row in zip(logits, input_ids[:, -logits.size(1) :]):
             log_probs = logits_row.log_softmax(dim=-1)
             token_log_prob = torch.gather(log_probs, dim=1, index=input_ids_row.unsqueeze(1)).squeeze(1)
             per_token_logps.append(token_log_prob)
-        return torch.stack(per_token_logps)   
-        
+        return torch.stack(per_token_logps)
+
     per_token_logps = get_log_probs(logits / temperature, completion_ids)
     # return per_token_logps, None, None
     ref_per_token_logps = ref_logp
@@ -80,6 +81,7 @@ def torch_grpo_loss(logits, old_logp, ref_logp, completion_ids, advantages, comp
     is_clipped = (per_token_loss1 < per_token_loss2).float()
     return per_token_loss, per_token_kl, is_clipped
 
+
 set_seed(42)
 device = infer_device()
 
@@ -99,15 +101,14 @@ device = infer_device()
 )
 def test_selective_log_softmax(B, T, V, temperature, dtype, atol, rtol):
     # logits_to_keep + 1
-    _input = torch.randn(B, T+1, V, device=device, dtype=dtype)
+    _input = torch.randn(B, T + 1, V, device=device, dtype=dtype)
 
     logit1 = _input.clone()
     logit2 = _input.clone()
     logit3 = _input.clone().float()
 
     # we set the length of prompt_ids is 100 and the length of completion_ids is T
-    input_ids = torch.randint(0, V-1, (B, 100 + T), dtype=torch.int64, device=device)
-
+    input_ids = torch.randint(0, V - 1, (B, 100 + T), dtype=torch.int64, device=device)
 
     torch_bf16_logp = selective_log_softmax(logit1, input_ids, temperature)
     triton_bf16_logp = fused_selective_log_softmax(logit2, input_ids, temperature)
@@ -122,11 +123,7 @@ def test_selective_log_softmax(B, T, V, temperature, dtype, atol, rtol):
 
 @pytest.mark.parametrize(
     "temperature, num_iteration, beta, eps_low, eps_high",
-    [
-       (0.7, num_iteration, beta, 0.2, 0.4)
-       for num_iteration in [1, 5]
-       for beta in [0.0, 0.04]
-    ],
+    [(0.7, num_iteration, beta, 0.2, 0.4) for num_iteration in [1, 5] for beta in [0.0, 0.04]],
 )
 @pytest.mark.parametrize(
     "B, T, V",
@@ -141,56 +138,44 @@ def test_selective_log_softmax(B, T, V, temperature, dtype, atol, rtol):
     ],
 )
 def test_grpo_loss(B, T, V, temperature, num_iteration, beta, eps_low, eps_high, dtype, atol, rtol):
-    _input = torch.randn(B, T+1, V, device=device, dtype=dtype)
+    _input = torch.randn(B, T + 1, V, device=device, dtype=dtype)
 
     logits1 = _input.clone().requires_grad_(True)
     logits2 = _input.clone().requires_grad_(True)
     logits3 = _input.clone().float().requires_grad_(True)
 
-    completion_ids = torch.randint(0, V-1, (B, T), dtype=torch.int64, device=device)
+    completion_ids = torch.randint(0, V - 1, (B, T), dtype=torch.int64, device=device)
     completion_mask = torch.ones_like(completion_ids, dtype=torch.int32)
     # we set num_padding is 100
     completion_mask[:, -100:] = 0
-    
+
     # we set these in fp32, because fused_selective_log_softmax retutn fp32 logp, although logits in bf16
     ref_logp = torch.randn(B, T, device=device, dtype=torch.float32) if beta != 0.0 else None
     old_logp = torch.randn(B, T, device=device, dtype=torch.float32) if num_iteration > 1 else None
     advantages = torch.randn(B, device=device, dtype=torch.float32)
 
-    loss1, kl1, is_clipped1 = torch_grpo_loss(logits1,
-                    old_logp,
-                    ref_logp,
-                    completion_ids,
-                    advantages,
-                    completion_mask,
-                    temperature,
-                    beta,
-                    eps_low,
-                    eps_high)
+    loss1, kl1, is_clipped1 = torch_grpo_loss(
+        logits1, old_logp, ref_logp, completion_ids, advantages, completion_mask, temperature, beta, eps_low, eps_high
+    )
 
-    loss2, kl2, is_clipped2 = triton_grpo_loss(logits2,
-                    old_logp,
-                    ref_logp,
-                    completion_ids,
-                    advantages,
-                    completion_mask,
-                    temperature,
-                    beta,
-                    eps_low,
-                    eps_high,
-                    inplace=True)
+    loss2, kl2, is_clipped2 = triton_grpo_loss(
+        logits2,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        inplace=True,
+    )
 
-    loss3, kl3, is_clipped3 = torch_grpo_loss(logits3,
-                    old_logp,
-                    ref_logp,
-                    completion_ids,
-                    advantages,
-                    completion_mask,
-                    temperature,
-                    beta,
-                    eps_low,
-                    eps_high)
-    
+    loss3, kl3, is_clipped3 = torch_grpo_loss(
+        logits3, old_logp, ref_logp, completion_ids, advantages, completion_mask, temperature, beta, eps_low, eps_high
+    )
+
     dy = torch.randn_like(loss3)
     loss1.backward(dy)
     loss2.backward(dy)

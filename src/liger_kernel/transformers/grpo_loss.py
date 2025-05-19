@@ -1,34 +1,40 @@
 from liger_kernel.ops.grpo_loss import GrpoLossFunction
 
-def triton_grpo_loss(logits, 
-                     old_logp, 
-                     ref_logp, 
-                     completion_ids, 
-                     advantages, 
-                     completion_mask=None, 
-                     temperature=0.9, 
-                     beta=0.04, 
-                     eps_low=0.2, 
-                     eps_high=0.4, 
-                     inplace=True):
-    
-    assert logits is not None and completion_ids is not None and advantages is not None, "must provide logits、completion_ids and advantages"
 
-    return  GrpoLossFunction.apply( logits, 
-                                    old_logp, 
-                                    ref_logp, 
-                                    completion_ids, 
-                                    advantages, 
-                                    completion_mask, 
-                                    temperature, 
-                                    beta, 
-                                    eps_low, 
-                                    eps_high,
-                                    inplace
-                                    )
+def triton_grpo_loss(
+    logits,
+    old_logp,
+    ref_logp,
+    completion_ids,
+    advantages,
+    completion_mask=None,
+    temperature=0.9,
+    beta=0.04,
+    eps_low=0.2,
+    eps_high=0.4,
+    inplace=True,
+):
+    assert logits is not None and completion_ids is not None and advantages is not None, (
+        "must provide logits、completion_ids and advantages"
+    )
+
+    return GrpoLossFunction.apply(
+        logits,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        inplace,
+    )
+
 
 # This is a demo how to use grpo_loss in GRPOTrainer. The Trl version must be 0.16
-'''
+"""
 import torch
 import trl
 assert trl.__version__.startswith("0.16"), "please pip install trl==0.16"
@@ -84,10 +90,9 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
 trl.GRPOTrainer._get_per_token_logps = _get_per_token_logps
 trl.GRPOTrainer.compute_loss = compute_loss
 trigger = None
-'''
+"""
 
 # add this line at the first line of grpo.py in open-r1
 """
 from liger_kernel.transformers.grpo_loss import trigger
 """
-
