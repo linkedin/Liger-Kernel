@@ -203,9 +203,7 @@ def lce_forward_deprecated(
                 shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
-            loss = loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1).to(shift_logits.device)
-            )
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1).to(shift_logits.device))
     if not return_dict:
         # NOTE: This part has not been tested.
         output = outputs[1:]
@@ -383,7 +381,6 @@ def lce_forward(
             flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
             flat_labels = shift_labels.view(-1).to(shift_logits.device)
             loss = loss_fct(flat_logits, flat_labels)
-
 
     if not return_dict:
         # NOTE: This part has not been tested.
