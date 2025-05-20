@@ -6,19 +6,13 @@ from typing import Union
 import torch
 
 from torch.nn import CrossEntropyLoss
-from transformers.models.llava.modeling_llava import _CONFIG_FOR_DOC
-from transformers.models.llava.modeling_llava import LLAVA_INPUTS_DOCSTRING
 from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast
-from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import is_torchdynamo_compiling
-from transformers.utils import replace_return_docstrings
 from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 
 
-@add_start_docstrings_to_model_forward(LLAVA_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=LlavaCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward_deprecated(
     self,
     input_ids: torch.LongTensor = None,
@@ -226,9 +220,7 @@ def lce_forward_deprecated(
     )
 
 
-@add_start_docstrings_to_model_forward(LLAVA_INPUTS_DOCSTRING)
 @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-@replace_return_docstrings(output_type=LlavaCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
