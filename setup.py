@@ -47,7 +47,6 @@ def get_optional_dependencies():
     }
 
 
-
 def is_xpu_available():
     """
     Check if Intel XPU is available.
