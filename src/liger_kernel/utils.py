@@ -1,4 +1,15 @@
+try:
+    import peft  # noqa: F401
+
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
+
 import torch
+
+
+def is_peft_available():
+    return PEFT_AVAILABLE
 
 
 def infer_device():
