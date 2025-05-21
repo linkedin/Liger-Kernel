@@ -1,11 +1,16 @@
 import pytest
 import torch
 
+from test.utils import assert_verbose_allclose
+from test.utils import set_seed
+from test.utils import supports_bfloat16
+
 from liger_kernel.transformers.functional import liger_softmax
 from liger_kernel.transformers.softmax import LigerKernelSoftmax
 from liger_kernel.utils import infer_device
 
 device = infer_device()
+set_seed()
 
 
 @pytest.mark.parametrize(
@@ -13,17 +18,25 @@ device = infer_device()
     [
         (2, 8),
         (4, 16),
-        (1, 1023),  # Large single row
+        (1, 1023),  # Large single row single-block dispatch
         (3, 7, 256),  # 3D input
+        (1, 4096),  # test multi-block dispatch
+        (1, 2, 4096),  # test multi-block dispatch on 3D input
     ],
 )
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
         (torch.float32, 1e-5, 1e-5),
-        (torch.bfloat16, 5e-2, 5e-2)
-        if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
-        else pytest.param(torch.bfloat16, 0, 0, marks=pytest.mark.skip(reason="bfloat16 not supported")),
+        pytest.param(
+            torch.bfloat16,
+            5e-2,
+            5e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(),
+                reason="bfloat16 not supported on this device",
+            ),
+        ),
     ],
 )
 def test_liger_softmax(shape, dtype, atol, rtol):
@@ -37,13 +50,13 @@ def test_liger_softmax(shape, dtype, atol, rtol):
     liger_softmax = LigerKernelSoftmax().to(device).to(dtype)
     liger_out = liger_softmax(x2)
 
-    assert torch.allclose(ref_out, liger_out, atol=atol, rtol=rtol)
+    assert_verbose_allclose(ref_out, liger_out, atol=atol, rtol=rtol)
 
     grad_output = torch.randn_like(ref_out)
     ref_out.backward(grad_output, retain_graph=True)
     liger_out.backward(grad_output, retain_graph=True)
 
-    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize(
@@ -53,15 +66,23 @@ def test_liger_softmax(shape, dtype, atol, rtol):
         (4, 16),
         (1, 1023),
         (3, 7, 256),
+        (1, 4096),
+        (1, 2, 4096),
     ],
 )
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
         (torch.float32, 1e-5, 1e-5),
-        (torch.bfloat16, 5e-2, 5e-2)
-        if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
-        else pytest.param(torch.bfloat16, 0, 0, marks=pytest.mark.skip(reason="bfloat16 not supported")),
+        pytest.param(
+            torch.bfloat16,
+            5e-2,
+            5e-2,
+            marks=pytest.mark.skipif(
+                not supports_bfloat16(),
+                reason="bfloat16 not supported on this device",
+            ),
+        ),
     ],
 )
 def test_liger_softmax_functional(shape, dtype, atol, rtol):
@@ -73,10 +94,10 @@ def test_liger_softmax_functional(shape, dtype, atol, rtol):
     ref_out = torch.nn.functional.softmax(x1, dim=-1)
     liger_out = liger_softmax(x2)
 
-    assert torch.allclose(ref_out, liger_out, atol=atol, rtol=rtol)
+    assert_verbose_allclose(ref_out, liger_out, atol=atol, rtol=rtol)
 
     grad_output = torch.randn_like(ref_out)
     ref_out.backward(grad_output, retain_graph=True)
     liger_out.backward(grad_output, retain_graph=True)
 
-    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)

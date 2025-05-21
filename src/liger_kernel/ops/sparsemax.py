@@ -114,13 +114,11 @@ def _sparsemax_forward(x: torch.Tensor, dim: int) -> Tuple[torch.Tensor, torch.T
     n_cols = x_sw.size(-1)
     n_rows = x_sw.numel() // n_cols
     x_flat = x_sw.view(n_rows, n_cols)
+    x_sorted_flat = torch.sort(x_flat.float(), dim=-1, descending=True).values
 
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     out_flat = torch.empty_like(x_flat)
     grid = (n_rows,)
-
-    x_sorted_flat = torch.sort(x_flat.float(), dim=-1, descending=True).values
-
     _sparsemax_forward_kernel[grid](
         x_flat,
         x_flat.stride(0),

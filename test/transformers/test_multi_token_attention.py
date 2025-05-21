@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
+from test.utils import supports_bfloat16
 
 from liger_kernel.transformers.functional import liger_multi_token_attention
 from liger_kernel.transformers.multi_token_attention import LigerMultiTokenAttention
@@ -55,7 +56,7 @@ class TorchMultiTokenAttention(torch.nn.Module):
             2e-2,
             2e-2,
             marks=pytest.mark.skipif(
-                not (torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
+                not supports_bfloat16(),
                 reason="bfloat16 not supported on this device",
             ),
         ),
@@ -125,7 +126,7 @@ def test_multi_token_attention_correctness(B, C_in, C_out, L, K, groups, bias, d
             2e-2,
             2e-2,
             marks=pytest.mark.skipif(
-                not (torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
+                not supports_bfloat16(),
                 reason="bfloat16 not supported on this device",
             ),
         ),
