@@ -8,7 +8,9 @@
 | SwiGLU                          | `liger_kernel.transformers.LigerSwiGLUMLP`                  |
 | GeGLU                           | `liger_kernel.transformers.LigerGEGLUMLP`                   |
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
-| Fused Linear CrossEntropy         | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
+| Fused Linear CrossEntropy       | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
+| Sparsemax                       | `liger_kernel.transformers.LigerSparsemax`                  |
+
 
 ### RMS Norm
 
@@ -48,6 +50,12 @@ This kernel combines linear transformations with cross-entropy loss calculations
 
 !!! Example "Try it out"
     You can experiment as shown in this example [here](https://colab.research.google.com/drive/1Z2QtvaIiLm5MWOs7X6ZPS1MN3hcIJFbj?usp=sharing)
+
+### Sparsemax
+
+Sparsemax is a sparse alternative to softmax that produces sparse probability distributions. This kernel implements an efficient version of the sparsemax operation that can be used as a drop-in replacement for softmax in attention mechanisms or classification tasks.
+
+The implementation achieves significant speed improvements and memory savings compared to standard PyTorch implementations, particularly for large input tensors.
 
 ## Alignment Kernels
 
