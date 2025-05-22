@@ -603,14 +603,12 @@ def apply_liger_kernel_to_pixtral(
     swiglu: bool = True,
 ) -> None:
     """
-    Apply Liger kernels to replace original implementation in HuggingFace Mistral models
+    Apply Liger kernels to replace original implementation in HuggingFace Pixtral models.
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
-        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
-        fused_linear_cross_entropy (bool): If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
-        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        fused_linear_cross_entropy (bool): If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
     """
     from transformers.models.pixtral import modeling_pixtral
@@ -618,11 +616,11 @@ def apply_liger_kernel_to_pixtral(
     if rope:
         modeling_pixtral.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        modeling_pixtral.MistralRMSNorm = LigerRMSNorm
+        modeling_pixtral.PixtralRMSNorm = LigerRMSNorm
     if fused_linear_cross_entropy:
         modeling_pixtral.PixtralTransformer.forward = pixtral_lce_forward
     if swiglu:
-        modeling_pixtral.MistralMLP = LigerSwiGLUMLP
+        modeling_pixtral.PixtralMLP = LigerSwiGLUMLP
 
 
 def apply_liger_kernel_to_gemma(

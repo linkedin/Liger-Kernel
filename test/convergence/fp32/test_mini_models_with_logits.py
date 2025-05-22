@@ -15,6 +15,8 @@ from transformers.models.mixtral import MixtralConfig
 from transformers.models.mixtral import MixtralForCausalLM
 from transformers.models.phi3 import Phi3Config
 from transformers.models.phi3 import Phi3ForCausalLM
+from transformers.models.pixtral import PixtralVisionConfig
+from transformers.models.pixtral import PixtralVisionModel
 from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen2 import Qwen2ForCausalLM
 
@@ -30,6 +32,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_mixtral
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_olmo2
 from liger_kernel.transformers import apply_liger_kernel_to_phi3
+from liger_kernel.transformers import apply_liger_kernel_to_pixtral
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
@@ -50,6 +53,7 @@ from test.utils import revert_liger_kernel_to_mixtral
 from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_olmo2
 from test.utils import revert_liger_kernel_to_phi3
+from test.utils import revert_liger_kernel_to_pixtral
 from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
@@ -278,6 +282,24 @@ MINI_MODEL_SETUPS = {
             use_cache=True,
             vocab_size=32000,
             attn_implementation="sdpa",
+        ),
+    ),
+    "mini_pixtral": MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_pixtral,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_pixtral,
+        model_class=PixtralVisionModel,
+        mini_model_config=PixtralVisionConfig(
+            hidden_size=1024, # 1024
+            intermediate_size=2048, # 4096
+            num_hidden_layers=4, # 24
+            num_attention_heads=8, # 16
+            num_channels=1, # 3
+            image_size=256, # 1024
+            patch_size=16, # 16
+            hidden_act="gelu", # gelu
+            attention_dropout=0.0,
+            rope_theta=10000.0,
+            initializer_range=0.02,
         ),
     ),
     "mini_gemma1": MiniModelConfig(
@@ -829,7 +851,21 @@ def run_mini_model(
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
         optimizer.zero_grad()
-        output = model(**batch)
+        if model_name == "mini_pixtral":
+            dummy_pixel_values = torch.randn(
+                1,
+                1,
+                model.config.num_channels,
+                model.config.image_size,
+                model.config.image_size,
+                device=model.device,
+                dtype=dtype
+            )
+            model_input = {"pixel_values": dummy_pixel_values}
+            output = model(**model_input)
+        else:
+            batch_on_device = {k: v.to(model.device) for k, v in batch.items()}
+            output = model(**batch_on_device)
         output.loss.backward()
         optimizer.step()
         print(f"Step {i}, Loss: {output.loss.item()}")
@@ -993,6 +1029,7 @@ def run_mini_model(
         # TODO: mixtral is flaky so disable the test for now
         # ("mini_mixtral", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match
+        ("mini_pixtral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
