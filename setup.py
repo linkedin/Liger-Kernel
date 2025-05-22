@@ -60,7 +60,7 @@ def is_xpu_available():
 
     try:
         result = subprocess.run("sycl-ls", check=True, capture_output=True, shell=True)
-        if 'level_zero:gpu' in result.stdout.decode():
+        if "level_zero:gpu" in result.stdout.decode():
             return True
     except (subprocess.SubprocessError, FileNotFoundError):
         pass
