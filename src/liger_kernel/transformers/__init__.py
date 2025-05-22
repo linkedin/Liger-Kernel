@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo2  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_paligemma  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_phi3  # noqa: F401
-    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_pixtral # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_pixtral  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2_5_vl  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2_vl  # noqa: F401

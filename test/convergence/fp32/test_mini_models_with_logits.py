@@ -289,14 +289,14 @@ MINI_MODEL_SETUPS = {
         liger_kernel_patch_revert_func=revert_liger_kernel_to_pixtral,
         model_class=PixtralVisionModel,
         mini_model_config=PixtralVisionConfig(
-            hidden_size=1024, # 1024
-            intermediate_size=2048, # 4096
-            num_hidden_layers=4, # 24
-            num_attention_heads=8, # 16
-            num_channels=1, # 3
-            image_size=256, # 1024
-            patch_size=16, # 16
-            hidden_act="gelu", # gelu
+            hidden_size=1024,  # 1024
+            intermediate_size=2048,  # 4096
+            num_hidden_layers=4,  # 24
+            num_attention_heads=8,  # 16
+            num_channels=1,  # 3
+            image_size=256,  # 1024
+            patch_size=16,  # 16
+            hidden_act="silu",  # gelu
             attention_dropout=0.0,
             rope_theta=10000.0,
             initializer_range=0.02,
@@ -833,7 +833,8 @@ def run_mini_model(
             apply_liger_kernel_to_llama(**kwargs)
 
         kwargs["fused_linear_cross_entropy"] = False
-        kwargs["cross_entropy"] = False
+        if model_name != "mini_pixtral":
+            kwargs["cross_entropy"] = False
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
@@ -859,20 +860,26 @@ def run_mini_model(
                 model.config.image_size,
                 model.config.image_size,
                 device=model.device,
-                dtype=dtype
+                dtype=dtype,
             )
             model_input = {"pixel_values": dummy_pixel_values}
             output = model(**model_input)
+            loss = output.last_hidden_state.sum()
         else:
             batch_on_device = {k: v.to(model.device) for k, v in batch.items()}
             output = model(**batch_on_device)
-        output.loss.backward()
+            loss = output.loss
+        loss.backward()
         optimizer.step()
-        print(f"Step {i}, Loss: {output.loss.item()}")
-        loss_list.append(output.loss.item())
+        print(f"Step {i}, Loss: {loss.item()}")
+        loss_list.append(loss.item())
 
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
-    return {"loss": loss_list, "logits": output.logits, "model": model}
+    if model_name == "mini_pixtral":
+        logits = output.last_hidden_state
+    else:
+        logits = output.logits
+    return {"loss": loss_list, "logits": logits, "model": model}
 
 
 @pytest.mark.parametrize(
