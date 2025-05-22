@@ -15,6 +15,8 @@ from transformers.models.mixtral import MixtralConfig
 from transformers.models.mixtral import MixtralForCausalLM
 from transformers.models.phi3 import Phi3Config
 from transformers.models.phi3 import Phi3ForCausalLM
+from transformers.models.pixtral import PixtralVisionConfig
+from transformers.models.pixtral import PixtralVisionModel
 from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen2 import Qwen2ForCausalLM
 
@@ -30,6 +32,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_mixtral
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_olmo2
 from liger_kernel.transformers import apply_liger_kernel_to_phi3
+from liger_kernel.transformers import apply_liger_kernel_to_pixtral
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
@@ -50,6 +53,7 @@ from test.utils import revert_liger_kernel_to_mixtral
 from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_olmo2
 from test.utils import revert_liger_kernel_to_phi3
+from test.utils import revert_liger_kernel_to_pixtral
 from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
@@ -279,6 +283,24 @@ MINI_MODEL_SETUPS = {
             use_cache=True,
             vocab_size=32000,
             attn_implementation="sdpa",
+        ),
+    ),
+    "mini_pixtral": MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_pixtral,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_pixtral,
+        model_class=PixtralVisionModel,
+        mini_model_config=PixtralVisionConfig(
+            hidden_size=1024,  # 1024
+            intermediate_size=2048,  # 4096
+            num_hidden_layers=4,  # 24
+            num_attention_heads=8,  # 16
+            num_channels=1,  # 3
+            image_size=256,  # 1024
+            patch_size=16,  # 16
+            hidden_act="silu",  # gelu
+            attention_dropout=0.0,
+            rope_theta=10000.0,
+            initializer_range=0.02,
         ),
     ),
     "mini_gemma1": MiniModelConfig(
@@ -812,7 +834,9 @@ def run_mini_model(
             apply_liger_kernel_to_llama(**kwargs)
 
         kwargs["fused_linear_cross_entropy"] = False
-        kwargs["cross_entropy"] = False
+        # pixtral patch does not accept a cross_entropy flag
+        if model_name != "mini_pixtral":
+            kwargs["cross_entropy"] = False
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
@@ -830,14 +854,33 @@ def run_mini_model(
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
         optimizer.zero_grad()
-        output = model(**batch)
-        output.loss.backward()
+        if model_name == "mini_pixtral":
+            dummy_pixel_values = torch.randn(
+                1,
+                1,
+                model.config.num_channels,
+                model.config.image_size,
+                model.config.image_size,
+                device=model.device,
+                dtype=dtype,
+            )
+            model_input = {"pixel_values": dummy_pixel_values}
+            output = model(**model_input)
+            loss = output.last_hidden_state.sum()
+        else:
+            output = model(**batch)
+            loss = output.loss
+        loss.backward()
         optimizer.step()
-        print(f"Step {i}, Loss: {output.loss.item()}")
-        loss_list.append(output.loss.item())
+        print(f"Step {i}, Loss: {loss.item()}")
+        loss_list.append(loss.item())
 
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
-    return {"loss": loss_list, "logits": output.logits, "model": model}
+    if model_name == "mini_pixtral":
+        logits = output.last_hidden_state
+    else:
+        logits = output.logits
+    return {"loss": loss_list, "logits": logits, "model": model}
 
 
 @pytest.mark.parametrize(
@@ -1045,6 +1088,19 @@ def run_mini_model(
         #     ),
         # ),
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match
+        pytest.param(
+            "mini_pixtral",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-0,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
         pytest.param(
             "mini_gemma1",
             32,
