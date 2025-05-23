@@ -1,7 +1,7 @@
 site_name: Liger-Kernel Docs
 site_dir: 'doc_site'
-# site_url: https://linkedin.github.io/Liger-Kernel/
-# site_author: LinkedIn
+site_url: https://linkedin.github.io/Liger-Kernel/
+site_author: LinkedIn
 site_description: Efficient Triton Kernels for LLM Training
 theme:
   name: material
