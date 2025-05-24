@@ -48,7 +48,7 @@ run-benchmarks:
 # MkDocs Configuration
 MKDOCS = mkdocs
 CONFIG_FILE = mkdocs.yml
-SITE_DIR = doc_site
+SITE_DIR = site
 
 # MkDocs targets
 
