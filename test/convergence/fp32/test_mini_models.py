@@ -835,8 +835,21 @@ def run_mini_model(
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
+    model.eval()
+    eval_batch = next(loader_iter).to(model.device)
+    if with_liger:
+        eval_batch["skip_logits"] = False
+    with torch.no_grad():
+        eval_output = model(**eval_batch)
+    print(f"Eval Loss: {eval_output.loss.item()}")
+    loss_list.append(eval_output.loss.item())
+
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
-    return {"loss": loss_list, "logits": output.logits, "model": model}
+    return {
+        "loss": loss_list,
+        "logits": eval_output.logits,
+        "model": model,
+    }
 
 
 @pytest.mark.parametrize(
@@ -931,8 +944,8 @@ def run_mini_model(
             torch.float32,
             1e-5,  # 1e-8,
             1e-1,  # 1e-5,
-            5e-3,
-            1e-5,
+            1,  # 5e-3,
+            1e-1,  # 1e-5,
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(
@@ -940,6 +953,7 @@ def run_mini_model(
                 reason="Qwen2-VL not available in this version of transformers",
             ),
         ),
+        # TODO: logits tolerances are significantly larger than the other tests, need to investigate
         pytest.param(  # qwen2_5_vl requires slightly larger tolerances to pass this test after bug fix to qwen2_vl in transformers v4.47.0
             "mini_qwen2_5_vl",
             32,
@@ -947,8 +961,8 @@ def run_mini_model(
             torch.float32,
             1e-5,  # 1e-8,
             1e-1,  # 1e-5,
-            5e-3,
-            1e-5,
+            3,  # 5e-3,
+            1e-1,  # 1e-5,
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(
@@ -1003,8 +1017,8 @@ def run_mini_model(
             torch.float32,
             1e-8,
             1e-4,
-            5e-3,
-            1e-5,
+            5e-2,  # 5e-3
+            1e-4,  # 1e-5
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(
@@ -1040,15 +1054,14 @@ def test_mini_model(
         rtol=loss_rtol,
     )
 
-    # No logits are materialized
-
-    # # Compare the logits from the last step
-    # assert_verbose_allclose(
-    #     expected_output["logits"],
-    #     actual_output["logits"],
-    #     atol=logits_atol,
-    #     rtol=logits_rtol,
-    # )
+    # Compare the logits from evaluation step
+    if expected_output["logits"] is not None and actual_output["logits"] is not None:
+        assert_verbose_allclose(
+            expected_output["logits"],
+            actual_output["logits"],
+            atol=logits_atol,
+            rtol=logits_rtol,
+        )
 
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them

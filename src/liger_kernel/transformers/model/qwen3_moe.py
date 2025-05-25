@@ -25,6 +25,7 @@ def lce_forward(
     output_router_logits: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
+    skip_logits: Optional[bool] = None,
     **kwargs,
 ) -> MoeCausalLMOutputWithPast:
     r"""
@@ -92,8 +93,10 @@ def lce_forward(
     logits = None
     loss = None
 
-    # if in training mode, do not materialize logits
-    if self.training and (labels is not None or shift_labels is not None):
+    if skip_logits is None:
+        skip_logits = self.training and (labels is not None or shift_labels is not None)
+
+    if skip_logits:
         loss = LigerForCausalLMLoss(
             hidden_states=kept_hidden_states,
             lm_head_weight=self.lm_head.weight,

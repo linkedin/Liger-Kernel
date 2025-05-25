@@ -30,6 +30,7 @@ def lce_forward(
     rope_deltas: Optional[torch.LongTensor] = None,
     cache_position: Optional[torch.LongTensor] = None,
     second_per_grid_ts: Optional[torch.Tensor] = None,
+    skip_logits: Optional[bool] = None,
     **kwargs,
 ) -> Union[Tuple, Qwen2_5_VLCausalLMOutputWithPast]:
     r"""
@@ -162,7 +163,13 @@ def lce_forward(
     loss = None
     logits = None
 
-    if self.training and (labels is not None or shift_labels is not None):
+    if skip_logits and labels is None and shift_labels is None:
+        raise ValueError("skip_logits is True, but labels and shift_labels are None")
+
+    if skip_logits is None:
+        skip_logits = self.training and (labels is not None or shift_labels is not None)
+
+    if skip_logits:
         loss = LigerForCausalLMLoss(
             hidden_states=hidden_states,
             lm_head_weight=self.lm_head.weight,

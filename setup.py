@@ -47,6 +47,27 @@ def get_optional_dependencies():
     }
 
 
+def is_xpu_available():
+    """
+    Check if Intel XPU is available.
+    xpu-smi is often missing right now.
+    """
+    try:
+        subprocess.run(["xpu-smi"], check=True)
+        return True
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    try:
+        result = subprocess.run("sycl-ls", check=True, capture_output=True, shell=True)
+        if "level_zero:gpu" in result.stdout.decode():
+            return True
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    return False
+
+
 def get_platform() -> Literal["cuda", "rocm", "cpu", "xpu"]:
     """
     Detect whether the system has NVIDIA or AMD GPU without torch dependency.
@@ -63,11 +84,10 @@ def get_platform() -> Literal["cuda", "rocm", "cpu", "xpu"]:
             print("ROCm GPU detected")
             return "rocm"
         except (subprocess.SubprocessError, FileNotFoundError):
-            try:
-                subprocess.run(["xpu-smi"], check=True)
+            if is_xpu_available():
                 print("Intel GPU detected")
                 return "xpu"
-            except (subprocess.SubprocessError, FileNotFoundError):
+            else:
                 print("No GPU detected")
                 return "cpu"
 
