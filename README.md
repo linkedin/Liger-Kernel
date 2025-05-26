@@ -63,6 +63,8 @@
 
 We've also added optimized Post-Training kernels that deliver **up to 80% memory savings** for alignment and distillation tasks. We support losses like DPO, CPO, ORPO, SimPO, KTO, JSD, and many more. Check out [how we optimize the memory](https://x.com/hsu_byron/status/1866577403918917655).
 
+You can view the documentation site for additional installation, usage examples, and API references:https://linkedin.github.io/Liger-Kernel/
+
 ## Supercharge Your Model with Liger Kernel
 
 ![Banner](https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/banner.GIF)
