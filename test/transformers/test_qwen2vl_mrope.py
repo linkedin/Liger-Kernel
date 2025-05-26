@@ -4,7 +4,7 @@ import torch
 from test.utils import supports_bfloat16
 
 try:
-    from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
+    from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLTextConfig
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLRotaryEmbedding
     from transformers.models.qwen2_vl.modeling_qwen2_vl import apply_multimodal_rotary_pos_emb
 
@@ -45,7 +45,7 @@ device = infer_device()
     ],
 )
 def test_correctness(bsz, seq_len, num_q_heads, num_kv_heads, head_dim, mrope_section, dtype, atol, rtol):
-    rotary_emb = Qwen2VLRotaryEmbedding(config=Qwen2VLConfig(head_dim=head_dim), device=device)
+    rotary_emb = Qwen2VLRotaryEmbedding(config=Qwen2VLTextConfig(head_dim=head_dim), device=device)
 
     _tensor_q = torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device).transpose(1, 2).to(dtype)
 
@@ -105,7 +105,7 @@ def test_functional_correctness(bsz, seq_len, num_q_heads, num_kv_heads, head_di
     k1 = _k.clone().requires_grad_(True)
     k2 = _k.clone().requires_grad_(True)
 
-    rotary_emb = Qwen2VLRotaryEmbedding(config=Qwen2VLConfig(head_dim=head_dim), device=device)
+    rotary_emb = Qwen2VLRotaryEmbedding(config=Qwen2VLTextConfig(head_dim=head_dim), device=device)
 
     pos_ids = torch.arange(seq_len * 3 * bsz, device=device, dtype=torch.long).view(3, bsz, seq_len)
     cos, sin = rotary_emb(k1, pos_ids)
