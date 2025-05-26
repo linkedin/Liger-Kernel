@@ -35,6 +35,13 @@ from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
+try:
+    import peft
+
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
+
 transformer_version = version.parse(transformers.__version__)
 
 logger = logging.getLogger(__name__)
@@ -48,22 +55,68 @@ def _bind_method_to_module(module, method_name: str, new_method: Callable):
 
 
 def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True):
-    module.offset = offset
-    module.casting_mode = casting_mode
-    module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
-    module.in_place = in_place
-    _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
-    _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
-    module.__class__.__name__ = LigerRMSNorm.__name__
+    # Check if the module is a PEFT ModulesToSaveWrapper
+    # If it is, we need to patch the modules_to_save.default and original_modules
+    if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
+        module.modules_to_save.default.offset = offset
+        module.modules_to_save.default.casting_mode = casting_mode
+        module.modules_to_save.default.variance_epsilon = (
+            getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        )
+        module.modules_to_save.default.in_place = in_place
+        module.original_module.offset = offset
+        module.original_module.casting_mode = casting_mode
+        module.original_module.variance_epsilon = (
+            getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        )
+        module.original_module.in_place = in_place
+        _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
+        _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module.original_module, "extra_repr", LigerRMSNorm.extra_repr)
+        module.modules_to_save.default.__class__.__name__ = LigerRMSNorm.__name__
+        module.original_module.__class__.__name__ = LigerRMSNorm.__name__
+    else:
+        module.offset = offset
+        module.casting_mode = casting_mode
+        module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.in_place = in_place
+        _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
+        module.__class__.__name__ = LigerRMSNorm.__name__
 
 
 def _patch_layer_norm_module(module, eps=1e-6):
-    module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
-    module.hidden_size = getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
-
-    _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
-    _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
-    module.__class__.__name__ = LigerLayerNorm.__name__
+    # Check if the module is a PEFT ModulesToSaveWrapper
+    # If it is, we need to patch the modules_to_save.default and original_modules
+    if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
+        module.hidden_size = module.normalized_shape
+        _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
+        _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
+        module.modules_to_save.default.variance_epsilon = (
+            getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        )
+        module.original_module.hidden_size = getattr(module, "hidden_size", None) or getattr(
+            module, "normalized_shape", None
+        )
+        module.original_module.variance_epsilon = (
+            getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        )
+        module.original_module.hidden_size = getattr(module, "hidden_size", None) or getattr(
+            module, "normalized_shape", None
+        )
+        _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
+        _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
+        _bind_method_to_module(module.original_module, "extra_repr", LigerRMSNorm.extra_repr)
+        module.modules_to_save.default.__class__.__name__ = LigerLayerNorm.__name__
+        module.original_module.__class__.__name__ = LigerLayerNorm.__name__
+    else:
+        module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
+        module.hidden_size = getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
+        _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
+        _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
+        module.__class__.__name__ = LigerLayerNorm.__name__
 
 
 def _patch_swiglu_module(module, liger_module):
@@ -1100,6 +1153,61 @@ def apply_liger_kernel_to_qwen3(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_qwen3_moe(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Qwen3 models.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.qwen3_moe import modeling_qwen3_moe
+    from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeModel
+
+    from liger_kernel.transformers.model.qwen3_moe import lce_forward as qwen3_lce_forward
+    from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
+
+    if rope:
+        modeling_qwen3_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if rms_norm:
+        modeling_qwen3_moe.Qwen3MoeRMSNorm = LigerRMSNorm
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        modeling_qwen3_moe.Qwen3MoeForCausalLM.forward = qwen3_lce_forward
+
+    if swiglu:
+        modeling_qwen3_moe.Qwen3MoeMLP = LigerQwen3MoeSwiGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: Qwen3MoeModel = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp, LigerQwen3MoeSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 def apply_liger_kernel_to_qwen2_vl(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -1453,6 +1561,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "olmo2": apply_liger_kernel_to_olmo2,
     "qwen2": apply_liger_kernel_to_qwen2,
     "qwen3": apply_liger_kernel_to_qwen3,
+    "qwen3_moe": apply_liger_kernel_to_qwen3_moe,
     "qwen2_vl": apply_liger_kernel_to_qwen2_vl,
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "phi3": apply_liger_kernel_to_phi3,

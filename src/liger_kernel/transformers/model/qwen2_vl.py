@@ -8,17 +8,11 @@ import torch
 from packaging import version
 from torch.nn import CrossEntropyLoss
 from transformers import __version__ as transformers_version
-from transformers.models.qwen2_vl.modeling_qwen2_vl import _CONFIG_FOR_DOC
-from transformers.models.qwen2_vl.modeling_qwen2_vl import QWEN2_VL_INPUTS_DOCSTRING
 from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLCausalLMOutputWithPast
-from transformers.utils import add_start_docstrings_to_model_forward
-from transformers.utils import replace_return_docstrings
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 
-@add_start_docstrings_to_model_forward(QWEN2_VL_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=Qwen2VLCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -37,6 +31,7 @@ def lce_forward(
     video_grid_thw: Optional[torch.LongTensor] = None,
     rope_deltas: Optional[torch.LongTensor] = None,
     cache_position: Optional[torch.LongTensor] = None,
+    skip_logits: Optional[bool] = None,
     **loss_kwargs,
 ) -> Union[Tuple, Qwen2VLCausalLMOutputWithPast]:
     r"""
@@ -171,7 +166,13 @@ def lce_forward(
     loss = None
     logits = None
 
-    if self.training and (labels is not None or shift_labels is not None):
+    if skip_logits and labels is None and shift_labels is None:
+        raise ValueError("skip_logits is True, but labels and shift_labels are None")
+
+    if skip_logits is None:
+        skip_logits = self.training and (labels is not None or shift_labels is not None)
+
+    if skip_logits:
         loss = LigerForCausalLMLoss(
             hidden_states=hidden_states,
             lm_head_weight=self.lm_head.weight,

@@ -48,13 +48,19 @@ run-benchmarks:
 # MkDocs Configuration
 MKDOCS = mkdocs
 CONFIG_FILE = mkdocs.yml
+SITE_DIR = site
 
 # MkDocs targets
+
+# Serve the documentation 
 serve:
 	$(MKDOCS) serve -f $(CONFIG_FILE)
 
+# Build the documentation into the specified site directory
 build:
-	$(MKDOCS) build -f $(CONFIG_FILE)
+	$(MKDOCS) build -f $(CONFIG_FILE) --site-dir $(SITE_DIR)
 
+# Clean the output directory
 clean:
-	rm -rf site/
+	rm -rf $(SITE_DIR)/
+

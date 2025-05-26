@@ -22,17 +22,18 @@ def bench_speed_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     from test.transformers.test_dyt import LigerDyT
     from test.transformers.test_dyt import TorchDyT
 
-    BT = input.x
+    hidden_size = input.x
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
     extra_benchmark_config = input.extra_benchmark_config
-    hidden_size = extra_benchmark_config["hidden_size"]
+    BT = extra_benchmark_config["BT"]
+    beta = extra_benchmark_config["beta"]
     dtype = extra_benchmark_config["dtype"]
 
     x_shape = (BT, hidden_size)
-    torch_dyt = TorchDyT(hidden_size=hidden_size).to(device)
-    torch_compile_dyt = torch.compile(TorchDyT(hidden_size=hidden_size).to(device))
-    triton_dyt = LigerDyT(hidden_size=hidden_size).to(device)
+    torch_dyt = TorchDyT(hidden_size=hidden_size, beta=beta).to(device)
+    torch_compile_dyt = torch.compile(TorchDyT(hidden_size=hidden_size, beta=beta).to(device))
+    triton_dyt = LigerDyT(hidden_size=hidden_size, beta=beta).to(device)
 
     x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
@@ -75,16 +76,17 @@ def bench_memory_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
     from test.transformers.test_dyt import LigerDyT
     from test.transformers.test_dyt import TorchDyT
 
-    BT = input.x
+    hidden_size = input.x
     provider = input.kernel_provider
     extra_benchmark_config = input.extra_benchmark_config
-    hidden_size = extra_benchmark_config["hidden_size"]
+    BT = extra_benchmark_config["BT"]
+    beta = extra_benchmark_config["beta"]
     dtype = extra_benchmark_config["dtype"]
 
     x_shape = (BT, hidden_size)
-    torch_dyt = TorchDyT(hidden_size=hidden_size).to(device)
-    torch_compile_dyt = torch.compile(TorchDyT(hidden_size=hidden_size).to(device))
-    triton_dyt = LigerDyT(hidden_size=hidden_size).to(device)
+    torch_dyt = TorchDyT(hidden_size=hidden_size, beta=beta).to(device)
+    torch_compile_dyt = torch.compile(TorchDyT(hidden_size=hidden_size, beta=beta).to(device))
+    triton_dyt = LigerDyT(hidden_size=hidden_size, beta=beta).to(device)
 
     x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
@@ -113,27 +115,28 @@ def bench_memory_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    common_configs = {
-        "kernel_name": "dyt",
-        "x_name": "BT",
-        "x_label": "batch_size * seq_len",
-        "x_values": [2**i for i in range(10, 15)],
-        "kernel_providers": ["liger", "torch", "torch_compile"],
-        "extra_benchmark_configs": [{"hidden_size": 4096, "dtype": torch.float32}],
-        "overwrite": args.overwrite,
-    }
+    for beta in [False, True]:
+        common_configs = {
+            "kernel_name": f"dyt_beta={beta}",
+            "x_name": "hidden_size",
+            "x_label": "hidden_size",
+            "x_values": [1024 * i for i in range(1, 17)],
+            "kernel_providers": ["liger", "torch", "torch_compile"],
+            "extra_benchmark_configs": [{"BT": 4096, "dtype": torch.bfloat16, "beta": beta}],
+            "overwrite": args.overwrite,
+        }
 
-    run_benchmarks(
-        bench_test_fn=bench_speed_dyt,
-        kernel_operation_modes=["forward", "backward", "full"],
-        metric_name="speed",
-        metric_unit="ms",
-        **common_configs,
-    )
-    run_benchmarks(
-        bench_test_fn=bench_memory_dyt,
-        kernel_operation_modes=["full"],
-        metric_name="memory",
-        metric_unit="MB",
-        **common_configs,
-    )
+        run_benchmarks(
+            bench_test_fn=bench_speed_dyt,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_dyt,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )

@@ -34,6 +34,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
@@ -53,6 +54,7 @@ from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
+from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 
@@ -129,6 +131,8 @@ except ImportError:
 try:
     from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
     from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+    from transformers.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
+    from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeForCausalLM
 
     QWEN3_AVAILABLE = True
 except ImportError:
@@ -391,6 +395,41 @@ if QWEN3_AVAILABLE:
             use_cache=True,
             vocab_size=32000,
             attn_implementation="sdpa",
+        ),
+    )
+
+    MINI_MODEL_SETUPS["mini_qwen3_moe"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_moe,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_moe,
+        model_class=Qwen3MoeForCausalLM,
+        mini_model_config=Qwen3MoeConfig(
+            vocab_size=32000,  # 151936
+            hidden_size=896,
+            intermediate_size=4864,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=True,
+            tie_word_embeddings=False,
+            rope_theta=10000.0,
+            rope_scaling=None,
+            attention_bias=False,
+            use_sliding_window=False,
+            sliding_window=4096,
+            max_window_layers=28,
+            attention_dropout=0.0,
+            decoder_sparse_step=1,
+            moe_intermediate_size=768,
+            num_experts_per_tok=2,
+            num_experts=8,
+            norm_topk_prob=False,
+            output_router_logits=False,
+            router_aux_loss_coef=0.001,
+            mlp_only_layers=None,
         ),
     )
 
@@ -796,8 +835,21 @@ def run_mini_model(
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
+    model.eval()
+    eval_batch = next(loader_iter).to(model.device)
+    if with_liger:
+        eval_batch["skip_logits"] = False
+    with torch.no_grad():
+        eval_output = model(**eval_batch)
+    print(f"Eval Loss: {eval_output.loss.item()}")
+    loss_list.append(eval_output.loss.item())
+
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
-    return {"loss": loss_list, "logits": output.logits, "model": model}
+    return {
+        "loss": loss_list,
+        "logits": eval_output.logits,
+        "model": model,
+    }
 
 
 @pytest.mark.parametrize(
@@ -869,6 +921,22 @@ def run_mini_model(
                 reason="Qwen3 not available in this version of transformers",
             ),
         ),
+        pytest.param(
+            "mini_qwen3_moe",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not QWEN3_AVAILABLE,
+                reason="Qwen3 not available in this version of transformers",
+            ),
+        ),
         pytest.param(  # qwen2_vl requires slightly larger tolerances to pass this test after bug fix to qwen2_vl in transformers v4.47.0
             "mini_qwen2_vl",
             32,
@@ -876,8 +944,8 @@ def run_mini_model(
             torch.float32,
             1e-5,  # 1e-8,
             1e-1,  # 1e-5,
-            5e-3,
-            1e-5,
+            1,  # 5e-3,
+            1e-1,  # 1e-5,
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(
@@ -885,6 +953,7 @@ def run_mini_model(
                 reason="Qwen2-VL not available in this version of transformers",
             ),
         ),
+        # TODO: logits tolerances are significantly larger than the other tests, need to investigate
         pytest.param(  # qwen2_5_vl requires slightly larger tolerances to pass this test after bug fix to qwen2_vl in transformers v4.47.0
             "mini_qwen2_5_vl",
             32,
@@ -892,8 +961,8 @@ def run_mini_model(
             torch.float32,
             1e-5,  # 1e-8,
             1e-1,  # 1e-5,
-            5e-3,
-            1e-5,
+            3,  # 5e-3,
+            1e-1,  # 1e-5,
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(
@@ -948,8 +1017,8 @@ def run_mini_model(
             torch.float32,
             1e-8,
             1e-4,
-            5e-3,
-            1e-5,
+            5e-2,  # 5e-3
+            1e-4,  # 1e-5
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(
@@ -985,15 +1054,14 @@ def test_mini_model(
         rtol=loss_rtol,
     )
 
-    # No logits are materialized
-
-    # # Compare the logits from the last step
-    # assert_verbose_allclose(
-    #     expected_output["logits"],
-    #     actual_output["logits"],
-    #     atol=logits_atol,
-    #     rtol=logits_rtol,
-    # )
+    # Compare the logits from evaluation step
+    if expected_output["logits"] is not None and actual_output["logits"] is not None:
+        assert_verbose_allclose(
+            expected_output["logits"],
+            actual_output["logits"],
+            atol=logits_atol,
+            rtol=logits_rtol,
+        )
 
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
