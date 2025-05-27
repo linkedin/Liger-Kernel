@@ -374,7 +374,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
     kernel_args = {}
     if X.device.type == "xpu":
         kernel_args["grf_mode"] = "large"
-    if BLOCK_SIZE > 256 or n_rows <= 4096 * 8 or row_mode:
+    if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
         _rms_norm_forward_kernel[(n_rows,)](
             Y,
             Y.stride(0),
@@ -446,7 +446,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     if X.device.type == "xpu":
         kernel_args["grf_mode"] = "large"
 
-    if BLOCK_SIZE > 256 or n_rows <= 4096 * 8 or row_mode:
+    if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
         _rms_norm_backward_kernel[grid](
             dY,
             dY.stride(0),
