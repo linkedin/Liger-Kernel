@@ -272,7 +272,7 @@ if __name__ == "__main__":
         "kernel_name": "fused_neighborhood_attention",
         "x_name": "seq_len",
         "x_label": "sequence length",
-        "x_values": [2**i for i in range(5, 10)],
+        "x_values": [2**i for i in range(6, 13)],
         "kernel_providers": ["liger", "torch"],
         "extra_benchmark_configs": [
             {
@@ -282,7 +282,7 @@ if __name__ == "__main__":
                 "kernel_size": 7,
                 "dilation": 1,
                 "bias": True,
-                "dtype": torch.bfloat16,
+                "dtype": torch.float32,
             },
             {
                 "batch_size": 4,
@@ -291,7 +291,7 @@ if __name__ == "__main__":
                 "kernel_size": 7,
                 "dilation": 1,
                 "bias": True,
-                "dtype": torch.bfloat16,
+                "dtype": torch.float32,
             },
             {
                 "batch_size": 2,
@@ -300,7 +300,7 @@ if __name__ == "__main__":
                 "kernel_size": 9,
                 "dilation": 1,
                 "bias": True,
-                "dtype": torch.bfloat16,
+                "dtype": torch.float32,
             },
             {
                 "batch_size": 2,
@@ -309,14 +309,14 @@ if __name__ == "__main__":
                 "kernel_size": 7,
                 "dilation": 2,
                 "bias": True,
-                "dtype": torch.bfloat16,
+                "dtype": torch.float32,
             },
         ],
     }
 
     run_benchmarks(
         bench_test_fn=bench_speed_fused_neighborhood_attention,
-        kernel_operation_modes=args.kernel_operation_modes,
+        kernel_operation_modes=["forward", "full", "backward"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,
