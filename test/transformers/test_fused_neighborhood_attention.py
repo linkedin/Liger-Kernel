@@ -7,6 +7,7 @@ import torch.nn as nn
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 
+from liger_kernel.transformers.functional import liger_fused_neighborhood_attention
 from liger_kernel.transformers.fused_neighborhood_attention import LigerFusedNeighborhoodAttention
 from liger_kernel.transformers.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionLayer
 from liger_kernel.utils import infer_device
@@ -105,6 +106,7 @@ class TorchNeighborhoodAttention(nn.Module):
     "dtype, atol, rtol",
     [
         (torch.float32, 5e-3, 5e-3),
+        (torch.bfloat16, 5e-1, 5e-1),
     ],
 )
 def test_fused_neighborhood_attention_correctness(
@@ -236,6 +238,7 @@ class TorchNeighborhoodAttentionLayer(nn.Module):
     "dtype, atol, rtol",
     [
         (torch.float32, 5e-3, 5e-3),
+        (torch.bfloat16, 5e-1, 5e-1),
     ],
 )
 def test_fused_neighborhood_attention_layer_correctness(
@@ -395,3 +398,175 @@ def test_fused_neighborhood_attention_gradient_flow(batch_size, seq_len, hidden_
     for name, param in attention.named_parameters():
         assert param.grad is not None, f"Parameter {name} has no gradient"
         assert not torch.allclose(param.grad, torch.zeros_like(param.grad)), f"Parameter {name} has zero gradient"
+
+
+def torch_fused_neighborhood_attention(
+    query,
+    key,
+    value,
+    kernel_size: int = 7,
+    dilation: int = 1,
+    scale: float = None,
+):
+    batch_size, num_heads, seq_len, head_dim = query.shape
+
+    if scale is None:
+        scale = 1.0 / math.sqrt(head_dim)
+
+    scores = torch.matmul(query, key.transpose(-2, -1)) * scale
+
+    mask = torch.zeros(seq_len, seq_len, device=query.device, dtype=torch.bool)
+    half_kernel = kernel_size // 2
+
+    for i in range(seq_len):
+        start = max(0, i - half_kernel * dilation)
+        end = min(seq_len, i + half_kernel * dilation + 1)
+
+        for j in range(start, end):
+            if dilation == 1 or (j - i) % dilation == 0:
+                mask[i, j] = True
+
+    scores = scores.masked_fill(~mask, float("-inf"))
+
+    attn_weights = torch.softmax(scores, dim=-1)
+
+    output = torch.matmul(attn_weights, value)
+
+    return output
+
+
+@pytest.mark.parametrize(
+    "batch_size, num_heads, seq_len, head_dim, kernel_size",
+    [
+        (2, 4, 32, 32, 7),
+        (1, 8, 24, 16, 5),
+        (2, 6, 16, 64, 9),
+        (1, 2, 48, 128, 3),
+    ],
+)
+@pytest.mark.parametrize("dilation", [1, 2])
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 5e-3, 5e-3),
+        (torch.bfloat16, 5e-1, 5e-1),
+    ],
+)
+def test_liger_fused_neighborhood_attention_functional_correctness(
+    batch_size, num_heads, seq_len, head_dim, kernel_size, dilation, dtype, atol, rtol
+):
+    set_seed(42)
+
+    query = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device, dtype=dtype)
+    key = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device, dtype=dtype)
+    value = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device, dtype=dtype)
+
+    query1 = query.detach().clone().requires_grad_(True)
+    key1 = key.detach().clone().requires_grad_(True)
+    value1 = value.detach().clone().requires_grad_(True)
+
+    query2 = query.detach().clone().requires_grad_(True)
+    key2 = key.detach().clone().requires_grad_(True)
+    value2 = value.detach().clone().requires_grad_(True)
+
+    liger_output = liger_fused_neighborhood_attention(query1, key1, value1, kernel_size=kernel_size, dilation=dilation)
+
+    torch_output = torch_fused_neighborhood_attention(query2, key2, value2, kernel_size=kernel_size, dilation=dilation)
+
+    assert_verbose_allclose(liger_output, torch_output, atol=atol, rtol=rtol)
+
+    liger_loss = liger_output.sum()
+    torch_loss = torch_output.sum()
+
+    liger_loss.backward()
+    torch_loss.backward()
+
+    assert_verbose_allclose(query1.grad, query2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(key1.grad, key2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(value1.grad, value2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "batch_size, num_heads, seq_len, head_dim",
+    [
+        (2, 4, 32, 32),
+        (1, 8, 16, 64),
+    ],
+)
+def test_liger_fused_neighborhood_attention_functional_custom_scale(batch_size, num_heads, seq_len, head_dim):
+    set_seed(42)
+
+    query = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
+    key = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
+    value = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
+
+    custom_scale = 0.5
+
+    query1 = query.detach().clone().requires_grad_(True)
+    key1 = key.detach().clone().requires_grad_(True)
+    value1 = value.detach().clone().requires_grad_(True)
+
+    query2 = query.detach().clone().requires_grad_(True)
+    key2 = key.detach().clone().requires_grad_(True)
+    value2 = value.detach().clone().requires_grad_(True)
+
+    liger_output = liger_fused_neighborhood_attention(
+        query1, key1, value1, kernel_size=7, dilation=1, scale=custom_scale
+    )
+
+    torch_output = torch_fused_neighborhood_attention(
+        query2, key2, value2, kernel_size=7, dilation=1, scale=custom_scale
+    )
+
+    assert_verbose_allclose(liger_output, torch_output, atol=5e-3, rtol=5e-3)
+
+
+def test_liger_fused_neighborhood_attention_functional_shapes():
+    batch_size, num_heads, seq_len, head_dim = 2, 4, 16, 32
+
+    query = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
+    key = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
+    value = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
+
+    output = liger_fused_neighborhood_attention(query, key, value)
+
+    expected_shape = (batch_size, num_heads, seq_len, head_dim)
+    assert output.shape == expected_shape, f"Expected shape {expected_shape}, got {output.shape}"
+
+    assert not torch.isnan(output).any(), "Output contains NaN values"
+    assert not torch.isinf(output).any(), "Output contains Inf values"
+
+
+def test_liger_fused_neighborhood_attention_functional_deterministic():
+    """Test that the functional interface is deterministic."""
+    set_seed(42)
+
+    batch_size, num_heads, seq_len, head_dim = 2, 4, 16, 32
+
+    query = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
+    key = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
+    value = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
+
+    output1 = liger_fused_neighborhood_attention(query, key, value)
+    output2 = liger_fused_neighborhood_attention(query, key, value)
+
+    assert torch.allclose(output1, output2, atol=1e-6, rtol=1e-6), "Functional interface is not deterministic"
+
+
+@pytest.mark.parametrize("kernel_size", [3, 5, 7, 9])
+@pytest.mark.parametrize("dilation", [1, 2, 3])
+def test_liger_fused_neighborhood_attention_functional_parameters(kernel_size, dilation):
+    """Test the functional interface with different kernel sizes and dilations."""
+    batch_size, num_heads, seq_len, head_dim = 1, 2, 24, 16
+
+    query = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
+    key = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
+    value = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
+
+    output = liger_fused_neighborhood_attention(query, key, value, kernel_size=kernel_size, dilation=dilation)
+
+    expected_shape = (batch_size, num_heads, seq_len, head_dim)
+    assert output.shape == expected_shape, f"Expected shape {expected_shape}, got {output.shape}"
+
+    assert not torch.isnan(output).any(), "Output contains NaN values"
+    assert not torch.isinf(output).any(), "Output contains Inf values"
