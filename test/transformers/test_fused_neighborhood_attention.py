@@ -106,7 +106,7 @@ class TorchNeighborhoodAttention(nn.Module):
     "dtype, atol, rtol",
     [
         (torch.float32, 5e-3, 5e-3),
-        (torch.bfloat16, 5e-1, 5e-1),
+        (torch.bfloat16, 5e-2, 5e-2),
     ],
 )
 def test_fused_neighborhood_attention_correctness(
@@ -238,7 +238,7 @@ class TorchNeighborhoodAttentionLayer(nn.Module):
     "dtype, atol, rtol",
     [
         (torch.float32, 5e-3, 5e-3),
-        (torch.bfloat16, 5e-1, 5e-1),
+        (torch.bfloat16, 5e-2, 5e-2),
     ],
 )
 def test_fused_neighborhood_attention_layer_correctness(
@@ -449,7 +449,7 @@ def torch_fused_neighborhood_attention(
     "dtype, atol, rtol",
     [
         (torch.float32, 5e-3, 5e-3),
-        (torch.bfloat16, 5e-1, 5e-1),
+        (torch.bfloat16, 5e-2, 5e-2),
     ],
 )
 def test_liger_fused_neighborhood_attention_functional_correctness(
