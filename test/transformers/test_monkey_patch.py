@@ -687,7 +687,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
             intermediate_size=64,
         )
         config = transformers.models.gemma3.configuration_gemma3.Gemma3Config(text_config, vision_config)
-        print(f"config.model_type: {config.model_type}")
+
         dummy_model_instance = Gemma3ForConditionalGeneration._from_config(config)
         assert isinstance(dummy_model_instance, Gemma3ForConditionalGeneration)
 

@@ -911,7 +911,7 @@ def apply_liger_kernel_to_gemma3(
                 fused_linear_cross_entropy=False,
                 rms_norm=rms_norm,
                 geglu=geglu,
-                model=model.model.language_model,
+                model=model.language_model,
             )
 
         else:
