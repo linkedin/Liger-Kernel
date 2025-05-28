@@ -905,9 +905,6 @@ def apply_liger_kernel_to_gemma3(
             if rms_norm:
                 _patch_rms_norm_module_for_gemma3(model.multi_modal_projector.mm_soft_emb_norm)
 
-            # Print instance of model.model.language_model
-            print(f"instance of model.model.language_model: {model.model.language_model}")
-            print(f"model_type of model.model.language_model: {model.model.language_model.config.model_type}")
             apply_liger_kernel_to_gemma3_text(
                 rope=rope,
                 cross_entropy=False,
@@ -1618,7 +1615,7 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
         - kwargs: keyword arguments that are passed to the corresponding apply_liger_kernel_to_* function.
     """
     model_type = getattr(model, "config", None) and getattr(model.config, "model_type", None)
-    print(f"model_type (apply_liger_kernel_to_instance): {model_type}")
+
     if not model_type:
         logger.info("Model type could not be determined from model config. No Liger kernels will be applied.")
         return
@@ -1628,9 +1625,6 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
         return
 
     apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
-    # Get the name of the apply_fn
-    apply_fn_name = apply_fn.__name__
-    print(f"apply_fn_name (apply_liger_kernel_to_instance): {apply_fn_name}")
     apply_fn_signature = inspect.signature(apply_fn)
 
     # Filter out the keyword arguments that are not supported by the apply function

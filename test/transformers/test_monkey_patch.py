@@ -689,7 +689,6 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
         config = transformers.models.gemma3.configuration_gemma3.Gemma3Config(text_config, vision_config)
         print(f"config.model_type: {config.model_type}")
         dummy_model_instance = Gemma3ForConditionalGeneration._from_config(config)
-        print(f"dummy_model_instance config.model_type: {dummy_model_instance.config.model_type}")
         assert isinstance(dummy_model_instance, Gemma3ForConditionalGeneration)
 
         # Check that model instance variables are not yet patched with Liger modules
