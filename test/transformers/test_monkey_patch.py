@@ -667,7 +667,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_text():
 
 
 @pytest.mark.skipif(not is_gemma3_available(), reason="gemma3 module not available")
-def test_apply_liger_kernel_to_instance_for_gemma3():
+def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
 
     with patch("transformers.models.gemma3.modeling_gemma3"):
@@ -687,8 +687,8 @@ def test_apply_liger_kernel_to_instance_for_gemma3():
             intermediate_size=64,
         )
         config = transformers.models.gemma3.configuration_gemma3.Gemma3Config(text_config, vision_config)
-        dummy_model_instance = Gemma3ForConditionalGeneration._from_config(config)
 
+        dummy_model_instance = Gemma3ForConditionalGeneration._from_config(config)
         assert isinstance(dummy_model_instance, Gemma3ForConditionalGeneration)
 
         # Check that model instance variables are not yet patched with Liger modules
@@ -704,11 +704,11 @@ def test_apply_liger_kernel_to_instance_for_gemma3():
             dummy_model_instance.multi_modal_projector.mm_soft_emb_norm.forward
         ) != inspect.getsource(LigerRMSNorm.forward)
 
-        assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) != inspect.getsource(
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
             LigerRMSNorm.forward
         )
 
-        for layer in dummy_model_instance.language_model.model.layers:
+        for layer in dummy_model_instance.language_model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
@@ -736,10 +736,10 @@ def test_apply_liger_kernel_to_instance_for_gemma3():
             dummy_model_instance.multi_modal_projector.mm_soft_emb_norm.forward
         ) == inspect.getsource(LigerRMSNorm.forward)
 
-        assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) == inspect.getsource(
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
             LigerRMSNorm.forward
         )
-        for layer in dummy_model_instance.language_model.model.layers:
+        for layer in dummy_model_instance.language_model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
