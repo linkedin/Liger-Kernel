@@ -776,7 +776,7 @@ def apply_liger_kernel_to_gemma3_text(
 
     from transformers.models.gemma3 import modeling_gemma3
     from transformers.models.gemma3.modeling_gemma3 import Gemma3DecoderLayer
-    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM, Gemma3TextModel
 
     from liger_kernel.transformers.gema3_rms import LigerRMSNormForGemma3
     from liger_kernel.transformers.model.gemma3 import causal_forward
@@ -807,9 +807,9 @@ def apply_liger_kernel_to_gemma3_text(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        if isinstance(model, Gemma3ForCausalLM):
+        if isinstance(model, Gemma3ForCausalLM) or isinstance(model, Gemma3TextModel):
             # get the base model from the model instance
-            base_model = model.model
+            base_model = model.model if isinstance(model, Gemma3ForCausalLM) else model
 
             if rms_norm:
                 _patch_rms_norm_module_for_gemma3(base_model.norm)
@@ -905,13 +905,16 @@ def apply_liger_kernel_to_gemma3(
             if rms_norm:
                 _patch_rms_norm_module_for_gemma3(model.multi_modal_projector.mm_soft_emb_norm)
 
+            # Print instance of model.model.language_model
+            print(f"instance of model.model.language_model: {model.model.language_model}")
+            print(f"model_type of model.model.language_model: {model.model.language_model.config.model_type}")
             apply_liger_kernel_to_gemma3_text(
                 rope=rope,
                 cross_entropy=False,
                 fused_linear_cross_entropy=False,
                 rms_norm=rms_norm,
                 geglu=geglu,
-                model=model.language_model,
+                model=model.model.language_model,
             )
 
         else:
@@ -1615,7 +1618,7 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
         - kwargs: keyword arguments that are passed to the corresponding apply_liger_kernel_to_* function.
     """
     model_type = getattr(model, "config", None) and getattr(model.config, "model_type", None)
-
+    print(f"model_type (apply_liger_kernel_to_instance): {model_type}")
     if not model_type:
         logger.info("Model type could not be determined from model config. No Liger kernels will be applied.")
         return
@@ -1625,7 +1628,9 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
         return
 
     apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
-
+    # Get the name of the apply_fn
+    apply_fn_name = apply_fn.__name__
+    print(f"apply_fn_name (apply_liger_kernel_to_instance): {apply_fn_name}")
     apply_fn_signature = inspect.signature(apply_fn)
 
     # Filter out the keyword arguments that are not supported by the apply function
