@@ -13,6 +13,7 @@ class LigerRMSNorm(nn.Module):
         casting_mode="llama",
         init_fn="ones",
         in_place=True,
+        row_mode=None,
     ):
         super().__init__()
         assert init_fn in [
@@ -20,11 +21,12 @@ class LigerRMSNorm(nn.Module):
             "zeros",
         ], f"init_fn must be either 'ones' or 'zeros', got {init_fn}"
         self.weight = nn.Parameter(torch.ones(hidden_size) if init_fn == "ones" else torch.zeros(hidden_size))
-        self.variance_epsilon, self.offset, self.casting_mode, self.in_place = (
+        self.variance_epsilon, self.offset, self.casting_mode, self.in_place, self.row_mode = (
             eps,
             offset,
             casting_mode,
             in_place,
+            row_mode,
         )
 
     def forward(self, hidden_states):
@@ -35,6 +37,7 @@ class LigerRMSNorm(nn.Module):
             self.offset,
             self.casting_mode,
             self.in_place,
+            self.row_mode
         )
 
     def extra_repr(self):
