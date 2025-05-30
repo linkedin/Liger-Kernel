@@ -152,7 +152,7 @@ def lce_forward(
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
-    **loss_kwargs,
+    **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
     r"""
     Args:
@@ -205,6 +205,7 @@ def lce_forward(
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
         cache_position=cache_position,
+        **kwargs,
     )
 
     hidden_states = outputs[0]
@@ -215,7 +216,7 @@ def lce_forward(
     if self.config.pretraining_tp > 1:
         raise Exception("Liger Kernel does not support pretraining_tp!!")
 
-    shift_labels = loss_kwargs.pop("shift_labels", None)
+    shift_labels = kwargs.pop("shift_labels", None)
     logits = None
     loss = None
     # if in training mode, don't materialize logits
@@ -233,7 +234,7 @@ def lce_forward(
             hidden_size=self.config.hidden_size,
             labels=labels,
             shift_labels=shift_labels,
-            **loss_kwargs,
+            **kwargs,
         )
 
     else:
@@ -243,7 +244,7 @@ def lce_forward(
                 logits=logits,
                 labels=labels,
                 vocab_size=self.config.vocab_size,
-                **loss_kwargs,
+                **kwargs,
             )
 
     if not return_dict:

@@ -32,7 +32,7 @@ def lce_forward(
     rope_deltas: Optional[torch.LongTensor] = None,
     cache_position: Optional[torch.LongTensor] = None,
     skip_logits: Optional[bool] = None,
-    **loss_kwargs,
+    **kwargs,
 ) -> Union[Tuple, Qwen2VLCausalLMOutputWithPast]:
     r"""
     Copy paste Qwen2VL's forward but replace torch cross entropy with liger fused linear cross entropy
@@ -158,11 +158,12 @@ def lce_forward(
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
         cache_position=cache_position,
+        **kwargs,
     )
 
     hidden_states = outputs[0]
 
-    shift_labels = loss_kwargs.pop("shift_labels", None)
+    shift_labels = kwargs.pop("shift_labels", None)
     loss = None
     logits = None
 
@@ -179,7 +180,7 @@ def lce_forward(
             labels=labels,
             shift_labels=shift_labels,
             hidden_size=self.config.hidden_size,
-            **loss_kwargs,
+            **kwargs,
         )
     else:
         logits = self.lm_head(hidden_states)
