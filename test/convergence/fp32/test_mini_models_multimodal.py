@@ -53,6 +53,7 @@ try:
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
     from transformers.models.qwen2_5_vl.processing_qwen2_5_vl import Qwen2_5_VLProcessor
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
+    from transformers.models.qwen2_vl.video_processing_qwen2_vl import Qwen2VLVideoProcessor
 
     QWEN2_5_VL_AVAILABLE = True
 except ImportError:
@@ -504,7 +505,9 @@ def create_processor(model_name: str):
         image_processor = Qwen2VLImageProcessor()
         video_processor = Qwen2VLVideoProcessor()
         return Qwen2VLProcessor(
-            image_processor=image_processor, video_processor=video_processor, tokenizer=qwen_tokenizer
+            image_processor=image_processor,
+            video_processor=video_processor,
+            tokenizer=qwen_tokenizer,
         )
 
     elif model_name == "mini_qwen2_5_vl":
@@ -522,7 +525,12 @@ def create_processor(model_name: str):
         )
         qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor()
-        return Qwen2_5_VLProcessor(image_processor=image_processor, tokenizer=qwen_tokenizer)
+        video_processor = Qwen2VLVideoProcessor()
+        return Qwen2_5_VLProcessor(
+            image_processor=image_processor,
+            video_processor=video_processor,
+            tokenizer=qwen_tokenizer,
+        )
 
     elif model_name == "mini_llava":
         tokenizer_config = load_tokenizer_config(
