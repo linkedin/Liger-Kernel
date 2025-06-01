@@ -9,6 +9,8 @@
 | GeGLU                           | `liger_kernel.transformers.LigerGEGLUMLP`                   |
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
 | Fused Linear CrossEntropy       | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
+| Multi Token Attention           | `liger_kernel.transformers.LigerMultiTokenAttention`        |
+| Softmax                         | `liger_kernel.transformers.LigerSoftmax`                    |
 | Sparsemax                       | `liger_kernel.transformers.LigerSparsemax`                  |
 
 
@@ -50,6 +52,19 @@ This kernel combines linear transformations with cross-entropy loss calculations
 
 !!! Example "Try it out"
     You can experiment as shown in this example [here](https://colab.research.google.com/drive/1Z2QtvaIiLm5MWOs7X6ZPS1MN3hcIJFbj?usp=sharing)
+
+### Multi Token Attention
+
+The Multi Token Attention kernel implementation provides and optimized fused implementation of multi-token attention over the implemented Pytorch model baseline. This is a new attention mechanism that can operate on multiple Q and K inputs introduced by Meta Research.
+
+Paper: https://arxiv.org/abs/2504.00927
+
+### Softmax
+
+The Softmax kernel implementation provides an optimized implementation of the softmax operation, which is a fundamental component in neural networks for converting raw scores into probability distributions.
+
+The implementation shows notable speedups compared to the Softmax PyTorch implementation
+
 
 ### Sparsemax
 
