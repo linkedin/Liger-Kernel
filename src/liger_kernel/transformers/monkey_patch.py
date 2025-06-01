@@ -429,9 +429,11 @@ def apply_liger_kernel_to_mllama(
             language_model: MllamaForCausalLM = model.language_model
             vision_model: MllamaVisionModel = model.vision_model
             text_model: MllamaTextModel = language_model
-        elif isinstance(model, MllamaForCausalLM) or isinstance(model, MllamaTextModel):
-            text_model = model.model if isinstance(model,MllamaForCausalLM) else model
+        elif isinstance(model, MllamaForCausalLM):
+            text_model = model.model
             vision_model = None
+        elif isinstance(model, MllamaTextModel):
+            text_model = model
 
         else:
             raise ValueError(f"Unsupported Mllama model type: {type(model)}")
