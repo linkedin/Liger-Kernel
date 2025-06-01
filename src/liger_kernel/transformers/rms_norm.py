@@ -37,7 +37,7 @@ class LigerRMSNorm(nn.Module):
             self.offset,
             self.casting_mode,
             self.in_place,
-            self.row_mode
+            self.row_mode,
         )
 
     def extra_repr(self):

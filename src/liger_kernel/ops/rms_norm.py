@@ -193,6 +193,7 @@ def _rms_norm_backward_kernel(
 
     tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
 
+
 @triton.jit
 def _block_rms_norm_forward_kernel(
     Y_ptr,
@@ -225,8 +226,11 @@ def _block_rms_norm_forward_kernel(
     row_mask = row_idx < n_rows
     col_mask = col_offsets < n_cols
 
-
-    X_row = tl.load(X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :], mask=row_mask[:, None] & col_mask[None, :] , other=0)
+    X_row = tl.load(
+        X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
+        mask=row_mask[:, None] & col_mask[None, :],
+        other=0,
+    )
     X_row_dtype = X_row.dtype
     W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0)
 
@@ -262,7 +266,12 @@ def _block_rms_norm_forward_kernel(
     if casting_mode == _CASTING_MODE_GEMMA:
         Y_row = Y_row.to(X_row_dtype)
 
-    tl.store(Y_ptr + row_idx[:, None] * Y_row_stride + col_offsets[None, :], Y_row, mask=row_mask[:, None] & col_mask[None, :])
+    tl.store(
+        Y_ptr + row_idx[:, None] * Y_row_stride + col_offsets[None, :],
+        Y_row,
+        mask=row_mask[:, None] & col_mask[None, :],
+    )
+
 
 @triton.jit
 def _block_rms_norm_backward_kernel(
@@ -306,8 +315,16 @@ def _block_rms_norm_backward_kernel(
     for start in range(pid * BLOCK_ROW, n_rows, NUM_SMS * BLOCK_ROW):
         row_idx = start + tl.arange(0, BLOCK_ROW)
         row_mask = row_idx < n_rows
-        dY_row = tl.load(dY_ptr + row_idx[:, None] * dY_row_stride + col_offsets[None, :], mask=row_mask[:, None] & col_mask[None, :], other=0.0)
-        X_row = tl.load(X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :], mask=row_mask[:, None] & col_mask[None, :], other=0.0)
+        dY_row = tl.load(
+            dY_ptr + row_idx[:, None] * dY_row_stride + col_offsets[None, :],
+            mask=row_mask[:, None] & col_mask[None, :],
+            other=0.0,
+        )
+        X_row = tl.load(
+            X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
+            mask=row_mask[:, None] & col_mask[None, :],
+            other=0.0,
+        )
 
         # Get cached rms
         rstd_row = tl.load(RSTD_ptr + row_idx * RSTD_row_stride, row_mask)
@@ -326,7 +343,9 @@ def _block_rms_norm_backward_kernel(
 
         dX_row = rstd_row[:, None] * m
 
-        dX_row += (rstd_row[:, None]) * (-(1 / n_cols) * (rstd_row * rstd_row * tl.sum(m * X_row, axis=1))[:, None] * X_row)
+        dX_row += (rstd_row[:, None]) * (
+            -(1 / n_cols) * (rstd_row * rstd_row * tl.sum(m * X_row, axis=1))[:, None] * X_row
+        )
 
         # calculate the gradient of W
         if casting_mode == _CASTING_MODE_LLAMA:
@@ -335,8 +354,11 @@ def _block_rms_norm_backward_kernel(
             # here X_row is already in fp32 (see previous if block)
             dW_row += tl.sum(dY_row * (X_row * rstd_row[:, None]), 0)
 
-        tl.store(dX_ptr + row_idx[:, None] * dX_row_stride + col_offsets[None, :], dX_row, mask=row_mask[:, None] & col_mask[None, :])
-
+        tl.store(
+            dX_ptr + row_idx[:, None] * dX_row_stride + col_offsets[None, :],
+            dX_row,
+            mask=row_mask[:, None] & col_mask[None, :],
+        )
 
     tl.store(dW_ptr + pid * dW_row_stride + col_offsets, dW_row, mask=col_mask)
 
@@ -549,15 +571,6 @@ class LigerRMSNormFunction(torch.autograd.Function):
         """
         X, W, RSTD = ctx.saved_tensors
         dX, dW = rms_norm_backward(
-            dY,
-            X,
-            W,
-            RSTD,
-            ctx.offset,
-            ctx.casting_mode,
-            ctx.BLOCK_SIZE,
-            ctx.num_warps,
-            ctx.in_place,
-            ctx.row_mode
+            dY, X, W, RSTD, ctx.offset, ctx.casting_mode, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place, ctx.row_mode
         )
         return dX, dW, None, None, None, None, None
