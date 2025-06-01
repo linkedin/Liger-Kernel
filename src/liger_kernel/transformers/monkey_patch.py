@@ -434,6 +434,7 @@ def apply_liger_kernel_to_mllama(
             vision_model = None
         elif isinstance(model, MllamaTextModel):
             text_model = model
+            vision_model = None
 
         else:
             raise ValueError(f"Unsupported Mllama model type: {type(model)}")
