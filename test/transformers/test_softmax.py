@@ -6,7 +6,7 @@ from test.utils import set_seed
 from test.utils import supports_bfloat16
 
 from liger_kernel.transformers.functional import liger_softmax
-from liger_kernel.transformers.softmax import LigerKernelSoftmax
+from liger_kernel.transformers.softmax import LigerSoftmax
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -47,7 +47,7 @@ def test_liger_softmax(shape, dtype, atol, rtol):
 
     torch_softmax = torch.nn.Softmax(dim=-1)
     ref_out = torch_softmax(x1)
-    liger_softmax = LigerKernelSoftmax().to(device).to(dtype)
+    liger_softmax = LigerSoftmax().to(device).to(dtype)
     liger_out = liger_softmax(x2)
 
     assert_verbose_allclose(ref_out, liger_out, atol=atol, rtol=rtol)

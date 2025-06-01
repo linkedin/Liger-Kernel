@@ -277,6 +277,8 @@ loss.backward()
 | GeGLU                           | `liger_kernel.transformers.LigerGEGLUMLP`                   |
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
 | Fused Linear CrossEntropy       | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
+| Multi Token Attention           | `liger_kernel.transformers.LigerMultiTokenAttention`        |
+| Softmax                         | `liger_kernel.transformers.LigerSoftmax`                    |
 | Sparsemax                       | `liger_kernel.transformers.LigerSparsemax`                  |
 
 

@@ -4,7 +4,7 @@ import torch.nn as nn
 from liger_kernel.ops.softmax import LigerSoftmaxFunction
 
 
-class LigerKernelSoftmax(nn.Module):
+class LigerSoftmax(nn.Module):
     def __init__(self):
         super().__init__()
 
