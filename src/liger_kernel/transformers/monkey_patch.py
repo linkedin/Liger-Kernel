@@ -358,6 +358,57 @@ def apply_liger_kernel_to_llava(
         elif vision_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
             logger.warning(f"{vision_model_name} is not supported by Liger kernel.")
 
+# def apply_liger_kernel_to_llama4(
+#     rope: bool = True,
+#     cross_entropy: bool = False,
+#     fused_linear_cross_entropy: bool = True,
+#     rms_norm: bool = True,
+#     swiglu: bool = False,
+#     model: PreTrainedModel = None,
+# ) -> None:
+#     """
+#     Apply Liger kernels to replace original implementation in HuggingFace Llama4 models.
+
+#     Args:
+#         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+#         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+#         fused_linear_cross_entropy (bool):
+#             Whether to apply Liger's fused linear cross entropy loss. Default is True.
+#             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+#             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+#         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+#         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is False.
+#         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+#         loaded. Default is None.
+#     """
+#     assert not (cross_entropy and fused_linear_cross_entropy), (
+#         "cross_entropy and fused_linear_cross_entropy cannot both be True."
+#     )
+
+#     from transformers.models.llama4 import modeling_llama4
+#     from transformers.models.mllama.modeling_llama4 import Llama4ForCausalLM
+#     from transformers.models.mllama.modeling_llama4 import Llama4ForConditionalGeneration
+#     from transformers.models.mllama.modeling_llama4 import Llama4TextModel
+#     from transformers.models.mllama.modeling_llama4 import Llama4VisionModel
+#     from liger_kernel.transformers.model.llama4 import lce_forward as llama4_lce_forward
+#     if rope:
+#         modeling_llama4.apply_rotary_emb = liger_rotary_pos_emb
+#     if rms_norm:
+#         modeling_llama4.Llama4RMSNorm = LigerRMSNorm
+#     if swiglu:
+#         modeling_llama4.Llama4MLP = LigerSwiGLUMLP
+
+#     if cross_entropy:
+#         modeling_llama4.CrossEntropyLoss = LigerCrossEntropyLoss
+
+#     if fused_linear_cross_entropy:
+#         modeling_llama4.Llama4ForCausalLM.forward = llama4_lce_forward
+
+#     if model is not None:
+#         # The model instance already exists, so we need to additionally patch the
+#         # instance variables that reference already-instantiated modules
+
+
 
 def apply_liger_kernel_to_mllama(
     rope: bool = True,
