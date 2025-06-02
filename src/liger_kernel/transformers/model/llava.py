@@ -7,7 +7,6 @@ import torch
 
 from torch.nn import CrossEntropyLoss
 from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast
-from transformers.utils import is_torchdynamo_compiling
 from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
