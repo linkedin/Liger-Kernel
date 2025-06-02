@@ -627,8 +627,8 @@ def apply_liger_kernel_to_gemma(
     from transformers.models.gemma import modeling_gemma
     from transformers.models.gemma.modeling_gemma import GemmaModel
 
-    # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L109
-    LigerRMSNormForGemma = partial(LigerRMSNorm, offset=1.0, init_fn="zeros", casting_mode="gemma")
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma
+
     _patch_rms_norm_module_for_gemma = partial(_patch_rms_norm_module, casting_mode="gemma", offset=1.0)
 
     if rope:
@@ -701,7 +701,8 @@ def apply_liger_kernel_to_gemma2(
     from transformers.models.gemma2 import modeling_gemma2
     from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
 
-    LigerRMSNormForGemma2 = partial(LigerRMSNorm, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False)
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma2
+
     _patch_rms_norm_module_for_gemma2 = partial(
         _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
     )
@@ -780,8 +781,8 @@ def apply_liger_kernel_to_gemma3_text(
     from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
     from transformers.models.gemma3.modeling_gemma3 import Gemma3TextModel
 
-    from liger_kernel.transformers.gema3_rms import LigerRMSNormForGemma3
     from liger_kernel.transformers.model.gemma3 import causal_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma3
 
     _patch_rms_norm_module_for_gemma3 = partial(
         _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
@@ -1451,11 +1452,12 @@ def apply_liger_kernel_to_olmo2(
     from transformers.models.olmo2.modeling_olmo2 import Olmo2Model
 
     from liger_kernel.transformers.model.olmo2 import lce_forward as olmo2_lce_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForOlmo2
 
     if rope:
         modeling_olmo2.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        modeling_olmo2.Olmo2RMSNorm = partial(LigerRMSNorm, in_place=False)
+        modeling_olmo2.Olmo2RMSNorm = LigerRMSNormForOlmo2
     if swiglu:
         modeling_olmo2.Olmo2MLP = LigerSwiGLUMLP
     if cross_entropy:
@@ -1514,11 +1516,12 @@ def apply_liger_kernel_to_glm4(
     from transformers.models.glm4.modeling_glm4 import Glm4Model
 
     from liger_kernel.transformers.model.glm4 import lce_forward as glm4_lce_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
 
     if rope:
         raise NotImplementedError("liger_rotary_pos_emb is not available for Glm4 models.")
     if rms_norm:
-        modeling_glm4.Glm4RMSNorm = partial(LigerRMSNorm, in_place=False)
+        modeling_glm4.Glm4RMSNorm = LigerRMSNormForGlm4
     if swiglu:
         modeling_glm4.Glm4MLP = LigerPhi3SwiGLUMLP
     if cross_entropy:
