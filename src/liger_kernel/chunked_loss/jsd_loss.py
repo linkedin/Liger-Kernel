@@ -150,8 +150,8 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         teacher_input: torch.Tensor,
         teacher_weight: torch.Tensor,
         true_labels: torch.LongTensor,
-        student_bias: torch.Tensor,
-        teacher_bias: torch.Tensor,
+        student_bias: torch.Tensor = None,
+        teacher_bias: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Compute the JSD distillation loss.

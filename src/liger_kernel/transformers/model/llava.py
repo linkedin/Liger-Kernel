@@ -5,19 +5,14 @@ from typing import Union
 
 import torch
 
-from transformers.models.llava.modeling_llava import _CONFIG_FOR_DOC
-from transformers.models.llava.modeling_llava import LLAVA_INPUTS_DOCSTRING
+from torch.nn import CrossEntropyLoss
 from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast
-from transformers.utils import add_start_docstrings_to_model_forward
 from transformers.utils import is_torchdynamo_compiling
-from transformers.utils import replace_return_docstrings
 from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 
 
-@add_start_docstrings_to_model_forward(LLAVA_INPUTS_DOCSTRING)
-@replace_return_docstrings(output_type=LlavaCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward_deprecated(
     self,
     input_ids: torch.LongTensor = None,
@@ -195,7 +190,20 @@ def lce_forward_deprecated(
 
         lce = LigerFusedLinearCrossEntropyLoss()
         loss = lce(self.language_model.lm_head.weight, shift_hidden_states, shift_labels)
-
+    else:
+        logits = self.language_model.lm_head(hidden_states)
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            if attention_mask is not None:
+                shift_attention_mask = attention_mask[..., 1:]
+                shift_logits = logits[..., :-1, :][shift_attention_mask.to(logits.device) != 0].contiguous()
+                shift_labels = labels[..., 1:][shift_attention_mask.to(labels.device) != 0].contiguous()
+            else:
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1).to(shift_logits.device))
     if not return_dict:
         # NOTE: This part has not been tested.
         output = outputs[1:]
@@ -210,9 +218,7 @@ def lce_forward_deprecated(
     )
 
 
-@add_start_docstrings_to_model_forward(LLAVA_INPUTS_DOCSTRING)
 @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
-@replace_return_docstrings(output_type=LlavaCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -231,6 +237,7 @@ def lce_forward(
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
     image_sizes: torch.Tensor = None,
+    skip_logits: Optional[bool] = None,
     **lm_kwargs,
 ) -> Union[Tuple, LlavaCausalLMOutputWithPast]:
     r"""
@@ -333,7 +340,10 @@ def lce_forward(
     loss = None
     logits = None
 
-    if self.training and (labels is not None):
+    # Overwrite skip_logits, since llava never materializes logits
+    skip_logits = labels is not None
+
+    if skip_logits:
         # Shift so that tokens < n predict n
         if attention_mask is not None:
             # we use the input attention mask to shift the logits and labels, because it is 2D.
@@ -353,6 +363,28 @@ def lce_forward(
             shift_hidden_states.view(-1, shift_hidden_states.size(-1)),
             shift_labels.view(-1).to(shift_hidden_states.device),
         )
+    else:
+        logits = self.language_model.lm_head(hidden_states)
+        if labels is not None:
+            # Upcast to float if we need to compute the loss to avoid potential precision issues
+            logits = logits.float()
+            shift_logits = logits[..., :-1, :]
+            shift_labels = labels[..., 1:]
+            if attention_mask is not None:
+                # we use the input attention mask to shift the logits and labels, because it is 2D.
+                # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
+                shift_attention_mask = attention_mask[:, -shift_logits.shape[1] :].to(logits.device)
+                shift_logits = shift_logits[shift_attention_mask.to(logits.device) != 0].contiguous()
+                shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
+            else:
+                shift_logits = shift_logits.contiguous()
+                shift_labels = shift_labels.contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+
+            flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
+            flat_labels = shift_labels.view(-1).to(shift_logits.device)
+            loss = loss_fct(flat_logits, flat_labels)
 
     if not return_dict:
         # NOTE: This part has not been tested.
