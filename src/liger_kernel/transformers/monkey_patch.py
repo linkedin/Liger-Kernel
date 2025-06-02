@@ -777,7 +777,8 @@ def apply_liger_kernel_to_gemma3_text(
 
     from transformers.models.gemma3 import modeling_gemma3
     from transformers.models.gemma3.modeling_gemma3 import Gemma3DecoderLayer
-    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM, Gemma3TextModel
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3TextModel
 
     from liger_kernel.transformers.gema3_rms import LigerRMSNormForGemma3
     from liger_kernel.transformers.model.gemma3 import causal_forward
