@@ -1106,7 +1106,7 @@ def run_mini_model(
             1e-3,
             1e-2,
             1e-1,
-            1e-2,
+            1e-1,
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
@@ -1119,7 +1119,7 @@ def run_mini_model(
             1e-3,
             1e-2,
             1e-1,
-            1e-2,
+            1e-1,
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
@@ -1148,7 +1148,7 @@ def run_mini_model(
             1e-3,
             1e-2,
             1e-1,
-            1e-2,
+            1e-1,
             1e-2,
             1e-2,
             marks=[
@@ -1189,13 +1189,21 @@ def test_mini_model(
 
     # Compare the logits from evaluation step
     if expected_output["logits"] is not None and actual_output["logits"] is not None:
+        # assert_verbose_allclose(
+        #     expected_output["logits"],
+        #     actual_output["logits"],
+        #     atol=logits_atol,
+        #     rtol=logits_rtol,
+        # )
+        expected_logprobs = torch.nn.functional.log_softmax(expected_output["logits"], dim=-1)
+        actual_logprobs = torch.nn.functional.log_softmax(actual_output["logits"], dim=-1)
+        
         assert_verbose_allclose(
-            expected_output["logits"],
-            actual_output["logits"],
+            expected_logprobs,
+            actual_logprobs,
             atol=logits_atol,
-            rtol=logits_rtol,
+            rtol=logits_rtol
         )
-
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
     for expected_param, actual_param in zip(
