@@ -24,4 +24,4 @@ def liger_benchmarks():
         shell=True,
         cwd=REMOTE_ROOT_PATH,
     )
-    subprocess.run(["make run-benchmarks"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
+    subprocess.run(["python benchmark/scripts/benchmark_kto_loss.py"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
