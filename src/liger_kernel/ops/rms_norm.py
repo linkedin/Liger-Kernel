@@ -194,6 +194,175 @@ def _rms_norm_backward_kernel(
     tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
 
 
+@triton.jit
+def _block_rms_norm_forward_kernel(
+    Y_ptr,
+    Y_row_stride,
+    X_ptr,
+    X_row_stride,
+    W_ptr,
+    W_row_stride,
+    RSTD_ptr,
+    RSTD_row_stride,
+    n_rows,
+    n_cols,
+    eps,
+    offset,
+    casting_mode: tl.constexpr,  # constexpr so the `if` blocks can be optimized out
+    BLOCK_SIZE: tl.constexpr,
+    BLOCK_ROW: tl.constexpr,
+):
+    """
+    y_i = (x_i / (RMS)) * (offset + wi), RMS = sqrt(sum(x_i^2) / N)
+
+    Reference:
+    1. https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
+    2. https://github.com/unslothai/unsloth/blob/fd753fed99ed5f10ef8a9b7139588d9de9ddecfb/unsloth/kernels/rms_layernorm.py#L22
+    3. https://arxiv.org/pdf/1910.07467
+    """
+
+    row_idx = tl.program_id(0) * BLOCK_ROW + tl.arange(0, BLOCK_ROW)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    row_mask = row_idx < n_rows
+    col_mask = col_offsets < n_cols
+
+    X_row = tl.load(
+        X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
+        mask=row_mask[:, None] & col_mask[None, :],
+        other=0,
+    )
+    X_row_dtype = X_row.dtype
+    W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0)
+
+    # On Llama, only rstd is computed on fp32
+    if casting_mode == _CASTING_MODE_LLAMA:
+        X_row = X_row.to(tl.float32)
+
+    # Gemma computes everything on fp32, and then casts back the output to the original dtype
+    if casting_mode == _CASTING_MODE_GEMMA:
+        W_row = W_row.to(tl.float32)
+        X_row = X_row.to(tl.float32)
+
+    if casting_mode == _CASTING_MODE_NONE:
+        eps = eps.to(X_row_dtype)
+        offset = offset.to(X_row_dtype)
+
+    mean_square = tl.sum(X_row * X_row, axis=1) / n_cols
+    rstd = rsqrt(mean_square + eps)
+
+    # We can save time by caching rms with minimal memory overhead
+    # because rms is much smaller compared to X_row, as rms is for each row.
+    # However, on the computation side, it can save 4 operations (*, sum, /, sqrt).
+    tl.store(RSTD_ptr + row_idx * RSTD_row_stride, rstd, row_mask)
+
+    X_row = X_row * rstd[:, None]
+
+    # On Llama, the multiplication with the weight is done on the original dtype
+    if casting_mode == _CASTING_MODE_LLAMA:
+        X_row = X_row.to(X_row_dtype)
+
+    Y_row = X_row * (offset + W_row)[None, :]
+
+    if casting_mode == _CASTING_MODE_GEMMA:
+        Y_row = Y_row.to(X_row_dtype)
+
+    tl.store(
+        Y_ptr + row_idx[:, None] * Y_row_stride + col_offsets[None, :],
+        Y_row,
+        mask=row_mask[:, None] & col_mask[None, :],
+    )
+
+
+@triton.jit
+def _block_rms_norm_backward_kernel(
+    dY_ptr,
+    dY_row_stride,
+    dX_ptr,
+    dX_row_stride,
+    X_ptr,
+    X_row_stride,
+    X_dtype: tl.constexpr,
+    W_ptr,
+    W_row_stride,
+    RSTD_ptr,
+    RSTD_row_stride,
+    dW_ptr,
+    dW_row_stride,
+    n_rows,
+    n_cols,
+    offset,
+    rows_per_program: tl.constexpr,
+    casting_mode: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    BLOCK_ROW: tl.constexpr,
+):
+    """
+    dx = (1 / RMS) * [dy * (w + offset - (1 / N) * (1 / RMS^2) * ((dy * (w + offset)) dot x) * x]. * means element-wise multiplication, whileas dot means dot product
+    dw = sum(dy * (x / RMS)). summation over BxT dimension
+    """
+
+    pid = tl.program_id(0).cast(tl.int64)
+    NUM_SMS = tl.num_programs(0)
+
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    col_mask = col_offsets < n_cols
+
+    dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+
+    W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
+    W_row = W_row + offset
+
+    for start in range(pid * BLOCK_ROW, n_rows, NUM_SMS * BLOCK_ROW):
+        row_idx = start + tl.arange(0, BLOCK_ROW)
+        row_mask = row_idx < n_rows
+        dY_row = tl.load(
+            dY_ptr + row_idx[:, None] * dY_row_stride + col_offsets[None, :],
+            mask=row_mask[:, None] & col_mask[None, :],
+            other=0.0,
+        )
+        X_row = tl.load(
+            X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
+            mask=row_mask[:, None] & col_mask[None, :],
+            other=0.0,
+        )
+
+        # Get cached rms
+        rstd_row = tl.load(RSTD_ptr + row_idx * RSTD_row_stride, row_mask)
+
+        X_row = X_row.to(tl.float32)
+
+        # Different bacward graphs for different casting modes
+        if casting_mode == _CASTING_MODE_LLAMA:
+            m = (dY_row * W_row[None, :]).to(tl.float32)
+
+        elif casting_mode == _CASTING_MODE_GEMMA:
+            dY_row = dY_row.to(tl.float32)
+            m = dY_row * W_row[None, :]
+        else:
+            m = dY_row * W_row[None, :]
+
+        dX_row = rstd_row[:, None] * m
+
+        dX_row += (rstd_row[:, None]) * (
+            -(1 / n_cols) * (rstd_row * rstd_row * tl.sum(m * X_row, axis=1))[:, None] * X_row
+        )
+
+        # calculate the gradient of W
+        if casting_mode == _CASTING_MODE_LLAMA:
+            dW_row += tl.sum(dY_row * (X_row * rstd_row[:, None]).to(X_dtype), 0)
+        else:
+            # here X_row is already in fp32 (see previous if block)
+            dW_row += tl.sum(dY_row * (X_row * rstd_row[:, None]), 0)
+
+        tl.store(
+            dX_ptr + row_idx[:, None] * dX_row_stride + col_offsets[None, :],
+            dX_row,
+            mask=row_mask[:, None] & col_mask[None, :],
+        )
+
+    tl.store(dW_ptr + pid * dW_row_stride + col_offsets, dW_row, mask=col_mask)
+
+
 _str_to_casting_mode = {
     "llama": _CASTING_MODE_LLAMA.value,
     "gemma": _CASTING_MODE_GEMMA.value,
@@ -201,7 +370,7 @@ _str_to_casting_mode = {
 }
 
 
-def rms_norm_forward(X, W, eps, offset, casting_mode):
+def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
     if not isinstance(casting_mode, int):
         assert casting_mode in _str_to_casting_mode, f"Invalid casting mode: {casting_mode}"
         casting_mode = _str_to_casting_mode[casting_mode]
@@ -227,27 +396,49 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
     kernel_args = {}
     if X.device.type == "xpu":
         kernel_args["grf_mode"] = "large"
-    _rms_norm_forward_kernel[(n_rows,)](
-        Y,
-        Y.stride(0),
-        X,
-        X.stride(0),
-        W,
-        W.stride(0),
-        RSTD,
-        RSTD.stride(0),
-        n_cols,
-        eps,
-        offset,
-        casting_mode,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        **kernel_args,  # XPU-specific optimization
-    )
+    if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
+        _rms_norm_forward_kernel[(n_rows,)](
+            Y,
+            Y.stride(0),
+            X,
+            X.stride(0),
+            W,
+            W.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            n_cols,
+            eps,
+            offset,
+            casting_mode,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            **kernel_args,  # XPU-specific optimization
+        )
+    else:
+        BLOCK_ROW = 16
+        kernel_args["BLOCK_ROW"] = BLOCK_ROW
+        _block_rms_norm_forward_kernel[(triton.cdiv(n_rows, BLOCK_ROW),)](
+            Y,
+            Y.stride(0),
+            X,
+            X.stride(0),
+            W,
+            W.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            n_rows,
+            n_cols,
+            eps,
+            offset,
+            casting_mode,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            **kernel_args,  # XPU-specific optimization
+        )
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place):
+def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -277,29 +468,56 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     if X.device.type == "xpu":
         kernel_args["grf_mode"] = "large"
 
-    _rms_norm_backward_kernel[grid](
-        dY,
-        dY.stride(0),
-        dX,
-        dX.stride(0),
-        X,
-        X.stride(0),
-        torch_to_triton_dtype[X.dtype],
-        W,
-        W.stride(0),
-        RSTD,
-        RSTD.stride(0),
-        _dW,
-        _dW.stride(0),
-        n_rows,
-        n_cols,
-        offset,
-        rows_per_program,
-        casting_mode,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        **kernel_args,  # XPU-specific optimization
-    )
+    if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
+        _rms_norm_backward_kernel[grid](
+            dY,
+            dY.stride(0),
+            dX,
+            dX.stride(0),
+            X,
+            X.stride(0),
+            torch_to_triton_dtype[X.dtype],
+            W,
+            W.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            _dW,
+            _dW.stride(0),
+            n_rows,
+            n_cols,
+            offset,
+            rows_per_program,
+            casting_mode,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            **kernel_args,  # XPU-specific optimization
+        )
+    else:
+        BLOCK_ROW = 16
+        kernel_args["BLOCK_ROW"] = BLOCK_ROW
+        _block_rms_norm_backward_kernel[grid](
+            dY,
+            dY.stride(0),
+            dX,
+            dX.stride(0),
+            X,
+            X.stride(0),
+            torch_to_triton_dtype[X.dtype],
+            W,
+            W.stride(0),
+            RSTD,
+            RSTD.stride(0),
+            _dW,
+            _dW.stride(0),
+            n_rows,
+            n_cols,
+            offset,
+            rows_per_program,
+            casting_mode,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            **kernel_args,  # XPU-specific optimization
+        )
     dX = dX.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype)
 
@@ -330,15 +548,16 @@ class LigerRMSNormFunction(torch.autograd.Function):
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, eps, offset=0.0, casting_mode="llama", in_place=True):
+    def forward(ctx, X, W, eps, offset=0.0, casting_mode="llama", in_place=True, row_mode=None):
         """
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
-        Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(X, W, eps, offset, casting_mode)
+        Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(X, W, eps, offset, casting_mode, row_mode)
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.in_place = in_place
+        ctx.row_mode = row_mode
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
         ctx.save_for_backward(X, W, RSTD)
@@ -352,14 +571,6 @@ class LigerRMSNormFunction(torch.autograd.Function):
         """
         X, W, RSTD = ctx.saved_tensors
         dX, dW = rms_norm_backward(
-            dY,
-            X,
-            W,
-            RSTD,
-            ctx.offset,
-            ctx.casting_mode,
-            ctx.BLOCK_SIZE,
-            ctx.num_warps,
-            ctx.in_place,
+            dY, X, W, RSTD, ctx.offset, ctx.casting_mode, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place, ctx.row_mode
         )
-        return dX, dW, None, None, None, None
+        return dX, dW, None, None, None, None, None
