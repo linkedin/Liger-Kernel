@@ -381,7 +381,11 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
     dim = shape[-1]
     X = X.view(-1, dim)
     n_rows, n_cols = X.shape
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    if X.device.type == "xpu":  # XPU-specific optimization
+        BLOCK_SIZE = torch.xpu.get_device_properties(X.device).max_work_group_size
+        num_warps = 4
+    else:
+        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
     # RSTD is to cache rstd for each row
@@ -453,8 +457,14 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     # fp32 for numerical stability especially.
     _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
 
-    if n_cols > BLOCK_SIZE:
-        raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
+    if X.device.type == "xpu":  # XPU-specific optimization
+        if n_cols > 65536:
+            raise RuntimeError(
+                "This layer norm doesn't support feature dim >= 64KB."
+            )  # TODO RuntimeError might need little more investigation in the future
+    else:
+        if n_cols > BLOCK_SIZE:
+            raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
     rows_per_program = math.ceil(n_rows / sm_count)
     grid = (sm_count,)
 
