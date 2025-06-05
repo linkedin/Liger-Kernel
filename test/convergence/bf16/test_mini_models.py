@@ -896,7 +896,7 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1,  # 1e-1
+            1e-1,  # 1e-1
             1e-1,  # 1e-2
             1e-2,
             1e-2,
@@ -966,7 +966,7 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1,  # 1e-1
+            1e-1,  # 1e-1
             1e-1,  # 1e-2
             1e-2,
             1e-2,
@@ -1203,6 +1203,17 @@ def test_mini_model(
             actual_logprobs,
             atol=logits_atol,
             rtol=logits_rtol
+        )
+        k = 5
+        exp_topk_vals, _ = torch.topk(expected_logprobs, k, dim=-1)
+        act_topk_vals, _ = torch.topk(actual_logprobs, k, dim=-1)
+
+        # Compare top-k logprobs with tolerance (ignoring order)
+        max_diff = torch.max(torch.abs(exp_topk_vals - act_topk_vals)).item()
+        print(f"Top-{k} logprobs max diff: {max_diff:.6f}")
+        assert torch.all(torch.abs(exp_topk_vals - act_topk_vals) < (logits_atol + logits_rtol * torch.abs(exp_topk_vals))), (
+            f"Top-{k} logprobs are not all close (atol={logits_atol}). "
+            f"Max diff: {max_diff:.6f}"
         )
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
