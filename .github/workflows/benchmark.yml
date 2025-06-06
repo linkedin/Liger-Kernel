@@ -23,18 +23,12 @@ jobs:
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      GH_TOKEN: ${{ secrets.GH_TOKEN }}
       GITHUB_USERNAME: linkedin
       REPO_NAME: Liger-Kernel
       OUTPUT_DIR: benchmarks
       OUTPUT_FILENAME: benchmark.csv
       GENERATED_CSV: benchmark/data/all_benchmark_data.csv
-      GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      GITHUB_USERNAME: linkedin
-      REPO_NAME: Liger-Kernel
-      OUTPUT_DIR: benchmarks
-      OUTPUT_FILENAME: benchmark.csv
-      GENERATED_CSV: benchmark/data/all_benchmark_data.csv
+
 
     steps:
       - name: Checkout code
@@ -45,10 +39,6 @@ jobs:
         id: get_hash
         run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-    # Get the latest commit hash from main branch
-      - name: Get commit hash
-        id: get_hash
-        run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Set up Python
         uses: actions/setup-python@v3
@@ -56,12 +46,10 @@ jobs:
           python-version: '3.10'
 
     # Install dependencies
-    # Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install modal
-          pip install pandas
           pip install pandas
 
       # - name: Run benchmarks on GPU
