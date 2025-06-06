@@ -4,10 +4,10 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "src/**"
-      - "test/**"
-      - "benchmark/**"
+    # paths:
+    #   - "src/**"
+    #   - "test/**"
+    #   - "benchmark/**"
 
 permissions:
   contents: write
