@@ -4,11 +4,14 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "src/**"
-      - "test/**"
-      - "benchmark/**"
+    # paths:
+    #   - "src/**"
+    #   - "test/**"
+    #   - "benchmark/**"
 
+permissions:
+  contents: write
+  
 concurrency:
   # This causes it to cancel previous in-progress actions on the same PR / branch,
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -20,12 +23,12 @@ jobs:
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      GH_TOKEN: ${{ secrets.GH_TOKEN }}
       GITHUB_USERNAME: linkedin
       REPO_NAME: Liger-Kernel
       OUTPUT_DIR: benchmarks
       OUTPUT_FILENAME: benchmark.csv
       GENERATED_CSV: benchmark/data/all_benchmark_data.csv
+
 
     steps:
       - name: Checkout code
@@ -35,6 +38,7 @@ jobs:
       - name: Get commit hash
         id: get_hash
         run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
 
       - name: Set up Python
         uses: actions/setup-python@v3
@@ -58,7 +62,6 @@ jobs:
         with:
           ref: gh-pages
           path: gh-pages
-          token: ${{ secrets.GH_TOKEN }}
       
       # Step 6: Copy benchmark CSV to gh-pages directory
       - name: Copy generated benchmark to gh-pages
@@ -70,9 +73,10 @@ jobs:
       - name: Commit and push to gh-pages
         run: |
           cd gh-pages
-          git config user.name "GitHub Action Bot"
-          git config user.email "action@github.com"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add .
           git commit -m "Add benchmark for commit ${{ steps.get_hash.outputs.hash }}" || echo "No changes to commit"
           git push origin gh-pages
+
 
