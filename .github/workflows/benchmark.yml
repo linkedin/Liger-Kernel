@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "src/**"
+      - "test/**"
+      - "benchmark/**"
 
 concurrency:
   # This causes it to cancel previous in-progress actions on the same PR / branch,
@@ -16,21 +20,59 @@ jobs:
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      GITHUB_USERNAME: linkedin
+      REPO_NAME: Liger-Kernel
+      OUTPUT_DIR: benchmarks
+      OUTPUT_FILENAME: benchmark.csv
+      GENERATED_CSV: benchmark/data/all_benchmark_data.csv
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
+    # Get the latest commit hash from main branch
+      - name: Get commit hash
+        id: get_hash
+        run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Set up Python
         uses: actions/setup-python@v3
         with:
           python-version: '3.10'
 
+    # Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install modal
+          pip install pandas
 
-      - name: Run benchmarks on GPU
+      # - name: Run benchmarks on GPU
+      #   run: |
+      #     modal run dev.modal.benchmarks
+        
+       # Step 5: Checkout gh-pages branch in a subfolderAdd commentMore actions
+      - name: Checkout gh-pages
+        uses: actions/checkout@v3
+        with:
+          ref: gh-pages
+          path: gh-pages
+          token: ${{ secrets.GH_TOKEN }}
+      
+      # Step 6: Copy benchmark CSV to gh-pages directory
+      - name: Copy generated benchmark to gh-pages
         run: |
-          modal run dev.modal.benchmarks
+          mkdir -p gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}
+          cp ${GENERATED_CSV} gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}/${OUTPUT_FILENAME}
+
+      # Step 7: Commit and push
+      - name: Commit and push to gh-pages
+        run: |
+          cd gh-pages
+          git config user.name "GitHub Action Bot"
+          git config user.email "action@github.com"
+          git add .
+          git commit -m "Add benchmark for commit ${{ steps.get_hash.outputs.hash }}" || echo "No changes to commit"
+          git push origin gh-pages
+
