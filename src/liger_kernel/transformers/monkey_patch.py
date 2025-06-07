@@ -314,13 +314,14 @@ def apply_liger_kernel_to_llava(
         logger.warning(TRANSFORMER_DEPRECATION_WARNING)
         modeling_llava.nn.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        if transformer_version >= version.parse("4.49.0"):
+        if transformer_version >= version.parse("4.52.0"):
             modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
+        elif transformer_version >= version.parse("4.49.0") and transformer_version < version.parse("4.52.0"): 
+            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
         else:  # if version < 4.49.0
             logger.warning(
-                "Support for transformers versions < 4.49.0 will soon be discontinued due to issues with incorrect legacy processing. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/35526"
+                "The latest version of Liger does not support transformers < 4.49.0 for llava. Please downgrade your liger version or upgrade your transformer version."
             )
-            modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
 
     if model is not None:
         text_model_name, vision_model_name = model.config.text_config.model_type, model.config.vision_config.model_type
