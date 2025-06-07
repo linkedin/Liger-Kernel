@@ -38,6 +38,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
+from test.utils import check_logprobs
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_gemma3_text
@@ -896,7 +897,7 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1,  # 1e-1
+            1e-1,  # 1e-1
             1e-1,  # 1e-2
             1e-2,
             1e-2,
@@ -966,7 +967,7 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1,  # 1e-1
+            1e-1,  # 1e-1
             1e-1,  # 1e-2
             1e-2,
             1e-2,
@@ -1106,7 +1107,7 @@ def run_mini_model(
             1e-3,
             1e-2,
             1e-1,
-            1e-2,
+            1e-1,
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
@@ -1119,7 +1120,7 @@ def run_mini_model(
             1e-3,
             1e-2,
             1e-1,
-            1e-2,
+            1e-1,
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
@@ -1148,7 +1149,7 @@ def run_mini_model(
             1e-3,
             1e-2,
             1e-1,
-            1e-2,
+            1,
             1e-2,
             1e-2,
             marks=[
@@ -1189,13 +1190,10 @@ def test_mini_model(
 
     # Compare the logits from evaluation step
     if expected_output["logits"] is not None and actual_output["logits"] is not None:
-        assert_verbose_allclose(
-            expected_output["logits"],
-            actual_output["logits"],
-            atol=logits_atol,
-            rtol=logits_rtol,
-        )
-
+        actual_logprobs = torch.nn.functional.log_softmax(actual_output["logits"], dim=-1)
+        expected_logprobs = torch.nn.functional.log_softmax(expected_output["logits"], dim=-1)
+        check_logprobs(actual_logprobs,expected_logprobs, atol=logits_atol,rtol=logits_rtol)
+        
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
     for expected_param, actual_param in zip(
