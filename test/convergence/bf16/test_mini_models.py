@@ -9,6 +9,8 @@ from transformers.models.gemma2 import Gemma2Config
 from transformers.models.gemma2 import Gemma2ForCausalLM
 from transformers.models.llama import LlamaConfig
 from transformers.models.llama import LlamaForCausalLM
+from transformers.models.llama4 import Llama4Config
+from transformers.models.llama4 import Llama4ForCausalLM
 from transformers.models.mistral import MistralConfig
 from transformers.models.mistral import MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig
@@ -24,6 +26,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text
 from liger_kernel.transformers import apply_liger_kernel_to_glm4
 from liger_kernel.transformers import apply_liger_kernel_to_granite
 from liger_kernel.transformers import apply_liger_kernel_to_llama
+from liger_kernel.transformers import apply_liger_kernel_to_llama4
 from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mistral
 from liger_kernel.transformers import apply_liger_kernel_to_mixtral
@@ -44,6 +47,7 @@ from test.utils import revert_liger_kernel_to_gemma3_text
 from test.utils import revert_liger_kernel_to_glm4
 from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_llama
+from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
@@ -144,6 +148,35 @@ from liger_kernel.utils import infer_device
 device = infer_device()
 
 MINI_MODEL_SETUPS = {
+    "mini_llama4": MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_llama4,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_llama4,
+        model_class=Llama4ForCausalLM,
+        mini_model_config=Llama4Config(
+            attention_bias=False,
+            attention_dropout=0.0,
+            # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
+            hidden_act="silu",
+            hidden_size=1024,  # 4096
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=8192,
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 32
+            num_key_value_heads=2,  # 8
+            pretraining_tp=1,
+            rms_norm_eps=1e-5,
+            rope_scaling=None,
+            rope_theta=500000.0,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 128256,
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    ),
     "mini_llama3": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_llama,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llama,
@@ -762,7 +795,7 @@ if GLM4_AVAILABLE:
     )
 
 
-def create_model(model_name="mini_llama3"):
+def create_model(model_name="mini_llama4"):
     """
     Create a mini version model
     The commented values are the original values
@@ -773,7 +806,7 @@ def create_model(model_name="mini_llama3"):
 
 
 def run_mini_model(
-    model_name="mini_llama3",
+    model_name="mini_llama4",
     num_steps=100,
     dtype=torch.bfloat16,
     lr=1e-5,
@@ -857,6 +890,19 @@ def run_mini_model(
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
     [
+        pytest.param(
+            "mini_llama4",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
         pytest.param(
             "mini_llama3",
             32,
