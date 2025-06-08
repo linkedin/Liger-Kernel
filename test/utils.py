@@ -56,18 +56,12 @@ def set_seed(seed=42):
     # Python hash seed
     os.environ["PYTHONHASHSEED"] = str(seed)
 
+def get_logprobs(tensor):
+    return torch.nn.functional.log_softmax(tensor, dim=-1)
 
-def check_logprobs(tensor1, tensor2, rtol=1e-05, atol=1e-08, k=5, max_print=5):
-    act_topk_vals, _ = torch.topk(tensor1, k, dim=-1)
-    exp_topk_vals, _ = torch.topk(tensor2, k, dim=-1)
-
-    # Compare top-k logprobs with tolerance (ignoring order)
-    max_diff = torch.max(torch.abs(exp_topk_vals - act_topk_vals)).item()
-    print(f"Top-{k} logprobs max diff: {max_diff:.6f}")
-    assert torch.all(torch.abs(exp_topk_vals - act_topk_vals) < (rtol + rtol * torch.abs(exp_topk_vals))), (
-        f"Top-{k} logprobs are not all close (tolerance={rtol + rtol * torch.abs(exp_topk_vals)}). "
-        f"Max diff: {max_diff:.6f}"
-    )
+def get_topk(tensor, k=5):
+    topk = torch.topk(tensor, k, dim=-1)
+    return topk
 
 
 def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=5):

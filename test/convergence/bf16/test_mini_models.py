@@ -38,7 +38,8 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
-from test.utils import check_logprobs
+from test.utils import get_logprobs
+from test.utils import get_topk
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_gemma3_text
@@ -846,17 +847,17 @@ def run_mini_model(
         eval_output = model(**eval_batch)
     print(f"Eval Loss: {eval_output.loss.item()}")
     loss_list.append(eval_output.loss.item())
-
+    topk_logprobs = get_topk(get_logprobs(eval_output.logits))
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
     return {
         "loss": loss_list,
-        "logits": eval_output.logits,
+        "topk_logprobs": topk_logprobs.values,
         "model": model,
     }
 
 
 @pytest.mark.parametrize(
-    "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
+    "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logprobs_atol, logprobs_rtol, param_atol, param_rtol",
     [
         pytest.param(
             "mini_llama3",
@@ -1106,7 +1107,7 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1e-1,
+            1e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -1119,7 +1120,7 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1e-1,
+            1e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -1169,8 +1170,8 @@ def test_mini_model(
     dtype,
     loss_atol,
     loss_rtol,
-    logits_atol,
-    logits_rtol,
+    logprobs_atol,
+    logprobs_rtol,
     param_atol,
     param_rtol,
 ):
@@ -1188,11 +1189,14 @@ def test_mini_model(
         rtol=loss_rtol,
     )
 
-    # Compare the logits from evaluation step
-    if expected_output["logits"] is not None and actual_output["logits"] is not None:
-        actual_logprobs = torch.nn.functional.log_softmax(actual_output["logits"], dim=-1)
-        expected_logprobs = torch.nn.functional.log_softmax(expected_output["logits"], dim=-1)
-        check_logprobs(actual_logprobs,expected_logprobs, atol=logits_atol,rtol=logits_rtol)
+    # Compare the topk logprobs from evaluation step
+    if expected_output["topk_logprobs"] is not None and actual_output["topk_logprobs"] is not None:
+        assert_verbose_allclose(
+            expected_output["topk_logprobs"],
+            actual_output["topk_logprobs"],
+            atol=logprobs_atol,
+            rtol=logprobs_rtol,
+        )
         
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
