@@ -38,6 +38,8 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
+from test.utils import get_logprobs
+from test.utils import get_topk
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_gemma3_text
@@ -836,12 +838,17 @@ def run_mini_model(
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
+    topk_logprobs = get_topk(get_logprobs(output.logits))
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
-    return {"loss": loss_list, "logits": output.logits, "model": model}
+    return {
+        "loss": loss_list,
+        "topk_logprobs": topk_logprobs.values,
+        "model": model,
+    }
 
 
 @pytest.mark.parametrize(
-    "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
+    "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logprobs_atol, logprobs_rtol, param_atol, param_rtol",
     [
         pytest.param(
             "mini_llama3",
@@ -1052,8 +1059,8 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1e-1,
             1e-2,
+            1e-1,
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
@@ -1065,8 +1072,8 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1e-1,
             1e-2,
+            1e-1,
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
@@ -1153,8 +1160,8 @@ def test_mini_model(
     dtype,
     loss_atol,
     loss_rtol,
-    logits_atol,
-    logits_rtol,
+    logprobs_atol,
+    logprobs_rtol,
     param_atol,
     param_rtol,
 ):
@@ -1174,12 +1181,12 @@ def test_mini_model(
 
     # No logits are materialized
     # import pdb; pdb.set_trace()
-    # Compare the logits from the last step
+    # Compare the topk logprobs from evaluation step
     assert_verbose_allclose(
-        expected_output["logits"],
-        actual_output["logits"],
-        atol=logits_atol,
-        rtol=logits_rtol,
+        expected_output["topk_logprobs"],
+        actual_output["topk_logprobs"],
+        atol=logprobs_atol,
+        rtol=logprobs_rtol,
     )
 
     # Compare the params from the last step

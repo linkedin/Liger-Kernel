@@ -56,9 +56,11 @@ def set_seed(seed=42):
     # Python hash seed
     os.environ["PYTHONHASHSEED"] = str(seed)
 
+@torch.no_grad
 def get_logprobs(tensor):
     return torch.nn.functional.log_softmax(tensor, dim=-1)
 
+@torch.no_grad
 def get_topk(tensor, k=5):
     topk = torch.topk(tensor, k, dim=-1)
     return topk
