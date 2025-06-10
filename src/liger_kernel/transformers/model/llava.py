@@ -7,6 +7,7 @@ import torch
 
 from torch.nn import CrossEntropyLoss
 from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast
+from transformers.utils import is_torchdynamo_compiling
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
@@ -193,6 +194,7 @@ def lce_forward_deprecated(
         image_hidden_states=image_features if pixel_values is not None else None,
     )
 
+
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -315,7 +317,6 @@ def lce_forward(
             loss = self.loss_function(
                 logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size, **lm_kwargs
             )
-
 
     if not return_dict:
         output = (logits,) + outputs[1:]

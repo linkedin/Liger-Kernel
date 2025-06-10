@@ -316,7 +316,7 @@ def apply_liger_kernel_to_llava(
     if fused_linear_cross_entropy:
         if transformer_version >= version.parse("4.52.0"):
             modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
-        elif transformer_version >= version.parse("4.49.0") and transformer_version < version.parse("4.52.0"): 
+        elif transformer_version >= version.parse("4.49.0") and transformer_version < version.parse("4.52.0"):
             modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
         else:  # if version < 4.49.0
             logger.warning(
