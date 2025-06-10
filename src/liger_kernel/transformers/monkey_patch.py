@@ -316,7 +316,7 @@ def apply_liger_kernel_to_llava(
     if fused_linear_cross_entropy:
         if transformer_version >= version.parse("4.52.0"):
             modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward
-        elif transformer_version >= version.parse("4.49.0") and transformer_version < version.parse("4.52.0"): 
+        elif transformer_version >= version.parse("4.49.0") and transformer_version < version.parse("4.52.0"):
             modeling_llava.LlavaForConditionalGeneration.forward = llava_lce_forward_deprecated
         else:  # if version < 4.49.0
             logger.warning(
@@ -1225,7 +1225,7 @@ def apply_liger_kernel_to_qwen2_vl(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
-    NOTE: Qwen2-VL is not available in transformers<4.45.0
+    NOTE: Qwen2-VL is not supported in transformers<4.52.4
 
     Args:
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
@@ -1239,6 +1239,10 @@ def apply_liger_kernel_to_qwen2_vl(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
+    if transformer_version < version.parse("4.52.4"):
+        logger.warning("Qwen2-VL support is only compatible with transformers >= 4.52.4")
+        return
+
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
@@ -1326,6 +1330,10 @@ def apply_liger_kernel_to_qwen2_5_vl(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
+    if transformer_version < version.parse("4.52.4"):
+        logger.warning("Qwen2.5-VL support is only compatible with transformers >= 4.52.4")
+        return
+
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
