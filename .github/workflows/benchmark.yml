@@ -28,7 +28,7 @@ jobs:
       OUTPUT_DIR: benchmarks
       OUTPUT_FILENAME: benchmark.csv
       GENERATED_CSV: benchmark/data/all_benchmark_data.csv
-
+      COMMIT_JSON: benchmarks/commits.json
 
     steps:
       - name: Checkout code
@@ -68,6 +68,37 @@ jobs:
         run: |
           mkdir -p gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}
           cp ${GENERATED_CSV} gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}/${OUTPUT_FILENAME}
+
+      # Step 7: Update commit.json with new commit hash
+      - name: Update commit.json
+        run: |
+          cd gh-pages
+          
+          # Create commit.json if it doesn't exist
+          if [ ! -f ${COMMIT_JSON} ]; then
+            echo '{"commits": []}' > ${COMMIT_JSON}
+          fi
+          
+          # Use Python to properly append to JSON array
+          python3 << 'PYTHON_SCRIPT'
+          import json
+          import os
+          
+          # Read existing JSON
+          with open(os.environ['COMMIT_JSON'], 'r') as f:
+              data = json.load(f)
+          
+          # Get the new commit hash
+          new_hash = "${{ steps.get_hash.outputs.hash }}"
+          
+          # Filter out any non-string entries and append new hash
+          data['commits'] = [commit for commit in data['commits'] if isinstance(commit, str)]
+          data['commits'].append(new_hash)
+          
+          # Write back to file with proper formatting
+          with open(os.environ['COMMIT_JSON'], 'w') as f:
+              json.dump(data, f, indent=2)
+          PYTHON_SCRIPT
 
       # Step 7: Commit and push
       - name: Commit and push to gh-pages
