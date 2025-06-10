@@ -28,7 +28,6 @@ jobs:
       OUTPUT_DIR: benchmarks
       OUTPUT_FILENAME: benchmark.csv
       GENERATED_CSV: benchmark/data/all_benchmark_data.csv
-      COMMIT_JSON: benchmarks/commits.json
 
     steps:
       - name: Checkout code
