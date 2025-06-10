@@ -1225,7 +1225,7 @@ def apply_liger_kernel_to_qwen2_vl(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen2-VL models.
-    NOTE: Qwen2-VL is not available in transformers<4.45.0
+    NOTE: Qwen2-VL is not supported in transformers<4.52.4
 
     Args:
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
@@ -1239,12 +1239,19 @@ def apply_liger_kernel_to_qwen2_vl(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
+    if transformer_version < version.parse("4.52.4"):
+        logger.warning("Qwen2-VL support is only compatible with transformers >= 4.52.4")
+        return
+
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
 
     from transformers.models.qwen2_vl import modeling_qwen2_vl
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VisionTransformerPretrainedModel
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModel
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLTextModel
 
     from liger_kernel.transformers.model.qwen2_vl import lce_forward as qwen2_vl_lce_forward
 
@@ -1266,24 +1273,38 @@ def apply_liger_kernel_to_qwen2_vl(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        # get the base model from the model instance
-        base_model: Qwen2VLModel = getattr(model, model.base_model_prefix, model)
+        if isinstance(model, (Qwen2VLForConditionalGeneration, Qwen2VLModel)):
+            # Note: language_model and visual properties can be accessed throught conditional class for BC.
+            # Not sure if it is subject to changes in the future.
+            # Reference: https://github.com/huggingface/transformers/blob/v4.52.4/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L1698
+            text_model: Qwen2VLTextModel = model.language_model
+            vision_model: Qwen2VisionTransformerPretrainedModel = model.visual
+        elif isinstance(model, Qwen2VLTextModel):
+            text_model: Qwen2VLTextModel = model
+            vision_model = None
+        else:
+            # Note: Currently there's no support for patching vision model only. Feel free to raise an issue if needed.
+            raise TypeError(
+                f"Unsupported Qwen2VL model type. `model` must be `Qwen2VLForConditionalGeneration`, `Qwen2VLModel` or `Qwen2VLTextModel`. Got: {type(model)}"
+            )
 
-        if hasattr(model, "visual"):
-            # Patch Qwen2VisionTransformerPretrainedModel
-            for vision_block in model.visual.blocks:
+        # Patch Qwen2VisionTransformerPretrainedModel
+        if vision_model is not None:
+            for vision_block in vision_model.blocks:
                 if layer_norm:
                     _patch_layer_norm_module(vision_block.norm1)
                     _patch_layer_norm_module(vision_block.norm2)
 
-        if rms_norm:
-            _patch_rms_norm_module(base_model.norm)
-        for decoder_layer in base_model.layers:
-            if swiglu:
-                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+        # Patch Qwen2VisionTextModel
+        if text_model is not None:
             if rms_norm:
-                _patch_rms_norm_module(decoder_layer.input_layernorm)
-                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module(text_model.norm)
+            for decoder_layer in text_model.layers:
+                if swiglu:
+                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
 def apply_liger_kernel_to_qwen2_5_vl(
@@ -1309,12 +1330,19 @@ def apply_liger_kernel_to_qwen2_5_vl(
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
+    if transformer_version < version.parse("4.52.4"):
+        logger.warning("Qwen2.5-VL support is only compatible with transformers >= 4.52.4")
+        return
+
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
 
     from transformers.models.qwen2_5_vl import modeling_qwen2_5_vl
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModel
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLTextModel
 
     from liger_kernel.transformers.model.qwen2_5_vl import lce_forward as qwen2_5_vl_lce_forward
 
@@ -1333,24 +1361,37 @@ def apply_liger_kernel_to_qwen2_5_vl(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        # get the base model from the model instance
-        base_model: Qwen2_5_VLModel = getattr(model, model.base_model_prefix, model)
+        if isinstance(model, (Qwen2_5_VLForConditionalGeneration, Qwen2_5_VLModel)):
+            # Note: language_model and visual properties can be accessed throught conditional class for BC.
+            # Not sure if it is subject to changes in the future.
+            # Reference: https://github.com/huggingface/transformers/blob/v4.52.4/src/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py#L1823
+            text_model: Qwen2_5_VLTextModel = model.language_model
+            vision_model: Qwen2_5_VisionTransformerPretrainedModel = model.visual
+        elif isinstance(model, Qwen2_5_VLTextModel):
+            text_model: Qwen2_5_VLTextModel = model
+            vision_model = None
+        else:
+            # Note: Currently there's no support for patching vision model only. Feel free to raise an issue if needed.
+            raise TypeError(
+                f"Unsupported Qwen2VL model type. `model` must be `Qwen2VLForConditionalGeneration`, `Qwen2VLModel` or `Qwen2VLTextModel`. Got: {type(model)}"
+            )
 
-        if hasattr(model, "visual"):
+        if vision_model is not None:
             # Patch Qwen2_5_VisionTransformerPretrainedModel
             for vision_block in model.visual.blocks:
                 if rms_norm:
                     _patch_rms_norm_module(vision_block.norm1)
                     _patch_rms_norm_module(vision_block.norm2)
 
-        if rms_norm:
-            _patch_rms_norm_module(base_model.norm)
-        for decoder_layer in base_model.layers:
-            if swiglu:
-                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+        if text_model is not None:
             if rms_norm:
-                _patch_rms_norm_module(decoder_layer.input_layernorm)
-                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module(text_model.norm)
+            for decoder_layer in text_model.layers:
+                if swiglu:
+                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
 def apply_liger_kernel_to_phi3(
@@ -1571,7 +1612,9 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen3": apply_liger_kernel_to_qwen3,
     "qwen3_moe": apply_liger_kernel_to_qwen3_moe,
     "qwen2_vl": apply_liger_kernel_to_qwen2_vl,
+    "qwen2_vl_text": apply_liger_kernel_to_qwen2_vl,
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
+    "qwen2_5_vl_text": apply_liger_kernel_to_qwen2_5_vl,
     "phi3": apply_liger_kernel_to_phi3,
     "paligemma": apply_liger_kernel_to_paligemma,
 }
