@@ -58,10 +58,10 @@ def set_seed(seed=42):
 
 @torch.no_grad
 def get_logprobs(tensor):
-    return torch.nn.functional.log_softmax(tensor, dim=-1)
+    return torch.nn.functional.log_softmax(tensor, dim=-1, dtype=torch.float32)
 
 @torch.no_grad
-def get_topk(tensor, k=5):
+def get_topk(tensor, k=20):
     topk = torch.topk(tensor, k, dim=-1)
     return topk
 
