@@ -72,7 +72,7 @@ jobs:
           if ! grep -q "${{ steps.get_hash.outputs.hash }}" ${OUTPUT_DIR}/commits.txt; then
             echo "${{ steps.get_hash.outputs.hash }}" >> ${OUTPUT_DIR}/commits.txt
           fi
-
+          
       - name: Commit and push to gh-pages
         run: |
           cd gh-pages
