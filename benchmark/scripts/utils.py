@@ -235,7 +235,7 @@ def update_benchmark_data_csv(
                     pass
             else:
                 existing_data_dict[row_key] = row_dict
-
+    os.makedirs(os.path.dirname(filename_abs_path), exist_ok=True)
     with open(filename_abs_path, mode="w", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
