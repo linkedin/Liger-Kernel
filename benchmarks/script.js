@@ -26,7 +26,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 async function fetchCommitHashes() {
   try {
     const response = await fetch(
-      "https://raw.githubusercontent.com/Manan17/Liger-Kernel/refs/heads/gh-pages/benchmarks/commits.txt"
+      "https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks/commits.txt"
     );
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
@@ -53,7 +53,7 @@ function populateCommitDropdown(commits, selectId) {
 }
 
 function loadCSV(commit, panel) {
-  Papa.parse(`https://raw.githubusercontent.com/Manan17/Liger-Kernel/refs/heads/gh-pages/benchmarks/${commit}/benchmark.csv`, {
+  Papa.parse(`https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks/${commit}/benchmark.csv`, {
     download: true,
     header: true,
     dynamicTyping: true,
