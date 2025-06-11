@@ -9,7 +9,7 @@ permissions:
   contents: write
   
 jobs:
-  benchmarks:
+  automate-benchmarks:
     runs-on: ubuntu-latest
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
