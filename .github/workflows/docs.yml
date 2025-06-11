@@ -8,7 +8,7 @@ permissions:
   contents: write
 jobs:
   deploy:
-    if: ${{ github.event_name != 'push' }}
+    if: env.ENABLE_DEPLOY == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
