@@ -24,6 +24,7 @@ def infer_device():
         return "cpu"
 
 
+
 def transformers_version_dispatch(
     required_version: str,
     before_fn,
