@@ -52,7 +52,7 @@ jobs:
           pip install pandas
 
     # Delete previous benchmark results.
-    - name: Remove previous benchmark data
+     - name: Remove previous benchmark data
         run: |
           rm -f benchmark/data/all_benchmark_data.csv
 
