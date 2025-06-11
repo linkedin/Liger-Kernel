@@ -29,6 +29,7 @@ jobs:
       OUTPUT_FILENAME: benchmark.csv
       GENERATED_CSV: benchmark/data/all_benchmark_data.csv
 
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -71,7 +72,6 @@ jobs:
         run: |
           mkdir -p gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}
           cp ${GENERATED_CSV} gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}/${OUTPUT_FILENAME}
-
       # Step 7: Append commit hash to commits.txt if not already present
       - name: Update commits.txt
         run: |
@@ -84,7 +84,6 @@ jobs:
           if ! grep -q "${{ steps.get_hash.outputs.hash }}" ${OUTPUT_DIR}/commits.txt; then
             echo "${{ steps.get_hash.outputs.hash }}" >> ${OUTPUT_DIR}/commits.txt
           fi
-
       # Step 7: Commit and push
       - name: Commit and push to gh-pages
         run: |
@@ -94,3 +93,4 @@ jobs:
           git add .
           git commit -m "Add benchmark for commit ${{ steps.get_hash.outputs.hash }}" || echo "No changes to commit"
           git push origin gh-pages
+
