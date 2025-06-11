@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: true
   
 jobs:
-  automate-benchmarks:
+  benchmarks:
     runs-on: ubuntu-latest
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -28,6 +28,7 @@ jobs:
       OUTPUT_DIR: benchmarks
       OUTPUT_FILENAME: benchmark.csv
       GENERATED_CSV: benchmark/data/all_benchmark_data.csv
+
 
     steps:
       - name: Checkout code
@@ -50,13 +51,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install modal
           pip install pandas
-
-    # Delete previous benchmark results.
-     - name: Remove previous benchmark data
-        run: |
-          rm -f benchmark/data/all_benchmark_data.csv
-
-
+          
       - name: Run benchmarks on GPU
         run: |
           modal run dev.modal.benchmarks
@@ -73,22 +68,6 @@ jobs:
         run: |
           mkdir -p gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}
           cp ${GENERATED_CSV} gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}/${OUTPUT_FILENAME}
-
-      # Step 7: Append commit hash to commits.txt if not already present
-      - name: Update commits.txt
-        run: |
-          cd gh-pages
-          echo "commits.txt file path: ${OUTPUT_DIR}/commits.txt"
-
-          # Create file if it doesn't exist
-          mkdir -p ${OUTPUT_DIR}
-          touch ${OUTPUT_DIR}/commits.txt
-
-          # Append only if not already present
-          if ! grep -q "${{ steps.get_hash.outputs.hash }}" ${OUTPUT_DIR}/commits.txt; then
-            echo "${{ steps.get_hash.outputs.hash }}" >> ${OUTPUT_DIR}/commits.txt
-          fi
-
       # Step 7: Commit and push
       - name: Commit and push to gh-pages
         run: |
@@ -98,5 +77,4 @@ jobs:
           git add .
           git commit -m "Add benchmark for commit ${{ steps.get_hash.outputs.hash }}" || echo "No changes to commit"
           git push origin gh-pages
-
 
