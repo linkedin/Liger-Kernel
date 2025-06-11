@@ -73,6 +73,18 @@ jobs:
         run: |
           mkdir -p gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}
           cp ${GENERATED_CSV} gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}/${OUTPUT_FILENAME}
+      # Step 7: Append commit hash to commits.txt if not already present
+      - name: Update commits.txt
+        run: |
+          cd gh-pages
+          echo "commits.txt file path: ${OUTPUT_DIR}/commits.txt"
+          # Create file if it doesn't exist
+          mkdir -p ${OUTPUT_DIR}
+          touch ${OUTPUT_DIR}/commits.txt
+          # Append only if not already present
+          if ! grep -q "${{ steps.get_hash.outputs.hash }}" ${OUTPUT_DIR}/commits.txt; then
+            echo "${{ steps.get_hash.outputs.hash }}" >> ${OUTPUT_DIR}/commits.txt
+          fi
       # Step 7: Commit and push
       - name: Commit and push to gh-pages
         run: |
