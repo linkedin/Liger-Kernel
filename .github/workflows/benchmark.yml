@@ -33,30 +33,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-    # Get the latest commit hash from main branch
+      # Get the latest commit hash from main branch
       - name: Get commit hash
         id: get_hash
         run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
 
       - name: Set up Python
         uses: actions/setup-python@v3
         with:
           python-version: '3.10'
 
-    # Install dependencies
+      # Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install modal
           pip install pandas
 
-    # Delete previous benchmark results.
-     - name: Remove previous benchmark data
+      # Delete previous benchmark results.
+      - name: Remove previous benchmark data
         run: |
           rm -f benchmark/data/all_benchmark_data.csv
-
-
+          
       - name: Run benchmarks on GPU
         run: |
           modal run dev.modal.benchmarks
@@ -79,11 +77,9 @@ jobs:
         run: |
           cd gh-pages
           echo "commits.txt file path: ${OUTPUT_DIR}/commits.txt"
-
           # Create file if it doesn't exist
           mkdir -p ${OUTPUT_DIR}
           touch ${OUTPUT_DIR}/commits.txt
-
           # Append only if not already present
           if ! grep -q "${{ steps.get_hash.outputs.hash }}" ${OUTPUT_DIR}/commits.txt; then
             echo "${{ steps.get_hash.outputs.hash }}" >> ${OUTPUT_DIR}/commits.txt
@@ -98,5 +94,3 @@ jobs:
           git add .
           git commit -m "Add benchmark for commit ${{ steps.get_hash.outputs.hash }}" || echo "No changes to commit"
           git push origin gh-pages
-
-

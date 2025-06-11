@@ -4,14 +4,11 @@ on:
     branches:
       - main
 
-env:
-  ENABLE_DEPLOY: false
-
 permissions:
   contents: write
 jobs:
   deploy:
-    if: env.ENABLE_DEPLOY == 'true'
+    if: False
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
