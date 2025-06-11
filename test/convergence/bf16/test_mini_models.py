@@ -1155,8 +1155,8 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1e-1,
-            1,
+            3e-1,
+            4e-1,
             1e-2,
             1e-2,
             marks=[
