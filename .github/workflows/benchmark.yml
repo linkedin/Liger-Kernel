@@ -4,18 +4,9 @@ on:
   push:
     branches:
       - main
-    # paths:
-    #   - "src/**"
-    #   - "test/**"
-    #   - "benchmark/**"
 
 permissions:
   contents: write
-  
-concurrency:
-  # This causes it to cancel previous in-progress actions on the same PR / branch,
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
   
 jobs:
   benchmarks:
@@ -33,7 +24,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-    # Get the latest commit hash from main branch
       - name: Get commit hash
         id: get_hash
         run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
@@ -44,14 +34,12 @@ jobs:
         with:
           python-version: '3.10'
 
-    # Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install modal
           pip install pandas
 
-    # Delete previous benchmark results.
      - name: Remove previous benchmark data
         run: |
           rm -f benchmark/data/all_benchmark_data.csv
@@ -61,20 +49,17 @@ jobs:
         run: |
           modal run dev.modal.benchmarks
         
-       # Step 5: Checkout gh-pages branch in a subfolderAdd commentMore actions
       - name: Checkout gh-pages
         uses: actions/checkout@v3
         with:
           ref: gh-pages
           path: gh-pages
       
-      # Step 6: Copy benchmark CSV to gh-pages directory
       - name: Copy generated benchmark to gh-pages
         run: |
           mkdir -p gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}
           cp ${GENERATED_CSV} gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}/${OUTPUT_FILENAME}
 
-      # Step 7: Append commit hash to commits.txt if not already present
       - name: Update commits.txt
         run: |
           cd gh-pages
@@ -89,7 +74,6 @@ jobs:
             echo "${{ steps.get_hash.outputs.hash }}" >> ${OUTPUT_DIR}/commits.txt
           fi
 
-      # Step 7: Commit and push
       - name: Commit and push to gh-pages
         run: |
           cd gh-pages
@@ -98,5 +82,4 @@ jobs:
           git add .
           git commit -m "Add benchmark for commit ${{ steps.get_hash.outputs.hash }}" || echo "No changes to commit"
           git push origin gh-pages
-
 
