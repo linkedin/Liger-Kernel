@@ -109,7 +109,7 @@ if __name__ == "__main__":
 
     run_benchmarks(
         bench_test_fn=bench_speed_cross_entropy,
-        kernel_operation_modes=["forward", "full"],
+        kernel_operation_modes=["forward", "backward", "full"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,

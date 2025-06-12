@@ -25,8 +25,7 @@ def liger_benchmarks():
         shell=True,
         cwd=REMOTE_ROOT_PATH,
     )
-    subprocess.run(["python benchmark/scripts/benchmark_kto_loss.py"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
-    subprocess.run(["python benchmark/scripts/benchmark_cpo_loss.py"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
+    subprocess.run(["make run-benchmarks"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
 
     file_path = Path(REMOTE_ROOT_PATH) / "benchmark" / "data" / "all_benchmark_data.csv"
     print(f"Checking if file exists at: {file_path}")
