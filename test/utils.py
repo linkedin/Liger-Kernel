@@ -285,7 +285,7 @@ def revert_liger_kernel_to_llama4(model_config: MiniModelConfig, model_type: str
     ], f'model_type must be "causal_lm" or "conditional_generation", Got: {model_type}'
     import torch.nn as nn
 
-    from transformers.models.mllama import modeling_llama4
+    from transformers.models.llama4 import modeling_llama4
 
     importlib.reload(nn)
     importlib.reload(modeling_llama4)
