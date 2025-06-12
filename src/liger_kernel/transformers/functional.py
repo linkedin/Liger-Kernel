@@ -4,6 +4,7 @@ from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.dyt import LigerDyTFunction
 from liger_kernel.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
+from liger_kernel.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
 from liger_kernel.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.group_norm import LigerGroupNormFunction
 from liger_kernel.ops.jsd import LigerJSDFunction
@@ -195,6 +196,33 @@ def liger_multi_token_attention(
         Output tensor after applying multi-token attention.
     """
     return LigerMultiTokenAttentionFunction.apply(scores, weight, bias, stride, padding, dilation, groups, sparse)
+
+
+def liger_fused_neighborhood_attention(
+    query,
+    key,
+    value,
+    kernel_size: int = 7,
+    dilation: int = 1,
+    scale: float = None,
+):
+    """
+    Liger fused neighborhood attention.
+
+    paper: https://arxiv.org/pdf/2504.16922
+
+    Args:
+        query: Query tensor of shape [batch_size, num_heads, seq_len, head_dim]
+        key: Key tensor of shape [batch_size, num_heads, seq_len, head_dim]
+        value: Value tensor of shape [batch_size, num_heads, seq_len, head_dim]
+        kernel_size: Size of the neighborhood window (default: 7)
+        dilation: Dilation factor for the neighborhood (default: 1)
+        scale: Scaling factor for attention scores (default: rsqrt(head_dim))
+
+    Returns:
+        Output tensor of shape [batch_size, num_heads, seq_len, head_dim]
+    """
+    return LigerFusedNeighborhoodAttentionFunction.apply(query, key, value, kernel_size, dilation, scale)
 
 
 def liger_tvd(
