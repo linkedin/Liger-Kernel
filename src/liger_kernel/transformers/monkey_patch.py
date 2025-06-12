@@ -392,7 +392,7 @@ def apply_liger_kernel_to_llama4(
     from transformers.models.mllama.modeling_llama4 import Llama4TextModel
     from transformers.models.mllama.modeling_llama4 import Llama4VisionModel
     from liger_kernel.transformers.model.llama4 import lce_forward as llama4_lce_forward
-    if rope:
+    if rope and (instance(model, Llama4ForCausalLM) or instance(model, Llama4TextModel)):
         modeling_llama4.apply_rotary_emb = liger_rotary_pos_emb
     if rms_norm:
         modeling_llama4.Llama4RMSNorm = LigerRMSNorm
