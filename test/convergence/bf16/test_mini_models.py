@@ -73,20 +73,26 @@ except ImportError:
     MLLAMA_AVAILABLE = False
 
 try:
-    # Qwen2-VL is only available in transformers>4.44.2
+    # Qwen2-VL is only available in transformers>4.52.4
+    import transformers
+
+    from packaging import version
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
 
-    QWEN2_VL_AVAILABLE = True
+    QWEN2_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.52.4")
 except ImportError:
     QWEN2_VL_AVAILABLE = False
 
 try:
-    # Qwen2.5-VL is only available in transformers>4.48.2
+    # Qwen2.5-VL is only available in transformers>4.52.4
+    import transformers
+
+    from packaging import version
     from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
 
-    QWEN2_5_VL_AVAILABLE = True
+    QWEN2_5_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.52.4")
 except ImportError:
     QWEN2_5_VL_AVAILABLE = False
 
