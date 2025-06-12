@@ -237,6 +237,13 @@ def supports_bfloat16():
         return False
 
 
+def is_torchvision_available():
+    if importlib.util.find_spec("torchvision") is not None:
+        return True
+    else:
+        return False
+
+
 def revert_liger_kernel_to_granite(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Granite.

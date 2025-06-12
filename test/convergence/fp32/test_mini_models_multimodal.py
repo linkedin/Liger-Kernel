@@ -22,6 +22,7 @@ from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import get_logprobs
 from test.utils import get_topk
+from test.utils import is_torchvision_available
 from test.utils import load_image_processing_config
 from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
@@ -790,6 +791,7 @@ def run_mini_model_multimodal(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
                 ),
+                pytest.mark.skipif(not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"),
             ],
         ),
         pytest.param(
@@ -824,6 +826,7 @@ def run_mini_model_multimodal(
                     not QWEN2_5_VL_AVAILABLE,
                     reason="Qwen2.5-VL not available in this version of transformers",
                 ),
+                pytest.mark.skipif(not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"),
             ],
         ),
         pytest.param(
