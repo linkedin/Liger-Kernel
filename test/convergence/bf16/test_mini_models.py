@@ -1203,7 +1203,7 @@ def test_mini_model(
             atol=logprobs_atol,
             rtol=logprobs_rtol,
         )
-        
+
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
     for expected_param, actual_param in zip(
