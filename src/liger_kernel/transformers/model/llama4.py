@@ -75,7 +75,10 @@ def lce_forward(
     hidden_states = outputs[0]
     # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-    logits = self.lm_head(hidden_states[:, slice_indices, :])
+    kept_hidden_states = hidden_states[:, slice_indices, :]
+
+    shift_labels = kwargs.pop("shift_labels", None)
+    logits = None
     loss = None
 
     if self.training and (labels is not None or shift_labels is not None):

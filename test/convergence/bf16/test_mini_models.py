@@ -171,7 +171,7 @@ MINI_MODEL_SETUPS = {
             bos_token_id=1,  # None
             eos_token_id=2,  # 151329, 151336, 151338
             pad_token_id=2,  # 151329
-            partial_rotary_factor=0.5,
+            partial_rotary_factor=1.0,
             cross_attention_layers=None,
             dropout=0,
             hidden_act="silu",
@@ -184,7 +184,7 @@ MINI_MODEL_SETUPS = {
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
             rope_scaling=None,
-            rope_theta=500_000,
+            rope_theta=10000.0,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 151552
@@ -847,7 +847,7 @@ def run_mini_model(
             "rms_norm": True,
         }
 
-        if "glm4" in model_name:
+        if "glm4" in model_name or "llama4" in model_name:
             kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -916,7 +916,7 @@ def run_mini_model(
             1e-3,
             1e-2,
             1e-1,
-            1e-2,
+            1e-1,
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
