@@ -360,7 +360,7 @@ def apply_liger_kernel_to_llava(
             logger.warning(f"{vision_model_name} is not supported by Liger kernel.")
 
 def apply_liger_kernel_to_llama4(
-    rope: bool = True,
+    rope: bool = False,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
@@ -393,7 +393,7 @@ def apply_liger_kernel_to_llama4(
     from transformers.models.llama4.modeling_llama4 import Llama4VisionModel
     from liger_kernel.transformers.model.llama4 import lce_forward as llama4_lce_forward
     if rope:
-        modeling_llama4.apply_rotary_emb = liger_rotary_pos_emb
+        raise NotImplementedError("liger_rotary_pos_emb is not available for Llama4 models.")
     if rms_norm:
         modeling_llama4.Llama4TextRMSNorm = LigerRMSNorm
     if swiglu:
@@ -415,7 +415,7 @@ def apply_liger_kernel_to_llama4(
         elif isinstance(model, Llama4ForCausalLM):
             text_model = model.model
             vision_model = None
-        elif isinstance(model, MllamaTextModel):
+        elif isinstance(model, Llama4TextModel):
             text_model = model
             vision_model = None
           

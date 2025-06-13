@@ -64,6 +64,15 @@ from test.utils import simple_collate_fn
 from test.utils import supports_bfloat16
 
 try:
+    from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
+    from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+
+    LLAMA4_AVAILABLE = True
+
+except ImportError:
+    LLAMA4_AVAILABLE = False
+
+try:
     # Mllama is only available in transformers>=4.45.0
     from transformers.models.mllama.configuration_mllama import MllamaTextConfig
     from transformers.models.mllama.modeling_mllama import MllamaForCausalLM
@@ -158,28 +167,28 @@ MINI_MODEL_SETUPS = {
         liger_kernel_patch_func=apply_liger_kernel_to_llama4,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llama4,
         model_class=Llama4ForCausalLM,
-        mini_model_config=Llama4Config(
-            attention_bias=False,
-            attention_dropout=0.0,
-            # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
-            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
-            bos_token_id=1,  # 128000
-            eos_token_id=2,  # 128001
+        mini_model_config=Llama4TextConfig(
+            bos_token_id=1,  # None
+            eos_token_id=2,  # 151329, 151336, 151338
+            pad_token_id=2,  # 151329
+            partial_rotary_factor=0.5,
+            cross_attention_layers=None,
+            dropout=0,
             hidden_act="silu",
-            hidden_size=1024,  # 4096
+            hidden_size=1024,  # 6144
             initializer_range=0.02,
             intermediate_size=2048,  # 14336
-            max_position_embeddings=8192,
-            num_attention_heads=8,  # 32
-            num_hidden_layers=4,  # 32
-            num_key_value_heads=2,  # 8
-            pretraining_tp=1,
+            max_position_embeddings=4096,  # 32768
+            num_attention_heads=8,  # 48
+            num_hidden_layers=4,  # 61
+            num_key_value_heads=2,
             rms_norm_eps=1e-5,
             rope_scaling=None,
-            rope_theta=500000.0,
+            rope_theta=500_000,
             tie_word_embeddings=False,
             use_cache=True,
-            vocab_size=32000,  # 128256,
+            vocab_size=32000,  # 151552
+            attention_bias=True,
             attn_implementation="sdpa",  # default value, pytorch native attention
         ),
     ),
@@ -410,6 +419,9 @@ MINI_MODEL_SETUPS = {
         ),
     ),
 }
+
+# if LLAMA4_AVAILABLE:
+
 
 if QWEN3_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen3"] = MiniModelConfig(
@@ -824,7 +836,7 @@ def run_mini_model(
     # Therefore, we have to reset RNG before we create the model to ensure the weight initialization started from the same RNG state.
 
     set_seed(42)
-
+    
     revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
     if "mllama" in model_name:
         revert_kwargs["model_type"] = "causal_lm"
