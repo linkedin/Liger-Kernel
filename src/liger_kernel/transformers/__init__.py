@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_granite  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llava  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mistral  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mixtral  # noqa: F401
@@ -87,6 +88,7 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_granite",
         "apply_liger_kernel_to_llama",
         "apply_liger_kernel_to_llava",
+        "apply_liger_kernel_to_llama4",
         "apply_liger_kernel_to_mistral",
         "apply_liger_kernel_to_mixtral",
         "apply_liger_kernel_to_mllama",
@@ -141,6 +143,7 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_granite",
             "apply_liger_kernel_to_llama",
             "apply_liger_kernel_to_llava",
+            "apply_liger_kernel_to_llama4",
             "apply_liger_kernel_to_mistral",
             "apply_liger_kernel_to_mixtral",
             "apply_liger_kernel_to_mllama",
