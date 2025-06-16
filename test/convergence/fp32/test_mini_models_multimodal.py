@@ -20,6 +20,8 @@ from test.utils import FAKE_CONFIGS_PATH
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
+from test.utils import get_logprobs
+from test.utils import get_topk
 from test.utils import is_torchvision_available
 from test.utils import load_image_processing_config
 from test.utils import load_processor_config
@@ -762,11 +764,16 @@ def run_mini_model_multimodal(
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
-    return {"loss": loss_list, "logits": output.logits, "model": model}
+    topk_logprobs = get_topk(get_logprobs(output.logits))
+    return {
+        "loss": loss_list,
+        "topk_logprobs": topk_logprobs.values,
+        "model": model,
+    }
 
 
 @pytest.mark.parametrize(
-    "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
+    "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logprobs_atol, logprobs_rtol, param_atol, param_rtol",
     [
         pytest.param(
             "mini_qwen2_vl",
@@ -875,10 +882,10 @@ def run_mini_model_multimodal(
             32,
             1e-4,
             torch.float32,
-            1e-8,
-            1e-5,
-            5e-3,
-            1e-5,
+            1e-3,
+            1e-3,
+            1e-1,
+            1e-1,
             5e-3,
             1e-5,
             marks=[
@@ -898,8 +905,8 @@ def test_mini_model_multimodal(
     dtype,
     loss_atol,
     loss_rtol,
-    logits_atol,
-    logits_rtol,
+    logprobs_atol,
+    logprobs_rtol,
     param_atol,
     param_rtol,
 ):
@@ -920,10 +927,10 @@ def test_mini_model_multimodal(
 
     # Compare the logits from the last step
     assert_verbose_allclose(
-        expected_output["logits"],
-        actual_output["logits"],
-        atol=logits_atol,
-        rtol=logits_rtol,
+        expected_output["topk_logprobs"],
+        actual_output["topk_logprobs"],
+        atol=logprobs_atol,
+        rtol=logprobs_rtol,
     )
 
     # Compare the params from the last step

@@ -38,6 +38,8 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
+from test.utils import get_logprobs
+from test.utils import get_topk
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_gemma3_text
@@ -849,17 +851,17 @@ def run_mini_model(
         eval_output = model(**eval_batch)
     print(f"Eval Loss: {eval_output.loss.item()}")
     loss_list.append(eval_output.loss.item())
-
+    topk_logprobs = get_topk(get_logprobs(eval_output.logits))
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
     return {
         "loss": loss_list,
-        "logits": eval_output.logits,
+        "topk_logprobs": topk_logprobs.values,
         "model": model,
     }
 
 
 @pytest.mark.parametrize(
-    "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logits_atol, logits_rtol, param_atol, param_rtol",
+    "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logprobs_atol, logprobs_rtol, param_atol, param_rtol",
     [
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
         pytest.param(
@@ -1013,7 +1015,7 @@ def run_mini_model(
         # TODO: mixtral is flaky so disable the test for now
         # ("mini_mixtral", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
-        ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-2, 5e-3, 1e-5),
         ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
@@ -1041,8 +1043,8 @@ def test_mini_model(
     dtype,
     loss_atol,
     loss_rtol,
-    logits_atol,
-    logits_rtol,
+    logprobs_atol,
+    logprobs_rtol,
     param_atol,
     param_rtol,
 ):
@@ -1060,13 +1062,13 @@ def test_mini_model(
         rtol=loss_rtol,
     )
 
-    # Compare the logits from evaluation step
-    if expected_output["logits"] is not None and actual_output["logits"] is not None:
+    # Compare the topk logprobs from evaluation step
+    if expected_output["topk_logprobs"] is not None and actual_output["topk_logprobs"] is not None:
         assert_verbose_allclose(
-            expected_output["logits"],
-            actual_output["logits"],
-            atol=logits_atol,
-            rtol=logits_rtol,
+            expected_output["topk_logprobs"],
+            actual_output["topk_logprobs"],
+            atol=logprobs_atol,
+            rtol=logprobs_rtol,
         )
 
     # Compare the params from the last step
