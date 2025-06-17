@@ -88,6 +88,7 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
         module.__class__.__name__ = LigerRMSNorm.__name__
 
+
 def _patch_layer_norm_module(module, eps=1e-6):
     # Check if the module is a PEFT ModulesToSaveWrapper
     # If it is, we need to patch the modules_to_save.default and original_modules
