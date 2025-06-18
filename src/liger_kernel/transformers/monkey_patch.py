@@ -54,7 +54,7 @@ def _bind_method_to_module(module, method_name: str, new_method: Callable):
     module.__dict__[method_name] = new_method.__get__(module, module.__class__)
 
 
-def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True):
+def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True, row_mode=None):
     # Check if the module is a PEFT ModulesToSaveWrapper
     # If it is, we need to patch the modules_to_save.default and original_modules
     if PEFT_AVAILABLE and isinstance(module, peft.utils.other.ModulesToSaveWrapper):
@@ -64,12 +64,14 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
             getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         )
         module.modules_to_save.default.in_place = in_place
+        module.modules_to_save.default.row_mode = row_mode
         module.original_module.offset = offset
         module.original_module.casting_mode = casting_mode
         module.original_module.variance_epsilon = (
             getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         )
         module.original_module.in_place = in_place
+        module.original_module.row_mode = row_mode
         _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
         _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
         _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
@@ -81,6 +83,7 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         module.casting_mode = casting_mode
         module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         module.in_place = in_place
+        module.row_mode = row_mode
         _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
         _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
         module.__class__.__name__ = LigerRMSNorm.__name__
