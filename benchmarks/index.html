@@ -1,52 +1,46 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Benchmark Visualization</title>
-  <link rel="stylesheet" href="style.css"/>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <meta charset="UTF-8">
+  <title>Liger Benchmark Dashboard</title>
+  <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body data-theme="light">
   <div class="container">
-    <div class="panel1">
-      <h1>Panel 1</h1>
-      <div class="controls">
-        <label>Commit Hash:</label>
-        <select id="commit"></select>
-  
-        <label for="kernel">Kernel Name:</label>
-        <select id="kernel"></select>
-  
-        <label for="mode">Pass Type:</label>
-        <select id="mode"></select>
-      </div>
-      <div class="metric-section">
-        <h2>Speed Metrics</h2>
-        <canvas id="benchmarkChartSpeed"></canvas>
-        <h2>Memory Metrics</h2>
-        <canvas id="benchmarkChartMemory"></canvas>
-      </div>
+    <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Theme">☀️</button>
+    <button class="theme-toggle" onclick="goToDetailedView()">Detailed View</button>
+    <h1>Liger Kernel Benchmark Comparison</h1>
+
+    <div class="selectors">
+      <label>
+        Show last N commits:
+        <select id="commitCount">
+          <option value="5">5</option>
+          <option value="20">20</option>
+          <option value="50">50</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+      <label>
+        Metric type:
+        <select id="metricType">
+          <option value="forward">forward</option>
+          <option value="backward">backward</option>
+          <option value="full">full</option>
+        </select>
+      </label>
+      <input type="text" id="kernelSearch" placeholder="Search kernel name..." onkeyup="renderTables()">
+      <button onclick="loadData()">Update Table</button>
     </div>
-    <div class="panel2">
-      <h1>Panel 2</h1>
-      <div class="controls">
-        <label>Commit Hash:</label>
-        <select id="commit2"></select>
-  
-        <label for="kernel">Kernel Name:</label>
-        <select id="kernel2"></select>
-  
-        <label for="mode">Pass Type:</label>
-        <select id="mode2"></select>
-      </div>
-      <div class="metric-section">
-        <h2>Speed Metrics</h2>
-        <canvas id="benchmarkChart2Speed"></canvas>
-        <h2>Memory Metrics</h2>
-        <canvas id="benchmarkChart2Memory"></canvas>
-      </div>
+
+    <h2>Memory</h2>
+    <div class="scroll-container">
+      <table id="memoryTable"></table>
+    </div>
+
+    <h2>Speed</h2>
+    <div class="scroll-container">
+      <table id="speedTable"></table>
     </div>
   </div>
 
