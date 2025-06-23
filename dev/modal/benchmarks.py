@@ -14,7 +14,7 @@ app = modal.App("liger_benchmarks", image=image)
 repo = image.add_local_dir(ROOT_PATH, remote_path=REMOTE_ROOT_PATH)
 
 
-@app.function(gpu=modal.gpu.H100, image=repo, timeout=60 * 90)
+@app.function(gpu="100", image=repo, timeout=60 * 90)
 def liger_benchmarks():
     import os
     import subprocess
