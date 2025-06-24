@@ -144,7 +144,7 @@ function renderTables() {
   const reference = allDataByCommit[referenceCommit];
 
   function createTable(table, filterMetric) {
-    let header = `<tr><th>Kernel</th><th>X</th><th>Reference: ${referenceCommit}</th>`;
+    let header = `<tr><th>Kernel</th><th>X</th><th>Reference: ${referenceCommit}</th>`
     for (const commit of commits) {
       if (commit === referenceCommit) continue;
       header += `<th>${commit}</th>`;
