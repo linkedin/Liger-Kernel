@@ -257,4 +257,3 @@ function hideTooltip() {
 }
 
 window.onload = loadData;
-  
