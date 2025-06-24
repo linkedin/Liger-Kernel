@@ -3,6 +3,7 @@ import logging
 
 from functools import partial
 from typing import Callable
+from types import MethodType
 
 import transformers
 
@@ -260,10 +261,16 @@ def apply_liger_kernel_to_llama(
 
     if fused_linear_cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
-            modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
+            if model is not None:
+                model.forward = MethodType(llama_lce_forward, model)
+            else:
+                modeling_llama.LlamaForCausalLM.forward = llama_lce_forward
         else:  # if version < 4.46.1
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
-            modeling_llama.LlamaForCausalLM.forward = llama_lce_forward_deprecated
+            if model is not None:
+                model.forward = MethodType(llama_lce_forward_deprecated, model)
+            else:
+                modeling_llama.LlamaForCausalLM.forward = llama_lce_forward_deprecated
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
