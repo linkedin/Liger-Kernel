@@ -1,3 +1,4 @@
+// TODO: Make this configurable into a separate file
 const referenceCommit = 'c1bdc24';
 const benchmarkBase = 'https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks';
 
@@ -32,8 +33,6 @@ async function fetchCSV(commit) {
   const rows = text.trim().split('\n');
   const headers = rows[0].split(',');
   const data = {};
-
-  console.log('Headers:', headers); // Debug headers
 
   for (let i = 1; i < rows.length; i++) {
     const rowText = rows[i];
@@ -77,11 +76,7 @@ async function fetchCSV(commit) {
       }
       // Store configuration data for tooltips
       if (!configData[kernelKey]) {
-        console.log('Row data for config:', {
-          extra_benchmark_config_str: row.extra_benchmark_config_str,
-          gpu_name: row.gpu_name,
-          liger_version: row.liger_version
-        });
+        // TODO: Compare for same GPU type only.
         configData[kernelKey] = {
           extra_benchmark_config_str: row.extra_benchmark_config_str || 'N/A',
           gpu_name: row.gpu_name || 'N/A',
@@ -114,9 +109,12 @@ async function loadData() {
 }
 
 function compareMetric(current, reference) {
+  // Tried running benchmarks on the same commit 4 times, and there was a 10% variance in the results.
+  // So we're using a 10% threshold to highlight the difference.
+  const THRESHOLD = 0.10;
   if (current == null || reference == null) return '';
   const delta = (current - reference) / reference;
-  if (delta > 0.10) return 'red';
+  if (delta > THRESHOLD) return 'red';
   if (delta < 0) return 'green';
   return '';
 }
