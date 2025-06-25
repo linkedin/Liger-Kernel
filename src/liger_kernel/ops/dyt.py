@@ -4,8 +4,6 @@ import torch
 import triton
 import triton.language as tl
 
-from triton.language.extra.libdevice import tanh
-
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import infer_device
