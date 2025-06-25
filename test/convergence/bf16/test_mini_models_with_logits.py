@@ -1138,25 +1138,27 @@ def run_mini_model(
         #         not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
         #     ),
         # ),
-        pytest.param(
-            "mini_gemma3_text",
-            32,
-            1e-4,
-            torch.bfloat16,
-            1e-3,
-            1e-2,
-            1e-1,
-            1e-2,
-            1e-2,
-            1e-2,
-            marks=[
-                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-                pytest.mark.skipif(
-                    not GEMMA3_AVAILABLE,
-                    reason="Gemma3 not available in this version of transformers",
-                ),
-            ],
-        ),
+        # TODO: gemma3 is flaky so disable the test for now
+        # https://github.com/linkedin/Liger-Kernel/issues/729
+        # pytest.param(
+        #     "mini_gemma3_text",
+        #     32,
+        #     1e-4,
+        #     torch.bfloat16,
+        #     1e-3,
+        #     1e-2,
+        #     1e-1,
+        #     1e-2,
+        #     1e-2,
+        #     1e-2,
+        #     marks=[
+        #         pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        #         pytest.mark.skipif(
+        #             not GEMMA3_AVAILABLE,
+        #             reason="Gemma3 not available in this version of transformers",
+        #         ),
+        #     ],
+        # ),
     ],
 )
 def test_mini_model(

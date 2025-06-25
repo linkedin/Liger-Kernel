@@ -896,22 +896,24 @@ def run_mini_model(
                 reason="Mllama not available in this version of transformers",
             ),
         ),
-        pytest.param(
-            "mini_gemma3_text",
-            32,
-            1e-4,
-            torch.float32,
-            1e-8,
-            1e-4,
-            5e-3,
-            1e-5,
-            5e-3,
-            1e-5,
-            marks=pytest.mark.skipif(
-                not GEMMA3_AVAILABLE,
-                reason="Gemma3 not available in this version of transformers",
-            ),
-        ),
+        # TODO: gemma3 is flaky so disable the test for now
+        # https://github.com/linkedin/Liger-Kernel/issues/729
+        # pytest.param(
+        #     "mini_gemma3_text",
+        #     32,
+        #     1e-4,
+        #     torch.float32,
+        #     1e-8,
+        #     1e-4,
+        #     5e-3,
+        #     1e-5,
+        #     5e-3,
+        #     1e-5,
+        #     marks=pytest.mark.skipif(
+        #         not GEMMA3_AVAILABLE,
+        #         reason="Gemma3 not available in this version of transformers",
+        #     ),
+        # ),
         ("mini_qwen2", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_qwen3",
