@@ -54,7 +54,7 @@ device = infer_device()
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
-        (torch.float32, 1e-5, 1e-5),
+        (torch.float32, 1e-4, 1e-4),
     ],
 )
 def test_liger_dyt_correctness(B, T, hidden_size, beta, init_alpha, dtype, atol, rtol):

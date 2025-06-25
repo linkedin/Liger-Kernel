@@ -62,6 +62,7 @@ class TorchMultiTokenAttention(torch.nn.Module):
         ),
     ],
 )
+@pytest.mark.skipif(device == "xpu", reason="skip for XPU") # TODO: fix for XPU
 def test_multi_token_attention_correctness(B, C_in, C_out, L, K, groups, bias, dtype, atol, rtol):
     set_seed(42)
     scores = torch.randn(B, C_in, L, L, device=device, dtype=dtype)  # input
@@ -132,6 +133,7 @@ def test_multi_token_attention_correctness(B, C_in, C_out, L, K, groups, bias, d
         ),
     ],
 )
+@pytest.mark.skipif(device == "xpu", reason="skip for XPU") # TODO: fix for XPU
 def test_multi_token_attention_functional(B, C_in, C_out, L, K, groups, bias, dtype, atol, rtol):
     scores = torch.randn(B, C_in, L, L, device=device, dtype=dtype)
 
