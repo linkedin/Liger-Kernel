@@ -257,10 +257,10 @@ def multimodal_forward(
         )
         labels = torch.where(input_ids == self.pad_token_id, self.config.ignore_index, labels)
 
-    causal_mask = self._update_causal_mask(
+    causal_mask = self.model._update_causal_mask(
         attention_mask, token_type_ids, past_key_values, cache_position, inputs_embeds, is_training
     )
-    outputs = self.language_model.model(
+    outputs = self.language_model(
         attention_mask=causal_mask,
         position_ids=position_ids,
         past_key_values=past_key_values,
@@ -304,9 +304,9 @@ def multimodal_forward(
         shift_labels = shift_labels.view(-1).to(hidden_device)
 
         lce = LigerFusedLinearCrossEntropyLoss()
-        loss = lce(self.language_model.lm_head.weight, shift_hidden_states, shift_labels)
+        loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
     else:
-        logits = self.language_model.lm_head(hidden_states)
+        logits = self.lm_head(hidden_states)
         if labels is not None:
             # Upcast to float if we need to compute the loss to avoid potential precision issues
             logits = logits.float()
