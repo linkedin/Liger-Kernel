@@ -848,7 +848,10 @@ def apply_liger_kernel_to_gemma3_text(
         nn.functional.cross_entropy = liger_cross_entropy
 
     if fused_linear_cross_entropy:
-        modeling_gemma3.Gemma3ForCausalLM.forward = causal_forward
+        if model is not None:
+            model.forward = MethodType(causal_forward, model)
+        else:
+            modeling_gemma3.Gemma3ForCausalLM.forward = causal_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -929,7 +932,10 @@ def apply_liger_kernel_to_gemma3(
         modeling_gemma3.nn.CrossEntropyLoss = LigerCrossEntropyLoss
 
     if fused_linear_cross_entropy:
-        modeling_gemma3.Gemma3ForConditionalGeneration.forward = multimodal_forward
+        if model is not None:
+            model.forward = MethodType(multimodal_forward, model)
+        else:
+            modeling_gemma3.Gemma3ForConditionalGeneration.forward = multimodal_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
