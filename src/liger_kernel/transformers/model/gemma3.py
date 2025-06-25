@@ -250,7 +250,7 @@ def multimodal_forward(
         inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 
     # mask out pad-token-ids in labels for BC
-    if labels is not None and self.pad_token_id in labels:
+    if labels is not None and self.config.pad_token_id in labels:
         logger.warning_once(
             "`labels` contains `pad_token_id` which will be masked with `config.ignore_index`. "
             "You have to mask out `pad_token_id` when preparing `labels`, this behavior will be removed in v.4.46.",
