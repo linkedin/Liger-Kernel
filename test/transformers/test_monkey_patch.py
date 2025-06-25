@@ -548,12 +548,7 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
         assert inspect.getsource(dummy_model_instance.vision_model.layernorm_post.forward) != inspect.getsource(
             LigerLayerNorm.forward
         )
-        for layer in dummy_model_instance.layers:
-            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerLayerNorm.forward)
-            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
-                LigerLayerNorm.forward
-            )
-        for layer in dummy_model_instance.vision_model.global_transformer.layers:
+        for layer in dummy_model_instance.vision_model.model.layers:
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerLayerNorm.forward
@@ -566,7 +561,7 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
         assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) == inspect.getsource(
             LigerRMSNorm.forward
         )
-        for layer in dummy_model_instance.language_model.layers:
+        for layer in dummy_model_instance.language_model.model.layers:
             assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
@@ -577,12 +572,7 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
         assert inspect.getsource(dummy_model_instance.vision_model.layernorm_post.forward) == inspect.getsource(
             LigerLayerNorm.forward
         )
-        for layer in dummy_model_instance.vision_model.transformer.layers:
-            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerLayerNorm.forward)
-            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(
-                LigerLayerNorm.forward
-            )
-        for layer in dummy_model_instance.vision_model.global_transformer.layers:
+        for layer in dummy_model_instance.vision_model.model.layers:
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerLayerNorm.forward
