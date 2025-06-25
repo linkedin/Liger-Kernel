@@ -208,7 +208,7 @@ def multimodal_forward(
     is_training = token_type_ids is not None and labels is not None
 
     # Replace image id woth PAD if the image token if OOV, to avoid index-errors
-    if input_ids is not None and self.config.image_token_index >= self.vocab_size:
+    if input_ids is not None and self.config.image_token_index >= self.model.vocab_size:
         special_image_mask = input_ids == self.config.image_token_index
         llm_input_ids = input_ids.clone()
         llm_input_ids[special_image_mask] = 0
@@ -229,7 +229,7 @@ def multimodal_forward(
 
     # Merge text and images
     if pixel_values is not None:
-        image_features = self.get_image_features(pixel_values)
+        image_features = self.model.get_image_features(pixel_values)
 
         if input_ids is None:
             special_image_mask = inputs_embeds == self.get_input_embeddings()(
@@ -257,7 +257,7 @@ def multimodal_forward(
         )
         labels = torch.where(input_ids == self.pad_token_id, self.config.ignore_index, labels)
 
-    causal_mask = self._update_causal_mask(
+    causal_mask = self.model._update_causal_mask(
         attention_mask, token_type_ids, past_key_values, cache_position, inputs_embeds, is_training
     )
     outputs = self.language_model.model(
