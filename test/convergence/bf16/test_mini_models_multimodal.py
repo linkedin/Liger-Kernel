@@ -165,7 +165,10 @@ if LLAMA4_AVAILABLE:
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llama4,
         model_class=Llama4ForConditionalGeneration,
         mini_model_config=Llama4Config(
+            image_token_index= 5,
             vision_config=Llama4VisionConfig(
+                attn_implementation_autoset=True,
+                attention_dropout=0.0,
                 hidden_act="gelu",
                 hidden_size=512,  # 1280
                 image_size=560,  # 560
@@ -180,7 +183,7 @@ if LLAMA4_AVAILABLE:
                 num_hidden_layers=8,  # 32
                 patch_size=140,  # 14
                 supported_aspect_ratios=[[1, 1]],  # [[1, 1], [1, 2], etc... ]
-                vision_output_dim=1024,  # 7680
+                vision_output_dim=4096,  # 7680
             ),
             text_config=Llama4TextConfig(
                 bos_token_id=0,
@@ -209,7 +212,6 @@ if LLAMA4_AVAILABLE:
                 use_cache=True,
                 vocab_size=32000,  # 128256,
             ),
-            image_token_index=1,  # NOTE: outside the vocab size
             attn_implementation="sdpa",
         ),
     )
@@ -654,6 +656,18 @@ def create_processor(model_name: str):
                 "meta-llama/Llama-4-Scout-17B-16E-Instruct/tokenizer_config.json",
             )
         )
+        image_processor_config = load_image_processing_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH,
+                "meta-llama/Llama-4-Scout-17B-16E-Instruct/preprocessor_config.json",
+            )
+        )
+        processor_config = load_processor_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH,
+                "meta-llama/Llama-4-Scout-17B-16E-Instruct/processor_config.json",
+            )
+        )
         tokenizer_base = train_bpe_tokenizer(
             [
                 token.content
@@ -664,8 +678,9 @@ def create_processor(model_name: str):
             ]
         )
         fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
-        image_processor = Llama4ImageProcessorFast(size={"height": 560, "width": 560})
-        return Llama4Processor(image_processor=image_processor, tokenizer=fast_tokenizer)
+        fast_tokenizer.model_input_names = ["input_ids", "attention_mask"]
+        image_processor = CLIPImageProcessor(**image_processor_config)
+        return Llama4Processor(**processor_config,image_processor=image_processor, tokenizer=fast_tokenizer)
     elif model_name == "mini_mllama":
         tokenizer_config = load_tokenizer_config(
             os.path.join(
