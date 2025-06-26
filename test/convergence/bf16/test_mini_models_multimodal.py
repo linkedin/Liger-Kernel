@@ -165,7 +165,7 @@ if LLAMA4_AVAILABLE:
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llama4,
         model_class=Llama4ForConditionalGeneration,
         mini_model_config=Llama4Config(
-            image_token_index= 5,
+            image_token_index= 8,
             vision_config=Llama4VisionConfig(
                 attn_implementation_autoset=True,
                 attention_dropout=0.0,
@@ -181,7 +181,7 @@ if LLAMA4_AVAILABLE:
                 num_channels=3,
                 num_global_layers=2,  # 8
                 num_hidden_layers=8,  # 32
-                patch_size=140,  # 14
+                patch_size=280,  # 14
                 supported_aspect_ratios=[[1, 1]],  # [[1, 1], [1, 2], etc... ]
                 vision_output_dim=4096,  # 7680
             ),
@@ -200,13 +200,6 @@ if LLAMA4_AVAILABLE:
                 num_hidden_layers=4,  # 40
                 num_key_value_heads=2,  # 8
                 rms_norm_eps=1e-5,
-                rope_scaling=dict(
-                    factor=8.0,
-                    high_freq_factor=4.0,
-                    low_freq_factor=1.0,
-                    original_max_position_embeddings=8192,
-                    rope_type="llama3",
-                ),
                 rope_theta=500_000,
                 tie_word_embeddings=False,
                 use_cache=True,
@@ -656,18 +649,6 @@ def create_processor(model_name: str):
                 "meta-llama/Llama-4-Scout-17B-16E-Instruct/tokenizer_config.json",
             )
         )
-        image_processor_config = load_image_processing_config(
-            os.path.join(
-                FAKE_CONFIGS_PATH,
-                "meta-llama/Llama-4-Scout-17B-16E-Instruct/preprocessor_config.json",
-            )
-        )
-        processor_config = load_processor_config(
-            os.path.join(
-                FAKE_CONFIGS_PATH,
-                "meta-llama/Llama-4-Scout-17B-16E-Instruct/processor_config.json",
-            )
-        )
         tokenizer_base = train_bpe_tokenizer(
             [
                 token.content
@@ -678,9 +659,13 @@ def create_processor(model_name: str):
             ]
         )
         fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
-        fast_tokenizer.model_input_names = ["input_ids", "attention_mask"]
-        image_processor = CLIPImageProcessor(**image_processor_config)
-        return Llama4Processor(**processor_config,image_processor=image_processor, tokenizer=fast_tokenizer)
+        image_processor = Llama4ImageProcessorFast(size={"height": 560, "width": 560})
+        return Llama4Processor(
+            image_processor=image_processor, 
+            tokenizer=fast_tokenizer,
+            fake_image_token="<|image|>",
+            image_token="<|image|>",
+        )
     elif model_name == "mini_mllama":
         tokenizer_config = load_tokenizer_config(
             os.path.join(
@@ -780,14 +765,27 @@ def create_multimodal_dataset(model_name: str):
 
     def preprocess_function(examples):
         """Tokenize text, preprocess images, and generate other relevant inputs for the model."""
-        return processor(
-            text=examples["text"],
-            images=examples["image"],
-            padding="max_length",
-            truncation=True,
-            max_length=1024,  # longer than for text-only b/c images require quite a few tokens
-            return_tensors="pt",
-        )
+        if model_name == "mini_llama4":
+            # Process images and text separately to avoid complex token replacement
+            image_inputs = processor.image_processor(images=examples["image"], return_tensors="pt")
+            text_inputs = processor.tokenizer(
+                examples["text"],
+                padding="max_length",
+                truncation=True,
+                max_length=1024,
+                return_tensors="pt",
+            )
+            return {**text_inputs, **image_inputs}
+        else:
+            # For other models, use the normal processor
+            return processor(
+                text=examples["text"],
+                images=examples["image"],
+                padding="max_length",
+                truncation=True,
+                max_length=1024,  # longer than for text-only b/c images require quite a few tokens
+                return_tensors="pt",
+            )
 
     train_dataset = (
         load_dataset("text", data_files={"train": UNTOKENIZED_DATASET_PATH}, split="train")
@@ -833,7 +831,8 @@ def run_mini_model_multimodal(
             "rms_norm": True,
             "cross_entropy": False,
         }
-
+        if "llama4" in model_name:
+            kwargs["rope"] = False
         if "qwen2_5_vl" not in model_name and "llava" not in model_name:
             kwargs["layer_norm"] = True
 
@@ -963,10 +962,10 @@ def run_mini_model_multimodal(
             32,
             1e-4,
             torch.bfloat16,
-            1e-3,
-            1e-2,
             1e-1,
             1e-1,
+            0.2,
+            0.3,
             1e-2,
             1e-2,
             marks=[

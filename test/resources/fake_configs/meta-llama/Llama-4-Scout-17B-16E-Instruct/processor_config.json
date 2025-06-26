@@ -1,7 +1,0 @@
-{
-    "fake_image_token": "<|image|>",
-    "image_token": "<|image|>",
-    "patch_size": 14,
-    "processor_class": "Llama4Processor"
-  }
-  
