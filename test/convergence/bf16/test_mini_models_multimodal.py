@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
 from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
 from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
-
+from liger_kernel.transformers import apply_liger_kernel_to_llama4
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3
 from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
@@ -31,6 +31,7 @@ from test.utils import revert_liger_kernel_to_gemma3
 from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_Paligemma
+from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import set_seed
@@ -126,6 +127,20 @@ try:
 except ImportError:
     GEMMA3_AVAILABLE = False
 
+try:
+    from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
+    from transformers.models.llama4.configuration_llama4 import Llama4VisionConfig
+    from transformers.models.llama4.configuration_llama4 import Llama4Config
+    from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+    from transformers.models.llama4.modeling_llama4 import Llama4ForConditionalGeneration
+    from transformers.models.llama4.image_processing_llama4_fast import Llama4ImageProcessorFast
+    from transformers.models.llama4.processing_llama4 import Llama4Processor
+
+    LLAMA4_AVAILABLE = True
+
+except ImportError:
+    LLAMA4_AVAILABLE = False
+
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -144,6 +159,60 @@ TEST_IMAGE_DIM = 64
 
 MINI_MODEL_SETUPS = {}
 
+if LLAMA4_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_llama4"] = MiniModelConfig(
+        liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_llama4, fused_linear_cross_entropy=False),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_llama4,
+        model_class=Llama4ForConditionalGeneration,
+        mini_model_config=Llama4Config(
+            vision_config=Llama4VisionConfig(
+                hidden_act="gelu",
+                hidden_size=512,  # 1280
+                image_size=560,  # 560
+                initializer_range=0.02,
+                intermediate_layers_indices=[2],  # [3, 7, 15, etc...]
+                intermediate_size=2048,  # 5120
+                max_num_tiles=1,  # 4
+                norm_eps=1e-5,
+                num_attention_heads=4,  # 16
+                num_channels=3,
+                num_global_layers=2,  # 8
+                num_hidden_layers=8,  # 32
+                patch_size=140,  # 14
+                supported_aspect_ratios=[[1, 1]],  # [[1, 1], [1, 2], etc... ]
+                vision_output_dim=1024,  # 7680
+            ),
+            text_config=Llama4TextConfig(
+                bos_token_id=0,
+                eos_token_id=0,
+                pad_token_id=0,
+                cross_attention_layers=[2],  # [3, 8, 13, 18, etc...]
+                dropout=0,
+                hidden_act="silu",
+                hidden_size=1024,  # 4096
+                initializer_range=0.02,
+                intermediate_size=2048,  # 14336
+                max_position_embeddings=131_072,
+                num_attention_heads=8,  # 32
+                num_hidden_layers=4,  # 40
+                num_key_value_heads=2,  # 8
+                rms_norm_eps=1e-5,
+                rope_scaling=dict(
+                    factor=8.0,
+                    high_freq_factor=4.0,
+                    low_freq_factor=1.0,
+                    original_max_position_embeddings=8192,
+                    rope_type="llama3",
+                ),
+                rope_theta=500_000,
+                tie_word_embeddings=False,
+                use_cache=True,
+                vocab_size=32000,  # 128256,
+            ),
+            image_token_index=1,  # NOTE: outside the vocab size
+            attn_implementation="sdpa",
+        ),
+    )
 
 if MLLAMA_AVAILABLE:
     MINI_MODEL_SETUPS["mini_mllama"] = MiniModelConfig(
@@ -578,7 +647,25 @@ def create_processor(model_name: str):
         image_processor = CLIPImageProcessor(**image_processor_config)
 
         return LlavaProcessor(**processor_config, image_processor=image_processor, tokenizer=fast_tokenizer)
-
+    elif model_name.startswith("mini_llama4"):
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH,
+                "meta-llama/Llama-4-Scout-17B-16E-Instruct/tokenizer_config.json",
+            )
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        image_processor = Llama4ImageProcessorFast(size={"height": 560, "width": 560})
+        return Llama4Processor(image_processor=image_processor, tokenizer=fast_tokenizer)
     elif model_name == "mini_mllama":
         tokenizer_config = load_tokenizer_config(
             os.path.join(
@@ -722,7 +809,7 @@ def run_mini_model_multimodal(
     set_seed(42)
 
     revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
-    if "mllama" in model_name:
+    if "mllama" in model_name or "llama4" in model_name:
         revert_kwargs["model_type"] = "conditional_generation"
 
     if with_liger is True:
@@ -853,6 +940,25 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not MLLAMA_AVAILABLE,
                     reason="Mllama not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_llama4",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-1,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not LLAMA4_AVAILABLE,
+                    reason="Llama4 not available in this version of transformers",
                 ),
             ],
         ),

@@ -44,6 +44,7 @@ def is_llama4_available():
     except ImportError:
         return False
 
+
 def is_qwen2_vl_available():
     try:
         import transformers.models.qwen2_vl  # noqa: F401
@@ -470,6 +471,7 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.llama4.modeling_llama4"):
         from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+
         # Instantiate a dummy model
         config = transformers.models.llama4.configuration_llama4.Llama4TextConfig(
             torch_dtype=torch.bfloat16,
@@ -503,11 +505,13 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
+
 @pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
 def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.llama4.modeling_llama4"):
         from transformers.models.llama4.modeling_llama4 import Llama4ForConditionalGeneration
+
         # Instantiate a dummy model
         config = transformers.models.llama4.configuration_llama4.Llama4Config(
             torch_dtype=torch.bfloat16,
@@ -582,6 +586,7 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
 
 def test_apply_liger_kernel_to_instance_for_mistral():
     # Ensure any monkey patching is cleaned up for subsequent tests

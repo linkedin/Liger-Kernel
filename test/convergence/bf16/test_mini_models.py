@@ -9,7 +9,6 @@ from transformers.models.gemma2 import Gemma2Config
 from transformers.models.gemma2 import Gemma2ForCausalLM
 from transformers.models.llama import LlamaConfig
 from transformers.models.llama import LlamaForCausalLM
-from transformers.models.llama4 import Llama4Config
 from transformers.models.llama4 import Llama4ForCausalLM
 from transformers.models.mistral import MistralConfig
 from transformers.models.mistral import MistralForCausalLM
@@ -838,7 +837,7 @@ def run_mini_model(
     # Therefore, we have to reset RNG before we create the model to ensure the weight initialization started from the same RNG state.
 
     set_seed(42)
-    
+
     revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
     if "mllama" in model_name:
         revert_kwargs["model_type"] = "causal_lm"

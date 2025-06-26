@@ -292,6 +292,7 @@ def revert_liger_kernel_to_mllama(model_config: MiniModelConfig, model_type: str
 
     print("Liger kernel patches have been reverted.")
 
+
 def revert_liger_kernel_to_llama4(model_config: MiniModelConfig, model_type: str = "causal_lm"):
     """
     Revert all Liger kernel patches applied to Llama4.

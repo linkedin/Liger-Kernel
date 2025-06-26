@@ -362,6 +362,7 @@ def apply_liger_kernel_to_llava(
         elif vision_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
             logger.warning(f"{vision_model_name} is not supported by Liger kernel.")
 
+
 def apply_liger_kernel_to_llama4(
     rope: bool = False,
     cross_entropy: bool = False,
@@ -369,6 +370,7 @@ def apply_liger_kernel_to_llama4(
     rms_norm: bool = True,
     swiglu: bool = True,
     model: PreTrainedModel = None,
+    layer_norm: bool = True,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Llama4 models.
@@ -394,7 +396,9 @@ def apply_liger_kernel_to_llama4(
     from transformers.models.llama4.modeling_llama4 import Llama4ForConditionalGeneration
     from transformers.models.llama4.modeling_llama4 import Llama4TextModel
     from transformers.models.llama4.modeling_llama4 import Llama4VisionModel
+
     from liger_kernel.transformers.model.llama4 import lce_forward as llama4_lce_forward
+
     if rope:
         raise NotImplementedError("liger_rotary_pos_emb is not available for Llama4 models.")
     if rms_norm:
@@ -414,14 +418,14 @@ def apply_liger_kernel_to_llama4(
         if isinstance(model, Llama4ForConditionalGeneration):
             language_model: Llama4ForCausalLM = model.language_model
             vision_model: Llama4VisionModel = model.vision_model
-            text_model: Llama4TextModel = language_model
+            text_model: Llama4TextModel = language_model.model
         elif isinstance(model, Llama4ForCausalLM):
             text_model = model.model
             vision_model = None
         elif isinstance(model, Llama4TextModel):
             text_model = model
             vision_model = None
-          
+
         else:
             raise ValueError(f"Unsupported Llama4 model type: {type(model)}")
 
@@ -439,12 +443,7 @@ def apply_liger_kernel_to_llama4(
             _patch_layer_norm_module(vision_model.layernorm_pre)
             _patch_layer_norm_module(vision_model.layernorm_post)
 
-            for layer in vision_model.transformer.layers:
-                if layer_norm:
-                    _patch_layer_norm_module(layer.input_layernorm)
-                    _patch_layer_norm_module(layer.post_attention_layernorm)
-
-            for layer in vision_model.global_transformer.layers:
+            for layer in vision_model.model.layers:
                 if layer_norm:
                     _patch_layer_norm_module(layer.input_layernorm)
                     _patch_layer_norm_module(layer.post_attention_layernorm)
@@ -1693,6 +1692,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "glm4": apply_liger_kernel_to_glm4,
     "llama": apply_liger_kernel_to_llama,
     "llama4_text": apply_liger_kernel_to_llama4,
+    "llama4": apply_liger_kernel_to_llama4,
     "llava": apply_liger_kernel_to_llava,
     "granite": apply_liger_kernel_to_granite,
     "mllama": apply_liger_kernel_to_mllama,
