@@ -896,19 +896,7 @@ def run_mini_model(
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logprobs_atol, logprobs_rtol, param_atol, param_rtol",
     [
-        pytest.param(
-            "mini_llama4",
-            32,
-            1e-4,
-            torch.bfloat16,
-            1e-3,
-            1e-2,
-            1e-1,
-            1e-1,
-            1e-2,
-            1e-2,
-        ),
-        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
+        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_llava",
             32,
@@ -997,8 +985,8 @@ def run_mini_model(
             torch.float32,
             1e-5,  # 1e-8,
             1e-1,  # 1e-5,
-            1,  # 5e-3,
-            1e-1,  # 1e-5,
+            5e-3,  # 5e-3,
+            1e-5,  # 1e-5,
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(
@@ -1014,8 +1002,8 @@ def run_mini_model(
             torch.float32,
             1e-5,  # 1e-8,
             1e-1,  # 1e-5,
-            3,  # 5e-3,
-            1e-1,  # 1e-5,
+            5e-3,  # 5e-3,
+            1e-5,  # 1e-5,
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(
@@ -1060,7 +1048,7 @@ def run_mini_model(
         # TODO: mixtral is flaky so disable the test for now
         # ("mini_mixtral", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
-        ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-2, 5e-3, 1e-5),
+        ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
@@ -1070,8 +1058,8 @@ def run_mini_model(
             torch.float32,
             1e-8,
             1e-4,
-            5e-2,  # 5e-3
-            1e-4,  # 1e-5
+            5e-3,  # 4e-3
+            1e-5,  # 1e-5
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(

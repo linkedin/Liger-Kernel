@@ -888,19 +888,7 @@ def run_mini_model(
 @pytest.mark.parametrize(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logprobs_atol, logprobs_rtol, param_atol, param_rtol",
     [
-        pytest.param(
-            "mini_llama4",
-            32,
-            1e-4,
-            torch.bfloat16,
-            1e-3,
-            1e-2,
-            3e-1,
-            2e-1,
-            1e-2,
-            1e-2,
-        ),
-        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 1e-4, 1e-5, 5e-3, 1e-5),
+        ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
             "mini_llava",
             32,

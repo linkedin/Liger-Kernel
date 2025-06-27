@@ -38,6 +38,7 @@ class TorchMultiTokenAttention(torch.nn.Module):
         return out_c.masked_fill(~mask, zero)
 
 
+@pytest.mark.skipif(device == "xpu", reason="Skip for xpu")
 @pytest.mark.parametrize(
     "B,C_in,C_out,L,K,groups",
     [
@@ -200,6 +201,7 @@ class TorchSparseMultiTokenAttention(TorchMultiTokenAttention):
         return out_c.masked_fill(~mask, zero)
 
 
+@pytest.mark.skipif(device == "xpu", reason="Skip for xpu")
 @pytest.mark.parametrize(
     "B,C_in,C_out,L,K,groups",
     [

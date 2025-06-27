@@ -942,8 +942,8 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,  # loss
             1e-2,  # loss
-            1e-1,  # logits atol
-            1e-2,  # logits rtol
+            1e-1,  # logit logprobs atol
+            1e-2,  # logprobs rtol
             1e-2,
             1e-2,
             marks=[
@@ -1012,7 +1012,7 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            2e-1,
+            1e-1,
             1e-2,
             1e-2,
             1e-2,
@@ -1112,8 +1112,8 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1e-2,
             1e-1,
+            1e-2,
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
@@ -1125,8 +1125,8 @@ def run_mini_model(
             torch.bfloat16,
             1e-3,
             1e-2,
-            1e-2,
             1e-1,
+            1e-2,
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
