@@ -765,7 +765,7 @@ def create_multimodal_dataset(model_name: str):
     def preprocess_function(examples):
         """Tokenize text, preprocess images, and generate other relevant inputs for the model."""
         if model_name == "mini_llama4":
-            # Process images and text separately to avoid complex token replacement, this helped setting lower tolerance than using the processor below.
+            # Process images and text separately to avoid complex token replacement, this helped setting lower tolerance than processing them together.
             image_inputs = processor.image_processor(images=examples["image"], return_tensors="pt")
             text_inputs = processor.tokenizer(
                 examples["text"],
