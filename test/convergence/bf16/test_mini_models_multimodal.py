@@ -9,8 +9,9 @@ from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
 from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
 from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
-from liger_kernel.transformers import apply_liger_kernel_to_llama4
+
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3
+from liger_kernel.transformers import apply_liger_kernel_to_llama4
 from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_paligemma
@@ -28,10 +29,10 @@ from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
 from test.utils import revert_liger_kernel_to_gemma3
+from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_Paligemma
-from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import set_seed
@@ -128,12 +129,12 @@ except ImportError:
     GEMMA3_AVAILABLE = False
 
 try:
+    from transformers.models.llama4.configuration_llama4 import Llama4Config
     from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
     from transformers.models.llama4.configuration_llama4 import Llama4VisionConfig
-    from transformers.models.llama4.configuration_llama4 import Llama4Config
+    from transformers.models.llama4.image_processing_llama4_fast import Llama4ImageProcessorFast
     from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
     from transformers.models.llama4.modeling_llama4 import Llama4ForConditionalGeneration
-    from transformers.models.llama4.image_processing_llama4_fast import Llama4ImageProcessorFast
     from transformers.models.llama4.processing_llama4 import Llama4Processor
 
     LLAMA4_AVAILABLE = True
@@ -165,7 +166,7 @@ if LLAMA4_AVAILABLE:
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llama4,
         model_class=Llama4ForConditionalGeneration,
         mini_model_config=Llama4Config(
-            image_token_index= 8,
+            image_token_index=8,
             vision_config=Llama4VisionConfig(
                 attn_implementation_autoset=True,
                 attention_dropout=0.0,
@@ -661,7 +662,7 @@ def create_processor(model_name: str):
         fast_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Llama4ImageProcessorFast(size={"height": 560, "width": 560})
         return Llama4Processor(
-            image_processor=image_processor, 
+            image_processor=image_processor,
             tokenizer=fast_tokenizer,
             fake_image_token="<|image|>",
             image_token="<|image|>",

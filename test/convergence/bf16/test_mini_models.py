@@ -63,15 +63,8 @@ from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 from test.utils import supports_bfloat16
-
-try:
-    from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
-    from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
-
-    LLAMA4_AVAILABLE = True
-
-except ImportError:
-    LLAMA4_AVAILABLE = False
+from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
+from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
 
 try:
     # Mllama is only available in transformers>=4.45.0
@@ -420,8 +413,6 @@ MINI_MODEL_SETUPS = {
         ),
     ),
 }
-
-# if LLAMA4_AVAILABLE:
 
 
 if QWEN3_AVAILABLE:
