@@ -10,6 +10,7 @@ from transformers.models.gemma2 import Gemma2ForCausalLM
 from transformers.models.llama import LlamaConfig
 from transformers.models.llama import LlamaForCausalLM
 from transformers.models.llama4 import Llama4ForCausalLM
+from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
 from transformers.models.mistral import MistralConfig
 from transformers.models.mistral import MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig
@@ -63,8 +64,6 @@ from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 from test.utils import supports_bfloat16
-from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
-from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
 
 try:
     # Mllama is only available in transformers>=4.45.0

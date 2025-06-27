@@ -133,7 +133,6 @@ try:
     from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
     from transformers.models.llama4.configuration_llama4 import Llama4VisionConfig
     from transformers.models.llama4.image_processing_llama4_fast import Llama4ImageProcessorFast
-    from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
     from transformers.models.llama4.modeling_llama4 import Llama4ForConditionalGeneration
     from transformers.models.llama4.processing_llama4 import Llama4Processor
 
