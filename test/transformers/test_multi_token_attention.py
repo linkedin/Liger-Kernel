@@ -37,6 +37,7 @@ class TorchMultiTokenAttention(torch.nn.Module):
         out_c = F.conv2d(probs, self.weight, self.bias, stride=1, padding=self.K // 2, groups=self.groups)
         return out_c.masked_fill(~mask, zero)
 
+
 @pytest.mark.skipif(device == "xpu", reason="Skip for xpu")
 @pytest.mark.parametrize(
     "B,C_in,C_out,L,K,groups",
