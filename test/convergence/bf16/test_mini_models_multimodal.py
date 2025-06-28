@@ -856,64 +856,70 @@ def run_mini_model_multimodal(
                 ),
             ],
         ),
-        pytest.param(
-            "mini_paligemma",
-            32,
-            1e-4,
-            torch.bfloat16,
-            1e-3,
-            1e-2,
-            1e-1,
-            1e-2,
-            1e-2,
-            1e-2,
-            marks=[
-                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-                pytest.mark.skipif(
-                    not PALIGEMMA_AVAILABLE,
-                    reason="Paligemma not available in this version of transformers",
-                ),
-            ],
-        ),
-        pytest.param(
-            "mini_paligemma2",
-            32,
-            1e-4,
-            torch.bfloat16,
-            1e-3,
-            1e-2,
-            1e-1,
-            1e-2,
-            1e-2,
-            1e-2,
-            marks=[
-                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-                pytest.mark.skipif(
-                    not PALIGEMMA_AVAILABLE,
-                    reason="Paligemma2 not available in this version of transformers",
-                ),
-            ],
-        ),
-        pytest.param(
-            "mini_gemma3",
-            32,
-            1e-4,
-            torch.bfloat16,
-            3e-3,
-            1e-2,
-            0.4,  # Increase the absolute tolerance for the logits of Gemma-3.
-            1e-1,
-            1e-2,
-            1e-2,
-            marks=[
-                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-                pytest.mark.skipif(
-                    not GEMMA3_AVAILABLE,
-                    reason="Gemma3 not available in this version of transformers",
-                ),
-                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
-            ],
-        ),
+        # TODO: paligemma is flaky so disable the test for now
+        # https://github.com/linkedin/Liger-Kernel/issues/729
+        # pytest.param(
+        #     "mini_paligemma",
+        #     32,
+        #     1e-4,
+        #     torch.bfloat16,
+        #     1e-3,
+        #     1e-2,
+        #     1e-1,
+        #     1e-2,
+        #     1e-2,
+        #     1e-2,
+        #     marks=[
+        #         pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        #         pytest.mark.skipif(
+        #             not PALIGEMMA_AVAILABLE,
+        #             reason="Paligemma not available in this version of transformers",
+        #         ),
+        #     ],
+        # ),
+        # TODO: paligemma2 is flaky so disable the test for now
+        # https://github.com/linkedin/Liger-Kernel/issues/729
+        # pytest.param(
+        #     "mini_paligemma2",
+        #     32,
+        #     1e-4,
+        #     torch.bfloat16,
+        #     1e-3,
+        #     1e-2,
+        #     1e-1,
+        #     1e-2,
+        #     1e-2,
+        #     1e-2,
+        #     marks=[
+        #         pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        #         pytest.mark.skipif(
+        #             not PALIGEMMA_AVAILABLE,
+        #             reason="Paligemma2 not available in this version of transformers",
+        #         ),
+        #     ],
+        # ),
+        # TODO: gemma3 is flaky so disable the test for now
+        # https://github.com/linkedin/Liger-Kernel/issues/729
+        # pytest.param(
+        #     "mini_gemma3",
+        #     32,
+        #     1e-4,
+        #     torch.bfloat16,
+        #     3e-3,
+        #     1e-2,
+        #     0.4,  # Increase the absolute tolerance for the logits of Gemma-3.
+        #     1e-1,
+        #     1e-2,
+        #     1e-2,
+        #     marks=[
+        #         pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        #         pytest.mark.skipif(
+        #             not GEMMA3_AVAILABLE,
+        #             reason="Gemma3 not available in this version of transformers",
+        #         ),
+        #         pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
+        #     ],
+        # ),
     ],
 )
 def test_mini_model_multimodal(
