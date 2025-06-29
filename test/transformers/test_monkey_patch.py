@@ -36,6 +36,15 @@ def is_mllama_available():
         return False
 
 
+def is_llama4_available():
+    try:
+        import transformers.models.llama4  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_qwen2_vl_available():
     try:
         import transformers.models.qwen2_vl  # noqa: F401
@@ -450,6 +459,128 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
+def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.llama4.modeling_llama4"):
+        from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+
+        # Instantiate a dummy model
+        config = transformers.models.llama4.configuration_llama4.Llama4TextConfig(
+            torch_dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="silu",
+            num_hidden_layers=2,
+        )
+        dummy_model_instance = Llama4ForCausalLM._from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
+def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.llama4.modeling_llama4"):
+        from transformers.models.llama4.modeling_llama4 import Llama4ForConditionalGeneration
+
+        # Instantiate a dummy model
+        config = transformers.models.llama4.configuration_llama4.Llama4Config(
+            torch_dtype=torch.bfloat16,
+            text_config=transformers.models.llama4.configuration_llama4.Llama4TextConfig(
+                torch_dtype=torch.bfloat16,
+                rms_norm_eps=1e-5,
+                hidden_size=32,
+                intermediate_size=64,
+                hidden_act="silu",
+                num_hidden_layers=2,
+            ),
+            vision_config=transformers.models.llama4.configuration_llama4.Llama4VisionConfig(
+                rms_norm_eps=1e-5,
+                hidden_size=32,
+                intermediate_size=64,
+                hidden_act="gelu",
+                num_hidden_layers=2,
+                vision_output_dim=64,
+            ),
+        )
+        dummy_model_instance = Llama4ForConditionalGeneration._from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert isinstance(dummy_model_instance, Llama4ForConditionalGeneration)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.language_model.model.layers:
+            assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        assert inspect.getsource(dummy_model_instance.vision_model.layernorm_pre.forward) != inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        assert inspect.getsource(dummy_model_instance.vision_model.layernorm_post.forward) != inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        for layer in dummy_model_instance.vision_model.model.layers:
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerLayerNorm.forward
+            )
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.language_model.model.layers:
+            assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        assert inspect.getsource(dummy_model_instance.vision_model.layernorm_pre.forward) == inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        assert inspect.getsource(dummy_model_instance.vision_model.layernorm_post.forward) == inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        for layer in dummy_model_instance.vision_model.model.layers:
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(
+                LigerLayerNorm.forward
+            )
 
         try:
             print(dummy_model_instance)

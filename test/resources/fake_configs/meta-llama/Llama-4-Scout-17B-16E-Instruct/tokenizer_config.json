@@ -1,0 +1,98 @@
+{
+  "add_bos_token": true,
+  "add_eos_token": false,
+  "add_prefix_space": null,
+  "added_tokens_decoder": {
+      "0": {
+          "content": "<unk>",
+          "lstrip": false,
+          "normalized": false,
+          "rstrip": false,
+          "single_word": false,
+          "special": true
+      },
+      "1": {
+          "content": "<s>",
+          "lstrip": false,
+          "normalized": false,
+          "rstrip": false,
+          "single_word": false,
+          "special": true
+      },
+      "2": {
+          "content": "</s>",
+          "lstrip": false,
+          "normalized": false,
+          "rstrip": false,
+          "single_word": false,
+          "special": true
+      },
+      "3": {
+          "content": "<image>",
+          "lstrip": false,
+          "normalized": false,
+          "rstrip": false,
+          "single_word": false,
+          "special": true
+      },
+      "4": {
+          "content": "<pad>",
+          "lstrip": false,
+          "normalized": false,
+          "rstrip": false,
+          "single_word": false,
+          "special": true
+      },
+      "5": {
+          "content": "<|header_start|>",
+          "lstrip": false,
+          "normalized": false,
+          "rstrip": false,
+          "single_word": false,
+          "special": true
+      },
+      "6": {
+          "content": "<|header_end|>",
+          "lstrip": false,
+          "normalized": false,
+          "rstrip": false,
+          "single_word": false,
+          "special": true
+      },
+      "7": {
+          "content": "<|eot|>",
+          "lstrip": false,
+          "normalized": false,
+          "rstrip": false,
+          "single_word": false,
+          "special": true
+      },
+      "8": {
+          "content": "<|image|>",
+          "lstrip": false,
+          "normalized": false,
+          "rstrip": false,
+          "single_word": false,
+          "special": true
+      }
+  },
+  "bos_token": "<s>",
+  "clean_up_tokenization_spaces": false,
+  "eos_token": "</s>",
+  "extra_special_tokens": {
+      "image_token": "<image>"
+  },
+  "image_token": "<image>",
+  "legacy": false,
+  "chat_template": "{{ bos_token }}{%- for message in messages %}{%- if message['role'] == 'user' %}{{ '<|header_start|>user<|header_end|>\\n\\n' }}{%- elif message['role'] == 'assistant' %}{{ '<|header_start|>assistant<|header_end|>\\n\\n' }}{%- endif %}{%- if message['content'] is string %}{{ message['content'] }}{%- else %}{%- for content in message['content'] %}{%- if content['type'] == 'image' %}{{ '<|image|>' }}{%- elif content['type'] == 'text' %}{{ content['text'] | trim }}{%- endif %}{%- endfor %}{%- endif %}{{ '<|eot|>' }}{%- endfor %}{%- if add_generation_prompt %}{{ '<|header_start|>assistant<|header_end|>\\n\\n' }}{%- endif %}",
+  "model_max_length": 1000000000000000019884624838656,
+  "pad_token": "<pad>",
+  "padding_side": "left",
+  "processor_class": "Llama4Processor",
+  "sp_model_kwargs": {},
+  "tokenizer_class": "LlamaTokenizer",
+  "trust_remote_code": false,
+  "unk_token": "<unk>",
+  "use_default_system_prompt": false,
+  "return_token_type_ids": false
+}
