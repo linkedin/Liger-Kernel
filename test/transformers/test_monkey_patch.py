@@ -714,7 +714,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_text():
 def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
 
-    with patch("transformers.models.gemma3.modeling_gemma3"), patch("transformers.models.siglip.modeling_siglip"):
+    with patch("transformers.models.gemma3.modeling_gemma3"):
         from transformers.models.gemma3.modeling_gemma3 import Gemma3ForConditionalGeneration
         from liger_kernel.transformers.model.gemma3 import multimodal_forward as gemma3_multimodal_forward
 

@@ -417,7 +417,7 @@ def apply_liger_kernel_to_mllama(
 
     if rope:
         modeling_mllama.apply_rotary_pos_emb = liger_rotary_pos_emb
-    if layer_norm:
+    if layer_norm and model is None:
         modeling_mllama.nn.LayerNorm = LigerLayerNorm
     if rms_norm:
         modeling_mllama.MllamaTextRMSNorm = LigerRMSNorm
@@ -921,7 +921,7 @@ def apply_liger_kernel_to_gemma3(
         _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
     )
 
-    if layer_norm:
+    if layer_norm and model is None:
         modeling_siglip.nn.LayerNorm = LigerLayerNorm
 
     apply_liger_kernel_to_gemma3_text(
@@ -1014,7 +1014,7 @@ def apply_liger_kernel_to_paligemma(
     from liger_kernel.transformers.model.paligemma import lce_forward_deprecated
 
     # The vision_tower is a SiglipVisionModel
-    if layer_norm:
+    if layer_norm and model is None:
         modeling_siglip.nn.LayerNorm = LigerLayerNorm
 
     # SiglipMLP is standard FFN so LigerGEGLUMLP is not compatible
@@ -1328,7 +1328,7 @@ def apply_liger_kernel_to_qwen2_vl(
     if rms_norm:
         # https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L439
         modeling_qwen2_vl.Qwen2RMSNorm = LigerRMSNorm
-    if layer_norm:
+    if layer_norm and model is None:
         modeling_qwen2_vl.LayerNorm = LigerLayerNorm
     if cross_entropy:
         modeling_qwen2_vl.CrossEntropyLoss = LigerCrossEntropyLoss
