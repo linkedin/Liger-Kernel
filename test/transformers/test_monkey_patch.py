@@ -9,6 +9,7 @@ import pytest
 import torch
 import transformers
 
+from packaging import version
 from transformers import AutoModelForCausalLM
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
@@ -25,31 +26,31 @@ from liger_kernel.transformers.monkey_patch import MODEL_TYPE_TO_APPLY_LIGER_FN
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
 
-from packaging import version
-
 # Import transformer version check
 transformer_version = version.parse(transformers.__version__)
 SUPPORTED_TRANSFORMER_VERSION = "4.46.1"
 
 # Import forward functions based on transformer version
 if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+    from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
+    from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
     from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
     from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
     from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
-    from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
-    from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
-    from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
-    from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
     from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
+    from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
+    from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 else:
-    from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward
-    from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward  # mistral doesn't have deprecated version
-    from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward
     from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward
     from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward
-    from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward
-    from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward
+    from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward
+    from liger_kernel.transformers.model.mistral import (
+        lce_forward as mistral_lce_forward,  # mistral doesn't have deprecated version
+    )
+    from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward
     from liger_kernel.transformers.model.mllama import lce_forward_deprecated as mllama_lce_forward
+    from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward
+    from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward
 
 
 # Check if optional modules are available
@@ -716,6 +717,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
 
     with patch("transformers.models.gemma3.modeling_gemma3"):
         from transformers.models.gemma3.modeling_gemma3 import Gemma3ForConditionalGeneration
+
         from liger_kernel.transformers.model.gemma3 import multimodal_forward as gemma3_multimodal_forward
 
         # Instantiate a dummy model
@@ -931,6 +933,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl_for_conditional_generation(
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_vl.modeling_qwen2_vl"):
         from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
+
         from liger_kernel.transformers.model.qwen2_vl import lce_forward as qwen2_vl_lce_forward
 
         # Instantiate a dummy model
@@ -996,6 +999,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_vl.modeling_qwen2_vl"):
         from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModel
+
         from liger_kernel.transformers.model.qwen2_vl import lce_forward as qwen2_vl_lce_forward
 
         # Instantiate a dummy model
@@ -1109,6 +1113,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl"):
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModel
+
         from liger_kernel.transformers.model.qwen2_5_vl import lce_forward as qwen2_5_vl_lce_forward
 
         # Instantiate a dummy model
@@ -1174,6 +1179,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_for_conditional_generatio
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl"):
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
+
         from liger_kernel.transformers.model.qwen2_5_vl import lce_forward as qwen2_5_vl_lce_forward
 
         # Instantiate a dummy model

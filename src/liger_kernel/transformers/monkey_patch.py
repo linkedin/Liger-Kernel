@@ -2,8 +2,8 @@ import inspect
 import logging
 
 from functools import partial
-from typing import Callable
 from types import MethodType
+from typing import Callable
 
 import transformers
 
