@@ -293,6 +293,29 @@ def revert_liger_kernel_to_mllama(model_config: MiniModelConfig, model_type: str
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_llama4(model_config: MiniModelConfig, model_type: str = "causal_lm"):
+    """
+    Revert all Liger kernel patches applied to Llama4.
+    """
+
+    assert model_type in [
+        "causal_lm",
+        "conditional_generation",
+    ], f'model_type must be "causal_lm" or "conditional_generation", Got: {model_type}'
+    import torch.nn as nn
+
+    from transformers.models.llama4 import modeling_llama4
+
+    importlib.reload(nn)
+    importlib.reload(modeling_llama4)
+    if model_type == "causal_lm":
+        model_config.model_class = modeling_llama4.Llama4ForCausalLM
+    else:
+        model_config.model_class = modeling_llama4.Llama4ForConditionalGeneration
+
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_mistral(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Mistral.

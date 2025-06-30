@@ -376,6 +376,92 @@ def apply_liger_kernel_to_llava(
             logger.warning(f"{vision_model_name} is not supported by Liger kernel.")
 
 
+def apply_liger_kernel_to_llama4(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+    layer_norm: bool = True,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Llama4 models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is False.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.llama4 import modeling_llama4
+    from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+    from transformers.models.llama4.modeling_llama4 import Llama4ForConditionalGeneration
+    from transformers.models.llama4.modeling_llama4 import Llama4TextModel
+    from transformers.models.llama4.modeling_llama4 import Llama4VisionModel
+
+    from liger_kernel.transformers.model.llama4 import lce_forward as llama4_lce_forward
+
+    if rope:
+        raise NotImplementedError("liger_rotary_pos_emb is not available for Llama4 models.")
+    if rms_norm:
+        modeling_llama4.Llama4TextRMSNorm = LigerRMSNorm
+    if swiglu:
+        modeling_llama4.Llama4TextMLP = LigerSwiGLUMLP
+
+    if cross_entropy:
+        modeling_llama4.CrossEntropyLoss = LigerCrossEntropyLoss
+
+    if fused_linear_cross_entropy:
+        modeling_llama4.Llama4ForCausalLM.forward = llama4_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        if isinstance(model, Llama4ForConditionalGeneration):
+            language_model: Llama4ForCausalLM = model.language_model
+            vision_model: Llama4VisionModel = model.vision_model
+            text_model: Llama4TextModel = language_model.model
+        elif isinstance(model, Llama4ForCausalLM):
+            text_model = model.model
+            vision_model = None
+        elif isinstance(model, Llama4TextModel):
+            text_model = model
+            vision_model = None
+
+        else:
+            raise ValueError(f"Unsupported Llama4 model type: {type(model)}")
+
+        if text_model:
+            if rms_norm:
+                _patch_rms_norm_module(text_model.norm)
+            for decoder_layer in text_model.layers:
+                if swiglu:
+                    _patch_swiglu_module(decoder_layer.feed_forward, LigerSwiGLUMLP)
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+        if vision_model:
+            _patch_layer_norm_module(vision_model.layernorm_pre)
+            _patch_layer_norm_module(vision_model.layernorm_post)
+
+            for layer in vision_model.model.layers:
+                if layer_norm:
+                    _patch_layer_norm_module(layer.input_layernorm)
+                    _patch_layer_norm_module(layer.post_attention_layernorm)
+
+
 def apply_liger_kernel_to_mllama(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -1687,6 +1773,8 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma3": apply_liger_kernel_to_gemma3,
     "glm4": apply_liger_kernel_to_glm4,
     "llama": apply_liger_kernel_to_llama,
+    "llama4_text": apply_liger_kernel_to_llama4,
+    "llama4": apply_liger_kernel_to_llama4,
     "llava": apply_liger_kernel_to_llava,
     "granite": apply_liger_kernel_to_granite,
     "mllama": apply_liger_kernel_to_mllama,
