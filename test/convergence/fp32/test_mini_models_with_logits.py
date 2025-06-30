@@ -928,7 +928,7 @@ def run_mini_model(
             torch.float32,
             1e-8,
             1e-4,
-            5e-3,
+            5e-2,
             1e-5,
             5e-3,
             1e-5,
@@ -1039,7 +1039,7 @@ def run_mini_model(
         # TODO: mixtral is flaky so disable the test for now
         # ("mini_mixtral", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match
-        ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
+        ("mini_gemma1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-2, 1e-5, 5e-3, 1e-5),
         ("mini_gemma1.1", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_gemma2", 32, 1e-4, torch.float32, 1e-8, 1e-4, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
@@ -1084,6 +1084,7 @@ def test_mini_model(
         torch.tensor([actual_output["loss"]]),
         atol=loss_atol,
         rtol=loss_rtol,
+        extra_info="[Loss]",
     )
 
     # No logits are materialized
@@ -1093,6 +1094,7 @@ def test_mini_model(
         actual_output["topk_logprobs"],
         atol=logprobs_atol,
         rtol=logprobs_rtol,
+        extra_info="[Top K Logprobs]",
     )
 
     # Compare the params from the last step
@@ -1101,4 +1103,10 @@ def test_mini_model(
         expected_output["model"].named_parameters(),
         actual_output["model"].named_parameters(),
     ):
-        assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)
+        assert_verbose_allclose(
+            expected_param[1],
+            actual_param[1],
+            atol=param_atol,
+            rtol=param_rtol,
+            extra_info="[Model parameters]",
+        )

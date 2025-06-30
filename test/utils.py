@@ -68,7 +68,7 @@ def get_topk(tensor, k=20):
     return topk
 
 
-def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=5):
+def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=5, extra_info=""):
     """
     Assert that two tensors are element-wise equal within a tolerance, providing detailed information about mismatches.
 
@@ -78,6 +78,7 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
     rtol (float): Relative tolerance.
     atol (float): Absolute tolerance.
     max_print (int): Maximum number of mismatched elements to print.
+    extra_info (str): Extra information to show at the start of the error message.
 
     Raises:
     AssertionError: If the tensors are not all close within the given tolerance.
@@ -127,7 +128,7 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
         if num_mismatched > max_print:
             mismatch_details.append(f"... and {num_mismatched - max_print} more mismatched elements.")
 
-        raise AssertionError("\n".join(mismatch_details))
+        raise AssertionError(extra_info + "\n".join(mismatch_details))
 
 
 # Pre-tokenized dataset using Mistral-7B tokenizer used for convergence tests

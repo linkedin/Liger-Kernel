@@ -1045,6 +1045,7 @@ def test_mini_model_multimodal(
         torch.tensor([actual_output["loss"]]),
         atol=loss_atol,
         rtol=loss_rtol,
+        extra_info="[Loss]",
     )
 
     # Compare the logits from the last step
@@ -1053,6 +1054,7 @@ def test_mini_model_multimodal(
         actual_output["topk_logprobs"],
         atol=logprobs_atol,
         rtol=logprobs_rtol,
+        extra_info="[Top k logrpobs]",
     )
 
     # Compare the params from the last step
@@ -1061,4 +1063,10 @@ def test_mini_model_multimodal(
         expected_output["model"].named_parameters(),
         actual_output["model"].named_parameters(),
     ):
-        assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)
+        assert_verbose_allclose(
+            expected_param[1],
+            actual_param[1],
+            atol=param_atol,
+            rtol=param_rtol,
+            extra_info="[Model parameters]",
+        )
