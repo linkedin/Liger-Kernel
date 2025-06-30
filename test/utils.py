@@ -505,6 +505,18 @@ def revert_liger_kernel_to_glm4(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_solar(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Solar.
+    """
+
+    from liger_kernel.transformers.model import modeling_solar
+
+    importlib.reload(modeling_solar)
+    model_config.model_class = modeling_solar.SolarForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to llava.
