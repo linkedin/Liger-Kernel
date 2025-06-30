@@ -15,7 +15,6 @@ repo = image.add_local_dir(ROOT_PATH, remote_path=REMOTE_ROOT_PATH)
 
 
 @app.function(gpu=["H100"], image=repo, timeout=60 * 90)
-
 def liger_benchmarks():
     import os
     import subprocess
