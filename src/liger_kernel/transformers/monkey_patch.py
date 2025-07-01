@@ -611,10 +611,17 @@ def apply_liger_kernel_to_mistral(
     if cross_entropy:
         modeling_mistral.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        if model is not None:
-            model.forward = MethodType(mistral_lce_forward, model)
+        if transformer_version >= version.parse("4.49.0"):
+            if model is not None:
+                model.forward = MethodType(mistral_lce_forward, model)
+            else:
+                modeling_mistral.MistralForCausalLM.forward = mistral_lce_forward
         else:
-            modeling_mistral.MistralForCausalLM.forward = mistral_lce_forward
+            logger.warning(
+                "The latest version of Liger does not support transformers < 4.49.0 for llava. Please downgrade your liger version or upgrade your transformer version."
+            )
+            logger.warning("LigerFusedLinearCrossEntropy patch is not applied.")
+
     if swiglu:
         modeling_mistral.MistralMLP = LigerSwiGLUMLP
 
