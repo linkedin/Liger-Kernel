@@ -821,9 +821,10 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
             intermediate_size=64,
             hidden_act="gelu",
             num_hidden_layers=2,
+            num_attention_heads=4,
             vision_output_dim=64,
         )
-        config = transformers.models.paligemma.configuration_paligemma.PaliGemmaConfig(text_config, vision_config)
+        config = transformers.models.paligemma.configuration_paligemma.PaliGemmaConfig(vision_config, text_config)
 
         dummy_model_instance = PaliGemmaForConditionalGeneration._from_config(config)
         assert isinstance(dummy_model_instance, PaliGemmaForConditionalGeneration)
