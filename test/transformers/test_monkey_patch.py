@@ -14,6 +14,8 @@ from transformers import AutoModelForCausalLM
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
 
+import liger_kernel
+
 from liger_kernel.transformers import LigerBlockSparseTop2MLP
 from liger_kernel.transformers import LigerGEGLUMLP
 from liger_kernel.transformers import LigerPhi3SwiGLUMLP
@@ -144,6 +146,7 @@ def test_import_from_root():
         from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_qwen3  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_solar  # noqa: F401
     except Exception:
         pytest.fail("Import kernel patch from root fails")
 
@@ -1050,6 +1053,45 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         for layer in dummy_model_instance.model.layers:
             for mlp_expert in layer.mlp.experts:
                 assert inspect.getsource(mlp_expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+def test_apply_liger_kernel_to_instance_for_solar():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("liger_kernel.transformers.model.modeling_solar"):
+        # Instantiate a dummy model
+        config = liger_kernel.transformers.model.configuration_solar.SolarConfig(
+            torch_dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="silu",
+            num_hidden_layers=2,
+        )
+        from liger_kernel.transformers.model.modeling_solar import SolarForCausalLM
+
+        dummy_model_instance = SolarForCausalLM._from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 

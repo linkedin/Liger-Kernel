@@ -38,6 +38,9 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
+from liger_kernel.transformers import apply_liger_kernel_to_solar
+from liger_kernel.transformers.model.configuration_solar import SolarConfig
+from liger_kernel.transformers.model.modeling_solar import SolarForCausalLM
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
@@ -61,6 +64,7 @@ from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import revert_liger_kernel_to_qwen3_moe
+from test.utils import revert_liger_kernel_to_solar
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 
@@ -408,6 +412,33 @@ MINI_MODEL_SETUPS = {
             attention_bias=False,
             attention_dropout=0.0,
             attn_implementation="eager",
+        ),
+    ),
+    "mini_solar": MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_solar,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_solar,
+        model_class=SolarForCausalLM,
+        mini_model_config=SolarConfig(
+            vocab_size=32000,  # 32128
+            hidden_size=1024,  # 5120
+            intermediate_size=2048,  # 17920
+            num_hidden_layers=4,  # 64
+            num_attention_heads=4,  # 40
+            num_key_value_heads=4,  # 10
+            hidden_act="silu",
+            max_position_embeddings=2048,
+            initializer_range=0.02,
+            rms_norm_eps=1e-06,
+            use_cache=True,
+            pad_token_id=None,
+            # Special token ids/vocab size to match Mistral-7B tokenizer used to create the tokenized dataset
+            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+            bos_token_id=1,
+            eos_token_id=2,
+            tie_word_embeddings=True,
+            rope_theta=10000.0,
+            attention_bias=False,
+            attention_dropout=0.0,
         ),
     ),
 }
@@ -1046,6 +1077,7 @@ def run_mini_model(
                 reason="Glm4 not available in this version of transformers",
             ),
         ),
+        ("mini_solar", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         # TODO: mixtral is flaky so disable the test for now
