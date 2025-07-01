@@ -9,8 +9,6 @@ from transformers.models.gemma2 import Gemma2Config
 from transformers.models.gemma2 import Gemma2ForCausalLM
 from transformers.models.llama import LlamaConfig
 from transformers.models.llama import LlamaForCausalLM
-from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
-from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
 from transformers.models.mistral import MistralConfig
 from transformers.models.mistral import MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig
@@ -64,6 +62,14 @@ from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 from test.utils import supports_bfloat16
+
+try:
+    from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
+    from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+
+    LLAMA4_AVAILABLE = True
+except ImportError:
+    LLAMA4_AVAILABLE = False
 
 try:
     # Mllama is only available in transformers>=4.45.0
@@ -901,7 +907,13 @@ def run_mini_model(
             2e-1,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not LLAMA4_AVAILABLE,
+                    reason="Llama4 not available in this version of transformers",
+                ),
+            ],
         ),
         pytest.param(
             "mini_llama3",
@@ -1008,7 +1020,7 @@ def run_mini_model(
         pytest.param(
             "mini_qwen3_moe",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
             1e-3,
             1e-2,
@@ -1046,7 +1058,7 @@ def run_mini_model(
         pytest.param(
             "mini_qwen2_5_vl",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
             1e-3,
             1e-2,
@@ -1108,7 +1120,7 @@ def run_mini_model(
         pytest.param(
             "mini_gemma1",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
             1e-3,
             1e-2,
@@ -1121,7 +1133,7 @@ def run_mini_model(
         pytest.param(
             "mini_gemma1.1",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
             1e-3,
             1e-2,
@@ -1188,7 +1200,7 @@ def run_mini_model(
         pytest.param(
             "mini_gemma3_text",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
             1e-3,
             1e-2,
@@ -1233,8 +1245,6 @@ def test_mini_model(
         extra_info="[Loss]",
     )
 
-    # No logits are materialized
-    # import pdb; pdb.set_trace()
     # Compare the topk logprobs from evaluation step
     assert_verbose_allclose(
         expected_output["topk_logprobs"],

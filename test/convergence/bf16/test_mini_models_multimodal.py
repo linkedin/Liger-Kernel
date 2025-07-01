@@ -921,7 +921,7 @@ def run_mini_model_multimodal(
         pytest.param(
             "mini_qwen2_5_vl",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
             1e-3,
             1e-2,
@@ -964,8 +964,8 @@ def run_mini_model_multimodal(
             torch.bfloat16,
             1e-1,
             1e-1,
-            0.2,
-            0.3,
+            1e-1,
+            1e-2,
             1e-2,
             1e-2,
             marks=[
@@ -1017,7 +1017,7 @@ def run_mini_model_multimodal(
         pytest.param(
             "mini_gemma3",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
             3e-3,
             1e-2,
