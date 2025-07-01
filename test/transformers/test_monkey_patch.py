@@ -807,7 +807,7 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
         from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
 
         # Instantiate a dummy model
-        text_config = transformers.models.paligemma.configuration_paligemma.GemmaConfig(
+        text_config = transformers.models.gemma.configuration_gemma.GemmaConfig(
             torch_dtype="bfloat16",
             rms_norm_eps=1e-5,
             hidden_size=32,
