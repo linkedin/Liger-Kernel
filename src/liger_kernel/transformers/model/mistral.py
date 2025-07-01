@@ -134,5 +134,3 @@ def lce_forward(
         attentions=outputs.attentions,
     )
 
-
-# Note: Grad Acc is not fixed in mistral at transformer 4.46.1
