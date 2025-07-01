@@ -127,7 +127,7 @@ def is_gemma3_available():
     except ImportError:
         return False
 
-    
+
 def is_paligemma_available():
     try:
         import transformers.models.paligemma  # noqa: F401
@@ -807,25 +807,21 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
         from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
 
         # Instantiate a dummy model
-        text_config = (
-            transformers.models.paligemma.configuration_paligemma.GemmaConfig(
-                torch_dtype="bfloat16",
-                rms_norm_eps=1e-5,
-                hidden_size=32,
-                intermediate_size=64,
-                hidden_act="silu",
-                num_hidden_layers=2,
-            )
+        text_config = transformers.models.paligemma.configuration_paligemma.GemmaConfig(
+            torch_dtype="bfloat16",
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="silu",
+            num_hidden_layers=2,
         )
-        vision_config = (
-            transformers.models.siglip.configuration_siglip.SiglipVisionConfig(
-                rms_norm_eps=1e-5,
-                hidden_size=32,
-                intermediate_size=64,
-                hidden_act="gelu",
-                num_hidden_layers=2,
-                vision_output_dim=64,
-            )
+        vision_config = transformers.models.siglip.configuration_siglip.SiglipVisionConfig(
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="gelu",
+            num_hidden_layers=2,
+            vision_output_dim=64,
         )
         config = transformers.models.paligemma.configuration_paligemma.PaliGemmaConfig(text_config, vision_config)
 
