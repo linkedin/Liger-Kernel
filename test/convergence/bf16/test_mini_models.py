@@ -1110,7 +1110,13 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    version.parse(transformers.__version__) < version.parse("4.49.0"),
+                    reason="Mistral not available in transformers<=4.49.0",
+                ),
+            ],
         ),
         pytest.param(
             "mini_olmo2",
