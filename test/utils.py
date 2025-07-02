@@ -57,6 +57,17 @@ def set_seed(seed=42):
     os.environ["PYTHONHASHSEED"] = str(seed)
 
 
+@torch.no_grad
+def get_logprobs(tensor):
+    return torch.nn.functional.log_softmax(tensor, dim=-1, dtype=torch.float32)
+
+
+@torch.no_grad
+def get_topk(tensor, k=20):
+    topk = torch.topk(tensor, k, dim=-1)
+    return topk
+
+
 def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=5):
     """
     Assert that two tensors are element-wise equal within a tolerance, providing detailed information about mismatches.
@@ -228,6 +239,13 @@ def supports_bfloat16():
         return False
 
 
+def is_torchvision_available():
+    if importlib.util.find_spec("torchvision") is not None:
+        return True
+    else:
+        return False
+
+
 def revert_liger_kernel_to_granite(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Granite.
@@ -271,6 +289,29 @@ def revert_liger_kernel_to_mllama(model_config: MiniModelConfig, model_type: str
         model_config.model_class = modeling_mllama.MllamaForCausalLM
     else:
         model_config.model_class = modeling_mllama.MllamaForConditionalGeneration
+
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_llama4(model_config: MiniModelConfig, model_type: str = "causal_lm"):
+    """
+    Revert all Liger kernel patches applied to Llama4.
+    """
+
+    assert model_type in [
+        "causal_lm",
+        "conditional_generation",
+    ], f'model_type must be "causal_lm" or "conditional_generation", Got: {model_type}'
+    import torch.nn as nn
+
+    from transformers.models.llama4 import modeling_llama4
+
+    importlib.reload(nn)
+    importlib.reload(modeling_llama4)
+    if model_type == "causal_lm":
+        model_config.model_class = modeling_llama4.Llama4ForCausalLM
+    else:
+        model_config.model_class = modeling_llama4.Llama4ForConditionalGeneration
 
     print("Liger kernel patches have been reverted.")
 

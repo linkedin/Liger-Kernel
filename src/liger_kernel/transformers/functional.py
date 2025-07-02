@@ -4,14 +4,17 @@ from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.dyt import LigerDyTFunction
 from liger_kernel.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
+from liger_kernel.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
 from liger_kernel.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.group_norm import LigerGroupNormFunction
 from liger_kernel.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.kl_div import LigerKLDivLossFunction
 from liger_kernel.ops.layer_norm import LigerLayerNormFunction
+from liger_kernel.ops.multi_token_attention import LigerMultiTokenAttentionFunction
 from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.rope import LigerRopeFunction
+from liger_kernel.ops.softmax import LigerSoftmaxFunction
 from liger_kernel.ops.sparsemax import LigerSparsemaxFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.tvd import LigerTVDLossFunction
@@ -167,6 +170,61 @@ def liger_sparsemax(
     return LigerSparsemaxFunction.apply(input, dim)
 
 
+def liger_multi_token_attention(
+    scores,
+    weight,
+    bias=None,
+    stride: int = 1,
+    padding: int = 0,
+    dilation: int = 1,
+    groups: int = 1,
+    sparse: bool = False,
+):
+    """
+    Functional interface for multi-token attention.
+
+    Args:
+        scores: Input tensor of shape (B, C_in, L, L)
+        weight: Convolution weight tensor of shape (C_out, C_in // groups, K, K)
+        bias: Optional bias tensor of shape (C_out,)
+        stride: Stride for the convolution (default: 1)
+        padding: Padding for the convolution (default: 0)
+        dilation: Dilation factor for the convolution (default: 1)
+        groups: Number of groups for the convolution (default: 1)
+        sparse: Specifies if input tensors are expected to be sparse (default: False)
+    Returns:
+        Output tensor after applying multi-token attention.
+    """
+    return LigerMultiTokenAttentionFunction.apply(scores, weight, bias, stride, padding, dilation, groups, sparse)
+
+
+def liger_fused_neighborhood_attention(
+    query,
+    key,
+    value,
+    kernel_size: int = 7,
+    dilation: int = 1,
+    scale: float = None,
+):
+    """
+    Liger fused neighborhood attention.
+
+    paper: https://arxiv.org/pdf/2504.16922
+
+    Args:
+        query: Query tensor of shape [batch_size, num_heads, seq_len, head_dim]
+        key: Key tensor of shape [batch_size, num_heads, seq_len, head_dim]
+        value: Value tensor of shape [batch_size, num_heads, seq_len, head_dim]
+        kernel_size: Size of the neighborhood window (default: 7)
+        dilation: Dilation factor for the neighborhood (default: 1)
+        scale: Scaling factor for attention scores (default: rsqrt(head_dim))
+
+    Returns:
+        Output tensor of shape [batch_size, num_heads, seq_len, head_dim]
+    """
+    return LigerFusedNeighborhoodAttentionFunction.apply(query, key, value, kernel_size, dilation, scale)
+
+
 def liger_tvd(
     input,
     target,
@@ -201,6 +259,10 @@ def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 
 def liger_swiglu(a, b):
     return LigerSiLUMulFunction.apply(a, b)
+
+
+def liger_softmax(x):
+    return LigerSoftmaxFunction.apply(x)
 
 
 def liger_dyt(x, alpha, gamma, beta):

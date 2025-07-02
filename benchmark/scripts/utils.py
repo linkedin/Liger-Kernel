@@ -208,6 +208,13 @@ def update_benchmark_data_csv(
 
         # Need to convert benchmark_data into multiple rows based on x_values and y_values
         for x_value, y_value_50, y_value_20, y_value_80 in zip_longest(x_values, y_values_50, y_values_20, y_values_80):
+            if y_value_50 is None:
+                y_value_50 = float("nan")
+            if y_value_20 is None:
+                y_value_20 = float("nan")
+            if y_value_80 is None:
+                y_value_80 = float("nan")
+
             row = BenchmarkDataCSVRow(
                 x_value=x_value,
                 y_value_50=y_value_50,
@@ -228,7 +235,7 @@ def update_benchmark_data_csv(
                     pass
             else:
                 existing_data_dict[row_key] = row_dict
-
+    os.makedirs(os.path.dirname(filename_abs_path), exist_ok=True)
     with open(filename_abs_path, mode="w", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
