@@ -38,6 +38,7 @@ if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
     from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
     from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
     from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
+    from liger_kernel.transformers.model.paligemma import lce_forward as paligemma_lce_forward
     from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
     from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 else:
@@ -49,6 +50,7 @@ else:
     )
     from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward
     from liger_kernel.transformers.model.mllama import lce_forward_deprecated as mllama_lce_forward
+    from liger_kernel.transformers.model.paligemma import lce_forward_deprecated as paligemma_lce_forward
     from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward
     from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward
 
@@ -802,33 +804,27 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
 def test_apply_liger_kernel_to_instance_for_paligemma():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.paligemma.modeling_paligemma"):
-        from transformers.models.gemma.modeling_gemma import Gemma2ForCausalLM
         from transformers.models.gemma.modeling_gemma import GemmaForCausalLM
+        from transformers.models.gemma2.modeling_gemma2 import Gemma2ForCausalLM
         from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
-
-        from liger_kernel.transformers.model.paligemma import lce_forward as paligemma_lce_forward
 
         # Instantiate a dummy model
         config = transformers.models.paligemma.configuration_paligemma.PaliGemmaConfig(
             torch_dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
-            intermediate_size=48,
-            embed_dim=16,
+            intermediate_size=64,
             hidden_act="silu",
             num_hidden_layers=2,
-            num_attention_heads=2,
-            max_position_embeddings=128,
-            vocab_size=1000,
             vision_config={
-                "depth": 4,
-                "embed_dim": 128,
-                "num_heads": 8,
-                "hidden_size": 1024,
+                "layer_norm_eps": 1e-5,
+                "hidden_size": 48,
+                "intermediate_size": 64,
             },
         )
 
         dummy_model_instance = PaliGemmaForConditionalGeneration(config)
+        assert isinstance(dummy_model_instance, PaliGemmaForConditionalGeneration)
 
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(paligemma_lce_forward)
