@@ -12,7 +12,7 @@ class LigerFusedLinearCosineSimilarityFunction(LigerFusedLinearDistillationBase)
         Args:
             student_logits (torch.Tensor): Logits of student tokens. Shape: (batch_size * seq_len,).
             teacher_logits (torch.Tensor): Logits of teacher tokens. Shape: (batch_size * seq_len,).
-            temperature: Coefficient beta of generalized Cosine Similarity in the interval [0, 1]. Default: `1.0` (float): .
+            beta: Coefficient beta of generalized Cosine Similarity in the interval [0, 1]. Default: `1.0` (float): .
         Returns:
             torch.Tensor: cosine similarity loss
         """
@@ -20,7 +20,6 @@ class LigerFusedLinearCosineSimilarityFunction(LigerFusedLinearDistillationBase)
         teacher_norm = F.normalize(teacher_logits, p=2, dim=-1)
 
         cosine_sim = F.cosine_similarity(student_norm, teacher_norm, dim=-1)
-        breakpoint()
         loss = beta * (1 - cosine_sim)
         return loss.sum()
 
