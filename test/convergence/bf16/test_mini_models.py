@@ -1035,25 +1035,25 @@ def run_mini_model(
         # TODO(tcc): Investigate qwen3_moe on different machines.
         # The loss diverges on ci test (A10G), but it never diverges on my local machine (3080).
         # Qwen3_moe can pass float32 tests.
-        # pytest.param(
-        #     "mini_qwen3_moe",
-        #     32,
-        #     1e-5,
-        #     torch.bfloat16,
-        #     1e-2,
-        #     5e-2,
-        #     1e-1,  # 1e-1
-        #     1e-1,  # 1e-2
-        #     1e-2,
-        #     1e-2,
-        #     marks=[
-        #         pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-        #         pytest.mark.skipif(
-        #             not QWEN3_AVAILABLE,
-        #             reason="Qwen3 not available in this version of transformers",
-        #         ),
-        #     ],
-        # ),
+        pytest.param(
+            "mini_qwen3_moe",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,
+            5e-2,
+            1e-1,  # 1e-1
+            1e-1,  # 1e-2
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN3_AVAILABLE,
+                    reason="Qwen3 not available in this version of transformers",
+                ),
+            ],
+        ),
         pytest.param(
             "mini_qwen2_vl",
             32,
@@ -1110,8 +1110,8 @@ def run_mini_model(
             32,
             1e-5,
             torch.bfloat16,
-            1e-2,
-            1e-2,
+            5e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,

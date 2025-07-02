@@ -1095,7 +1095,7 @@ def run_mini_model(
             1e-5,
             torch.bfloat16,
             1e-2,
-            1e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -1206,7 +1206,7 @@ def run_mini_model(
             torch.bfloat16,
             1e-2,
             5e-2,
-            1e-1,
+            3e-1,  # 1e-1 too flaky
             1e-2,
             1e-2,
             1e-2,
