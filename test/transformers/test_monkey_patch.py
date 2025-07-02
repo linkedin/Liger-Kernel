@@ -804,8 +804,6 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
 def test_apply_liger_kernel_to_instance_for_paligemma():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.paligemma.modeling_paligemma"):
-        from transformers.models.gemma.modeling_gemma import GemmaForCausalLM
-        from transformers.models.gemma2.modeling_gemma2 import Gemma2ForCausalLM
         from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
 
         # Instantiate a dummy model
@@ -836,36 +834,6 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
             assert inspect.getsource(layer.layer_norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(layer.layer_norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
 
-        # language_model
-        if isinstance(dummy_model_instance.model.language_model, GemmaForCausalLM):
-            assert inspect.getsource(dummy_model_instance.language_model.forward) == inspect.getsource(gemma_lce_forward)
-            assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
-            for layer in dummy_model_instance.language_model.layers:
-                assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
-                assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
-                assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
-                    LigerRMSNorm.forward
-                )
-        if isinstance(dummy_model_instance.model.language_model, Gemma2ForCausalLM):
-            assert inspect.getsource(dummy_model_instance.language_model.forward) == inspect.getsource(gemma2_lce_forward)
-            assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
-            for layer in dummy_model_instance.language_model.layers:
-                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
-                assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
-                assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
-                    LigerRMSNorm.forward
-                )
-                assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(
-                    LigerRMSNorm.forward
-                )
-                assert inspect.getsource(layer.post_feedforward_layernorm.forward) != inspect.getsource(
-                    LigerRMSNorm.forward
-                )
-
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
@@ -878,36 +846,6 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
         for layer in dummy_model_instance.vision_tower.vision_model.encoder.layers:
             assert inspect.getsource(layer.layer_norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(layer.layer_norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
-
-        # language_model
-        if isinstance(dummy_model_instance.model.language_model, GemmaForCausalLM):
-            assert inspect.getsource(dummy_model_instance.language_model.forward) == inspect.getsource(gemma_lce_forward)
-            assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
-            for layer in dummy_model_instance.language_model.layers:
-                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
-                assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
-                assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(
-                    LigerRMSNorm.forward
-                )
-        if isinstance(dummy_model_instance.model.language_model, Gemma2ForCausalLM):
-            assert inspect.getsource(dummy_model_instance.language_model.forward) == inspect.getsource(gemma2_lce_forward)
-            assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
-            for layer in dummy_model_instance.language_model.layers:
-                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
-                assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
-                assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(
-                    LigerRMSNorm.forward
-                )
-                assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(
-                    LigerRMSNorm.forward
-                )
-                assert inspect.getsource(layer.post_feedforward_layernorm.forward) == inspect.getsource(
-                    LigerRMSNorm.forward
-                )
 
         try:
             print(dummy_model_instance)
