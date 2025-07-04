@@ -40,7 +40,7 @@ def _geglu_tanh_forward_kernel(a, b, c, stride, n_cols: tl.constexpr, BLOCK_SIZE
     tanh_arg = sqrt_2_over_pi * (a_row + 0.044715 * a_cubed)
     tanh_result = tanh(tanh_arg)
     geglu_a = 0.5 * a_row * (1 + tanh_result)
-    c_row = geglu_a * b_row
+    c_row = geglu_a.cast(b_row.dtype) * b_row
     tl.store(c + col_offsets, c_row, mask=mask)
 
 

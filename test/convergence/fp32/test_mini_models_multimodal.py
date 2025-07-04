@@ -898,24 +898,26 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"),
             ],
         ),
-        pytest.param(
-            "mini_llama4",
-            32,
-            1e-4,
-            torch.bfloat16,
-            1e-1,
-            1e-1,
-            0.2,
-            0.3,
-            1e-2,
-            1e-2,
-            marks=[
-                pytest.mark.skipif(
-                    not LLAMA4_AVAILABLE,
-                    reason="Llama4 not available in this version of transformers",
-                ),
-            ],
-        ),
+        # Disable since Llama4 image processor resacle and normalize images to torch.bfloat16, the dtype of model parameters have to be bfloat16
+        # Refer to: https://github.com/huggingface/transformers/blob/67ddc82fbc7e52c6f42a395b4a6d278c55b77a39/src/transformers/models/llama4/image_processing_llama4_fast.py#L371
+        # pytest.param(
+        #     "mini_llama4",
+        #     32,
+        #     1e-4,
+        #     torch.float32,
+        #     1e-8,
+        #     1e-5,
+        #     5e-3,
+        #     1e-5,
+        #     1e-2,
+        #     1e-2,
+        #     marks=[
+        #         pytest.mark.skipif(
+        #             not LLAMA4_AVAILABLE,
+        #             reason="Llama4 not available in this version of transformers",
+        #         ),
+        #     ],
+        # ),
         pytest.param(
             "mini_llava",
             32,
@@ -1002,12 +1004,12 @@ def run_mini_model_multimodal(
         pytest.param(
             "mini_gemma3",
             32,
-            1e-4,
+            1e-5,
             torch.float32,
-            1e-3,
-            1e-3,
-            1e-1,
-            1e-1,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
             5e-3,
             1e-5,
             marks=[
@@ -1045,6 +1047,7 @@ def test_mini_model_multimodal(
         torch.tensor([actual_output["loss"]]),
         atol=loss_atol,
         rtol=loss_rtol,
+        extra_info="[Loss]",
     )
 
     # Compare the logits from the last step
@@ -1053,6 +1056,7 @@ def test_mini_model_multimodal(
         actual_output["topk_logprobs"],
         atol=logprobs_atol,
         rtol=logprobs_rtol,
+        extra_info="[Top k logrpobs]",
     )
 
     # Compare the params from the last step
@@ -1061,4 +1065,10 @@ def test_mini_model_multimodal(
         expected_output["model"].named_parameters(),
         actual_output["model"].named_parameters(),
     ):
-        assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)
+        assert_verbose_allclose(
+            expected_param[1],
+            actual_param[1],
+            atol=param_atol,
+            rtol=param_rtol,
+            extra_info="[Model parameters]",
+        )
