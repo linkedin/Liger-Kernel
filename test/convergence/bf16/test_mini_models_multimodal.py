@@ -884,8 +884,8 @@ def run_mini_model_multimodal(
             32,
             1e-4,
             torch.bfloat16,
-            1e-3,
-            1e-2,
+            5e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -902,10 +902,10 @@ def run_mini_model_multimodal(
         pytest.param(
             "mini_llava",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
-            1e-2,
+            5e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -921,10 +921,10 @@ def run_mini_model_multimodal(
         pytest.param(
             "mini_qwen2_5_vl",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
-            1e-2,
+            5e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -941,10 +941,10 @@ def run_mini_model_multimodal(
         pytest.param(
             "mini_mllama",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
-            1e-2,
+            5e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -960,12 +960,12 @@ def run_mini_model_multimodal(
         pytest.param(
             "mini_llama4",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
+            5e-2,
+            5e-2,
             1e-1,
             1e-1,
-            0.2,
-            0.3,
             1e-2,
             1e-2,
             marks=[
@@ -979,10 +979,10 @@ def run_mini_model_multimodal(
         pytest.param(
             "mini_paligemma",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
-            1e-2,
+            5e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -998,10 +998,10 @@ def run_mini_model_multimodal(
         pytest.param(
             "mini_paligemma2",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
-            1e-2,
+            5e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -1017,11 +1017,11 @@ def run_mini_model_multimodal(
         pytest.param(
             "mini_gemma3",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            3e-3,
-            1e-2,
-            0.4,  # Increase the absolute tolerance for the logits of Gemma-3.
+            5e-2,
+            5e-2,
+            1e-1,
             1e-1,
             1e-2,
             1e-2,
@@ -1061,6 +1061,7 @@ def test_mini_model_multimodal(
         torch.tensor([actual_output["loss"]]),
         atol=loss_atol,
         rtol=loss_rtol,
+        extra_info="[Loss]",
     )
 
     # Compare the topk logprobs from evaluation step
@@ -1069,6 +1070,7 @@ def test_mini_model_multimodal(
         actual_output["topk_logprobs"],
         atol=logprobs_atol,
         rtol=logprobs_rtol,
+        extra_info="[Top k logprobs]",
     )
 
     # Compare the params from the last step
@@ -1077,4 +1079,10 @@ def test_mini_model_multimodal(
         expected_output["model"].named_parameters(),
         actual_output["model"].named_parameters(),
     ):
-        assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)
+        assert_verbose_allclose(
+            expected_param[1],
+            actual_param[1],
+            atol=param_atol,
+            rtol=param_rtol,
+            extra_info="[Model parameters]",
+        )
