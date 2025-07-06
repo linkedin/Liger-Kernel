@@ -1096,7 +1096,9 @@ def apply_liger_kernel_to_paligemma(
     # PaliGemma submodules are ['vision_tower', 'multi_modal_projector', 'language_model']
 
     from transformers.models.gemma.modeling_gemma import GemmaForCausalLM
+    from transformers.models.gemma.modeling_gemma import GemmaModel
     from transformers.models.gemma2.modeling_gemma2 import Gemma2ForCausalLM
+    from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
     from transformers.models.paligemma import modeling_paligemma
     from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
     from transformers.models.siglip import modeling_siglip
@@ -1155,7 +1157,7 @@ def apply_liger_kernel_to_paligemma(
 
         language_model = model.language_model
 
-        if isinstance(language_model, GemmaForCausalLM):
+        if isinstance(language_model, GemmaForCausalLM) or isinstance(language_model, GemmaModel):
             apply_liger_kernel_to_gemma(
                 rope=rope,
                 cross_entropy=False,
@@ -1165,7 +1167,7 @@ def apply_liger_kernel_to_paligemma(
                 model=language_model,
             )
 
-        elif isinstance(language_model, Gemma2ForCausalLM):
+        elif isinstance(language_model, Gemma2ForCausalLM) or isinstance(language_model, Gemma2Model):
             apply_liger_kernel_to_gemma2(
                 rope=rope,
                 cross_entropy=False,
