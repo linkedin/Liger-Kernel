@@ -1,4 +1,3 @@
-from typing import List
 from typing import Optional
 from typing import Tuple
 from typing import Union
@@ -134,6 +133,7 @@ def causal_forward(
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
     )
+
 
 def multimodal_forward(
     self,
