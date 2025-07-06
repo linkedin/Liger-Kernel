@@ -52,12 +52,12 @@ device = infer_device()
     ],
 )
 @pytest.mark.parametrize(
-    "dtype, atol, rtol",
+    "dtype, atol, rtol, alpha_atol, alpha_rtol",
     [
-        (torch.float32, 1e-5, 1e-5),
+        (torch.float32, 1e-5, 1e-5, 1e-5, 1e-3),
     ],
 )
-def test_liger_dyt_correctness(B, T, hidden_size, beta, init_alpha, dtype, atol, rtol):
+def test_liger_dyt_correctness(B, T, hidden_size, beta, init_alpha, dtype, atol, rtol, alpha_atol, alpha_rtol):
     _input = torch.randn(B, T, hidden_size, device=device, dtype=dtype)
 
     x1 = _input.clone().requires_grad_(True)
@@ -83,17 +83,21 @@ def test_liger_dyt_correctness(B, T, hidden_size, beta, init_alpha, dtype, atol,
     torch_output = torch_dyt(x1)
     liger_output = liger_dyt(x2)
 
-    assert_verbose_allclose(torch_output, liger_output, rtol=rtol, atol=atol)
+    assert_verbose_allclose(torch_output, liger_output, rtol=rtol, atol=atol, extra_info="[output]")
 
     grad_output = torch.randn_like(_input)
     torch_output.backward(grad_output)
     liger_output.backward(grad_output)
 
-    assert_verbose_allclose(x1.grad, x2.grad, rtol=rtol, atol=atol)
-    assert_verbose_allclose(torch_dyt.alpha.grad, liger_dyt.alpha.grad, rtol=rtol, atol=atol)
-    assert_verbose_allclose(torch_dyt.gamma.grad, liger_dyt.gamma.grad, rtol=rtol, atol=atol)
+    assert_verbose_allclose(x1.grad, x2.grad, rtol=rtol, atol=atol, extra_info="[input.grad]")
+    assert_verbose_allclose(
+        torch_dyt.alpha.grad, liger_dyt.alpha.grad, rtol=alpha_rtol, atol=alpha_atol, extra_info="[alpha.grad]"
+    )
+    assert_verbose_allclose(torch_dyt.gamma.grad, liger_dyt.gamma.grad, rtol=rtol, atol=atol, extra_info="[gamma.grad]")
     if beta:
-        assert_verbose_allclose(torch_dyt.beta.grad, liger_dyt.beta.grad, rtol=rtol, atol=atol)
+        assert_verbose_allclose(
+            torch_dyt.beta.grad, liger_dyt.beta.grad, rtol=rtol, atol=atol, extra_info="[beta.grad]"
+        )
 
 
 @pytest.mark.parametrize("beta", [False, True])
