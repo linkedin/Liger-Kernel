@@ -9,6 +9,7 @@ import pytest
 import torch
 import transformers
 
+from packaging import version
 from transformers import AutoModelForCausalLM
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
@@ -25,11 +26,46 @@ from liger_kernel.transformers.monkey_patch import MODEL_TYPE_TO_APPLY_LIGER_FN
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
 
+# Import transformer version check
+transformer_version = version.parse(transformers.__version__)
+SUPPORTED_TRANSFORMER_VERSION = "4.46.1"
+
+# Import forward functions based on transformer version
+if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+    from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
+    from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
+    from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
+    from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
+    from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
+    from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
+    from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
+    from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
+else:
+    from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward
+    from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward
+    from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward
+    from liger_kernel.transformers.model.mistral import (
+        lce_forward as mistral_lce_forward,  # mistral doesn't have deprecated version
+    )
+    from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward
+    from liger_kernel.transformers.model.mllama import lce_forward_deprecated as mllama_lce_forward
+    from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward
+    from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward
+
 
 # Check if optional modules are available
 def is_mllama_available():
     try:
         import transformers.models.mllama  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def is_llama4_available():
+    try:
+        import transformers.models.llama4  # noqa: F401
 
         return True
     except ImportError:
@@ -288,6 +324,7 @@ def test_apply_liger_kernel_to_instance_for_llama():
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(llama_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
@@ -298,6 +335,7 @@ def test_apply_liger_kernel_to_instance_for_llama():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(llama_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
@@ -348,6 +386,7 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
         assert isinstance(dummy_model_instance, MllamaForConditionalGeneration)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(mllama_lce_forward)
         assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
             LigerRMSNorm.forward
         )
@@ -377,6 +416,7 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(mllama_lce_forward)
         assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
             LigerRMSNorm.forward
         )
@@ -435,6 +475,7 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
         assert isinstance(dummy_model_instance, MllamaForCausalLM)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(mllama_lce_forward)
         assert not isinstance(dummy_model_instance.model.norm, LigerRMSNorm)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
@@ -445,6 +486,7 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(mllama_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
@@ -457,6 +499,132 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
+@pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
+def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.llama4.modeling_llama4"):
+        from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+
+        # Instantiate a dummy model
+        config = transformers.models.llama4.configuration_llama4.Llama4TextConfig(
+            torch_dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="silu",
+            num_hidden_layers=2,
+        )
+        dummy_model_instance = Llama4ForCausalLM._from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
+def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.llama4.modeling_llama4"):
+        from transformers.models.llama4.modeling_llama4 import Llama4ForConditionalGeneration
+
+        # Instantiate a dummy model
+        config = transformers.models.llama4.configuration_llama4.Llama4Config(
+            torch_dtype=torch.bfloat16,
+            text_config=transformers.models.llama4.configuration_llama4.Llama4TextConfig(
+                torch_dtype=torch.bfloat16,
+                rms_norm_eps=1e-5,
+                hidden_size=32,
+                intermediate_size=64,
+                hidden_act="silu",
+                num_hidden_layers=2,
+            ),
+            vision_config=transformers.models.llama4.configuration_llama4.Llama4VisionConfig(
+                rms_norm_eps=1e-5,
+                hidden_size=32,
+                intermediate_size=64,
+                hidden_act="gelu",
+                num_hidden_layers=2,
+                vision_output_dim=64,
+            ),
+        )
+        dummy_model_instance = Llama4ForConditionalGeneration._from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert isinstance(dummy_model_instance, Llama4ForConditionalGeneration)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.language_model.model.layers:
+            assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        assert inspect.getsource(dummy_model_instance.vision_model.layernorm_pre.forward) != inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        assert inspect.getsource(dummy_model_instance.vision_model.layernorm_post.forward) != inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        for layer in dummy_model_instance.vision_model.model.layers:
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerLayerNorm.forward
+            )
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.language_model.model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.language_model.model.layers:
+            assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        assert inspect.getsource(dummy_model_instance.vision_model.layernorm_pre.forward) == inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        assert inspect.getsource(dummy_model_instance.vision_model.layernorm_post.forward) == inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        for layer in dummy_model_instance.vision_model.model.layers:
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(
+                LigerLayerNorm.forward
+            )
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(
+    transformer_version < version.parse("4.49.0"),
+    reason="fused linear cross entropy patch doesn't work on mistral in transformers<4.49.0",
+)
 def test_apply_liger_kernel_to_instance_for_mistral():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.mistral.modeling_mistral"):
@@ -472,6 +640,7 @@ def test_apply_liger_kernel_to_instance_for_mistral():
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(mistral_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
@@ -482,6 +651,7 @@ def test_apply_liger_kernel_to_instance_for_mistral():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(mistral_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
@@ -511,6 +681,7 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(mixtral_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             for expert in layer.block_sparse_moe.experts:
@@ -522,6 +693,7 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(mixtral_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             for expert in layer.block_sparse_moe.experts:
@@ -550,6 +722,7 @@ def test_apply_liger_kernel_to_instance_for_gemma():
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(gemma_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
@@ -560,6 +733,7 @@ def test_apply_liger_kernel_to_instance_for_gemma():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(gemma_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
@@ -587,6 +761,7 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(gemma2_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
@@ -601,6 +776,7 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(gemma2_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
@@ -621,6 +797,8 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
 def test_apply_liger_kernel_to_instance_for_gemma3_text():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.gemma3.modeling_gemma3"):
+        from liger_kernel.transformers.model.gemma3 import causal_forward as gemma3_causal_forward
+
         # Instantiate a dummy model
         config = transformers.models.gemma3.configuration_gemma3.Gemma3TextConfig(
             torch_dtype=torch.bfloat16,
@@ -632,6 +810,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_text():
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(gemma3_causal_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
@@ -648,6 +827,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_text():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(gemma3_causal_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
@@ -673,6 +853,8 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
     with patch("transformers.models.gemma3.modeling_gemma3"):
         from transformers.models.gemma3.modeling_gemma3 import Gemma3ForConditionalGeneration
 
+        from liger_kernel.transformers.model.gemma3 import multimodal_forward as gemma3_multimodal_forward
+
         # Instantiate a dummy model
         text_config = transformers.models.gemma3.configuration_gemma3.Gemma3TextConfig(
             torch_dtype=torch.bfloat16,
@@ -692,6 +874,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
         assert isinstance(dummy_model_instance, Gemma3ForConditionalGeneration)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(gemma3_multimodal_forward)
         assert inspect.getsource(
             dummy_model_instance.vision_tower.vision_model.post_layernorm.forward
         ) != inspect.getsource(LigerLayerNorm.forward)
@@ -723,7 +906,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
-
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(gemma3_multimodal_forward)
         assert inspect.getsource(
             dummy_model_instance.vision_tower.vision_model.post_layernorm.forward
         ) == inspect.getsource(LigerLayerNorm.forward)
@@ -771,6 +954,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2():
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen2_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
@@ -781,6 +965,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen2_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
@@ -797,6 +982,8 @@ def test_apply_liger_kernel_to_instance_for_qwen2():
 def test_apply_liger_kernel_to_instance_for_qwen3():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen3.modeling_qwen3"):
+        from liger_kernel.transformers.model.qwen3 import lce_forward as qwen3_lce_forward
+
         # Instantiate a dummy model
         config = transformers.models.qwen3.configuration_qwen3.Qwen3Config(
             torch_dtype=torch.bfloat16,
@@ -809,6 +996,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3():
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
@@ -819,6 +1007,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
@@ -835,6 +1024,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3():
 def test_apply_liger_kernel_to_instance_for_qwen3_moe():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen3_moe.modeling_qwen3_moe"):
+        from liger_kernel.transformers.model.qwen3_moe import lce_forward as qwen3_moe_lce_forward
+
         # Instantiate a dummy model
         config = transformers.models.qwen3_moe.configuration_qwen3_moe.Qwen3MoeConfig(
             torch_dtype=torch.bfloat16,
@@ -847,6 +1038,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
@@ -857,6 +1049,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             for mlp_expert in layer.mlp.experts:
@@ -875,6 +1068,8 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl_for_conditional_generation(
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_vl.modeling_qwen2_vl"):
         from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
+
+        from liger_kernel.transformers.model.qwen2_vl import lce_forward as qwen2_vl_lce_forward
 
         # Instantiate a dummy model
         config = transformers.models.qwen2_vl.configuration_qwen2_vl.Qwen2VLConfig(
@@ -900,6 +1095,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl_for_conditional_generation(
         assert isinstance(dummy_model_instance, Qwen2VLForConditionalGeneration)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen2_vl_lce_forward)
         assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
             LigerRMSNorm.forward
         )
@@ -915,6 +1111,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl_for_conditional_generation(
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen2_vl_lce_forward)
         assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
             LigerRMSNorm.forward
         )
@@ -937,6 +1134,8 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_vl.modeling_qwen2_vl"):
         from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLModel
+
+        from liger_kernel.transformers.model.qwen2_vl import lce_forward as qwen2_vl_lce_forward
 
         # Instantiate a dummy model
         config = transformers.models.qwen2_vl.configuration_qwen2_vl.Qwen2VLConfig(
@@ -962,6 +1161,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl():
         assert isinstance(dummy_model_instance, Qwen2VLModel)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen2_vl_lce_forward)
         assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
             LigerRMSNorm.forward
         )
@@ -977,6 +1177,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen2_vl_lce_forward)
         assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
             LigerRMSNorm.forward
         )
@@ -1018,6 +1219,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl_text():
         assert isinstance(dummy_model_instance, Qwen2VLTextModel)
 
         # Check that model instance variables are not yet patched with Liger modules
+        # Note: Text models don't have forward method patching, so skip this check
         assert inspect.getsource(dummy_model_instance.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
@@ -1028,6 +1230,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl_text():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        # Note: Text models don't have forward method patching, so skip this check
         assert inspect.getsource(dummy_model_instance.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
@@ -1045,6 +1248,8 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl"):
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModel
+
+        from liger_kernel.transformers.model.qwen2_5_vl import lce_forward as qwen2_5_vl_lce_forward
 
         # Instantiate a dummy model
         config = transformers.models.qwen2_5_vl.configuration_qwen2_5_vl.Qwen2_5_VLConfig(
@@ -1070,6 +1275,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl():
         assert isinstance(dummy_model_instance, Qwen2_5_VLModel)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen2_5_vl_lce_forward)
         assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
             LigerRMSNorm.forward
         )
@@ -1085,6 +1291,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen2_5_vl_lce_forward)
         assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
             LigerRMSNorm.forward
         )
@@ -1107,6 +1314,8 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_for_conditional_generatio
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl"):
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
+
+        from liger_kernel.transformers.model.qwen2_5_vl import lce_forward as qwen2_5_vl_lce_forward
 
         # Instantiate a dummy model
         config = transformers.models.qwen2_5_vl.configuration_qwen2_5_vl.Qwen2_5_VLConfig(
@@ -1132,6 +1341,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_for_conditional_generatio
         assert isinstance(dummy_model_instance, Qwen2_5_VLForConditionalGeneration)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen2_5_vl_lce_forward)
         assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
             LigerRMSNorm.forward
         )
@@ -1147,6 +1357,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_for_conditional_generatio
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen2_5_vl_lce_forward)
         assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
             LigerRMSNorm.forward
         )
@@ -1188,6 +1399,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_text():
         assert isinstance(dummy_model_instance, Qwen2_5_VLTextModel)
 
         # Check that model instance variables are not yet patched with Liger modules
+        # Note: Text models don't have forward method patching, so skip this check
         assert inspect.getsource(dummy_model_instance.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
@@ -1198,6 +1410,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_text():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        # Note: Text models don't have forward method patching, so skip this check
         assert inspect.getsource(dummy_model_instance.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
@@ -1225,6 +1438,7 @@ def test_apply_liger_kernel_to_instance_for_phi3():
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(phi3_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerPhi3SwiGLUMLP.forward)
@@ -1235,6 +1449,7 @@ def test_apply_liger_kernel_to_instance_for_phi3():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(phi3_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerPhi3SwiGLUMLP.forward)
@@ -1251,6 +1466,8 @@ def test_apply_liger_kernel_to_instance_for_phi3():
 def test_apply_liger_kernel_to_instance_for_olmo2():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.olmo2.modeling_olmo2"):
+        from liger_kernel.transformers.model.olmo2 import lce_forward as olmo2_lce_forward
+
         # Instantiate a dummy model
         config = transformers.models.olmo2.configuration_olmo2.Olmo2Config(
             torch_dtype=torch.bfloat16,
@@ -1263,6 +1480,7 @@ def test_apply_liger_kernel_to_instance_for_olmo2():
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(olmo2_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
@@ -1275,6 +1493,7 @@ def test_apply_liger_kernel_to_instance_for_olmo2():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(olmo2_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
@@ -1293,6 +1512,8 @@ def test_apply_liger_kernel_to_instance_for_olmo2():
 def test_apply_liger_kernel_to_instance_for_glm4():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.glm4.modeling_glm4"):
+        from liger_kernel.transformers.model.glm4 import lce_forward as glm4_lce_forward
+
         # Instantiate a dummy model
         config = transformers.models.glm4.configuration_glm4.Glm4Config(
             torch_dtype=torch.bfloat16,
@@ -1305,6 +1526,7 @@ def test_apply_liger_kernel_to_instance_for_glm4():
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(glm4_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerPhi3SwiGLUMLP.forward)
@@ -1317,6 +1539,7 @@ def test_apply_liger_kernel_to_instance_for_glm4():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(glm4_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerPhi3SwiGLUMLP.forward)

@@ -27,6 +27,7 @@ def lce_forward_deprecated(
     output_hidden_states: Optional[bool] = None,
     return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
+    skip_logits: Optional[bool] = None,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
     r"""
 
@@ -81,7 +82,14 @@ def lce_forward_deprecated(
     loss = None
     logits = None
 
-    if self.training and (labels is not None):
+    if skip_logits and labels is None:
+        raise ValueError("skip_logits is True, but labels is None")
+
+    if skip_logits is None:
+        # By default, if in training mode, don't materialize logits
+        skip_logits = self.training and labels is not None
+
+    if skip_logits:
         shift_hidden_states = hidden_states[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
 
