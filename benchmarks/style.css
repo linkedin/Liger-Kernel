@@ -16,6 +16,12 @@
   --secondary-color: #2c2c2c;
 }
 
+[data-theme="dark"] td.golden {
+  background-color: #3a3a1a;
+  color: #ffc107;
+  border-color: #b8860b;
+}
+
 body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   margin: 0;
@@ -71,6 +77,13 @@ td.green {
 td.red {
   background-color: #f8d7da;
   color: #721c24;
+}
+
+td.golden {
+  background-color: #fff3cd;
+  color: #856404;
+  font-weight: bold;
+  border: 2px solid #ffc107;
 }
 
 /* Tooltip styles */

@@ -111,8 +111,6 @@ function renderCharts(data, panel) {
 }
 
 function renderChart(data, panel, metric, kernel, mode) {
-  console.log(`Rendering ${metric} chart for panel ${panel}`);
-  console.log('Available metrics:', [...new Set(data.map(d => d.metric_name))]);
   
   const filtered = data.filter(
     d =>
@@ -121,13 +119,11 @@ function renderChart(data, panel, metric, kernel, mode) {
       d.kernel_operation_mode === mode
   );
 
-  console.log(`Filtered data for ${metric}:`, filtered);
 
   const batchSizes = [...new Set(filtered.map(d => d.x_value))].sort((a, b) => a - b);
   const providers = [...new Set(filtered.map(d => d.kernel_provider))];
 
-  console.log(`Batch sizes for ${metric}:`, batchSizes);
-  console.log(`Providers for ${metric}:`, providers);
+
 
   const datasets = providers.map(provider => {
     const values = batchSizes.map(bs => {
@@ -137,11 +133,11 @@ function renderChart(data, panel, metric, kernel, mode) {
 
     let borderColor;
     if (provider === "liger") {
-      borderColor = "orange";
+      borderColor = "#FF6B35";
     } else if (provider === "huggingface") {
-      borderColor = "steelblue";
+      borderColor = "#4A90E2";
     } else {
-      borderColor = "green";  // For any third provider (like torch_compile)
+      borderColor = "#2ECC71";  // For any third provider (like torch_compile)
     }
 
     return {
@@ -152,6 +148,7 @@ function renderChart(data, panel, metric, kernel, mode) {
       tension: 0.2,
       pointRadius: 4,
       pointHoverRadius: 6,
+      borderWidth: 2,
     };
   });
 
@@ -170,6 +167,32 @@ function renderChart(data, panel, metric, kernel, mode) {
     if (metric === "memory" && chart2Memory) chart2Memory.destroy();
   }
 
+  // Calculate smart Y-axis range for better visibility of differences
+  const allValues = datasets.flatMap(d => d.data.filter(v => v !== null));
+  let yAxisConfig = {
+    title: { 
+      display: true, 
+      text: `${metric} (${getMetricUnit(metric)})`
+    },
+    type: 'linear'
+  };
+
+  if (allValues.length > 0) {
+    const minVal = Math.min(...allValues);
+    const maxVal = Math.max(...allValues);
+    const range = maxVal - minVal;
+    
+    // If the range is small compared to the minimum value, focus on the data range
+    if (range < minVal * 0.1) {
+      yAxisConfig.min = minVal - (range * 0.2);
+      yAxisConfig.max = maxVal + (range * 0.2);
+    } else {
+      yAxisConfig.beginAtZero = true;
+    }
+  } else {
+    yAxisConfig.beginAtZero = true;
+  }
+
   const newChart = new Chart(ctx, {
     type: "line",
     data: {
@@ -181,20 +204,34 @@ function renderChart(data, panel, metric, kernel, mode) {
       plugins: {
         title: {
           display: true,
-          text: `Benchmark - ${kernel} - ${metric} (${mode})`,
+          text: `${kernel} - ${metric} (${mode})`,
+          font: {
+            size: 14,
+            weight: 'bold'
+          }
         },
         legend: {
           position: "top",
+        },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              const label = context.dataset.label || '';
+              const value = context.parsed.y;
+              return `${label}: ${value.toFixed(2)} ${getMetricUnit(metric)}`;
+            }
+          }
         }
       },
       scales: {
         x: {
           title: { display: true, text: "Batch Size (B)" },
         },
-        y: {
-          title: { display: true, text: metric },
-          beginAtZero: true
-        }
+        y: yAxisConfig
+      },
+      interaction: {
+        intersect: false,
+        mode: 'index'
       }
     }
   });
@@ -207,4 +244,8 @@ function renderChart(data, panel, metric, kernel, mode) {
     if (metric === "speed") chart2Speed = newChart;
     else chart2Memory = newChart;
   }
+}
+
+function getMetricUnit(metric) {
+  return metric === 'speed' ? 'ms' : 'MB';
 }
