@@ -16,7 +16,7 @@ async function loadGoldenCommits() {
       return data.golden_commits || {};
     }
   } catch (e) {
-    console.warn('Could not load golden commits from JSON, using fallback');
+    console.warn('Could not load golden commits from JSON');
   }
   return {};
 }
