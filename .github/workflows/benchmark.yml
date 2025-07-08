@@ -5,6 +5,10 @@ on:
     # Runs at 00:00 UTC every Friday
     - cron: '0 0 * * 5'
   workflow_dispatch:  # Enables manual trigger
+    inputs:
+      commit_hash:
+        description: 'Commit hash to benchmark'
+        default: 'main'
 
 permissions:
   contents: write
