@@ -813,12 +813,15 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
         # Instantiate a dummy model
         config = transformers.models.paligemma.configuration_paligemma.PaliGemmaConfig(
             torch_dtype=torch.bfloat16,
-            rms_norm_eps=1e-5,
-            hidden_size=32,
-            intermediate_size=64,
-            hidden_act="silu",
-            num_hidden_layers=2,
+            text_config={
+                "num_hidden_layers": 2,
+                "rms_norm_eps": 1e-5,
+                "hidden_size": 32,
+                "intermediate_size": 64,
+                "hidden_act": "silu",
+            }, 
             vision_config={
+                "num_hidden_layers": 2,
                 "layer_norm_eps": 1e-5,
                 "hidden_size": 48,
                 "intermediate_size": 64,

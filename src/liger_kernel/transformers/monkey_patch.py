@@ -1157,7 +1157,7 @@ def apply_liger_kernel_to_paligemma(
 
         language_model = model.language_model
 
-        if isinstance(language_model, GemmaForCausalLM) or isinstance(language_model, GemmaModel):
+        if isinstance(language_model, (GemmaForCausalLM, GemmaModel)):
             apply_liger_kernel_to_gemma(
                 rope=rope,
                 cross_entropy=False,
@@ -1167,7 +1167,7 @@ def apply_liger_kernel_to_paligemma(
                 model=language_model,
             )
 
-        elif isinstance(language_model, Gemma2ForCausalLM) or isinstance(language_model, Gemma2Model):
+        elif isinstance(language_model, (Gemma2ForCausalLM, Gemma2Model)):
             apply_liger_kernel_to_gemma2(
                 rope=rope,
                 cross_entropy=False,
