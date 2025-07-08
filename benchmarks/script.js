@@ -1,11 +1,57 @@
 // TODO: Make this configurable into a separate file
-const referenceCommit = 'c1bdc24';
+const defaultReferenceCommit = 'c1bdc24';
 const benchmarkBase = 'https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks';
 
 let allCommits = [];
 let allDataByCommit = {};
 let kernelMeta = {};
 let configData = {}; // Store configuration data for tooltips
+let goldenCommits = {};
+
+async function loadGoldenCommits() {
+  try {
+    const res = await fetch('https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmark/golden_commits.json');
+    if (res.ok) {
+      const data = await res.json();
+      return data.golden_commits || {};
+    }
+  } catch (e) {
+    console.warn('Could not load golden commits from JSON, using fallback');
+  }
+  return {};
+}
+
+function getGoldenCommit(kernelName) {
+  // Extract base kernel name by removing operation mode and metric suffixes
+  let baseKernelName = kernelName;
+  
+  // Remove common suffixes
+  const suffixes = ['_forward_speed', '_backward_speed', '_full_speed', '_full_memory', '_forward_memory', '_backward_memory'];
+  for (const suffix of suffixes) {
+    if (baseKernelName.endsWith(suffix)) {
+      baseKernelName = baseKernelName.slice(0, -suffix.length);
+      break;
+    }
+  }
+  
+  // Check for exact base kernel match
+  if (goldenCommits[baseKernelName]) {
+    return goldenCommits[baseKernelName];
+  }
+  
+  // Check for partial matches - find the longest matching key
+  let bestMatch = '';
+  let bestCommit = defaultReferenceCommit;
+  
+  for (const [key, commit] of Object.entries(goldenCommits)) {
+    if (kernelName.includes(key) && key.length > bestMatch.length) {
+      bestMatch = key;
+      bestCommit = commit;
+    }
+  }
+  
+  return bestCommit;
+}
 
 function toggleTheme() {
   const body = document.body;
@@ -92,6 +138,8 @@ async function loadData() {
   document.getElementById('speedTable').innerHTML = 'Loading...';
   document.getElementById('memoryTable').innerHTML = 'Loading...';
 
+  goldenCommits = await loadGoldenCommits();
+
   const count = document.getElementById('commitCount').value;
   allCommits = await fetchCommits();
   const selectedCommits = count === 'all' ? allCommits : allCommits.slice(-parseInt(count));
@@ -141,12 +189,10 @@ function renderTables() {
   memoryTable.innerHTML = '';
 
   const commits = Object.keys(allDataByCommit);
-  const reference = allDataByCommit[referenceCommit];
 
   function createTable(table, filterMetric) {
-    let header = `<tr><th>Kernel</th><th>X</th><th>Reference: ${referenceCommit}</th>`
+    let header = `<tr><th>Kernel</th><th>X</th><th>Golden Reference</th>`
     for (const commit of commits) {
-      if (commit === referenceCommit) continue;
       header += `<th>${commit}</th>`;
     }
     header += '</tr>';
@@ -161,19 +207,23 @@ function renderTables() {
 
     [...allKeys].forEach((kernelKey) => {
       if (searchQuery && !kernelKey.toLowerCase().includes(searchQuery)) return;
-      const refVal = reference?.[kernelKey];
+      
+      // Get kernel-specific golden commit
+      const goldenCommit = getGoldenCommit(kernelKey);
+      const refVal = allDataByCommit[goldenCommit]?.[kernelKey];
       const meta = kernelMeta[kernelKey] || { x_label: '?', x_value: '?' };
       const config = configData[kernelKey] || { extra_benchmark_config_str: 'N/A', gpu_name: 'N/A', liger_version: 'N/A' };
       
-      const tooltipText = formatConfigForTooltip(config);
+      const tooltipText = formatConfigForTooltip(config) + `\n\nGolden Commit: ${goldenCommit}`;
 
       let row = `<tr data-tooltip="${tooltipText}" style="cursor: pointer;">`;
-      row += `<td>${kernelKey}</td><td>${meta.x_label}=${meta.x_value}</td><td>${refVal != null ? refVal.toFixed(2) : 'N/A'}</td>`;
+      row += `<td>${kernelKey}</td><td>${meta.x_label}=${meta.x_value}</td><td title="${goldenCommit}">${refVal != null ? refVal.toFixed(2) : 'N/A'}</td>`;
       for (const commit of commits) {
-        if (commit === referenceCommit) continue;
         const val = allDataByCommit[commit]?.[kernelKey];
         const cls = compareMetric(val, refVal);
-        row += `<td class="${cls}">${val != null ? val.toFixed(2) : 'N/A'}</td>`;
+        const isGolden = commit === goldenCommit;
+        const cellClass = isGolden ? 'golden' : cls;
+        row += `<td class="${cellClass}" ${isGolden ? 'title="Golden Reference"' : ''}>${val != null ? val.toFixed(2) : 'N/A'}</td>`;
       }
       row += '</tr>';
       table.innerHTML += row;
