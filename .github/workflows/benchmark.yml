@@ -32,13 +32,28 @@ jobs:
 
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      # Step: Decide the commit hash to use
+      - name: Determine commit hash to checkout
+        id: choose_commit
+        run: |
+          if [ "${{ github.event.inputs.commit_hash }}" != "" ]; then
+            echo "Using manual input commit: ${{ github.event.inputs.commit_hash }}"
+            echo "commit=${{ github.event.inputs.commit_hash }}" >> $GITHUB_OUTPUT
+          else
+            echo "Using latest commit from main"
+            git fetch origin main
+            echo "commit=$(git rev-parse origin/main)" >> $GITHUB_OUTPUT
+          fi
 
-      # Get the latest commit hash from main branch
-      - name: Get commit hash
-        id: get_hash
-        run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+      # Step: Checkout full history so we can check out any commit
+      - name: Checkout full repo history
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Important: so we can checkout arbitrary commit
+
+      # Step: Checkout to the actual desired commit
+      - name: Checkout to selected commit
+        run: git checkout ${{ steps.choose_commit.outputs.commit }}
 
       - name: Set up Python
         uses: actions/setup-python@v3
@@ -71,8 +86,8 @@ jobs:
       # Step 6: Copy benchmark CSV to gh-pages directory
       - name: Copy generated benchmark to gh-pages
         run: |
-          mkdir -p gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}
-          cp ${GENERATED_CSV} gh-pages/${OUTPUT_DIR}/${{ steps.get_hash.outputs.hash }}/${OUTPUT_FILENAME}
+          mkdir -p gh-pages/${OUTPUT_DIR}/${{ steps.choose_commit.outputs.hash }}
+          cp ${GENERATED_CSV} gh-pages/${OUTPUT_DIR}/${{ steps.choose_commit.outputs.hash }}/${OUTPUT_FILENAME}
       # Step 7: Append commit hash to commits.txt if not already present
       - name: Update commits.txt
         run: |
@@ -82,8 +97,8 @@ jobs:
           mkdir -p ${OUTPUT_DIR}
           touch ${OUTPUT_DIR}/commits.txt
           # Append only if not already present
-          if ! grep -q "${{ steps.get_hash.outputs.hash }}" ${OUTPUT_DIR}/commits.txt; then
-            echo "${{ steps.get_hash.outputs.hash }}" >> ${OUTPUT_DIR}/commits.txt
+          if ! grep -q "${{ steps.choose_commit.outputs.hash }}" ${OUTPUT_DIR}/commits.txt; then
+            echo "${{ steps.choose_commit.outputs.hash }}" >> ${OUTPUT_DIR}/commits.txt
           fi
       # Step 7: Commit and push
       - name: Commit and push to gh-pages
@@ -92,6 +107,6 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add .
-          git commit -m "Add benchmark for commit ${{ steps.get_hash.outputs.hash }}" || echo "No changes to commit"
+          git commit -m "Add benchmark for commit ${{ steps.choose_commit.outputs.hash }}" || echo "No changes to commit"
           git push origin gh-pages
 
