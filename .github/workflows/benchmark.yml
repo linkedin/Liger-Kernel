@@ -38,11 +38,11 @@ jobs:
         run: |
           if [ "${{ github.event.inputs.commit_hash }}" != "" ]; then
             echo "Using manual input commit: ${{ github.event.inputs.commit_hash }}"
-            echo "commit=${{ github.event.inputs.commit_hash }}" >> $GITHUB_OUTPUT
+            echo "hash=${{ github.event.inputs.commit_hash }}" >> $GITHUB_OUTPUT
           else
             echo "Using latest commit from main"
             git fetch origin main
-            echo "commit=$(git rev-parse origin/main)" >> $GITHUB_OUTPUT
+            echo "hash=$(git rev-parse origin/main)" >> $GITHUB_OUTPUT
           fi
 
       # Step: Checkout full history so we can check out any commit
@@ -50,10 +50,29 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0  # Important: so we can checkout arbitrary commit
+            # Step: Conditionally replace benchmark folder from main
+      - name: Replace benchmark folder from main (manual only, commit ≠ main)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.commit_hash != 'main' }}
+        run: |
+          echo "Detected manual trigger with commit_hash = ${{ github.event.inputs.commit_hash }}"
+          
+          # Save current branch (detached HEAD at old commit)
+          ORIG_COMMIT=${{ github.event.inputs.commit_hash }}
 
-      # Step: Checkout to the actual desired commit
-      - name: Checkout to selected commit
-        run: git checkout ${{ steps.choose_commit.outputs.commit }}
+          # Fetch and checkout main
+          git fetch origin main
+          git checkout origin/main -- benchmark/
+
+          # Save benchmark folder from main
+          cp -r benchmark /tmp/benchmark_main
+
+          # Checkout back to target commit
+          git checkout $ORIG_COMMIT
+
+          # Replace old benchmark with one from main
+          rm -rf benchmark
+          cp -r /tmp/benchmark_main benchmark
+    
 
       - name: Set up Python
         uses: actions/setup-python@v3
@@ -65,7 +84,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install modal
-          pip install pandas
 
       # Delete previous benchmark results.
       - name: Remove previous benchmark data
@@ -86,8 +104,16 @@ jobs:
       # Step 6: Copy benchmark CSV to gh-pages directory
       - name: Copy generated benchmark to gh-pages
         run: |
-          mkdir -p gh-pages/${OUTPUT_DIR}/${{ steps.choose_commit.outputs.hash }}
-          cp ${GENERATED_CSV} gh-pages/${OUTPUT_DIR}/${{ steps.choose_commit.outputs.hash }}/${OUTPUT_FILENAME}
+          COMMIT_DIR="gh-pages/${OUTPUT_DIR}/${{ steps.choose_commit.outputs.hash }}"
+          mkdir -p "$COMMIT_DIR"
+
+          if [ -f "$COMMIT_DIR/${OUTPUT_FILENAME}" ]; then
+            echo "Removing existing benchmark.csv for this commit"
+            rm "$COMMIT_DIR/${OUTPUT_FILENAME}"
+          fi
+
+          cp "${GENERATED_CSV}" "$COMMIT_DIR/${OUTPUT_FILENAME}"
+
       # Step 7: Append commit hash to commits.txt if not already present
       - name: Update commits.txt
         run: |
@@ -96,10 +122,9 @@ jobs:
           # Create file if it doesn't exist
           mkdir -p ${OUTPUT_DIR}
           touch ${OUTPUT_DIR}/commits.txt
-          # Append only if not already present
-          if ! grep -q "${{ steps.choose_commit.outputs.hash }}" ${OUTPUT_DIR}/commits.txt; then
-            echo "${{ steps.choose_commit.outputs.hash }}" >> ${OUTPUT_DIR}/commits.txt
-          fi
+
+          echo "${{ steps.choose_commit.outputs.hash }}" >> ${OUTPUT_DIR}/commits.txt
+          echo "Added commit hash to commits.txt"
       # Step 7: Commit and push
       - name: Commit and push to gh-pages
         run: |
