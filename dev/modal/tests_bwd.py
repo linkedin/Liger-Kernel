@@ -14,7 +14,7 @@ app = modal.App("liger_tests_bwd", image=image)
 repo = image.add_local_dir(ROOT_PATH, remote_path=REMOTE_ROOT_PATH)
 
 
-@app.function(gpu="A10G", image=repo, timeout=60 * 30)
+@app.function(gpu="A10G", image=repo, timeout=60 * 60)
 def liger_bwd_tests():
     import subprocess
 
@@ -24,9 +24,9 @@ def liger_bwd_tests():
         shell=True,
         cwd=REMOTE_ROOT_PATH,
     )
-    # force install transformers==4.44.2
+    # force install transformers==4.49.0
     subprocess.run(
-        ["uv pip install transformers==4.44.2 --system"],
+        ["uv pip install transformers==4.49.0 --system"],
         check=True,
         shell=True,
         cwd=REMOTE_ROOT_PATH,
