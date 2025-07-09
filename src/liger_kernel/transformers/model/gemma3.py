@@ -255,7 +255,7 @@ def multimodal_forward(
         shift_labels = shift_labels.view(-1).to(hidden_device)
 
         lce = LigerFusedLinearCrossEntropyLoss()
-        loss = lce(self.language_model.lm_head.weight, shift_hidden_states, shift_labels)
+        loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
     else:
         logits = self.lm_head(kept_hidden_states)
         if labels is not None:
