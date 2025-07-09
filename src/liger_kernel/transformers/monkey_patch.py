@@ -537,7 +537,10 @@ def apply_liger_kernel_to_mllama(
         if isinstance(model, MllamaForConditionalGeneration):
             language_model: MllamaForCausalLM = model.language_model
             vision_model: MllamaVisionModel = model.vision_model
-            text_model: MllamaTextModel = language_model
+            if isinstance(language_model, MllamaForCausalLM):
+                text_model: MllamaTextModel = language_model.model
+            else:
+                text_model = language_model
         elif isinstance(model, MllamaForCausalLM):
             text_model = model.model
             vision_model = None

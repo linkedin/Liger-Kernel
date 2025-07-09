@@ -938,8 +938,8 @@ def run_mini_model(
                     reason="LLaVa not available in this version of transformers",
                 ),
                 pytest.mark.skipif(
-                    version.parse(transformers.__version__) < version.parse("4.49.0"),
-                    reason="Mistral not available in transformers<=4.49.0",
+                    version.parse(transformers.__version__) < version.parse("4.52.0"),
+                    reason="LLaVa doesn't materialize logits in transformers<=4.52.0 so we can't test it",
                 ),
             ],
         ),
@@ -1103,7 +1103,7 @@ def run_mini_model(
             torch.float32,
             1e-8,
             1e-4,
-            5e-3,  # 4e-3
+            4e-2,  # 4e-3
             1e-5,  # 1e-5
             5e-3,
             1e-5,

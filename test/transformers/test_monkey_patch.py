@@ -72,24 +72,6 @@ def is_llama4_available():
         return False
 
 
-def is_qwen2_vl_available():
-    try:
-        import transformers.models.qwen2_vl  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
-def is_qwen2_5_vl_available():
-    try:
-        import transformers.models.qwen2_5_vl  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
 def is_qwen3_available():
     try:
         import transformers.models.qwen3  # noqa: F401
@@ -354,6 +336,7 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.mllama.modeling_mllama"):
         from transformers.models.mllama.modeling_mllama import MllamaForConditionalGeneration
+        from transformers.models.mllama.modeling_mllama import MllamaTextModel
 
         # Instantiate a dummy model
         config = transformers.models.mllama.configuration_mllama.MllamaConfig(
@@ -387,10 +370,14 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
 
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(mllama_lce_forward)
-        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
-            LigerRMSNorm.forward
-        )
-        for layer in dummy_model_instance.language_model.layers:
+
+        if isinstance(dummy_model_instance.language_model, MllamaTextModel):
+            language_model = dummy_model_instance.language_model
+        else:
+            language_model = dummy_model_instance.language_model.model
+
+        assert inspect.getsource(language_model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in language_model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
@@ -417,10 +404,8 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
 
         # Check that the model's instance variables were correctly patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(mllama_lce_forward)
-        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
-            LigerRMSNorm.forward
-        )
-        for layer in dummy_model_instance.language_model.layers:
+        assert inspect.getsource(language_model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in language_model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
@@ -441,7 +426,6 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerLayerNorm.forward
             )
-
         try:
             print(dummy_model_instance)
         except Exception as e:
@@ -1063,7 +1047,10 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
-@pytest.mark.skipif(not is_qwen2_vl_available(), reason="qwen2_vl module not available")
+@pytest.mark.skipif(
+    transformer_version < version.parse("4.52.4"),
+    reason="Qwen2-VL support is only compatible with transformers >= 4.52.4",
+)
 def test_apply_liger_kernel_to_instance_for_qwen2_vl_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_vl.modeling_qwen2_vl"):
@@ -1129,7 +1116,10 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl_for_conditional_generation(
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
-@pytest.mark.skipif(not is_qwen2_vl_available(), reason="qwen2_vl module not available")
+@pytest.mark.skipif(
+    transformer_version < version.parse("4.52.4"),
+    reason="Qwen2-VL support is only compatible with transformers >= 4.52.4",
+)
 def test_apply_liger_kernel_to_instance_for_qwen2_vl():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_vl.modeling_qwen2_vl"):
@@ -1195,7 +1185,10 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
-@pytest.mark.skipif(not is_qwen2_vl_available(), reason="qwen2_vl module not available")
+@pytest.mark.skipif(
+    transformer_version < version.parse("4.52.4"),
+    reason="Qwen2-VL support is only compatible with transformers >= 4.52.4",
+)
 def test_apply_liger_kernel_to_instance_for_qwen2_vl_text():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_vl.modeling_qwen2_vl"):
@@ -1243,7 +1236,10 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl_text():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
-@pytest.mark.skipif(not is_qwen2_5_vl_available(), reason="qwen2_5_vl module not available")
+@pytest.mark.skipif(
+    transformer_version < version.parse("4.52.4"),
+    reason="Qwen2.5-VL support is only compatible with transformers >= 4.52.4",
+)
 def test_apply_liger_kernel_to_instance_for_qwen2_5_vl():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl"):
@@ -1309,7 +1305,10 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
-@pytest.mark.skipif(not is_qwen2_5_vl_available(), reason="qwen2_5_vl module not available")
+@pytest.mark.skipif(
+    transformer_version < version.parse("4.52.4"),
+    reason="Qwen2.5-VL support is only compatible with transformers >= 4.52.4",
+)
 def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl"):
@@ -1375,7 +1374,10 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_for_conditional_generatio
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
-@pytest.mark.skipif(not is_qwen2_5_vl_available(), reason="qwen2_5_vl module not available")
+@pytest.mark.skipif(
+    transformer_version < version.parse("4.52.4"),
+    reason="Qwen2.5-VL support is only compatible with transformers >= 4.52.4",
+)
 def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_text():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen2_5_vl.modeling_qwen2_5_vl"):

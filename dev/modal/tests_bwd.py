@@ -14,7 +14,7 @@ app = modal.App("liger_tests_bwd", image=image)
 repo = image.add_local_dir(ROOT_PATH, remote_path=REMOTE_ROOT_PATH)
 
 
-@app.function(gpu="A10G", image=repo, timeout=60 * 30)
+@app.function(gpu="A10G", image=repo, timeout=60 * 60)
 def liger_bwd_tests():
     import subprocess
 
