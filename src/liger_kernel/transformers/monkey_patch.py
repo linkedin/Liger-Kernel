@@ -289,6 +289,7 @@ def apply_liger_kernel_to_llama(
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
+
 def apply_liger_kernel_to_smollm3(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -342,7 +343,6 @@ def apply_liger_kernel_to_smollm3(
         else:
             modeling_smollm3.SmolLM3ForCausalLM.forward = llama_lce_forward
 
-
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules (e.g. LlamaRMSNorm or LlamaMLP)
@@ -359,6 +359,7 @@ def apply_liger_kernel_to_smollm3(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
 
 def apply_liger_kernel_to_llava(
     cross_entropy: bool = False,

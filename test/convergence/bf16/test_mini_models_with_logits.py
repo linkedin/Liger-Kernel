@@ -53,7 +53,6 @@ from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
-from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
 from test.utils import revert_liger_kernel_to_mllama
@@ -64,6 +63,7 @@ from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import revert_liger_kernel_to_qwen3_moe
+from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 from test.utils import supports_bfloat16
@@ -847,6 +847,7 @@ if SMOLLM3_AVAILABLE:
         ),
     )
 
+
 def create_model(model_name="mini_llama3"):
     """
     Create a mini version model
@@ -1259,9 +1260,13 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=[pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-                    pytest.mark.skipif(not SMOLLM3_AVAILABLE,reason="Smollm3 not available in this version of transformers",
-                ),],
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not SMOLLM3_AVAILABLE,
+                    reason="Smollm3 not available in this version of transformers",
+                ),
+            ],
         ),
     ],
 )

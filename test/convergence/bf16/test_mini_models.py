@@ -51,7 +51,6 @@ from test.utils import revert_liger_kernel_to_gemma3_text
 from test.utils import revert_liger_kernel_to_glm4
 from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_llama
-from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mistral
@@ -64,6 +63,7 @@ from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import revert_liger_kernel_to_qwen3_moe
+from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 from test.utils import supports_bfloat16
@@ -145,7 +145,7 @@ try:
     GLM4_AVAILABLE = True
 except ImportError:
     GLM4_AVAILABLE = False
-    
+
 try:
     from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
     from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
@@ -153,7 +153,7 @@ try:
     GEMMA3_AVAILABLE = True
 except ImportError:
     GEMMA3_AVAILABLE = False
-    
+
 try:
     # Smollm3 is only available in transformers>=4.53.0
     from transformers.models.smollm3.configuration_smollm3 import SmolLM3Config
@@ -814,7 +814,7 @@ if GLM4_AVAILABLE:
             attn_implementation="sdpa",  # default value, pytorch native attention
         ),
     )
-    
+
 if SMOLLM3_AVAILABLE:
     MINI_MODEL_SETUPS["mini_smollm3"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_smollm3,
@@ -848,7 +848,6 @@ if SMOLLM3_AVAILABLE:
             attn_implementation="sdpa",  # default value, pytorch native attention
         ),
     )
-
 
 
 def create_model(model_name="mini_llama4"):
@@ -1194,9 +1193,13 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks=[pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-                    pytest.mark.skipif(not SMOLLM3_AVAILABLE,reason="Smollm3 not available in this version of transformers",
-                ),],
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not SMOLLM3_AVAILABLE,
+                    reason="Smollm3 not available in this version of transformers",
+                ),
+            ],
         ),
         # TODO: mixtral is flaky so disable the test for now
         # pytest.param(

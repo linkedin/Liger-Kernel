@@ -21,7 +21,6 @@ from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen2 import Qwen2ForCausalLM
 from transformers.models.smollm3 import SmolLM3ForCausalLM
 
-
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text
@@ -52,7 +51,6 @@ from test.utils import revert_liger_kernel_to_gemma3_text
 from test.utils import revert_liger_kernel_to_glm4
 from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_llama
-from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mistral
@@ -65,6 +63,7 @@ from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import revert_liger_kernel_to_qwen3_moe
+from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 
@@ -135,7 +134,7 @@ try:
     GLM4_AVAILABLE = True
 except ImportError:
     GLM4_AVAILABLE = False
-    
+
 try:
     from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
     from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
@@ -143,7 +142,7 @@ try:
     GEMMA3_AVAILABLE = True
 except ImportError:
     GEMMA3_AVAILABLE = False
-    
+
 try:
     # Smollm3 is only available in transformers>=4.53.0
     from transformers.models.smollm3.configuration_smollm3 import SmolLM3Config
@@ -814,7 +813,7 @@ if LLAVA_AVAILABLE:
     )
 
 if SMOLLM3_AVAILABLE:
-  MINI_MODEL_SETUPS["mini_smollm3"] = MiniModelConfig(
+    MINI_MODEL_SETUPS["mini_smollm3"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_smollm3,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_smollm3,
         model_class=SmolLM3ForCausalLM,
@@ -1102,7 +1101,6 @@ def run_mini_model(
                 reason="Glm4 not available in this version of transformers",
             ),
         ),
-
         ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         ("mini_mistral", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         # TODO: mixtral is flaky so disable the test for now
@@ -1138,7 +1136,10 @@ def run_mini_model(
             1e-2,
             1e-2,
             1e-2,
-            marks= pytest.mark.skipif(not SMOLLM3_AVAILABLE,reason="Smollm3 not available in this version of transformers",),
+            marks=pytest.mark.skipif(
+                not SMOLLM3_AVAILABLE,
+                reason="Smollm3 not available in this version of transformers",
+            ),
         ),
     ],
 )
