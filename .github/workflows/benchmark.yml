@@ -9,6 +9,10 @@ on:
       commit_hash:
         description: 'Commit hash to benchmark'
         default: 'main'
+      overwrite:
+        description: 'Overwrite existing benchmark data if it exists'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -73,6 +77,23 @@ jobs:
           rm -rf benchmark
           cp -r /tmp/benchmark_main benchmark
     
+      # Step: Check if benchmark exists and exit if overwrite is false
+      - name: Check existing benchmark
+        run: |
+          COMMIT_HASH="${{ steps.choose_commit.outputs.hash }}"
+          BENCHMARK_URL="https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks/${COMMIT_HASH}/benchmark.csv"
+          
+          if curl --output /dev/null --silent --head --fail "$BENCHMARK_URL"; then
+            echo "Benchmark already exists for commit $COMMIT_HASH"
+            if [ "${{ github.event.inputs.overwrite }}" != "true" ]; then
+              echo "Overwrite is false - exiting"
+              exit 1
+            else
+              echo "Overwrite is true - proceeding"
+            fi
+          else
+            echo "No existing benchmark found - proceeding"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v3
