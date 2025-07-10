@@ -41,9 +41,7 @@ class LigerRMSNorm(nn.Module):
         )
 
     def extra_repr(self):
-        return (
-            f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}, offset={self.offset}, in_place={self.in_place}"
-        )
+        return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}, offset={self.offset}, in_place={self.in_place}, row_mode={self.row_mode}"
 
 
 class LigerRMSNormForGemma(LigerRMSNorm):
