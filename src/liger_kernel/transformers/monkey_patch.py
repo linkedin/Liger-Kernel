@@ -299,7 +299,7 @@ def apply_liger_kernel_to_smollm3(
     model: PreTrainedModel = None,
 ) -> None:
     """
-    Apply Liger kernels to replace original implementation in HuggingFace Llama models (2 and 3)
+    Apply Liger kernels to replace original implementation in HuggingFace SmolLM3 model
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
