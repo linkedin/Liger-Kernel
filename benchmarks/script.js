@@ -45,7 +45,7 @@ let goldenCommits = {};
 
 async function loadGoldenCommits() {
   try {
-    const res = await fetch('https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmark/golden_commits.json');
+    const res = await fetch('https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks/golden_commits.json');
     if (res.ok) {
       const data = await res.json();
       return data.golden_commits || {};
