@@ -160,3 +160,83 @@ button:hover {
 .theme-toggle:hover {
   background-color: var(--secondary-color);
 }
+
+/* Category-based row styling */
+.category-pretraining {
+  border-left: 4px solid #2196F3;
+}
+
+.category-distillation {
+  border-left: 4px solid #FF9800;
+}
+
+.category-post_training {
+  border-left: 4px solid #9C27B0;
+}
+
+.category-other {
+  border-left: 4px solid #607D8B;
+}
+
+/* Category filter styling */
+#categoryFilter {
+  padding: 8px;
+  border-radius: 5px;
+  border: 1px solid #ccc;
+  background-color: var(--bg-color);
+  color: var(--font-color);
+}
+
+/* Legend styling */
+.legend {
+  margin: 20px 0;
+  text-align: center;
+}
+
+.legend h3 {
+  margin-bottom: 10px;
+  color: var(--font-color);
+  font-size: 16px;
+}
+
+.legend-items {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-color {
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  border: 1px solid #ddd;
+}
+
+.legend-color.pretraining {
+  background-color: #2196F3;
+}
+
+.legend-color.distillation {
+  background-color: #FF9800;
+}
+
+.legend-color.post_training {
+  background-color: #9C27B0;
+}
+
+.legend-color.other {
+  background-color: #607D8B;
+}
+
+.legend-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--font-color);
+}
