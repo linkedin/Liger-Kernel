@@ -5,15 +5,12 @@ from typing import Tuple
 from typing import Union
 
 import torch
-import torch.nn.functional as F
 
 from torch.distributed.fsdp import FullyShardedDataParallel
-from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fsdp import _FSDPForwardRedirection
-from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.utils import PEFT_AVAILABLE
 

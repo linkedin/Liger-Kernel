@@ -20,7 +20,6 @@ from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_for
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
-from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_forward
 from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
 from liger_kernel.transformers.model.llava import lce_forward_deprecated as llava_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
@@ -30,6 +29,7 @@ from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward_deprecated
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward_deprecated
+from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_forward
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
