@@ -20,6 +20,7 @@ from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_for
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
+from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_forward
 from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
 from liger_kernel.transformers.model.llava import lce_forward_deprecated as llava_lce_forward_deprecated
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
@@ -339,13 +340,13 @@ def apply_liger_kernel_to_smollm3(
 
     if fused_linear_cross_entropy:
         if model is not None:
-            model.forward = MethodType(llama_lce_forward, model)
+            model.forward = MethodType(smollm3_lce_forward, model)
         else:
-            modeling_smollm3.SmolLM3ForCausalLM.forward = llama_lce_forward
+            modeling_smollm3.SmolLM3ForCausalLM.forward = smollm3_lce_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
-        # instance variables that reference already-instantiated modules (e.g. LlamaRMSNorm or LlamaMLP)
+        # instance variables that reference already-instantiated modules (e.g. SmolLM3RMSNorm or SmolLM3MLP)
 
         # get the base model from the model instance
         base_model: SmolLM3Model = getattr(model, model.base_model_prefix, model)
