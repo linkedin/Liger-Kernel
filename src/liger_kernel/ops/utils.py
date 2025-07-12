@@ -42,10 +42,61 @@ def ensure_contiguous(fn):
     return wrapper
 
 
+def _calculate_max_fused_size():
+    torch_device_props = _get_device_properties()
+
+    MIN_SIZE = 4096
+    MAX_SIZE = 131072
+    base_size = 65536
+
+    if torch_device_props["max_regs"] > 65536:
+        reg_limit = 131072
+    elif torch_device_props["max_regs"] > 49152:
+        reg_limit = 65536
+    elif torch_device_props["max_regs"] > 32768:
+        reg_limit = 32768
+    else:
+        reg_limit = 16384
+
+    if torch_device_props["num_sm"] >= 80:
+        sm_factor = 2.0
+    elif torch_device_props["num_sm"] >= 68:
+        sm_factor = 1.5
+    elif torch_device_props["num_sm"] >= 46:
+        sm_factor = 1.0
+    else:
+        sm_factor = 0.5
+
+    if torch_device_props["max_shared_mem"] >= 98304:
+        smem_factor = 1.5
+    elif torch_device_props["max_shared_mem"] >= 49152:
+        smem_factor = 1.0
+    else:
+        smem_factor = 0.5
+
+    if torch_device_props["is_hip"]:
+        base_size = min(base_size, 32768)
+        sm_factor *= 0.75
+        smem_factor *= 0.75
+
+    calculated_size = int(base_size * min(sm_factor, smem_factor))
+    final_size = min(reg_limit, calculated_size)
+
+    final_size = triton.next_power_of_2(final_size)
+    return max(MIN_SIZE, min(MAX_SIZE, final_size))
+
+
+def _prev_power_of_2(n):
+    # Triton requires powers of 2 for num_warps
+    if n <= 0:
+        return 1
+    return 1 << (n.bit_length() - 1)
+
+
 def calculate_settings(n):
     # reference: https://github.com/unslothai/unsloth/blob/fd753fed99ed5f10ef8a9b7139588d9de9ddecfb/unsloth/kernels/utils.py#L43
 
-    MAX_FUSED_SIZE = 65536
+    MAX_FUSED_SIZE = _calculate_max_fused_size()
     BLOCK_SIZE = triton.next_power_of_2(n)
     if BLOCK_SIZE > MAX_FUSED_SIZE:
         raise RuntimeError(
@@ -53,13 +104,120 @@ def calculate_settings(n):
         )
 
     num_warps = 4
-    if BLOCK_SIZE >= 32768:
+    if BLOCK_SIZE >= 65536:
+        num_warps = 64 if not is_hip() else 16  # H100 has 64 schedulable warps maximum per SM
+    elif BLOCK_SIZE >= 32768:
         num_warps = 32 if not is_hip() else 16
     elif BLOCK_SIZE >= 8192:
         num_warps = 16
     elif BLOCK_SIZE >= 2048:
         num_warps = 8
+
+    torch_device_props = _get_device_properties()
+    max_threads_per_sm = torch_device_props["max_threads_per_sm"]
+    warp_size = torch_device_props["warp_size"]
+    max_warps_per_sm = max_threads_per_sm // warp_size
+
+    num_warps = min(num_warps, max_warps_per_sm)
+
+    # Triton requires num_warps to be a power of 2.
+    num_warps = _prev_power_of_2(num_warps)
+
     return BLOCK_SIZE, num_warps
+
+
+def _get_device_properties():
+    device = torch.cuda.current_device()
+    torch_device_props = torch.cuda.get_device_properties(device)
+
+    max_shared_mem = 49152  # value for RTX 3090.
+    if hasattr(torch_device_props, "shared_memory_per_block"):
+        max_shared_mem = torch_device_props.shared_memory_per_block
+    elif hasattr(torch_device_props, "sharedMemPerBlock"):
+        max_shared_mem = torch_device_props.sharedMemPerBlock
+    elif hasattr(torch_device_props, "max_shared_memory_per_block"):
+        max_shared_mem = torch_device_props.max_shared_memory_per_block
+
+    is_hip_device: bool = is_hip()
+
+    return {
+        "num_sm": torch_device_props.multi_processor_count,
+        "max_shared_mem": max_shared_mem,
+        "max_threads_per_sm": torch_device_props.max_threads_per_multi_processor,
+        "warp_size": 64 if is_hip_device else 32,
+        "max_regs": torch_device_props.regs_per_multiprocessor,
+        "is_hip": is_hip_device,
+    }
+
+
+def calculate_num_stages():
+    torch_device_props = _get_device_properties()
+
+    reg_stages = 2
+    if torch_device_props["max_regs"] > 65536:
+        reg_stages = 8
+    elif torch_device_props["max_regs"] >= 65536:
+        reg_stages = 6
+    elif torch_device_props["max_regs"] > 49152:
+        reg_stages = 4
+    elif torch_device_props["max_regs"] > 32768:
+        reg_stages = 4
+    elif torch_device_props["max_regs"] > 16384:
+        reg_stages = 3
+
+    smem_stages = 2
+    if torch_device_props["max_shared_mem"] > 163840:
+        smem_stages = 8
+    elif torch_device_props["max_shared_mem"] > 131072:
+        smem_stages = 6
+    elif torch_device_props["max_shared_mem"] > 98304:
+        smem_stages = 4
+    elif torch_device_props["max_shared_mem"] >= 49152:
+        smem_stages = 4
+    elif torch_device_props["max_shared_mem"] > 32768:
+        smem_stages = 3
+    elif torch_device_props["max_shared_mem"] > 16384:
+        smem_stages = 2
+    else:
+        smem_stages = 1
+
+    num_sm = torch_device_props["num_sm"]
+    sm_stages = 2
+    if num_sm >= 108:
+        sm_stages = 8
+    elif num_sm >= 84:
+        sm_stages = 6
+    elif num_sm >= 68:
+        sm_stages = 4
+    elif num_sm >= 46:
+        sm_stages = 3
+    elif num_sm >= 28:
+        sm_stages = 2
+    else:
+        sm_stages = 1
+
+    max_threads_per_sm = torch_device_props["max_threads_per_sm"]
+    thread_stages = 2
+    if max_threads_per_sm >= 2048:
+        thread_stages = 8
+    elif max_threads_per_sm >= 1792:
+        thread_stages = 6
+    elif max_threads_per_sm >= 1536:
+        thread_stages = 4
+    elif max_threads_per_sm >= 1024:
+        thread_stages = 3
+    else:
+        thread_stages = 2
+
+    if torch_device_props["is_hip"]:
+        reg_stages = max(1, reg_stages // 2)
+        smem_stages = max(1, smem_stages // 2)
+        sm_stages = max(1, sm_stages // 2)
+        thread_stages = max(1, thread_stages // 2)
+
+    final_stages = min(reg_stages, smem_stages, sm_stages, thread_stages)
+
+    return max(1, min(8, final_stages))
 
 
 def compare_version(package: str, operator: Callable, target: str):

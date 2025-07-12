@@ -114,7 +114,7 @@ if __name__ == "__main__":
         kernel_name="softmax",
         x_name="N",
         x_label="hidden size",
-        x_values=[128, 256, 512, 1024, 2048, 4096],
+        x_values=[2**i for i in range(8, 17)],
         kernel_providers=["liger", "torch"],
         extra_benchmark_configs=[
             {"M": 2048, "dtype": torch.float32},
