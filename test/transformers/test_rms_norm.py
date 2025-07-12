@@ -183,3 +183,96 @@ def test_correctness_functional(bs, sl, hd, dtype, atol, rtol, reference, offset
     y2.backward(grad)
 
     assert torch.allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
+
+
+def estimate_mem(bs, sl, hd, dtype):
+    """
+    Estimate GPU memory requirement for the test case.
+    """
+    # Get bytes per element for the dtype
+    if dtype == torch.float32:
+        bytes_per_element = 4
+    elif dtype == torch.bfloat16:
+        bytes_per_element = 2
+
+    # Calculate tensor sizes
+    main_tensor_size = bs * sl * hd * bytes_per_element  # _tensor
+    weight_tensor_size = hd * bytes_per_element  # w
+
+    total_tensors = (
+        2 * main_tensor_size + 2 * main_tensor_size + 2 * main_tensor_size + main_tensor_size + weight_tensor_size
+    )
+
+    # Convert to GB
+    total_memory_gb = total_tensors / (1024**3)
+
+    return total_memory_gb
+
+
+def memory_check_for_test(bs, sl, hd, dtype, margin=3, device_id: int = 0):
+    """
+    Check if system has sufficient GPU memory for the test.
+    """
+    if not torch.cuda.is_available():
+        return False
+
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+
+    free_bytes, total_bytes = torch.cuda.mem_get_info(device_id)
+    free_mem = free_bytes / (1024**3)
+
+    # Estimate required memory
+    required_mem = estimate_mem(bs, sl, hd, dtype) + margin
+
+    # Check if we have enough memory (with safety margin)
+    return free_mem >= required_mem
+
+
+@pytest.mark.parametrize(
+    "bs, sl, hd",
+    [
+        (1, 1_000_000, 512),
+        (1, 1_000_000, 4096),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-6),
+        (torch.bfloat16, 2e-1, 2e-2),
+    ],
+)
+@pytest.mark.parametrize(
+    "reference, offset, casting_mode",
+    [
+        (LlamaRMSNorm, 0.0, "llama"),
+        (GemmaRMSNorm, 1.0, "gemma"),
+        (BaseRMSNorm, 0.0, "none"),
+    ],
+)
+def test_rms_norm_for_prevent_overflow(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode):
+    if not memory_check_for_test(bs, sl, hd, dtype):
+        required_mem = estimate_mem(bs, sl, hd, dtype)
+        pytest.skip(
+            f"Insufficient GPU memory for test with bs={bs}, sl={sl}, hd={hd}, dtype={dtype}. Required: {required_mem:.2f}GB"
+        )
+    # Create a tensor with large values
+    _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype) * 1e6
+
+    h1 = _tensor.clone().requires_grad_(True)
+    h2 = _tensor.clone().requires_grad_(True)
+
+    w = torch.randn(hd, device=device, dtype=dtype)
+
+    y1 = liger_rms_norm(X=h1, W=w, eps=1e-6, offset=offset, casting_mode=casting_mode)
+    y2 = LigerRMSNormFunction.apply(h2, w, 1e-6, offset, casting_mode)
+
+    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
+
+    grad = torch.randn_like(y2)
+
+    y1.backward(grad)
+    y2.backward(grad)
+
+    assert torch.allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
