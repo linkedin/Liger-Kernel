@@ -183,3 +183,62 @@ def test_correctness_functional(bs, sl, hd, dtype, atol, rtol, reference, offset
     y2.backward(grad)
 
     assert torch.allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
+
+
+def memory_check(required_memory_gb):
+    """
+    Check if the system has sufficient GPU memory.
+    Returns True if sufficient memory is available, otherwise False.
+    """
+    if torch.cuda.is_available():
+        total_memory = torch.cuda.get_device_properties(0).total_memory
+        total_memory_gb = total_memory / (1024**3)  # Convert bytes to GB
+        return total_memory_gb >= required_memory_gb
+    return False
+
+
+@pytest.mark.parametrize(
+    "bs, sl, hd",
+    [
+        (1, 1, 512),
+        (1, 1, 4096),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-6),
+        (torch.bfloat16, 2e-1, 2e-2),
+    ],
+)
+@pytest.mark.parametrize(
+    "reference, offset, casting_mode",
+    [
+        (LlamaRMSNorm, 0.0, "llama"),
+        (GemmaRMSNorm, 1.0, "gemma"),
+    ],
+)
+@pytest.mark.skipif(
+    not memory_check(16),  # Skip if less than 16GB GPU memory
+    reason="Insufficient GPU memory for large tensor operations",
+)
+def test_rms_norm_for_prevent_overflow(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode):
+    # Create a tensor with large values
+    _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype) * 1e6
+
+    h1 = _tensor.clone().requires_grad_(True)
+    h2 = _tensor.clone().requires_grad_(True)
+
+    w = torch.randn(hd, device=device, dtype=dtype)
+
+    y1 = liger_rms_norm(X=h1, W=w, eps=1e-6, offset=offset, casting_mode=casting_mode)
+    y2 = LigerRMSNormFunction.apply(h2, w, 1e-6, offset, casting_mode)
+
+    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
+
+    grad = torch.randn_like(y2)
+
+    y1.backward(grad)
+    y2.backward(grad)
+
+    assert torch.allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
