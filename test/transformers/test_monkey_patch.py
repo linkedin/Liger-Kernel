@@ -1638,7 +1638,7 @@ def test_apply_liger_kernel_to_instance_for_smollm3():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.smollm3.modeling_smollm3"):
         # Instantiate a dummy model
-        config = transformers.models.smollm3.configuration_smollm3.SmollM3Config(
+        config = transformers.models.smollm3.configuration_smollm3.SmolLM3Config(
             torch_dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
@@ -1660,12 +1660,12 @@ def test_apply_liger_kernel_to_instance_for_smollm3():
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
-        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(smolllm3_lce_forward)
-        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(smolllm3_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
-            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
         # Ensure that the model patched with Liger modules can work properly
         try:
