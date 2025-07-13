@@ -31,7 +31,7 @@ def get_optional_dependencies():
     """Get optional dependency groups."""
     return {
         "dev": [
-            "transformers>=4.44.2",
+            "transformers>=4.49.0",
             "matplotlib>=3.7.2",
             "flake8>=4.0.1.1",
             "black>=24.4.2",

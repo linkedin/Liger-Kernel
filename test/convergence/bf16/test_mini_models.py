@@ -957,8 +957,8 @@ def run_mini_model(
                     reason="LLaVa not available in this version of transformers",
                 ),
                 pytest.mark.skipif(
-                    version.parse(transformers.__version__) < version.parse("4.49.0"),
-                    reason="Mistral not available in transformers<=4.49.0",
+                    version.parse(transformers.__version__) < version.parse("4.52.0"),
+                    reason="LLaVa doesn't materialize logits in transformers<=4.52.0 so we can't test it",
                 ),
             ],
         ),

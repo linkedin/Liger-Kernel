@@ -537,7 +537,10 @@ def apply_liger_kernel_to_mllama(
         if isinstance(model, MllamaForConditionalGeneration):
             language_model: MllamaForCausalLM = model.language_model
             vision_model: MllamaVisionModel = model.vision_model
-            text_model: MllamaTextModel = language_model
+            if isinstance(language_model, MllamaForCausalLM):
+                text_model: MllamaTextModel = language_model.model
+            else:
+                text_model = language_model
         elif isinstance(model, MllamaForCausalLM):
             text_model = model.model
             vision_model = None
@@ -1096,7 +1099,9 @@ def apply_liger_kernel_to_paligemma(
     # PaliGemma submodules are ['vision_tower', 'multi_modal_projector', 'language_model']
 
     from transformers.models.gemma.modeling_gemma import GemmaForCausalLM
+    from transformers.models.gemma.modeling_gemma import GemmaModel
     from transformers.models.gemma2.modeling_gemma2 import Gemma2ForCausalLM
+    from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
     from transformers.models.paligemma import modeling_paligemma
     from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
     from transformers.models.siglip import modeling_siglip
@@ -1155,7 +1160,7 @@ def apply_liger_kernel_to_paligemma(
 
         language_model = model.language_model
 
-        if isinstance(language_model, GemmaForCausalLM):
+        if isinstance(language_model, (GemmaForCausalLM, GemmaModel)):
             apply_liger_kernel_to_gemma(
                 rope=rope,
                 cross_entropy=False,
@@ -1165,7 +1170,7 @@ def apply_liger_kernel_to_paligemma(
                 model=language_model,
             )
 
-        elif isinstance(language_model, Gemma2ForCausalLM):
+        elif isinstance(language_model, (Gemma2ForCausalLM, Gemma2Model)):
             apply_liger_kernel_to_gemma2(
                 rope=rope,
                 cross_entropy=False,
