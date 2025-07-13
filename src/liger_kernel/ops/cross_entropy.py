@@ -54,7 +54,7 @@ def liger_cross_entropy_kernel(
     X_ptr: Pointer to input tensor.
     X_stride (int): The stride of the input tensor.
     Y_ptr: Pointer to target tensor.
-    Y_stride (int): The stride of the target tensor.
+Y_stride (int): The stride of the target tensor.
     weight_ptr: Pointer to weight tensor.
     loss_ptr: Pointer to tensor to store the loss.
     z_loss_ptr: Pointer to tensor to store the z loss. No operation if RETURN_Z_LOSS is 0.
@@ -103,8 +103,6 @@ def liger_cross_entropy_kernel(
     # Refer to Algorithm 3 in the paper: https://arxiv.org/pdf/1805.02867
 
     # 3. [Online softmax] first pass: find max + sum
-    m = float("-inf")  # m is the max value. use the notation from the paper
-    d = 0.0  # d is the sum. use the notation from the paper
     ori_X_y = tl.load(X_ptr + y).cast(tl.float32)  # we need to store the original value of X_y for the loss calculation
     if HAS_SOFTCAPPING:
         ori_X_y = softcap * tanh(ori_X_y / softcap)
@@ -114,11 +112,16 @@ def liger_cross_entropy_kernel(
     scaled_x_sum = 0.0
     eps = label_smoothing / n_cols
 
+
+    m = tl.full((BLOCK_SIZE,), float("-inf"), tl.float32)
+    d = tl.full((BLOCK_SIZE,), 0.0, tl.float32)
+
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
+        X_mask = X_offsets < n_cols
         X_block = tl.load(
             X_ptr + X_offsets,
-            mask=X_offsets < n_cols,
+            mask=X_mask,
             other=float("-inf"),
             # Ensure float32 precision for softmax calculation
         ).cast(tl.float32)
@@ -128,10 +131,10 @@ def liger_cross_entropy_kernel(
         if label_smoothing > 0:
             # scale X beforehand to avoid overflow
             if HAS_WEIGHT:
-                weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
-                scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -eps * X_block * weight_block, 0.0))
+                weight_block = tl.load(weight_ptr + X_offsets, mask=X_mask)
+                scaled_x_sum += tl.sum(tl.where(X_mask, -eps * X_block * weight_block, 0.0))
             else:
-                scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -eps * X_block, 0.0))
+                scaled_x_sum += tl.sum(tl.where(X_mask, -eps * X_block, 0.0))
         m_new = tl.maximum(m, block_max)
         d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
         m = m_new
@@ -139,6 +142,8 @@ def liger_cross_entropy_kernel(
     # log (sum(e^(X_i))) = log (sum(e ^ (max(X) * e ^ (X_i - max(X)))))
     #                    = log (e^(max(X)) * sum(e ^ (X_i - max(X))))
     #                    = max(X) + log (sum(e ^ (X_i - max(X)))) = m + log d
+    m = tl.max(m, axis=0)
+    d = tl.sum(d, axis=0)
     lse = m + tl.log(d)
 
     # 4. [Online Softmax] Second pass: compute gradients
@@ -158,9 +163,10 @@ def liger_cross_entropy_kernel(
 
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
+        X_mask = X_offsets < n_cols
         X_block = tl.load(
             X_ptr + X_offsets,
-            mask=X_offsets < n_cols,
+            mask=X_mask,
             other=float("-inf"),
             # Ensure float32 precision for softmax calculation
         ).cast(tl.float32)
@@ -181,7 +187,7 @@ def liger_cross_entropy_kernel(
             if reduction == "mean":
                 X_block = X_block / n_non_ignore
         else:
-            weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
+            weight_block = tl.load(weight_ptr + X_offsets, mask=X_mask)
             softmax_X = tl.exp(X_block - m) / d
             # derivative of original_loss
             dloss_ori = (1 - label_smoothing) * softmax_X
@@ -206,7 +212,7 @@ def liger_cross_entropy_kernel(
         if HAS_SOFTCAPPING:
             X_block = X_block * (1 - intermediate * intermediate)
 
-        tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
+        tl.store(X_ptr + X_offsets, X_block, mask=X_mask)
 
     # We need tl.debug_barrier() to ensure the new result of X_ptr is written as mentioned in
     # https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/ops/cross_entropy.py#L34
@@ -277,9 +283,7 @@ def cross_entropy_forward(
 
     BT, V = _input.shape
     n_rows = BT
-
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
-
     # unreduced loss
     loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
     z_loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device) if return_z_loss else None
@@ -329,12 +333,8 @@ def cross_entropy_forward(
         reduction=reduction,
         softcap=softcap,
         RETURN_Z_LOSS=return_z_loss,
-        BLOCK_SIZE=BLOCK_SIZE,
         HAS_WEIGHT=True if weight is not None else False,
         HAS_SOFTCAPPING=True if softcap is not None else False,
-        # TODO: 32 seems to give the best performance
-        # Performance is quite sensitive to num_warps
-        num_warps=32 if not is_hip() else 16,
     )
 
     if reduction == "none":
