@@ -197,18 +197,18 @@ def test_correctness_functional(bs, sl, hd, dtype, atol, rtol, reference, offset
 
     w = torch.randn(hd, device=device, dtype=dtype)
 
-    triton_h, triton_r = liger_fused_add_rms_norm(X=h1, R=r1, W=w, eps=1e-6, offset=offset, casting_mode=casting_mode, in_place=in_place)
+    h, r = liger_fused_add_rms_norm(X=h1, R=r1, W=w, eps=1e-6, offset=offset, casting_mode=casting_mode, in_place=in_place)
     ref_h, ref_r = LigerFusedAddRMSNormFunction.apply(h2, r2, w, 1e-6, offset, casting_mode, in_place)
 
-    assert torch.allclose(triton_h, ref_h, atol=atol, rtol=rtol)
-    assert torch.allclose(triton_r, ref_r, atol=atol, rtol=rtol)
+    assert torch.allclose(h, ref_h, atol=atol, rtol=rtol)
+    assert torch.allclose(r, ref_r, atol=atol, rtol=rtol)
 
-    dh = torch.randn_like(triton_h)
+    dh = torch.randn_like(h)
     dh_ref = dh.clone()
-    dr = torch.randn_like(triton_r)
+    dr = torch.randn_like(r)
     dr_ref = dr.clone()
 
-    torch.autograd.backward((triton_h, triton_r), (dh, dr), retain_graph=True)
+    torch.autograd.backward((h, r), (dh, dr), retain_graph=True)
     torch.autograd.backward((ref_h, ref_r), (dh_ref, dr_ref), retain_graph=True)
 
 

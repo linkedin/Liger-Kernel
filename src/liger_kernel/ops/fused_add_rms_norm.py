@@ -47,14 +47,18 @@ def _fused_add_rms_norm_forward_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    1. y = r + x
-    2. s = y
-    3. y_i = (s_i / (RMS)) * (offset + wi), RMS = sqrt(sum(s_i^2) / N)
+    This kernel computes the following:
+    1. hidden_states = residual + hidden_states
+    2. residual = hidden_states
+    3. hidden_states = rmsnorm(hidden_states)
 
-    Reference:
-    1. https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
-    2. https://github.com/unslothai/unsloth/blob/fd753fed99ed5f10ef8a9b7139588d9de9ddecfb/unsloth/kernels/rms_layernorm.py#L22
-    3. https://arxiv.org/pdf/1910.07467
+    This is a commonly used pattern in the decoder layers of LLMs.
+    Some examples:
+    1. https://github.com/huggingface/transformers/blob/0dc2df5ddafe3cb5824ad24e85beba13e0aa6726/src/transformers/models/qwen3/modeling_qwen3.py#L271
+    2. https://github.com/huggingface/transformers/blob/0dc2df5ddafe3cb5824ad24e85beba13e0aa6726/src/transformers/models/llama4/modeling_llama4.py#L393
+
+    This kernel is inspired by the rms_norm forward kernel, and is adapted to support the residual addition in the forward pass.
+    The backward pass is also adapted to support the residual addition in the backward pass.
     """
 
     row_idx = tl.program_id(0)
@@ -135,8 +139,17 @@ def _fused_add_rms_norm_backward_kernel(
     has_dS_out: tl.constexpr,
 ):
     """
-    dx = (1 / RMS) * [dy * (w + offset - (1 / N) * (1 / RMS^2) * ((dy * (w + offset)) dot x) * x]. * means element-wise multiplication, whileas dot means dot product
-    dw = sum(dy * (x / RMS)). summation over BxT dimension
+    This kernel is adapted from the rms_norm backward kernel, and is adapted to support the residual
+    addition in the backward pass. For the following code pattern:
+    1. hidden_states = residual + hidden_states
+    2. residual = hidden_states
+    3. hidden_states = rmsnorm(hidden_states)
+
+    The gradient of hidden_states and residual comes out be exactly same. The value of this gradient is
+    the sum of the gradient of the hidden_states in step 3 and the gradient of the residual in step 2.
+
+    The backward pass computation logic is same as the rms_norm backward kernel, except that the gradient
+    of the hidden_states in step 3 and the gradient of the residual in step 2 are summed up.
     """
 
     row_block_id = tl.program_id(0)
@@ -327,7 +340,7 @@ def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BL
     dX = dX.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype)
 
-    return dX, dX, dW # dR = dX
+    return dX, dX, dW # dR is equal to dX
 
 
 class LigerFusedAddRMSNormFunction(torch.autograd.Function):
