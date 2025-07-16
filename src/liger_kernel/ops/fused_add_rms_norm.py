@@ -27,7 +27,7 @@ _CASTING_MODE_GEMMA: tl.constexpr = tl.constexpr(1)
 
 
 @triton.jit
-def _fused_residual_rms_norm_forward_kernel(
+def _fused_add_rms_norm_forward_kernel(
     Y_ptr,
     Y_row_stride,
     S_ptr, # output residual
@@ -47,9 +47,9 @@ def _fused_residual_rms_norm_forward_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    y = r + x
-    s = y
-    y_i = (s_i / (RMS)) * (offset + wi), RMS = sqrt(sum(s_i^2) / N)
+    1. y = r + x
+    2. s = y
+    3. y_i = (s_i / (RMS)) * (offset + wi), RMS = sqrt(sum(s_i^2) / N)
 
     Reference:
     1. https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
@@ -110,15 +110,15 @@ def _fused_residual_rms_norm_forward_kernel(
 
 
 @triton.jit
-def _fused_residual_rms_norm_backward_kernel(
+def _fused_add_rms_norm_backward_kernel(
     dY_ptr,
     dY_row_stride,
+    dS_out_ptr,
+    dS_out_row_stride,
     dX_ptr,
     dX_row_stride,
-    dR_ptr,
-    dR_row_stride,
-    S_ptr,
-    S_row_stride,
+    X_ptr,
+    X_row_stride,
     X_dtype: tl.constexpr,
     W_ptr,
     W_row_stride,
@@ -132,6 +132,7 @@ def _fused_residual_rms_norm_backward_kernel(
     rows_per_program: tl.constexpr,
     casting_mode: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    has_dS_out: tl.constexpr,
 ):
     """
     dx = (1 / RMS) * [dy * (w + offset - (1 / N) * (1 / RMS^2) * ((dy * (w + offset)) dot x) * x]. * means element-wise multiplication, whileas dot means dot product
@@ -148,8 +149,10 @@ def _fused_residual_rms_norm_backward_kernel(
 
     dY_ptr += row_start * dY_row_stride
     dX_ptr += row_start * dX_row_stride
-    dR_ptr += row_start * dR_row_stride
-    S_ptr += row_start * S_row_stride
+    if has_dS_out:
+        dS_out_ptr += row_start * dS_out_row_stride
+
+    X_ptr += row_start * X_row_stride
     RSTD_ptr += row_start
 
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
@@ -157,12 +160,12 @@ def _fused_residual_rms_norm_backward_kernel(
 
     for _ in range(row_start, row_end):
         dY_row = tl.load(dY_ptr + col_offsets, mask=mask, other=0.0)
-        S_row = tl.load(S_ptr + col_offsets, mask=mask, other=0.0)
+        X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0.0)
 
         # Get cached rms
         rstd_row = tl.load(RSTD_ptr)
 
-        S_row = S_row.to(tl.float32)
+        X_row = X_row.to(tl.float32)
 
         # Different bacward graphs for different casting modes
         if casting_mode == _CASTING_MODE_LLAMA:
@@ -174,24 +177,27 @@ def _fused_residual_rms_norm_backward_kernel(
         else:
             m = dY_row * W_row
 
-        dS_row = rstd_row * m
+        dX_row = rstd_row * m
 
-        dS_row += (rstd_row) * (-(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * S_row, axis=0) * S_row)
+        if has_dS_out:
+            dS_out_row = tl.load(dS_out_ptr + col_offsets, mask=mask, other=0.0)
+            dX_row += (rstd_row) * (-(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row) + dS_out_row
+            dS_out_ptr += dS_out_row_stride
+        else:
+            dX_row += (rstd_row) * (-(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row)
 
         # calculate the gradient of W
         if casting_mode == _CASTING_MODE_LLAMA:
-            dW_row += dY_row * (S_row * rstd_row).to(X_dtype)
+            dW_row += dY_row * (X_row * rstd_row).to(X_dtype)
         else:
-            # here S_row is already in fp32 (see previous if block)
-            dW_row += dY_row * (S_row * rstd_row)
+            # here X_row is already in fp32 (see previous if block)
+            dW_row += dY_row * (X_row * rstd_row)
 
-        tl.store(dR_ptr + col_offsets, dS_row.to(X_dtype), mask=mask)
-        tl.store(dX_ptr + col_offsets, dS_row.to(X_dtype), mask=mask)
+        tl.store(dX_ptr + col_offsets, dX_row.to(X_dtype), mask=mask)
 
         dY_ptr += dY_row_stride
         dX_ptr += dX_row_stride
-        dR_ptr += dR_row_stride
-        S_ptr += S_row_stride
+        X_ptr += X_row_stride
         RSTD_ptr += RSTD_row_stride
 
     tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
@@ -204,7 +210,7 @@ _str_to_casting_mode = {
 }
 
 
-def fused_residual_rms_norm_forward(X, R, W, eps, offset, casting_mode, row_mode):
+def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode, row_mode):
     if not isinstance(casting_mode, int):
         assert casting_mode in _str_to_casting_mode, f"Invalid casting mode: {casting_mode}"
         casting_mode = _str_to_casting_mode[casting_mode]
@@ -233,7 +239,7 @@ def fused_residual_rms_norm_forward(X, R, W, eps, offset, casting_mode, row_mode
     if X.device.type == "xpu":
         kernel_args["grf_mode"] = "large"
     
-    _fused_residual_rms_norm_forward_kernel[(n_rows,)](
+    _fused_add_rms_norm_forward_kernel[(n_rows,)](
         Y,
         Y.stride(0),
         S,
@@ -255,13 +261,14 @@ def fused_residual_rms_norm_forward(X, R, W, eps, offset, casting_mode, row_mode
         **kernel_args,  # XPU-specific optimization
     )
     
-    return Y.view(*shape), S, RSTD, BLOCK_SIZE, num_warps, casting_mode
+    return Y.view(*shape), S.view(*shape), RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def fused_residual_rms_norm_backward(dY, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode):
+def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
+    dS_out = dS_out.view(-1, dim)
     S = S.view(-1, dim)
     n_rows, n_cols = dY.shape
 
@@ -282,21 +289,20 @@ def fused_residual_rms_norm_backward(dY, S, W, RSTD, offset, casting_mode, BLOCK
     if in_place is True:
         dX = dY
     else:
-        dX = torch.zeros_like(dY)
-        dR = torch.zeros_like(S)
+        dX = torch.empty_like(dY)
 
     # XPU-specific optimization
     kernel_args = {}
     if S.device.type == "xpu":
         kernel_args["grf_mode"] = "large"
 
-    _fused_residual_rms_norm_backward_kernel[grid](
+    _fused_add_rms_norm_backward_kernel[grid](
         dY,
         dY.stride(0),
+        dS_out,
+        dS_out.stride(0),
         dX,
         dX.stride(0),
-        dR,
-        dR.stride(0),
         S,
         S.stride(0),
         torch_to_triton_dtype[S.dtype],
@@ -313,17 +319,18 @@ def fused_residual_rms_norm_backward(dY, S, W, RSTD, offset, casting_mode, BLOCK
         casting_mode,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
+        has_dS_out=dS_out is not None,
         **kernel_args,  # XPU-specific optimization
     )
     
+
     dX = dX.view(*shape)
-    dR = dR.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype)
 
-    return dX, dR, dW
+    return dX, dX, dW # dR = dX
 
 
-class LigerFusedResidualRMSNormFunction(torch.autograd.Function):
+class LigerFusedAddRMSNormFunction(torch.autograd.Function):
     """
     Performs RMSNorm (Root Mean Square Normalization), which normalizes the input tensor `X` using the
     weight tensor `W`, with an optional offset and casting mode.
@@ -352,7 +359,7 @@ class LigerFusedResidualRMSNormFunction(torch.autograd.Function):
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
-        Y, S, RSTD, BLOCK_SIZE, num_warps, casting_mode = fused_residual_rms_norm_forward(X, R, W, eps, offset, casting_mode, row_mode)
+        Y, S, RSTD, BLOCK_SIZE, num_warps, casting_mode = fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode, row_mode)
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.in_place = in_place
@@ -369,12 +376,8 @@ class LigerFusedResidualRMSNormFunction(torch.autograd.Function):
         Y: (B, T, H) or (BxT, H)
         """
         S, W, RSTD = ctx.saved_tensors
-        dX, dR, dW = fused_residual_rms_norm_backward(
-            dY, S, W, RSTD, ctx.offset, ctx.casting_mode, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place, ctx.row_mode
+        dX, dR, dW = fused_add_rms_norm_backward(
+            dY, dS_out, S, W, RSTD, ctx.offset, ctx.casting_mode, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place, ctx.row_mode
         )
-
-        if dS_out is not None:
-            dX = dX + dS_out
-            dR = dR + dS_out
 
         return dX, dR, dW, None, None, None, None, None

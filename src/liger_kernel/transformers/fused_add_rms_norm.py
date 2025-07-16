@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.fused_residual_rms_norm import LigerFusedResidualRMSNormFunction
+from liger_kernel.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction
 
 
-class LigerFusedResidualRMSNorm(nn.Module):
+class LigerFusedAddRMSNorm(nn.Module):
     def __init__(
         self,
         hidden_size,
@@ -30,7 +30,7 @@ class LigerFusedResidualRMSNorm(nn.Module):
         )
 
     def forward(self, hidden_states, residual):
-        return LigerFusedResidualRMSNormFunction.apply(
+        return LigerFusedAddRMSNormFunction.apply(
             hidden_states,
             residual,
             self.weight,
