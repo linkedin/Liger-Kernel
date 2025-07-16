@@ -2,6 +2,41 @@
 const defaultReferenceCommit = 'c1bdc24';
 const benchmarkBase = 'https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks';
 
+// Kernel categories configuration
+const kernelCategories = {
+  "pretraining": [
+    "cross_entropy",
+    "fused_linear_cross_entropy",
+    "softmax",
+    "sparsemax",
+    "rope",
+    "geglu",
+    "swiglu",
+    "layer_norm",
+    "rms_norm",
+    "group_norm",
+    "multi_token_attention",
+    "sparse_multi_token_attention",
+    "fused_neighborhood_attention"
+  ],
+  "distillation": [
+    "distill_jsd_loss",
+    "distill_cosine_loss", 
+    "jsd",
+    "kl_div",
+    "tvd",
+    "fused_linear_jsd",
+    "dyt_beta=True",
+    "dyt_beta=False"
+  ],
+  "post_training": [
+    "dpo_loss",
+    "kto_loss",
+    "fused_linear_cpo_loss",
+    "fused_linear_simpo_loss"
+  ]
+};
+
 let allCommits = [];
 let allDataByCommit = {};
 let kernelMeta = {};
@@ -10,7 +45,7 @@ let goldenCommits = {};
 
 async function loadGoldenCommits() {
   try {
-    const res = await fetch('https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmark/golden_commits.json');
+    const res = await fetch('https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks/golden_commits.json');
     if (res.ok) {
       const data = await res.json();
       return data.golden_commits || {};
@@ -51,6 +86,31 @@ function getGoldenCommit(kernelName) {
   }
   
   return bestCommit;
+}
+
+function getKernelCategory(kernelName) {
+  // Extract base kernel name by removing operation mode and metric suffixes
+  let baseKernelName = kernelName;
+  
+  // Remove common suffixes
+  const suffixes = ['_forward_speed', '_backward_speed', '_full_speed', '_full_memory', '_forward_memory', '_backward_memory'];
+  for (const suffix of suffixes) {
+    if (baseKernelName.endsWith(suffix)) {
+      baseKernelName = baseKernelName.slice(0, -suffix.length);
+      break;
+    }
+  }
+  
+  // Find which category this kernel belongs to
+  for (const [category, kernels] of Object.entries(kernelCategories)) {
+    for (const kernelPattern of kernels) {
+      if (baseKernelName === kernelPattern || baseKernelName.includes(kernelPattern)) {
+        return category;
+      }
+    }
+  }
+  
+  return 'other'; // Default category for unmatched kernels
 }
 
 function toggleTheme() {
@@ -182,6 +242,7 @@ function formatConfigForTooltip(config) {
 function renderTables() {
   const metricType = document.getElementById('metricType').value;
   const searchQuery = document.getElementById('kernelSearch').value.toLowerCase();
+  const categoryFilter = document.getElementById('categoryFilter').value;
   const speedTable = document.getElementById('speedTable');
   const memoryTable = document.getElementById('memoryTable');
 
@@ -206,7 +267,14 @@ function renderTables() {
     }
 
     [...allKeys].forEach((kernelKey) => {
+      // Apply search filter
       if (searchQuery && !kernelKey.toLowerCase().includes(searchQuery)) return;
+      
+      // Apply category filter
+      if (categoryFilter !== 'all') {
+        const kernelCategory = getKernelCategory(kernelKey);
+        if (kernelCategory !== categoryFilter) return;
+      }
       
       // Get kernel-specific golden commit
       const goldenCommit = getGoldenCommit(kernelKey);
@@ -214,9 +282,12 @@ function renderTables() {
       const meta = kernelMeta[kernelKey] || { x_label: '?', x_value: '?' };
       const config = configData[kernelKey] || { extra_benchmark_config_str: 'N/A', gpu_name: 'N/A', liger_version: 'N/A' };
       
-      const tooltipText = formatConfigForTooltip(config) + `\n\nGolden Commit: ${goldenCommit}`;
+      // Get category for styling
+      const kernelCategory = getKernelCategory(kernelKey);
+      
+      const tooltipText = formatConfigForTooltip(config) + `\n\nCategory: ${kernelCategory}\nGolden Commit: ${goldenCommit}`;
 
-      let row = `<tr data-tooltip="${tooltipText}" style="cursor: pointer;">`;
+      let row = `<tr data-tooltip="${tooltipText}" class="category-${kernelCategory}" style="cursor: pointer;">`;
       row += `<td>${kernelKey}</td><td>${meta.x_label}=${meta.x_value}</td><td title="${goldenCommit}">${refVal != null ? refVal.toFixed(2) : 'N/A'}</td>`;
       for (const commit of commits) {
         const val = allDataByCommit[commit]?.[kernelKey];
