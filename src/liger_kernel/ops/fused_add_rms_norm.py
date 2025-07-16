@@ -225,7 +225,7 @@ _str_to_casting_mode = {
 }
 
 
-def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode, row_mode):
+def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
     if not isinstance(casting_mode, int):
         assert casting_mode in _str_to_casting_mode, f"Invalid casting mode: {casting_mode}"
         casting_mode = _str_to_casting_mode[casting_mode]
@@ -279,9 +279,7 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode, row_mode):
     return Y.view(*shape), S.view(*shape), RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def fused_add_rms_norm_backward(
-    dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode
-):
+def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -348,40 +346,41 @@ def fused_add_rms_norm_backward(
 
 class LigerFusedAddRMSNormFunction(torch.autograd.Function):
     """
-    Performs RMSNorm (Root Mean Square Normalization), which normalizes the input tensor `X` using the
-    weight tensor `W`, with an optional offset and casting mode.
+    Performs a fused operation that first adds a residual tensor to the hidden_states tensor (`X`), then applies RMSNorm (Root Mean Square Normalization) to the result using the weight tensor `W`, with optional offset and casting mode.
+
+    This class implements the following sequence, commonly used in transformer decoder layers:
+        1. hidden_states = residual + hidden_states
+        2. residual = hidden_states (after addition)
+        3. hidden_states = rmsnorm(hidden_states)
+
+    Both the normalized hidden_states and the updated residual are returned as outputs.
 
     Some models use an 'offset' to shift the weight tensor `W` by a constant value. For example, Gemma
     uses an offset of 1.0, so the computation becomes `(X / RMS(X)) * (W + 1.0)` instead of the usual
     `(X / RMS(X)) * W`. You can pass the offset value as an argument to the forward function.
 
     In addition, different models cast their inputs at different places during RMSNorm computation. For
-    example, Gemma casts everything to fp32 nefore starting the computation, while Llama casts only the
+    example, Gemma casts everything to fp32 before starting the computation, while Llama casts only the
     inverse RMS to fp32. You can specify the casting mode using the `casting_mode` argument. We currently
     support the following casting modes (they match HuggingFace Transformers' implementations):
     - 'llama': matches the Llama implementation, where only the inverse RMS is computed on fp32.
     - 'gemma': matches the Gemma implementation, where everything is cast to fp32, then computed, then cast back to the original dtype.
     - 'none': no casting is done. The computation is done in the original dtype. This saves memory and is slightly faster, but has more error w.r.t. the original implementation.
 
-    `in_place` option means whether to in_place modify dY to store dX. This is default to `True` to save memory. However, under certain cases, it can produce incorrect inputs.
-        For example, gemma2 uses two rmsnorm sequentially with residual in between. The resesidual part needs dY so it cannot be modified in-place.
-        Therefore, for the patching of RMSNorm in gemma2, we set `in_place` to `False`
+    The `in_place` option determines whether to modify dY in-place to store dX. This defaults to `True` to save memory.
     """
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, R, W, eps, offset=0.0, casting_mode="llama", in_place=False, row_mode=None):
+    def forward(ctx, X, R, W, eps, offset=0.0, casting_mode="llama", in_place=False):
         """
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
-        Y, S, RSTD, BLOCK_SIZE, num_warps, casting_mode = fused_add_rms_norm_forward(
-            X, R, W, eps, offset, casting_mode, row_mode
-        )
+        Y, S, RSTD, BLOCK_SIZE, num_warps, casting_mode = fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode)
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.in_place = in_place
-        ctx.row_mode = row_mode
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
         ctx.save_for_backward(S, W, RSTD)
@@ -405,7 +404,6 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
             ctx.BLOCK_SIZE,
             ctx.num_warps,
             ctx.in_place,
-            ctx.row_mode,
         )
 
         return dX, dR, dW, None, None, None, None, None
