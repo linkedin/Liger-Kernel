@@ -30,11 +30,11 @@ _CASTING_MODE_GEMMA: tl.constexpr = tl.constexpr(1)
 def _fused_add_rms_norm_forward_kernel(
     Y_ptr,
     Y_row_stride,
-    S_ptr, # output residual
+    S_ptr,  # output residual
     S_row_stride,
     X_ptr,
     X_row_stride,
-    R_ptr, # input residual
+    R_ptr,  # input residual
     R_row_stride,
     W_ptr,
     W_row_stride,
@@ -194,7 +194,9 @@ def _fused_add_rms_norm_backward_kernel(
 
         if has_dS_out:
             dS_out_row = tl.load(dS_out_ptr + col_offsets, mask=mask, other=0.0)
-            dX_row += (rstd_row) * (-(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row) + dS_out_row
+            dX_row += (rstd_row) * (
+                -(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row
+            ) + dS_out_row
             dS_out_ptr += dS_out_row_stride
         else:
             dX_row += (rstd_row) * (-(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row)
@@ -251,7 +253,7 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode, row_mode):
     kernel_args = {}
     if X.device.type == "xpu":
         kernel_args["grf_mode"] = "large"
-    
+
     _fused_add_rms_norm_forward_kernel[(n_rows,)](
         Y,
         Y.stride(0),
@@ -273,11 +275,13 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode, row_mode):
         num_warps=num_warps,
         **kernel_args,  # XPU-specific optimization
     )
-    
+
     return Y.view(*shape), S.view(*shape), RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode):
+def fused_add_rms_norm_backward(
+    dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode
+):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -335,12 +339,11 @@ def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BL
         has_dS_out=dS_out is not None,
         **kernel_args,  # XPU-specific optimization
     )
-    
 
     dX = dX.view(*shape)
     dW = _dW.sum(dim=0).to(W.dtype)
 
-    return dX, dX, dW # dR is equal to dX
+    return dX, dX, dW  # dR is equal to dX
 
 
 class LigerFusedAddRMSNormFunction(torch.autograd.Function):
@@ -372,7 +375,9 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
-        Y, S, RSTD, BLOCK_SIZE, num_warps, casting_mode = fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode, row_mode)
+        Y, S, RSTD, BLOCK_SIZE, num_warps, casting_mode = fused_add_rms_norm_forward(
+            X, R, W, eps, offset, casting_mode, row_mode
+        )
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.in_place = in_place
@@ -390,7 +395,17 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
         """
         S, W, RSTD = ctx.saved_tensors
         dX, dR, dW = fused_add_rms_norm_backward(
-            dY, dS_out, S, W, RSTD, ctx.offset, ctx.casting_mode, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place, ctx.row_mode
+            dY,
+            dS_out,
+            S,
+            W,
+            RSTD,
+            ctx.offset,
+            ctx.casting_mode,
+            ctx.BLOCK_SIZE,
+            ctx.num_warps,
+            ctx.in_place,
+            ctx.row_mode,
         )
 
         return dX, dR, dW, None, None, None, None, None

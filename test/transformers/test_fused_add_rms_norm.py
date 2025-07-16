@@ -143,7 +143,9 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
 
     # triton
     triton_rms = (
-        LigerFusedAddRMSNorm(hidden_size=hd, offset=offset, casting_mode=casting_mode, in_place=in_place).to(device).to(dtype)
+        LigerFusedAddRMSNorm(hidden_size=hd, offset=offset, casting_mode=casting_mode, in_place=in_place)
+        .to(device)
+        .to(dtype)
     )
     triton_h, triton_r = triton_rms(h2, r2)
 
@@ -197,7 +199,9 @@ def test_correctness_functional(bs, sl, hd, dtype, atol, rtol, reference, offset
 
     w = torch.randn(hd, device=device, dtype=dtype)
 
-    h, r = liger_fused_add_rms_norm(X=h1, R=r1, W=w, eps=1e-6, offset=offset, casting_mode=casting_mode, in_place=in_place)
+    h, r = liger_fused_add_rms_norm(
+        X=h1, R=r1, W=w, eps=1e-6, offset=offset, casting_mode=casting_mode, in_place=in_place
+    )
     ref_h, ref_r = LigerFusedAddRMSNormFunction.apply(h2, r2, w, 1e-6, offset, casting_mode, in_place)
 
     assert torch.allclose(h, ref_h, atol=atol, rtol=rtol)
@@ -210,7 +214,6 @@ def test_correctness_functional(bs, sl, hd, dtype, atol, rtol, reference, offset
 
     torch.autograd.backward((h, r), (dh, dr), retain_graph=True)
     torch.autograd.backward((ref_h, ref_r), (dh_ref, dr_ref), retain_graph=True)
-
 
     assert torch.allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
     assert torch.allclose(r1.grad, r2.grad, atol=atol, rtol=rtol)

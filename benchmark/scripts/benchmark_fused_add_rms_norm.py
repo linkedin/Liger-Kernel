@@ -34,7 +34,7 @@ class NaiveAddRMSNorm(nn.Module):
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
         return self.weight * hidden_states.to(input_dtype), residual.to(input_dtype)
-    
+
 
 class AddLigerRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
@@ -53,7 +53,7 @@ class AddLigerRMSNorm(nn.Module):
         hidden_states = hidden_states + residual
         residual = hidden_states
         hidden_states = self.rms_norm(hidden_states)
-        return self.weight * hidden_states, residual
+        return self.weight * hidden_states.to(input_dtype), residual.to(input_dtype)
 
 
 def bench_speed_fused_residual_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -116,7 +116,7 @@ def bench_speed_fused_residual_rms_norm(input: SingleBenchmarkRunInput) -> Singl
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             full,
-            grad_to_none=[x,r],
+            grad_to_none=[x, r],
             rep=500,
             quantiles=QUANTILES,
         )

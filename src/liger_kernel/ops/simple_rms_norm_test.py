@@ -2,20 +2,19 @@
 import torch
 
 # ⬇️ UPDATE these import paths to match your repo layout
-from liger_kernel.ops.simple_rms_norm import (
-    LigerRMSNormFunction,      # the Triton-fused autograd Function
-)
+from liger_kernel.ops.simple_rms_norm import LigerRMSNormFunction  # the Triton-fused autograd Function
+
 
 # -----------------------------------------------------------------------------
 # 🟢 Pure-PyTorch reference (no fusion, no Triton)
 # -----------------------------------------------------------------------------
 def reference_residual_rmsnorm(hidden, residual, weight, eps=1e-5, offset=0.0):
     """Implements:
-       S  = hidden + residual
-       residual_out = S                           # saved for next block
-       rms = sqrt(mean(S²) + eps)
-       hidden_out = (S / rms) * (weight + offset)
-       returns (hidden_out, residual_out)
+    S  = hidden + residual
+    residual_out = S                           # saved for next block
+    rms = sqrt(mean(S²) + eps)
+    hidden_out = (S / rms) * (weight + offset)
+    returns (hidden_out, residual_out)
     """
     S = hidden + residual
     print("S", S)
@@ -34,35 +33,33 @@ def run_test():
 
     # ---------------- Hyper-params ----------------
     B, H = 8, 4096
-    eps  = 1e-5
+    eps = 1e-5
     offset = 0.0
-    mode   = "none"        # "llama" / "gemma" / "none"
+    mode = "none"  # "llama" / "gemma" / "none"
 
     # ---------------- Inputs ----------------
     hidden = torch.randn(B, H, device="cuda", dtype=torch.float16, requires_grad=True)
     residual = torch.randn_like(hidden, requires_grad=True)
-    weight = torch.randn(H,  device="cuda", dtype=torch.float16, requires_grad=True)
+    weight = torch.randn(H, device="cuda", dtype=torch.float16, requires_grad=True)
 
     print("hidden", hidden)
     print("residual", residual)
     print("weight", weight)
 
     #                                    ── reference ──
-    h_ref   = hidden.detach().clone().float().requires_grad_(True)
-    r_ref   = residual.detach().clone().float().requires_grad_(True)
-    w_ref   = weight.detach().clone().float().requires_grad_(True)
+    h_ref = hidden.detach().clone().float().requires_grad_(True)
+    r_ref = residual.detach().clone().float().requires_grad_(True)
+    w_ref = weight.detach().clone().float().requires_grad_(True)
     hidden_ref_out, residual_ref_out = reference_residual_rmsnorm(h_ref, r_ref, w_ref, eps, offset)
     #                                    ── Triton kernel ──
-    hidden_out, residual_out = LigerRMSNormFunction.apply(
-        hidden, residual, weight, eps, offset, mode
-    )
+    hidden_out, residual_out = LigerRMSNormFunction.apply(hidden, residual, weight, eps, offset, mode)
 
     # ---------------- Forward check ----------------
     assert torch.allclose(hidden_out, hidden_ref_out.half(), atol=1e-3, rtol=1e-3), "Hidden output mismatch"
     assert torch.allclose(residual_out, residual_ref_out.half(), atol=1e-3, rtol=1e-3), "Residual output mismatch"
 
     # ---------------- Back-prop ----------------
-    grad_hidden   = torch.randn_like(hidden_out)
+    grad_hidden = torch.randn_like(hidden_out)
     grad_residual = torch.randn_likelike(residual_out)
 
     grad_hidden_ref = grad_hidden.detach().clone().float()
