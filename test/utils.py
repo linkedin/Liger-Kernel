@@ -82,8 +82,8 @@ def mem_get_info():
         try:
             free, total = torch.cuda.mem_get_info()
             info["cuda"] = {
-                "free": free,
-                "total": total,
+                "free": free / (1024**3), # transform to GB
+                "total": total / (1024**3), # transform to GB
             }
         except Exception as e:
             info["cuda"] = f"Error: {e}"
@@ -92,8 +92,8 @@ def mem_get_info():
         try:
             free, total = torch.xpu.mem_get_info()
             info["xpu"] = {
-                "free": free,
-                "total": total,
+                "free": free / (1024**3), # transform to GB
+                "total": total / (1024**3), # transform to GB
             }
         except Exception as e:
             info["xpu"] = f"Error: {e}"
