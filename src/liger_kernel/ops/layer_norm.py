@@ -279,11 +279,6 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
 
 
 class LigerLayerNormFunction(torch.autograd.Function):
-    """
-    This implementation provides significant performance improvements over
-    standard PyTorch LayerNorm, especially for large hidden dimensions.
-    """
-
     @staticmethod
     @ensure_contiguous
     def forward(ctx, X, W, B, eps):
