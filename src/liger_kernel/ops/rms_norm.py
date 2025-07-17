@@ -137,7 +137,7 @@ def _rms_norm_backward_kernel(
     dw = sum(dy * (x / RMS)). summation over BxT dimension
     """
 
-    row_block_id = tl.program_id(0)
+    row_block_id = tl.program_id(0).to(tl.int64)
     row_start = row_block_id * rows_per_program
     row_end = min((row_block_id + 1) * rows_per_program, n_rows)
     col_offsets = tl.arange(0, BLOCK_SIZE)
