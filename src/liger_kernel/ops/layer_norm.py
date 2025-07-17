@@ -1,4 +1,3 @@
-import math
 import operator
 
 import torch
@@ -150,13 +149,13 @@ def _layer_norm_backward_kernel(
 
 
 def layer_norm_forward(X, W, B, eps):
-    """    
+    """
     Args:
         X: Input tensor of shape (..., hidden_size)
         W: Weight tensor of shape (hidden_size,)
         B: Bias tensor of shape (hidden_size,)
         eps: Small constant for numerical stability
-        
+
     Returns:
         Tuple of (output, input, mean, rstd, block_size, num_warps)
     """
@@ -164,15 +163,15 @@ def layer_norm_forward(X, W, B, eps):
     dim = shape[-1]
     X = X.view(-1, dim)
     n_rows, n_cols = X.shape
-    
+
     # Calculate optimal block size and warp configuration
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-    
+
     # Allocate output tensors
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
     Mean = torch.empty(n_rows, dtype=X.dtype, device=X.device)
     RSTD = torch.empty(n_rows, dtype=X.dtype, device=X.device)
-    
+
     # Validate input dimensions
     if X.shape[1] != W.shape[0]:
         raise ValueError(
@@ -188,31 +187,38 @@ def layer_norm_forward(X, W, B, eps):
     # Launch kernel with one thread block per row for optimal performance
     grid = (n_rows,)
     _layer_norm_forward_kernel[grid](
-        Y, Y.stride(0),
-        X, X.stride(0), 
-        W, W.stride(0), 
-        B, B.stride(0),
-        Mean, Mean.stride(0), 
-        RSTD, RSTD.stride(0), 
-        n_cols, eps,
-        BLOCK_SIZE=BLOCK_SIZE, 
-        num_warps=num_warps, 
+        Y,
+        Y.stride(0),
+        X,
+        X.stride(0),
+        W,
+        W.stride(0),
+        B,
+        B.stride(0),
+        Mean,
+        Mean.stride(0),
+        RSTD,
+        RSTD.stride(0),
+        n_cols,
+        eps,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
         **kernel_args,
     )
-    
+
     return Y.view(*shape), X, Mean, RSTD, BLOCK_SIZE, num_warps
 
 
 def layer_norm_backward(dY, X, W, B, Mean, RSTD):
-    """    
+    """
     Args:
         dY: Gradient of output
-        X: Input tensor 
+        X: Input tensor
         W: Weight tensor
         B: Bias tensor
         Mean: Pre-computed mean
         RSTD: Pre-computed reciprocal standard deviation
-        
+
     Returns:
         Tuple of (input_grad, weight_grad, bias_grad)
     """
@@ -229,15 +235,16 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     # Calculate optimal block size and warp configuration
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     if n_cols > BLOCK_SIZE:
-        raise RuntimeError(
-            f"Feature dimension {n_cols} exceeds maximum supported size of {BLOCK_SIZE}."
-        )
+        raise RuntimeError(f"Feature dimension {n_cols} exceeds maximum supported size of {BLOCK_SIZE}.")
 
     # Determine dtype for triton operations
     triton_dtype = (
-        tl.float32 if X.dtype == torch.float32
-        else tl.bfloat16 if X.dtype == torch.bfloat16  
-        else tl.float16 if X.dtype == torch.float16
+        tl.float32
+        if X.dtype == torch.float32
+        else tl.bfloat16
+        if X.dtype == torch.bfloat16
+        else tl.float16
+        if X.dtype == torch.float16
         else tl.float32  # fallback
     )
 
@@ -249,9 +256,17 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     # Launch kernel with one thread block per row for optimal performance
     grid = (n_rows,)
     _layer_norm_backward_kernel[grid](
-        X, W, Mean, RSTD,
-        DX, DW, DB, dY,
-        X.stride(0), DX.stride(0), dY.stride(0),
+        X,
+        W,
+        Mean,
+        RSTD,
+        DX,
+        DW,
+        DB,
+        dY,
+        X.stride(0),
+        DX.stride(0),
+        dY.stride(0),
         n_cols,
         BLOCK_SIZE=BLOCK_SIZE,
         dtype=triton_dtype,
@@ -264,10 +279,11 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
 
 
 class LigerLayerNormFunction(torch.autograd.Function):
-    """    
+    """
     This implementation provides significant performance improvements over
     standard PyTorch LayerNorm, especially for large hidden dimensions.
     """
+
     @staticmethod
     @ensure_contiguous
     def forward(ctx, X, W, B, eps):
@@ -284,13 +300,13 @@ class LigerLayerNormFunction(torch.autograd.Function):
 
 
 def liger_layer_norm(X, W, B, eps=1e-5):
-    """    
+    """
     Args:
         X: Input tensor of shape (..., hidden_size)
         W: Weight tensor of shape (hidden_size,)
         B: Bias tensor of shape (hidden_size,)
         eps: Small constant for numerical stability
-    
+
     Returns:
         Normalized tensor of same shape as X
     """
