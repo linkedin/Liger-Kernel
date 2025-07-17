@@ -61,7 +61,7 @@ def _fused_add_rms_norm_forward_kernel(
     The backward pass is also adapted to support the residual addition in the backward pass.
     """
 
-    row_idx = tl.program_id(0)
+    row_idx = tl.program_id(0).to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
@@ -152,7 +152,7 @@ def _fused_add_rms_norm_backward_kernel(
     of the hidden_states in step 3 and the gradient of the residual in step 2 are summed up.
     """
 
-    row_block_id = tl.program_id(0)
+    row_block_id = tl.program_id(0).to(tl.int64)
     row_start = row_block_id * rows_per_program
     row_end = min((row_block_id + 1) * rows_per_program, n_rows)
     col_offsets = tl.arange(0, BLOCK_SIZE)
