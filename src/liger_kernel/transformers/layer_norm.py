@@ -27,7 +27,6 @@ class LigerLayerNorm(nn.Module):
         self.variance_epsilon = eps
 
     def forward(self, hidden_states):
-        """Apply optimized layer normalization."""
         return LigerLayerNormFunction.apply(hidden_states, self.weight, self.bias, self.variance_epsilon)
 
     def extra_repr(self):
