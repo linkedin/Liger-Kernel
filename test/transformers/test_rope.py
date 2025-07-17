@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from test.utils import supports_bfloat16
+from test.utils import mem_get_info
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
 from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
@@ -30,6 +31,13 @@ SLEEP_SECONDS = 0.1
         # so we don't test it here
         (3, 423, 73, 213, 92),
         (3, 423, 73, 155, 92),
+        pytest.param(
+            1, 1000000, 32, 8, 32,  # large seqlen
+            marks=pytest.mark.skipif(
+                mem_get_info().get("cuda", {}).get("total") < 40,
+                reason="This test requires >40GB VRAM"
+            )
+        ),
     ],
 )
 @pytest.mark.parametrize(
@@ -108,6 +116,13 @@ def test_correctness(
         (1, 2, 1, 2, 8),
         # weird shapes
         (9, 7, 41, 41, 41),
+        pytest.param(
+            1, 1000000, 32, 8, 32,  # large seqlen
+            marks=pytest.mark.skipif(
+                mem_get_info().get("cuda", {}).get("total") < 40,
+                reason="This test requires >40GB VRAM"
+            )
+        ),
     ],
 )
 @pytest.mark.parametrize(
