@@ -5,13 +5,6 @@ from liger_kernel.ops.layer_norm import LigerLayerNormFunction
 
 
 class LigerLayerNorm(nn.Module):
-    """
-    Args:
-        hidden_size: The size of the hidden dimension
-        eps: A value added to the denominator for numerical stability
-        bias: Whether to include a bias parameter
-        init_fn: How to initialize the weight parameter ("ones" or "zeros")
-    """
 
     def __init__(self, hidden_size, eps=1e-6, bias=False, init_fn="ones"):
         super().__init__()
