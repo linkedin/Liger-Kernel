@@ -297,17 +297,3 @@ class LigerLayerNormFunction(torch.autograd.Function):
         X, W, B, Mean, RSTD = ctx.saved_tensors
         DX, DW, DB = layer_norm_backward(dY, X, W, B, Mean, RSTD)
         return DX, DW, DB, None
-
-
-def liger_layer_norm(X, W, B, eps=1e-5):
-    """
-    Args:
-        X: Input tensor of shape (..., hidden_size)
-        W: Weight tensor of shape (hidden_size,)
-        B: Bias tensor of shape (hidden_size,)
-        eps: Small constant for numerical stability
-
-    Returns:
-        Normalized tensor of same shape as X
-    """
-    return LigerLayerNormFunction.apply(X, W, B, eps)
