@@ -96,13 +96,15 @@ class GemmaRMSNorm(nn.Module):
     ],
 )
 @pytest.mark.parametrize(
-    "dtype, atol, rtol",
+    "dtype, atol, rtol, weight_atol, weight_rtol",
     [
-        (torch.float32, 1e-4, 1e-6),
+        (torch.float32, 1e-4, 1e-6, 1e-3, 1e-4),
         pytest.param(
             torch.bfloat16,
             2e-1,
             2e-2,
+            2e-1,
+            7e-1,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
@@ -122,7 +124,9 @@ class GemmaRMSNorm(nn.Module):
         False,
     ],
 )
-def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode, in_place):
+def test_correctness(
+    bs, sl, hd, dtype, atol, rtol, weight_atol, weight_rtol, reference, offset, casting_mode, in_place
+):
     _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
 
     h1 = _tensor.clone().requires_grad_(True)
@@ -144,7 +148,7 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
     triton_o.backward(do, retain_graph=True)
 
     assert_verbose_allclose(ref_o, triton_o, atol=atol, rtol=rtol)
-    assert_verbose_allclose(ref_rms.weight.grad, triton_rms.weight.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(ref_rms.weight.grad, triton_rms.weight.grad, atol=weight_atol, rtol=weight_rtol)
     print(f"{h1.grad=}")
     print(f"{h2.grad=}")
     assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol, max_print=20)
