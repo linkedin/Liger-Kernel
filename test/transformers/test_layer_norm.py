@@ -16,6 +16,7 @@ device = infer_device()
         (4, 16, 128),
         (1, 1, 1023),  # Minimal batch/seq with near power-of-2 hidden
         (3, 7, 256),  # Prime numbers for batch/seq
+        (1, 1, 1500),
     ],
 )
 @pytest.mark.parametrize(

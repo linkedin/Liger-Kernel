@@ -66,7 +66,9 @@ def _layer_norm_forward_kernel(
     n_cols_f32 = n_cols.to(tl.float32)
     mean = tl.sum(X_f32, axis=0) / n_cols_f32
     X_centered = X_f32 - mean
-    var = tl.sum(X_centered * X_centered, axis=0) / n_cols_f32
+    # Apply mask to variance calculation to exclude contributions from masked elements
+    X_centered_masked = tl.where(mask, X_centered, 0.0)
+    var = tl.sum(X_centered_masked * X_centered_masked, axis=0) / n_cols_f32
     rstd = rsqrt(var + eps)
 
     # Store statistics (convert back to original dtype only once)
