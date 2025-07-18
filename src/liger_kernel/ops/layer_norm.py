@@ -252,7 +252,7 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         if X.dtype == torch.float16
         else tl.float32  # fallback
     )
-    
+
     # Use float32 for atomic operations if bfloat16 is not supported
     atomic_dtype = tl.float32 if triton_dtype == tl.bfloat16 else triton_dtype
 
