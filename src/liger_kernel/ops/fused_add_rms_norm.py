@@ -254,6 +254,7 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
     if X.device.type == "xpu":
         kernel_args["grf_mode"] = "large"
 
+    # TODO: add _block_fused_add_rms_norm_forward_kernel
     _fused_add_rms_norm_forward_kernel[(n_rows,)](
         Y,
         Y.stride(0),
@@ -311,6 +312,7 @@ def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BL
     if S.device.type == "xpu":
         kernel_args["grf_mode"] = "large"
 
+    # TODO: add _block_fused_add_rms_norm_backward_kernel
     _fused_add_rms_norm_backward_kernel[grid](
         dY,
         dY.stride(0),
@@ -377,6 +379,7 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
+        # TODO: add row_mode
         Y, S, RSTD, BLOCK_SIZE, num_warps, casting_mode = fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode)
         ctx.offset = offset
         ctx.casting_mode = casting_mode
