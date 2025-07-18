@@ -23,6 +23,7 @@ device = infer_device()
     "dtype, atol, rtol",
     [
         (torch.float32, 1e-5, 1e-5),
+        (torch.bfloat16, 2e-2, 2e-2),  # Relaxed tolerance for bfloat16 due to lower precision + atomic limitations  
     ],
 )
 def test_liger_layer_norm(
@@ -73,6 +74,7 @@ def test_liger_layer_norm(
     "dtype, atol, rtol",
     [
         (torch.float32, 1e-5, 1e-5),
+        (torch.bfloat16, 2e-2, 2e-2),  # Relaxed tolerance for bfloat16 due to lower precision + atomic limitations  
     ],
 )
 def test_liger_layer_norm_functional(

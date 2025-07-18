@@ -99,6 +99,7 @@ def _layer_norm_backward_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
     dtype: tl.constexpr,
+    atomic_dtype: tl.constexpr,
 ):
     """
     References:
@@ -146,8 +147,8 @@ def _layer_norm_backward_kernel(
     # Accumulate weight and bias gradients using atomic operations
     dw = dy_f32 * x_hat
     db = dy_f32
-    tl.atomic_add(DW_ptr + cols, dw.to(dtype), mask=mask)
-    tl.atomic_add(DB_ptr + cols, db.to(dtype), mask=mask)
+    tl.atomic_add(DW_ptr + cols, dw.to(atomic_dtype), mask=mask)
+    tl.atomic_add(DB_ptr + cols, db.to(atomic_dtype), mask=mask)
 
 
 def layer_norm_forward(X, W, B, eps):
@@ -231,8 +232,10 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
 
     # Allocate gradient tensors
     DX = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
-    DW = torch.zeros(n_cols, dtype=W.dtype, device=W.device)
-    DB = torch.zeros(n_cols, dtype=W.dtype, device=W.device)
+    # Use float32 for weight/bias gradients if bfloat16 (due to atomic_add limitation)
+    grad_dtype = torch.float32 if W.dtype == torch.bfloat16 else W.dtype
+    DW = torch.zeros(n_cols, dtype=grad_dtype, device=W.device)
+    DB = torch.zeros(n_cols, dtype=grad_dtype, device=W.device)
 
     # Calculate optimal block size and warp configuration
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
@@ -249,6 +252,9 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         if X.dtype == torch.float16
         else tl.float32  # fallback
     )
+    
+    # Use float32 for atomic operations if bfloat16 is not supported
+    atomic_dtype = tl.float32 if triton_dtype == tl.bfloat16 else triton_dtype
 
     # XPU-specific optimization
     kernel_args = {}
@@ -272,6 +278,7 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         n_cols,
         BLOCK_SIZE=BLOCK_SIZE,
         dtype=triton_dtype,
+        atomic_dtype=atomic_dtype,
         num_warps=num_warps,
         **kernel_args,
     )
