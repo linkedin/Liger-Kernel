@@ -1633,7 +1633,7 @@ def test_apply_liger_kernel_to_instance_for_glm4():
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
-
+@pytest.mark.skipif(not is_smollm3_available(), reason="smollm3 module not available")
 def test_apply_liger_kernel_to_instance_for_smollm3():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.smollm3.modeling_smollm3"):
