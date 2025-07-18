@@ -71,37 +71,13 @@ def get_topk(tensor, k=20):
 def mem_get_info():
     """
     Get memory information for available GPU devices.
-
-    Returns:
-        dict: Memory information for CUDA and/or XPU devices, or error messages.
-              For each device, returns free, total, and used memory in bytes.
     """
-    info = {}
-
-    if torch.cuda.is_available():
-        try:
-            free, total = torch.cuda.mem_get_info()
-            info["cuda"] = {
-                "free": free / (1024**3), # transform to GB
-                "total": total / (1024**3), # transform to GB
-            }
-        except Exception as e:
-            info["cuda"] = f"Error: {e}"
-
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        try:
-            free, total = torch.xpu.mem_get_info()
-            info["xpu"] = {
-                "free": free / (1024**3), # transform to GB
-                "total": total / (1024**3), # transform to GB
-            }
-        except Exception as e:
-            info["xpu"] = f"Error: {e}"
-
-    if not info:
-        info["message"] = "No supported device found (neither CUDA nor XPU available)"
-
-    return info
+    if device == "cuda" and torch.cuda.is_available():
+        return torch.cuda.mem_get_info()
+    elif device == "xpu" and torch.xpu.is_available():
+        return torch.xpu.mem_get_info()
+    else:
+        raise RuntimeError("No supported device found (neither CUDA nor XPU available)")
 
 
 def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=5, extra_info=""):

@@ -86,11 +86,12 @@ class GemmaRMSNorm(nn.Module):
         # weird shapes
         (5, 123, 123),
         pytest.param(
-            1, 2_000_000, 128,  # large seqlen
+            1,
+            2_000_000,
+            128,  # large seqlen
             marks=pytest.mark.skipif(
-                mem_get_info().get("cuda", {}).get("total") < 40,
-                reason="This test requires >40GB VRAM"
-            )
+                mem_get_info()[1] < 40 * 1024 * 1024 * 1024, reason="This test requires >40GB VRAM"
+            ),
         ),
     ],
 )
@@ -156,11 +157,12 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
         # weird shapes
         (9, 7, 41),
         pytest.param(
-            1, 2_000_000, 128,  # large seqlen
+            1,
+            2_000_000,
+            128,  # large seqlen
             marks=pytest.mark.skipif(
-                mem_get_info().get("cuda", {}).get("total") < 40,
-                reason="This test requires >40GB VRAM"
-            )
+                mem_get_info()[1] < 40 * 1024 * 1024 * 1024, reason="This test requires >40GB VRAM"
+            ),
         ),
     ],
 )
