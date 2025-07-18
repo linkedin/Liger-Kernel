@@ -42,7 +42,7 @@ def _layer_norm_forward_kernel(
     https://arxiv.org/abs/1607.06450
     https://github.com/karpathy/llm.c/blob/master/doc/layernorm/layernorm.md
     """
-    row_idx = tl.program_id(0)
+    row_idx = tl.program_id(0).to(tl.int64)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
@@ -105,7 +105,7 @@ def _layer_norm_backward_kernel(
     https://arxiv.org/abs/1607.06450
     https://github.com/karpathy/llm.c/blob/master/doc/layernorm/layernorm.md
     """
-    row_idx = tl.program_id(0)
+    row_idx = tl.program_id(0).to(tl.int64)
     cols = tl.arange(0, BLOCK_SIZE)
     mask = cols < n_cols
 
