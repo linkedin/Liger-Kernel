@@ -166,15 +166,13 @@ pip install -e ".[dev]"
 
 Bib Latex entry:
 ```bib
-@article{hsu2024ligerkernelefficienttriton,
-      title={Liger Kernel: Efficient Triton Kernels for LLM Training},
-      author={Pin-Lun Hsu and Yun Dai and Vignesh Kothapalli and Qingquan Song and Shao Tang and Siyu Zhu and Steven Shimizu and Shivam Sahni and Haowen Ning and Yanning Chen},
-      year={2024},
-      eprint={2410.10989},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2410.10989},
-      journal={arXiv preprint arXiv:2410.10989},
+@inproceedings{
+hsu2025ligerkernel,
+title={Liger-Kernel: Efficient Triton Kernels for {LLM} Training},
+author={Pin-Lun Hsu and Yun Dai and Vignesh Kothapalli and Qingquan Song and Shao Tang and Siyu Zhu and Steven Shimizu and Shivam Sahni and Haowen Ning and Yanning Chen and Zhipeng Wang},
+booktitle={Championing Open-source DEvelopment in ML Workshop @ ICML25},
+year={2025},
+url={https://openreview.net/forum?id=36SjAIT42G}
 }
 ```
 
