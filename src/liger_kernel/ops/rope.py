@@ -32,7 +32,7 @@ def _triton_rope(
 
     # cos size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
     # stride: (seq_len * head_dim, head_dim, 1)
-    pid = tl.program_id(0)
+    pid = tl.program_id(0).to(tl.int64)
 
     # locate start address
     q_ptr = q_ptr + pid * q_row_stride
