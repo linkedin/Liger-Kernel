@@ -283,6 +283,18 @@ def revert_liger_kernel_to_llama(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_smollm3(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to SmolLM3.
+    """
+
+    from transformers.models.smollm3 import modeling_smollm3
+
+    importlib.reload(modeling_smollm3)
+    model_config.model_class = modeling_smollm3.SmolLM3ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_mllama(model_config: MiniModelConfig, model_type: str = "causal_lm"):
     """
     Revert all Liger kernel patches applied to MLlama.
