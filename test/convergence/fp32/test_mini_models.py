@@ -17,7 +17,6 @@ from transformers.models.phi3 import Phi3Config
 from transformers.models.phi3 import Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen2 import Qwen2ForCausalLM
-from transformers.models.smollm3 import SmolLM3ForCausalLM
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
