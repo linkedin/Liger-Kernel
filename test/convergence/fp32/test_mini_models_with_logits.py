@@ -17,6 +17,7 @@ from transformers.models.phi3 import Phi3Config
 from transformers.models.phi3 import Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen2 import Qwen2ForCausalLM
+from transformers.models.smollm3 import SmolLM3ForCausalLM
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
@@ -36,6 +37,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
+from liger_kernel.transformers import apply_liger_kernel_to_smollm3
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
@@ -59,6 +61,7 @@ from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import revert_liger_kernel_to_qwen3_moe
+from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 
@@ -155,6 +158,15 @@ try:
     GEMMA3_AVAILABLE = True
 except ImportError:
     GEMMA3_AVAILABLE = False
+
+try:
+    # Smollm3 is only available in transformers>=4.53.0
+    from transformers.models.smollm3.configuration_smollm3 import SmolLM3Config
+    from transformers.models.smollm3.modeling_smollm3 import SmolLM3ForCausalLM
+
+    SMOLLM3_AVAILABLE = True
+except ImportError:
+    SMOLLM3_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -808,6 +820,40 @@ if GLM4_AVAILABLE:
         ),
     )
 
+if SMOLLM3_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_smollm3"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_smollm3,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_smollm3,
+        model_class=SmolLM3ForCausalLM,
+        mini_model_config=SmolLM3Config(
+            attention_bias=False,
+            attention_dropout=0.0,
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
+            pad_token_id=2,  # 128000
+            hidden_act="silu",
+            hidden_size=1024,  # 4096
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=8192,
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 32
+            num_key_value_heads=2,  # 8
+            pretraining_tp=1,
+            rms_norm_eps=1e-5,
+            rope_scaling=None,
+            rope_theta=500000.0,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 128256,
+            # At rope backward
+            # Eager produces incontiguous dq and dk
+            # SDPA produces contiguous dq and incontiguous dk
+            # Flash_attn produces contiguous dq and dk
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
+
 
 def create_model(model_name="mini_llama3"):
     """
@@ -1079,6 +1125,22 @@ def run_mini_model(
             marks=pytest.mark.skipif(
                 not GRANITE_AVAILABLE,
                 reason="Granite not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_smollm3",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=pytest.mark.skipif(
+                not SMOLLM3_AVAILABLE,
+                reason="Smollm3 not available in this version of transformers",
             ),
         ),
     ],

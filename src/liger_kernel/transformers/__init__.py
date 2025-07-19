@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 # Always-safe imports (independent of 'transformers')
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss  # noqa: F401
 from liger_kernel.transformers.dyt import LigerDyT  # noqa: F401
+from liger_kernel.transformers.fused_add_rms_norm import LigerFusedAddRMSNorm  # noqa: F401
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss  # noqa: F401
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # noqa: F401
 from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2_vl  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_moe  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_smollm3  # noqa: F401
 
 
 # Check if 'transformers' is installed
@@ -100,6 +102,7 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_qwen2_vl",
         "apply_liger_kernel_to_qwen3",
         "apply_liger_kernel_to_qwen3_moe",
+        "apply_liger_kernel_to_smollm3",
     }
 
     if name in monkey_patch_symbols:
@@ -119,6 +122,7 @@ __all__ = [
     "LigerGEGLUMLP",
     "LigerJSD",
     "LigerLayerNorm",
+    "LigerFusedAddRMSNorm",
     "LigerRMSNorm",
     "liger_rotary_pos_emb",
     "LigerBlockSparseTop2MLP",
@@ -155,5 +159,6 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_qwen2_vl",
             "apply_liger_kernel_to_qwen3",
             "apply_liger_kernel_to_qwen3_moe",
+            "apply_liger_kernel_to_smollm3",
         ]
     )
