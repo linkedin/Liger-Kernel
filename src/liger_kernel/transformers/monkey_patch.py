@@ -29,6 +29,7 @@ from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward_deprecated
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward_deprecated
+from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_forward
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
@@ -290,6 +291,77 @@ def apply_liger_kernel_to_llama(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_smollm3(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace SmolLM3 model
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.smollm3 import modeling_smollm3
+    from transformers.models.smollm3.modeling_smollm3 import SmolLM3Model
+
+    if rope:
+        modeling_smollm3.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_smollm3.SmolLM3RMSNorm = LigerRMSNorm
+    if swiglu:
+        modeling_smollm3.SmolLM3MLP = LigerSwiGLUMLP
+
+    if cross_entropy:
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_smollm3.CrossEntropyLoss = LigerCrossEntropyLoss
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(smollm3_lce_forward, model)
+        else:
+            modeling_smollm3.SmolLM3ForCausalLM.forward = smollm3_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules (e.g. SmolLM3RMSNorm or SmolLM3MLP)
+
+        # get the base model from the model instance
+        base_model: SmolLM3Model = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 def apply_liger_kernel_to_llava(
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
@@ -537,7 +609,10 @@ def apply_liger_kernel_to_mllama(
         if isinstance(model, MllamaForConditionalGeneration):
             language_model: MllamaForCausalLM = model.language_model
             vision_model: MllamaVisionModel = model.vision_model
-            text_model: MllamaTextModel = language_model
+            if isinstance(language_model, MllamaForCausalLM):
+                text_model: MllamaTextModel = language_model.model
+            else:
+                text_model = language_model
         elif isinstance(model, MllamaForCausalLM):
             text_model = model.model
             vision_model = None
@@ -611,10 +686,17 @@ def apply_liger_kernel_to_mistral(
     if cross_entropy:
         modeling_mistral.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
-        if model is not None:
-            model.forward = MethodType(mistral_lce_forward, model)
+        if transformer_version >= version.parse("4.49.0"):
+            if model is not None:
+                model.forward = MethodType(mistral_lce_forward, model)
+            else:
+                modeling_mistral.MistralForCausalLM.forward = mistral_lce_forward
         else:
-            modeling_mistral.MistralForCausalLM.forward = mistral_lce_forward
+            logger.warning(
+                "The latest version of Liger does not support transformers < 4.49.0 for llava. Please downgrade your liger version or upgrade your transformer version."
+            )
+            logger.warning("LigerFusedLinearCrossEntropy patch is not applied.")
+
     if swiglu:
         modeling_mistral.MistralMLP = LigerSwiGLUMLP
 
@@ -1089,7 +1171,9 @@ def apply_liger_kernel_to_paligemma(
     # PaliGemma submodules are ['vision_tower', 'multi_modal_projector', 'language_model']
 
     from transformers.models.gemma.modeling_gemma import GemmaForCausalLM
+    from transformers.models.gemma.modeling_gemma import GemmaModel
     from transformers.models.gemma2.modeling_gemma2 import Gemma2ForCausalLM
+    from transformers.models.gemma2.modeling_gemma2 import Gemma2Model
     from transformers.models.paligemma import modeling_paligemma
     from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
     from transformers.models.siglip import modeling_siglip
@@ -1148,7 +1232,7 @@ def apply_liger_kernel_to_paligemma(
 
         language_model = model.language_model
 
-        if isinstance(language_model, GemmaForCausalLM):
+        if isinstance(language_model, (GemmaForCausalLM, GemmaModel)):
             apply_liger_kernel_to_gemma(
                 rope=rope,
                 cross_entropy=False,
@@ -1158,7 +1242,7 @@ def apply_liger_kernel_to_paligemma(
                 model=language_model,
             )
 
-        elif isinstance(language_model, Gemma2ForCausalLM):
+        elif isinstance(language_model, (Gemma2ForCausalLM, Gemma2Model)):
             apply_liger_kernel_to_gemma2(
                 rope=rope,
                 cross_entropy=False,
@@ -1789,6 +1873,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2_vl_text": apply_liger_kernel_to_qwen2_vl,
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "qwen2_5_vl_text": apply_liger_kernel_to_qwen2_5_vl,
+    "smollm3": apply_liger_kernel_to_smollm3,
     "phi3": apply_liger_kernel_to_phi3,
     "paligemma": apply_liger_kernel_to_paligemma,
 }

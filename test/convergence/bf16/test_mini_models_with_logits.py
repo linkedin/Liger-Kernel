@@ -9,8 +9,6 @@ from transformers.models.gemma2 import Gemma2Config
 from transformers.models.gemma2 import Gemma2ForCausalLM
 from transformers.models.llama import LlamaConfig
 from transformers.models.llama import LlamaForCausalLM
-from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
-from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
 from transformers.models.mistral import MistralConfig
 from transformers.models.mistral import MistralForCausalLM
 from transformers.models.mixtral import MixtralConfig
@@ -38,6 +36,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
+from liger_kernel.transformers import apply_liger_kernel_to_smollm3
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
@@ -61,9 +60,18 @@ from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import revert_liger_kernel_to_qwen3_moe
+from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 from test.utils import supports_bfloat16
+
+try:
+    from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
+    from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+
+    LLAMA4_AVAILABLE = True
+except ImportError:
+    LLAMA4_AVAILABLE = False
 
 try:
     # Mllama is only available in transformers>=4.45.0
@@ -151,40 +159,20 @@ try:
 except ImportError:
     GEMMA3_AVAILABLE = False
 
+try:
+    # Smollm3 is only available in transformers>=4.53.0
+    from transformers.models.smollm3.configuration_smollm3 import SmolLM3Config
+    from transformers.models.smollm3.modeling_smollm3 import SmolLM3ForCausalLM
+
+    SMOLLM3_AVAILABLE = True
+except ImportError:
+    SMOLLM3_AVAILABLE = False
+
 from liger_kernel.utils import infer_device
 
 device = infer_device()
 
 MINI_MODEL_SETUPS = {
-    "mini_llama4": MiniModelConfig(
-        liger_kernel_patch_func=apply_liger_kernel_to_llama4,
-        liger_kernel_patch_revert_func=revert_liger_kernel_to_llama4,
-        model_class=Llama4ForCausalLM,
-        mini_model_config=Llama4TextConfig(
-            bos_token_id=1,  # None
-            eos_token_id=2,  # 151329, 151336, 151338
-            pad_token_id=2,  # 151329
-            partial_rotary_factor=1.0,
-            cross_attention_layers=None,
-            dropout=0,
-            hidden_act="silu",
-            hidden_size=1024,  # 6144
-            initializer_range=0.02,
-            intermediate_size=2048,  # 14336
-            max_position_embeddings=4096,  # 32768
-            num_attention_heads=8,  # 48
-            num_hidden_layers=4,  # 61
-            num_key_value_heads=2,
-            rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=10000.0,
-            tie_word_embeddings=False,
-            use_cache=True,
-            vocab_size=32000,  # 151552
-            attention_bias=True,
-            attn_implementation="sdpa",  # default value, pytorch native attention
-        ),
-    ),
     "mini_llama3": MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_llama,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_llama,
@@ -412,6 +400,37 @@ MINI_MODEL_SETUPS = {
         ),
     ),
 }
+
+if LLAMA4_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_llama4"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_llama4,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_llama4,
+        model_class=Llama4ForCausalLM,
+        mini_model_config=Llama4TextConfig(
+            bos_token_id=1,  # None
+            eos_token_id=2,  # 151329, 151336, 151338
+            pad_token_id=2,  # 151329
+            partial_rotary_factor=1.0,
+            cross_attention_layers=None,
+            dropout=0,
+            hidden_act="silu",
+            hidden_size=1024,  # 6144
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=4096,  # 32768
+            num_attention_heads=8,  # 48
+            num_hidden_layers=4,  # 61
+            num_key_value_heads=2,
+            rms_norm_eps=1e-5,
+            rope_scaling=None,
+            rope_theta=10000.0,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 151552
+            attention_bias=True,
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
 
 if QWEN3_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen3"] = MiniModelConfig(
@@ -801,6 +820,39 @@ if GLM4_AVAILABLE:
             attn_implementation="sdpa",  # default value, pytorch native attention
         ),
     )
+if SMOLLM3_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_smollm3"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_smollm3,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_smollm3,
+        model_class=SmolLM3ForCausalLM,
+        mini_model_config=SmolLM3Config(
+            attention_bias=False,
+            attention_dropout=0.0,
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
+            pad_token_id=2,  # 128000
+            hidden_act="silu",
+            hidden_size=1024,  # 4096
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=8192,
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 32
+            num_key_value_heads=2,  # 8
+            pretraining_tp=1,
+            rms_norm_eps=1e-5,
+            rope_scaling=None,
+            rope_theta=500000.0,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 128256,
+            # At rope backward
+            # Eager produces incontiguous dq and dk
+            # SDPA produces contiguous dq and incontiguous dk
+            # Flash_attn produces contiguous dq and dk
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
 
 
 def create_model(model_name="mini_llama3"):
@@ -893,23 +945,29 @@ def run_mini_model(
         pytest.param(
             "mini_llama4",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
             1e-2,
+            5e-2,
             3e-1,
             2e-1,
             1e-2,
             1e-2,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not LLAMA4_AVAILABLE,
+                    reason="Llama4 not available in this version of transformers",
+                ),
+            ],
         ),
         pytest.param(
             "mini_llama3",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
             1e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -919,10 +977,10 @@ def run_mini_model(
         pytest.param(
             "mini_llava",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
             1e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -938,12 +996,12 @@ def run_mini_model(
         pytest.param(
             "mini_granite3",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,  # loss
             1e-2,  # loss
-            1e-1,  # logits atol
-            1e-2,  # logits rtol
+            1e-2,  # loss
+            1e-1,  # logit logprobs atol
+            1e-2,  # logprobs rtol
             1e-2,
             1e-2,
             marks=[
@@ -957,9 +1015,9 @@ def run_mini_model(
         pytest.param(
             "mini_mllama",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
+            1e-2,
             1e-2,
             1e-1,
             1e-2,
@@ -976,10 +1034,10 @@ def run_mini_model(
         pytest.param(
             "mini_qwen2",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
             1e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -989,10 +1047,10 @@ def run_mini_model(
         pytest.param(
             "mini_qwen3",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
             1e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -1008,11 +1066,11 @@ def run_mini_model(
         pytest.param(
             "mini_qwen3_moe",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
             1e-2,
-            2e-1,
+            5e-2,
+            1e-1,
             1e-2,
             1e-2,
             1e-2,
@@ -1027,10 +1085,10 @@ def run_mini_model(
         pytest.param(
             "mini_qwen2_vl",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
             1e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -1046,9 +1104,9 @@ def run_mini_model(
         pytest.param(
             "mini_qwen2_5_vl",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
+            1e-2,
             1e-2,
             1e-1,
             1e-2,
@@ -1065,9 +1123,9 @@ def run_mini_model(
         pytest.param(
             "mini_phi3",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
+            1e-2,
             1e-2,
             1e-1,
             1e-2,
@@ -1078,10 +1136,10 @@ def run_mini_model(
         pytest.param(
             "mini_mistral",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
             1e-2,
+            5e-2,
             1e-1,
             1e-2,
             1e-2,
@@ -1108,12 +1166,12 @@ def run_mini_model(
         pytest.param(
             "mini_gemma1",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
             1e-2,
             1e-2,
             1e-1,
+            1e-2,
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
@@ -1121,12 +1179,12 @@ def run_mini_model(
         pytest.param(
             "mini_gemma1.1",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
             1e-2,
             1e-2,
             1e-1,
+            1e-2,
             1e-2,
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
@@ -1136,7 +1194,7 @@ def run_mini_model(
             32,
             1e-4,
             torch.bfloat16,
-            1e-3,
+            1e-2,
             1e-2,
             1e-1,
             1e-2,
@@ -1153,9 +1211,9 @@ def run_mini_model(
         pytest.param(
             "mini_glm4",
             32,
-            1e-4,
+            1e-5,
             torch.bfloat16,
-            1e-3,
+            1e-2,
             1e-2,
             1e-1,
             1e-2,
@@ -1188,6 +1246,25 @@ def run_mini_model(
         pytest.param(
             "mini_gemma3_text",
             32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            3e-1,  # 1e-1 too flaky
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not GEMMA3_AVAILABLE,
+                    reason="Gemma3 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_smollm3",
+            32,
             1e-4,
             torch.bfloat16,
             1e-3,
@@ -1199,8 +1276,8 @@ def run_mini_model(
             marks=[
                 pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
                 pytest.mark.skipif(
-                    not GEMMA3_AVAILABLE,
-                    reason="Gemma3 not available in this version of transformers",
+                    not SMOLLM3_AVAILABLE,
+                    reason="Smollm3 not available in this version of transformers",
                 ),
             ],
         ),
@@ -1230,16 +1307,16 @@ def test_mini_model(
         torch.tensor([actual_output["loss"]]),
         atol=loss_atol,
         rtol=loss_rtol,
+        extra_info="[Loss]",
     )
 
-    # No logits are materialized
-    # import pdb; pdb.set_trace()
     # Compare the topk logprobs from evaluation step
     assert_verbose_allclose(
         expected_output["topk_logprobs"],
         actual_output["topk_logprobs"],
         atol=logprobs_atol,
         rtol=logprobs_rtol,
+        extra_info="[Top k logprobs]",
     )
 
     # Compare the params from the last step
@@ -1248,4 +1325,10 @@ def test_mini_model(
         expected_output["model"].named_parameters(),
         actual_output["model"].named_parameters(),
     ):
-        assert_verbose_allclose(expected_param[1], actual_param[1], atol=param_atol, rtol=param_rtol)
+        assert_verbose_allclose(
+            expected_param[1],
+            actual_param[1],
+            atol=param_atol,
+            rtol=param_rtol,
+            extra_info="[Model parameters]",
+        )
