@@ -129,7 +129,11 @@ function goToDetailedView() {
 async function fetchCommits() {
   const res = await fetch(`${benchmarkBase}/commits.txt`);
   const text = await res.text();
-  return text.trim().split('\n');
+  const all = text.trim().split('\n');
+  // Separate into commits and versions
+  const commits = all.filter(line => !line.includes('-'));
+  const versions = all.filter(line => line.includes('-'));
+  return { commits, versions, all };
 }
 
 async function fetchCSV(commit) {
@@ -201,8 +205,11 @@ async function loadData() {
   goldenCommits = await loadGoldenCommits();
 
   const count = document.getElementById('commitCount').value;
-  allCommits = await fetchCommits();
-  const selectedCommits = count === 'all' ? allCommits : allCommits.slice(-parseInt(count));
+  const viewType = document.getElementById('viewType').value;
+  const { commits, versions } = await fetchCommits();
+
+  let selectedList = viewType === 'versions' ? versions : commits;
+  const selectedCommits = count === 'all' ? selectedList : selectedList.slice(-parseInt(count));
 
   allDataByCommit = {};
   kernelMeta = {};
@@ -245,6 +252,7 @@ function renderTables() {
   const categoryFilter = document.getElementById('categoryFilter').value;
   const speedTable = document.getElementById('speedTable');
   const memoryTable = document.getElementById('memoryTable');
+  const viewType = document.getElementById('viewType').value;
 
   speedTable.innerHTML = '';
   memoryTable.innerHTML = '';
@@ -252,7 +260,10 @@ function renderTables() {
   const commits = Object.keys(allDataByCommit);
 
   function createTable(table, filterMetric) {
-    let header = `<tr><th>Kernel</th><th>X</th><th>Golden Reference</th>`
+    let header = `<tr><th>Kernel</th><th>X</th>`;
+    if (viewType === 'commits') {
+      header += `<th>Golden Reference</th>`;
+    }
     for (const commit of commits) {
       header += `<th>${commit}</th>`;
     }
@@ -276,25 +287,45 @@ function renderTables() {
         if (kernelCategory !== categoryFilter) return;
       }
       
-      // Get kernel-specific golden commit
-      const goldenCommit = getGoldenCommit(kernelKey);
-      const refVal = allDataByCommit[goldenCommit]?.[kernelKey];
-      const meta = kernelMeta[kernelKey] || { x_label: '?', x_value: '?' };
-      const config = configData[kernelKey] || { extra_benchmark_config_str: 'N/A', gpu_name: 'N/A', liger_version: 'N/A' };
-      
-      // Get category for styling
       const kernelCategory = getKernelCategory(kernelKey);
-      
-      const tooltipText = formatConfigForTooltip(config) + `\n\nCategory: ${kernelCategory}\nGolden Commit: ${goldenCommit}`;
-
+      const config = configData[kernelKey] || { extra_benchmark_config_str: 'N/A', gpu_name: 'N/A', liger_version: 'N/A' };
+      let tooltipText = formatConfigForTooltip(config) + `\n\nCategory: ${kernelCategory}`;
+      if (viewType === 'commits') {
+        const goldenCommit = getGoldenCommit(kernelKey);
+        tooltipText += `\nGolden Commit: ${goldenCommit}`;
+      }
       let row = `<tr data-tooltip="${tooltipText}" class="category-${kernelCategory}" style="cursor: pointer;">`;
-      row += `<td>${kernelKey}</td><td>${meta.x_label}=${meta.x_value}</td><td title="${goldenCommit}">${refVal != null ? refVal.toFixed(2) : 'N/A'}</td>`;
+      row += `<td>${kernelKey}</td><td>${(kernelMeta[kernelKey]?.x_label || '?')}=${(kernelMeta[kernelKey]?.x_value || '?')}</td>`;
+      if (viewType === 'commits') {
+        // Get kernel-specific golden commit
+        const goldenCommit = getGoldenCommit(kernelKey);
+        let refVal = allDataByCommit[goldenCommit]?.[kernelKey];
+        if (refVal == null) {
+          const versionedKey = Object.keys(allDataByCommit).find(k => k.startsWith(goldenCommit + '-'));
+          if (versionedKey && allDataByCommit[versionedKey]?.[kernelKey] != null) {
+            refVal = allDataByCommit[versionedKey][kernelKey];
+          }
+        }
+        row += `<td title="${goldenCommit}">${refVal != null ? refVal.toFixed(2) : 'N/A'}</td>`;
+      }
       for (const commit of commits) {
         const val = allDataByCommit[commit]?.[kernelKey];
-        const cls = compareMetric(val, refVal);
-        const isGolden = commit === goldenCommit;
-        const cellClass = isGolden ? 'golden' : cls;
-        row += `<td class="${cellClass}" ${isGolden ? 'title="Golden Reference"' : ''}>${val != null ? val.toFixed(2) : 'N/A'}</td>`;
+        let cellClass = '';
+        let refVal = null;
+        if (viewType === 'commits') {
+          const goldenCommit = getGoldenCommit(kernelKey);
+          refVal = allDataByCommit[goldenCommit]?.[kernelKey];
+          if (refVal == null) {
+            const versionedKey = Object.keys(allDataByCommit).find(k => k.startsWith(goldenCommit + '-'));
+            if (versionedKey && allDataByCommit[versionedKey]?.[kernelKey] != null) {
+              refVal = allDataByCommit[versionedKey][kernelKey];
+            }
+          }
+          const cls = compareMetric(val, refVal);
+          const isGolden = commit === goldenCommit;
+          cellClass = isGolden ? 'golden' : cls;
+        }
+        row += `<td class="${cellClass}">${val != null ? val.toFixed(2) : 'N/A'}</td>`;
       }
       row += '</tr>';
       table.innerHTML += row;

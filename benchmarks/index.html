@@ -39,6 +39,13 @@
           <option value="post_training">Post Training</option>
         </select>
       </label>
+      <label>
+        Show:
+        <select id="viewType" onchange="loadData()">
+          <option value="commits">Commits</option>
+          <option value="versions">Versions</option>
+        </select>
+      </label>
       <input type="text" id="kernelSearch" placeholder="Search kernel name..." oninput="renderTables()">
     </div>
 
