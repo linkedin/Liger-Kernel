@@ -68,18 +68,6 @@ def get_topk(tensor, k=20):
     return topk
 
 
-def mem_get_info():
-    """
-    Get memory information for available GPU devices.
-    """
-    if device == "cuda" and torch.cuda.is_available():
-        return torch.cuda.mem_get_info()
-    elif device == "xpu" and torch.xpu.is_available():
-        return torch.xpu.mem_get_info()
-    else:
-        raise RuntimeError("No supported device found (neither CUDA nor XPU available)")
-
-
 def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=5, extra_info=""):
     """
     Assert that two tensors are element-wise equal within a tolerance, providing detailed information about mismatches.

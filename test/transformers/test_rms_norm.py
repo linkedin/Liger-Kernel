@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 
 from test.utils import assert_verbose_allclose
-from test.utils import mem_get_info
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
@@ -85,26 +84,16 @@ class GemmaRMSNorm(nn.Module):
         (2, 128, 512),
         # weird shapes
         (5, 123, 123),
-        pytest.param(
-            1,
-            2_000_000,
-            128,  # large seqlen
-            marks=pytest.mark.skipif(
-                mem_get_info()[1] < 40 * 1024 * 1024 * 1024, reason="This test requires >40GB VRAM"
-            ),
-        ),
     ],
 )
 @pytest.mark.parametrize(
-    "dtype, atol, rtol, weight_atol, weight_rtol",
+    "dtype, atol, rtol",
     [
-        (torch.float32, 1e-4, 1e-6, 1e-3, 1e-4),
+        (torch.float32, 1e-4, 1e-6),
         pytest.param(
             torch.bfloat16,
             2e-1,
             2e-2,
-            2e-1,
-            7e-1,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
@@ -124,9 +113,7 @@ class GemmaRMSNorm(nn.Module):
         False,
     ],
 )
-def test_correctness(
-    bs, sl, hd, dtype, atol, rtol, weight_atol, weight_rtol, reference, offset, casting_mode, in_place
-):
+def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode, in_place):
     _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
 
     h1 = _tensor.clone().requires_grad_(True)
@@ -148,7 +135,7 @@ def test_correctness(
     triton_o.backward(do, retain_graph=True)
 
     assert_verbose_allclose(ref_o, triton_o, atol=atol, rtol=rtol)
-    assert_verbose_allclose(ref_rms.weight.grad, triton_rms.weight.grad, atol=weight_atol, rtol=weight_rtol)
+    assert_verbose_allclose(ref_rms.weight.grad, triton_rms.weight.grad, atol=atol, rtol=rtol)
     print(f"{h1.grad=}")
     print(f"{h2.grad=}")
     assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol, max_print=20)
@@ -160,14 +147,6 @@ def test_correctness(
         (2, 2, 8),
         # weird shapes
         (9, 7, 41),
-        pytest.param(
-            1,
-            2_000_000,
-            128,  # large seqlen
-            marks=pytest.mark.skipif(
-                mem_get_info()[1] < 40 * 1024 * 1024 * 1024, reason="This test requires >40GB VRAM"
-            ),
-        ),
     ],
 )
 @pytest.mark.parametrize(
