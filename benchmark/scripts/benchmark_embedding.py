@@ -48,6 +48,14 @@ def bench_speed_embedding(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
+    elif mode == "backward":
+        output = fwd()
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            lambda: output.backward(torch.randn_like(output), retain_graph=True),
+            quantiles=QUANTILES,
+            grad_to_none=[input_ids],
+            rep=100,
+        )
     elif mode == "full":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
     return SingleBenchmarkRunOutput(

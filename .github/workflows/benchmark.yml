@@ -71,10 +71,8 @@ jobs:
 
           # Save benchmark folder from main
           cp -r benchmark /tmp/benchmark_main
-
           # Checkout back to target commit
           git checkout $ORIG_COMMIT
-
           # Replace old benchmark with one from main
           rm -rf benchmark
           cp -r /tmp/benchmark_main benchmark
@@ -136,6 +134,7 @@ jobs:
             path=${{steps.choose_commit.outputs.hash}}
           fi
           COMMIT_DIR="gh-pages/${OUTPUT_DIR}/${path}"
+
           mkdir -p "$COMMIT_DIR"
 
           if [ -f "$COMMIT_DIR/${OUTPUT_FILENAME}" ]; then
@@ -155,6 +154,7 @@ jobs:
           touch ${OUTPUT_DIR}/commits.txt
 
           echo "${{ steps.copy_benchmark.outputs.path }}" >> ${OUTPUT_DIR}/commits.txt
+
           echo "Added commit hash to commits.txt"
       # Step 7: Commit and push
       - name: Commit and push to gh-pages
