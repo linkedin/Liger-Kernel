@@ -44,10 +44,11 @@ def fused_linear_cross_entropy_forward(
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
-    grad_weight = torch.zeros_like(weight, device=device) if weight.requires_grad else None
     grad_input = torch.zeros_like(_input, device=device)
-    grad_bias = torch.zeros_like(bias, device=device) if bias is not None else None
-    # we use fp32 for loss accumulator
+
+    # we use fp32 for loss and gradients accumulator
+    grad_weight = torch.zeros_like(weight, dtype=torch.float32, device=device) if weight.requires_grad else None
+    grad_bias = torch.zeros_like(bias, dtype=torch.float32, device=device) if bias is not None else None
     loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
     z_loss_1d = torch.zeros(BT, dtype=_input.dtype, device=_input.device) if return_z_loss else None
 
@@ -124,16 +125,7 @@ def fused_linear_cross_entropy_forward(
         grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
         if grad_weight is not None:
-            torch.addmm(
-                input=grad_weight,
-                mat1=logits_chunk.t().to(
-                    _input_chunk.dtype
-                ),  # In an autocast scenario without bias, differing logits_chunk data types will cause an addmm operation error.
-                mat2=_input_chunk,
-                out=grad_weight,
-                alpha=1.0,
-                beta=1.0,
-            )
+            grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
 
         if bias is not None:
             torch.add(
@@ -151,6 +143,11 @@ def fused_linear_cross_entropy_forward(
     else:
         loss = torch.sum(loss_1d)
         z_loss = torch.sum(z_loss_1d) if return_z_loss else None
+
+    # Cast back to original dtype
+    grad_weight = grad_weight.to(weight.dtype) if grad_weight is not None else None
+    grad_bias = grad_bias.to(bias.dtype) if grad_bias is not None else None
+
     return loss, z_loss, grad_input, grad_weight, grad_bias
 
 
