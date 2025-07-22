@@ -15,7 +15,7 @@ class LigerFusedLinearCrossEntropyLoss(torch.nn.Module):
         reduction: str = "mean",
         softcap: Optional[float] = None,
         return_z_loss: bool = False,
-        accum_dtype = None,
+        accum_dtype=None,
     ):
         super().__init__()
         assert (label_smoothing >= 0) and (label_smoothing <= 1), (

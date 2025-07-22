@@ -37,7 +37,9 @@ class LigerLMHeadCE(torch.nn.Module):
     def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100, accum_dtype=None):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
-        self.ce_loss = LigerFusedLinearCrossEntropyLoss(ignore_index=ignore_index, reduction="mean", accum_dtype=accum_dtype)
+        self.ce_loss = LigerFusedLinearCrossEntropyLoss(
+            ignore_index=ignore_index, reduction="mean", accum_dtype=accum_dtype
+        )
 
     def forward(self, x, y):
         return self.ce_loss(self.lin.weight, x, y)
