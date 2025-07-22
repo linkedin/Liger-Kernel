@@ -187,6 +187,16 @@ button:hover {
   color: var(--font-color);
 }
 
+#viewType {
+  padding: 8px;
+  border-radius: 5px;
+  border: 1px solid #ccc;
+  background-color: var(--bg-color);
+  color: var(--font-color);
+  margin-left: 10px;
+}
+
+
 /* Legend styling */
 .legend {
   margin: 20px 0;
