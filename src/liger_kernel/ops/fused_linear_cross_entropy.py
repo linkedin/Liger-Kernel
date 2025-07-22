@@ -25,6 +25,7 @@ def fused_linear_cross_entropy_forward(
     reduction="mean",
     softcap=None,
     return_z_loss=False,
+    accum_dtype=None,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     device = _input.device
@@ -47,8 +48,13 @@ def fused_linear_cross_entropy_forward(
     grad_input = torch.zeros_like(_input, device=device)
 
     # we use fp32 for loss and gradients accumulator
-    grad_weight = torch.zeros_like(weight, dtype=torch.float32, device=device) if weight.requires_grad else None
-    grad_bias = torch.zeros_like(bias, dtype=torch.float32, device=device) if bias is not None else None
+    if accum_dtype is None:
+        grad_weight = torch.zeros_like(weight, device=device) if weight.requires_grad else None
+        grad_bias = torch.zeros_like(bias, device=device) if bias is not None else None
+    else:
+        grad_weight = torch.zeros_like(weight, dtype=accum_dtype, device=device) if weight.requires_grad else None
+        grad_bias = torch.zeros_like(bias, dtype=accum_dtype, device=device) if bias is not None else None
+
     loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
     z_loss_1d = torch.zeros(BT, dtype=_input.dtype, device=_input.device) if return_z_loss else None
 
@@ -214,6 +220,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         reduction="mean",
         softcap=None,
         return_z_loss: bool = False,
+        accum_dtype=None,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -246,6 +253,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             reduction=reduction,
             softcap=softcap,
             return_z_loss=return_z_loss,
+            accum_dtype=accum_dtype,
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
@@ -270,6 +278,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             grad_weight,
             None,
             grad_bias,
+            None,
             None,
             None,
             None,
