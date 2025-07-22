@@ -256,8 +256,8 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     # Use float32 for atomic operations if bfloat16 is not supported
     atomic_dtype = tl.float32 if triton_dtype == tl.bfloat16 else triton_dtype
 
+    kernel_args = {"num_warps": num_warps}
     # XPU-specific optimization
-    kernel_args = {}
     if X.device.type == "xpu":
         kernel_args.update({"grf_mode": "large", "num_warps": 32, "num_stages": 4})
 
@@ -279,7 +279,6 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         BLOCK_SIZE=BLOCK_SIZE,
         dtype=triton_dtype,
         atomic_dtype=atomic_dtype,
-        num_warps=num_warps,
         **kernel_args,
     )
 
