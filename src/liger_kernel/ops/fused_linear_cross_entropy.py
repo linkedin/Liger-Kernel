@@ -38,11 +38,30 @@ def fused_linear_cross_entropy_forward(
     # for ex: BT = 4096*4, V = 32000, H = 4096 ==> inc_factor = 8, chunk_size = 2048
     BT, H = _input.shape
     V = weight.shape[0]
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+    # --- TUNE CHUNK SIZE ---
+    # Set chunk_size to a large value for better performance, but keep as a parameter for tuning
+    # You can set this to e.g. 8192, 16384, or even BT for no chunking if memory allows
+    DEFAULT_CHUNK_SIZE = 16384
+    chunk_size = min(DEFAULT_CHUNK_SIZE, BT)
+    num_chunks = triton.cdiv(BT, chunk_size)
 
-    inc_factor = triton.cdiv(V, H)  # (V + H - 1) // H
-    chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
-    num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
+    # --- WEIGHT SHARING & PADDING ---
+    # Quantize and pad weight once per forward call
+    fp8_dtype = torch.float8_e4m3fn
+    fp8_max = torch.finfo(fp8_dtype).max
+    weight_device = weight.device
+    V, H = weight.shape
+    pad_V = (16 - V % 16) % 16
+    pad_H = (16 - H % 16) % 16
+    if pad_V > 0 or pad_H > 0:
+        weight_padded = torch.nn.functional.pad(weight, (0, pad_H, 0, pad_V), mode='constant', value=0)
+    else:
+        weight_padded = weight
+    amax_weight = torch.max(torch.abs(weight_padded)).float()
+    weight_scale = (fp8_max / torch.clamp(amax_weight, min=1e-12)).clamp(max=fp8_max)
+    weight_fp8 = (weight_padded * weight_scale).clamp(-fp8_max, fp8_max).to(fp8_dtype)
+    weight_scale_reciprocal = weight_scale.reciprocal()
+    # Only use the original weight for non-FP8 fallback
 
     grad_weight = torch.zeros_like(weight, device=device) if weight.requires_grad else None
     grad_input = torch.zeros_like(_input, device=device)
@@ -73,8 +92,35 @@ def fused_linear_cross_entropy_forward(
         end_idx = min((chunk_id + 1) * chunk_size, BT)
         _input_chunk = _input[start_idx:end_idx]  # chunk_size x H
 
-        # when doing matmul, use the original precision
-        logits_chunk = _input_chunk @ weight.t()  # chunk_size x V
+        in_features = _input_chunk.shape[1]
+        out_features = weight.shape[0]
+        use_fp8 = True
+
+        if use_fp8:
+            # --- AVOID REDUNDANT PADDING ---
+            pad_in = (16 - in_features % 16) % 16
+            if pad_in > 0:
+                input_padded = torch.nn.functional.pad(_input_chunk, (0, pad_in), mode='constant', value=0)
+            else:
+                input_padded = _input_chunk
+            amax_input = torch.max(torch.abs(input_padded)).float()
+            input_scale = (fp8_max / torch.clamp(amax_input, min=1e-12)).clamp(max=fp8_max)
+            input_fp8 = (input_padded * input_scale).clamp(-fp8_max, fp8_max).to(fp8_dtype)
+            input_scale_reciprocal = input_scale.reciprocal()
+            # FP8 matmul
+            logits_chunk = torch._scaled_mm(
+                input_fp8,
+                weight_fp8[:out_features, :in_features].T,  # Use only the relevant part
+                scale_a=input_scale_reciprocal,
+                scale_b=weight_scale_reciprocal,
+                out_dtype=_input_chunk.dtype,
+                use_fast_accum=True,
+            )
+            if isinstance(logits_chunk, tuple):
+                logits_chunk = logits_chunk[0]
+            del input_fp8
+        else:
+            logits_chunk = _input_chunk @ weight.t()
         if bias is not None:
             logits_chunk = logits_chunk + bias
 
@@ -112,7 +158,7 @@ def fused_linear_cross_entropy_forward(
             RETURN_Z_LOSS=return_z_loss,
             HAS_WEIGHT=True if ce_weight is not None else False,
             HAS_SOFTCAPPING=True if softcap is not None else False,
-            BLOCK_SIZE=BLOCK_SIZE,
+            BLOCK_SIZE=chunk_size, # Use chunk_size for BLOCK_SIZE
             num_warps=32 if not is_hip() else 16,
         )
 
@@ -124,16 +170,41 @@ def fused_linear_cross_entropy_forward(
         grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
         if grad_weight is not None:
-            torch.addmm(
-                input=grad_weight,
-                mat1=logits_chunk.t().to(
-                    _input_chunk.dtype
-                ),  # In an autocast scenario without bias, differing logits_chunk data types will cause an addmm operation error.
-                mat2=_input_chunk,
-                out=grad_weight,
-                alpha=1.0,
-                beta=1.0,
+            # Always use FP8 for grad_weight accumulation by padding to multiples of 16
+            # Use the shared quantized/padded weight for mat2
+            mat1 = logits_chunk.t().to(_input_chunk.dtype).contiguous()
+            mat2 = _input_chunk.t().contiguous().t()
+            m1_row, m1_col = mat1.shape
+            m2_row, m2_col = mat2.shape
+            pad_m1_row = (16 - m1_row % 16) % 16
+            pad_m1_col = (16 - m1_col % 16) % 16
+            pad_m2_row = (16 - m2_row % 16) % 16
+            pad_m2_col = (16 - m2_col % 16) % 16
+            if pad_m1_row > 0 or pad_m1_col > 0:
+                mat1 = torch.nn.functional.pad(mat1, (0, pad_m1_col, 0, pad_m1_row), mode='constant', value=0)
+            if pad_m2_row > 0 or pad_m2_col > 0:
+                mat2 = torch.nn.functional.pad(mat2, (0, pad_m2_col, 0, pad_m2_row), mode='constant', value=0)
+            amax_mat1 = torch.max(torch.abs(mat1)).float()
+            mat1_scale = (fp8_max / torch.clamp(amax_mat1, min=1e-12)).clamp(max=fp8_max)
+            mat1_fp8 = (mat1 * mat1_scale).clamp(-fp8_max, fp8_max).to(fp8_dtype)
+            mat1_scale_recip = mat1_scale.reciprocal()
+            amax_mat2 = torch.max(torch.abs(mat2)).float()
+            mat2_scale = (fp8_max / torch.clamp(amax_mat2, min=1e-12)).clamp(max=fp8_max)
+            mat2_fp8 = (mat2 * mat2_scale).clamp(-fp8_max, fp8_max).to(fp8_dtype)
+            mat2_scale_recip = mat2_scale.reciprocal()
+            grad_weight_add = torch._scaled_mm(
+                mat1_fp8,
+                mat2_fp8,
+                scale_a=mat1_scale_recip,
+                scale_b=mat2_scale_recip,
+                out_dtype=grad_weight.dtype,
+                use_fast_accum=True,
             )
+            if isinstance(grad_weight_add, tuple):
+                grad_weight_add = grad_weight_add[0]
+            del mat1_fp8, mat2_fp8
+            grad_weight_add = grad_weight_add[:m1_row, :m2_col]
+            grad_weight.add_(grad_weight_add)
 
         if bias is not None:
             torch.add(
