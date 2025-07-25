@@ -80,6 +80,7 @@ class LigerLMHeadCE(torch.nn.Module):
         reduction: str = "mean",
         softcap: Optional[float] = None,
         return_z_loss: bool = False,
+        accum_dtype=None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
@@ -91,6 +92,7 @@ class LigerLMHeadCE(torch.nn.Module):
             reduction=reduction,
             softcap=softcap,
             return_z_loss=return_z_loss,
+            accum_dtype=accum_dtype,
         )
 
     def forward(self, x, y):
@@ -120,11 +122,11 @@ class LigerLMHeadCE(torch.nn.Module):
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize(
-    "has_ce_weight, label_smoothing, ignore_index, lse_square_scale, softcap, return_z_loss",
+    "has_ce_weight, label_smoothing, ignore_index, lse_square_scale, softcap, return_z_loss, accum_dtype",
     [
-        (False, 0, -100, 0, None, False),
+        (False, 0, -100, 0, None, False, None),
         # Pass non-default values once to ensure all params work along
-        (True, 0.1, 42, 1e-4, 30.0, True),
+        (True, 0.1, 42, 1e-4, 30.0, True, torch.float32),
     ],
 )
 def test_correctness(
@@ -142,6 +144,7 @@ def test_correctness(
     reduction,
     softcap,
     return_z_loss,
+    accum_dtype,
     atol,
     rtol,
 ):
@@ -174,6 +177,7 @@ def test_correctness(
         softcap=softcap,
         return_z_loss=return_z_loss,
         dtype=dtype,
+        accum_dtype=accum_dtype,
     ).to(device)
 
     # init the linear in all CEs with the same weights
@@ -267,9 +271,10 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, ce_weight, atol
         reduction="mean",
         softcap=30.0,
         return_z_loss=True,
+        accum_dtype=torch.float32,
     )
     y2, z2 = LigerFusedLinearCrossEntropyFunction.apply(
-        x2, weight, target, bias, ce_weight, -100, 1e-4, 0.1, "mean", 30.0, True
+        x2, weight, target, bias, ce_weight, -100, 1e-4, 0.1, "mean", 30.0, True, torch.float32
     )
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
@@ -299,7 +304,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, ce_weight, atol
         (False, torch.float16, 5e-3, 5e-2),
     ],
 )
-def test_amp(B, T, H, V, bias, cast_dtype, atol, rtol):
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_amp(B, T, H, V, bias, cast_dtype, accum_dtype, atol, rtol):
     dtype = torch.float32
     torch_lm_head_ce = TorchLMHeadCE(
         H=H,
@@ -316,6 +322,7 @@ def test_amp(B, T, H, V, bias, cast_dtype, atol, rtol):
         label_smoothing=0.0,
         reduction="mean",
         dtype=dtype,
+        accum_dtype=accum_dtype,
     ).to(device)
 
     # init the linear in all CEs with the same weights
