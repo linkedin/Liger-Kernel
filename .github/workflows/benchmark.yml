@@ -42,7 +42,7 @@ jobs:
       - name: Determine commit hash to checkout
         id: choose_commit
         run: |
-          if [ ${{ github.event_name}}" == "workflow_dispatch" && "${{ github.event.inputs.commit_hash }}" != "main" ]; then
+          if [ "${{ github.event_name}}" == "workflow_dispatch" && "${{ github.event.inputs.commit_hash }}" != "main" ]; then
             echo "Using manual input commit: ${{ github.event.inputs.commit_hash }}"
             echo "hash=${{ github.event.inputs.commit_hash }}" >> $GITHUB_OUTPUT
           else
