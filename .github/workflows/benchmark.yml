@@ -4,8 +4,8 @@ on:
   release:
     types: [published]
   schedule:
-    # Runs every 5 minutes
-    - cron: '*/5 * * * *'
+    # Runs at 00:00 UTC every Friday
+    - cron: '0 0 * * 5'
   workflow_dispatch:  # Enables manual trigger
     inputs:
       commit_hash:
@@ -44,7 +44,7 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0  # Important: so we can checkout arbitrary commit
-
+          
       - name: Determine commit hash to checkout
         id: choose_commit
         run: |
