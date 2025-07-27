@@ -39,6 +39,12 @@ jobs:
 
     steps:
       # Step: Decide the commit hash to use
+      # Step: Checkout full history so we can check out any commit
+      - name: Checkout full repo history
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Important: so we can checkout arbitrary commit
+          
       - name: Determine commit hash to checkout
         id: choose_commit
         run: |
@@ -50,11 +56,6 @@ jobs:
             echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
           fi
 
-      # Step: Checkout full history so we can check out any commit
-      - name: Checkout full repo history
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0  # Important: so we can checkout arbitrary commit
       # Step: Conditionally replace benchmark folder from main
       - name: Replace benchmark folder from main (manual only, commit ≠ main)
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.commit_hash != 'main' }}
