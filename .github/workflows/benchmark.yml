@@ -47,7 +47,6 @@ jobs:
             echo "hash=${{ github.event.inputs.commit_hash }}" >> $GITHUB_OUTPUT
           else
             echo "Using latest commit from main"
-            git fetch origin main
             echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
           fi
 
