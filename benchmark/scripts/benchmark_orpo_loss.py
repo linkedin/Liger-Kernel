@@ -36,8 +36,11 @@ def bench_memory_fused_linear_orpo_loss(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    torch_lm_head_orpo = lambda x, target: TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(device)(x, target)[0]
-    liger_lm_head_orpo = lambda x, target: LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(device)(x, target)[0]
+    # Instantiate once and retrieve the first output only
+    torch_lm_head_orpo = TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(device)
+    liger_lm_head_orpo = LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(device)
+    torch_fwd = lambda x, target, nll_target: torch_lm_head_orpo(x, target, nll_target)[0]
+    liger_fwd = lambda x, target, nll_target: liger_lm_head_orpo(x, target, nll_target)[0]
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
@@ -45,9 +48,9 @@ def bench_memory_fused_linear_orpo_loss(
 
     def fwd():
         if provider == "liger":
-            return liger_lm_head_orpo(_input, target, nll_target)
+            return liger_fwd(_input, target, nll_target)
         elif provider == "huggingface":
-            return torch_lm_head_orpo(_input, target, nll_target)
+            return torch_fwd(_input, target, nll_target)
 
     def full():
         y = fwd()
@@ -80,8 +83,11 @@ def bench_speed_fused_linear_orpo_loss(
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
-    torch_lm_head_orpo = lambda x, target: TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(device)(x, target)[0]
-    liger_lm_head_orpo = lambda x, target: LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(device)(x, target)[0]
+    # Instantiate once and retrieve the first output only
+    torch_lm_head_orpo = TorchLMHeadORPO(H=H, V=V, dtype=dtype).to(device)
+    liger_lm_head_orpo = LigerLMHeadORPO(H=H, V=V, dtype=dtype).to(device)
+    torch_fwd = lambda x, target, nll_target: torch_lm_head_orpo(x, target, nll_target)[0]
+    liger_fwd = lambda x, target, nll_target: liger_lm_head_orpo(x, target, nll_target)[0]
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
@@ -89,9 +95,9 @@ def bench_speed_fused_linear_orpo_loss(
 
     def fwd():
         if provider == "liger":
-            return liger_lm_head_orpo(_input, target, nll_target)
+            return liger_fwd(_input, target, nll_target)
         elif provider == "huggingface":
-            return torch_lm_head_orpo(_input, target, nll_target)
+            return torch_fwd(_input, target, nll_target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
