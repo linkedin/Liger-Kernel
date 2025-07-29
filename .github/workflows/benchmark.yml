@@ -39,24 +39,24 @@ jobs:
 
     steps:
       # Step: Decide the commit hash to use
-      - name: Determine commit hash to checkout
-        id: choose_commit
-        run: |
-          if [ "${{ github.event.inputs.commit_hash }}" != "" ]; then
-            echo "Using manual input commit: ${{ github.event.inputs.commit_hash }}"
-            echo "hash=${{ github.event.inputs.commit_hash }}" >> $GITHUB_OUTPUT
-          else
-            echo "Using latest commit from main"
-            git fetch origin main
-            echo "hash=$(git rev-parse origin/main)" >> $GITHUB_OUTPUT
-          fi
-
       # Step: Checkout full history so we can check out any commit
       - name: Checkout full repo history
         uses: actions/checkout@v3
         with:
           fetch-depth: 0  # Important: so we can checkout arbitrary commit
-            # Step: Conditionally replace benchmark folder from main
+          
+      - name: Determine commit hash to checkout
+        id: choose_commit
+        run: |
+          if [ "${{ github.event_name}}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.commit_hash }}" != "main" ]; then
+            echo "Using manual input commit: ${{ github.event.inputs.commit_hash }}"
+            echo "hash=${{ github.event.inputs.commit_hash }}" >> $GITHUB_OUTPUT
+          else
+            echo "Using latest commit from main"
+            echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+      # Step: Conditionally replace benchmark folder from main
       - name: Replace benchmark folder from main (manual only, commit ≠ main)
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.commit_hash != 'main' }}
         run: |
@@ -133,6 +133,7 @@ jobs:
             echo "Not a release event"
             path=${{steps.choose_commit.outputs.hash}}
           fi
+          echo "path=$path" >> $GITHUB_OUTPUT
           COMMIT_DIR="gh-pages/${OUTPUT_DIR}/${path}"
 
           mkdir -p "$COMMIT_DIR"
