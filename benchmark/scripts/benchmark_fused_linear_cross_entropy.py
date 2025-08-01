@@ -34,10 +34,12 @@ class TorchLMHeadCE(torch.nn.Module):
 
 
 class LigerLMHeadCE(torch.nn.Module):
-    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
+    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100, accum_dtype=None):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
-        self.ce_loss = LigerFusedLinearCrossEntropyLoss(ignore_index=ignore_index, reduction="mean")
+        self.ce_loss = LigerFusedLinearCrossEntropyLoss(
+            ignore_index=ignore_index, reduction="mean", accum_dtype=accum_dtype
+        )
 
     def forward(self, x, y):
         return self.ce_loss(self.lin.weight, x, y)
@@ -59,6 +61,7 @@ def bench_memory_fused_linear_cross_entropy(
 
     torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
+    liger_lm_head_ce_fp32_accum = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
 
     _input = torch.randn(BT, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (BT, 1), dtype=torch.long, device=device).squeeze(1)
@@ -66,6 +69,8 @@ def bench_memory_fused_linear_cross_entropy(
     def fwd():
         if provider == "liger":
             return liger_lm_head_ce(_input, target)
+        elif provider == "liger-fp32-accum":
+            return liger_lm_head_ce_fp32_accum(_input, target)
         elif provider == "huggingface":
             return torch_lm_head_ce(_input, target)
 
@@ -98,6 +103,7 @@ def bench_speed_fused_linear_cross_entropy(
 
     torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
+    liger_lm_head_ce_fp32_accum = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
 
     _input = torch.randn(BT, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (BT, 1), dtype=torch.long, device=device).squeeze(1)
@@ -105,6 +111,8 @@ def bench_speed_fused_linear_cross_entropy(
     def fwd():
         if provider == "liger":
             return liger_lm_head_ce(_input, target)
+        elif provider == "liger-fp32-accum":
+            return liger_lm_head_ce_fp32_accum(_input, target)
         elif provider == "huggingface":
             return torch_lm_head_ce(_input, target)
 
@@ -149,7 +157,7 @@ if __name__ == "__main__":
         "x_name": "BT",
         "x_label": "B x T",
         "x_values": [2**i for i in range(12, 16)],
-        "kernel_providers": ["liger", "huggingface"],
+        "kernel_providers": ["liger", "liger-fp32-accum", "huggingface"],
         "extra_benchmark_configs": [{"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}],
         "overwrite": args.overwrite,
     }
