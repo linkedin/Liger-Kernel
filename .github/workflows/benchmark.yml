@@ -133,6 +133,7 @@ jobs:
             echo "Not a release event"
             path=${{steps.choose_commit.outputs.hash}}
           fi
+          echo "path=$path" >> $GITHUB_OUTPUT
           COMMIT_DIR="gh-pages/${OUTPUT_DIR}/${path}"
 
           mkdir -p "$COMMIT_DIR"
