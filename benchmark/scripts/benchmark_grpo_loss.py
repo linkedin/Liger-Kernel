@@ -38,12 +38,12 @@ def bench_memory_fused_linear_grpo_loss(
     provider = input.kernel_provider
 
     # Instantiate once and retrieve the first output only
-    torch_lm_head_grpo = TorchLMHeadGRPO(
-        H=H, V=V, dtype=dtype, importance_sampling_level=importance_sampling_level
-    ).to(device)
-    liger_lm_head_grpo = LigerLMHeadGRPO(
-        H=H, V=V, dtype=dtype, importance_sampling_level=importance_sampling_level
-    ).to(device)
+    torch_lm_head_grpo = TorchLMHeadGRPO(H=H, V=V, dtype=dtype, importance_sampling_level=importance_sampling_level).to(
+        device
+    )
+    liger_lm_head_grpo = LigerLMHeadGRPO(H=H, V=V, dtype=dtype, importance_sampling_level=importance_sampling_level).to(
+        device
+    )
 
     # Create inputs
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
@@ -52,12 +52,12 @@ def bench_memory_fused_linear_grpo_loss(
     advantages = torch.randn(B, dtype=dtype, device=device)
     ref_input = torch.randn(B, T, H, dtype=dtype, device=device)
 
-    torch_fwd = lambda: torch_lm_head_grpo(
-        _input, selected_token_ids, attention_mask, advantages, ref_input=ref_input
-    )[0]
-    liger_fwd = lambda: liger_lm_head_grpo(
-        _input, selected_token_ids, attention_mask, advantages, ref_input=ref_input
-    )[0]
+    torch_fwd = lambda: torch_lm_head_grpo(_input, selected_token_ids, attention_mask, advantages, ref_input=ref_input)[
+        0
+    ]
+    liger_fwd = lambda: liger_lm_head_grpo(_input, selected_token_ids, attention_mask, advantages, ref_input=ref_input)[
+        0
+    ]
 
     def fwd():
         if provider == "liger":
@@ -98,12 +98,12 @@ def bench_speed_fused_linear_grpo_loss(
     mode = input.kernel_operation_mode
 
     # Instantiate once and retrieve the first output only
-    torch_lm_head_grpo = TorchLMHeadGRPO(
-        H=H, V=V, dtype=dtype, importance_sampling_level=importance_sampling_level
-    ).to(device)
-    liger_lm_head_grpo = LigerLMHeadGRPO(
-        H=H, V=V, dtype=dtype, importance_sampling_level=importance_sampling_level
-    ).to(device)
+    torch_lm_head_grpo = TorchLMHeadGRPO(H=H, V=V, dtype=dtype, importance_sampling_level=importance_sampling_level).to(
+        device
+    )
+    liger_lm_head_grpo = LigerLMHeadGRPO(H=H, V=V, dtype=dtype, importance_sampling_level=importance_sampling_level).to(
+        device
+    )
 
     # Create inputs
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
@@ -112,12 +112,12 @@ def bench_speed_fused_linear_grpo_loss(
     advantages = torch.randn(B, dtype=dtype, device=device)
     ref_input = torch.randn(B, T, H, dtype=dtype, device=device)
 
-    torch_fwd = lambda: torch_lm_head_grpo(
-        _input, selected_token_ids, attention_mask, advantages, ref_input=ref_input
-    )[0]
-    liger_fwd = lambda: liger_lm_head_grpo(
-        _input, selected_token_ids, attention_mask, advantages, ref_input=ref_input
-    )[0]
+    torch_fwd = lambda: torch_lm_head_grpo(_input, selected_token_ids, attention_mask, advantages, ref_input=ref_input)[
+        0
+    ]
+    liger_fwd = lambda: liger_lm_head_grpo(_input, selected_token_ids, attention_mask, advantages, ref_input=ref_input)[
+        0
+    ]
 
     def fwd():
         if provider == "liger":
