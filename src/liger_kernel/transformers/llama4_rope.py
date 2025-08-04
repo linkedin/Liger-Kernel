@@ -51,9 +51,24 @@ def liger_llama4_vision_rotary_pos_emb(
         Tuple[torch.Tensor, torch.Tensor]: Rotated query and key tensors
     """
     # Handle broadcasting for vision RoPE
-    if freqs_ci.dim() == 3:  # (seq_len, head_dim//2)
-        # Expand to match (batch, seq_len, head_dim//2)
+    if freqs_ci.dim() == 3:
+        try:
+            # Try the regular 3D expansion
+            freqs_ci = freqs_ci.unsqueeze(0).expand(query.shape[0], -1, -1)
+        except RuntimeError as e:
+            if "expand" in str(e) and "4" in str(e):
+                # The tensor is actually 4D internally, handle it differently
+                freqs_ci = freqs_ci.squeeze(1)  # Remove the middle dimension
+                freqs_ci = freqs_ci.unsqueeze(0).expand(query.shape[0], -1, -1)
+            else:
+                raise e
+    elif freqs_ci.dim() == 4:  # (1, seq_len, 1, head_dim//2) - already properly shaped
+        # Squeeze the middle dimension to get (1, seq_len, head_dim//2)
+        freqs_ci = freqs_ci.squeeze(2)
+    elif freqs_ci.dim() == 2:  # (seq_len, head_dim//2) - needs expansion
         freqs_ci = freqs_ci.unsqueeze(0).expand(query.shape[0], -1, -1)
+    else:
+        raise ValueError(f"Unexpected freqs_ci shape: {freqs_ci.shape}")
 
     # Use the same fused kernel as text RoPE
     return LigerLlama4RopeFunction.apply(query, key, freqs_ci)
