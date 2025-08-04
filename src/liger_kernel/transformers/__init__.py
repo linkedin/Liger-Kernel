@@ -13,6 +13,10 @@ from liger_kernel.transformers.jsd import LigerJSD  # noqa: F401
 from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
 from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401
 from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
+from liger_kernel.transformers.llama4_rope import (  # noqa: F401
+    liger_llama4_text_rotary_pos_emb,
+    liger_llama4_vision_rotary_pos_emb,
+)
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP  # noqa: F401
@@ -125,6 +129,8 @@ __all__ = [
     "LigerFusedAddRMSNorm",
     "LigerRMSNorm",
     "liger_rotary_pos_emb",
+    "liger_llama4_text_rotary_pos_emb",
+    "liger_llama4_vision_rotary_pos_emb",
     "LigerBlockSparseTop2MLP",
     "LigerPhi3SwiGLUMLP",
     "LigerQwen3MoeSwiGLUMLP",
