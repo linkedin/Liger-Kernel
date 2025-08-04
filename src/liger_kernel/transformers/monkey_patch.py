@@ -486,6 +486,7 @@ def apply_liger_kernel_to_llama4(
 
     if rope:
         from liger_kernel.transformers.llama4_rope import apply_liger_llama4_rope_full
+
         apply_liger_llama4_rope_full(modeling_llama4)
     if rms_norm:
         modeling_llama4.Llama4TextRMSNorm = LigerRMSNorm
