@@ -12,7 +12,7 @@ import triton.language as tl
 def _llama4_rope_kernel(
     q_ptr,
     q_row_stride,
-    k_ptr, 
+    k_ptr,
     k_row_stride,
     freqs_real_ptr,
     freqs_imag_ptr,
@@ -25,10 +25,8 @@ def _llama4_rope_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    Apply Llama4 RoPE using complex multiplication.
-    Each program processes one (batch, seq) position for all heads.
+    Apply Llama4 RoPE using the exact same complex arithmetic as original HuggingFace.
     """
-    # Program ID represents (batch * seq_len + seq)
     pid = tl.program_id(0)
     
     # Decompose to get batch and sequence indices
@@ -42,8 +40,6 @@ def _llama4_rope_kernel(
         return
     
     # Calculate base pointers for this (batch, seq) position
-    # After transpose and contiguous, layout is (batch, seq, num_heads, head_dim)
-    # q_row_stride is the stride for the seq dimension
     row_idx = batch_idx * seq_len + seq_idx
     q_ptr = q_ptr + row_idx * q_row_stride
     k_ptr = k_ptr + row_idx * k_row_stride
@@ -59,23 +55,34 @@ def _llama4_rope_kernel(
             d_indices = d_start + tl.arange(0, BLOCK_SIZE)
             mask = d_indices < (head_dim // 2)
             
-            # Load frequencies (real and imaginary parts)
-            freqs_real = tl.load(freqs_real_ptr + freqs_ptr_offset + d_indices, mask=mask, other=0.0)
-            freqs_imag = tl.load(freqs_imag_ptr + freqs_ptr_offset + d_indices, mask=mask, other=0.0)
+            # Load frequencies (real and imaginary parts) with proper indexing
+            # freqs_real and freqs_imag are (seq_len, head_dim//2)
+            # We need to access freqs_real[seq_idx, freq_idx] and freqs_imag[seq_idx, freq_idx]
+            freq_idx = d_indices
+            freqs_real = tl.load(freqs_real_ptr + seq_idx * freqs_row_stride + freq_idx, mask=mask, other=0.0)
+            freqs_imag = tl.load(freqs_imag_ptr + seq_idx * freqs_row_stride + freq_idx, mask=mask, other=0.0)
             
-            # Load first half and second half of the head dimension
-            q1 = tl.load(q_head_ptr + d_indices, mask=mask, other=0.0)
-            q2 = tl.load(q_head_ptr + d_indices + head_dim // 2, mask=mask, other=0.0)
+            # Load consecutive pairs as real/imaginary parts
+            # For input [1,2,3,4], we want q_real = [1,3] and q_imag = [2,4]
+            # This matches torch.view_as_complex behavior
+            q_real = tl.load(q_head_ptr + d_indices * 2, mask=mask, other=0.0)
+            q_imag = tl.load(q_head_ptr + d_indices * 2 + 1, mask=mask, other=0.0)
             
-            # Apply complex multiplication: (q1 + i*q2) * (cos + i*sin)
-            # Real part: q1*cos - q2*sin
-            # Imag part: q1*sin + q2*cos
-            new_q1 = q1 * freqs_real - q2 * freqs_imag
-            new_q2 = q1 * freqs_imag + q2 * freqs_real
+            # Cast to float32 for high-precision computation
+            q_real = q_real.to(tl.float32)
+            q_imag = q_imag.to(tl.float32)
+            freqs_real = freqs_real.to(tl.float32)
+            freqs_imag = freqs_imag.to(tl.float32)
             
-            # Store results
-            tl.store(q_head_ptr + d_indices, new_q1, mask=mask)
-            tl.store(q_head_ptr + d_indices + head_dim // 2, new_q2, mask=mask)
+            # Complex multiplication: (q_real + i*q_imag) * (freqs_real + i*freqs_imag)
+            # Real part: q_real*freqs_real - q_imag*freqs_imag
+            # Imag part: q_real*freqs_imag + q_imag*freqs_real
+            new_q_real = q_real * freqs_real - q_imag * freqs_imag
+            new_q_imag = q_real * freqs_imag + q_imag * freqs_real
+            
+            # Store results back to consecutive pairs
+            tl.store(q_head_ptr + d_indices * 2, new_q_real, mask=mask)
+            tl.store(q_head_ptr + d_indices * 2 + 1, new_q_imag, mask=mask)
     
     # Process each key head
     for h in range(n_k_heads):
@@ -87,26 +94,37 @@ def _llama4_rope_kernel(
             d_indices = d_start + tl.arange(0, BLOCK_SIZE)
             mask = d_indices < (head_dim // 2)
             
-            # Load frequencies (real and imaginary parts)
-            freqs_real = tl.load(freqs_real_ptr + freqs_ptr_offset + d_indices, mask=mask, other=0.0)
-            freqs_imag = tl.load(freqs_imag_ptr + freqs_ptr_offset + d_indices, mask=mask, other=0.0)
+            # Load frequencies (real and imaginary parts) with proper indexing
+            # freqs_real and freqs_imag are (seq_len, head_dim//2)
+            # We need to access freqs_real[seq_idx, freq_idx] and freqs_imag[seq_idx, freq_idx]
+            freq_idx = d_indices
+            freqs_real = tl.load(freqs_real_ptr + seq_idx * freqs_row_stride + freq_idx, mask=mask, other=0.0)
+            freqs_imag = tl.load(freqs_imag_ptr + seq_idx * freqs_row_stride + freq_idx, mask=mask, other=0.0)
             
-            # Load first half and second half of the head dimension
-            k1 = tl.load(k_head_ptr + d_indices, mask=mask, other=0.0)
-            k2 = tl.load(k_head_ptr + d_indices + head_dim // 2, mask=mask, other=0.0)
+            # Load consecutive pairs as real/imaginary parts
+            # For input [5,6,7,8], we want k_real = [5,7] and k_imag = [6,8]
+            # This matches torch.view_as_complex behavior
+            k_real = tl.load(k_head_ptr + d_indices * 2, mask=mask, other=0.0)
+            k_imag = tl.load(k_head_ptr + d_indices * 2 + 1, mask=mask, other=0.0)
             
-            # Apply complex multiplication
-            new_k1 = k1 * freqs_real - k2 * freqs_imag
-            new_k2 = k1 * freqs_imag + k2 * freqs_real
+            # Cast to float32 for high-precision computation
+            k_real = k_real.to(tl.float32)
+            k_imag = k_imag.to(tl.float32)
+            freqs_real = freqs_real.to(tl.float32)
+            freqs_imag = freqs_imag.to(tl.float32)
             
-            # Store results
-            tl.store(k_head_ptr + d_indices, new_k1, mask=mask)
-            tl.store(k_head_ptr + d_indices + head_dim // 2, new_k2, mask=mask)
+            # Complex multiplication: (k_real + i*k_imag) * (freqs_real + i*freqs_imag)
+            new_k_real = k_real * freqs_real - k_imag * freqs_imag
+            new_k_imag = k_real * freqs_imag + k_imag * freqs_real
+            
+            # Store results back to consecutive pairs
+            tl.store(k_head_ptr + d_indices * 2, new_k_real, mask=mask)
+            tl.store(k_head_ptr + d_indices * 2 + 1, new_k_imag, mask=mask)
 
 
 def llama4_rope_forward(q, k, freqs_cis):
     """
-    Apply Llama4 RoPE to query and key tensors.
+    Apply Llama4 RoPE to query and key tensors using fused Triton kernel.
     
     Args:
         q: Query tensor of shape (batch_size, seq_len, num_heads, head_dim)
@@ -124,6 +142,13 @@ def llama4_rope_forward(q, k, freqs_cis):
     q = q.contiguous()
     k = k.contiguous()
     
+    # Store original dtype to cast back later
+    original_dtype = q.dtype
+    
+    # Cast to float32 for high-precision computation to match original HF implementation
+    q = q.float()
+    k = k.float()
+    
     # Handle complex frequencies
     if freqs_cis.is_complex():
         freqs_real = freqs_cis.real
@@ -134,14 +159,16 @@ def llama4_rope_forward(q, k, freqs_cis):
         freqs_real = freqs_cis[..., :freq_dim]
         freqs_imag = freqs_cis[..., freq_dim:]
     
+    # Ensure frequencies are in float32 precision to match original HF implementation
+    freqs_real = freqs_real.float()
+    freqs_imag = freqs_imag.float()
+    
     # Handle frequency tensor shape
     if freqs_real.dim() == 3:
-        # Take appropriate slice
         if freqs_real.shape[0] == 1:
             freqs_real = freqs_real[0]
             freqs_imag = freqs_imag[0]
         elif freqs_real.shape[0] == batch_size:
-            # Use first batch
             freqs_real = freqs_real[0]
             freqs_imag = freqs_imag[0]
     
@@ -155,7 +182,6 @@ def llama4_rope_forward(q, k, freqs_cis):
         freqs_real = freqs_real[:seq_len]
         freqs_imag = freqs_imag[:seq_len]
     elif freqs_real.shape[0] < seq_len:
-        # Pad with zeros if too short
         pad_len = seq_len - freqs_real.shape[0]
         freqs_real = torch.nn.functional.pad(freqs_real, (0, 0, 0, pad_len))
         freqs_imag = torch.nn.functional.pad(freqs_imag, (0, 0, 0, pad_len))
@@ -163,24 +189,57 @@ def llama4_rope_forward(q, k, freqs_cis):
     # Handle frequency dimension
     freq_dim = freqs_real.shape[1]
     if freq_dim == head_dim // 2:
-        # Direct mapping
         pass
     elif freq_dim == head_dim // 4:
-        # Each frequency is used twice
         freqs_real = freqs_real.repeat_interleave(2, dim=1)
         freqs_imag = freqs_imag.repeat_interleave(2, dim=1)
-    else:
-        # Try to repeat to match
+    elif freq_dim == 5:  # Vision RoPE specific pattern
+        # For vision RoPE, we need to repeat the 5 frequencies to match head_dim//2
         repeat_factor = (head_dim // 2) // freq_dim
         if repeat_factor * freq_dim == head_dim // 2:
             freqs_real = freqs_real.repeat_interleave(repeat_factor, dim=1)
             freqs_imag = freqs_imag.repeat_interleave(repeat_factor, dim=1)
         else:
-            raise ValueError(f"Cannot match frequency dim {freq_dim} to head_dim {head_dim}")
+            # If exact division doesn't work, pad to the required size
+            target_dim = head_dim // 2
+            if freq_dim < target_dim:
+                # Repeat and pad
+                repeat_times = target_dim // freq_dim
+                remainder = target_dim % freq_dim
+                freqs_real = freqs_real.repeat_interleave(repeat_times, dim=1)
+                freqs_imag = freqs_imag.repeat_interleave(repeat_times, dim=1)
+                if remainder > 0:
+                    freqs_real = torch.cat([freqs_real, freqs_real[:, :remainder]], dim=1)
+                    freqs_imag = torch.cat([freqs_imag, freqs_imag[:, :remainder]], dim=1)
+            else:
+                # Truncate if too large
+                freqs_real = freqs_real[:, :target_dim]
+                freqs_imag = freqs_imag[:, :target_dim]
+    else:
+        repeat_factor = (head_dim // 2) // freq_dim
+        if repeat_factor * freq_dim == head_dim // 2:
+            freqs_real = freqs_real.repeat_interleave(repeat_factor, dim=1)
+            freqs_imag = freqs_imag.repeat_interleave(repeat_factor, dim=1)
+        else:
+            # Try to handle any other frequency dimension
+            target_dim = head_dim // 2
+            if freq_dim < target_dim:
+                # Repeat and pad
+                repeat_times = target_dim // freq_dim
+                remainder = target_dim % freq_dim
+                freqs_real = freqs_real.repeat_interleave(repeat_times, dim=1)
+                freqs_imag = freqs_imag.repeat_interleave(repeat_times, dim=1)
+                if remainder > 0:
+                    freqs_real = torch.cat([freqs_real, freqs_real[:, :remainder]], dim=1)
+                    freqs_imag = torch.cat([freqs_imag, freqs_imag[:, :remainder]], dim=1)
+            else:
+                # Truncate if too large
+                freqs_real = freqs_real[:, :target_dim]
+                freqs_imag = freqs_imag[:, :target_dim]
     
     # Ensure contiguous and correct dtype
-    freqs_real = freqs_real.contiguous().to(q.dtype)
-    freqs_imag = freqs_imag.contiguous().to(q.dtype)
+    freqs_real = freqs_real.contiguous()
+    freqs_imag = freqs_imag.contiguous()
     
     # Grid: one program per (batch, seq) position
     grid = (batch_size * seq_len,)
@@ -189,7 +248,6 @@ def llama4_rope_forward(q, k, freqs_cis):
     BLOCK_SIZE = min(64, triton.next_power_of_2(head_dim // 2))
     
     # Launch kernel
-    # The stride for seq dimension is num_heads * head_dim
     _llama4_rope_kernel[grid](
         q,
         q.stride(1),  # stride for seq dimension (num_heads * head_dim)
@@ -205,6 +263,10 @@ def llama4_rope_forward(q, k, freqs_cis):
         head_dim,
         BLOCK_SIZE=BLOCK_SIZE,
     )
+    
+    # Cast back to original dtype to match original HF implementation
+    q = q.to(original_dtype)
+    k = k.to(original_dtype)
     
     return q, k
 
