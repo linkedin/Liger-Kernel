@@ -37,10 +37,9 @@ const kernelCategories = {
   ]
 };
 
-let allCommits = [];
 let allDataByCommit = {};
 let kernelMeta = {};
-let configData = {}; // Store configuration data for tooltips
+let configData = {}; // Store configuration data for tooltips - format: {commit: {kernelKey: config}}
 let goldenCommits = {};
 
 async function loadGoldenCommits() {
@@ -60,7 +59,6 @@ function getGoldenCommit(kernelName) {
   // Extract base kernel name by removing operation mode and metric suffixes
   let baseKernelName = kernelName;
   
-  // Remove common suffixes
   const suffixes = ['_forward_speed', '_backward_speed', '_full_speed', '_full_memory', '_forward_memory', '_backward_memory'];
   for (const suffix of suffixes) {
     if (baseKernelName.endsWith(suffix)) {
@@ -92,7 +90,6 @@ function getKernelCategory(kernelName) {
   // Extract base kernel name by removing operation mode and metric suffixes
   let baseKernelName = kernelName;
   
-  // Remove common suffixes
   const suffixes = ['_forward_speed', '_backward_speed', '_full_speed', '_full_memory', '_forward_memory', '_backward_memory'];
   for (const suffix of suffixes) {
     if (baseKernelName.endsWith(suffix)) {
@@ -130,10 +127,9 @@ async function fetchCommits() {
   const res = await fetch(`${benchmarkBase}/commits.txt`);
   const text = await res.text();
   const all = text.trim().split('\n');
-  // Separate into commits and versions
   const commits = all.filter(line => !line.includes('-'));
   const versions = all.filter(line => line.includes('-'));
-  return { commits, versions, all };
+  return { commits, versions };
 }
 
 async function fetchCSV(commit) {
@@ -168,13 +164,12 @@ async function fetchCSV(commit) {
         currentCol += char;
       }
     }
-    cols.push(currentCol.trim()); // Add the last column
+    cols.push(currentCol.trim());
     
     const row = Object.fromEntries(headers.map((h, idx) => [h.trim(), cols[idx]?.trim()]));
     if (row.kernel_provider !== 'liger') continue;
 
-    const baseKey = `${row.kernel_name}_${row.kernel_operation_mode}_${row.metric_name}`;
-    const kernelKey = `${baseKey}`;
+    const kernelKey = `${row.kernel_name}_${row.kernel_operation_mode}_${row.metric_name}`;
 
     if (!data[kernelKey]) {
       data[kernelKey] = parseFloat(row.y_value_50);
@@ -185,9 +180,11 @@ async function fetchCSV(commit) {
         };
       }
       // Store configuration data for tooltips
-      if (!configData[kernelKey]) {
-        // TODO: Compare for same GPU type only.
-        configData[kernelKey] = {
+      if (!configData[commit]) {
+        configData[commit] = {};
+      }
+      if (!configData[commit][kernelKey]) {
+        configData[commit][kernelKey] = {
           extra_benchmark_config_str: row.extra_benchmark_config_str || 'N/A',
           gpu_name: row.gpu_name || 'N/A',
           liger_version: row.liger_version || 'N/A'
@@ -211,21 +208,34 @@ async function loadData() {
   let selectedList = viewType === 'versions' ? versions : commits;
   const selectedCommits = count === 'all' ? selectedList : selectedList.slice(-parseInt(count));
 
+  // Collect all unique commits that need to be loaded
+  const commitsToLoad = new Set(selectedCommits);
+  
+  // Add reference commits only if they're not already in the selected commits
+  Object.values(goldenCommits).forEach(commit => {
+    if (!selectedCommits.includes(commit)) {
+      commitsToLoad.add(commit);
+    }
+  });
+  
+  // Also add the default reference commit if not already included
+  if (!selectedCommits.includes(defaultReferenceCommit)) {
+    commitsToLoad.add(defaultReferenceCommit);
+  }
+
   allDataByCommit = {};
   kernelMeta = {};
-  configData = {}; // Reset config data
+  configData = {};
 
-  await Promise.all(selectedCommits.map(async (commit) => {
+  await Promise.all([...commitsToLoad].map(async (commit) => {
     const data = await fetchCSV(commit);
     if (data) allDataByCommit[commit] = data;
   }));
 
-  renderTables();
+  await renderTables();
 }
 
 function compareMetric(current, reference) {
-  // Tried running benchmarks on the same commit 4 times, and there was a 10% variance in the results.
-  // So we're using a 10% threshold to highlight the difference.
   const THRESHOLD = 0.10;
   if (current == null || reference == null) return '';
   const delta = (current - reference) / reference;
@@ -246,7 +256,7 @@ function formatConfigForTooltip(config) {
   }
 }
 
-function renderTables() {
+async function renderTables() {
   const metricType = document.getElementById('metricType').value;
   const searchQuery = document.getElementById('kernelSearch').value.toLowerCase();
   const categoryFilter = document.getElementById('categoryFilter').value;
@@ -257,7 +267,13 @@ function renderTables() {
   speedTable.innerHTML = '';
   memoryTable.innerHTML = '';
 
-  const commits = Object.keys(allDataByCommit);
+  const count = document.getElementById('commitCount').value;
+  const { commits: allCommitsList, versions: allVersionsList } = await fetchCommits();
+  const selectedList = viewType === 'versions' ? allVersionsList : allCommitsList;
+  const selectedCommits = count === 'all' ? selectedList : selectedList.slice(-parseInt(count));
+  
+  const allLoadedCommits = Object.keys(allDataByCommit);
+  const commits = selectedCommits.filter(commit => allLoadedCommits.includes(commit)).reverse();
 
   function createTable(table, filterMetric) {
     let header = `<tr><th>Kernel</th><th>X</th>`;
@@ -278,26 +294,17 @@ function renderTables() {
     }
 
     [...allKeys].forEach((kernelKey) => {
-      // Apply search filter
       if (searchQuery && !kernelKey.toLowerCase().includes(searchQuery)) return;
       
-      // Apply category filter
       if (categoryFilter !== 'all') {
         const kernelCategory = getKernelCategory(kernelKey);
         if (kernelCategory !== categoryFilter) return;
       }
       
       const kernelCategory = getKernelCategory(kernelKey);
-      const config = configData[kernelKey] || { extra_benchmark_config_str: 'N/A', gpu_name: 'N/A', liger_version: 'N/A' };
-      let tooltipText = formatConfigForTooltip(config) + `\n\nCategory: ${kernelCategory}`;
-      if (viewType === 'commits') {
-        const goldenCommit = getGoldenCommit(kernelKey);
-        tooltipText += `\nGolden Commit: ${goldenCommit}`;
-      }
-      let row = `<tr data-tooltip="${tooltipText}" class="category-${kernelCategory}" style="cursor: pointer;">`;
+      let row = `<tr class="category-${kernelCategory}">`;
       row += `<td>${kernelKey}</td><td>${(kernelMeta[kernelKey]?.x_label || '?')}=${(kernelMeta[kernelKey]?.x_value || '?')}</td>`;
       if (viewType === 'commits') {
-        // Get kernel-specific golden commit
         const goldenCommit = getGoldenCommit(kernelKey);
         let refVal = allDataByCommit[goldenCommit]?.[kernelKey];
         if (refVal == null) {
@@ -306,26 +313,24 @@ function renderTables() {
             refVal = allDataByCommit[versionedKey][kernelKey];
           }
         }
-        row += `<td title="${goldenCommit}">${refVal != null ? refVal.toFixed(2) : 'N/A'}</td>`;
+        const refConfig = configData[goldenCommit]?.[kernelKey] || { extra_benchmark_config_str: 'N/A', gpu_name: 'N/A', liger_version: 'N/A' };
+        const refTooltipText = formatConfigForTooltip(refConfig) + `\n\nCategory: ${kernelCategory}\nGolden Commit: ${goldenCommit}`;
+        row += `<td title="${goldenCommit}" data-tooltip="${refTooltipText}" style="cursor: pointer;">${refVal != null ? refVal.toFixed(2) : 'N/A'}</td>`;
       }
       for (const commit of commits) {
         const val = allDataByCommit[commit]?.[kernelKey];
         let cellClass = '';
-        let refVal = null;
         if (viewType === 'commits') {
           const goldenCommit = getGoldenCommit(kernelKey);
-          refVal = allDataByCommit[goldenCommit]?.[kernelKey];
-          if (refVal == null) {
-            const versionedKey = Object.keys(allDataByCommit).find(k => k.startsWith(goldenCommit + '-'));
-            if (versionedKey && allDataByCommit[versionedKey]?.[kernelKey] != null) {
-              refVal = allDataByCommit[versionedKey][kernelKey];
-            }
-          }
+          const refVal = allDataByCommit[goldenCommit]?.[kernelKey];
           const cls = compareMetric(val, refVal);
           const isGolden = commit === goldenCommit;
           cellClass = isGolden ? 'golden' : cls;
         }
-        row += `<td class="${cellClass}">${val != null ? val.toFixed(2) : 'N/A'}</td>`;
+        
+        const config = configData[commit]?.[kernelKey] || { extra_benchmark_config_str: 'N/A', gpu_name: 'N/A', liger_version: 'N/A' };
+        const tooltipText = formatConfigForTooltip(config) + `\n\nCategory: ${kernelCategory}\nCommit: ${commit}`;
+        row += `<td class="${cellClass}" data-tooltip="${tooltipText}" style="cursor: pointer;">${val != null ? val.toFixed(2) : 'N/A'}</td>`;
       }
       row += '</tr>';
       table.innerHTML += row;
@@ -348,12 +353,12 @@ function addTooltipListeners() {
     document.body.appendChild(tooltipEl);
   }
 
-  const tooltipRows = document.querySelectorAll('tr[data-tooltip]');
+  const tooltipCells = document.querySelectorAll('td[data-tooltip]');
   
-  tooltipRows.forEach(row => {
-    row.addEventListener('mouseenter', showTooltip);
-    row.addEventListener('mousemove', moveTooltip);
-    row.addEventListener('mouseleave', hideTooltip);
+  tooltipCells.forEach(cell => {
+    cell.addEventListener('mouseenter', showTooltip);
+    cell.addEventListener('mousemove', moveTooltip);
+    cell.addEventListener('mouseleave', hideTooltip);
   });
 }
 
@@ -369,29 +374,24 @@ function moveTooltip(event) {
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
 
-    // Use clientX and clientY which are relative to the viewport for fixed positioning
     let left = event.clientX + 15;
     let top = event.clientY + 15;
 
     const tooltipWidth = tooltipEl.offsetWidth;
     const tooltipHeight = tooltipEl.offsetHeight;
 
-    // Prevent tooltip from going off the right edge of the viewport
     if (left + tooltipWidth > viewportWidth) {
         left = event.clientX - tooltipWidth - 15;
     }
 
-    // Prevent tooltip from going off the bottom edge of the viewport
     if (top + tooltipHeight > viewportHeight) {
         top = event.clientY - tooltipHeight - 15;
     }
 
-    // Prevent tooltip from going off the left edge
     if (left < 0) {
         left = 5;
     }
 
-    // Prevent tooltip from going off the top edge
     if (top < 0) {
         top = 5;
     }
