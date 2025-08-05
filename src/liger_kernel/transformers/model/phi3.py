@@ -180,17 +180,6 @@ def lce_forward(
     'This is an example script .\n Certainly! Below is a sample script that demonstrates a simple task, such as calculating the sum'
     ```"""
 
-
-    if (
-        use_cache
-        and self.config.rope_scaling
-        and cache_position is not None
-        and cache_position[0] == self.config.original_max_position_embeddings
-    ):
-        logger.warning(
-            f"If you are not using the generate method, you may encounter nonsensical outputs after the {self.config.original_max_position_embeddings}th token, as the KV cache needs to be recomputed."
-        )
-
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
