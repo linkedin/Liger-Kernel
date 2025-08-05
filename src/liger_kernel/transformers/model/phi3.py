@@ -180,9 +180,6 @@ def lce_forward(
     'This is an example script .\n Certainly! Below is a sample script that demonstrates a simple task, such as calculating the sum'
     ```"""
 
-    from transformers.models.phi3.modeling_phi3 import logging
-
-    logger = logging.get_logger(__name__)
 
     if (
         use_cache
