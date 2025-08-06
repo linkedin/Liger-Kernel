@@ -23,6 +23,7 @@ def fixed_fused_linear_cross_entropy(
         reduction=reduction,
         ignore_index=ignore_index,
         softcap=final_logit_softcapping,
+        **kwargs,
     )
     if reduction == "sum":
         loss = loss / num_items_in_batch
