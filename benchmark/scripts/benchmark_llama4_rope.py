@@ -32,7 +32,7 @@ def bench_speed_llama4_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRu
     seq_len = extra_benchmark_config["seq_len"] if "seq_len" in extra_benchmark_config else input.x
 
     head_dim = hidden_size // num_q_heads
-    
+
     # Create Llama4TextConfig for the rotary embedding
     config = Llama4TextConfig(
         hidden_size=hidden_size,
@@ -43,7 +43,7 @@ def bench_speed_llama4_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRu
         rope_theta=10000.0,
         rope_scaling=None,  # Use default rope type
     )
-    
+
     rotary_emb = transformers_version_dispatch(
         "4.48.0",
         Llama4TextRotaryEmbedding,
@@ -51,7 +51,7 @@ def bench_speed_llama4_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRu
         before_kwargs={"config": config, "device": device},
         after_kwargs={"config": config, "device": device},
     )
-    
+
     q = torch.randn(
         (1, seq_len, num_q_heads, head_dim),
         device=device,
@@ -126,7 +126,7 @@ def bench_memory_llama4_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkR
     seq_len = extra_benchmark_config["seq_len"] if "seq_len" in extra_benchmark_config else input.x
 
     head_dim = hidden_size // num_q_heads
-    
+
     # Create Llama4TextConfig for the rotary embedding
     config = Llama4TextConfig(
         hidden_size=hidden_size,
@@ -137,7 +137,7 @@ def bench_memory_llama4_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkR
         rope_theta=10000.0,
         rope_scaling=None,  # Use default rope type
     )
-    
+
     rotary_emb = transformers_version_dispatch(
         "4.48.0",
         Llama4TextRotaryEmbedding,
@@ -145,7 +145,7 @@ def bench_memory_llama4_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkR
         before_kwargs={"config": config, "device": device},
         after_kwargs={"config": config, "device": device},
     )
-    
+
     q = torch.randn(
         (1, seq_len, num_q_heads, head_dim),
         device=device,
@@ -246,4 +246,4 @@ if __name__ == "__main__":
         metric_name="memory",
         metric_unit="MB",
         **common_configs_varying_seq_len,
-    ) 
+    )

@@ -21,9 +21,7 @@ def _prepare_freqs(freqs_cis: torch.Tensor, seq_len: int, head_dim_half: int):
     # Canonicalize to shape (seq_len, head_dim_half):
     # 1) Ensure the last dimension is head_dim_half
     if freqs_real.shape[-1] != head_dim_half:
-        raise ValueError(
-            f"Unexpected last dim for freqs: {freqs_real.shape[-1]} (expected {head_dim_half})"
-        )
+        raise ValueError(f"Unexpected last dim for freqs: {freqs_real.shape[-1]} (expected {head_dim_half})")
     # 2) Flatten all leading dims to a single row dimension
     freqs_real = freqs_real.reshape(-1, head_dim_half)
     freqs_imag = freqs_imag.reshape(-1, head_dim_half)
@@ -33,9 +31,7 @@ def _prepare_freqs(freqs_cis: torch.Tensor, seq_len: int, head_dim_half: int):
             freqs_real = freqs_real.expand(seq_len, -1)
             freqs_imag = freqs_imag.expand(seq_len, -1)
         else:
-            raise ValueError(
-                f"Insufficient rows in freqs: {freqs_real.shape[0]} < seq_len={seq_len}"
-            )
+            raise ValueError(f"Insufficient rows in freqs: {freqs_real.shape[0]} < seq_len={seq_len}")
     # 4) If we have more rows than seq_len (e.g., batch present), take the first seq_len rows
     elif freqs_real.shape[0] > seq_len:
         freqs_real = freqs_real[:seq_len]
@@ -66,14 +62,20 @@ def _cast_and_contiguous(q, k, freqs_real, freqs_imag):
     freqs_imag = _maybe_contiguous(_maybe_to_dtype(freqs_imag, compute_dtype))
     return q, k, freqs_real, freqs_imag
 
+
 @triton.jit
 def _llama4_rope_kernel(
-    q_ptr, k_ptr,
-    freqs_real_ptr, freqs_imag_ptr,
-    q_row_stride, k_row_stride,
-    q_head_stride, k_head_stride,
+    q_ptr,
+    k_ptr,
+    freqs_real_ptr,
+    freqs_imag_ptr,
+    q_row_stride,
+    k_row_stride,
+    q_head_stride,
+    k_head_stride,
     freqs_row_stride,
-    seq_len, batch_size,
+    seq_len,
+    batch_size,
     imag_sign,
     head_dim_half: tl.constexpr,
     n_q_heads: tl.constexpr,
@@ -86,7 +88,7 @@ def _llama4_rope_kernel(
     """
     # 2D grid
     pid_bs = tl.program_id(0)  # over batch*seq
-    pid_h = tl.program_id(1)   # over heads
+    pid_h = tl.program_id(1)  # over heads
 
     batch_idx = pid_bs // seq_len
     seq_idx = pid_bs % seq_len
@@ -177,15 +179,24 @@ def llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE: int = None, imag_sign: floa
 
     # Launch kernel
     _llama4_rope_kernel[grid](
-        q, k,
-        freqs_real, freqs_imag,
-        q.stride(1), k.stride(1),
-        q.stride(2), k.stride(2),
+        q,
+        k,
+        freqs_real,
+        freqs_imag,
+        q.stride(1),
+        k.stride(1),
+        q.stride(2),
+        k.stride(2),
         freqs_real.stride(0),
-        seq_len, batch_size,
+        seq_len,
+        batch_size,
         imag_sign,
-        head_dim_half, n_q_heads, n_k_heads, BLOCK_SIZE,
-        num_warps=num_warps, num_stages=2,
+        head_dim_half,
+        n_q_heads,
+        n_k_heads,
+        BLOCK_SIZE,
+        num_warps=num_warps,
+        num_stages=2,
     )
 
     # Cast back to original dtype only if it differs from compute dtype
@@ -196,6 +207,7 @@ def llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE: int = None, imag_sign: floa
 
     return q, k
 
+
 class LigerLlama4RopeFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, freqs_cis, BLOCK_SIZE: int = None):
@@ -203,10 +215,11 @@ class LigerLlama4RopeFunction(torch.autograd.Function):
         ctx.save_for_backward(freqs_cis.detach() if isinstance(freqs_cis, torch.Tensor) else freqs_cis)
         ctx.BLOCK_SIZE = BLOCK_SIZE
         return q_out, k_out
+
     @staticmethod
     def backward(ctx, dq, dk):
-        freqs_cis, = ctx.saved_tensors
-        BLOCK_SIZE = getattr(ctx, 'BLOCK_SIZE', None)
+        (freqs_cis,) = ctx.saved_tensors
+        BLOCK_SIZE = getattr(ctx, "BLOCK_SIZE", None)
         # Use imag_sign=-1.0 for conjugate without materializing a new tensor
         dq_out, dk_out = llama4_rope_forward(dq, dk, freqs_cis, BLOCK_SIZE, imag_sign=-1.0)
         return dq_out, dk_out, None
