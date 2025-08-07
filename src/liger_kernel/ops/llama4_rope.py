@@ -9,17 +9,38 @@ def _prepare_freqs(freqs_cis: torch.Tensor, seq_len: int, head_dim_half: int):
         freqs_real = freqs_cis.real
         freqs_imag = freqs_cis.imag
     else:
-        # Already split: [seq_len, 2*head_dim_half]
-        freqs_real = freqs_cis[..., :head_dim_half]
-        freqs_imag = freqs_cis[..., head_dim_half:]
-    # Handle batch dimension
-    if freqs_real.dim() == 3 and freqs_real.shape[0] == 1:
-        freqs_real = freqs_real.squeeze(0)
-        freqs_imag = freqs_imag.squeeze(0)
-    # Expand 1D to 2D
-    if freqs_real.dim() == 1:
-        freqs_real = freqs_real.unsqueeze(0).expand(seq_len, -1)
-        freqs_imag = freqs_imag.unsqueeze(0).expand(seq_len, -1)
+        # Already split: last dim should be 2*head_dim_half
+        if freqs_cis.shape[-1] == 2 * head_dim_half:
+            freqs_real = freqs_cis[..., :head_dim_half]
+            freqs_imag = freqs_cis[..., head_dim_half:]
+        else:
+            raise ValueError(
+                f"Unexpected freqs_cis shape for non-complex input: {freqs_cis.shape}, expected last dim = {2 * head_dim_half}"
+            )
+
+    # Canonicalize to shape (seq_len, head_dim_half):
+    # 1) Ensure the last dimension is head_dim_half
+    if freqs_real.shape[-1] != head_dim_half:
+        raise ValueError(
+            f"Unexpected last dim for freqs: {freqs_real.shape[-1]} (expected {head_dim_half})"
+        )
+    # 2) Flatten all leading dims to a single row dimension
+    freqs_real = freqs_real.reshape(-1, head_dim_half)
+    freqs_imag = freqs_imag.reshape(-1, head_dim_half)
+    # 3) If we have fewer rows than seq_len, allow broadcasting when single row
+    if freqs_real.shape[0] < seq_len:
+        if freqs_real.shape[0] == 1:
+            freqs_real = freqs_real.expand(seq_len, -1)
+            freqs_imag = freqs_imag.expand(seq_len, -1)
+        else:
+            raise ValueError(
+                f"Insufficient rows in freqs: {freqs_real.shape[0]} < seq_len={seq_len}"
+            )
+    # 4) If we have more rows than seq_len (e.g., batch present), take the first seq_len rows
+    elif freqs_real.shape[0] > seq_len:
+        freqs_real = freqs_real[:seq_len]
+        freqs_imag = freqs_imag[:seq_len]
+
     return freqs_real, freqs_imag
 
 
@@ -60,6 +81,7 @@ def _llama4_rope_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
+    H100-optimized RoPE kernel with improved parallelization across heads and dimensions.
     Grid: (batch*seq, head)
     """
     # 2D grid
@@ -83,7 +105,7 @@ def _llama4_rope_kernel(
         d_indices = d_start + tl.arange(0, BLOCK_SIZE)
         mask_d = d_indices < head_dim_half
 
-        # Load frequencies once per tile
+        # Load frequencies once per tile (freqs layout: [seq_len, head_dim_half])
         freq_idx = d_indices
         freqs_real = tl.load(freqs_real_ptr + seq_idx * freqs_row_stride + freq_idx, mask=mask_d, other=0.0)
         freqs_imag = tl.load(freqs_imag_ptr + seq_idx * freqs_row_stride + freq_idx, mask=mask_d, other=0.0)
@@ -142,6 +164,7 @@ def llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE: int = None, imag_sign: floa
     # Cast to appropriate dtype and make contiguous only when needed
     q, k, freqs_real, freqs_imag = _cast_and_contiguous(q, k, freqs_real, freqs_imag)
 
+    # H100-optimized meta-params
     if BLOCK_SIZE is None:
         BLOCK_SIZE, num_warps = _select_kernel_meta(head_dim_half)
     else:
@@ -177,7 +200,7 @@ class LigerLlama4RopeFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, freqs_cis, BLOCK_SIZE: int = None):
         q_out, k_out = llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE, imag_sign=1.0)
-        ctx.save_for_backward(freqs_cis)
+        ctx.save_for_backward(freqs_cis.detach() if isinstance(freqs_cis, torch.Tensor) else freqs_cis)
         ctx.BLOCK_SIZE = BLOCK_SIZE
         return q_out, k_out
     @staticmethod
