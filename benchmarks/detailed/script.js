@@ -3,6 +3,27 @@ let chartMemory;
 let chart2Speed;
 let chart2Memory;
 
+const primaryBase = 'https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks';
+const fallbackBase = 'https://cdn.jsdelivr.net/gh/linkedin/Liger-Kernel@gh-pages/benchmarks';
+
+async function fetchWithFallback(path) {
+  const urls = [
+    `${primaryBase}/${path}`,
+    `${fallbackBase}/${path}`,
+  ];
+  let lastErr;
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return res;
+      lastErr = new Error(`HTTP ${res.status} for ${url}`);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('Failed to fetch with fallback');
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   const commits = await fetchCommitHashes();
   // const commits = ["a96bdc1", "bc105fd", "cbe66ed"]
@@ -25,12 +46,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 async function fetchCommitHashes() {
   try {
-    const response = await fetch(
-      "https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks/commits.txt"
-    );
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
+    const response = await fetchWithFallback('commits.txt');
     const text = await response.text();
     // Split by newlines and filter out empty lines
     return text.split('\n')
@@ -53,12 +69,25 @@ function populateCommitDropdown(commits, selectId) {
 }
 
 function loadCSV(commit, panel) {
-  Papa.parse(`https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks/${commit}/benchmark.csv`, {
+  Papa.parse(`${primaryBase}/${commit}/benchmark.csv`, {
     download: true,
     header: true,
     dynamicTyping: true,
-    complete: (result) => {
-      const data = result.data.filter(d => d.kernel_provider);
+    complete: async (result) => {
+      // If primary failed to load any data rows, try fallback
+      let data = result.data.filter(d => d.kernel_provider);
+      if (!data || data.length === 0) {
+        try {
+          const res = await fetchWithFallback(`${commit}/benchmark.csv`);
+          const text = await res.text();
+          const parsed = Papa.parse(text, { header: true, dynamicTyping: true });
+          data = parsed.data.filter(d => d.kernel_provider);
+        } catch (e) {
+          alert("Failed to load CSV for commit: " + commit);
+          console.error(e);
+          return;
+        }
+      }
       if (panel === 1) {
         setupControls(data, 1);
         renderCharts(data, 1);
@@ -67,9 +96,24 @@ function loadCSV(commit, panel) {
         renderCharts(data, 2);
       }
     },
-    error: (err) => {
-      alert("Failed to load CSV for commit: " + commit);
-      console.error(err);
+    error: async (err) => {
+      // Try fallback immediately
+      try {
+        const res = await fetchWithFallback(`${commit}/benchmark.csv`);
+        const text = await res.text();
+        const parsed = Papa.parse(text, { header: true, dynamicTyping: true });
+        const data = parsed.data.filter(d => d.kernel_provider);
+        if (panel === 1) {
+          setupControls(data, 1);
+          renderCharts(data, 1);
+        } else {
+          setupControls(data, 2);
+          renderCharts(data, 2);
+        }
+      } catch (e) {
+        alert("Failed to load CSV for commit: " + commit);
+        console.error(err);
+      }
     }
   });
 }
