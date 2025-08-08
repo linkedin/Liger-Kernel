@@ -1,6 +1,7 @@
 // TODO: Make this configurable into a separate file
 const defaultReferenceCommit = 'c1bdc24';
-const benchmarkBase = 'https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks';
+const benchmarkPrimaryBase = 'https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks';
+const benchmarkFallbackBase = 'https://cdn.jsdelivr.net/gh/linkedin/Liger-Kernel@gh-pages/benchmarks';
 
 // Kernel categories configuration
 const kernelCategories = {
@@ -42,13 +43,31 @@ let kernelMeta = {};
 let configData = {}; // Store configuration data for tooltips - format: {commit: {kernelKey: config}}
 let goldenCommits = {};
 
+async function fetchWithFallback(path, responseType = 'text') {
+  const urls = [
+    `${benchmarkPrimaryBase}/${path}`,
+    `${benchmarkFallbackBase}/${path}`,
+  ];
+  let lastErr;
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        if (responseType === 'json') return await res.json();
+        return await res.text();
+      }
+      lastErr = new Error(`HTTP ${res.status} for ${url}`);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('Failed to fetch with fallback');
+}
+
 async function loadGoldenCommits() {
   try {
-    const res = await fetch('https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks/golden_commits.json');
-    if (res.ok) {
-      const data = await res.json();
-      return data.golden_commits || {};
-    }
+    const data = await fetchWithFallback('golden_commits.json', 'json');
+    return data.golden_commits || {};
   } catch (e) {
     console.warn('Could not load golden commits from JSON');
   }
@@ -124,8 +143,7 @@ function goToDetailedView() {
 }
 
 async function fetchCommits() {
-  const res = await fetch(`${benchmarkBase}/commits.txt`);
-  const text = await res.text();
+  const text = await fetchWithFallback('commits.txt', 'text');
   const all = text.trim().split('\n');
   const commits = all.filter(line => !line.includes('-'));
   const versions = all.filter(line => line.includes('-'));
@@ -133,9 +151,7 @@ async function fetchCommits() {
 }
 
 async function fetchCSV(commit) {
-  const res = await fetch(`${benchmarkBase}/${commit}/benchmark.csv`);
-  if (!res.ok) return null;
-  const text = await res.text();
+  const text = await fetchWithFallback(`${commit}/benchmark.csv`, 'text');
   const rows = text.trim().split('\n');
   const headers = rows[0].split(',');
   const data = {};
