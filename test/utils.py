@@ -535,6 +535,18 @@ def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_gpt_oss(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to GPT OSS.
+    """
+    from transformers.models.gpt_oss import modeling_gpt_oss
+
+    importlib.reload(modeling_gpt_oss)
+    model_config.model_class = modeling_gpt_oss.GptOssForCausalLM
+
+    print("Liger kernel patches have been reverted.")
+
+
 class HFAlignmentLoss:
     def __init__(
         self,
