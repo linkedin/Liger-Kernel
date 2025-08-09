@@ -22,6 +22,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text
 from liger_kernel.transformers import apply_liger_kernel_to_glm4
+from liger_kernel.transformers import apply_liger_kernel_to_gpt_oss
 from liger_kernel.transformers import apply_liger_kernel_to_granite
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_llama4
@@ -46,6 +47,7 @@ from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_gemma3_text
 from test.utils import revert_liger_kernel_to_glm4
+from test.utils import revert_liger_kernel_to_gpt_oss
 from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_llama4
@@ -166,6 +168,15 @@ try:
     SMOLLM3_AVAILABLE = True
 except ImportError:
     SMOLLM3_AVAILABLE = False
+
+try:
+    # GPT OSS is only available in transformers>=4.55.0
+    from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
+    from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM
+
+    GPT_OSS_AVAILABLE = True
+except ImportError:
+    GPT_OSS_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -853,6 +864,43 @@ if SMOLLM3_AVAILABLE:
         ),
     )
 
+if GPT_OSS_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_gpt_oss"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_gpt_oss,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gpt_oss,
+        model_class=GptOssForCausalLM,
+        mini_model_config=GptOssConfig(
+            num_hidden_layers=4,
+            num_local_experts=32,  # 128,
+            vocab_size=32000,  # 201088,
+            hidden_size=896,  # 2880,
+            intermediate_size=896,  # 2880,
+            head_dim=64,
+            num_attention_heads=8,  # 16,
+            num_key_value_heads=2,  # 4,
+            sliding_window=128,
+            rope_theta=150000.0,
+            tie_word_embeddings=False,
+            hidden_act="silu",
+            initializer_range=0.02,
+            max_position_embeddings=32768,  # 131072,
+            rms_norm_eps=1e-5,
+            rope_scaling=dict(
+                factor=32.0,
+                beta_fast=32.0,
+                beta_slow=1.0,
+                truncate=False,
+                rope_type="yarn",
+            ),
+            attention_dropout=0.0,
+            num_experts_per_tok=2,
+            router_aux_loss_coef=0.9,
+            output_router_logits=False,
+            use_cache=True,
+            layer_types=None,
+        ),
+    )
+
 
 def create_model(model_name="mini_llama3"):
     """
@@ -1140,6 +1188,22 @@ def run_mini_model(
             marks=pytest.mark.skipif(
                 not SMOLLM3_AVAILABLE,
                 reason="Smollm3 not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_gpt_oss",
+            32,
+            1e-5,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not GPT_OSS_AVAILABLE,
+                reason="GPT OSS not available in this version of transformers",
             ),
         ),
     ],

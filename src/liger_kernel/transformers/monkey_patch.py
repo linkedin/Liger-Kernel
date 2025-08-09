@@ -1849,6 +1849,58 @@ def apply_liger_kernel_to_glm4(
                 _patch_rms_norm_module(decoder_layer.post_mlp_layernorm, in_place=False)
 
 
+def apply_liger_kernel_to_gpt_oss(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace GPT OSS models.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.gpt_oss import modeling_gpt_oss
+    from transformers.models.gpt_oss.modeling_gpt_oss import GptOssModel
+
+    from liger_kernel.transformers.model.gpt_oss import lce_forward as gpt_oss_lce_forward
+
+    if rope:
+        modeling_gpt_oss.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if rms_norm:
+        modeling_gpt_oss.GptOssRMSNorm = LigerRMSNorm
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(gpt_oss_lce_forward, model)
+        else:
+            modeling_gpt_oss.GptOssForCausalLM.forward = gpt_oss_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: GptOssModel = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+        for decoder_layer in base_model.layers:
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
@@ -1856,6 +1908,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma3_text": apply_liger_kernel_to_gemma3_text,
     "gemma3": apply_liger_kernel_to_gemma3,
     "glm4": apply_liger_kernel_to_glm4,
+    "gpt_oss": apply_liger_kernel_to_gpt_oss,
     "llama": apply_liger_kernel_to_llama,
     "llama4_text": apply_liger_kernel_to_llama4,
     "llama4": apply_liger_kernel_to_llama4,
