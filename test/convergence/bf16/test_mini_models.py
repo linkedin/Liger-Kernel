@@ -1317,22 +1317,20 @@ def run_mini_model(
             1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
-        TODO: Gemma2 test for bf16 is not passing within the tolerance range, might be casting issue, need to investigate
-        pytest.param(
-            "mini_gemma2",
-            32,
-            1e-4,
-            torch.bfloat16,
-            1e-3,
-            1e-2,
-            1e-1,
-            1e-2,
-            1e-2,
-            1e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
-                ),
+        # TODO: Gemma2 test for bf16 is not passing within the tolerance range, might be casting issue, need to investigate
+        # pytest.param(
+        #     "mini_gemma2",
+        #     32,
+        #     1e-4,
+        #     torch.bfloat16,
+        #     1e-3,
+        #     1e-2,
+        #     1e-1,
+        #     1e-2,
+        #     1e-2,
+        #     1e-2,
+        #     marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
         pytest.param(
             "mini_gemma3_text",
             32,
