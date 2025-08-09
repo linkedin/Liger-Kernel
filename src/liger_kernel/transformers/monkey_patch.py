@@ -448,7 +448,7 @@ def apply_liger_kernel_to_llava(
 
 
 def apply_liger_kernel_to_llama4(
-    rope: bool = False,
+    rope: bool = True,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
@@ -484,7 +484,9 @@ def apply_liger_kernel_to_llama4(
     from liger_kernel.transformers.model.llama4 import lce_forward as llama4_lce_forward
 
     if rope:
-        raise NotImplementedError("liger_rotary_pos_emb is not available for Llama4 models.")
+        from liger_kernel.transformers.llama4_rope import apply_liger_llama4_rope_full
+
+        apply_liger_llama4_rope_full(modeling_llama4)
     if rms_norm:
         modeling_llama4.Llama4TextRMSNorm = LigerRMSNorm
     if swiglu:
