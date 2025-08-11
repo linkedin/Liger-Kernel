@@ -1684,7 +1684,7 @@ def test_apply_liger_kernel_to_instance_for_smollm3():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
-@pytest.mark.skipif(not is_qwen3_available(), reason="gpt oss module not available")
+@pytest.mark.skipif(not is_gpt_oss_available(), reason="gpt oss module not available")
 def test_apply_liger_kernel_to_instance_for_gpt_oss():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.gpt_oss.modeling_gpt_oss"):
