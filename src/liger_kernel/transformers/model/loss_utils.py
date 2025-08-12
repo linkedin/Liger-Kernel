@@ -13,6 +13,7 @@ def fixed_fused_linear_cross_entropy(
     num_items_in_batch: Optional[int] = None,
     ignore_index: int = -100,
     final_logit_softcapping: Optional[float] = None,
+    accum_dtype: Optional[torch.dtype] = None,
     **kwargs,
 ):
     reduction = "sum" if num_items_in_batch is not None else "mean"
@@ -23,6 +24,7 @@ def fixed_fused_linear_cross_entropy(
         reduction=reduction,
         ignore_index=ignore_index,
         softcap=final_logit_softcapping,
+        accum_dtype=accum_dtype,
     )
     if reduction == "sum":
         loss = loss / num_items_in_batch

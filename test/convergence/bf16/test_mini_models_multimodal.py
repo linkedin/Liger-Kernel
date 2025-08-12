@@ -860,7 +860,7 @@ def run_mini_model_multimodal(
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
         optimizer.zero_grad()
-        output = model(**batch)
+        output = model(**batch, accum_dtype=torch.float32)
         output.loss.backward()
         optimizer.step()
 
