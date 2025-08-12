@@ -926,7 +926,7 @@ def run_mini_model(
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
         optimizer.zero_grad()
-        output = model(**batch)
+        output = model(**batch, accum_dtype=torch.float32)
         output.loss.backward()
         optimizer.step()
         print(f"Step {i}, Loss: {output.loss.item()}")
