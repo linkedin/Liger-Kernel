@@ -6,7 +6,7 @@ import torch
 from transformers.cache_utils import Cache
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 from transformers.modeling_outputs import MoeModelOutputWithPast
-from transformers.models.mixtral.modeling_mixtral import load_balancing_loss_func
+from transformers.models.gpt_oss.modeling_gpt_oss import load_balancing_loss_func
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 
