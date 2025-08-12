@@ -1844,12 +1844,14 @@ def apply_liger_kernel_to_gpt_oss(
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
-    swiglu: bool = True,
+    swiglu: bool = False,
     model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace GPT OSS models.
     """
+    if swiglu:
+        raise NotImplementedError("LigerSwiGLUMLP is not available for GPT-OSS models.")
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )

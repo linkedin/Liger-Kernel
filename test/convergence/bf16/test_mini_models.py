@@ -948,6 +948,8 @@ def run_mini_model(
 
         if "gemma" in model_name:
             kwargs["geglu"] = True
+        elif "gpt_oss" in model_name:
+            kwargs["swiglu"] = False
         else:
             kwargs["swiglu"] = True
 
