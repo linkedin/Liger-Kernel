@@ -831,8 +831,7 @@ def run_mini_model_multimodal(
             "rms_norm": True,
             "cross_entropy": False,
         }
-        if "llama4" in model_name:
-            kwargs["rope"] = False
+
         if "qwen2_5_vl" not in model_name and "llava" not in model_name:
             kwargs["layer_norm"] = True
 
@@ -861,7 +860,7 @@ def run_mini_model_multimodal(
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
         optimizer.zero_grad()
-        output = model(**batch)
+        output = model(**batch, accum_dtype=torch.float32)
         output.loss.backward()
         optimizer.step()
 

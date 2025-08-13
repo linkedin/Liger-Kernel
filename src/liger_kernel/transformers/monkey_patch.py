@@ -26,7 +26,6 @@ from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_f
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
-from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward_deprecated
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward_deprecated
 from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_forward
@@ -449,7 +448,7 @@ def apply_liger_kernel_to_llava(
 
 
 def apply_liger_kernel_to_llama4(
-    rope: bool = False,
+    rope: bool = True,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
@@ -485,7 +484,9 @@ def apply_liger_kernel_to_llama4(
     from liger_kernel.transformers.model.llama4 import lce_forward as llama4_lce_forward
 
     if rope:
-        raise NotImplementedError("liger_rotary_pos_emb is not available for Llama4 models.")
+        from liger_kernel.transformers.llama4_rope import apply_liger_llama4_rope_full
+
+        apply_liger_llama4_rope_full(modeling_llama4)
     if rms_norm:
         modeling_llama4.Llama4TextRMSNorm = LigerRMSNorm
     if swiglu:
@@ -1675,25 +1676,14 @@ def apply_liger_kernel_to_phi3(
     if swiglu:
         modeling_phi3.Phi3MLP = LigerPhi3SwiGLUMLP
     if cross_entropy:
-        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
-            from transformers.loss.loss_utils import nn
+        from transformers.loss.loss_utils import nn
 
-            nn.functional.cross_entropy = liger_cross_entropy
-        else:
-            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
-            modeling_phi3.CrossEntropyLoss = LigerCrossEntropyLoss
+        nn.functional.cross_entropy = liger_cross_entropy
     if fused_linear_cross_entropy:
-        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
-            if model is not None:
-                model.forward = MethodType(phi3_lce_forward, model)
-            else:
-                modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
-        else:  # if version < 4.46.1
-            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
-            if model is not None:
-                model.forward = MethodType(phi3_lce_forward_deprecated, model)
-            else:
-                modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward_deprecated
+        if model is not None:
+            model.forward = MethodType(phi3_lce_forward, model)
+        else:
+            modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the

@@ -891,7 +891,7 @@ def run_mini_model(
             "rms_norm": True,
         }
 
-        if "glm4" in model_name or "llama4" in model_name:
+        if "glm4" in model_name:
             kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -926,7 +926,7 @@ def run_mini_model(
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
         optimizer.zero_grad()
-        output = model(**batch)
+        output = model(**batch, accum_dtype=torch.float32)
         output.loss.backward()
         optimizer.step()
         print(f"Step {i}, Loss: {output.loss.item()}")
