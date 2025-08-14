@@ -1858,6 +1858,7 @@ def apply_liger_kernel_to_gpt_oss(
 
     from transformers.models.gpt_oss import modeling_gpt_oss
     from transformers.models.gpt_oss.modeling_gpt_oss import GptOssModel
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGptOss
 
     from liger_kernel.transformers.model.gpt_oss import lce_forward as gpt_oss_lce_forward
 
@@ -1865,7 +1866,7 @@ def apply_liger_kernel_to_gpt_oss(
         modeling_gpt_oss.apply_rotary_pos_emb = liger_rotary_pos_emb
 
     if rms_norm:
-        modeling_gpt_oss.GptOssRMSNorm = LigerRMSNorm
+        modeling_gpt_oss.GptOssRMSNorm = LigerRMSNormForGptOss
 
     if cross_entropy:
         from transformers.loss.loss_utils import nn
