@@ -10,20 +10,20 @@ from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinea
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # noqa: F401
 from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
 from liger_kernel.transformers.jsd import LigerJSD  # noqa: F401
+from liger_kernel.transformers.kl_div import LigerKLDIVLoss  # noqa: F401
 from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
 from liger_kernel.transformers.llama4_rope import liger_llama4_text_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.llama4_rope import liger_llama4_vision_rotary_pos_emb  # noqa: F401
+from liger_kernel.transformers.multi_token_attention import LigerMultiTokenAttention  # noqa: F401
 from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401
 from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
+from liger_kernel.transformers.softmax import LigerSoftmax  # noqa: F401
+from liger_kernel.transformers.sparsemax import LigerSparsemax  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401
-from liger_kernel.transformers.kl_div import LigerKLDIVLoss  # noqa: F401
-from liger_kernel.transformers.multi_token_attention import LigerMultiTokenAttention  # noqa: F401
-from liger_kernel.transformers.softmax import LigerSoftmax  # noqa: F401
-from liger_kernel.transformers.sparsemax import LigerSparsemax  # noqa: F401
 
 # Static-only imports for IDEs and type checkers
 if TYPE_CHECKING:
