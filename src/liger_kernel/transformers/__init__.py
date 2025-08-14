@@ -20,6 +20,10 @@ from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401
+from liger_kernel.transformers.kl_div import LigerKLDIVLoss  # noqa: F401
+from liger_kernel.transformers.multi_token_attention import LigerMultiTokenAttention  # noqa: F401
+from liger_kernel.transformers.softmax import LigerSoftmax  # noqa: F401
+from liger_kernel.transformers.sparsemax import LigerSparsemax  # noqa: F401
 
 # Static-only imports for IDEs and type checkers
 if TYPE_CHECKING:
@@ -134,6 +138,10 @@ __all__ = [
     "LigerQwen3MoeSwiGLUMLP",
     "LigerSwiGLUMLP",
     "LigerTVDLoss",
+    "LigerKLDIVLoss",
+    "LigerMultiTokenAttention",
+    "LigerSoftmax",
+    "LigerSparsemax",
 ]
 
 # Add transformer-dependent symbols only if available
