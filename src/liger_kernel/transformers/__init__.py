@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3_text  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_granite  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama4  # noqa: F401
