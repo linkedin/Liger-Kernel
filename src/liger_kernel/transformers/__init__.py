@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3_text  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gpt_oss  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_granite  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama4  # noqa: F401
@@ -89,6 +90,7 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_gemma3",
         "apply_liger_kernel_to_gemma3_text",
         "apply_liger_kernel_to_glm4",
+        "apply_liger_kernel_to_gpt_oss",
         "apply_liger_kernel_to_granite",
         "apply_liger_kernel_to_llama",
         "apply_liger_kernel_to_llava",
@@ -148,6 +150,7 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_gemma3",
             "apply_liger_kernel_to_gemma3_text",
             "apply_liger_kernel_to_glm4",
+            "apply_liger_kernel_to_gpt_oss",
             "apply_liger_kernel_to_granite",
             "apply_liger_kernel_to_llama",
             "apply_liger_kernel_to_llava",
