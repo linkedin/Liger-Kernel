@@ -1879,8 +1879,6 @@ def apply_liger_kernel_to_glm4v(
         raise NotImplementedError("liger_rotary_pos_emb is not available for Glm4 models.")
     if rms_norm:
         modeling_glm4.Glm4RMSNorm = LigerRMSNormForGlm4
-    if swiglu:
-        modeling_glm4.Glm4MLP = LigerPhi3SwiGLUMLP
     if cross_entropy:
         from transformers.loss.loss_utils import nn
 
@@ -1922,7 +1920,7 @@ def apply_liger_kernel_to_glm4v(
                 _patch_layer_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
                 if swiglu:
-                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+                    _patch_swiglu_module(decoder_layer.mlp, LigerPhi3SwiGLUMLP)
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
