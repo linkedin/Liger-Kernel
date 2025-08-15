@@ -1937,6 +1937,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma3_text": apply_liger_kernel_to_gemma3_text,
     "gemma3": apply_liger_kernel_to_gemma3,
     "glm4": apply_liger_kernel_to_glm4,
+    "glm4.1v": apply_liger_kernel_to_glm4v,
     "llama": apply_liger_kernel_to_llama,
     "llama4_text": apply_liger_kernel_to_llama4,
     "llama4": apply_liger_kernel_to_llama4,
