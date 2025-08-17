@@ -1910,14 +1910,14 @@ def apply_liger_kernel_to_glm4v(
         if vision_model is not None:
             for vision_block in vision_model.blocks:
                 if rms_norm:
-                    _patch_layer_norm_module(vision_block.norm1)
-                    _patch_layer_norm_module(vision_block.norm2)
+                    _patch_rms_norm_module(vision_block.norm1)
+                    _patch_rms_norm_module(vision_block.norm2)
                 if swiglu:
                     _patch_swiglu_module(vision_block.mlp, LigerSwiGLUMLP)
 
         if text_model is not None:
             if rms_norm:
-                _patch_layer_norm_module(text_model.norm)
+                _patch_rms_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
                 if swiglu:
                     _patch_swiglu_module(decoder_layer.mlp, LigerPhi3SwiGLUMLP)
@@ -1935,7 +1935,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma3_text": apply_liger_kernel_to_gemma3_text,
     "gemma3": apply_liger_kernel_to_gemma3,
     "glm4": apply_liger_kernel_to_glm4,
-    "glm4.1v": apply_liger_kernel_to_glm4v,
+    "glm4v": apply_liger_kernel_to_glm4v,
     "llama": apply_liger_kernel_to_llama,
     "llama4_text": apply_liger_kernel_to_llama4,
     "llama4": apply_liger_kernel_to_llama4,
