@@ -1655,6 +1655,7 @@ def test_apply_liger_kernel_to_instance_for_glm4():
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
+
 @pytest.mark.skipif(not is_glm4v_available(), reason="glm4v module not available")
 def test_apply_liger_kernel_to_instance_for_glm4v():
     # Ensure any monkey patching is cleaned up for subsequent tests
@@ -1685,7 +1686,9 @@ def test_apply_liger_kernel_to_instance_for_glm4v():
 
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(glm4v_lce_forward)
-        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
         for layer in dummy_model_instance.language_model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerPhi3SwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
@@ -1702,7 +1705,9 @@ def test_apply_liger_kernel_to_instance_for_glm4v():
 
         # Check that the model's instance variables were correctly patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(glm4v_lce_forward)
-        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
         for layer in dummy_model_instance.language_model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerPhi3SwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
