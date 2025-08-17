@@ -842,6 +842,12 @@ if GLM4V_AVAILABLE:
             bos_token_id=1,  # None
             eos_token_id=2,  # 151329, 151336, 151338
             pad_token_id=2,  # 151329
+            image_token_id=151343,
+            video_token_id=151344,
+            image_start_token_id=151339,
+            image_end_token_id=151340,
+            video_start_token_id=151341,
+            video_end_token_id=151342,
             partial_rotary_factor=0.5,
             cross_attention_layers=None,
             dropout=0,
@@ -861,6 +867,36 @@ if GLM4V_AVAILABLE:
             vocab_size=32000,  # 151552
             attention_bias=True,
             attn_implementation="sdpa",  # default value, pytorch native attention
+            text_config={
+                "partial_rotary_factor": 0.5,
+                "hidden_act": "silu",
+                "hidden_size": 1024,
+                "intermediate_size": 2048,
+                "max_position_embeddings": 4096,
+                "num_attention_heads": 8,
+                "num_hidden_layers": 4,
+                "num_key_value_heads": 2,
+                "rms_norm_eps": 1e-5,
+                "rope_scaling": {
+                    "type": "default",
+                    "mrope_section": [8, 12, 12],  # (temporal, height, width)
+                },
+                "rope_theta": 500_000,
+                "vocab_size": 32000,
+                "attention_bias": True,
+            },
+            vision_config={
+                "depth": 4,  # 32
+                "hidden_act": "silu",
+                "hidden_size": 128,  # 1280
+                "intermediate_size": 256,  # 3420
+                "num_heads": 16,
+                "in_chans": 3,
+                "out_hidden_size": 128,  # 3584
+                "patch_size": 14,
+                "spatial_merge_size": 2,
+                "temporal_patch_size": 2,
+            },
         ),
     )
 
