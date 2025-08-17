@@ -1663,7 +1663,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v():
         from liger_kernel.transformers.model.glm4v import lce_forward as glm4v_lce_forward
 
         # Instantiate a dummy model
-        config = transformers.models.paligemma.configuration_glm4v.Glm4vConfig(
+        config = transformers.models.glm4v.configuration_glm4v.Glm4vConfig(
             torch_dtype=torch.bfloat16,
             text_config={
                 "num_hidden_layers": 2,
