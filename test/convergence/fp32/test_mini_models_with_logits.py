@@ -154,8 +154,8 @@ except ImportError:
 
 try:
     # Glm4v is only available in transformers>=4.51.3
-    from transformers.models.glm4.configuration_glm4 import Glm4vConfig
-    from transformers.models.glm4.modeling_glm4 import Glm4vForConditionalGeneration
+    from transformers.models.glm4v.configuration_glm4v import Glm4vConfig
+    from transformers.models.glm4v.modeling_glm4v import Glm4vForConditionalGeneration
 
     GLM4V_AVAILABLE = True
 except ImportError:
