@@ -1866,11 +1866,11 @@ def apply_liger_kernel_to_glm4v(
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
 
-    from transformers.models.glm4 import modeling_glm4
-    from transformers.models.glm4.modeling_glm4 import Glm4vForConditionalGeneration
-    from transformers.models.glm4.modeling_glm4 import Glm4vModel
-    from transformers.models.glm4.modeling_glm4 import Glm4vTextModel
-    from transformers.models.glm4.modeling_glm4 import Glm4vVisionModel
+    from transformers.models.glm4v import modeling_glm4v
+    from transformers.models.glm4v.modeling_glm4v import Glm4vForConditionalGeneration
+    from transformers.models.glm4v.modeling_glm4v import Glm4vModel
+    from transformers.models.glm4v.modeling_glm4v import Glm4vTextModel
+    from transformers.models.glm4v.modeling_glm4v import Glm4vVisionModel
 
     from liger_kernel.transformers.model.glm4 import lce_forward as glm4_lce_forward
     from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
@@ -1878,7 +1878,7 @@ def apply_liger_kernel_to_glm4v(
     if rope:
         raise NotImplementedError("liger_rotary_pos_emb is not available for Glm4 models.")
     if rms_norm:
-        modeling_glm4.Glm4RMSNorm = LigerRMSNormForGlm4
+        modeling_glm4v.Glm4RMSNorm = LigerRMSNormForGlm4
     if cross_entropy:
         from transformers.loss.loss_utils import nn
 
@@ -1887,7 +1887,7 @@ def apply_liger_kernel_to_glm4v(
         if model is not None:
             model.forward = MethodType(glm4_lce_forward, model)
         else:
-            modeling_glm4.Glm4ForCausalLM.forward = glm4_lce_forward
+            modeling_glm4v.Glm4vForConditionalGeneration.forward = glm4_lce_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
