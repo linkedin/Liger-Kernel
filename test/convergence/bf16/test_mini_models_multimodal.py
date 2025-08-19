@@ -557,6 +557,7 @@ if QWEN2_5_VL_AVAILABLE:
                 "hidden_size": 128,  # 1280
                 "num_heads": 16,
                 "in_chans": 3,
+                "out_hidden_size": 1024,
             },
             attn_implementation="sdpa",
         ),
@@ -860,7 +861,17 @@ def run_mini_model_multimodal(
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
         optimizer.zero_grad()
-        output = model(**batch, accum_dtype=torch.float32)
+        supports_accum = getattr(model, "_supports_accum_dtype", None)
+        if supports_accum is None:
+            import inspect
+
+            params = inspect.signature(model.forward).parameters
+            supports_accum = ("accum_dtype" in params) or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+            setattr(model, "_supports_accum_dtype", supports_accum)
+
+        output = model(**batch, accum_dtype=torch.float32) if supports_accum else model(**batch)
         output.loss.backward()
         optimizer.step()
 
