@@ -22,6 +22,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text
 from liger_kernel.transformers import apply_liger_kernel_to_glm4
+from liger_kernel.transformers import apply_liger_kernel_to_glm4v
 from liger_kernel.transformers import apply_liger_kernel_to_granite
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_llama4
@@ -46,6 +47,7 @@ from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_gemma3_text
 from test.utils import revert_liger_kernel_to_glm4
+from test.utils import revert_liger_kernel_to_glm4v
 from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_llama4
@@ -149,6 +151,15 @@ try:
     GLM4_AVAILABLE = True
 except ImportError:
     GLM4_AVAILABLE = False
+
+try:
+    # Glm4v is only available in transformers>=4.51.3
+    from transformers.models.glm4v.configuration_glm4v import Glm4vConfig
+    from transformers.models.glm4v.modeling_glm4v import Glm4vForConditionalGeneration
+
+    GLM4V_AVAILABLE = True
+except ImportError:
+    GLM4V_AVAILABLE = False
 
 try:
     from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
@@ -819,6 +830,73 @@ if GLM4_AVAILABLE:
         ),
     )
 
+if GLM4V_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_glm4v"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_glm4v,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_glm4v,
+        model_class=Glm4vForConditionalGeneration,
+        mini_model_config=Glm4vConfig(
+            bos_token_id=1,  # None
+            eos_token_id=2,  # 151329, 151336, 151338
+            pad_token_id=2,  # 151329
+            image_token_id=151343,
+            video_token_id=151344,
+            image_start_token_id=151339,
+            image_end_token_id=151340,
+            video_start_token_id=151341,
+            video_end_token_id=151342,
+            partial_rotary_factor=0.5,
+            cross_attention_layers=None,
+            dropout=0,
+            hidden_act="silu",
+            hidden_size=1024,  # 6144
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=4096,  # 32768
+            num_attention_heads=8,  # 48
+            num_hidden_layers=4,  # 61
+            num_key_value_heads=2,
+            rms_norm_eps=1e-5,
+            rope_scaling=None,
+            rope_theta=500_000,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 151552
+            attention_bias=True,
+            attn_implementation="sdpa",  # default value, pytorch native attention
+            text_config={
+                "partial_rotary_factor": 0.5,
+                "hidden_act": "silu",
+                "hidden_size": 1024,
+                "intermediate_size": 2048,
+                "max_position_embeddings": 4096,
+                "num_attention_heads": 8,
+                "num_hidden_layers": 4,
+                "num_key_value_heads": 2,
+                "rms_norm_eps": 1e-5,
+                "rope_scaling": {
+                    "type": "default",
+                    "mrope_section": [8, 12, 12],  # (temporal, height, width)
+                },
+                "rope_theta": 500_000,
+                "vocab_size": 32000,
+                "attention_bias": True,
+            },
+            vision_config={
+                "depth": 4,  # 32
+                "hidden_act": "silu",
+                "hidden_size": 128,  # 1280
+                "intermediate_size": 256,  # 3420
+                "num_heads": 16,
+                "in_chans": 3,
+                "out_hidden_size": 128,  # 3584
+                "patch_size": 14,
+                "spatial_merge_size": 2,
+                "temporal_patch_size": 2,
+            },
+        ),
+    )
+
 if SMOLLM3_AVAILABLE:
     MINI_MODEL_SETUPS["mini_smollm3"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_smollm3,
@@ -1100,6 +1178,22 @@ def run_mini_model(
             marks=pytest.mark.skipif(
                 not GLM4_AVAILABLE,
                 reason="Glm4 not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_glm4v",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not GLM4V_AVAILABLE,
+                reason="Glm4v not available in this version of transformers",
             ),
         ),
         ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
