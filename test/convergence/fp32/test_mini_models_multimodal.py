@@ -555,6 +555,7 @@ if QWEN2_5_VL_AVAILABLE:
                 "hidden_size": 128,  # 1280
                 "num_heads": 16,
                 "in_chans": 3,
+                "out_hidden_size": 1024,
             },
             attn_implementation="sdpa",
         ),
