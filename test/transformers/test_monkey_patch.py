@@ -1790,13 +1790,13 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNormForGlm4.forward
             )
+            assert inspect.getsource(dummy_model_instance.visual.post_conv_layernorm.forward) != inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
+            assert inspect.getsource(dummy_model_instance.visual.post_layernorm.forward) != inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
         for vision_block in dummy_model_instance.visual.blocks:
-            assert inspect.getsource(vision_block.post_conv_layernorm.forward) != inspect.getsource(
-                LigerRMSNormForGlm4.forward
-            )
-            assert inspect.getsource(vision_block.post_layernorm.forward) != inspect.getsource(
-                LigerRMSNormForGlm4.forward
-            )
             assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
