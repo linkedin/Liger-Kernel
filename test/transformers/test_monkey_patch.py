@@ -119,6 +119,7 @@ def is_glm4v_available():
     except ImportError:
         return False
 
+
 def is_glm4v_moe_available():
     try:
         import transformers.models.glm4v_moe  # noqa: F401
@@ -126,6 +127,7 @@ def is_glm4v_moe_available():
         return True
     except ImportError:
         return False
+
 
 def is_gemma3_available():
     try:
@@ -1732,13 +1734,15 @@ def test_apply_liger_kernel_to_instance_for_glm4v():
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
+
 @pytest.mark.skipif(not is_glm4v_moe_available(), reason="glm4v_moe module not available")
 def test_apply_liger_kernel_to_instance_for_glm4v_moe():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.glm4v_moe.modeling_glm4v_moe"):
         from transformers.models.glm4v_moe.modeling_glm4v_moe import Glm4vMoeForConditionalGeneration
-        from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
+
         from liger_kernel.transformers.model.glm4v_moe import lce_forward as glm4v_moe_lce_forward
+        from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
 
         # Instantiate a dummy model
         config = transformers.models.glm4v_moe.configuration_glm4v_moe.Glm4vMoeConfig(
@@ -1765,16 +1769,28 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
         assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
             LigerRMSNormForGlm4.forward
         )
-        assert inspect.getsource(dummy_model_instance.visual.post_conv_layernorm.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
-        assert inspect.getsource(dummy_model_instance.visual.post_layernorm.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
-        
+        assert inspect.getsource(dummy_model_instance.visual.post_conv_layernorm.forward) != inspect.getsource(
+            LigerRMSNormForGlm4.forward
+        )
+        assert inspect.getsource(dummy_model_instance.visual.post_layernorm.forward) != inspect.getsource(
+            LigerRMSNormForGlm4.forward
+        )
+
         for decoder_layer in dummy_model_instance.language_model.layers:
             assert inspect.getsource(decoder_layer.mlp.experts.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
-            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
         for vision_block in dummy_model_instance.visual.blocks:
-            assert inspect.getsource(vision_block.post_conv_layernorm.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
-            assert inspect.getsource(vision_block.post_layernorm.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
+            assert inspect.getsource(vision_block.post_conv_layernorm.forward) != inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
+            assert inspect.getsource(vision_block.post_layernorm.forward) != inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
             assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
@@ -1787,16 +1803,28 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
         assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
             LigerRMSNormForGlm4.forward
         )
-        assert inspect.getsource(dummy_model_instance.visual.post_conv_layernorm.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
-        assert inspect.getsource(dummy_model_instance.visual.post_layernorm.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
-        
+        assert inspect.getsource(dummy_model_instance.visual.post_conv_layernorm.forward) == inspect.getsource(
+            LigerRMSNormForGlm4.forward
+        )
+        assert inspect.getsource(dummy_model_instance.visual.post_layernorm.forward) == inspect.getsource(
+            LigerRMSNormForGlm4.forward
+        )
+
         for decoder_layer in dummy_model_instance.language_model.layers:
             assert inspect.getsource(decoder_layer.mlp.experts.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
-            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
         for vision_block in dummy_model_instance.visual.blocks:
-            assert inspect.getsource(vision_block.post_conv_layernorm.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
-            assert inspect.getsource(vision_block.post_layernorm.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
+            assert inspect.getsource(vision_block.post_conv_layernorm.forward) == inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
+            assert inspect.getsource(vision_block.post_layernorm.forward) == inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
             assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
@@ -1805,6 +1833,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
 
 @pytest.mark.skipif(not is_smollm3_available(), reason="smollm3 module not available")
 def test_apply_liger_kernel_to_instance_for_smollm3():
