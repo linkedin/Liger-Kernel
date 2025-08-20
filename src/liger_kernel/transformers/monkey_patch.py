@@ -1928,6 +1928,95 @@ def apply_liger_kernel_to_glm4v(
                     _patch_rms_norm_module(decoder_layer.post_mlp_layernorm)
 
 
+def apply_liger_kernel_to_glm4v_moe(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace GLM4v_moe models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLUMLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.glm4v_moe import modeling_glm4v_moe
+    from transformers.models.glm4v_moe.modeling_glm4v_moe import Glm4vMoeForConditionalGeneration
+    from transformers.models.glm4v_moe.modeling_glm4v_moe import Glm4vMoeModel
+    from transformers.models.glm4v_moe.modeling_glm4v_moe import Glm4vMoeTextModel
+    from transformers.models.glm4v_moe.modeling_glm4v_moe import Glm4vMoeVisionModel
+
+    from liger_kernel.transformers.model.glm4v_moe import lce_forward as glm4v_moe_lce_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
+
+    if rope:
+        raise NotImplementedError("liger_rotary_pos_emb is not available for Glm4 models.")
+    if rms_norm:
+        modeling_glm4v_moe.Glm4vRMSNorm = LigerRMSNormForGlm4
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(glm4v_moe_lce_forward, model)
+        else:
+            modeling_glm4v_moe.Glm4vMoeForConditionalGeneration.forward = glm4v_moe_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        if isinstance(model, (Glm4vMoeForConditionalGeneration, Glm4vMoeModel)):
+            # Note: language_model and visual properties can be accessed throught conditional class for BC.
+            # Not sure if it is subject to changes in the future.
+            # Reference: https://github.com/huggingface/transformers/blob/main/src/transformers/models/glm4v_moe/modeling_glm4v_moe.py#L337
+            text_model: Glm4vMoeTextModel = model.language_model
+            vision_model: Glm4vMoeVisionModel = model.visual
+        elif isinstance(model, Glm4vMoeTextModel):
+            text_model: Glm4vMoeTextModel = model
+            vision_model = None
+        else:
+            # Note: Currently there's no support for patching vision model only. Feel free to raise an issue if needed.
+            raise TypeError(
+                f"Unsupported glm4v_moe model type. `model` must be `Glm4vMoeForConditionalGeneration`, `Glm4vMoeVisionModel` or `Glm4vMoeTextModel`. Got: {type(model)}"
+            )
+
+        if vision_model is not None:
+            _patch_rms_norm_module(vision_model.post_conv_layernorm)
+            _patch_rms_norm_module(vision_model.post_layernorm)
+            for vision_block in vision_model.blocks:
+                if rms_norm:
+                    _patch_rms_norm_module(vision_block.norm1)
+                    _patch_rms_norm_module(vision_block.norm2)
+                if swiglu:
+                    _patch_swiglu_module(vision_block.mlp, LigerSwiGLUMLP)
+
+        if text_model is not None:
+            if rms_norm:
+                _patch_rms_norm_module(text_model.norm)
+            for decoder_layer in text_model.layers:
+                if swiglu:
+                    _patch_swiglu_module(decoder_layer.mlp.experts, LigerSwiGLUMLP)
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
@@ -1936,6 +2025,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma3": apply_liger_kernel_to_gemma3,
     "glm4": apply_liger_kernel_to_glm4,
     "glm4v": apply_liger_kernel_to_glm4v,
+    "glm4v_moe": apply_liger_kernel_to_glm4v_moe,
     "llama": apply_liger_kernel_to_llama,
     "llama4_text": apply_liger_kernel_to_llama4,
     "llama4": apply_liger_kernel_to_llama4,
