@@ -2011,7 +2011,10 @@ def apply_liger_kernel_to_glm4v_moe(
                 _patch_rms_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
                 if swiglu:
-                    _patch_swiglu_module(decoder_layer.mlp.experts, LigerSwiGLUMLP)
+                    if hasattr(decoder_layer.mlp, "experts"):
+                        _patch_swiglu_module(decoder_layer.mlp.experts, LigerSwiGLUMLP)
+                    else:
+                        _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)

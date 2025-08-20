@@ -1747,10 +1747,12 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
         # Instantiate a dummy model
         config = transformers.models.glm4v_moe.configuration_glm4v_moe.Glm4vMoeConfig(
             torch_dtype=torch.bfloat16,
+            hidden_size=32,
+            num_attention_heads=4,
+            num_key_value_heads=2,
             text_config={
                 "num_hidden_layers": 2,
                 "rms_norm_eps": 1e-5,
-                "hidden_size": 32,
                 "intermediate_size": 64,
                 "hidden_act": "silu",
             },
@@ -1777,7 +1779,11 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
         )
 
         for decoder_layer in dummy_model_instance.language_model.layers:
-            assert inspect.getsource(decoder_layer.mlp.experts.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            if hasattr(decoder_layer.mlp, "experts"):
+                for expert in decoder_layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            else:
+                assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(
                 LigerRMSNormForGlm4.forward
             )
