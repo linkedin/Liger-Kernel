@@ -276,7 +276,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         reduction: reduction to apply
         accum_dtype (torch.dtype): the dtype of intermediate result buffers for weight and bias gradient accumulations.
             Recommended to set `accum_dtype` to higher precision, e.g. `torch.float32`, if the training is unstable with original dtype. Default: `None`, performing accumulations in original dtype
-        use_token_scaling (bool): whether to scale each token's loss by its predicted probability (detached). 
+        use_token_scaling (bool): whether to scale each token's loss by its predicted probability (detached).
             When True, each token's loss is multiplied by the model's predicted probability for that token's true class.
             Default: False.
         """
