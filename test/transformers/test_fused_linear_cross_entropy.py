@@ -352,3 +352,229 @@ def test_amp(B, T, H, V, bias, cast_dtype, accum_dtype, atol, rtol):
         atol=atol,
         rtol=rtol,
     )
+
+
+def test_correctness_token_scaling():
+    """Test that token scaling produces the correct loss values and gradients."""
+    B, T, H, V = 2, 4, 8, 16
+    dtype = torch.float32
+
+    # Create inputs
+    _input = torch.randn(B * T, H, device=device, dtype=dtype, requires_grad=True)
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    # Create weights
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    bias = torch.randn(V, device=device, dtype=dtype)
+
+    # Test using functional API with token scaling
+    loss_scaled = liger_fused_linear_cross_entropy(
+        input=_input,
+        weight=weight,
+        target=target,
+        bias=bias,
+        ignore_index=-100,
+        reduction="none",  # Use "none" to get per-token losses
+        use_token_scaling=True,
+    )
+
+    # Compare with manual implementation
+    # Compute logits
+    logits = _input @ weight.t()
+    if bias is not None:
+        logits = logits + bias
+
+    # Compute standard cross entropy loss per token
+    ce_loss = torch.nn.functional.cross_entropy(logits, target, ignore_index=-100, reduction="none")
+
+    # Compute predicted probabilities for target tokens
+    pred_probs = torch.softmax(logits, dim=-1).gather(1, target.unsqueeze(-1)).squeeze(-1).detach()
+
+    # Scale by predicted probabilities
+    expected_loss = ce_loss * pred_probs
+
+    # Check that losses are close
+    assert torch.allclose(loss_scaled, expected_loss, atol=1e-4, rtol=1e-4)
+
+    # Test gradients
+    loss_scaled.sum().backward(retain_graph=True)
+    grad_scaled = _input.grad.clone()
+    _input.grad.zero_()
+
+    expected_loss.sum().backward(retain_graph=True)
+    grad_expected = _input.grad.clone()
+    _input.grad.zero_()
+
+    # Check that gradients are close
+    assert torch.allclose(grad_scaled, grad_expected, atol=1e-4, rtol=1e-4)
+
+
+def test_correctness_token_scaling_consistency():
+    """Test that token scaling is consistent between functional and module APIs."""
+    B, T, H, V = 2, 4, 8, 16
+    dtype = torch.float32
+
+    # Create inputs
+    _input = torch.randn(B * T, H, device=device, dtype=dtype, requires_grad=True)
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    # Create weights
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    bias = torch.randn(V, device=device, dtype=dtype)
+
+    # Test functional API
+    loss_functional = liger_fused_linear_cross_entropy(
+        input=_input,
+        weight=weight,
+        target=target,
+        bias=bias,
+        ignore_index=-100,
+        reduction="sum",
+        use_token_scaling=True,
+    )
+
+    # Test module API
+    ce_loss_module = LigerFusedLinearCrossEntropyLoss(
+        ignore_index=-100,
+        reduction="sum",
+        use_token_scaling=True,
+    )
+
+    loss_module = ce_loss_module(weight, _input, target, bias)
+
+    # Check that losses are identical
+    assert torch.allclose(loss_functional, loss_module, atol=1e-6, rtol=1e-6)
+
+    # Test gradients
+    loss_functional.backward(retain_graph=True)
+    grad_functional = _input.grad.clone()
+    _input.grad.zero_()
+
+    loss_module.backward(retain_graph=True)
+    grad_module = _input.grad.clone()
+    _input.grad.zero_()
+
+    # Check that gradients are identical
+    assert torch.allclose(grad_functional, grad_module, atol=1e-6, rtol=1e-6)
+
+
+def test_correctness_token_scaling_functional():
+    """Test token scaling using the functional API."""
+    B, T, H, V = 2, 4, 8, 16
+    dtype = torch.float32
+
+    # Create inputs
+    _input = torch.randn(B * T, H, device=device, dtype=dtype)
+    x1 = _input.detach().clone().requires_grad_(True)
+    x2 = _input.detach().clone().requires_grad_(True)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    # Create weights
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    bias = torch.randn(V, device=device, dtype=dtype)
+
+    # Test using functional API with token scaling
+    y1 = liger_fused_linear_cross_entropy(
+        input=x1,
+        weight=weight,
+        target=target,
+        bias=bias,
+        ignore_index=-100,
+        lse_square_scale=0.0,
+        label_smoothing=0.0,
+        reduction="sum",  # Use sum for easier verification
+        softcap=None,
+        return_z_loss=False,
+        accum_dtype=None,
+        use_token_scaling=True,
+    )
+
+    # Compare with manual implementation
+    # Compute logits
+    logits = x2 @ weight.t()
+    if bias is not None:
+        logits = logits + bias
+
+    # Compute softmax probabilities
+    probs = torch.softmax(logits.detach(), dim=-1)  # Detach to avoid gradient flow
+
+    # Get predicted probabilities for target tokens
+    pred_probs = torch.gather(probs, -1, target.unsqueeze(-1)).squeeze(-1)
+
+    # Compute standard cross entropy loss
+    ce_loss = torch.nn.functional.cross_entropy(logits, target, ignore_index=-100, reduction="none")
+
+    # Scale by predicted probabilities
+    scaled_loss = ce_loss * pred_probs
+
+    # Sum over all tokens
+    y2 = scaled_loss.sum()
+
+    # Check that losses are close
+    assert torch.allclose(y1, y2, atol=1e-5, rtol=1e-5)
+
+    # Test gradients
+    y1.backward()
+    y2.backward()
+
+    # Check that gradients are close
+    assert torch.allclose(x1.grad, x2.grad, atol=1e-5, rtol=1e-5)
+
+
+def test_correctness_token_scaling_module():
+    """Test token scaling using the module API."""
+    B, T, H, V = 2, 4, 8, 16
+    dtype = torch.float32
+
+    # Create inputs
+    _input = torch.randn(B * T, H, device=device, dtype=dtype)
+    x1 = _input.detach().clone().requires_grad_(True)
+    x2 = _input.detach().clone().requires_grad_(True)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    # Create module with token scaling
+    ce_loss = LigerFusedLinearCrossEntropyLoss(
+        ignore_index=-100,
+        reduction="sum",
+        use_token_scaling=True,
+    )
+
+    # Create weights
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    bias = torch.randn(V, device=device, dtype=dtype)
+
+    # Test using module API with token scaling
+    y1 = ce_loss(weight, x1, target, bias)
+
+    # Compare with manual implementation
+    # Compute logits
+    logits = x2 @ weight.t()
+    if bias is not None:
+        logits = logits + bias
+
+    # Compute softmax probabilities
+    probs = torch.softmax(logits.detach(), dim=-1)  # Detach to avoid gradient flow
+
+    # Get predicted probabilities for target tokens
+    pred_probs = torch.gather(probs, -1, target.unsqueeze(-1)).squeeze(-1)
+
+    # Compute standard cross entropy loss
+    ce_loss_manual = torch.nn.functional.cross_entropy(logits, target, ignore_index=-100, reduction="none")
+
+    # Scale by predicted probabilities
+    scaled_loss = ce_loss_manual * pred_probs
+
+    # Sum over all tokens
+    y2 = scaled_loss.sum()
+
+    # Check that losses are close
+    assert torch.allclose(y1, y2, atol=1e-5, rtol=1e-5)
+
+    # Test gradients
+    y1.backward()
+    y2.backward()
+
+    # Check that gradients are close
+    assert torch.allclose(x1.grad, x2.grad, atol=1e-5, rtol=1e-5)

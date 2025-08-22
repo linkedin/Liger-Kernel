@@ -26,6 +26,7 @@ def fused_linear_cross_entropy_forward(
     softcap=None,
     return_z_loss=False,
     accum_dtype=None,
+    use_token_scaling=False,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     device = _input.device
@@ -89,6 +90,23 @@ def fused_linear_cross_entropy_forward(
 
         n_rows = logits_chunk.shape[0]
 
+        # Compute predicted probabilities for token scaling if needed
+        if use_token_scaling:
+            # Compute softmax probabilities for scaling
+            # We need to compute this before the cross entropy kernel modifies logits_chunk
+            logits_for_softmax = logits_chunk.detach().clone()  # Detach to avoid gradient flow
+            if softcap is not None:
+                logits_for_softmax = softcap * torch.tanh(logits_for_softmax / softcap)
+
+            # Compute softmax to get predicted probabilities
+            probs = torch.softmax(logits_for_softmax, dim=-1)
+
+            # Get the predicted probability for each target token
+            pred_probs = torch.gather(probs, -1, target_chunk.unsqueeze(-1)).squeeze(-1)
+
+            # Store the scaling factors
+            scaling_factors = pred_probs.detach()  # Detach to ensure no gradient flow
+
         # unreduced loss
         loss_1d_slice = loss_1d[start_idx:end_idx]  # chunk_size,
         z_loss_1d_slice = z_loss_1d[start_idx:end_idx] if return_z_loss else None
@@ -123,10 +141,22 @@ def fused_linear_cross_entropy_forward(
             num_warps=32 if not is_hip() else 16,
         )
 
+        # Apply token scaling if requested
+        if use_token_scaling:
+            loss_1d_slice = loss_1d_slice * scaling_factors
+            if return_z_loss:
+                z_loss_1d_slice = z_loss_1d_slice * scaling_factors
+
         loss_1d[start_idx:end_idx] = loss_1d_slice
         if return_z_loss:
             z_loss_1d[start_idx:end_idx] = z_loss_1d_slice
         grad_logits_chunk = logits_chunk  # chunk_size x V
+
+        # Apply token scaling to gradients if requested
+        if use_token_scaling:
+            # Expand scaling factors to match gradient dimensions
+            scaling_factors_expanded = scaling_factors.unsqueeze(-1)  # chunk_size x 1
+            grad_logits_chunk = grad_logits_chunk * scaling_factors_expanded
 
         grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
@@ -136,7 +166,7 @@ def fused_linear_cross_entropy_forward(
         if bias is not None:
             torch.add(
                 input=grad_bias,
-                other=logits_chunk.sum(dim=0),
+                other=grad_logits_chunk.sum(dim=0),
                 out=grad_bias,
                 alpha=1.0,
             )
@@ -146,6 +176,10 @@ def fused_linear_cross_entropy_forward(
     #     loss = loss_1d
     #     z_loss = z_loss_1d if return_z_loss else None
 
+    if reduction == "none":
+        # Return per-token losses
+        loss = loss_1d
+        z_loss = z_loss_1d if return_z_loss else None
     else:
         loss = torch.sum(loss_1d)
         z_loss = torch.sum(z_loss_1d) if return_z_loss else None
@@ -221,6 +255,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         softcap=None,
         return_z_loss: bool = False,
         accum_dtype=None,
+        use_token_scaling: bool = False,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -241,6 +276,9 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         reduction: reduction to apply
         accum_dtype (torch.dtype): the dtype of intermediate result buffers for weight and bias gradient accumulations.
             Recommended to set `accum_dtype` to higher precision, e.g. `torch.float32`, if the training is unstable with original dtype. Default: `None`, performing accumulations in original dtype
+        use_token_scaling (bool): whether to scale each token's loss by its predicted probability (detached).
+            When True, each token's loss is multiplied by the model's predicted probability for that token's true class.
+            Default: False.
         """
 
         loss, z_loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
@@ -256,6 +294,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             softcap=softcap,
             return_z_loss=return_z_loss,
             accum_dtype=accum_dtype,
+            use_token_scaling=use_token_scaling,
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
@@ -288,4 +327,5 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             None,
             None,
             None,
+            None,  # use_token_scaling
         )
