@@ -2016,9 +2016,11 @@ def apply_liger_kernel_to_glm4v_moe(
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-        if isinstance(decoder_layer.mlp, Glm4vMoeTextMoE):
-            for expert in decoder_layer.mlp.experts:
-                _patch_swiglu_module(expert, LigerSwiGLUMLP)
+        if isinstance(Glm4vMoeTextMoE, type) and isinstance(decoder_layer.mlp, Glm4vMoeTextMoE):
+            experts = getattr(decoder_layer.mlp, "experts", None)
+            if experts is not None:
+                for expert in experts:
+                    _patch_swiglu_module(expert, LigerSwiGLUMLP)
             if decoder_layer.mlp.shared_experts is not None:
                 _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
             for decoder_layer in text_model.layers:
