@@ -1751,10 +1751,13 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
             num_attention_heads=4,
             num_key_value_heads=2,
             text_config={
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "num_attention_heads": 4,
                 "num_hidden_layers": 2,
                 "rms_norm_eps": 1e-5,
-                "intermediate_size": 64,
                 "hidden_act": "silu",
+                "n_routed_experts": 1,
             },
             vision_config={
                 "num_hidden_layers": 2,

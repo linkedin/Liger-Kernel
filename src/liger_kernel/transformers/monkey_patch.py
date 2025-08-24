@@ -1987,6 +1987,7 @@ def apply_liger_kernel_to_glm4v_moe(
             # Reference: https://github.com/huggingface/transformers/blob/main/src/transformers/models/glm4v_moe/modeling_glm4v_moe.py#L337
             text_model: Glm4vMoeTextModel = model.language_model
             vision_model: Glm4vMoeVisionModel = model.visual
+            Glm4vMoeTextMoE = modeling_glm4v_moe.Glm4vMoeTextMoE
         elif isinstance(model, Glm4vMoeTextModel):
             text_model: Glm4vMoeTextModel = model
             vision_model = None
@@ -2011,15 +2012,20 @@ def apply_liger_kernel_to_glm4v_moe(
                 _patch_rms_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
                 if swiglu:
-                    if hasattr(decoder_layer.mlp, "experts"):
-                        for expert in decoder_layer.mlp.experts:
-                            _patch_swiglu_module(expert, LigerSwiGLUMLP)
-                    else:
-                        decoder_layer.mlp = _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+                    decoder_layer.mlp = _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-
+        if isinstance(decoder_layer.mlp, Glm4vMoeTextMoE):
+            for expert in decoder_layer.mlp.experts:
+                _patch_swiglu_module(expert, LigerSwiGLUMLP)
+                _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
+            for decoder_layer in text_model.layers:
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+# instance variables that reference already-instantiated modulesisinstance(, (Glm4vMoeFo    for vision_block in vision_model.blocks:
+       
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
