@@ -11,7 +11,6 @@ from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
 from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3
-from liger_kernel.transformers import apply_liger_kernel_to_glm4v_moe
 from liger_kernel.transformers import apply_liger_kernel_to_llama4
 from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
@@ -30,7 +29,6 @@ from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
 from test.utils import revert_liger_kernel_to_gemma3
-from test.utils import revert_liger_kernel_to_glm4v_moe
 from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mllama
@@ -71,18 +69,6 @@ try:
     QWEN2_5_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.52.4")
 except ImportError:
     QWEN2_5_VL_AVAILABLE = False
-
-try:
-    # Glm4v_moe is only available in transformers>=4.51.3
-    import transformers
-
-    from packaging import version
-    from transformers.models.glm4v_moe.configuration_glm4v_moe import Glm4vMoeConfig
-    from transformers.models.glm4v_moe.modeling_glm4v_moe import Glm4vMoeForConditionalGeneration
-
-    GLM4V_MOE_AVAILABLE = True
-except ImportError:
-    GLM4V_MOE_AVAILABLE = False
 
 try:
     # Mllama is only available in transformers>=4.45.0
@@ -574,82 +560,6 @@ if QWEN2_5_VL_AVAILABLE:
             attn_implementation="sdpa",
         ),
     )
-if GLM4V_MOE_AVAILABLE:
-    MINI_MODEL_SETUPS["mini_glm4v_moe"] = MiniModelConfig(
-        liger_kernel_patch_func=apply_liger_kernel_to_glm4v_moe,
-        liger_kernel_patch_revert_func=revert_liger_kernel_to_glm4v_moe,
-        model_class=Glm4vMoeForConditionalGeneration,
-        mini_model_config=Glm4vMoeConfig(
-            bos_token_id=1,  # None
-            eos_token_id=2,  # 151329, 151336, 151338
-            pad_token_id=2,  # 151329
-            image_token_id=151343,
-            video_token_id=151344,
-            image_start_token_id=151339,
-            image_end_token_id=151340,
-            video_start_token_id=151341,
-            video_end_token_id=151342,
-            partial_rotary_factor=0.5,
-            cross_attention_layers=None,
-            dropout=0,
-            hidden_act="silu",
-            hidden_size=1024,  # 6144
-            initializer_range=0.02,
-            intermediate_size=2048,  # 14336
-            max_position_embeddings=4096,  # 32768
-            num_attention_heads=8,  # 48
-            num_hidden_layers=4,  # 61
-            num_key_value_heads=2,
-            rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500_000,
-            tie_word_embeddings=False,
-            use_cache=True,
-            vocab_size=32000,  # 151552
-            attention_bias=True,
-            attn_implementation="sdpa",  # default value, pytorch native attention
-            text_config={
-                "partial_rotary_factor": 0.5,
-                "hidden_act": "silu",
-                "hidden_size": 1024,
-                "intermediate_size": 2048,
-                "max_position_embeddings": 4096,
-                "num_attention_heads": 8,
-                "num_hidden_layers": 4,
-                "num_key_value_heads": 2,
-                "rms_norm_eps": 1e-5,
-                "rope_scaling": {
-                    "type": "default",
-                    "mrope_section": [8, 12, 12],  # (temporal, height, width)
-                },
-                "rope_theta": 500_000,
-                "vocab_size": 32000,
-                "attention_bias": True,
-                "attention_dropout": 0.0,
-                "moe_intermediate_size": 1408,
-                "num_experts_per_tok": 2,
-                "n_shared_experts": 1,
-                "n_routed_experts": 128,
-                "routed_scaling_factor": 1.0,
-                "n_group": 1,
-                "topk_group": 1,
-                "first_k_dense_replace": 1,
-                "norm_topk_prob": True,
-            },
-            vision_config={
-                "depth": 4,  # 32
-                "hidden_act": "silu",
-                "hidden_size": 128,  # 1280
-                "intermediate_size": 256,  # 3420
-                "num_heads": 16,
-                "in_chans": 3,
-                "out_hidden_size": 128,  # 3584
-                "patch_size": 14,
-                "spatial_merge_size": 2,
-                "temporal_patch_size": 2,
-            },
-        ),
-    )
 
 
 def create_processor(model_name: str):
@@ -1110,22 +1020,6 @@ def run_mini_model_multimodal(
                 ),
                 pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
-        ),
-        pytest.param(
-            "mini_glm4v_moe",
-            32,
-            1e-5,
-            torch.bfloat16,
-            5e-2,
-            5e-2,
-            1e-1,
-            1e-1,
-            1e-2,
-            1e-2,
-            marks=pytest.mark.skipif(
-                not GLM4V_MOE_AVAILABLE,
-                reason="Glm4v_moe not available in this version of transformers",
-            ),
         ),
     ],
 )
