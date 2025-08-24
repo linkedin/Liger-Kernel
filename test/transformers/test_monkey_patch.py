@@ -1786,7 +1786,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNormForGlm4.forward
             )
-            assert inspect.getsource(decoder_layer.post_layernorm.forward) != inspect.getsource(
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(
                 LigerRMSNormForGlm4.forward
             )
         if decoder_layer.mlp.experts is not None:
@@ -1820,7 +1820,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerRMSNormForGlm4.forward
             )
-            assert inspect.getsource(decoder_layer.post_layernorm.forward) == inspect.getsource(
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(
                 LigerRMSNormForGlm4.forward
             )
         if decoder_layer.mlp.experts is not None:
