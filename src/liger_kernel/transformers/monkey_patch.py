@@ -2019,13 +2019,17 @@ def apply_liger_kernel_to_glm4v_moe(
         if isinstance(decoder_layer.mlp, Glm4vMoeTextMoE):
             for expert in decoder_layer.mlp.experts:
                 _patch_swiglu_module(expert, LigerSwiGLUMLP)
-                _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
+            if decoder_layer.mlp.shared_experts is not None:
+                for shared_expert in decoder_layer.mlp.shared_experts:
+                    _patch_swiglu_module(shared_expert, LigerSwiGLUMLP)
             for decoder_layer in text_model.layers:
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 # instance variables that reference already-instantiated modulesisinstance(, (Glm4vMoeFo    for vision_block in vision_model.blocks:
-       
+
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
