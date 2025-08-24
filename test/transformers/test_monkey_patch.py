@@ -1783,10 +1783,10 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
 
         for decoder_layer in dummy_model_instance.language_model.layers:
             assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
-            assert inspect.getsource(dummy_model_instance.post_conv_layernorm.forward) != inspect.getsource(
+            assert inspect.getsource(decoder_layer.post_conv_layernorm.forward) != inspect.getsource(
                 LigerRMSNormForGlm4.forward
             )
-            assert inspect.getsource(dummy_model_instance.post_layernorm.forward) != inspect.getsource(
+            assert inspect.getsource(decoder_layer.post_layernorm.forward) != inspect.getsource(
                 LigerRMSNormForGlm4.forward
             )
         if decoder_layer.mlp.experts is not None:
@@ -1817,10 +1817,10 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
 
         for decoder_layer in dummy_model_instance.language_model.layers:
             assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
-            assert inspect.getsource(dummy_model_instance.post_conv_layernorm.forward) == inspect.getsource(
+            assert inspect.getsource(decoder_layer.post_conv_layernorm.forward) == inspect.getsource(
                 LigerRMSNormForGlm4.forward
             )
-            assert inspect.getsource(dummy_model_instance.post_layernorm.forward) == inspect.getsource(
+            assert inspect.getsource(decoder_layer.post_layernorm.forward) == inspect.getsource(
                 LigerRMSNormForGlm4.forward
             )
         if decoder_layer.mlp.experts is not None:
