@@ -609,13 +609,32 @@ if GLM4V_MOE_AVAILABLE:
             attention_bias=True,
             attn_implementation="sdpa",  # default value, pytorch native attention
             text_config={
-                "hidden_size": 128,
-                "intermediate_size": 256,
-                "num_attention_heads": 4,
-                "num_hidden_layers": 2,
-                "rms_norm_eps": 1e-5,
+                "partial_rotary_factor": 0.5,
                 "hidden_act": "silu",
-                "n_routed_experts": 1,
+                "hidden_size": 1024,
+                "intermediate_size": 2048,
+                "max_position_embeddings": 4096,
+                "num_attention_heads": 8,
+                "num_hidden_layers": 4,
+                "num_key_value_heads": 2,
+                "rms_norm_eps": 1e-5,
+                "rope_scaling": {
+                    "type": "default",
+                    "mrope_section": [8, 12, 12],  # (temporal, height, width)
+                },
+                "rope_theta": 500_000,
+                "vocab_size": 32000,
+                "attention_bias": True,
+                "attention_dropout": 0.0,
+                "moe_intermediate_size": 1408,
+                "num_experts_per_tok": 2,
+                "n_shared_experts": 1,
+                "n_routed_experts": 128,
+                "routed_scaling_factor": 1.0,
+                "n_group": 1,
+                "topk_group": 1,
+                "first_k_dense_replace": 1,
+                "norm_topk_prob": True,
             },
             vision_config={
                 "depth": 4,  # 32
