@@ -578,3 +578,41 @@ def test_correctness_token_scaling_module():
 
     # Check that gradients are close
     assert torch.allclose(x1.grad, x2.grad, atol=1e-5, rtol=1e-5)
+
+
+def test_token_scaling_with_ignore_index():
+    """Test token scaling when some targets have ignore_index values."""
+    B, T, H, V = 2, 4, 8, 1000
+    dtype = torch.float32
+
+    # Create inputs
+    _input = torch.randn(B * T, H, device=device, dtype=dtype, requires_grad=True)
+
+    # Create targets with some ignore_index values (-100)
+    target = torch.tensor([0, 100, -100, 500, -100, 999], device=device, dtype=torch.long)
+    _input = torch.randn(6, H, device=device, dtype=dtype, requires_grad=True)  # Adjust input size
+
+    # Create weights
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    bias = torch.randn(V, device=device, dtype=dtype)
+
+    # Test using functional API with token scaling
+    loss_scaled = liger_fused_linear_cross_entropy(
+        input=_input,
+        weight=weight,
+        target=target,
+        bias=bias,
+        ignore_index=-100,
+        reduction="sum",
+        use_token_scaling=True,
+    )
+
+    # This should not raise any CUDA errors
+    assert loss_scaled.numel() == 1  # Should return a scalar for sum reduction
+    assert not torch.isnan(loss_scaled)  # Should not be NaN
+    assert not torch.isinf(loss_scaled)  # Should not be infinite
+
+    # Test gradients
+    loss_scaled.backward()
+    assert _input.grad is not None
+    assert not torch.isnan(_input.grad).any()  # Gradients should not be NaN

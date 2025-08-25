@@ -101,8 +101,21 @@ def fused_linear_cross_entropy_forward(
             # Compute softmax to get predicted probabilities
             probs = torch.softmax(logits_for_softmax, dim=-1)
 
-            # Get the predicted probability for each target token
-            pred_probs = torch.gather(probs, -1, target_chunk.unsqueeze(-1)).squeeze(-1)
+            # Get predicted probabilities for token scaling, handling ignored targets
+            valid_target_mask = target_chunk != ignore_index
+            valid_targets = target_chunk[valid_target_mask]
+
+            if len(valid_targets) > 0:
+                # Gather probabilities only for valid targets
+                valid_probs = probs[valid_target_mask]
+                pred_probs_valid = torch.gather(valid_probs, -1, valid_targets.unsqueeze(-1)).squeeze(-1)
+
+                # Create full tensor with zeros for ignored targets
+                pred_probs = torch.zeros_like(target_chunk, dtype=probs.dtype, device=probs.device)
+                pred_probs[valid_target_mask] = pred_probs_valid
+            else:
+                # All targets are ignored
+                pred_probs = torch.zeros_like(target_chunk, dtype=probs.dtype, device=probs.device)
 
             # Store the scaling factors
             scaling_factors = pred_probs.detach()  # Detach to ensure no gradient flow
