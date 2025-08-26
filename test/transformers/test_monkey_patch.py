@@ -120,6 +120,15 @@ def is_glm4v_available():
         return False
 
 
+def is_glm4v_moe_available():
+    try:
+        import transformers.models.glm4v_moe  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_gemma3_available():
     try:
         import transformers.models.gemma3  # noqa: F401
@@ -147,6 +156,7 @@ def test_import_from_root():
         from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_glm4  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_glm4v  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_glm4v_moe  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_llama  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_mistral  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_mixtral  # noqa: F401
@@ -1705,6 +1715,114 @@ def test_apply_liger_kernel_to_instance_for_glm4v():
         for vision_block in dummy_model_instance.visual.blocks:
             assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_glm4v_moe_available(), reason="glm4v_moe module not available")
+def test_apply_liger_kernel_to_instance_for_glm4v_moe():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.glm4v_moe.modeling_glm4v_moe"):
+        from transformers.models.glm4v_moe.modeling_glm4v_moe import Glm4vMoeForConditionalGeneration
+
+        from liger_kernel.transformers.model.glm4v_moe import lce_forward as glm4v_moe_lce_forward
+        from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
+
+        # Instantiate a dummy model
+        config = transformers.models.glm4v_moe.configuration_glm4v_moe.Glm4vMoeConfig(
+            torch_dtype=torch.bfloat16,
+            hidden_size=32,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            text_config={
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "num_attention_heads": 4,
+                "num_hidden_layers": 2,
+                "rms_norm_eps": 1e-5,
+                "hidden_act": "silu",
+                "n_routed_experts": 1,
+            },
+            vision_config={
+                "num_hidden_layers": 2,
+                "rms_norm_eps": 1e-5,
+                "hidden_size": 48,
+                "intermediate_size": 64,
+            },
+        )
+        dummy_model_instance = Glm4vMoeForConditionalGeneration(config)
+        assert isinstance(dummy_model_instance, Glm4vMoeForConditionalGeneration)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(glm4v_moe_lce_forward)
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
+            LigerRMSNormForGlm4.forward
+        )
+        assert inspect.getsource(dummy_model_instance.visual.post_conv_layernorm.forward) != inspect.getsource(
+            LigerRMSNormForGlm4.forward
+        )
+        assert inspect.getsource(dummy_model_instance.visual.post_layernorm.forward) != inspect.getsource(
+            LigerRMSNormForGlm4.forward
+        )
+
+        for decoder_layer in dummy_model_instance.language_model.layers:
+            assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
+        if decoder_layer.mlp.experts is not None:
+            for expert in decoder_layer.mlp.experts:
+                assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            if decoder_layer.mlp.shared_experts is not None:
+                assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) != inspect.getsource(
+                    LigerSwiGLUMLP.forward
+                )
+        for vision_block in dummy_model_instance.visual.blocks:
+            assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
+            assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
+            assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(glm4v_moe_lce_forward)
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
+            LigerRMSNormForGlm4.forward
+        )
+        assert inspect.getsource(dummy_model_instance.visual.post_conv_layernorm.forward) == inspect.getsource(
+            LigerRMSNormForGlm4.forward
+        )
+        assert inspect.getsource(dummy_model_instance.visual.post_layernorm.forward) == inspect.getsource(
+            LigerRMSNormForGlm4.forward
+        )
+
+        for decoder_layer in dummy_model_instance.language_model.layers:
+            if decoder_layer.mlp is not None:
+                assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+                assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
+                    LigerRMSNormForGlm4.forward
+                )
+                assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(
+                    LigerRMSNormForGlm4.forward
+                )
+            if getattr(decoder_layer.mlp, "experts", None) is not None:
+                for expert in decoder_layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            if getattr(decoder_layer.mlp, "shared_experts", None) is not None:
+                assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) == inspect.getsource(
+                    LigerSwiGLUMLP.forward
+                )
+        for vision_block in dummy_model_instance.visual.blocks:
+            assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
+            assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
 
         try:

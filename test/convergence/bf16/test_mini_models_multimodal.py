@@ -71,6 +71,7 @@ try:
 except ImportError:
     QWEN2_5_VL_AVAILABLE = False
 
+
 try:
     # Mllama is only available in transformers>=4.45.0
     from transformers.models.mllama.configuration_mllama import MllamaConfig
