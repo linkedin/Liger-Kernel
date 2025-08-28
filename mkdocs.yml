@@ -70,6 +70,7 @@ plugins:
             show_root_heading: true
             show_source: true
             docstring_style: google  
+            docstring_section_style: table
             heading_level: 3  
             show_signature_annotations: false  # Hides type annotations to save space
             separate_signature: true  # Separates signature from description
