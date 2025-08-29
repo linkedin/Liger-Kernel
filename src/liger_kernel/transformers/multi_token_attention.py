@@ -9,7 +9,7 @@ from liger_kernel.ops.multi_token_attention import LigerMultiTokenAttentionFunct
 
 
 class LigerMultiTokenAttention(nn.Module):
-    """
+    r"""
     Multi-Token Attention:
         out = mask_{0}(conv2d(softmax(mask_{-\inf}(scores))))
 
