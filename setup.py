@@ -99,4 +99,15 @@ setup(
     packages=["liger_kernel"],
     install_requires=get_default_dependencies(),
     extras_require=get_optional_dependencies(),
+    classifiers=[
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Education",
+        "Intended Audience :: Science/Research",
+        "Programming Language :: Python :: 3",
+        "Topic :: Scientific/Engineering :: Artificial Intelligence",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "License :: OSI Approved :: BSD-2-Clause Software License",
+        "Operating System :: OS Independent",
+    ]
 )
