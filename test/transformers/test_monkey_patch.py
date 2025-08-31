@@ -793,9 +793,7 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_feedforward_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -810,9 +808,7 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_feedforward_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -902,9 +898,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_text():
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_feedforward_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -921,9 +915,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_text():
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_feedforward_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -985,9 +977,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_feedforward_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -1018,9 +1008,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_feedforward_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
             )
