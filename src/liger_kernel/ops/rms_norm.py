@@ -17,6 +17,7 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import calculate_num_stages
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
@@ -139,7 +140,7 @@ def _rms_norm_backward_kernel(
 
     row_block_id = tl.program_id(0).to(tl.int64)
     row_start = row_block_id * rows_per_program
-    row_end = min((row_block_id + 1) * rows_per_program, n_rows)
+    row_end = tl.minimum((row_block_id + 1) * rows_per_program, n_rows)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
@@ -312,7 +313,7 @@ def _block_rms_norm_backward_kernel(
     W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
     W_row = W_row + offset
 
-    for start in range(pid * BLOCK_ROW, n_rows, NUM_SMS * BLOCK_ROW):
+    for start in tl.range(pid * BLOCK_ROW, n_rows, NUM_SMS * BLOCK_ROW, num_stages=2):
         row_idx = start + tl.arange(0, BLOCK_ROW)
         row_mask = row_idx < n_rows
         dY_row = tl.load(
@@ -382,6 +383,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
     X = X.view(-1, dim)
     n_rows, n_cols = X.shape
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    num_stages = calculate_num_stages()
 
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
     # RSTD is to cache rstd for each row
@@ -412,6 +414,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
             casting_mode,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
+            num_stages=num_stages,
             **kernel_args,  # XPU-specific optimization
         )
     else:
@@ -433,12 +436,13 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
             casting_mode,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
+            num_stages=num_stages,
             **kernel_args,  # XPU-specific optimization
         )
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, row_mode):
+def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, num_stages, in_place, row_mode):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -490,6 +494,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
             casting_mode,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
+            num_stages=num_stages,
             **kernel_args,  # XPU-specific optimization
         )
     else:
@@ -516,6 +521,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
             casting_mode,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
+            num_stages=num_stages,
             **kernel_args,  # XPU-specific optimization
         )
     dX = dX.view(*shape)
@@ -554,12 +560,14 @@ class LigerRMSNormFunction(torch.autograd.Function):
         W: (H,)
         """
         Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(X, W, eps, offset, casting_mode, row_mode)
+        num_stages = calculate_num_stages()
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.in_place = in_place
         ctx.row_mode = row_mode
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
+        ctx.num_stages = num_stages
         ctx.save_for_backward(X, W, RSTD)
         return Y
 
@@ -571,6 +579,16 @@ class LigerRMSNormFunction(torch.autograd.Function):
         """
         X, W, RSTD = ctx.saved_tensors
         dX, dW = rms_norm_backward(
-            dY, X, W, RSTD, ctx.offset, ctx.casting_mode, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place, ctx.row_mode
+            dY,
+            X,
+            W,
+            RSTD,
+            ctx.offset,
+            ctx.casting_mode,
+            ctx.BLOCK_SIZE,
+            ctx.num_warps,
+            ctx.num_stages,
+            ctx.in_place,
+            ctx.row_mode,
         )
         return dX, dW, None, None, None, None, None
