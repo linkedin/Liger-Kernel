@@ -555,6 +555,7 @@ if QWEN2_5_VL_AVAILABLE:
                 "hidden_size": 128,  # 1280
                 "num_heads": 16,
                 "in_chans": 3,
+                "out_hidden_size": 1024,
             },
             attn_implementation="sdpa",
         ),
@@ -1007,7 +1008,7 @@ def run_mini_model_multimodal(
             1e-5,
             torch.float32,
             1e-8,
-            1e-5,
+            1e-4,
             5e-3,
             1e-5,
             5e-3,

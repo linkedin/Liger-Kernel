@@ -26,9 +26,9 @@ from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_f
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
-from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward_deprecated
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward_deprecated
+from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_forward
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
@@ -77,8 +77,8 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
         _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
         _bind_method_to_module(module.original_module, "extra_repr", LigerRMSNorm.extra_repr)
-        module.modules_to_save.default.__class__.__name__ = LigerRMSNorm.__name__
-        module.original_module.__class__.__name__ = LigerRMSNorm.__name__
+        _bind_method_to_module(module.modules_to_save.default, "_get_name", lambda self: LigerRMSNorm.__name__)
+        _bind_method_to_module(module.original_module, "_get_name", lambda self: LigerRMSNorm.__name__)
     else:
         module.offset = offset
         module.casting_mode = casting_mode
@@ -87,7 +87,7 @@ def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", i
         module.row_mode = row_mode
         _bind_method_to_module(module, "forward", LigerRMSNorm.forward)
         _bind_method_to_module(module, "extra_repr", LigerRMSNorm.extra_repr)
-        module.__class__.__name__ = LigerRMSNorm.__name__
+        _bind_method_to_module(module, "_get_name", lambda self: LigerRMSNorm.__name__)
 
 
 def _patch_layer_norm_module(module, eps=1e-6):
@@ -109,28 +109,28 @@ def _patch_layer_norm_module(module, eps=1e-6):
         module.original_module.hidden_size = getattr(module, "hidden_size", None) or getattr(
             module, "normalized_shape", None
         )
-        _bind_method_to_module(module.modules_to_save.default, "forward", LigerRMSNorm.forward)
-        _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerRMSNorm.extra_repr)
-        _bind_method_to_module(module.original_module, "forward", LigerRMSNorm.forward)
-        _bind_method_to_module(module.original_module, "extra_repr", LigerRMSNorm.extra_repr)
-        module.modules_to_save.default.__class__.__name__ = LigerLayerNorm.__name__
-        module.original_module.__class__.__name__ = LigerLayerNorm.__name__
+        _bind_method_to_module(module.modules_to_save.default, "forward", LigerLayerNorm.forward)
+        _bind_method_to_module(module.modules_to_save.default, "extra_repr", LigerLayerNorm.extra_repr)
+        _bind_method_to_module(module.original_module, "forward", LigerLayerNorm.forward)
+        _bind_method_to_module(module.original_module, "extra_repr", LigerLayerNorm.extra_repr)
+        _bind_method_to_module(module.modules_to_save.default, "_get_name", lambda self: LigerLayerNorm.__name__)
+        _bind_method_to_module(module.original_module, "_get_name", lambda self: LigerLayerNorm.__name__)
     else:
         module.variance_epsilon = getattr(module, "variance_epsilon", None) or getattr(module, "eps", None) or eps
         module.hidden_size = getattr(module, "hidden_size", None) or getattr(module, "normalized_shape", None)
         _bind_method_to_module(module, "forward", LigerLayerNorm.forward)
         _bind_method_to_module(module, "extra_repr", LigerLayerNorm.extra_repr)
-        module.__class__.__name__ = LigerLayerNorm.__name__
+        _bind_method_to_module(module, "_get_name", lambda self: LigerLayerNorm.__name__)
 
 
 def _patch_swiglu_module(module, liger_module):
     _bind_method_to_module(module, "forward", liger_module.forward)
-    module.__class__.__name__ = liger_module.__name__
+    _bind_method_to_module(module, "_get_name", lambda self: liger_module.__name__)
 
 
 def _patch_geglu_module(module):
     _bind_method_to_module(module, "forward", LigerGEGLUMLP.forward)
-    module.__class__.__name__ = LigerGEGLUMLP.__name__
+    _bind_method_to_module(module, "_get_name", lambda self: LigerGEGLUMLP.__name__)
 
 
 def apply_liger_kernel_to_granite(
@@ -290,6 +290,77 @@ def apply_liger_kernel_to_llama(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_smollm3(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace SmolLM3 model
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.smollm3 import modeling_smollm3
+    from transformers.models.smollm3.modeling_smollm3 import SmolLM3Model
+
+    if rope:
+        modeling_smollm3.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_smollm3.SmolLM3RMSNorm = LigerRMSNorm
+    if swiglu:
+        modeling_smollm3.SmolLM3MLP = LigerSwiGLUMLP
+
+    if cross_entropy:
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            from transformers.loss.loss_utils import nn
+
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_smollm3.CrossEntropyLoss = LigerCrossEntropyLoss
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(smollm3_lce_forward, model)
+        else:
+            modeling_smollm3.SmolLM3ForCausalLM.forward = smollm3_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules (e.g. SmolLM3RMSNorm or SmolLM3MLP)
+
+        # get the base model from the model instance
+        base_model: SmolLM3Model = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 def apply_liger_kernel_to_llava(
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
@@ -377,7 +448,7 @@ def apply_liger_kernel_to_llava(
 
 
 def apply_liger_kernel_to_llama4(
-    rope: bool = False,
+    rope: bool = True,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
@@ -413,7 +484,9 @@ def apply_liger_kernel_to_llama4(
     from liger_kernel.transformers.model.llama4 import lce_forward as llama4_lce_forward
 
     if rope:
-        raise NotImplementedError("liger_rotary_pos_emb is not available for Llama4 models.")
+        from liger_kernel.transformers.llama4_rope import apply_liger_llama4_rope_full
+
+        apply_liger_llama4_rope_full(modeling_llama4)
     if rms_norm:
         modeling_llama4.Llama4TextRMSNorm = LigerRMSNorm
     if swiglu:
@@ -1603,25 +1676,14 @@ def apply_liger_kernel_to_phi3(
     if swiglu:
         modeling_phi3.Phi3MLP = LigerPhi3SwiGLUMLP
     if cross_entropy:
-        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
-            from transformers.loss.loss_utils import nn
+        from transformers.loss.loss_utils import nn
 
-            nn.functional.cross_entropy = liger_cross_entropy
-        else:
-            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
-            modeling_phi3.CrossEntropyLoss = LigerCrossEntropyLoss
+        nn.functional.cross_entropy = liger_cross_entropy
     if fused_linear_cross_entropy:
-        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
-            if model is not None:
-                model.forward = MethodType(phi3_lce_forward, model)
-            else:
-                modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
-        else:  # if version < 4.46.1
-            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
-            if model is not None:
-                model.forward = MethodType(phi3_lce_forward_deprecated, model)
-            else:
-                modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward_deprecated
+        if model is not None:
+            model.forward = MethodType(phi3_lce_forward, model)
+        else:
+            modeling_phi3.Phi3ForCausalLM.forward = phi3_lce_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -1777,6 +1839,95 @@ def apply_liger_kernel_to_glm4(
                 _patch_rms_norm_module(decoder_layer.post_mlp_layernorm, in_place=False)
 
 
+def apply_liger_kernel_to_glm4v(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace GLM-4v models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU Glm4MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.glm4v import modeling_glm4v
+    from transformers.models.glm4v.modeling_glm4v import Glm4vForConditionalGeneration
+    from transformers.models.glm4v.modeling_glm4v import Glm4vModel
+    from transformers.models.glm4v.modeling_glm4v import Glm4vTextModel
+    from transformers.models.glm4v.modeling_glm4v import Glm4vVisionModel
+
+    from liger_kernel.transformers.model.glm4v import lce_forward as glm4v_lce_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
+
+    if rope:
+        raise NotImplementedError("liger_rotary_pos_emb is not available for Glm4 models.")
+    if rms_norm:
+        modeling_glm4v.Glm4vRMSNorm = LigerRMSNormForGlm4
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(glm4v_lce_forward, model)
+        else:
+            modeling_glm4v.Glm4vForConditionalGeneration.forward = glm4v_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        if isinstance(model, (Glm4vForConditionalGeneration, Glm4vModel)):
+            # Note: language_model and visual properties can be accessed throught conditional class for BC.
+            # Not sure if it is subject to changes in the future.
+            # Reference: https://github.com/huggingface/transformers/blob/main/src/transformers/models/glm4v/modeling_glm4v.py#L1305
+            text_model: Glm4vTextModel = model.language_model
+            vision_model: Glm4vVisionModel = model.visual
+        elif isinstance(model, Glm4vTextModel):
+            text_model: Glm4vTextModel = model
+            vision_model = None
+        else:
+            # Note: Currently there's no support for patching vision model only. Feel free to raise an issue if needed.
+            raise TypeError(
+                f"Unsupported glm4.1v model type. `model` must be `Glm4VLForConditionalGeneration`, `Glm4vVisionModel` or `Glm4vTextModel`. Got: {type(model)}"
+            )
+
+        if vision_model is not None:
+            for vision_block in vision_model.blocks:
+                if rms_norm:
+                    _patch_rms_norm_module(vision_block.norm1)
+                    _patch_rms_norm_module(vision_block.norm2)
+                if swiglu:
+                    _patch_swiglu_module(vision_block.mlp, LigerSwiGLUMLP)
+
+        if text_model is not None:
+            if rms_norm:
+                _patch_rms_norm_module(text_model.norm)
+            for decoder_layer in text_model.layers:
+                if swiglu:
+                    _patch_swiglu_module(decoder_layer.mlp, LigerPhi3SwiGLUMLP)
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_self_attn_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_mlp_layernorm)
+
+
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
@@ -1784,6 +1935,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma3_text": apply_liger_kernel_to_gemma3_text,
     "gemma3": apply_liger_kernel_to_gemma3,
     "glm4": apply_liger_kernel_to_glm4,
+    "glm4v": apply_liger_kernel_to_glm4v,
     "llama": apply_liger_kernel_to_llama,
     "llama4_text": apply_liger_kernel_to_llama4,
     "llama4": apply_liger_kernel_to_llama4,
@@ -1801,6 +1953,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2_vl_text": apply_liger_kernel_to_qwen2_vl,
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "qwen2_5_vl_text": apply_liger_kernel_to_qwen2_5_vl,
+    "smollm3": apply_liger_kernel_to_smollm3,
     "phi3": apply_liger_kernel_to_phi3,
     "paligemma": apply_liger_kernel_to_paligemma,
 }

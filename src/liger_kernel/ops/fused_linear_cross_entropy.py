@@ -25,6 +25,8 @@ def fused_linear_cross_entropy_forward(
     reduction="mean",
     softcap=None,
     return_z_loss=False,
+    accum_dtype=None,
+    use_token_scaling=False,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     device = _input.device
@@ -44,10 +46,16 @@ def fused_linear_cross_entropy_forward(
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
-    grad_weight = torch.zeros_like(weight, device=device) if weight.requires_grad else None
     grad_input = torch.zeros_like(_input, device=device)
-    grad_bias = torch.zeros_like(bias, device=device) if bias is not None else None
-    # we use fp32 for loss accumulator
+
+    # we use fp32 for loss and gradients accumulator
+    if accum_dtype is None:
+        grad_weight = torch.zeros_like(weight, device=device) if weight.requires_grad else None
+        grad_bias = torch.zeros_like(bias, device=device) if bias is not None else None
+    else:
+        grad_weight = torch.zeros_like(weight, dtype=accum_dtype, device=device) if weight.requires_grad else None
+        grad_bias = torch.zeros_like(bias, dtype=accum_dtype, device=device) if bias is not None else None
+
     loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
     z_loss_1d = torch.zeros(BT, dtype=_input.dtype, device=_input.device) if return_z_loss else None
 
@@ -81,6 +89,36 @@ def fused_linear_cross_entropy_forward(
         target_chunk = target[start_idx:end_idx]  # chunk_size,
 
         n_rows = logits_chunk.shape[0]
+
+        # Compute predicted probabilities for token scaling if needed
+        if use_token_scaling:
+            # Compute softmax probabilities for scaling
+            # We need to compute this before the cross entropy kernel modifies logits_chunk
+            logits_for_softmax = logits_chunk.detach().clone()  # Detach to avoid gradient flow
+            if softcap is not None:
+                logits_for_softmax = softcap * torch.tanh(logits_for_softmax / softcap)
+
+            # Compute softmax to get predicted probabilities
+            probs = torch.softmax(logits_for_softmax, dim=-1)
+
+            # Get predicted probabilities for token scaling, handling ignored targets
+            valid_target_mask = target_chunk != ignore_index
+            valid_targets = target_chunk[valid_target_mask]
+
+            if len(valid_targets) > 0:
+                # Gather probabilities only for valid targets
+                valid_probs = probs[valid_target_mask]
+                pred_probs_valid = torch.gather(valid_probs, -1, valid_targets.unsqueeze(-1)).squeeze(-1)
+
+                # Create full tensor with zeros for ignored targets
+                pred_probs = torch.zeros_like(target_chunk, dtype=probs.dtype, device=probs.device)
+                pred_probs[valid_target_mask] = pred_probs_valid
+            else:
+                # All targets are ignored
+                pred_probs = torch.zeros_like(target_chunk, dtype=probs.dtype, device=probs.device)
+
+            # Store the scaling factors
+            scaling_factors = pred_probs.detach()  # Detach to ensure no gradient flow
 
         # unreduced loss
         loss_1d_slice = loss_1d[start_idx:end_idx]  # chunk_size,
@@ -116,29 +154,32 @@ def fused_linear_cross_entropy_forward(
             num_warps=32 if not is_hip() else 16,
         )
 
+        # Apply token scaling if requested
+        if use_token_scaling:
+            loss_1d_slice = loss_1d_slice * scaling_factors
+            if return_z_loss:
+                z_loss_1d_slice = z_loss_1d_slice * scaling_factors
+
         loss_1d[start_idx:end_idx] = loss_1d_slice
         if return_z_loss:
             z_loss_1d[start_idx:end_idx] = z_loss_1d_slice
         grad_logits_chunk = logits_chunk  # chunk_size x V
 
+        # Apply token scaling to gradients if requested
+        if use_token_scaling:
+            # Expand scaling factors to match gradient dimensions
+            scaling_factors_expanded = scaling_factors.unsqueeze(-1)  # chunk_size x 1
+            grad_logits_chunk = grad_logits_chunk * scaling_factors_expanded
+
         grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
         if grad_weight is not None:
-            torch.addmm(
-                input=grad_weight,
-                mat1=logits_chunk.t().to(
-                    _input_chunk.dtype
-                ),  # In an autocast scenario without bias, differing logits_chunk data types will cause an addmm operation error.
-                mat2=_input_chunk,
-                out=grad_weight,
-                alpha=1.0,
-                beta=1.0,
-            )
+            grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
 
         if bias is not None:
             torch.add(
                 input=grad_bias,
-                other=logits_chunk.sum(dim=0),
+                other=grad_logits_chunk.sum(dim=0),
                 out=grad_bias,
                 alpha=1.0,
             )
@@ -148,9 +189,18 @@ def fused_linear_cross_entropy_forward(
     #     loss = loss_1d
     #     z_loss = z_loss_1d if return_z_loss else None
 
+    if reduction == "none":
+        # Return per-token losses
+        loss = loss_1d
+        z_loss = z_loss_1d if return_z_loss else None
     else:
         loss = torch.sum(loss_1d)
         z_loss = torch.sum(z_loss_1d) if return_z_loss else None
+
+    # Cast back to original dtype
+    grad_weight = grad_weight.to(weight.dtype) if grad_weight is not None else None
+    grad_bias = grad_bias.to(bias.dtype) if grad_bias is not None else None
+
     return loss, z_loss, grad_input, grad_weight, grad_bias
 
 
@@ -217,6 +267,8 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         reduction="mean",
         softcap=None,
         return_z_loss: bool = False,
+        accum_dtype=None,
+        use_token_scaling: bool = False,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -235,6 +287,11 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         ignore_index: the index to ignore in the target
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
         reduction: reduction to apply
+        accum_dtype (torch.dtype): the dtype of intermediate result buffers for weight and bias gradient accumulations.
+            Recommended to set `accum_dtype` to higher precision, e.g. `torch.float32`, if the training is unstable with original dtype. Default: `None`, performing accumulations in original dtype
+        use_token_scaling (bool): whether to scale each token's loss by its predicted probability (detached).
+            When True, each token's loss is multiplied by the model's predicted probability for that token's true class.
+            Default: False.
         """
 
         loss, z_loss, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
@@ -249,6 +306,8 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             reduction=reduction,
             softcap=softcap,
             return_z_loss=return_z_loss,
+            accum_dtype=accum_dtype,
+            use_token_scaling=use_token_scaling,
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
@@ -280,4 +339,6 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             None,
             None,
             None,
+            None,
+            None,  # use_token_scaling
         )

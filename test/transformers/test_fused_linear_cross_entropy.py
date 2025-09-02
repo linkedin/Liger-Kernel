@@ -80,6 +80,7 @@ class LigerLMHeadCE(torch.nn.Module):
         reduction: str = "mean",
         softcap: Optional[float] = None,
         return_z_loss: bool = False,
+        accum_dtype=None,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
@@ -91,6 +92,7 @@ class LigerLMHeadCE(torch.nn.Module):
             reduction=reduction,
             softcap=softcap,
             return_z_loss=return_z_loss,
+            accum_dtype=accum_dtype,
         )
 
     def forward(self, x, y):
@@ -120,11 +122,11 @@ class LigerLMHeadCE(torch.nn.Module):
 )
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize(
-    "has_ce_weight, label_smoothing, ignore_index, lse_square_scale, softcap, return_z_loss",
+    "has_ce_weight, label_smoothing, ignore_index, lse_square_scale, softcap, return_z_loss, accum_dtype",
     [
-        (False, 0, -100, 0, None, False),
+        (False, 0, -100, 0, None, False, None),
         # Pass non-default values once to ensure all params work along
-        (True, 0.1, 42, 1e-4, 30.0, True),
+        (True, 0.1, 42, 1e-4, 30.0, True, torch.float32),
     ],
 )
 def test_correctness(
@@ -142,6 +144,7 @@ def test_correctness(
     reduction,
     softcap,
     return_z_loss,
+    accum_dtype,
     atol,
     rtol,
 ):
@@ -174,6 +177,7 @@ def test_correctness(
         softcap=softcap,
         return_z_loss=return_z_loss,
         dtype=dtype,
+        accum_dtype=accum_dtype,
     ).to(device)
 
     # init the linear in all CEs with the same weights
@@ -267,9 +271,10 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, ce_weight, atol
         reduction="mean",
         softcap=30.0,
         return_z_loss=True,
+        accum_dtype=torch.float32,
     )
     y2, z2 = LigerFusedLinearCrossEntropyFunction.apply(
-        x2, weight, target, bias, ce_weight, -100, 1e-4, 0.1, "mean", 30.0, True
+        x2, weight, target, bias, ce_weight, -100, 1e-4, 0.1, "mean", 30.0, True, torch.float32
     )
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
@@ -299,7 +304,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, ce_weight, atol
         (False, torch.float16, 5e-3, 5e-2),
     ],
 )
-def test_amp(B, T, H, V, bias, cast_dtype, atol, rtol):
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_amp(B, T, H, V, bias, cast_dtype, accum_dtype, atol, rtol):
     dtype = torch.float32
     torch_lm_head_ce = TorchLMHeadCE(
         H=H,
@@ -316,6 +322,7 @@ def test_amp(B, T, H, V, bias, cast_dtype, atol, rtol):
         label_smoothing=0.0,
         reduction="mean",
         dtype=dtype,
+        accum_dtype=accum_dtype,
     ).to(device)
 
     # init the linear in all CEs with the same weights
@@ -345,3 +352,267 @@ def test_amp(B, T, H, V, bias, cast_dtype, atol, rtol):
         atol=atol,
         rtol=rtol,
     )
+
+
+def test_correctness_token_scaling():
+    """Test that token scaling produces the correct loss values and gradients."""
+    B, T, H, V = 2, 4, 8, 16
+    dtype = torch.float32
+
+    # Create inputs
+    _input = torch.randn(B * T, H, device=device, dtype=dtype, requires_grad=True)
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    # Create weights
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    bias = torch.randn(V, device=device, dtype=dtype)
+
+    # Test using functional API with token scaling
+    loss_scaled = liger_fused_linear_cross_entropy(
+        input=_input,
+        weight=weight,
+        target=target,
+        bias=bias,
+        ignore_index=-100,
+        reduction="none",  # Use "none" to get per-token losses
+        use_token_scaling=True,
+    )
+
+    # Compare with manual implementation
+    # Compute logits
+    logits = _input @ weight.t()
+    if bias is not None:
+        logits = logits + bias
+
+    # Compute standard cross entropy loss per token
+    ce_loss = torch.nn.functional.cross_entropy(logits, target, ignore_index=-100, reduction="none")
+
+    # Compute predicted probabilities for target tokens
+    pred_probs = torch.softmax(logits, dim=-1).gather(1, target.unsqueeze(-1)).squeeze(-1).detach()
+
+    # Scale by predicted probabilities
+    expected_loss = ce_loss * pred_probs
+
+    # Check that losses are close
+    assert torch.allclose(loss_scaled, expected_loss, atol=1e-4, rtol=1e-4)
+
+    # Test gradients
+    loss_scaled.sum().backward(retain_graph=True)
+    grad_scaled = _input.grad.clone()
+    _input.grad.zero_()
+
+    expected_loss.sum().backward(retain_graph=True)
+    grad_expected = _input.grad.clone()
+    _input.grad.zero_()
+
+    # Check that gradients are close
+    assert torch.allclose(grad_scaled, grad_expected, atol=1e-4, rtol=1e-4)
+
+
+def test_correctness_token_scaling_consistency():
+    """Test that token scaling is consistent between functional and module APIs."""
+    B, T, H, V = 2, 4, 8, 16
+    dtype = torch.float32
+
+    # Create inputs
+    _input = torch.randn(B * T, H, device=device, dtype=dtype, requires_grad=True)
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    # Create weights
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    bias = torch.randn(V, device=device, dtype=dtype)
+
+    # Test functional API
+    loss_functional = liger_fused_linear_cross_entropy(
+        input=_input,
+        weight=weight,
+        target=target,
+        bias=bias,
+        ignore_index=-100,
+        reduction="sum",
+        use_token_scaling=True,
+    )
+
+    # Test module API
+    ce_loss_module = LigerFusedLinearCrossEntropyLoss(
+        ignore_index=-100,
+        reduction="sum",
+        use_token_scaling=True,
+    )
+
+    loss_module = ce_loss_module(weight, _input, target, bias)
+
+    # Check that losses are identical
+    assert torch.allclose(loss_functional, loss_module, atol=1e-6, rtol=1e-6)
+
+    # Test gradients
+    loss_functional.backward(retain_graph=True)
+    grad_functional = _input.grad.clone()
+    _input.grad.zero_()
+
+    loss_module.backward(retain_graph=True)
+    grad_module = _input.grad.clone()
+    _input.grad.zero_()
+
+    # Check that gradients are identical
+    assert torch.allclose(grad_functional, grad_module, atol=1e-6, rtol=1e-6)
+
+
+def test_correctness_token_scaling_functional():
+    """Test token scaling using the functional API."""
+    B, T, H, V = 2, 4, 8, 16
+    dtype = torch.float32
+
+    # Create inputs
+    _input = torch.randn(B * T, H, device=device, dtype=dtype)
+    x1 = _input.detach().clone().requires_grad_(True)
+    x2 = _input.detach().clone().requires_grad_(True)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    # Create weights
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    bias = torch.randn(V, device=device, dtype=dtype)
+
+    # Test using functional API with token scaling
+    y1 = liger_fused_linear_cross_entropy(
+        input=x1,
+        weight=weight,
+        target=target,
+        bias=bias,
+        ignore_index=-100,
+        lse_square_scale=0.0,
+        label_smoothing=0.0,
+        reduction="sum",  # Use sum for easier verification
+        softcap=None,
+        return_z_loss=False,
+        accum_dtype=None,
+        use_token_scaling=True,
+    )
+
+    # Compare with manual implementation
+    # Compute logits
+    logits = x2 @ weight.t()
+    if bias is not None:
+        logits = logits + bias
+
+    # Compute softmax probabilities
+    probs = torch.softmax(logits.detach(), dim=-1)  # Detach to avoid gradient flow
+
+    # Get predicted probabilities for target tokens
+    pred_probs = torch.gather(probs, -1, target.unsqueeze(-1)).squeeze(-1)
+
+    # Compute standard cross entropy loss
+    ce_loss = torch.nn.functional.cross_entropy(logits, target, ignore_index=-100, reduction="none")
+
+    # Scale by predicted probabilities
+    scaled_loss = ce_loss * pred_probs
+
+    # Sum over all tokens
+    y2 = scaled_loss.sum()
+
+    # Check that losses are close
+    assert torch.allclose(y1, y2, atol=1e-5, rtol=1e-5)
+
+    # Test gradients
+    y1.backward()
+    y2.backward()
+
+    # Check that gradients are close
+    assert torch.allclose(x1.grad, x2.grad, atol=1e-5, rtol=1e-5)
+
+
+def test_correctness_token_scaling_module():
+    """Test token scaling using the module API."""
+    B, T, H, V = 2, 4, 8, 16
+    dtype = torch.float32
+
+    # Create inputs
+    _input = torch.randn(B * T, H, device=device, dtype=dtype)
+    x1 = _input.detach().clone().requires_grad_(True)
+    x2 = _input.detach().clone().requires_grad_(True)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    # Create module with token scaling
+    ce_loss = LigerFusedLinearCrossEntropyLoss(
+        ignore_index=-100,
+        reduction="sum",
+        use_token_scaling=True,
+    )
+
+    # Create weights
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    bias = torch.randn(V, device=device, dtype=dtype)
+
+    # Test using module API with token scaling
+    y1 = ce_loss(weight, x1, target, bias)
+
+    # Compare with manual implementation
+    # Compute logits
+    logits = x2 @ weight.t()
+    if bias is not None:
+        logits = logits + bias
+
+    # Compute softmax probabilities
+    probs = torch.softmax(logits.detach(), dim=-1)  # Detach to avoid gradient flow
+
+    # Get predicted probabilities for target tokens
+    pred_probs = torch.gather(probs, -1, target.unsqueeze(-1)).squeeze(-1)
+
+    # Compute standard cross entropy loss
+    ce_loss_manual = torch.nn.functional.cross_entropy(logits, target, ignore_index=-100, reduction="none")
+
+    # Scale by predicted probabilities
+    scaled_loss = ce_loss_manual * pred_probs
+
+    # Sum over all tokens
+    y2 = scaled_loss.sum()
+
+    # Check that losses are close
+    assert torch.allclose(y1, y2, atol=1e-5, rtol=1e-5)
+
+    # Test gradients
+    y1.backward()
+    y2.backward()
+
+    # Check that gradients are close
+    assert torch.allclose(x1.grad, x2.grad, atol=1e-5, rtol=1e-5)
+
+
+def test_token_scaling_with_ignore_index():
+    """Test token scaling when some targets have ignore_index values."""
+    B, T, H, V = 2, 4, 8, 1000
+    dtype = torch.float32
+
+    # Create inputs
+    _input = torch.randn(B * T, H, device=device, dtype=dtype, requires_grad=True)
+
+    # Create targets with some ignore_index values (-100)
+    target = torch.tensor([0, 100, -100, 500, -100, 999], device=device, dtype=torch.long)
+    _input = torch.randn(6, H, device=device, dtype=dtype, requires_grad=True)  # Adjust input size
+
+    # Create weights
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    bias = torch.randn(V, device=device, dtype=dtype)
+
+    # Test using functional API with token scaling
+    loss_scaled = liger_fused_linear_cross_entropy(
+        input=_input,
+        weight=weight,
+        target=target,
+        bias=bias,
+        ignore_index=-100,
+        reduction="sum",
+        use_token_scaling=True,
+    )
+
+    # This should not raise any CUDA errors
+    assert loss_scaled.numel() == 1  # Should return a scalar for sum reduction
+    assert not torch.isnan(loss_scaled)  # Should not be NaN
+    assert not torch.isinf(loss_scaled)  # Should not be infinite
+
+    # Test gradients
+    loss_scaled.backward()
+    assert _input.grad is not None
+    assert not torch.isnan(_input.grad).any()  # Gradients should not be NaN

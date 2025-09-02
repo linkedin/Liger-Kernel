@@ -5,13 +5,20 @@ from typing import TYPE_CHECKING
 # Always-safe imports (independent of 'transformers')
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss  # noqa: F401
 from liger_kernel.transformers.dyt import LigerDyT  # noqa: F401
+from liger_kernel.transformers.fused_add_rms_norm import LigerFusedAddRMSNorm  # noqa: F401
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss  # noqa: F401
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD  # noqa: F401
 from liger_kernel.transformers.geglu import LigerGEGLUMLP  # noqa: F401
 from liger_kernel.transformers.jsd import LigerJSD  # noqa: F401
+from liger_kernel.transformers.kl_div import LigerKLDIVLoss  # noqa: F401
 from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
+from liger_kernel.transformers.llama4_rope import liger_llama4_text_rotary_pos_emb  # noqa: F401
+from liger_kernel.transformers.llama4_rope import liger_llama4_vision_rotary_pos_emb  # noqa: F401
+from liger_kernel.transformers.multi_token_attention import LigerMultiTokenAttention  # noqa: F401
 from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401
 from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
+from liger_kernel.transformers.softmax import LigerSoftmax  # noqa: F401
+from liger_kernel.transformers.sparsemax import LigerSparsemax  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP  # noqa: F401
@@ -28,6 +35,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3_text  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_granite  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama4  # noqa: F401
@@ -43,6 +51,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2_vl  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_moe  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_smollm3  # noqa: F401
 
 
 # Check if 'transformers' is installed
@@ -85,6 +94,7 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_gemma3",
         "apply_liger_kernel_to_gemma3_text",
         "apply_liger_kernel_to_glm4",
+        "apply_liger_kernel_to_glm4v",
         "apply_liger_kernel_to_granite",
         "apply_liger_kernel_to_llama",
         "apply_liger_kernel_to_llava",
@@ -100,6 +110,7 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_qwen2_vl",
         "apply_liger_kernel_to_qwen3",
         "apply_liger_kernel_to_qwen3_moe",
+        "apply_liger_kernel_to_smollm3",
     }
 
     if name in monkey_patch_symbols:
@@ -119,13 +130,20 @@ __all__ = [
     "LigerGEGLUMLP",
     "LigerJSD",
     "LigerLayerNorm",
+    "LigerFusedAddRMSNorm",
     "LigerRMSNorm",
     "liger_rotary_pos_emb",
+    "liger_llama4_text_rotary_pos_emb",
+    "liger_llama4_vision_rotary_pos_emb",
     "LigerBlockSparseTop2MLP",
     "LigerPhi3SwiGLUMLP",
     "LigerQwen3MoeSwiGLUMLP",
     "LigerSwiGLUMLP",
     "LigerTVDLoss",
+    "LigerKLDIVLoss",
+    "LigerMultiTokenAttention",
+    "LigerSoftmax",
+    "LigerSparsemax",
 ]
 
 # Add transformer-dependent symbols only if available
@@ -140,6 +158,7 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_gemma3",
             "apply_liger_kernel_to_gemma3_text",
             "apply_liger_kernel_to_glm4",
+            "apply_liger_kernel_to_glm4v",
             "apply_liger_kernel_to_granite",
             "apply_liger_kernel_to_llama",
             "apply_liger_kernel_to_llava",
@@ -155,5 +174,6 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_qwen2_vl",
             "apply_liger_kernel_to_qwen3",
             "apply_liger_kernel_to_qwen3_moe",
+            "apply_liger_kernel_to_smollm3",
         ]
     )

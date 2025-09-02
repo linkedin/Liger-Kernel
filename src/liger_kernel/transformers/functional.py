@@ -2,6 +2,7 @@ from typing import Optional
 
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.dyt import LigerDyTFunction
+from liger_kernel.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction
 from liger_kernel.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
 from liger_kernel.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
@@ -63,6 +64,8 @@ def liger_fused_linear_cross_entropy(
     reduction: str = "mean",
     softcap: Optional[float] = None,
     return_z_loss: bool = False,
+    accum_dtype=None,
+    use_token_scaling: bool = False,
 ):
     loss, z_loss = LigerFusedLinearCrossEntropyFunction.apply(
         input,
@@ -76,6 +79,8 @@ def liger_fused_linear_cross_entropy(
         reduction,
         softcap,
         return_z_loss,
+        accum_dtype,
+        use_token_scaling,
     )
     if not return_z_loss:
         return loss
@@ -251,6 +256,10 @@ def liger_qwen2vl_mrope(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
 
 def liger_rms_norm(X, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):
     return LigerRMSNormFunction.apply(X, W, eps, offset, casting_mode, in_place)
+
+
+def liger_fused_add_rms_norm(X, R, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):
+    return LigerFusedAddRMSNormFunction.apply(X, R, W, eps, offset, casting_mode, in_place)
 
 
 def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):

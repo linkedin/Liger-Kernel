@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -25,8 +27,9 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             jsd_loss = F.kl_div(teacher_log_probs, student_log_probs, reduction="sum", log_target=True)
         else:
             # Compute probabilities (only required for mean calculation)
-            mean_probs = (1 - beta) * student_log_probs.exp() + beta * teacher_log_probs.exp()
-            log_mean_probs = mean_probs.log()
+            log_mean_probs = torch.logsumexp(
+                torch.stack([student_log_probs + math.log(1 - beta), teacher_log_probs + math.log(beta)], dim=0), dim=0
+            )
 
             student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="sum", log_target=True)
             teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="sum", log_target=True)

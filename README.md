@@ -32,7 +32,7 @@
         </td>
         <td style="padding: 10px;">
             <a href="https://discord.gg/gpumode">
-                <img src="https://dcbadge.vercel.app/api/server/gpumode?style=flat" alt="Join Our Discord">
+                <img src="https://dcbadge.limes.pink/api/server/gpumode?style=flat" alt="Join Our Discord">
             </a>
         </td>
     </tr>
@@ -348,7 +348,7 @@ loss.backward()
                 </a>
             </div>
             <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
+                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml">
                     <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?event=schedule" alt="Build">
                 </a>
             </div>
@@ -368,15 +368,13 @@ loss.backward()
 
 Biblatex entry:
 ```bib
-@article{hsu2024ligerkernelefficienttriton,
-      title={Liger Kernel: Efficient Triton Kernels for LLM Training},
-      author={Pin-Lun Hsu and Yun Dai and Vignesh Kothapalli and Qingquan Song and Shao Tang and Siyu Zhu and Steven Shimizu and Shivam Sahni and Haowen Ning and Yanning Chen and Zhipeng Wang},
-      year={2025},
-      eprint={2410.10989},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://openreview.net/forum?id=36SjAIT42G},
-      journal={Proceedings of the ICML 2025 Workshop on Championing Opensource Development in Machine Learning (CODEML ’25)},
+@inproceedings{
+hsu2025ligerkernel,
+title={Liger-Kernel: Efficient Triton Kernels for {LLM} Training},
+author={Pin-Lun Hsu and Yun Dai and Vignesh Kothapalli and Qingquan Song and Shao Tang and Siyu Zhu and Steven Shimizu and Shivam Sahni and Haowen Ning and Yanning Chen and Zhipeng Wang},
+booktitle={Championing Open-source DEvelopment in ML Workshop @ ICML25},
+year={2025},
+url={https://openreview.net/forum?id=36SjAIT42G}
 }
 ```
 
