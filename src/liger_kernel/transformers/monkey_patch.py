@@ -1927,6 +1927,78 @@ def apply_liger_kernel_to_glm4v(
                     _patch_rms_norm_module(decoder_layer.post_self_attn_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_mlp_layernorm)
 
+def apply_liger_kernel_to_falcon_h1(
+    rope: bool = True,
+    cross_entropy: bool = True,
+    fused_linear_cross_entropy: bool = False, # TODO: To be enabled
+    rms_norm: bool = True,
+    swiglu: bool = False, # TODO: To be enabled
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Falcon-H1 models
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.falcon_h1 import modeling_falcon_h1
+    from transformers.models.falcon_h1.modeling_falcon_h1 import FalconH1Model
+
+    if rope:
+        logger.info("Apply liger rotary pos emb.")
+        modeling_falcon_h1.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        logger.info("Apply liger RMSNorm")
+        modeling_falcon_h1.FalconH1RMSNorm = LigerRMSNorm
+    if swiglu:
+        modeling_falcon_h1.FalconH1MLP = LigerSwiGLUMLP
+
+    if cross_entropy:
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            logger.info("Apply liger cross entropy")
+            from transformers.loss.loss_utils import nn
+            nn.functional.cross_entropy = liger_cross_entropy
+        else:
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_falcon_h1.CrossEntropyLoss = LigerCrossEntropyLoss
+
+    # TODO: To be enabled
+    if fused_linear_cross_entropy:
+        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+            modeling_falcon_h1.FalconH1ForCausalLM.forward = llama_lce_forward
+        else:  # if version < 4.46.1
+            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
+            modeling_falcon_h1.FalconH1ForCausalLM.forward = llama_lce_forward_deprecated
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules (e.g. LlamaRMSNorm or LlamaMLP)
+
+        # get the base model from the model instance
+        base_model: FalconH1Model = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.final_layernorm)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.pre_ff_layernorm)
 
 def apply_liger_kernel_to_glm4v_moe(
     rope: bool = False,
@@ -2137,6 +2209,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "smollm3": apply_liger_kernel_to_smollm3,
     "phi3": apply_liger_kernel_to_phi3,
     "paligemma": apply_liger_kernel_to_paligemma,
+    "falcon_h1": apply_liger_kernel_to_falcon_h1,
 }
 
 
