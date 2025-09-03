@@ -1927,12 +1927,13 @@ def apply_liger_kernel_to_glm4v(
                     _patch_rms_norm_module(decoder_layer.post_self_attn_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_mlp_layernorm)
 
+
 def apply_liger_kernel_to_falcon_h1(
     rope: bool = True,
     cross_entropy: bool = True,
-    fused_linear_cross_entropy: bool = False, # TODO: To be enabled
+    fused_linear_cross_entropy: bool = False,  # TODO: To be enabled
     rms_norm: bool = True,
-    swiglu: bool = False, # TODO: To be enabled
+    swiglu: bool = False,  # TODO: To be enabled
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -1970,6 +1971,7 @@ def apply_liger_kernel_to_falcon_h1(
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
             logger.info("Apply liger cross entropy")
             from transformers.loss.loss_utils import nn
+
             nn.functional.cross_entropy = liger_cross_entropy
         else:
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
@@ -1999,6 +2001,7 @@ def apply_liger_kernel_to_falcon_h1(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.pre_ff_layernorm)
+
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
