@@ -65,6 +65,7 @@ def liger_fused_linear_cross_entropy(
     softcap: Optional[float] = None,
     return_z_loss: bool = False,
     accum_dtype=None,
+    use_token_scaling: bool = False,
 ):
     loss, z_loss = LigerFusedLinearCrossEntropyFunction.apply(
         input,
@@ -79,6 +80,7 @@ def liger_fused_linear_cross_entropy(
         softcap,
         return_z_loss,
         accum_dtype,
+        use_token_scaling,
     )
     if not return_z_loss:
         return loss

@@ -3,12 +3,14 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
 
 permissions:
   contents: write
 jobs:
   deploy:
-    if: False
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,5 +28,5 @@ jobs:
           path: .cache
           restore-keys: |
             mkdocs-material-
-      - run: pip install mkdocs-material 
+      - run: pip install mkdocs-material mkdocstrings[python]
       - run: mkdocs gh-deploy --force

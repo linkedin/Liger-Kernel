@@ -5,12 +5,13 @@ from typing import Union
 
 import torch
 
-from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 
+@deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -29,41 +30,82 @@ def lce_forward(
     **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
     r"""
+    Args:
+        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+            config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+            (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+        logits_to_keep (`int` or `torch.Tensor`, *optional*):
+            If an `int`, compute logits for the last `logits_to_keep` tokens. If `0`, calculate logits for all
+            `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
+            token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
+            If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
+            This is useful when using packed tensor format (single dimension for batch and sequence length).
+
+    Returns:
+
     Example:
 
     ```python
-    >>> from transformers import AutoTokenizer, Phi3ForCausalLM
+    >>> from PIL import Image
+    >>> from transformers import AutoTokenizer, Glm4vForConditionalGeneration
 
-    >>> model = Phi3ForCausalLM.from_pretrained("meta-phi3/Phi3-2-7b-hf")
-    >>> tokenizer = AutoTokenizer.from_pretrained("meta-phi3/Phi3-2-7b-hf")
-
-    >>> prompt = "Hey, are you conscious? Can you talk to me?"
-    >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-    >>> # Generate
-    >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-    >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+    >>> MODEL_PATH = "THUDM/GLM-4.1V-9B-Thinking"
+    >>> messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "url": "https://upload.wikimedia.org/wikipedia/commons/f/fa/Grayscale_8bits_palette_sample_image.png"
+                },
+                {
+                    "type": "text",
+                    "text": "describe this image"
+                }
+            ],
+        }
+    ]
+    >>> processor = AutoProcessor.from_pretrained(MODEL_PATH, use_fast=True)
+    >>> model = Glm4vForConditionalGeneration.from_pretrained(
+        pretrained_model_name_or_path=MODEL_PATH,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+    )
+    >>> inputs = processor.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_dict=True,
+        return_tensors="pt"
+    ).to(model.device)
+    >>> generated_ids = model.generate(**inputs, max_new_tokens=8192)
+    output_text = processor.decode(generated_ids[0][inputs["input_ids"].shape[1]:], skip_special_tokens=False)
+    <think>Got it, let's describe the image. First, there's a vintage car, specifically a Volkswagen Beetle
     ```"""
-
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-    outputs: BaseModelOutputWithPast = self.model(
+    # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+    outputs = self.model(
         input_ids=input_ids,
         attention_mask=attention_mask,
         position_ids=position_ids,
         past_key_values=past_key_values,
         inputs_embeds=inputs_embeds,
         use_cache=use_cache,
+        output_attentions=output_attentions,
+        output_hidden_states=output_hidden_states,
+        return_dict=return_dict,
         cache_position=cache_position,
         **kwargs,
     )
 
-    hidden_states = outputs.last_hidden_state
+    hidden_states = outputs[0]
     # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
     kept_hidden_states = hidden_states[:, slice_indices, :]
@@ -98,10 +140,6 @@ def lce_forward(
                 vocab_size=self.config.vocab_size,
                 **kwargs,
             )
-
-    if not return_dict:
-        output = (logits,) + outputs[1:]
-        return (loss,) + output if loss is not None else output
 
     return CausalLMOutputWithPast(
         loss=loss,
