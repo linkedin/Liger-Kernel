@@ -109,5 +109,5 @@ setup(
         "Topic :: Software Development :: Libraries :: Python Modules",
         "License :: OSI Approved :: BSD-2-Clause Software License",
         "Operating System :: OS Independent",
-    ]
+    ],
 )
