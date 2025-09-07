@@ -25,6 +25,30 @@ asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"
 
+[tool.coverage.run]
+source = ["src/liger_kernel"]
+
+[tool.coverage.report]
+omit = ["tests/*"]
+show_missing = true
+skip_covered = false
+
+addopts = [
+    "-n", "auto",                     # pytest-xdist: parallel tests on all CPUs
+    "--dist=loadscope",               # group by module/class (less flaky)
+    "--cov=src/liger kernel",         # pytest-cov target
+    "--cov-report=term-missing",      # show uncovered lines in terminal
+    "--cov-report=html", 
+    "--cov-config=pyproject.toml",    # use this file for coverage settings
+    "--durations=0"                   # show slowest tests
+]
+
+python_files = "test_*.py"
+
+testpaths = [
+    "test/",
+]
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"
