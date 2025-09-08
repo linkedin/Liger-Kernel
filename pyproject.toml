@@ -23,13 +23,14 @@ namespaces = false
 log_cli = true
 log_cli_level = "INFO"
 asyncio_mode = "auto"
+pythonpath = ["src", "."]
 
 addopts = [
     "-n", "auto",                     # pytest-xdist: parallel tests on all CPUs
     "--dist=loadscope",               # group tests by module/class
-    "--cov=liger_kernel",             # ✅ track the package name, not src path
+    "--cov=liger_kernel",             # ✅ Use package name (matches imports)
     "--cov-report=term-missing",      # show missing lines in terminal
-    "--cov-report=html",              # generate HTML report
+    "--cov-report=html",              # generate HTML report  
     "--cov-config=pyproject.toml",
     "--durations=0"                   # show slowest tests
 ]
@@ -37,9 +38,16 @@ addopts = [
 python_files = "test_*.py"
 testpaths = ["test/"]
 
-
 [tool.coverage.run]
-source = ["liger_kernel"]             
+branch = true
+parallel = true
+source = ["liger_kernel"]
+
+[tool.coverage.paths] 
+liger_kernel = [
+    "src/liger_kernel",
+    "*/site-packages/liger_kernel"
+]
 
 [tool.coverage.report]
 omit = ["test/*"]
