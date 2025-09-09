@@ -182,7 +182,7 @@ except ImportError:
     SMOLLM3_AVAILABLE = False
 
 try:
-    # InternVL is only available in transformers>=4.54.1
+    # InternVL is only available in transformers>=4.52.1
     from transformers.models.internvl.configuration_internvl import InternVLConfig
     from transformers.models.internvl.modeling_internvl import InternVLForConditionalGeneration
 

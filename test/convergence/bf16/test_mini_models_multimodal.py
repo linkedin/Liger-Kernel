@@ -144,7 +144,7 @@ except ImportError:
     LLAMA4_AVAILABLE = False
 
 try:
-    # InternVL is only available in transformers>=4.54.1
+    # InternVL is only available in transformers>=4.52.1
     from transformers.models.got_ocr2.image_processing_got_ocr2_fast import GotOcr2ImageProcessorFast
     from transformers.models.internvl.configuration_internvl import InternVLConfig
     from transformers.models.internvl.modeling_internvl import InternVLForConditionalGeneration
@@ -987,7 +987,9 @@ def run_mini_model_multimodal(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
                 ),
-                pytest.mark.skipif(not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"),
+                pytest.mark.skipif(
+                    not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"
+                ),
             ],
         ),
         pytest.param(
@@ -1045,7 +1047,9 @@ def run_mini_model_multimodal(
                     not QWEN2_5_VL_AVAILABLE,
                     reason="Qwen2.5-VL not available in this version of transformers",
                 ),
-                pytest.mark.skipif(not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"),
+                pytest.mark.skipif(
+                    not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"
+                ),
             ],
         ),
         pytest.param(

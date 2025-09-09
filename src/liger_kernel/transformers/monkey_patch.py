@@ -1939,7 +1939,7 @@ def apply_liger_kernel_to_internvl(
     Apply Liger kernels to replace original implementation in HuggingFace InternVL models.
     Due to the characteristics of InternVL, the model must be passed to apply Liger-Kernel's patch to other models connected to InternVL.
     However, if an LM not supported by Liger-Kernel is connected to InternVL, unexpected side effects may occur.
-    NOTE: InternVL is not available in transformers<4.54.1
+    NOTE: InternVL is not available in transformers<4.52.1
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
