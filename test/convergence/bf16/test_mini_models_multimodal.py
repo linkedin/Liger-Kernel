@@ -988,9 +988,7 @@ def run_mini_model_multimodal(
                     not QWEN2_VL_AVAILABLE,
                     reason="Qwen2-VL not available in this version of transformers",
                 ),
-                pytest.mark.skipif(
-                    not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"
-                ),
+                pytest.mark.skipif(not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"),
             ],
         ),
         pytest.param(
@@ -1048,9 +1046,7 @@ def run_mini_model_multimodal(
                     not QWEN2_5_VL_AVAILABLE,
                     reason="Qwen2.5-VL not available in this version of transformers",
                 ),
-                pytest.mark.skipif(
-                    not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"
-                ),
+                pytest.mark.skipif(not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"),
             ],
         ),
         pytest.param(
