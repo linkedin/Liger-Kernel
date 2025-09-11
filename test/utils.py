@@ -559,6 +559,21 @@ def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_internvl(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to InternVL.
+    """
+
+    from transformers.models.internvl import modeling_internvl
+    from transformers.models.qwen2 import modeling_qwen2
+
+    importlib.reload(modeling_internvl)
+    importlib.reload(modeling_qwen2)
+
+    model_config.model_class = modeling_internvl.InternVLForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
 class HFAlignmentLoss:
     def __init__(
         self,
