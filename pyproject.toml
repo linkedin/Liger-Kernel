@@ -20,33 +20,31 @@ include = ["liger_kernel*"]
 namespaces = false
 
 [tool.pytest.ini_options]
-log_cli = true
-log_cli_level = "INFO"
 asyncio_mode = "auto"
 pythonpath = ["src", "."]
-
 addopts = [
-    "-n", "auto",                     # pytest-xdist: parallel tests on all CPUs
-    "--dist=loadscope",               # group tests by module/class
-    "--cov=liger_kernel",             # ✅ Use package name (matches imports)
-    "--cov-report=term-missing",      # show missing lines in terminal
-    "--cov-report=html",              # generate HTML report  
+    "-n", "auto",
+    "--dist=load",                    # use "load" to distribute tests and let pytest-cov combine coverage
+    "--cov=src/liger_kernel",
+    "--cov-report=term-missing",
+    "--cov-report=html",
     "--cov-config=pyproject.toml",
-    "--durations=0"                   # show slowest tests
+    "--durations=0"
 ]
-
 python_files = "test_*.py"
 testpaths = ["test/"]
 
 [tool.coverage.run]
 branch = true
 parallel = true
-source = ["liger_kernel"]
+source = ["src/liger_kernel"]
+# xdist uses subprocesses; "multiprocessing" is a safe concurrency choice
+concurrency = ["multiprocessing"]
 
-[tool.coverage.paths] 
+[tool.coverage.paths]
 liger_kernel = [
-    "src/liger_kernel",
-    "*/site-packages/liger_kernel"
+  "src/liger_kernel",
+  "*/site-packages/liger_kernel"
 ]
 
 [tool.coverage.report]

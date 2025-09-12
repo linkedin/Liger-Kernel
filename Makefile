@@ -5,20 +5,15 @@ all: checkstyle test test-convergence
 
 # Command to run pytest for correctness tests
 test:
-	# Run pytest with coverage and xdist
 	python -m pytest --disable-warnings \
 		-n auto \
-		--dist=loadscope \
-		--cov=liger_kernel \
+		--dist=load \
+		--cov=src/liger_kernel \
 		--cov-report=term-missing \
-		--cov-report=html \
 		--ignore=test/convergence \
 		test/
-
-	# Combine coverage files 
 	coverage combine
-
-	# Generate HTML report
+	coverage report -m
 	coverage html
 
 # Command to run ruff for linting and formatting code
