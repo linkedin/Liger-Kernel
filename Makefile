@@ -5,7 +5,16 @@ all: checkstyle test test-convergence
 
 # Command to run pytest for correctness tests
 test:
-	python -m pytest --disable-warnings test/ --ignore=test/convergence
+	python -m pytest --disable-warnings \
+		-n auto \
+		--dist=load \
+		--cov=src/liger_kernel \
+		--cov-report=term-missing \
+		--ignore=test/convergence \
+		test/
+	coverage combine
+	coverage report -m
+	coverage html
 
 # Command to run ruff for linting and formatting code
 checkstyle:

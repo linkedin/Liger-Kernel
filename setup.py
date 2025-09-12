@@ -38,6 +38,8 @@ def get_optional_dependencies():
             "isort>=5.13.2",
             "pytest>=7.1.2",
             "pytest-xdist",
+            "pytest-cov",
+            "pytest-asyncio",
             "pytest-rerunfailures",
             "datasets>=2.19.2",
             "seaborn",
