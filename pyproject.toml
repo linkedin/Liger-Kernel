@@ -24,6 +24,36 @@ pythonpath = ["src", "."]
 asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"
+addopts = [
+    "-n", "auto",
+    "--dist=load",                    # use "load" to distribute tests and let pytest-cov combine coverage
+    "--cov=src/liger_kernel",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-config=pyproject.toml",
+    "--durations=0"
+]
+python_files = "test_*.py"
+testpaths = ["test/"]
+
+[tool.coverage.run]
+branch = true
+parallel = true
+source = ["src/liger_kernel"]
+# xdist uses subprocesses; "multiprocessing" is a safe concurrency choice
+concurrency = ["multiprocessing"]
+
+[tool.coverage.paths]
+liger_kernel = [
+  "src/liger_kernel",
+  "*/site-packages/liger_kernel"
+]
+
+[tool.coverage.report]
+omit = ["test/*"]
+show_missing = true
+skip_covered = false
+
 
 [tool.ruff]
 line-length = 120
