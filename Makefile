@@ -6,8 +6,6 @@ all: checkstyle test test-convergence
 # Command to run pytest for correctness tests
 test:
 	python -m pytest --disable-warnings \
-		-n auto \
-		--dist=load \
 		--cov=src/liger_kernel \
 		--cov-report=term-missing \
 		--ignore=test/convergence \
