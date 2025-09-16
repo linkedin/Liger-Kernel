@@ -319,7 +319,7 @@ def train():
         model = model_builder(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
         )
 
         # Freeze the base model

@@ -9,7 +9,7 @@ from liger_kernel.transformers.trainer import LigerORPOTrainer  # noqa: F401
 
 model = AutoModelForCausalLM.from_pretrained(
     "meta-llama/Llama-3.2-1B-Instruct",
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
 )
 
 tokenizer = AutoTokenizer.from_pretrained(
