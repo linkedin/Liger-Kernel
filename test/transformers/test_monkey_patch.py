@@ -338,7 +338,7 @@ def test_apply_liger_kernel_to_instance_for_llama():
     with patch("transformers.models.llama.modeling_llama"):
         # Instantiate a dummy model
         config = transformers.models.llama.configuration_llama.LlamaConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -382,7 +382,7 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
 
         # Instantiate a dummy model
         config = transformers.models.mllama.configuration_mllama.MllamaConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             text_config=transformers.models.mllama.configuration_mllama.MllamaTextConfig(
                 rms_norm_eps=1e-5,
                 hidden_size=32,
@@ -533,7 +533,7 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
 
         # Instantiate a dummy model
         config = transformers.models.llama4.configuration_llama4.Llama4TextConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -573,9 +573,9 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
 
         # Instantiate a dummy model
         config = transformers.models.llama4.configuration_llama4.Llama4Config(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             text_config=transformers.models.llama4.configuration_llama4.Llama4TextConfig(
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
                 rms_norm_eps=1e-5,
                 hidden_size=32,
                 intermediate_size=64,
@@ -656,7 +656,7 @@ def test_apply_liger_kernel_to_instance_for_mistral():
     with patch("transformers.models.mistral.modeling_mistral"):
         # Instantiate a dummy model
         config = transformers.models.mistral.configuration_mistral.MistralConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -695,7 +695,7 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
     with patch("transformers.models.mixtral.modeling_mixtral"):
         # Instantiate a dummy model
         config = transformers.models.mixtral.configuration_mixtral.MixtralConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -738,7 +738,7 @@ def test_apply_liger_kernel_to_instance_for_gemma():
     with patch("transformers.models.gemma.modeling_gemma"):
         # Instantiate a dummy model
         config = transformers.models.gemma.configuration_gemma.GemmaConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -777,7 +777,7 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
     with patch("transformers.models.gemma2.modeling_gemma2"):
         # Instantiate a dummy model
         config = transformers.models.gemma2.configuration_gemma2.Gemma2Config(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -827,7 +827,7 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
 
         # Instantiate a dummy model
         config = transformers.models.paligemma.configuration_paligemma.PaliGemmaConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             text_config={
                 "num_hidden_layers": 2,
                 "rms_norm_eps": 1e-5,
@@ -883,7 +883,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_text():
 
         # Instantiate a dummy model
         config = transformers.models.gemma3.configuration_gemma3.Gemma3TextConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -939,7 +939,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
 
         # Instantiate a dummy model
         text_config = transformers.models.gemma3.configuration_gemma3.Gemma3TextConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -1026,7 +1026,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2():
     with patch("transformers.models.qwen2.modeling_qwen2"):
         # Instantiate a dummy model
         config = transformers.models.qwen2.configuration_qwen2.Qwen2Config(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -1068,7 +1068,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3():
 
         # Instantiate a dummy model
         config = transformers.models.qwen3.configuration_qwen3.Qwen3Config(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -1110,7 +1110,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
 
         # Instantiate a dummy model
         config = transformers.models.qwen3_moe.configuration_qwen3_moe.Qwen3MoeConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -1158,7 +1158,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl_for_conditional_generation(
 
         # Instantiate a dummy model
         config = transformers.models.qwen2_vl.configuration_qwen2_vl.Qwen2VLConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=48,
@@ -1227,7 +1227,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl():
 
         # Instantiate a dummy model
         config = transformers.models.qwen2_vl.configuration_qwen2_vl.Qwen2VLConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=48,
@@ -1294,7 +1294,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl_text():
 
         # Instantiate a dummy model
         config = transformers.models.qwen2_vl.configuration_qwen2_vl.Qwen2VLTextConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=48,
@@ -1347,7 +1347,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl():
 
         # Instantiate a dummy model
         config = transformers.models.qwen2_5_vl.configuration_qwen2_5_vl.Qwen2_5_VLConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=48,
@@ -1416,7 +1416,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_for_conditional_generatio
 
         # Instantiate a dummy model
         config = transformers.models.qwen2_5_vl.configuration_qwen2_5_vl.Qwen2_5_VLConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=48,
@@ -1483,7 +1483,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_text():
 
         # Instantiate a dummy model
         config = transformers.models.qwen2_5_vl.configuration_qwen2_5_vl.Qwen2_5_VLTextConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=48,
@@ -1528,7 +1528,7 @@ def test_apply_liger_kernel_to_instance_for_phi3():
     with patch("transformers.models.phi3.modeling_phi3"):
         # Instantiate a dummy model
         config = transformers.models.phi3.configuration_phi3.Phi3Config(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -1570,7 +1570,7 @@ def test_apply_liger_kernel_to_instance_for_olmo2():
 
         # Instantiate a dummy model
         config = transformers.models.olmo2.configuration_olmo2.Olmo2Config(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -1616,7 +1616,7 @@ def test_apply_liger_kernel_to_instance_for_glm4():
 
         # Instantiate a dummy model
         config = transformers.models.glm4.configuration_glm4.Glm4Config(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
@@ -1664,7 +1664,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v():
 
         # Instantiate a dummy model
         config = transformers.models.glm4v.configuration_glm4v.Glm4vConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             text_config={
                 "num_hidden_layers": 2,
                 "rms_norm_eps": 1e-5,
@@ -1734,7 +1734,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
 
         # Instantiate a dummy model
         config = transformers.models.glm4v_moe.configuration_glm4v_moe.Glm4vMoeConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             hidden_size=32,
             num_attention_heads=4,
             num_key_value_heads=2,
@@ -1837,7 +1837,7 @@ def test_apply_liger_kernel_to_instance_for_smollm3():
     with patch("transformers.models.smollm3.modeling_smollm3"):
         # Instantiate a dummy model
         config = transformers.models.smollm3.configuration_smollm3.SmolLM3Config(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
