@@ -1400,7 +1400,7 @@ def run_mini_model(
             1e-2,
             4e-1,
             1e-1,
-            5e-1,
+            5e-1,  # TODO: very high tolerance set for now, need to investigate
             2e-1,
             1e-2,
             marks=[
