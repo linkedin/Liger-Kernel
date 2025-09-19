@@ -25,8 +25,6 @@ asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"
 addopts = [
-    "-n", "auto",
-    "--dist=load",                    # use "load" to distribute tests and let pytest-cov combine coverage
     "--cov=src/liger_kernel",
     "--cov-report=term-missing",
     "--cov-report=html",
