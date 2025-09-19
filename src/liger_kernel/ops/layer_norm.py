@@ -63,12 +63,11 @@ def _layer_norm_forward_kernel(
     X_f32 = X_row.to(tl.float32)
 
     # Compute statistics in fp32 for numerical stability
-    n_cols_f32 = n_cols.to(tl.float32)
-    mean = tl.sum(X_f32, axis=0) / n_cols_f32
+    mean = tl.sum(X_f32, axis=0) / n_cols
     X_centered = X_f32 - mean
     # Apply mask to variance calculation to exclude contributions from masked elements
     X_centered_masked = tl.where(mask, X_centered, 0.0)
-    var = tl.sum(X_centered_masked * X_centered_masked, axis=0) / n_cols_f32
+    var = tl.sum(X_centered_masked * X_centered_masked, axis=0) / n_cols
     rstd = rsqrt(var + eps)
 
     # Store statistics (convert back to original dtype only once)
@@ -113,7 +112,6 @@ def _layer_norm_backward_kernel(
     # Pre-load weights once (same optimization as forward pass)
     w = tl.load(W_ptr + cols, mask=mask, other=0.0)
     w_f32 = w.to(tl.float32)
-    n_cols_f32 = n_cols.to(tl.float32)
 
     # Calculate pointers for this specific row
     row_X_ptr = X_ptr + row_idx * stride_x
@@ -137,8 +135,8 @@ def _layer_norm_backward_kernel(
     # Compute backward pass for this row
     x_hat = (x_f32 - mean_f32) * rstd_f32
     wdy = w_f32 * dy_f32
-    c1 = tl.sum(x_hat * wdy, axis=0) / n_cols_f32
-    c2 = tl.sum(wdy, axis=0) / n_cols_f32
+    c1 = tl.sum(x_hat * wdy, axis=0) / n_cols
+    c2 = tl.sum(wdy, axis=0) / n_cols
     dx = (wdy - (x_hat * c1 + c2)) * rstd_f32
 
     # Store input gradient
