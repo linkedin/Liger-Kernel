@@ -164,6 +164,9 @@ pip install -e .
 
 # Setup Development Dependencies
 pip install -e ".[dev]"
+
+# NOTE -> For AMD users only
+pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.3/
 ```
 
 
