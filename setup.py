@@ -18,7 +18,6 @@ def get_default_dependencies():
         ]
     elif platform == "rocm":
         return [
-            "torch>=2.6.0.dev",
             "triton>=3.0.0",
         ]
     elif platform == "xpu":
@@ -33,9 +32,7 @@ def get_optional_dependencies():
         "dev": [
             "transformers>=4.49.0",
             "matplotlib>=3.7.2",
-            "flake8>=4.0.1.1",
-            "black>=24.4.2",
-            "isort>=5.13.2",
+            "ruff>=0.12.0",
             "pytest>=7.1.2",
             "pytest-xdist",
             "pytest-cov",
@@ -43,7 +40,6 @@ def get_optional_dependencies():
             "pytest-rerunfailures",
             "datasets>=2.19.2",
             "seaborn",
-            "mkdocs",
             "mkdocs-material",
             "torchvision>=0.20",
         ]
