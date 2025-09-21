@@ -13,12 +13,14 @@ jobs:
     name: "Add Copilot to PR reviews"
     if: ${{ github.event.pull_request.draft == false }}   # skip still-draft PRs
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GH_TOKEN_COPILOT_REVIEW }}   # gh CLI picks this up automatically
 
     steps:
       - name: Install gh-copilot-review extension
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: gh extension install ChrisCarini/gh-copilot-review
 
       - name: Ask Copilot to review this PR
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN_COPILOT_REVIEW }}   # gh CLI picks this up automatically
         run: gh copilot-review "${{ github.event.pull_request.html_url }}"
