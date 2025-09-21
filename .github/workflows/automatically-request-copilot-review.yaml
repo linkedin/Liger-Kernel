@@ -13,6 +13,7 @@ jobs:
     name: "Add Copilot to PR reviews"
     if: ${{ github.event.pull_request.draft == false }}   # skip still-draft PRs
     runs-on: ubuntu-latest
+    environment: copilot-review
 
     steps:
       - name: Install gh-copilot-review extension
