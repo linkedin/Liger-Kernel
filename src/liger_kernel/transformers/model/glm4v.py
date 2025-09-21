@@ -70,7 +70,7 @@ def lce_forward(
     >>> processor = AutoProcessor.from_pretrained(MODEL_PATH, use_fast=True)
     >>> model = Glm4vForConditionalGeneration.from_pretrained(
         pretrained_model_name_or_path=MODEL_PATH,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
     )
     >>> inputs = processor.apply_chat_template(

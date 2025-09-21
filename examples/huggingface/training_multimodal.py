@@ -56,7 +56,7 @@ def construct_model_and_processor(model_name: str, use_liger: bool) -> torch.nn.
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             pretrained_model_name_or_path=model_name,
             use_cache=False,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             low_cpu_mem_usage=True,
             attn_implementation="sdpa",
         )

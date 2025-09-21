@@ -129,8 +129,8 @@ y = orpo_loss(lm_head.weight, x, target)
 - `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
 
 ```bash
-# Need to pass the url when installing
-pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
+pip install -e .[dev]
+pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.3/
 ```
 
 ### Optional Dependencies
@@ -164,6 +164,9 @@ pip install -e .
 
 # Setup Development Dependencies
 pip install -e ".[dev]"
+
+# NOTE -> For AMD users only
+pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.3/
 ```
 
 

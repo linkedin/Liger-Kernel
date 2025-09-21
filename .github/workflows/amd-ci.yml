@@ -64,7 +64,8 @@ jobs:
       run: |
         rocm-smi
         python -m pip install --upgrade pip
-        pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/nightly/rocm${{ matrix.rocm_version }}
+        pip install -e .[dev]
+        pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm${{ matrix.rocm_version }}/
     
     - name: List Python Environments
       run: python -m pip list
