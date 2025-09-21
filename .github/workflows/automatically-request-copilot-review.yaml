@@ -1,7 +1,7 @@
 name: Automatic Copilot Code Review
 
 on:
-  pull_request:
+  pull_request_target:
     types:
       - opened            # brand-new PRs
       - ready_for_review  # PR drafts marked "Ready for review"
