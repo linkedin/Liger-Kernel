@@ -16,6 +16,24 @@ jobs:
     environment: copilot-review
 
     steps:
+      - name: Debug environment and secrets
+        run: |
+          echo "Environment: copilot-review"
+          echo "Repository: ${{ github.repository }}"
+          echo "PR from repo: ${{ github.event.pull_request.head.repo.full_name }}"
+          echo "Is fork: ${{ github.event.pull_request.head.repo.full_name != github.repository }}"
+          echo "Secret exists: ${{ secrets.GH_TOKEN_COPILOT_REVIEW != '' }}"
+          echo "Secret length: ${#GH_TOKEN_COPILOT_REVIEW}"
+        env:
+          GH_TOKEN_COPILOT_REVIEW: ${{ secrets.GH_TOKEN_COPILOT_REVIEW }}
+      
+      - name: Test GitHub token
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Testing default GitHub token..."
+          gh auth status
+      
       - name: Install gh-copilot-review extension
         env:
           GH_TOKEN: ${{ github.token }}
