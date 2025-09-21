@@ -10,9 +10,10 @@ test:
 		--cov-report=term-missing \
 		--ignore=test/convergence \
 		test/
-	coverage combine
+
+# Command to run coverage report
+coverage:
 	coverage report -m
-	coverage html
 
 # Command to run ruff for linting and formatting code
 checkstyle:
