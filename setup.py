@@ -18,7 +18,6 @@ def get_default_dependencies():
         ]
     elif platform == "rocm":
         return [
-            "torch>=2.6.0.dev",
             "triton>=3.0.0",
         ]
     elif platform == "xpu":
