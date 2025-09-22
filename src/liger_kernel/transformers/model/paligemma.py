@@ -382,6 +382,25 @@ def lce_forward(
             flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
             flat_labels = shift_labels.view(-1).to(shift_logits.device)
             loss = loss_fct(flat_logits, flat_labels)
+        elif shift_labels is not None:
+            # Upcast to float if we need to compute the loss to avoid potential precision issues
+            logits = logits.float()
+            shift_logits = logits[..., :-1, :]
+            if attention_mask is not None:
+                # we use the input attention mask to shift the logits and labels, because it is 2D.
+                # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
+                shift_attention_mask = attention_mask[:, -shift_logits.shape[1] :].to(logits.device)
+                shift_logits = shift_logits[shift_attention_mask.to(logits.device) != 0].contiguous()
+                shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
+            else:
+                shift_logits = shift_logits.contiguous()
+                shift_labels = shift_labels.contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+
+            flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
+            flat_labels = shift_labels.view(-1).to(shift_logits.device)
+            loss = loss_fct(flat_logits, flat_labels)
     if not return_dict:
         output = (logits,) + outputs[1:]
         return (loss,) + output if loss is not None else output
