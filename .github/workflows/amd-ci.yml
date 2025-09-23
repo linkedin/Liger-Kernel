@@ -13,9 +13,6 @@ on:
     paths:
       - "src/**"
       - "test/**"
-  schedule:
-    # Runs at 00:00 UTC daily
-    - cron: '0 0 * * *'
   workflow_dispatch:  # Enables manual trigger
 
 concurrency:
