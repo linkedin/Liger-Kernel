@@ -1390,6 +1390,7 @@ def run_mini_model(
                     not GLM4V_AVAILABLE,
                     reason="Glm4v not available in this version of transformers",
                 ),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(
@@ -1409,6 +1410,7 @@ def run_mini_model(
                     not GLM4V_MOE_AVAILABLE,
                     reason="Glm4v_moe not available in this version of transformers",
                 ),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(
