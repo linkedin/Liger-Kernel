@@ -1310,10 +1310,13 @@ def run_mini_model(
             1e-5,
             5e-3,
             1e-5,
-            marks=pytest.mark.skipif(
-                not GLM4V_MOE_AVAILABLE,
-                reason="Glm4v_moe not available in this version of transformers",
-            ),
+            marks=[
+                pytest.mark.skipif(
+                    not GLM4V_MOE_AVAILABLE,
+                    reason="Glm4v_moe not available in this version of transformers",
+                ),
+                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
+            ],
         ),
         ("mini_phi3", 32, 1e-4, torch.float32, 1e-8, 1e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(
