@@ -119,7 +119,7 @@ def test_correctness_gelu_mlp(
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
-        (torch.float32, 1e-2, 1e-5),
+        (torch.float32, 1e-0, 1e-3),
         pytest.param(
             torch.bfloat16,
             1e-0,

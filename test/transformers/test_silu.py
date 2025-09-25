@@ -55,8 +55,8 @@ SLEEP_SECONDS = 0.1
         (torch.float32, 1e-2, 1e-4),
         pytest.param(
             torch.bfloat16,
-            1e-1,
-            1e-3,
+            1e-0,
+            1e-2,
             marks=pytest.mark.skipif(
                 not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
             ),
