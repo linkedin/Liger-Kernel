@@ -1,3 +1,4 @@
+import math
 import torch
 import triton
 import triton.language as tl
@@ -16,7 +17,7 @@ def _gelu_forward_kernel(a, c, stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.cons
 
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
-    a_row = tl.load(a + col_offsets, mask=mask, other=0)
+    a_row = tl.load(a + col_offsets, mask=mask, other=0).to(tl.float32)
 
     # GELU: 0.5 * x * (1 + erf(x / sqrt(2)))
     c_row = 0.5 * a_row * (1 + tl.erf(a_row / tl.sqrt(2.0)))
@@ -37,11 +38,11 @@ def _gelu_backward_kernel(
     mask = col_offsets < n_cols
 
     dc_row = tl.load(dc + col_offsets, mask=mask, other=0)
-    a_row = tl.load(a + col_offsets, mask=mask, other=0)
+    a_row = tl.load(a + col_offsets, mask=mask, other=0).to(tl.float32)
 
     # GELU derivative: 0.5 * (1 + erf(x / sqrt(2))) + 0.5 * x * (1 / sqrt(2 * pi)) * exp(-0.5 * x^2)
     da_row = 0.5 * (1 + tl.erf(a_row / tl.sqrt(2.0))) + 0.5 * a_row * (
-        1 / tl.sqrt(2 * tl.pi)
+        1 / tl.sqrt(2 * math.pi)
     ) * tl.exp(-0.5 * a_row * a_row)
     da_row = da_row * dc_row
     tl.store(a + col_offsets, da_row, mask=mask)

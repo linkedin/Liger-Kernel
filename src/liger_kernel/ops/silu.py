@@ -16,7 +16,7 @@ def _silu_forward_kernel(a, c, stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.cons
 
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
-    a_row = tl.load(a + col_offsets, mask=mask, other=0)
+    a_row = tl.load(a + col_offsets, mask=mask, other=0).to(tl.float32)
 
     # SiLU: x * sigmoid(x)
     c_row = a_row * tl.sigmoid(a_row)
@@ -37,7 +37,7 @@ def _silu_backward_kernel(
     mask = col_offsets < n_cols
 
     dc_row = tl.load(dc + col_offsets, mask=mask, other=0)
-    a_row = tl.load(a + col_offsets, mask=mask, other=0)
+    a_row = tl.load(a + col_offsets, mask=mask, other=0).to(tl.float32)
 
     # SiLU derivative: sigmoid(x) * (1 + x * (1 - sigmoid(x)))
     sig_a = tl.sigmoid(a_row)
