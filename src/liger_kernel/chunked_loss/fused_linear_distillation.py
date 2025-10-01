@@ -283,8 +283,6 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output, *args):
-        # When return_soft_hard_loss=True, we receive 3 grad outputs (loss, soft_loss, hard_loss)
-        # We only use grad_output (gradient w.r.t. combined loss) for backpropagation
         grad_input, grad_weight, grad_bias = ctx.saved_tensors
         if torch.ne(grad_output, torch.tensor(1.0, device=grad_output.device)):
             grad_input = grad_input * grad_output
