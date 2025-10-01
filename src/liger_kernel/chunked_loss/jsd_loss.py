@@ -1,5 +1,8 @@
 import math
 
+from typing import Tuple
+from typing import Union
+
 import torch
 import torch.nn.functional as F
 
@@ -99,7 +102,6 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
 
     @staticmethod
     def backward(ctx, grad_output, *args):
-        # When return_soft_hard_loss=True, we receive 3 grad outputs, but we only use the first
         grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output, *args)[:6]
 
         return (
@@ -163,7 +165,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         true_labels: torch.LongTensor,
         student_bias: torch.Tensor = None,
         teacher_bias: torch.Tensor = None,
-    ):
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Compute the JSD distillation loss.
 
@@ -175,7 +177,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             true_labels (torch.LongTensor): Target labels tensor
 
         Returns:
-            torch.Tensor or Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: 
+            torch.Tensor or Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
                 If return_soft_hard_loss is False: Computed combined loss
                 If return_soft_hard_loss is True: Tuple of (combined_loss, soft_loss, hard_loss)
         """

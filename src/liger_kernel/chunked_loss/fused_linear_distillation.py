@@ -1,5 +1,7 @@
 from abc import abstractmethod
 from functools import partial
+from typing import Tuple
+from typing import Union
 
 import torch
 
@@ -159,7 +161,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         compiled=True,
         return_soft_hard_loss=False,
         **loss_kwargs,
-    ):
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Base class for fused linear layer with distillation loss.
         Only need to compute gradients for student model.

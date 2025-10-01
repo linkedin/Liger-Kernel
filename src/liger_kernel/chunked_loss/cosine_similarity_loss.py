@@ -1,3 +1,6 @@
+from typing import Tuple
+from typing import Union
+
 import torch
 import torch.nn.functional as F
 
@@ -42,7 +45,7 @@ class LigerFusedLinearCosineSimilarityFunction(LigerFusedLinearDistillationBase)
         compiled: bool = True,
         chunk_size: int = 1024,
         return_soft_hard_loss: bool = False,
-    ):
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         return super().forward(
             cls=cls,
             ctx=ctx,
@@ -113,7 +116,7 @@ class LigerFusedLinearCosineSimilarityLoss(torch.nn.Module):
         true_labels: torch.LongTensor,
         student_bias: torch.Tensor = None,
         teacher_bias: torch.Tensor = None,
-    ):
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         return LigerFusedLinearCosineSimilarityFunction.apply(
             student_input,
             student_weight,
