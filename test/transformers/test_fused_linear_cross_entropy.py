@@ -230,6 +230,7 @@ def test_correctness(
             rtol=rtol,
         )
 
+
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
@@ -336,12 +337,12 @@ def test_correctness_with_forward_only(
         if return_z_loss:
             assert_verbose_allclose(z_output1, z_output2, atol=atol, rtol=rtol)
 
-
     try:
         grad_output = torch.rand_like(output1)
         output2.backward(gradient=grad_output)
     except RuntimeError as e:
         assert "does not require grad" in str(e)
+
 
 @pytest.mark.parametrize(
     "B, T, H, V",

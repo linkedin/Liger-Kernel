@@ -454,6 +454,7 @@ def _test_correctness_not_last_layer_with_other_params_once(
     loss2.backward(gradient=grad_output)
     assert torch.allclose(_input.grad, _input2.grad, atol=atol, rtol=rtol)
 
+
 def _test_correctness_with_forward_only(target_ce, B, T, V, reduction, dtype, scalar, atol, rtol):
     torch.manual_seed(0)
     torch_ce = CrossEntropyLoss(reduction=reduction)
@@ -474,7 +475,7 @@ def _test_correctness_with_forward_only(target_ce, B, T, V, reduction, dtype, sc
         output2.backward(gradient=torch.ones_like(output))
     except RuntimeError as e:
         assert "does not require grad" in str(e)
-    
+
 
 def _test_correctness_functional(
     B,
@@ -1083,12 +1084,13 @@ def test_correctness_with_out_of_bounds_target_once(B, T, V, ignore_index):
     liger_ce = LigerCrossEntropyLoss(ignore_index=ignore_index)
     _test_correctness_with_out_of_bounds_target_once(liger_ce, B, T, V, ignore_index)
 
+
 @pytest.mark.parametrize(
-        "B, T, V, ignore_index",
-        [
-            (2, 4096, 32000, -100),
-            (3, 423, 32000, 2),
-        ],
+    "B, T, V, ignore_index",
+    [
+        (2, 4096, 32000, -100),
+        (3, 423, 32000, 2),
+    ],
 )
 @pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
 @pytest.mark.parametrize(
