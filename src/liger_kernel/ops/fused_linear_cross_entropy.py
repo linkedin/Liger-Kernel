@@ -150,6 +150,7 @@ def fused_linear_cross_entropy_forward(
             RETURN_Z_LOSS=return_z_loss,
             HAS_WEIGHT=True if ce_weight is not None else False,
             HAS_SOFTCAPPING=True if softcap is not None else False,
+            HAS_GRADIENTS=logits_chunk.requires_grad,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32 if not is_hip() else 16,
         )
@@ -173,10 +174,10 @@ def fused_linear_cross_entropy_forward(
 
         grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
-        if grad_weight is not None:
+        if grad_weight is not None and _input_chunk.requires_grad:
             grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
 
-        if bias is not None:
+        if bias is not None and _input_chunk.requires_grad:
             torch.add(
                 input=grad_bias,
                 other=grad_logits_chunk.sum(dim=0),

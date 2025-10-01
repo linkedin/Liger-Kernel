@@ -58,6 +58,7 @@ def bench_memory_fused_linear_cross_entropy(
     V = input.extra_benchmark_config["V"]
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
+    mode = input.kernel_operation_mode
 
     torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
@@ -78,7 +79,12 @@ def bench_memory_fused_linear_cross_entropy(
         y = fwd()
         y.backward()
 
-    mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
+    if mode == "full":
+        mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
+    elif mode == "no-grad-full":
+        with torch.no_grad():
+            mem_50, mem_20, mem_80 = _test_memory(fwd, _iter=10, quantiles=QUANTILES)
+
     return SingleBenchmarkRunOutput(
         y_20=mem_20,
         y_50=mem_50,
@@ -122,6 +128,13 @@ def bench_speed_fused_linear_cross_entropy(
             rep=100,
             quantiles=QUANTILES,
         )
+    elif mode == "no-grad-forward":
+        with torch.no_grad():
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(
+                fwd,
+                rep=100,
+                quantiles=QUANTILES,
+            )
     elif mode == "backward":
         y = fwd()
 
@@ -164,14 +177,14 @@ if __name__ == "__main__":
 
     run_benchmarks(
         bench_test_fn=bench_speed_fused_linear_cross_entropy,
-        kernel_operation_modes=["forward", "backward", "full"],
+        kernel_operation_modes=["forward", "backward", "full", "no-grad-forward"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,
     )
     run_benchmarks(
         bench_test_fn=bench_memory_fused_linear_cross_entropy,
-        kernel_operation_modes=["full"],
+        kernel_operation_modes=["full", "no-grad-full"],
         metric_name="memory",
         metric_unit="MB",
         **common_configs,
