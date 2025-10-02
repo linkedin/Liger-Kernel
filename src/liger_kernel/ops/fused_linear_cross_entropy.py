@@ -150,7 +150,7 @@ def fused_linear_cross_entropy_forward(
             RETURN_Z_LOSS=return_z_loss,
             HAS_WEIGHT=True if ce_weight is not None else False,
             HAS_SOFTCAPPING=True if softcap is not None else False,
-            HAS_GRADIENTS=logits_chunk.requires_grad,
+            HAS_GRADIENTS=_input_chunk.requires_grad,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32 if not is_hip() else 16,
         )
