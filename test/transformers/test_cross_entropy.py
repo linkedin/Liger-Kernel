@@ -1036,6 +1036,7 @@ def test_float32_internal():
         RETURN_Z_LOSS=0,  # False
         HAS_WEIGHT=False,
         HAS_SOFTCAPPING=False,
+        HAS_GRADIENTS=True,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=32 if not is_hip() else 16,
     )
@@ -1064,6 +1065,7 @@ def test_float32_internal():
         RETURN_Z_LOSS=0,  # False
         HAS_WEIGHT=False,
         HAS_SOFTCAPPING=False,
+        HAS_GRADIENTS=True,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=32 if not is_hip() else 16,
     )
