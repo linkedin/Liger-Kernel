@@ -342,17 +342,17 @@ loss.backward()
         <td style="padding: 10px;">
             <div style="display: block;">
                 <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml/badge.svg?event=schedule" alt="Build">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml/badge.svg?branch=main&event=push" alt="Build">
                 </a>
             </div>
             <div style="display: block;">
                 <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?event=schedule" alt="Build">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?branch=main&event=push" alt="Build">
                 </a>
             </div>
             <div style="display: block;">
                 <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?event=schedule" alt="Build">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?branch=main&event=push" alt="Build">
                 </a>
             </div>
         </td>
