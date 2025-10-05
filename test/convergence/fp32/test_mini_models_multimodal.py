@@ -11,6 +11,7 @@ from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
 from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3
+from liger_kernel.transformers import apply_liger_kernel_to_internvl
 from liger_kernel.transformers import apply_liger_kernel_to_llama4
 from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
@@ -29,6 +30,7 @@ from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
 from test.utils import revert_liger_kernel_to_gemma3
+from test.utils import revert_liger_kernel_to_internvl
 from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mllama
@@ -136,6 +138,19 @@ try:
     GEMMA3_AVAILABLE = True
 except ImportError:
     GEMMA3_AVAILABLE = False
+
+try:
+    # InternVL is only available in transformers>=4.52.1
+    from transformers.models.got_ocr2.image_processing_got_ocr2_fast import GotOcr2ImageProcessorFast
+    from transformers.models.internvl.configuration_internvl import InternVLConfig
+    from transformers.models.internvl.modeling_internvl import InternVLForConditionalGeneration
+    from transformers.models.internvl.processing_internvl import InternVLProcessor
+    from transformers.models.internvl.video_processing_internvl import InternVLVideoProcessor
+    from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
+
+    INTERNVL_AVAILABLE = True
+except ImportError:
+    INTERNVL_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -514,6 +529,38 @@ if LLAVA_AVAILABLE:
         ),
     )
 
+if INTERNVL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_internvl"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_internvl,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_internvl,
+        model_class=InternVLForConditionalGeneration,
+        mini_model_config=InternVLConfig(
+            text_config=Qwen2Config(
+                rms_norm_eps=1e-5,
+                hidden_size=256,  # 1024
+                intermediate_size=1024,  # 4096
+                hidden_act="silu",
+                num_hidden_layers=4,  # 24
+                num_attention_heads=4,  # 16
+                num_key_value_heads=2,  # 16
+                max_position_embeddings=4096,  # 8192
+                vocab_size=32000,  # 151936
+                bos_token_id=1,
+                eos_token_id=2,
+                pad_token_id=2,
+                tie_word_embeddings=False,
+            ),
+            vision_config={
+                "hidden_size": 256,  # 1024
+                "intermediate_size": 1024,  # 4096
+                "num_hidden_layers": 4,  # 24
+                "num_attention_heads": 4,  # 16
+            },
+            image_token_id=24,
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
+
 if QWEN2_5_VL_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen2_5_vl"] = MiniModelConfig(
         liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_qwen2_5_vl, fused_linear_cross_entropy=False),
@@ -641,6 +688,30 @@ def create_processor(model_name: str):
         image_processor = CLIPImageProcessor(**image_processor_config)
 
         return LlavaProcessor(**processor_config, image_processor=image_processor, tokenizer=fast_tokenizer)
+
+    elif model_name == "mini_internvl":
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(FAKE_CONFIGS_PATH, "OpenGVLab/InternVL3-1B-hf/tokenizer_config.json")
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        image_processor = GotOcr2ImageProcessorFast(
+            crop_to_patches=False, min_patches=1, max_patches=12, size={"height": 448, "width": 448}
+        )
+        video_processor = InternVLVideoProcessor()
+
+        # Return proper InternVL processor
+        return InternVLProcessor(
+            image_processor=image_processor, tokenizer=qwen_tokenizer, video_processor=video_processor
+        )
 
     elif model_name.startswith("mini_llama4"):
         tokenizer_config = load_tokenizer_config(
@@ -869,7 +940,16 @@ def run_mini_model_multimodal(
         print(f"Step {i}, Loss: {output.loss.item()}")
         loss_list.append(output.loss.item())
 
-    topk_logprobs = get_topk(get_logprobs(output.logits))
+    model.eval()
+    eval_batch = next(loader_iter).to(model.device)
+    if with_liger:
+        eval_batch["skip_logits"] = False
+    with torch.no_grad():
+        eval_output = model(**eval_batch)
+    print(f"Eval Loss: {eval_output.loss.item()}")
+    loss_list.append(eval_output.loss.item())
+    topk_logprobs = get_topk(get_logprobs(eval_output.logits))
+    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
     return {
         "loss": loss_list,
         "topk_logprobs": topk_logprobs.values,
@@ -933,6 +1013,22 @@ def run_mini_model_multimodal(
             marks=pytest.mark.skipif(
                 not LLAVA_AVAILABLE,
                 reason="LLaVa not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_internvl",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not INTERNVL_AVAILABLE,
+                reason="InternVL not available in this version of transformers",
             ),
         ),
         pytest.param(
