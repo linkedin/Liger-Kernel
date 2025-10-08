@@ -252,8 +252,14 @@ def lce_forward(
             logits = logits * self.config.final_logit_softcapping
 
         loss = None
-        if labels is not None:
-            loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
+        if labels is not None or shift_labels is not None:
+            loss = self.loss_function(
+                logits=logits,
+                labels=labels,
+                shift_labels=shift_labels,
+                vocab_size=self.vocab_size,
+                **kwargs,
+            )
 
     if not return_dict:
         output = (logits,) + outputs[1:]

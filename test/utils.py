@@ -14,7 +14,9 @@ from typing import Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import transformers
 
+from packaging import version
 from tokenizers import AddedToken
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
@@ -149,18 +151,20 @@ class MiniModelConfig:
 
 def simple_collate_fn(data: List[Dict[str, Any]]):
     """A basic collate function to use for DataLoader"""
+    batch = {}
 
     input_ids = torch.stack([torch.tensor(item["input_ids"]) for item in data])
     attention_mask = torch.stack([torch.tensor(item["attention_mask"]) for item in data])
     labels = input_ids.clone()
+    batch["input_ids"] = input_ids
+    batch["attention_mask"] = attention_mask
+    batch["labels"] = labels
+    if version.parse("4.54.1") <= version.parse(transformers.__version__):
+        shift_labels = nn.functional.pad(labels, (0, 1), value=-100)
+        shift_labels = shift_labels[..., 1:].contiguous()
+        batch["shift_labels"] = shift_labels
 
-    return BatchEncoding(
-        {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
-        }
-    )
+    return BatchEncoding(batch)
 
 
 def multimodal_collate_fn(data: List[Dict[str, Any]]):
@@ -174,6 +178,10 @@ def multimodal_collate_fn(data: List[Dict[str, Any]]):
 
     labels = input_ids.clone()
     batch["labels"] = labels
+    if version.parse("4.54.1") <= version.parse(transformers.__version__):
+        shift_labels = nn.functional.pad(labels, (0, 1), value=-100)
+        shift_labels = shift_labels[..., 1:].contiguous()
+        batch["shift_labels"] = shift_labels
 
     # Collate all other keys, e.g. pixel_values, attention_mask, image_grid_thw, etc
     for key in keys:
