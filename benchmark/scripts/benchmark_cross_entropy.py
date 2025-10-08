@@ -23,7 +23,6 @@ def bench_memory_cross_entropy(
 
     V = input.x
     provider = input.kernel_provider
-    mode = input.kernel_operation_mode
     B = input.extra_benchmark_config["B"]
     T = input.extra_benchmark_config["T"]
 
@@ -40,11 +39,7 @@ def bench_memory_cross_entropy(
         y = fwd()
         y.backward()
 
-    if mode == "full":
-        mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    elif mode == "no-grad-full":
-        with torch.no_grad():
-            mem_50, mem_20, mem_80 = _test_memory(fwd, quantiles=QUANTILES)
+    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(
         y_20=mem_20,
         y_50=mem_50,
@@ -124,7 +119,7 @@ if __name__ == "__main__":
     )
     run_benchmarks(
         bench_test_fn=bench_memory_cross_entropy,
-        kernel_operation_modes=["full", "no-grad-full"],
+        kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
         **common_configs,
