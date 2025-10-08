@@ -59,20 +59,19 @@ def bench_memory_fused_linear_cross_entropy(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_ce_fp32_accum = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
+    lm_head_ce = None
+    if provider == "liger":
+        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
+    elif provider == "liger-fp32-accum":
+        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
+    else:
+        lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
 
     _input = torch.randn(BT, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (BT, 1), dtype=torch.long, device=device).squeeze(1)
 
     def fwd():
-        if provider == "liger":
-            return liger_lm_head_ce(_input, target)
-        elif provider == "liger-fp32-accum":
-            return liger_lm_head_ce_fp32_accum(_input, target)
-        elif provider == "huggingface":
-            return torch_lm_head_ce(_input, target)
+        return lm_head_ce(_input, target)
 
     def full():
         y = fwd()
@@ -101,20 +100,19 @@ def bench_speed_fused_linear_cross_entropy(
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
-    torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_ce_fp32_accum = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
+    lm_head_ce = None
+    if provider == "liger":
+        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
+    elif provider == "liger-fp32-accum":
+        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
+    else:
+        lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
 
     _input = torch.randn(BT, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (BT, 1), dtype=torch.long, device=device).squeeze(1)
 
     def fwd():
-        if provider == "liger":
-            return liger_lm_head_ce(_input, target)
-        elif provider == "liger-fp32-accum":
-            return liger_lm_head_ce_fp32_accum(_input, target)
-        elif provider == "huggingface":
-            return torch_lm_head_ce(_input, target)
+        return lm_head_ce(_input, target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
