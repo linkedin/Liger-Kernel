@@ -1997,7 +1997,6 @@ def apply_liger_kernel_to_falcon_h1(
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.pre_ff_layernorm)
 
-<<<<<<< HEAD
 def apply_liger_kernel_to_glm4v_moe(
     rope: bool = False,
     cross_entropy: bool = False,
@@ -2176,8 +2175,6 @@ def apply_liger_kernel_to_internvl(
         elif vision_model_name not in MODEL_TYPE_TO_APPLY_LIGER_FN:
             logger.warning(f"{vision_model_name} is not supported by Liger kernel.")
 
-=======
->>>>>>> b622d23 (Fix make style)
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
