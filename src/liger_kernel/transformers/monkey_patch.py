@@ -1931,21 +1931,21 @@ def apply_liger_kernel_to_glm4v(
 def apply_liger_kernel_to_falcon_h1(
     rope: bool = True,
     cross_entropy: bool = True,
-    fused_linear_cross_entropy: bool = False,  # TODO: To be enabled
+    fused_linear_cross_entropy: bool = False,
     rms_norm: bool = True,
-    swiglu: bool = False,  # TODO: To be enabled
+    swiglu: bool = False,
     model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Falcon-H1 models
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
-        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is True.
         fused_linear_cross_entropy (bool):
-            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            Whether to apply Liger's fused linear cross entropy loss. Default is False.
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
-        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is False.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
@@ -1965,7 +1965,7 @@ def apply_liger_kernel_to_falcon_h1(
         logger.info("Apply liger RMSNorm")
         modeling_falcon_h1.FalconH1RMSNorm = LigerRMSNorm
     if swiglu:
-        modeling_falcon_h1.FalconH1MLP = LigerSwiGLUMLP
+        raise NotImplementedError("LigerSwiGLUMLP is not available for Falcon-H1 models.")
 
     if cross_entropy:
         if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
@@ -1977,13 +1977,8 @@ def apply_liger_kernel_to_falcon_h1(
             logger.warning(TRANSFORMER_DEPRECATION_WARNING)
             modeling_falcon_h1.CrossEntropyLoss = LigerCrossEntropyLoss
 
-    # TODO: To be enabled
     if fused_linear_cross_entropy:
-        if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
-            modeling_falcon_h1.FalconH1ForCausalLM.forward = llama_lce_forward
-        else:  # if version < 4.46.1
-            logger.warning(TRANSFORMER_DEPRECATION_WARNING)
-            modeling_falcon_h1.FalconH1ForCausalLM.forward = llama_lce_forward_deprecated
+        raise NotImplementedError("LigerFusedLinearCrossEntropy is not available for Falcon-H1 models.")
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
