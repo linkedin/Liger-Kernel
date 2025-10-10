@@ -2110,8 +2110,8 @@ def apply_liger_kernel_to_internvl(
 
 def apply_liger_kernel_to_falcon_h1(
     rope: bool = True,
-    cross_entropy: bool = True,
-    fused_linear_cross_entropy: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = False,
     model: PreTrainedModel = None,
