@@ -9,7 +9,7 @@ from transformers.models.falcon_h1.modeling_falcon_h1 import FalconHybridMambaAt
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 
-def forward(
+def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
     attention_mask: Optional[torch.Tensor] = None,

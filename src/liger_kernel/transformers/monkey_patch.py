@@ -15,6 +15,7 @@ from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
+from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward_deprecated
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
@@ -2144,7 +2145,7 @@ def apply_liger_kernel_to_falcon_h1(
         logger.info("Apply liger RMSNorm")
         modeling_falcon_h1.FalconH1RMSNorm = LigerRMSNorm
     if swiglu:
-        raise NotImplementedError("LigerSwiGLUMLP is not available for Falcon-H1 models.")
+        logger.warning("LigerSwiGLUMLP is not available for Falcon-H1 models. There will be no effect.")
 
     if cross_entropy:
         logger.info("Apply liger cross entropy")
@@ -2153,7 +2154,10 @@ def apply_liger_kernel_to_falcon_h1(
         nn.functional.cross_entropy = liger_cross_entropy
 
     if fused_linear_cross_entropy:
-        raise NotImplementedError("LigerFusedLinearCrossEntropy is not available for Falcon-H1 models.")
+        if model is not None:
+            model.forward = MethodType(falcon_h1_lce_forward, model)
+        else:
+            modeling_falcon_h1.FalconH1ForCausalLM.forward = falcon_h1_lce_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
