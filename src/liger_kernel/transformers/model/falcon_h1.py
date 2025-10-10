@@ -1,10 +1,13 @@
+from typing import TYPE_CHECKING
 from typing import Optional
 from typing import Union
 
 import torch
 
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.falcon_h1.modeling_falcon_h1 import FalconHybridMambaAttentionDynamicCache
+
+if TYPE_CHECKING:
+    from transformers.models.falcon_h1.modeling_falcon_h1 import FalconHybridMambaAttentionDynamicCache
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
@@ -14,7 +17,7 @@ def lce_forward(
     input_ids: torch.LongTensor = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[FalconHybridMambaAttentionDynamicCache] = None,
+    past_key_values: Optional["FalconHybridMambaAttentionDynamicCache"] = None,
     inputs_embeds: Optional[torch.FloatTensor] = None,
     labels: Optional[torch.LongTensor] = None,
     use_cache: Optional[bool] = None,
