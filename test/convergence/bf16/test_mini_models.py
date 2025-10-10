@@ -1087,7 +1087,7 @@ if FALCONH1_AVAILABLE:
             hidden_size=256,  # 4096
             num_hidden_layers=4,  # 24
             num_attention_heads=4,  # 32
-            num_key_value_heads=2, # 8
+            num_key_value_heads=2,  # 8
             intermediate_size=1024,  # 11008
             hidden_act="silu",
             max_position_embeddings=4096,
@@ -1102,7 +1102,7 @@ if FALCONH1_AVAILABLE:
             mamba_n_heads=16,  # 128
             mamba_d_state=32,  # 245
             mamba_d_conv=2,  # 4
-            attn_implementation = "eager",
+            attn_implementation="eager",
         ),
     )
 
