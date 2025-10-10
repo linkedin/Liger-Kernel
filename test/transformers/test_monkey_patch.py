@@ -20,7 +20,6 @@ from liger_kernel.transformers import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers import LigerQwen3MoeSwiGLUMLP
 from liger_kernel.transformers import LigerRMSNorm
 from liger_kernel.transformers import LigerSwiGLUMLP
-from liger_kernel.transformers import liger_rotary_pos_emb
 from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.monkey_patch import MODEL_TYPE_TO_APPLY_LIGER_FN
