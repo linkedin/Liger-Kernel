@@ -15,6 +15,7 @@ from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
 from liger_kernel.transformers.llama4_rope import liger_llama4_text_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.llama4_rope import liger_llama4_vision_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.multi_token_attention import LigerMultiTokenAttention  # noqa: F401
+from liger_kernel.transformers.poly_norm import LigerPolyNorm  # noqa: F401
 from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401
 from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.softmax import LigerSoftmax  # noqa: F401
@@ -135,6 +136,7 @@ __all__ = [
     "LigerJSD",
     "LigerLayerNorm",
     "LigerFusedAddRMSNorm",
+    "LigerPolyNorm",
     "LigerRMSNorm",
     "liger_rotary_pos_emb",
     "liger_llama4_text_rotary_pos_emb",

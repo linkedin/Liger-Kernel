@@ -12,6 +12,7 @@ from liger_kernel.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.kl_div import LigerKLDivLossFunction
 from liger_kernel.ops.layer_norm import LigerLayerNormFunction
 from liger_kernel.ops.multi_token_attention import LigerMultiTokenAttentionFunction
+from liger_kernel.ops.poly_norm import LigerPolyNormFunction
 from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.rope import LigerRopeFunction
@@ -256,6 +257,10 @@ def liger_qwen2vl_mrope(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
 
 def liger_rms_norm(X, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):
     return LigerRMSNormFunction.apply(X, W, eps, offset, casting_mode, in_place)
+
+
+def liger_poly_norm(X, W, B, eps=1e-6):
+    return LigerPolyNormFunction.apply(X, W, B, eps)
 
 
 def liger_fused_add_rms_norm(X, R, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):
