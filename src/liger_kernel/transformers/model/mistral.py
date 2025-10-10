@@ -115,10 +115,11 @@ def lce_forward(
         logits = self.lm_head(kept_hidden_states)
 
         loss = None
-        if labels is not None:
+        if labels is not None or shift_labels is not None:
             loss = self.loss_function(
                 logits=logits,
                 labels=labels,
+                shift_labels=shift_labels,
                 vocab_size=self.config.vocab_size,
                 **kwargs,
             )
