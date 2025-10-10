@@ -25,6 +25,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_glm4
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v_moe
 from liger_kernel.transformers import apply_liger_kernel_to_granite
+from liger_kernel.transformers import apply_liger_kernel_to_internvl
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_llama4
 from liger_kernel.transformers import apply_liger_kernel_to_llava
@@ -51,6 +52,7 @@ from test.utils import revert_liger_kernel_to_glm4
 from test.utils import revert_liger_kernel_to_glm4v
 from test.utils import revert_liger_kernel_to_glm4v_moe
 from test.utils import revert_liger_kernel_to_granite
+from test.utils import revert_liger_kernel_to_internvl
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
@@ -189,6 +191,15 @@ try:
     SMOLLM3_AVAILABLE = True
 except ImportError:
     SMOLLM3_AVAILABLE = False
+
+try:
+    # InternVL is only available in transformers>=4.52.1
+    from transformers.models.internvl.configuration_internvl import InternVLConfig
+    from transformers.models.internvl.modeling_internvl import InternVLForConditionalGeneration
+
+    INTERNVL_AVAILABLE = True
+except ImportError:
+    INTERNVL_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -1020,6 +1031,38 @@ if SMOLLM3_AVAILABLE:
         ),
     )
 
+if INTERNVL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_internvl"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_internvl,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_internvl,
+        model_class=InternVLForConditionalGeneration,
+        mini_model_config=InternVLConfig(
+            text_config=Qwen2Config(
+                rms_norm_eps=1e-5,
+                hidden_size=256,  # 1024
+                intermediate_size=1024,  # 4096
+                hidden_act="silu",
+                num_hidden_layers=4,  # 24
+                num_attention_heads=4,  # 16
+                num_key_value_heads=2,  # 16
+                max_position_embeddings=4096,  # 8192
+                vocab_size=32000,  # 151936
+                bos_token_id=1,
+                eos_token_id=2,
+                pad_token_id=2,
+                tie_word_embeddings=False,
+            ),
+            vision_config={
+                "hidden_size": 256,  # 1024
+                "intermediate_size": 1024,  # 4096
+                "num_hidden_layers": 4,  # 24
+                "num_attention_heads": 4,  # 16
+            },
+            image_token_id=10,
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
+
 
 def create_model(model_name="mini_llama3"):
     """
@@ -1482,6 +1525,25 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not SMOLLM3_AVAILABLE,
                     reason="Smollm3 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_internvl",
+            32,
+            1e-4,
+            torch.bfloat16,
+            1e-3,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not INTERNVL_AVAILABLE,
+                    reason="InternVL not available in this version of transformers",
                 ),
             ],
         ),
