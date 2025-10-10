@@ -66,6 +66,15 @@ def is_mllama_available():
         return False
 
 
+def is_internvl_available():
+    try:
+        import transformers.models.internvl  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_llama4_available():
     try:
         import transformers.models.llama4  # noqa: F401
@@ -157,6 +166,7 @@ def test_import_from_root():
         from liger_kernel.transformers import apply_liger_kernel_to_glm4  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_glm4v  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_glm4v_moe  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_internvl  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_llama  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_mistral  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_mixtral  # noqa: F401
@@ -1513,6 +1523,61 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_text():
         # Note: Text models don't have forward method patching, so skip this check
         assert inspect.getsource(dummy_model_instance.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_internvl_available(), reason="internvl module not available")
+def test_apply_liger_kernel_to_instance_for_internvl():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.internvl.modeling_internvl"):
+        from transformers.models.internvl.modeling_internvl import InternVLForConditionalGeneration
+
+        # Instantiate a dummy model
+        config = transformers.models.internvl.configuration_internvl.InternVLConfig(
+            torch_dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=48,
+            hidden_act="silu",
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=128,
+            vocab_size=1000,
+            vision_config={
+                "depth": 4,
+                "embed_dim": 128,
+                "num_heads": 8,
+                "hidden_size": 1024,
+            },
+        )
+        dummy_model_instance = InternVLForConditionalGeneration._from_config(config)
+
+        assert isinstance(dummy_model_instance, InternVLForConditionalGeneration)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.language_model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.language_model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
