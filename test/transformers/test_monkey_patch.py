@@ -37,6 +37,7 @@ if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
     from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
     from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
     from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
+    from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
     from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
     from liger_kernel.transformers.model.paligemma import lce_forward as paligemma_lce_forward
     from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
@@ -49,6 +50,7 @@ else:
     from liger_kernel.transformers.model.mistral import (
         lce_forward as mistral_lce_forward,  # mistral doesn't have deprecated version
     )
+    from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward
     from liger_kernel.transformers.model.mllama import lce_forward_deprecated as mllama_lce_forward
     from liger_kernel.transformers.model.paligemma import lce_forward_deprecated as paligemma_lce_forward
     from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward
@@ -751,11 +753,6 @@ def test_apply_liger_kernel_to_instance_for_mistral():
 
 def test_apply_liger_kernel_to_instance_for_mixtral():
     # Ensure any monkey patching is cleaned up for subsequent tests
-    if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
-        from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
-    else:
-        from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward
-
     with patch("transformers.models.mixtral.modeling_mixtral"):
         # Instantiate a dummy model
         config = transformers.models.mixtral.configuration_mixtral.MixtralConfig(
