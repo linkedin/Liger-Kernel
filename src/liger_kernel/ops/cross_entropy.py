@@ -45,6 +45,7 @@ def liger_cross_entropy_kernel(
     BLOCK_SIZE: tl.constexpr,
     HAS_WEIGHT: tl.constexpr,
     HAS_SOFTCAPPING: tl.constexpr,
+    HAS_GRADIENTS: tl.constexpr,
 ):
     """
     This kernel computes both cross entropy loss and the gradient of the input.
@@ -72,6 +73,7 @@ def liger_cross_entropy_kernel(
     BLOCK_SIZE (int): The block size for Triton operations.
     HAS_WEIGHT (bool): The boolean value to determine whether assigning weight to each of the classes.
     HAS_SOFTCAPPING (bool): The boolean value to determine whether applying soft-capping or not.
+    HAS_GRADIENTS (bool): The boolean value to determine whether calculating gradients in forward pass.
     """
 
     # https://github.com/triton-lang/triton/issues/1058
@@ -155,58 +157,58 @@ def liger_cross_entropy_kernel(
     # For 'sum' reduction, no normalization is applied:
     # dx_y = softmax(x_y) - 1
     # dx_i = softmax(x_i), for i ≠ y
+    if HAS_GRADIENTS:
+        for i in range(0, n_cols, BLOCK_SIZE):
+            X_offsets = i + tl.arange(0, BLOCK_SIZE)
+            X_block = tl.load(
+                X_ptr + X_offsets,
+                mask=X_offsets < n_cols,
+                other=float("-inf"),
+                # Ensure float32 precision for softmax calculation
+            ).cast(tl.float32)
+            if HAS_SOFTCAPPING:
+                intermediate = tanh(X_block / softcap)
+                X_block = softcap * intermediate
 
-    for i in range(0, n_cols, BLOCK_SIZE):
-        X_offsets = i + tl.arange(0, BLOCK_SIZE)
-        X_block = tl.load(
-            X_ptr + X_offsets,
-            mask=X_offsets < n_cols,
-            other=float("-inf"),
-            # Ensure float32 precision for softmax calculation
-        ).cast(tl.float32)
-        if HAS_SOFTCAPPING:
-            intermediate = tanh(X_block / softcap)
-            X_block = softcap * intermediate
+            if not HAS_WEIGHT:
+                # softmax(x_i)
+                X_block = tl.exp(X_block - m) / d
+                # derivative of z-loss: 2 * lse_square_scale * lse * softmax(x_i)
+                X_block += 2 * lse_square_scale * lse * X_block
+                # smoothing term
+                X_block += -eps
+                # special handle dx_y
+                X_block = tl.where(X_offsets != y, X_block, X_block - (1 - label_smoothing))
+                # reduction scale
+                if reduction == "mean":
+                    X_block = X_block / n_non_ignore
+            else:
+                weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
+                softmax_X = tl.exp(X_block - m) / d
+                # derivative of original_loss
+                dloss_ori = (1 - label_smoothing) * softmax_X
+                # specially handle dx_y
+                dloss_ori = tl.where(X_offsets != y, dloss_ori, dloss_ori - (1 - label_smoothing))
+                dloss_ori = dloss_ori * weight_y
+                # derivative of smooth_loss
+                dloss_smooth = eps * (-weight_block + softmax_X * weight_sum)
+                # derivative of z-loss
+                dz_loss = 2 * lse_square_scale * lse * softmax_X
+                # reduction scale
+                if reduction == "mean":
+                    dloss_ori = dloss_ori / sum_non_ignore_weight
+                    dloss_smooth = dloss_smooth / sum_non_ignore_weight
+                    # TODO: Implement weighted z_loss. Currently, z_loss is not scaled by weight.
+                    dz_loss = dz_loss / n_non_ignore
+                # derivative of total_loss
+                X_block = dloss_ori + dloss_smooth + dz_loss
 
-        if not HAS_WEIGHT:
-            # softmax(x_i)
-            X_block = tl.exp(X_block - m) / d
-            # derivative of z-loss: 2 * lse_square_scale * lse * softmax(x_i)
-            X_block += 2 * lse_square_scale * lse * X_block
-            # smoothing term
-            X_block += -eps
-            # special handle dx_y
-            X_block = tl.where(X_offsets != y, X_block, X_block - (1 - label_smoothing))
-            # reduction scale
-            if reduction == "mean":
-                X_block = X_block / n_non_ignore
-        else:
-            weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
-            softmax_X = tl.exp(X_block - m) / d
-            # derivative of original_loss
-            dloss_ori = (1 - label_smoothing) * softmax_X
-            # specially handle dx_y
-            dloss_ori = tl.where(X_offsets != y, dloss_ori, dloss_ori - (1 - label_smoothing))
-            dloss_ori = dloss_ori * weight_y
-            # derivative of smooth_loss
-            dloss_smooth = eps * (-weight_block + softmax_X * weight_sum)
-            # derivative of z-loss
-            dz_loss = 2 * lse_square_scale * lse * softmax_X
-            # reduction scale
-            if reduction == "mean":
-                dloss_ori = dloss_ori / sum_non_ignore_weight
-                dloss_smooth = dloss_smooth / sum_non_ignore_weight
-                # TODO: Implement weighted z_loss. Currently, z_loss is not scaled by weight.
-                dz_loss = dz_loss / n_non_ignore
-            # derivative of total_loss
-            X_block = dloss_ori + dloss_smooth + dz_loss
+            # chain rule softcapping
+            # d(softcap * tanh(x / softcap)) = (1 - tanh^2(x / softcap))
+            if HAS_SOFTCAPPING:
+                X_block = X_block * (1 - intermediate * intermediate)
 
-        # chain rule softcapping
-        # d(softcap * tanh(x / softcap)) = (1 - tanh^2(x / softcap))
-        if HAS_SOFTCAPPING:
-            X_block = X_block * (1 - intermediate * intermediate)
-
-        tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
+            tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
 
     # We need tl.debug_barrier() to ensure the new result of X_ptr is written as mentioned in
     # https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/ops/cross_entropy.py#L34
@@ -332,6 +334,7 @@ def cross_entropy_forward(
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_WEIGHT=True if weight is not None else False,
         HAS_SOFTCAPPING=True if softcap is not None else False,
+        HAS_GRADIENTS=_input.requires_grad,
         # TODO: 32 seems to give the best performance
         # Performance is quite sensitive to num_warps
         num_warps=32 if not is_hip() else 16,
