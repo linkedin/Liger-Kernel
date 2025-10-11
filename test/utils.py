@@ -582,6 +582,18 @@ def revert_liger_kernel_to_internvl(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_falcon_h1(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to FalconH1.
+    """
+
+    from transformers.models.falcon_h1 import modeling_falcon_h1
+
+    importlib.reload(modeling_falcon_h1)
+    model_config.model_class = modeling_falcon_h1.FalconH1ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 class HFAlignmentLoss:
     def __init__(
         self,
