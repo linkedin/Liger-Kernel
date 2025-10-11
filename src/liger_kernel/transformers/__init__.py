@@ -30,13 +30,16 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.auto_model import AutoLigerKernelForCausalLM  # noqa: F401
     from liger_kernel.transformers.monkey_patch import _apply_liger_kernel  # noqa: F401
     from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_falcon_h1  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma2  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3_text  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_granite  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_internvl  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llava  # noqa: F401
@@ -89,13 +92,16 @@ def __getattr__(name: str):
     monkey_patch_symbols = {
         "_apply_liger_kernel",
         "_apply_liger_kernel_to_instance",
+        "apply_liger_kernel_to_falcon_h1",
         "apply_liger_kernel_to_gemma",
         "apply_liger_kernel_to_gemma2",
         "apply_liger_kernel_to_gemma3",
         "apply_liger_kernel_to_gemma3_text",
         "apply_liger_kernel_to_glm4",
         "apply_liger_kernel_to_glm4v",
+        "apply_liger_kernel_to_glm4v_moe",
         "apply_liger_kernel_to_granite",
+        "apply_liger_kernel_to_internvl",
         "apply_liger_kernel_to_llama",
         "apply_liger_kernel_to_llava",
         "apply_liger_kernel_to_llama4",
@@ -153,13 +159,16 @@ if _TRANSFORMERS_AVAILABLE:
             "AutoLigerKernelForCausalLM",
             "_apply_liger_kernel",
             "_apply_liger_kernel_to_instance",
+            "apply_liger_kernel_to_falcon_h1",
             "apply_liger_kernel_to_gemma",
             "apply_liger_kernel_to_gemma2",
             "apply_liger_kernel_to_gemma3",
             "apply_liger_kernel_to_gemma3_text",
             "apply_liger_kernel_to_glm4",
             "apply_liger_kernel_to_glm4v",
+            "apply_liger_kernel_to_glm4v_moe",
             "apply_liger_kernel_to_granite",
+            "apply_liger_kernel_to_internvl",
             "apply_liger_kernel_to_llama",
             "apply_liger_kernel_to_llava",
             "apply_liger_kernel_to_llama4",

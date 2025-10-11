@@ -14,7 +14,9 @@ from typing import Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import transformers
 
+from packaging import version
 from tokenizers import AddedToken
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
@@ -149,18 +151,20 @@ class MiniModelConfig:
 
 def simple_collate_fn(data: List[Dict[str, Any]]):
     """A basic collate function to use for DataLoader"""
+    batch = {}
 
     input_ids = torch.stack([torch.tensor(item["input_ids"]) for item in data])
     attention_mask = torch.stack([torch.tensor(item["attention_mask"]) for item in data])
     labels = input_ids.clone()
+    batch["input_ids"] = input_ids
+    batch["attention_mask"] = attention_mask
+    batch["labels"] = labels
+    if version.parse("4.54.1") <= version.parse(transformers.__version__):
+        shift_labels = nn.functional.pad(labels, (0, 1), value=-100)
+        shift_labels = shift_labels[..., 1:].contiguous()
+        batch["shift_labels"] = shift_labels
 
-    return BatchEncoding(
-        {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
-        }
-    )
+    return BatchEncoding(batch)
 
 
 def multimodal_collate_fn(data: List[Dict[str, Any]]):
@@ -174,6 +178,10 @@ def multimodal_collate_fn(data: List[Dict[str, Any]]):
 
     labels = input_ids.clone()
     batch["labels"] = labels
+    if version.parse("4.54.1") <= version.parse(transformers.__version__):
+        shift_labels = nn.functional.pad(labels, (0, 1), value=-100)
+        shift_labels = shift_labels[..., 1:].contiguous()
+        batch["shift_labels"] = shift_labels
 
     # Collate all other keys, e.g. pixel_values, attention_mask, image_grid_thw, etc
     for key in keys:
@@ -530,6 +538,18 @@ def revert_liger_kernel_to_glm4v(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_glm4v_moe(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Glm4v_MoE.
+    """
+
+    from transformers.models.glm4v_moe import modeling_glm4v_moe
+
+    importlib.reload(modeling_glm4v_moe)
+    model_config.model_class = modeling_glm4v_moe.Glm4vMoeForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to llava.
@@ -544,6 +564,21 @@ def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
     importlib.reload(modeling_llama)
 
     model_config.model_class = modeling_llava.LlavaForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_internvl(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to InternVL.
+    """
+
+    from transformers.models.internvl import modeling_internvl
+    from transformers.models.qwen2 import modeling_qwen2
+
+    importlib.reload(modeling_internvl)
+    importlib.reload(modeling_qwen2)
+
+    model_config.model_class = modeling_internvl.InternVLForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
 

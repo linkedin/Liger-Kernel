@@ -70,7 +70,7 @@ def lce_forward(
     >>> processor = AutoProcessor.from_pretrained(MODEL_PATH, use_fast=True)
     >>> model = Glm4vForConditionalGeneration.from_pretrained(
         pretrained_model_name_or_path=MODEL_PATH,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
     )
     >>> inputs = processor.apply_chat_template(
@@ -133,10 +133,11 @@ def lce_forward(
 
     else:
         logits = self.lm_head(kept_hidden_states)
-        if labels is not None:
+        if labels is not None or shift_labels is not None:
             loss = self.loss_function(
                 logits=logits,
                 labels=labels,
+                shift_labels=shift_labels,
                 vocab_size=self.config.vocab_size,
                 **kwargs,
             )
