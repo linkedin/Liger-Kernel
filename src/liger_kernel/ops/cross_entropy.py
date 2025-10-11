@@ -414,6 +414,8 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         Returns:
         tuple: A tuple with the compouted losses with respect to loss and z loss. The elements are tensors or None.
         """
+        input_requires_grad = _input.requires_grad
+
         loss, z_loss, _input = cross_entropy_forward(
             _input,
             target,
@@ -428,7 +430,8 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         # TODO: investigation
         # If we don't detach the _input tensor, the memory will double
         # Not sure why but seems that there will be a time both grad and value exist but in different location
-        ctx.save_for_backward(_input.detach())
+        if input_requires_grad:
+            ctx.save_for_backward(_input.detach())
         ctx.return_z_loss = return_z_loss
 
         return loss, z_loss
