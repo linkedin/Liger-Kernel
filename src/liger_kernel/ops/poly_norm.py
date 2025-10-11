@@ -158,16 +158,6 @@ def _poly_norm_backward_kernel(
         X_pow2 = X_row * X_row
         X_pow1 = X_row
 
-        # Compute norm values (for weight gradients)
-        norm_x3 = X_pow3 * rstd_3
-        norm_x2 = X_pow2 * rstd_2
-        norm_x1 = X_pow1 * rstd_1
-
-        # Accumulate weight gradients: dW_p = sum(dY * norm(x^p))
-        dW0_acc += tl.sum(dY_row * norm_x3, axis=0)
-        dW1_acc += tl.sum(dY_row * norm_x2, axis=0)
-        dW2_acc += tl.sum(dY_row * norm_x1, axis=0)
-
         # Accumulate bias gradient: dB = sum(dY)
         dB_acc += tl.sum(dY_row, axis=0)
 
@@ -188,6 +178,11 @@ def _poly_norm_backward_kernel(
         # For p=1: ∂L/∂x from w2 * norm(x)
         S_1 = tl.sum(dY_row * X_pow1, axis=0)  # scalar
         grad_x_1 = w2 * (1.0 * rstd_1 * dY_row - (1.0 / n_cols) * X_row * (rstd_1 * rstd_1 * rstd_1) * S_1)
+
+        # Accumulate weight gradients using closed-form: dW_p = rstd_p * S_p
+        dW0_acc += rstd_3 * S_3
+        dW1_acc += rstd_2 * S_2
+        dW2_acc += rstd_1 * S_1
 
         # Total gradient
         dX_row = grad_x_3 + grad_x_2 + grad_x_1
@@ -264,7 +259,7 @@ def poly_norm_forward(X, W, B, eps=1e-6):
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps
 
 
-def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps):
+def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps, in_place):
     """
     PolyNorm Backward Pass
 
@@ -275,6 +270,7 @@ def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps):
         RSTD: cached rstd values from forward
         BLOCK_SIZE: block size from forward
         num_warps: number of warps from forward
+        in_place: whether to in-place modify dY to store dX (saves memory)
 
     Returns:
         dX: gradient w.r.t. input
@@ -295,8 +291,12 @@ def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps):
     elif X.device.type == "xpu":
         sm_count = torch.xpu.get_device_properties(X.device).gpu_eu_count
 
-    # Allocate gradients
-    dX = torch.zeros_like(dY)
+    # Allocate or reuse gradients
+    if in_place is True:
+        dX = dY
+    else:
+        dX = torch.zeros_like(dY)
+    
     _dW = torch.empty((sm_count, 3), dtype=torch.float32, device=W.device)
     _dB = torch.empty((sm_count,), dtype=torch.float32, device=W.device)
 
@@ -352,13 +352,14 @@ class LigerPolyNormFunction(torch.autograd.Function):
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, B, eps=1e-6):
+    def forward(ctx, X, W, B, eps=1e-6, in_place=True):
         """
         Args:
             X: input tensor of shape (B, T, H) or (BxT, H)
             W: weight tensor of shape (3,) for [w0, w1, w2]
             B: bias scalar
             eps: epsilon for numerical stability
+            in_place: whether to in-place modify grad_output in backward (saves memory)
 
         Returns:
             Y: output tensor of same shape as X
@@ -366,6 +367,7 @@ class LigerPolyNormFunction(torch.autograd.Function):
         Y, X, RSTD, BLOCK_SIZE, num_warps = poly_norm_forward(X, W, B, eps)
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
+        ctx.in_place = in_place
         ctx.save_for_backward(X, W, RSTD)
         return Y
 
@@ -380,5 +382,7 @@ class LigerPolyNormFunction(torch.autograd.Function):
             dX, dW, dB: gradients w.r.t. X, W, B
         """
         X, W, RSTD = ctx.saved_tensors
-        dX, dW, dB = poly_norm_backward(grad_output, X, W, RSTD, ctx.BLOCK_SIZE, ctx.num_warps)
-        return dX, dW, dB, None
+        dX, dW, dB = poly_norm_backward(
+            grad_output, X, W, RSTD, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place
+        )
+        return dX, dW, dB, None, None

@@ -29,8 +29,9 @@ class NaivePolyNorm(nn.Module):
 
     def __init__(self, eps=1e-6):
         super().__init__()
-        self.weight = nn.Parameter(torch.tensor([0.3, 0.4, 0.3]))
-        self.bias = nn.Parameter(torch.tensor(0.1))
+        # Align with PolyCom reference: (1/3, 1/3, 1/3) and bias=1.0
+        self.weight = nn.Parameter(torch.full((3,), 1.0 / 3.0))
+        self.bias = nn.Parameter(torch.tensor(1.0))
         self.variance_epsilon = eps
 
     def _norm(self, x):

@@ -259,8 +259,8 @@ def liger_rms_norm(X, W, eps, offset: float = 0.0, casting_mode: str = "llama", 
     return LigerRMSNormFunction.apply(X, W, eps, offset, casting_mode, in_place)
 
 
-def liger_poly_norm(X, W, B, eps=1e-6):
-    return LigerPolyNormFunction.apply(X, W, B, eps)
+def liger_poly_norm(X, W, B, eps=1e-6, in_place=True):
+    return LigerPolyNormFunction.apply(X, W, B, eps, in_place)
 
 
 def liger_fused_add_rms_norm(X, R, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):

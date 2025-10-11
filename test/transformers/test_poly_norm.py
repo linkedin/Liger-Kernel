@@ -44,8 +44,8 @@ class NaivePolyNorm(nn.Module):
 
     def __init__(self, eps=1e-6):
         super().__init__()
-        self.weight = nn.Parameter(torch.tensor([0.3, 0.4, 0.3]))
-        self.bias = nn.Parameter(torch.tensor(0.1))
+        self.weight = nn.Parameter(torch.full((3,), 1.0 / 3.0))
+        self.bias = nn.Parameter(torch.tensor(1.0))
         self.eps = eps
 
     def _norm(self, x):
@@ -203,9 +203,11 @@ def test_correctness_functional(bs, sl, hd, dtype, atol, rtol):
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
 
     grad = torch.randn_like(y2)
+    grad1 = grad.clone()
+    grad2 = grad.clone()
 
-    y1.backward(grad)
-    y2.backward(grad)
+    y1.backward(grad1)
+    y2.backward(grad2)
 
     # Check gradients
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
