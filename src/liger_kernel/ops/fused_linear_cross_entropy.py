@@ -175,7 +175,6 @@ def fused_linear_cross_entropy_forward(
             scaling_factors_expanded = scaling_factors.unsqueeze(-1)  # chunk_size x 1
             grad_logits_chunk = grad_logits_chunk * scaling_factors_expanded
 
-        
         if input_requires_grad:
             grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
