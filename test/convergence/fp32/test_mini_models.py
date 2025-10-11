@@ -18,6 +18,7 @@ from transformers.models.phi3 import Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen2 import Qwen2ForCausalLM
 
+from liger_kernel.transformers import apply_liger_kernel_to_falcon_h1
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text
@@ -45,6 +46,7 @@ from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import get_logprobs
 from test.utils import get_topk
+from test.utils import revert_liger_kernel_to_falcon_h1
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_gemma3_text
@@ -199,6 +201,15 @@ try:
     INTERNVL_AVAILABLE = True
 except ImportError:
     INTERNVL_AVAILABLE = False
+
+try:
+    # FalconH1 is only available in transformers>=4.53.0
+    from transformers.models.falcon_h1.configuration_falcon_h1 import FalconH1Config
+    from transformers.models.falcon_h1.modeling_falcon_h1 import FalconH1ForCausalLM
+
+    FALCONH1_AVAILABLE = True
+except ImportError:
+    FALCONH1_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -1061,6 +1072,35 @@ if INTERNVL_AVAILABLE:
         ),
     )
 
+if FALCONH1_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_falcon_h1"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_falcon_h1,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_falcon_h1,
+        model_class=FalconH1ForCausalLM,
+        mini_model_config=FalconH1Config(
+            model_type="falcon_h1",
+            vocab_size=32000,
+            hidden_size=256,  # 4096
+            num_hidden_layers=4,  # 24
+            num_attention_heads=4,  # 32
+            num_key_value_heads=2,  # 8
+            intermediate_size=1024,  # 11008
+            hidden_act="silu",
+            max_position_embeddings=4096,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=True,
+            pad_token_id=0,
+            bos_token_id=1,
+            eos_token_id=2,
+            tie_word_embeddings=False,
+            mamba_d_ssm=128,  # 1024
+            mamba_n_heads=16,  # 128
+            mamba_d_state=32,  # 245
+            mamba_d_conv=2,  # 4
+        ),
+    )
+
 
 def create_model(model_name="mini_llama3"):
     """
@@ -1430,6 +1470,22 @@ def run_mini_model(
             marks=pytest.mark.skipif(
                 not INTERNVL_AVAILABLE,
                 reason="InternVL not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_falcon_h1",
+            32,
+            1e-5,
+            torch.float32,
+            1e-8,
+            1e-4,
+            4e-2,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not FALCONH1_AVAILABLE,
+                reason="FalconH1 not available in this version of transformers",
             ),
         ),
     ],
