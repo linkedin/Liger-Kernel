@@ -1066,6 +1066,10 @@ def run_mini_model_multimodal(
                     not MLLAMA_AVAILABLE,
                     reason="Mllama not available in this version of transformers",
                 ),
+                pytest.mark.skipif(
+                    version.parse("4.51.0") > version.parse(transformers.__version__),
+                    reason="MllamaForConditionalGeneration doesn't accecpt `skip_logits` kwargs",
+                ),
             ],
         ),
         pytest.param(
