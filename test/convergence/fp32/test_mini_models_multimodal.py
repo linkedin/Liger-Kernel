@@ -1061,10 +1061,16 @@ def run_mini_model_multimodal(
             1e-5,
             5e-3,
             1e-5,
-            marks=pytest.mark.skipif(
-                not MLLAMA_AVAILABLE,
-                reason="Mllama not available in this version of transformers",
-            ),
+            marks=[
+                pytest.mark.skipif(
+                    not MLLAMA_AVAILABLE,
+                    reason="Mllama not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    version.parse("4.51.0") > version.parse(transformers.__version__),
+                    reason="MllamaForConditionalGeneration doesn't accecpt `skip_logits` kwargs",
+                ),
+            ],
         ),
         pytest.param(
             "mini_paligemma",
