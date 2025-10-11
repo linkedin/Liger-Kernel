@@ -234,6 +234,119 @@ def test_correctness(
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
+        (8, 128, 1024, 4096),
+        (4, 47, 31, 123),  # random shape
+    ],
+)
+@pytest.mark.parametrize(
+    "reduction, scalar, dtype, atol, rtol",
+    [
+        ("mean", 1.0, torch.bfloat16, 5e-3, 5e-2),
+        ("mean", 1.0, torch.float32, 1e-5, 5e-4),
+        ("sum", 1.0, torch.bfloat16, 5e-0, 5e1),
+        ("sum", 1.0, torch.float32, 1e-3, 5e-2),
+    ],
+)
+@pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize(
+    "has_ce_weight, label_smoothing, ignore_index, lse_square_scale, softcap, return_z_loss, accum_dtype",
+    [
+        (False, 0, -100, 0, None, False, None),
+        # Pass non-default values once to ensure all params work along
+        (True, 0.1, 42, 1e-4, 30.0, True, torch.float32),
+    ],
+)
+def test_correctness_with_forward_only(
+    B,
+    T,
+    H,
+    V,
+    scalar,
+    dtype,
+    bias,
+    has_ce_weight,
+    lse_square_scale,
+    label_smoothing,
+    ignore_index,
+    reduction,
+    softcap,
+    return_z_loss,
+    accum_dtype,
+    atol,
+    rtol,
+):
+    if has_ce_weight:
+        ce_weight = torch.rand(V, device=device, dtype=torch.float32)
+    else:
+        ce_weight = None
+    torch_lm_head_ce = TorchLMHeadCE(
+        H=H,
+        V=V,
+        bias=bias,
+        ce_weight=ce_weight,
+        lse_square_scale=lse_square_scale,
+        label_smoothing=label_smoothing,
+        ignore_index=ignore_index,
+        reduction=reduction,
+        softcap=softcap,
+        return_z_loss=return_z_loss,
+        dtype=dtype,
+    ).to(device)
+    liger_lm_head_ce = LigerLMHeadCE(
+        H=H,
+        V=V,
+        bias=bias,
+        ce_weight=ce_weight,
+        lse_square_scale=lse_square_scale,
+        label_smoothing=label_smoothing,
+        ignore_index=ignore_index,
+        reduction=reduction,
+        softcap=softcap,
+        return_z_loss=return_z_loss,
+        dtype=dtype,
+        accum_dtype=accum_dtype,
+    ).to(device)
+
+    # init the linear in all CEs with the same weights
+    torch_lm_head_ce.lin.weight.data = liger_lm_head_ce.lin.weight.data = torch.rand(V, H, device=device, dtype=dtype)
+
+    if bias:
+        torch_lm_head_ce.lin.bias.data = liger_lm_head_ce.lin.bias.data = torch.rand(V, device=device, dtype=dtype)
+
+    _tensor = torch.randn(B * T, H, device=device, dtype=dtype) * scalar
+    _input1 = _tensor.detach().clone().requires_grad_(True)
+    _input2 = _tensor.detach().clone().requires_grad_(True)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    # Assign some random number of elements as ignore_index
+    num_elements_to_assign = torch.randint(
+        1, B * T // 2, (1,)
+    ).item()  # Random number of elements to set to ignore_index
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
+    target[indices_to_assign] = ignore_index
+
+    with torch.no_grad():
+        if return_z_loss:
+            output1, z_output1 = torch_lm_head_ce(_input1, target)
+            output2, z_output2 = liger_lm_head_ce(_input2, target)
+        else:
+            output1 = torch_lm_head_ce(_input1, target)
+            output2 = liger_lm_head_ce(_input2, target)
+
+        assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
+        if return_z_loss:
+            assert_verbose_allclose(z_output1, z_output2, atol=atol, rtol=rtol)
+
+    try:
+        grad_output = torch.rand_like(output1)
+        output2.backward(gradient=grad_output)
+    except RuntimeError as e:
+        assert "does not require grad" in str(e)
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
         (2, 2, 8, 8),
         # weird shapes
         (9, 7, 41, 41),

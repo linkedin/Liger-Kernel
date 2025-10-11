@@ -32,6 +32,7 @@ SUPPORTED_TRANSFORMER_VERSION = "4.46.1"
 
 # Import forward functions based on transformer version
 if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
+    from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
     from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
     from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
     from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
@@ -150,6 +151,15 @@ def is_gemma3_available():
 def is_paligemma_available():
     try:
         import transformers.models.paligemma  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def is_falcon_h1_available():
+    try:
+        import transformers.models.falcon_h1  # noqa: F401
 
         return True
     except ImportError:
@@ -377,6 +387,47 @@ def test_apply_liger_kernel_to_instance_for_llama():
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
         # Ensure that the model patched with Liger modules can work properly
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_falcon_h1_available(), reason="falcon_h1 module not available")
+def test_apply_liger_kernel_to_falcon_h1_for_causal_lm():
+    with patch("transformers.models.falcon_h1.modeling_falcon_h1"):
+        from transformers.models.falcon_h1.modeling_falcon_h1 import FalconH1ForCausalLM
+
+        # Instantiate a dummy model
+        config = transformers.models.falcon_h1.configuration_falcon_h1.FalconH1Config(
+            hidden_size=256,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=1024,
+        )
+        dummy_model_instance = FalconH1ForCausalLM(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(falcon_h1_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.final_layernorm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.pre_ff_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(falcon_h1_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.final_layernorm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.pre_ff_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
         try:
             print(dummy_model_instance)
         except Exception as e:

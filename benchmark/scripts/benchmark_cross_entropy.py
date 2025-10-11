@@ -70,6 +70,9 @@ def bench_speed_cross_entropy(
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
+    elif mode == "no-grad-forward":
+        with torch.no_grad():
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
     elif mode == "backward":
         y = fwd()
 
@@ -109,7 +112,7 @@ if __name__ == "__main__":
 
     run_benchmarks(
         bench_test_fn=bench_speed_cross_entropy,
-        kernel_operation_modes=["forward", "backward", "full"],
+        kernel_operation_modes=["forward", "backward", "full", "no-grad-forward"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,
