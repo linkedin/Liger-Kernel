@@ -469,7 +469,7 @@ def apply_liger_kernel_to_llama4(
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
-        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is False.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -522,7 +522,10 @@ def apply_liger_kernel_to_llama4(
                 _patch_rms_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
                 if swiglu:
-                    _patch_swiglu_module(decoder_layer.feed_forward, LigerSwiGLUMLP)
+                    if decoder_layer.is_moe_layer:
+                        _patch_swiglu_module(decoder_layer.feed_forward.shared_expert, LigerSwiGLUMLP)
+                    else:
+                        _patch_swiglu_module(decoder_layer.feed_forward, LigerSwiGLUMLP)
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
