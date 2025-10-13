@@ -480,7 +480,6 @@ def apply_liger_kernel_to_llama4(
     from transformers.models.llama4 import modeling_llama4
     from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
     from transformers.models.llama4.modeling_llama4 import Llama4ForConditionalGeneration
-    from transformers.models.llama4.modeling_llama4 import Llama4TextMLP
     from transformers.models.llama4.modeling_llama4 import Llama4TextModel
     from transformers.models.llama4.modeling_llama4 import Llama4VisionModel
 
@@ -523,10 +522,10 @@ def apply_liger_kernel_to_llama4(
                 _patch_rms_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
                 if swiglu:
-                    if isinstance(decoder_layer.feed_forward, Llama4TextMLP):
-                        _patch_swiglu_module(decoder_layer.feed_forward, LigerSwiGLUMLP)
-                    else:  # Llama4TextMoe
+                    if decoder_layer.is_moe_layer:
                         _patch_swiglu_module(decoder_layer.feed_forward.shared_expert, LigerSwiGLUMLP)
+                    else:
+                        _patch_swiglu_module(decoder_layer.feed_forward, LigerSwiGLUMLP)
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
