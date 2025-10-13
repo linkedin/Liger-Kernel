@@ -296,7 +296,7 @@ def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps, in_place):
         dX = dY
     else:
         dX = torch.zeros_like(dY)
-    
+
     _dW = torch.empty((sm_count, 3), dtype=torch.float32, device=W.device)
     _dB = torch.empty((sm_count,), dtype=torch.float32, device=W.device)
 
@@ -382,7 +382,5 @@ class LigerPolyNormFunction(torch.autograd.Function):
             dX, dW, dB: gradients w.r.t. X, W, B
         """
         X, W, RSTD = ctx.saved_tensors
-        dX, dW, dB = poly_norm_backward(
-            grad_output, X, W, RSTD, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place
-        )
+        dX, dW, dB = poly_norm_backward(grad_output, X, W, RSTD, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place)
         return dX, dW, dB, None, None
