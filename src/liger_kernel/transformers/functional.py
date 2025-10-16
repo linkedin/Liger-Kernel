@@ -36,8 +36,9 @@ def liger_cross_entropy(
     lse_square_scale: float = 0.0,
     softcap: Optional[float] = None,
     return_z_loss: bool = False,
+    return_token_accuracy: bool = False,
 ):
-    loss, z_loss = LigerCrossEntropyFunction.apply(
+    loss, z_loss, accuracy = LigerCrossEntropyFunction.apply(
         input,
         target,
         weight,
@@ -47,10 +48,20 @@ def liger_cross_entropy(
         reduction,
         softcap,
         return_z_loss,
+        return_token_accuracy,
     )
-    if not return_z_loss:
+
+    # Return based on what was requested
+    if not return_z_loss and not return_token_accuracy:
         return loss
-    return loss, z_loss
+
+    result = [loss]
+    if return_z_loss:
+        result.append(z_loss)
+    if return_token_accuracy:
+        result.append(accuracy)
+
+    return tuple(result) if len(result) > 1 else result[0]
 
 
 def liger_fused_linear_cross_entropy(
@@ -67,8 +78,9 @@ def liger_fused_linear_cross_entropy(
     return_z_loss: bool = False,
     accum_dtype=None,
     use_token_scaling: bool = False,
+    return_token_accuracy: bool = False,
 ):
-    loss, z_loss = LigerFusedLinearCrossEntropyFunction.apply(
+    loss, z_loss, accuracy = LigerFusedLinearCrossEntropyFunction.apply(
         input,
         weight,
         target,
@@ -82,10 +94,20 @@ def liger_fused_linear_cross_entropy(
         return_z_loss,
         accum_dtype,
         use_token_scaling,
+        return_token_accuracy,
     )
-    if not return_z_loss:
+
+    # Return based on what was requested
+    if not return_z_loss and not return_token_accuracy:
         return loss
-    return loss, z_loss
+
+    result = [loss]
+    if return_z_loss:
+        result.append(z_loss)
+    if return_token_accuracy:
+        result.append(accuracy)
+
+    return tuple(result) if len(result) > 1 else result[0]
 
 
 def liger_fused_linear_jsd(

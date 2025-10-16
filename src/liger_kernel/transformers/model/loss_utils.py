@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Union, Tuple
 
 import torch
 import torch.nn as nn
@@ -14,10 +14,11 @@ def fixed_fused_linear_cross_entropy(
     ignore_index: int = -100,
     final_logit_softcapping: Optional[float] = None,
     accum_dtype: Optional[torch.dtype] = None,
+    return_token_accuracy: bool = False,
     **kwargs,
 ):
     reduction = "sum" if num_items_in_batch is not None else "mean"
-    loss = F.liger_fused_linear_cross_entropy(
+    result = F.liger_fused_linear_cross_entropy(
         hidden_states,
         lm_head_weight,
         target,
@@ -25,12 +26,21 @@ def fixed_fused_linear_cross_entropy(
         ignore_index=ignore_index,
         softcap=final_logit_softcapping,
         accum_dtype=accum_dtype,
+        return_token_accuracy=return_token_accuracy,
         **kwargs,
     )
-    if reduction == "sum":
-        loss = loss / num_items_in_batch
 
-    return loss
+    # Handle return value based on return_token_accuracy flag
+    if return_token_accuracy:
+        loss, accuracy = result
+        if reduction == "sum":
+            loss = loss / num_items_in_batch
+        return loss, accuracy
+    else:
+        loss = result
+        if reduction == "sum":
+            loss = loss / num_items_in_batch
+        return loss
 
 
 def LigerForCausalLMLoss(
@@ -42,6 +52,7 @@ def LigerForCausalLMLoss(
     ignore_index: int = -100,
     shift_labels: Optional[torch.Tensor] = None,
     final_logit_softcapping: Optional[float] = None,
+    return_token_accuracy: bool = False,
     **kwargs,
 ):
     # Skip upcast since intermediate values for the loss are all fp32 in kernel
@@ -55,13 +66,16 @@ def LigerForCausalLMLoss(
     shift_labels = shift_labels.view(-1)
     # Enable model parallelism
     shift_labels = shift_labels.to(hidden_states.device)
-    loss = fixed_fused_linear_cross_entropy(
+    result = fixed_fused_linear_cross_entropy(
         hidden_states,
         lm_head_weight,
         shift_labels,
         num_items_in_batch,
         ignore_index,
         final_logit_softcapping,
+        return_token_accuracy=return_token_accuracy,
         **kwargs,
     )
-    return loss
+    return result
+
+
