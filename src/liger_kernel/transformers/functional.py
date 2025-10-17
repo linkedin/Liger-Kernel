@@ -38,7 +38,7 @@ def liger_cross_entropy(
     return_z_loss: bool = False,
     return_token_accuracy: bool = False,
 ):
-    loss, z_loss, accuracy = LigerCrossEntropyFunction.apply(
+    loss, z_loss, token_accuracy = LigerCrossEntropyFunction.apply(
         input,
         target,
         weight,
@@ -59,7 +59,7 @@ def liger_cross_entropy(
     if return_z_loss:
         result.append(z_loss)
     if return_token_accuracy:
-        result.append(accuracy)
+        result.append(token_accuracy)
 
     return tuple(result) if len(result) > 1 else result[0]
 
@@ -80,7 +80,7 @@ def liger_fused_linear_cross_entropy(
     use_token_scaling: bool = False,
     return_token_accuracy: bool = False,
 ):
-    loss, z_loss, accuracy = LigerFusedLinearCrossEntropyFunction.apply(
+    loss, z_loss, token_accuracy = LigerFusedLinearCrossEntropyFunction.apply(
         input,
         weight,
         target,
@@ -105,7 +105,7 @@ def liger_fused_linear_cross_entropy(
     if return_z_loss:
         result.append(z_loss)
     if return_token_accuracy:
-        result.append(accuracy)
+        result.append(token_accuracy)
 
     return tuple(result) if len(result) > 1 else result[0]
 

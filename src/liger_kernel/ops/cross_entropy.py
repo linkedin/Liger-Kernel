@@ -32,8 +32,8 @@ def liger_cross_entropy_kernel(
     loss_ptr,
     z_loss_ptr,
     loss_stride,
-    accuracy_ptr,
-    accuracy_stride,
+    token_accuracy_ptr,
+    token_accuracy_stride,
     n_cols,
     n_non_ignore,
     sum_non_ignore_weight,
@@ -63,8 +63,8 @@ def liger_cross_entropy_kernel(
     loss_ptr: Pointer to tensor to store the loss.
     z_loss_ptr: Pointer to tensor to store the z loss. No operation if RETURN_Z_LOSS is 0.
     loss_stride (int): The stride of the loss tensor.
-    accuracy_ptr: Pointer to tensor to store the per-token accuracy. No operation if RETURN_TOKEN_ACCURACY is 0.
-    accuracy_stride (int): The stride of the accuracy tensor.
+    token_accuracy_ptr: Pointer to tensor to store the per-token accuracy. No operation if RETURN_TOKEN_ACCURACY is 0.
+    token_accuracy_stride (int): The stride of the token accuracy tensor.
     n_cols (int): The number of columns in the input tensor.
     n_non_ignore (float): The number of non-ignored elements in the batch.
     sum_non_ignore_weight (float): The sum of non-ignored target's weights in the batch.
@@ -100,15 +100,15 @@ def liger_cross_entropy_kernel(
             tl.store(X_ptr + X_offsets, 0.0, mask=X_offsets < n_cols)
         # For ignored tokens, set accuracy to 0
         if RETURN_TOKEN_ACCURACY:
-            accuracy_ptr += program_id * accuracy_stride
-            tl.store(accuracy_ptr, 0.0)
+            token_accuracy_ptr += program_id * token_accuracy_stride
+            tl.store(token_accuracy_ptr, 0.0)
         return
 
     loss_ptr += program_id * loss_stride
     if RETURN_Z_LOSS:
         z_loss_ptr += program_id * loss_stride
     if RETURN_TOKEN_ACCURACY:
-        accuracy_ptr += program_id * accuracy_stride
+        token_accuracy_ptr += program_id * token_accuracy_stride
 
     if HAS_WEIGHT:
         weight_y = tl.load(weight_ptr + y).cast(tl.float32)
@@ -282,7 +282,7 @@ def liger_cross_entropy_kernel(
     if RETURN_TOKEN_ACCURACY:
         # Store 1.0 if prediction is correct, 0.0 otherwise
         is_correct = 1.0 if argmax_idx == y else 0.0
-        tl.store(accuracy_ptr, is_correct)
+        tl.store(token_accuracy_ptr, is_correct)
 
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
@@ -314,7 +314,7 @@ def cross_entropy_forward(
     # unreduced loss
     loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
     z_loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device) if return_z_loss else None
-    accuracy_1d = torch.zeros(n_rows, dtype=torch.float32, device=_input.device) if return_token_accuracy else None
+    token_accuracy_1d = torch.zeros(n_rows, dtype=torch.float32, device=_input.device) if return_token_accuracy else None
 
     target_mask = target != ignore_index
     n_non_ignore = target_mask.sum().item()
@@ -351,8 +351,8 @@ def cross_entropy_forward(
         loss_ptr=loss_1d,
         z_loss_ptr=z_loss_1d,
         loss_stride=loss_1d.stride(-1),  # always 1
-        accuracy_ptr=accuracy_1d,
-        accuracy_stride=accuracy_1d.stride(-1) if return_token_accuracy else 0,  # always 1 if accuracy is enabled
+        token_accuracy_ptr=token_accuracy_1d,
+        token_accuracy_stride=token_accuracy_1d.stride(-1) if return_token_accuracy else 0,  # always 1 if accuracy is enabled
         n_cols=V,
         n_non_ignore=n_non_ignore,
         sum_non_ignore_weight=sum_non_ignore_weight,
@@ -376,14 +376,14 @@ def cross_entropy_forward(
     if reduction == "none":
         loss = loss_1d
         z_loss = z_loss_1d if return_z_loss else None
-        accuracy = accuracy_1d if return_token_accuracy else None
+        token_accuracy = token_accuracy_1d if return_token_accuracy else None
     else:
         loss = torch.sum(loss_1d)
         z_loss = torch.sum(z_loss_1d) if return_z_loss else None
         # For accuracy, we compute the mean across all non-ignored tokens
-        accuracy = torch.sum(accuracy_1d) / n_non_ignore if return_token_accuracy else None
+        token_accuracy = torch.sum(token_accuracy_1d) / n_non_ignore if return_token_accuracy else None
 
-    return loss, z_loss, accuracy, _input
+    return loss, z_loss, token_accuracy, _input
 
 
 def cross_entropy_backward(_input, grad_output):
@@ -454,7 +454,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         """
         input_requires_grad = _input.requires_grad
 
-        loss, z_loss, accuracy, _input = cross_entropy_forward(
+        loss, z_loss, token_accuracy, _input = cross_entropy_forward(
             _input,
             target,
             weight,
@@ -474,7 +474,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         ctx.return_z_loss = return_z_loss
         ctx.return_token_accuracy = return_token_accuracy
 
-        return loss, z_loss, accuracy
+        return loss, z_loss, token_accuracy
 
     @staticmethod
     def backward(ctx, grad_output, grad_output2, grad_output3):
