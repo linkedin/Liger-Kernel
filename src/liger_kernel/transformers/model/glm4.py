@@ -91,6 +91,7 @@ def lce_forward(
     shift_labels = kwargs.pop("shift_labels", None)
     logits = None
     loss = None
+    token_accuracy = None
 
     if skip_logits and labels is None and shift_labels is None:
         raise ValueError("skip_logits is True, but labels and shift_labels are None")
@@ -100,7 +101,6 @@ def lce_forward(
         skip_logits = self.training and (labels is not None or shift_labels is not None)
 
     # Compute loss
-    token_accuracy = None
     if skip_logits:
         result = LigerForCausalLMLoss(
             hidden_states=kept_hidden_states,

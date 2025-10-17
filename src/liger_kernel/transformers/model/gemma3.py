@@ -98,12 +98,12 @@ def causal_forward(
     shift_labels = loss_kwargs.pop("shift_labels", None)
     loss = None
     logits = None
+    token_accuracy = None
 
     if skip_logits is None:
         skip_logits = self.training and (labels is not None or shift_labels is not None)
 
     # Compute loss
-    token_accuracy = None
     if skip_logits:
         result = LigerForCausalLMLoss(
             hidden_states=kept_hidden_states,
