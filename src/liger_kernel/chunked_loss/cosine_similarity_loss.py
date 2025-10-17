@@ -1,3 +1,6 @@
+from typing import Tuple
+from typing import Union
+
 import torch
 import torch.nn.functional as F
 
@@ -41,7 +44,8 @@ class LigerFusedLinearCosineSimilarityFunction(LigerFusedLinearDistillationBase)
         temperature: float = 1.0,
         compiled: bool = True,
         chunk_size: int = 1024,
-    ):
+        return_soft_hard_loss: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         return super().forward(
             cls=cls,
             ctx=ctx,
@@ -59,11 +63,12 @@ class LigerFusedLinearCosineSimilarityFunction(LigerFusedLinearDistillationBase)
             ignore_index=ignore_index,
             temperature=temperature,
             compiled=compiled,
+            return_soft_hard_loss=return_soft_hard_loss,
         )
 
     @staticmethod
-    def backward(ctx, grad_output):
-        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:6]
+    def backward(ctx, grad_output, *args):
+        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output, *args)[:6]
 
         return (
             *grads,
@@ -75,6 +80,7 @@ class LigerFusedLinearCosineSimilarityFunction(LigerFusedLinearDistillationBase)
             None,  # temperature
             None,  # compiled
             None,  # chunk_size
+            None,  # return_soft_hard_loss
         )
 
 
@@ -88,6 +94,7 @@ class LigerFusedLinearCosineSimilarityLoss(torch.nn.Module):
         temperature: float = 1.0,
         compiled: bool = True,
         chunk_size: int = 1024,
+        return_soft_hard_loss: bool = False,
     ):
         super().__init__()
         assert temperature != 0, "Temperature cannot be 0."
@@ -98,6 +105,7 @@ class LigerFusedLinearCosineSimilarityLoss(torch.nn.Module):
         self.compiled = compiled
         self.beta = beta
         self.chunk_size = chunk_size
+        self.return_soft_hard_loss = return_soft_hard_loss
 
     def forward(
         self,
@@ -108,7 +116,7 @@ class LigerFusedLinearCosineSimilarityLoss(torch.nn.Module):
         true_labels: torch.LongTensor,
         student_bias: torch.Tensor = None,
         teacher_bias: torch.Tensor = None,
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         return LigerFusedLinearCosineSimilarityFunction.apply(
             student_input,
             student_weight,
@@ -124,4 +132,5 @@ class LigerFusedLinearCosineSimilarityLoss(torch.nn.Module):
             self.temperature,
             self.compiled,
             self.chunk_size,
+            self.return_soft_hard_loss,
         )
