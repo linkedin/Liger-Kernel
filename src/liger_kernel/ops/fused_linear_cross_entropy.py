@@ -55,8 +55,6 @@ def fused_linear_cross_entropy_forward(
     grad_input = torch.zeros_like(_input, device=device)
 
     # we use fp32 for loss and gradients accumulator
-    grad_weight = None
-    grad_bias = None
     if input_requires_grad:
         if accum_dtype is None:
             grad_weight = torch.zeros_like(weight, device=device) if weight.requires_grad else None

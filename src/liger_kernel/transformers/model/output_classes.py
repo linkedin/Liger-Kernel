@@ -1,6 +1,6 @@
 """
 Custom output classes for Liger-Kernel that extend transformers' ModelOutput classes
-with optional accuracy field.
+with optional token accuracy field.
 """
 
 from dataclasses import dataclass
