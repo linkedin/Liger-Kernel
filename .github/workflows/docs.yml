@@ -11,7 +11,6 @@ permissions:
   contents: write
 jobs:
   deploy:
-    if: False
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,4 +29,36 @@ jobs:
           restore-keys: |
             mkdocs-material-
       - run: pip install mkdocs-material mkdocstrings[python]
-      - run: mkdocs gh-deploy --force
+      # ====== Backup the benchmarks from gh-pages ======
+      # This is necessary because the benchmarks are not included in the documentation build process.
+      # So we need to backup the benchmarks from gh-pages and restore them after the documentation is built.
+      - name: Backup benchmarks from gh-pages
+        run: |
+          git fetch origin gh-pages
+          # create worktree bound to local gh-pages, tracking origin/gh-pages
+          git branch -f gh-pages origin/gh-pages || true
+          mkdir -p ghp && git worktree add ghp gh-pages || true
+          if [ -d ghp/benchmarks ]; then
+            tar -C ghp -czf /tmp/benchmarks.tgz benchmarks
+          fi
+          # IMPORTANT: remove worktree so gh-pages isn't checked out anywhere
+          git worktree remove ghp --force || true
+          echo "Backed up benchmarks from gh-pages"
+      # ====== Deploy the documentation ======
+      - name: Deploy documentation
+        run: mkdocs gh-deploy --force
+      # ====== Restore the benchmarks onto gh-pages ======
+      # This is necessary because the benchmarks are not included in the documentation build process.
+      # So we need to restore the benchmarks onto gh-pages after the documentation is built.
+      - name: Restore benchmarks onto gh-pages
+        run: |
+          # Refresh remote tracking and recreate a clean worktree
+          git fetch origin gh-pages
+          git worktree add -B gh-pages ghp origin/gh-pages
+          if [ -f /tmp/benchmarks.tgz ]; then
+            tar -C ghp -xzf /tmp/benchmarks.tgz
+            git -C ghp add -A
+            git -C ghp commit -m "Restore benchmarks after gh-deploy" || echo "No changes"
+            git -C ghp push origin gh-pages
+          fi
+          git worktree remove ghp --force || true

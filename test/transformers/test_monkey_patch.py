@@ -600,13 +600,19 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
             intermediate_size=64,
             hidden_act="silu",
             num_hidden_layers=2,
+            moe_layers=[1],
         )
         dummy_model_instance = Llama4ForCausalLM._from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            if layer.is_moe_layer:
+                assert inspect.getsource(layer.feed_forward.shared_expert.forward) != inspect.getsource(
+                    LigerSwiGLUMLP.forward
+                )
+            else:
+                assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
@@ -616,7 +622,12 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
         # Check that the model's instance variables were correctly patched with Liger modules
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            if layer.is_moe_layer:
+                assert inspect.getsource(layer.feed_forward.shared_expert.forward) == inspect.getsource(
+                    LigerSwiGLUMLP.forward
+                )
+            else:
+                assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
@@ -642,6 +653,7 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
                 intermediate_size=64,
                 hidden_act="silu",
                 num_hidden_layers=2,
+                moe_layers=[1],
             ),
             vision_config=transformers.models.llama4.configuration_llama4.Llama4VisionConfig(
                 rms_norm_eps=1e-5,
@@ -662,7 +674,12 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
             LigerRMSNorm.forward
         )
         for layer in dummy_model_instance.language_model.model.layers:
-            assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            if layer.is_moe_layer:
+                assert inspect.getsource(layer.feed_forward.shared_expert.forward) != inspect.getsource(
+                    LigerSwiGLUMLP.forward
+                )
+            else:
+                assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
@@ -686,7 +703,12 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
             LigerRMSNorm.forward
         )
         for layer in dummy_model_instance.language_model.model.layers:
-            assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            if layer.is_moe_layer:
+                assert inspect.getsource(layer.feed_forward.shared_expert.forward) == inspect.getsource(
+                    LigerSwiGLUMLP.forward
+                )
+            else:
+                assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
