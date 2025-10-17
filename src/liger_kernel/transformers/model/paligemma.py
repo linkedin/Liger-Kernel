@@ -13,6 +13,8 @@ from transformers.utils import logging
 from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
+from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
+from liger_kernel.transformers.model.output_classes import LigerPaliGemmaCausalLMOutputWithPast
 
 logger = logging.get_logger(__name__)
 
@@ -218,7 +220,7 @@ def lce_forward(
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
     **lm_kwargs,
-) -> Union[Tuple, PaliGemmaCausalLMOutputWithPast]:
+) -> Union[Tuple, LigerPaliGemmaCausalLMOutputWithPast]:
     r"""
     Args:
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -331,6 +333,7 @@ def lce_forward(
 
     loss = None
     logits = None
+    token_accuracy = None
 
     if skip_logits and labels is None:
         raise ValueError("skip_logits is True, but labels is None")
@@ -358,8 +361,20 @@ def lce_forward(
         shift_hidden_states = shift_hidden_states.view(-1, self.config.text_config.hidden_size)
         shift_labels = shift_labels.view(-1).to(hidden_device)
 
-        lce = LigerFusedLinearCrossEntropyLoss()
-        loss = lce(self.language_model.lm_head.weight, shift_hidden_states, shift_labels)
+        # Use LigerForCausalLMLoss with accuracy support and pass already shifted labels
+        result = LigerForCausalLMLoss(
+            hidden_states=shift_hidden_states,
+            lm_head_weight=self.language_model.lm_head.weight,
+            labels=None,
+            shift_labels=shift_labels,
+            hidden_size=self.config.text_config.hidden_size,
+            **lm_kwargs,
+        )
+        # Unpack loss and token_accuracy if returned as tuple
+        if isinstance(result, tuple):
+            loss, token_accuracy = result
+        else:
+            loss = result
     else:
         logits = self.language_model.lm_head(hidden_states)
         if labels is not None:
@@ -403,13 +418,17 @@ def lce_forward(
             loss = loss_fct(flat_logits, flat_labels)
     if not return_dict:
         output = (logits,) + outputs[1:]
-        return (loss,) + output if loss is not None else output
+        output = (loss,) + output if loss is not None else output
+        output = output + (token_accuracy,) if token_accuracy is not None else output
+        return output
 
-    return PaliGemmaCausalLMOutputWithPast(
+    # Return PaliGemma output with accuracy field
+    return LigerPaliGemmaCausalLMOutputWithPast(
         loss=loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
         image_hidden_states=image_features if pixel_values is not None else None,
+        token_accuracy=token_accuracy,
     )

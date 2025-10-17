@@ -30,7 +30,9 @@ def fused_linear_cross_entropy_forward(
     return_token_accuracy=False,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
-    assert isinstance(return_token_accuracy, bool), f"return_token_accuracy must be True or False. Got: {return_token_accuracy}"
+    assert isinstance(return_token_accuracy, bool), (
+        f"return_token_accuracy must be True or False. Got: {return_token_accuracy}"
+    )
     device = _input.device
 
     input_requires_grad = _input.requires_grad
@@ -148,7 +150,9 @@ def fused_linear_cross_entropy_forward(
             z_loss_ptr=z_loss_1d_slice,
             loss_stride=loss_1d_slice.stride(-1),  # always 1
             token_accuracy_ptr=token_accuracy_1d_slice,
-            token_accuracy_stride=token_accuracy_1d_slice.stride(-1) if return_token_accuracy else 0,  # always 1 if accuracy is enabled
+            token_accuracy_stride=token_accuracy_1d_slice.stride(-1)
+            if return_token_accuracy
+            else 0,  # always 1 if accuracy is enabled
             n_cols=V,
             n_non_ignore=total_n_non_ignore,
             sum_non_ignore_weight=total_sum_non_ignore_ce_weight,

@@ -304,7 +304,9 @@ def cross_entropy_forward(
     return_token_accuracy=False,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
-    assert isinstance(return_token_accuracy, bool), f"return_token_accuracy must be True or False. Got: {return_token_accuracy}"
+    assert isinstance(return_token_accuracy, bool), (
+        f"return_token_accuracy must be True or False. Got: {return_token_accuracy}"
+    )
 
     BT, V = _input.shape
     n_rows = BT
@@ -314,7 +316,9 @@ def cross_entropy_forward(
     # unreduced loss
     loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device)
     z_loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device) if return_z_loss else None
-    token_accuracy_1d = torch.zeros(n_rows, dtype=torch.float32, device=_input.device) if return_token_accuracy else None
+    token_accuracy_1d = (
+        torch.zeros(n_rows, dtype=torch.float32, device=_input.device) if return_token_accuracy else None
+    )
 
     target_mask = target != ignore_index
     n_non_ignore = target_mask.sum().item()
@@ -352,7 +356,9 @@ def cross_entropy_forward(
         z_loss_ptr=z_loss_1d,
         loss_stride=loss_1d.stride(-1),  # always 1
         token_accuracy_ptr=token_accuracy_1d,
-        token_accuracy_stride=token_accuracy_1d.stride(-1) if return_token_accuracy else 0,  # always 1 if accuracy is enabled
+        token_accuracy_stride=token_accuracy_1d.stride(-1)
+        if return_token_accuracy
+        else 0,  # always 1 if accuracy is enabled
         n_cols=V,
         n_non_ignore=n_non_ignore,
         sum_non_ignore_weight=sum_non_ignore_weight,

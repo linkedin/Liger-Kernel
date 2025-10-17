@@ -1,4 +1,4 @@
-from typing import Optional, Union, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -32,10 +32,10 @@ def fixed_fused_linear_cross_entropy(
 
     # Handle return value based on return_token_accuracy flag
     if return_token_accuracy:
-        loss, accuracy = result
+        loss, token_accuracy = result
         if reduction == "sum":
             loss = loss / num_items_in_batch
-        return loss, accuracy
+        return loss, token_accuracy
     else:
         loss = result
         if reduction == "sum":
@@ -77,5 +77,3 @@ def LigerForCausalLMLoss(
         **kwargs,
     )
     return result
-
-

@@ -4,9 +4,8 @@ from typing import Union
 
 import torch
 
-from transformers.modeling_outputs import CausalLMOutputWithPast
-
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
+from liger_kernel.transformers.model.output_classes import LigerCausalLMOutputWithPast
 
 
 def lce_forward(
@@ -24,7 +23,7 @@ def lce_forward(
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
     **kwargs,
-) -> CausalLMOutputWithPast:
+) -> LigerCausalLMOutputWithPast:
     r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
@@ -83,6 +82,7 @@ def lce_forward(
     shift_labels = kwargs.pop("shift_labels", None)
     logits = None
     loss = None
+    token_accuracy = None
 
     if skip_logits and labels is None and shift_labels is None:
         raise ValueError("skip_logits is True, but labels and shift_labels are None")
@@ -91,8 +91,9 @@ def lce_forward(
         # By default, if in training mode, don't materialize logits
         skip_logits = self.training and (labels is not None or shift_labels is not None)
 
+    # Compute loss
     if skip_logits:
-        loss = LigerForCausalLMLoss(
+        result = LigerForCausalLMLoss(
             hidden_states=kept_hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
@@ -100,6 +101,11 @@ def lce_forward(
             hidden_size=self.config.hidden_size,
             **kwargs,
         )
+        # Unpack loss and token_accuracy if returned as tuple
+        if isinstance(result, tuple):
+            loss, token_accuracy = result
+        else:
+            loss = result
 
     else:
         logits = self.lm_head(kept_hidden_states)
@@ -112,10 +118,12 @@ def lce_forward(
                 **kwargs,
             )
 
-    return CausalLMOutputWithPast(
+    # Return custom output class with accuracy field
+    return LigerCausalLMOutputWithPast(
         loss=loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
+        token_accuracy=token_accuracy,
     )
