@@ -409,6 +409,134 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, ce_weight, atol
     ],
 )
 @pytest.mark.parametrize(
+    "reduction, scalar, dtype, atol, rtol",
+    [
+        ("mean", 1.0, torch.bfloat16, 5e-3, 5e-2),
+        ("mean", 1.0, torch.float32, 1e-5, 5e-4),
+    ],
+)
+@pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize("return_token_accuracy", [True, False])
+def test_correctness_with_token_accuracy(
+    B,
+    T,
+    H,
+    V,
+    scalar,
+    dtype,
+    bias,
+    return_token_accuracy,
+    reduction,
+    atol,
+    rtol,
+):
+    """Test that return_token_accuracy flag works correctly."""
+    torch_lm_head_ce = TorchLMHeadCE(
+        H=H,
+        V=V,
+        bias=bias,
+        reduction=reduction,
+        dtype=dtype,
+    ).to(device)
+    liger_lm_head_ce = LigerLMHeadCE(
+        H=H,
+        V=V,
+        bias=bias,
+        reduction=reduction,
+        dtype=dtype,
+    ).to(device)
+
+    # init the linear in all CEs with the same weights
+    torch_lm_head_ce.lin.weight.data = liger_lm_head_ce.lin.weight.data = torch.rand(V, H, device=device, dtype=dtype)
+
+    if bias:
+        torch_lm_head_ce.lin.bias.data = liger_lm_head_ce.lin.bias.data = torch.rand(V, device=device, dtype=dtype)
+
+    _tensor = torch.randn(B * T, H, device=device, dtype=dtype) * scalar
+    _input1 = _tensor.detach().clone().requires_grad_(True)
+    _input2 = _tensor.detach().clone().requires_grad_(True)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    # Assign some random number of elements as ignore_index
+    num_elements_to_assign = torch.randint(
+        1, B * T // 2, (1,)
+    ).item()
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
+    target[indices_to_assign] = -100
+
+    # Compute with torch (baseline - only loss)
+    output1 = torch_lm_head_ce(_input1, target)
+
+    # Compute with liger using functional API with return_token_accuracy
+    from liger_kernel.transformers.functional import liger_fused_linear_cross_entropy
+
+    result = liger_fused_linear_cross_entropy(
+        input=_input2,
+        weight=liger_lm_head_ce.lin.weight,
+        target=target,
+        bias=liger_lm_head_ce.lin.bias if bias else None,
+        ignore_index=-100,
+        reduction=reduction,
+        return_token_accuracy=return_token_accuracy,
+    )
+
+    if return_token_accuracy:
+        # Should return tuple (loss, token_accuracy)
+        assert isinstance(result, tuple), "Expected tuple when return_token_accuracy=True"
+        assert len(result) == 2, "Expected (loss, token_accuracy) tuple"
+        output2, token_accuracy = result
+
+        # Verify token_accuracy is computed correctly
+        assert token_accuracy is not None, "token_accuracy should not be None"
+        with torch.no_grad():
+            # Compute expected accuracy
+            logits = _input2 @ liger_lm_head_ce.lin.weight.t()
+            if bias:
+                logits = logits + liger_lm_head_ce.lin.bias
+            predictions = torch.argmax(logits, dim=-1)
+            mask = target != -100
+            correct = (predictions == target) & mask
+            expected_accuracy = correct.sum().float() / mask.sum().float()
+
+        assert_verbose_allclose(token_accuracy, expected_accuracy, atol=atol, rtol=rtol)
+    else:
+        # Should return only loss
+        output2 = result
+        assert not isinstance(result, tuple), "Expected scalar loss when return_token_accuracy=False"
+
+    # Loss should match regardless of return_token_accuracy flag
+    assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
+
+    grad_output = torch.ones_like(output1)
+    output1.backward(gradient=grad_output)
+    output2.backward(gradient=grad_output)
+
+    assert_verbose_allclose(_input1.grad, _input2.grad, atol=atol, rtol=rtol)
+
+    assert_verbose_allclose(
+        torch_lm_head_ce.lin.weight.grad,
+        liger_lm_head_ce.lin.weight.grad,
+        atol=atol,
+        rtol=rtol,
+    )
+
+    if bias:
+        assert_verbose_allclose(
+            torch_lm_head_ce.lin.bias.grad,
+            liger_lm_head_ce.lin.bias.grad,
+            atol=atol,
+            rtol=rtol,
+        )
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (8, 128, 1024, 4096),
+        (4, 47, 31, 123),  # random shape
+    ],
+)
+@pytest.mark.parametrize(
     "bias, cast_dtype, atol, rtol",
     [
         (True, torch.bfloat16, 5e-3, 5e-2),
