@@ -5,10 +5,10 @@ from typing import Union
 
 import torch
 
-from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLCausalLMOutputWithPast
 from transformers.utils import can_return_tuple
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
+from liger_kernel.transformers.model.output_classes import LigerQwen2VLCausalLMOutputWithPast
 
 
 @can_return_tuple
@@ -32,7 +32,7 @@ def lce_forward(
     cache_position: Optional[torch.LongTensor] = None,
     skip_logits: Optional[bool] = None,
     **kwargs,
-) -> Union[Tuple, Qwen2VLCausalLMOutputWithPast]:
+) -> Union[Tuple, LigerQwen2VLCausalLMOutputWithPast]:
     r"""
     labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
         Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
@@ -109,6 +109,7 @@ def lce_forward(
     shift_labels = kwargs.pop("shift_labels", None)
     loss = None
     logits = None
+    token_accuracy = None
 
     if skip_logits and labels is None and shift_labels is None:
         raise ValueError("skip_logits is True, but labels and shift_labels are None")
@@ -116,8 +117,9 @@ def lce_forward(
     if skip_logits is None:
         skip_logits = self.training and (labels is not None or shift_labels is not None)
 
+    # Compute loss
     if skip_logits:
-        loss = LigerForCausalLMLoss(
+        result = LigerForCausalLMLoss(
             hidden_states=hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
@@ -125,6 +127,11 @@ def lce_forward(
             hidden_size=self.config.hidden_size,
             **kwargs,
         )
+        # Unpack loss and token_accuracy if returned as tuple
+        if isinstance(result, tuple):
+            loss, token_accuracy = result
+        else:
+            loss = result
     else:
         logits = self.lm_head(hidden_states)
 
@@ -137,11 +144,19 @@ def lce_forward(
                 vocab_size=self.config.vocab_size,
             )
 
-    return Qwen2VLCausalLMOutputWithPast(
+    if not return_dict:
+        output_tuple = (logits,) + outputs[1:]
+        output = (loss,) + output_tuple if loss is not None else output_tuple
+        output = output + (token_accuracy,) if token_accuracy is not None else output
+        return output
+
+    # Return Qwen2VL output with token accuracy
+    return LigerQwen2VLCausalLMOutputWithPast(
         loss=loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
         rope_deltas=outputs.rope_deltas,
+        token_accuracy=token_accuracy,
     )
