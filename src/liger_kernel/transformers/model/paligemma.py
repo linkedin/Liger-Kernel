@@ -422,7 +422,7 @@ def lce_forward(
         output = output + (token_accuracy,) if token_accuracy is not None else output
         return output
 
-    # Return PaliGemma output with accuracy field
+    # Return PaliGemma output with token_accuracy field
     return LigerPaliGemmaCausalLMOutputWithPast(
         loss=loss,
         logits=logits,

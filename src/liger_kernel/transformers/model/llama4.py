@@ -107,7 +107,7 @@ def lce_forward(
                 **kwargs,
             )
 
-    # Return custom output class with accuracy field
+    # Return custom output class with token_accuracy field
     return LigerCausalLMOutputWithPast(
         loss=loss,
         logits=logits,

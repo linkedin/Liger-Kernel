@@ -317,7 +317,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         return_token_accuracy (bool): When `return_token_accuracy` is `True`, computes and returns per-token accuracy without materializing logits. Default: `False`
         """
 
-        loss, z_loss, accuracy, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
+        loss, z_loss, token_accuracy, grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_forward(
             _input=_input,
             weight=weight,
             target=target,
@@ -341,7 +341,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         )
         ctx.return_z_loss = return_z_loss
         ctx.return_token_accuracy = return_token_accuracy
-        return loss, z_loss, accuracy
+        return loss, z_loss, token_accuracy
 
     @staticmethod
     @amp_custom_bwd
@@ -349,7 +349,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         if ctx.return_z_loss:
             del grad_output2  # z_loss is only for logging
         if ctx.return_token_accuracy:
-            del grad_output3  # accuracy is only for metrics
+            del grad_output3  # token_accuracy is only for metrics
         (grad_input, grad_weight, grad_bias) = ctx.saved_tensors
         grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_backward(
             grad_output, grad_input, grad_weight, grad_bias

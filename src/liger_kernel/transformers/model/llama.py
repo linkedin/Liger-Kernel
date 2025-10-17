@@ -273,7 +273,7 @@ def lce_forward(
             output_tuple = output_tuple + (token_accuracy,)
         return output_tuple
 
-    # Return custom output class with accuracy field
+    # Return custom output class with token_accuracy field
     return LigerCausalLMOutputWithPast(
         loss=loss,
         logits=logits,
