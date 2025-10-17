@@ -114,7 +114,7 @@ def lce_forward(
         )
         # Unpack loss and token_accuracy if returned as tuple
         if isinstance(result, tuple):
-            loss, accuracy = result
+            loss, token_accuracy = result
         else:
             loss = result
 

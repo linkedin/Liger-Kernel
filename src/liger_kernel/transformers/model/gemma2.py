@@ -246,9 +246,9 @@ def lce_forward(
             final_logit_softcapping=self.config.final_logit_softcapping,
             **kwargs,
         )
-        # Unpack loss and accuracy if returned as tuple
+        # Unpack loss and token_accuracy if returned as tuple
         if isinstance(result, tuple):
-            loss, accuracy = result
+            loss, token_accuracy = result
         else:
             loss = result
 
