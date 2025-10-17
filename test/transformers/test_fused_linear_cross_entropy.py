@@ -458,9 +458,7 @@ def test_correctness_with_token_accuracy(
 
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
     # Assign some random number of elements as ignore_index
-    num_elements_to_assign = torch.randint(
-        1, B * T // 2, (1,)
-    ).item()
+    num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
     target[indices_to_assign] = -100
 
