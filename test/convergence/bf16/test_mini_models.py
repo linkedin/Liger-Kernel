@@ -1152,6 +1152,7 @@ if QWEN3NEXT_AVAILABLE:
         ),
     )
 
+
 def create_model(model_name="mini_llama4"):
     """
     Create a mini version model
