@@ -594,6 +594,18 @@ def revert_liger_kernel_to_falcon_h1(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_qwen3_next(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Qwen3Next.
+    """
+
+    from transformers.models.qwen3_next import modeling_qwen3_next
+
+    importlib.reload(modeling_qwen3_next)
+    model_config.model_class = modeling_qwen3_next.Qwen3NextForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 class HFAlignmentLoss:
     def __init__(
         self,

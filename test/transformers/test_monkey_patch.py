@@ -407,67 +407,6 @@ def test_apply_liger_kernel_to_instance_for_llama():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
-@pytest.mark.skipif(not is_qwen3_next_available(), reason="qwen3_next module not available")
-def test_apply_liger_kernel_to_instance_for_qwen3next():
-    # Ensure any monkey patching is cleaned up for subsequent tests
-    with patch("transformers.models.qwen3_next.modeling_qwen3_next"):
-        # Instantiate a dummy model
-        config = transformers.models.qwen3_next.configuration_qwen3_next.Qwen3NextConfig(
-            dtype=torch.bfloat16,
-            rms_norm_eps=1e-5,
-            hidden_size=32,
-            intermediate_size=64,
-            moe_intermediate_size=16,
-            shared_expert_intermediate_size=16,
-            hidden_act="silu",
-            num_hidden_layers=2,
-            num_experts=2,
-            num_experts_per_tok=1,
-            mlp_only_layers=[
-                1,
-            ],
-        )
-        dummy_model_instance = AutoModelForCausalLM.from_config(config)
-
-        # Check that model instance variables are not yet patched with Liger modules
-        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_next_lce_forward)
-        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
-        for layer in dummy_model_instance.model.layers:
-            if hasattr(layer, "mlp") and hasattr(layer.mlp, "experts"):
-                for expert in layer.mlp.experts:
-                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
-            else:
-                assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
-
-            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
-
-        # Test applying kernels to the model instance
-        _apply_liger_kernel_to_instance(model=dummy_model_instance)
-
-        # Check that the model's instance variables were correctly patched with Liger modules
-        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_next_lce_forward)
-        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
-        for layer in dummy_model_instance.model.layers:
-            if hasattr(layer, "mlp") and hasattr(layer.mlp, "experts"):
-                for expert in layer.mlp.experts:
-                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
-                if hasattr(layer.mlp, "shared_expert"):
-                    assert inspect.getsource(layer.mlp.shared_expert.forward) == inspect.getsource(
-                        LigerSwiGLUMLP.forward
-                    )
-            else:
-                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
-
-            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
-
-        try:
-            print(dummy_model_instance)
-        except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
-
-
 @pytest.mark.skipif(not is_falcon_h1_available(), reason="falcon_h1 module not available")
 def test_apply_liger_kernel_to_falcon_h1_for_causal_lm():
     with patch("transformers.models.falcon_h1.modeling_falcon_h1"):
@@ -2079,6 +2018,65 @@ def test_apply_liger_kernel_to_instance_for_smollm3():
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
         # Ensure that the model patched with Liger modules can work properly
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_next_available(), reason="qwen3_next module not available")
+def test_apply_liger_kernel_to_instance_for_qwen3_next():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3_next.modeling_qwen3_next"):
+        # Instantiate a dummy model
+        config = transformers.models.qwen3_next.configuration_qwen3_next.Qwen3NextConfig(
+            dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            moe_intermediate_size=16,
+            shared_expert_intermediate_size=16,
+            hidden_act="silu",
+            num_hidden_layers=2,
+            num_experts=2,
+            num_experts_per_tok=1,
+            mlp_only_layers=[1],
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_next_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            if hasattr(layer, "mlp") and hasattr(layer.mlp, "experts"):
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            else:
+                assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_next_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            if hasattr(layer, "mlp") and hasattr(layer.mlp, "experts"):
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+                if hasattr(layer.mlp, "shared_expert"):
+                    assert inspect.getsource(layer.mlp.shared_expert.forward) == inspect.getsource(
+                        LigerSwiGLUMLP.forward
+                    )
+            else:
+                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
         try:
             print(dummy_model_instance)
         except Exception as e:

@@ -40,6 +40,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next
 from liger_kernel.transformers import apply_liger_kernel_to_smollm3
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
@@ -68,6 +69,7 @@ from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import revert_liger_kernel_to_qwen3_moe
+from test.utils import revert_liger_kernel_to_qwen3_next
 from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import set_seed
 from test.utils import simple_collate_fn
@@ -210,6 +212,15 @@ try:
     FALCONH1_AVAILABLE = True
 except ImportError:
     FALCONH1_AVAILABLE = False
+
+try:
+    # Qwen3Next is only available in transformers>=4.57.0
+    from transformers.models.qwen3_next.configuration_qwen3_next import Qwen3NextConfig
+    from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextForCausalLM
+
+    QWEN3NEXT_AVAILABLE = True
+except ImportError:
+    QWEN3NEXT_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -1101,6 +1112,40 @@ if FALCONH1_AVAILABLE:
         ),
     )
 
+if QWEN3NEXT_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_next"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_next,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_next,
+        model_class=Qwen3NextForCausalLM,
+        mini_model_config=Qwen3NextConfig(  # Copypaste Qwen3MoeConfig
+            vocab_size=32000,
+            hidden_size=896,
+            intermediate_size=4864,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=True,
+            tie_word_embeddings=False,
+            rope_theta=10000.0,
+            rope_scaling=None,
+            attention_bias=False,
+            use_sliding_window=False,
+            sliding_window=4096,
+            max_window_layers=28,
+            attention_dropout=0.0,
+            decoder_sparse_step=1,
+            moe_intermediate_size=768,
+            num_experts_per_tok=2,
+            num_experts=8,
+            norm_topk_prob=False,
+            output_router_logits=False,
+            router_aux_loss_coef=0.001,
+        ),
+    )
 
 def create_model(model_name="mini_llama3"):
     """
@@ -1136,7 +1181,7 @@ def run_mini_model(
             "rms_norm": True,
         }
 
-        if "glm4" in model_name:
+        if "glm4" in model_name or "qwen3_next" in model_name:
             kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -1487,6 +1532,24 @@ def run_mini_model(
                 not FALCONH1_AVAILABLE,
                 reason="FalconH1 not available in this version of transformers",
             ),
+        ),
+        pytest.param(
+            "mini_qwen3_next",
+            32,
+            1e-5,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not QWEN3NEXT_AVAILABLE,
+                    reason="Qwen3Next not available in this version of transformers",
+                ),
+            ],
         ),
     ],
 )
