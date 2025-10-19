@@ -2214,21 +2214,30 @@ def apply_liger_kernel_to_qwen3_next(
     from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextSparseMoeBlock
 
     from liger_kernel.transformers.model.qwen3_next import lce_forward as qwen3_next_lce_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForQwen3Next
     from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
 
     if rope:
-        raise NotImplementedError("liger_rotary_pos_emb is not available for qwen3_next models.")
+        modeling_qwen3_next.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        modeling_qwen3_next.Qwen3NextRMSNorm = LigerRMSNorm
+        modeling_qwen3_next.Qwen3NextRMSNorm = LigerRMSNormForQwen3Next
     if cross_entropy:
         from transformers.loss.loss_utils import nn
 
         nn.functional.cross_entropy = liger_cross_entropy
     if fused_linear_cross_entropy:
         if model is not None:
-            model.forward = MethodType(qwen3_next_lce_forward, model)
+            if isinstance(model, Qwen3NextForCausalLM):
+                model.forward = MethodType(qwen3_next_lce_forward, model)
+            else:
+                raise TypeError(
+                    f" fused_linear_cross_entropy is only applicable on Qwen3NextForCausalLM. Got: {type(model)}"
+                )
         else:
-            modeling_qwen3_next.Qwen3NextModel.forward = qwen3_next_lce_forward
+            modeling_qwen3_next.Qwen3NextForCausalLM.forward = qwen3_next_lce_forward
+    if swiglu:
+        # Qwen3MoeMLP and Qwen3NextMLP are identical, hence we reuse LigerQwen3MoeSwiGLUMLP
+        modeling_qwen3_next.Qwen3NextMLP = LigerQwen3MoeSwiGLUMLP
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
