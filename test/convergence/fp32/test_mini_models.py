@@ -1144,6 +1144,8 @@ if QWEN3NEXT_AVAILABLE:
             norm_topk_prob=False,
             output_router_logits=False,
             router_aux_loss_coef=0.001,
+            # config.dtype must be set if fla installed since there's a bug in the original code (No torch.get_current_dtype())
+            dtype=torch.float32,
         ),
     )
 
@@ -1549,6 +1551,10 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not QWEN3NEXT_AVAILABLE,
                     reason="Qwen3Next not available in this version of transformers",
+                ),
+                pytest.mark.skip(
+                    reason="flash-linear-attention's ChunkGatedDeltaRuleFunction does not support float32.\n"
+                    + " Torch's implementation takes too long"
                 ),
             ],
         ),

@@ -1149,6 +1149,8 @@ if QWEN3NEXT_AVAILABLE:
             norm_topk_prob=False,
             output_router_logits=False,
             router_aux_loss_coef=0.001,
+            # config.dtype must be set if fla installed since there's a bug in the original code (No torch.get_current_dtype())
+            dtype=torch.bfloat16,
         ),
     )
 
