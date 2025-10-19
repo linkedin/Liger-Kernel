@@ -6,7 +6,7 @@ import torch
 
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 from transformers.modeling_outputs import MoeModelOutputWithPast
-from transformers.models.mixtral.modeling_mixtral import load_balancing_loss_func
+from transformers.models.qwen3_next.modeling_qwen3_next import load_balancing_loss_func
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
