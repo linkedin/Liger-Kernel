@@ -2180,6 +2180,92 @@ def apply_liger_kernel_to_falcon_h1(
                 _patch_rms_norm_module(decoder_layer.pre_ff_layernorm)
 
 
+def apply_liger_kernel_to_qwen3_next(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace GLM4v_moe models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLUMLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.qwen3_next import modeling_qwen3_next
+    from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextExperts
+    from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextForCausalLM
+    from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextModel
+
+    from liger_kernel.transformers.model.qwen3_next import lce_forward as qwen3_next_lce_forward
+
+    if rope:
+        raise NotImplementedError("liger_rotary_pos_emb is not available for qwen3_next models.")
+    if rms_norm:
+        modeling_qwen3_next.Qwen3NextRMSNorm = LigerRMSNorm
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(qwen3_next_lce_forward, model)
+        else:
+            modeling_qwen3_next.Qwen3NextModel.forward = qwen3_next_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        if isinstance(model, (Qwen3NextForCausalLM, Qwen3NextModel)):
+            # Note: language_model and visual properties can be accessed throught conditional class for BC.
+            # Not sure if it is subject to changes in the future.
+            # Reference: https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_next/modeling_qwen3_next.py#L986
+            base_model: Qwen3NextForCausalLM = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.final_layernorm)
+
+            for decoder_layer in base_model.layers:
+                if swiglu:
+                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.pre_ff_layernorm)
+
+        else:
+            # Note: Currently there's no support for patching vision model only. Feel free to raise an issue if needed.
+            raise TypeError(
+                f"Unsupported glm4v_moe model type. `model` must be `Qwen3NextForCausalLM`, `Qwen3NextModel`. Got: {type(model)}"
+            )
+
+        if isinstance(Qwen3NextExperts, type) and isinstance(decoder_layer.mlp, Qwen3NextExperts):
+            experts = getattr(decoder_layer.mlp, "experts", None)
+            if experts is not None:
+                for expert in experts:
+                    _patch_swiglu_module(expert, LigerSwiGLUMLP)
+            if decoder_layer.mlp.shared_experts is not None:
+                _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
+            for decoder_layer in model.layers:
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
@@ -2207,6 +2293,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2_vl_text": apply_liger_kernel_to_qwen2_vl,
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "qwen2_5_vl_text": apply_liger_kernel_to_qwen2_5_vl,
+    "qwen3_next": apply_liger_kernel_to_qwen3_next,
     "smollm3": apply_liger_kernel_to_smollm3,
     "phi3": apply_liger_kernel_to_phi3,
     "paligemma": apply_liger_kernel_to_paligemma,
