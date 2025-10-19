@@ -2208,12 +2208,13 @@ def apply_liger_kernel_to_qwen3_next(
     )
 
     from transformers.models.qwen3_next import modeling_qwen3_next
-    from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextExperts
     from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextForCausalLM
+    from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextMLP
     from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextModel
     from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextSparseMoeBlock
 
     from liger_kernel.transformers.model.qwen3_next import lce_forward as qwen3_next_lce_forward
+    from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
 
     if rope:
         raise NotImplementedError("liger_rotary_pos_emb is not available for qwen3_next models.")
@@ -2233,53 +2234,29 @@ def apply_liger_kernel_to_qwen3_next(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
         if isinstance(model, (Qwen3NextForCausalLM, Qwen3NextModel)):
-            # Note: language_model and visual properties can be accessed throught conditional class for BC.
-            # Not sure if it is subject to changes in the future.
-            # Reference: https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_next/modeling_qwen3_next.py#L986
             base_model: Qwen3NextForCausalLM = getattr(model, model.base_model_prefix, model)
+        else:
+            raise TypeError(
+                f"Unsupported qwen3_next model type. `model` must be `Qwen3NextForCausalLM`, `Qwen3NextModel`. Got: {type(model)}"
+            )
 
         if rms_norm:
-            _patch_rms_norm_module(base_model.final_layernorm)
+            _patch_rms_norm_module(base_model.norm)
 
-            for decoder_layer in base_model.layers:
-                if swiglu:
-                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
-                if rms_norm:
-                    _patch_rms_norm_module(decoder_layer.input_layernorm)
-                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-                    _patch_rms_norm_module(decoder_layer.norm)
+        for decoder_layer in base_model.layers:
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.pre_ff_layernorm)
 
-                if isinstance(Qwen3NextExperts, type) and isinstance(decoder_layer.mlp, Qwen3NextExperts):
+            if swiglu:
+                if isinstance(decoder_layer.mlp, Qwen3NextMLP):
+                    _patch_swiglu_module(decoder_layer.mlp, LigerQwen3MoeSwiGLUMLP)
+                if isinstance(decoder_layer.mlp, Qwen3NextSparseMoeBlock):
+                    _patch_swiglu_module(decoder_layer.mlp.shared_exprt, LigerSwiGLUMLP)
                     experts = getattr(decoder_layer.mlp, "experts", None)
                     if experts is not None:
                         for expert in experts:
                             _patch_swiglu_module(expert, LigerSwiGLUMLP)
-                    if decoder_layer.mlp.shared_experts is not None:
-                        _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
-                    for decoder_layer in model.layers:
-                        if rms_norm:
-                            _patch_rms_norm_module(decoder_layer.input_layernorm)
-                            _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-
-                    if isinstance(Qwen3NextSparseMoeBlock, type) and isinstance(
-                        decoder_layer.mlp, Qwen3NextSparseMoeBlock
-                    ):
-                        experts = getattr(decoder_layer.mlp, "experts", None)
-                        if experts is not None:
-                            for expert in experts:
-                                _patch_swiglu_module(expert, LigerSwiGLUMLP)
-                        if decoder_layer.mlp.shared_experts is not None:
-                            _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
-                        for decoder_layer in model.layers:
-                            if rms_norm:
-                                _patch_rms_norm_module(decoder_layer.input_layernorm)
-                                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-
-        else:
-            # Note: Currently there's no support for patching vision model only. Feel free to raise an issue if needed.
-            raise TypeError(
-                f"Unsupported glm4v_moe model type. `model` must be `Qwen3NextForCausalLM`, `Qwen3NextModel`. Got: {type(model)}"
-            )
 
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py

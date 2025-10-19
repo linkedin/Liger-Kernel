@@ -1,3 +1,4 @@
+from typing import TYPE_CHECKING
 from typing import List
 from typing import Optional
 from typing import Union
@@ -6,7 +7,9 @@ import torch
 
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 from transformers.modeling_outputs import MoeModelOutputWithPast
-from transformers.models.qwen3_next.modeling_qwen3_next import load_balancing_loss_func
+
+if TYPE_CHECKING:
+    from transformers.models.qwen3_next.modeling_qwen3_next import load_balancing_loss_func
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
@@ -106,7 +109,7 @@ def lce_forward(
         )
     else:  # if in inference model materialize logits
         logits = self.lm_head(kept_hidden_states)
-        if labels is not None:
+        if labels is not None or shift_labels is not None:
             loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
 
     aux_loss = None
