@@ -2246,17 +2246,18 @@ def apply_liger_kernel_to_qwen3_next(
         for decoder_layer in base_model.layers:
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
-                _patch_rms_norm_module(decoder_layer.pre_ff_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
+            # Qwen3MoeMLP and Qwen3NextMLP are identical, hence we reuse LigerQwen3MoeSwiGLUMLP
             if swiglu:
                 if isinstance(decoder_layer.mlp, Qwen3NextMLP):
                     _patch_swiglu_module(decoder_layer.mlp, LigerQwen3MoeSwiGLUMLP)
                 if isinstance(decoder_layer.mlp, Qwen3NextSparseMoeBlock):
-                    _patch_swiglu_module(decoder_layer.mlp.shared_exprt, LigerSwiGLUMLP)
+                    _patch_swiglu_module(decoder_layer.mlp.shared_expert, LigerQwen3MoeSwiGLUMLP)
                     experts = getattr(decoder_layer.mlp, "experts", None)
                     if experts is not None:
                         for expert in experts:
-                            _patch_swiglu_module(expert, LigerSwiGLUMLP)
+                            _patch_swiglu_module(expert, LigerQwen3MoeSwiGLUMLP)
 
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
