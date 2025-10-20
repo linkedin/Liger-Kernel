@@ -1212,8 +1212,6 @@ def run_mini_model(
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
-    print(MINI_MODEL_SETUPS[model_name])
-
     model = create_model(model_name).to(dtype).to(device)
 
     train_dataset = load_from_disk(DEFAULT_DATASET_PATH)
