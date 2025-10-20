@@ -1172,7 +1172,7 @@ def run_mini_model(
     # Everytime RNG is used, like randomly initialzing weight, the RNG progresses to the next state.
     # Therefore, we have to reset RNG before we create the model to ensure the weight initialization started from the same RNG state.
 
-    set_seed(42)
+    set_seed(0)
 
     revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
     if "mllama" in model_name:
