@@ -141,7 +141,9 @@ def lce_forward(
 
     if not return_dict:
         output = (logits,) + outputs[1:]
-        return (loss,) + output if loss is not None else output
+        output = (loss,) + output if loss is not None else output
+        output = output + (token_accuracy,) if token_accuracy is not None else output
+        return output
 
     # Return custom output class with token_accuracy field
     return LigerInternVLCausalLMOutputWithPast(

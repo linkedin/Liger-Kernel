@@ -27,6 +27,7 @@ def lce_forward(
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
+    return_dict: Optional[bool] = None,
     **kwargs,
 ) -> LigerMoeCausalLMOutputWithPast:
     r"""
@@ -65,10 +66,10 @@ def lce_forward(
     output_router_logits = (
         output_router_logits if output_router_logits is not None else self.config.output_router_logits
     )
-
     output_hidden_states = (
         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
+    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs: MoeModelOutputWithPast = self.model(
@@ -130,6 +131,13 @@ def lce_forward(
         )
         if labels is not None:
             loss += self.router_aux_loss_coef * aux_loss.to(loss.device)  # make sure to reside in the same device
+
+    if not return_dict:
+        output = (logits,) + outputs[1:]
+        output = ((aux_loss,) + output) if aux_loss is not None else output
+        output = ((loss,) + output) if loss is not None else output
+        output = output + (token_accuracy,) if token_accuracy is not None else output
+        return output
 
     # Return custom output class with accuracy field
     return LigerMoeCausalLMOutputWithPast(

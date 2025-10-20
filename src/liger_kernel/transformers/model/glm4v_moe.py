@@ -28,6 +28,7 @@ def lce_forward(
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
+    return_dict: Optional[bool] = None,
     **kwargs,
 ) -> Union[Tuple, LigerGlm4vMoeCausalLMOutputWithPast]:
     r"""
@@ -91,6 +92,7 @@ def lce_forward(
     >>> output_text = processor.decode(generated_ids[0][inputs["input_ids"].shape[1]:], skip_special_tokens=False)
     ```
     """
+    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     outputs = self.model(
@@ -147,6 +149,12 @@ def lce_forward(
                 **kwargs,
             )
 
+    if not return_dict:
+        output = (logits,) + outputs[1:]
+        output = ((loss,) + output) if loss is not None else output
+        output = output + (token_accuracy,) if token_accuracy is not None else output
+        return output
+
     # Return GLM4V MoE output with accuracy (using dict syntax to add extra field)
     return LigerGlm4vMoeCausalLMOutputWithPast(
         loss=loss,
@@ -155,5 +163,6 @@ def lce_forward(
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
         rope_deltas=outputs.rope_deltas,
+        aux_loss=outputs.aux_loss,
         token_accuracy=token_accuracy,
     )

@@ -413,6 +413,7 @@ def lce_forward(
             flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
             flat_labels = shift_labels.view(-1).to(shift_logits.device)
             loss = loss_fct(flat_logits, flat_labels)
+
     if not return_dict:
         output = (logits,) + outputs[1:]
         output = (loss,) + output if loss is not None else output

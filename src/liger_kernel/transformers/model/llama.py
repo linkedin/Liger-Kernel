@@ -263,12 +263,10 @@ def lce_forward(
             )
 
     if not return_dict:
-        output_tuple = (logits,) + outputs[1:]
-        if loss is not None:
-            output_tuple = (loss,) + output_tuple
-        if token_accuracy is not None:
-            output_tuple = output_tuple + (token_accuracy,)
-        return output_tuple
+        output = (logits,) + outputs[1:]
+        output = ((loss,) + output) if loss is not None else output
+        output = output + (token_accuracy,) if token_accuracy is not None else output
+        return output
 
     # Return custom output class with token_accuracy field
     return LigerCausalLMOutputWithPast(
