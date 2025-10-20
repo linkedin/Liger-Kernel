@@ -54,10 +54,7 @@ def fixed_fused_linear_cross_entropy(
         loss = loss / num_items_in_batch
 
     if return_token_accuracy:
-        return CrossEntropyOutput(
-            loss=loss,
-            token_accuracy=token_accuracy,
-        )
+        return CrossEntropyOutput(loss=loss, token_accuracy=token_accuracy)
 
     return loss
 

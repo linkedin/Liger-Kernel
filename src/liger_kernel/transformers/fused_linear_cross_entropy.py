@@ -61,8 +61,4 @@ class LigerFusedLinearCrossEntropyLoss(torch.nn.Module):
         if not self.return_z_loss and not self.return_token_accuracy:
             return loss
 
-        return CrossEntropyOutput(
-            loss=loss,
-            z_loss=z_loss if self.return_z_loss else None,
-            token_accuracy=token_accuracy if self.return_token_accuracy else None,
-        )
+        return CrossEntropyOutput(loss=loss, z_loss=z_loss, token_accuracy=token_accuracy)

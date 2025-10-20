@@ -64,11 +64,7 @@ def liger_cross_entropy(
     if not return_z_loss and not return_token_accuracy:
         return loss
 
-    return CrossEntropyOutput(
-        loss=loss,
-        z_loss=z_loss,
-        token_accuracy=token_accuracy,
-    )
+    return CrossEntropyOutput(loss=loss, z_loss=z_loss, token_accuracy=token_accuracy)
 
 
 def liger_fused_linear_cross_entropy(
@@ -107,11 +103,7 @@ def liger_fused_linear_cross_entropy(
     if not return_z_loss and not return_token_accuracy:
         return loss
 
-    return CrossEntropyOutput(
-        loss=loss,
-        z_loss=z_loss,
-        token_accuracy=token_accuracy,
-    )
+    return CrossEntropyOutput(loss=loss, z_loss=z_loss, token_accuracy=token_accuracy)
 
 
 def liger_fused_linear_jsd(
