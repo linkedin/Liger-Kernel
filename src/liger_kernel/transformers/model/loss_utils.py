@@ -1,9 +1,27 @@
 from typing import Optional
+from typing import Tuple
 
 import torch
 import torch.nn as nn
 
 import liger_kernel.transformers.functional as F
+
+from liger_kernel.transformers.functional import CrossEntropyOutput
+
+
+def unpack_cross_entropy_result(
+    result,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    if isinstance(result, CrossEntropyOutput):
+        return result.loss, result.z_loss, result.token_accuracy
+
+    if isinstance(result, tuple):
+        loss = result[0]
+        z_loss = result[1] if len(result) > 1 else None
+        token_accuracy = result[2] if len(result) > 2 else None
+        return loss, z_loss, token_accuracy
+
+    return result, None, None
 
 
 def fixed_fused_linear_cross_entropy(
@@ -30,17 +48,18 @@ def fixed_fused_linear_cross_entropy(
         **kwargs,
     )
 
-    # Handle return value based on return_token_accuracy flag
+    loss, _, token_accuracy = unpack_cross_entropy_result(result)
+
+    if reduction == "sum":
+        loss = loss / num_items_in_batch
+
     if return_token_accuracy:
-        loss, token_accuracy = result
-        if reduction == "sum":
-            loss = loss / num_items_in_batch
-        return loss, token_accuracy
-    else:
-        loss = result
-        if reduction == "sum":
-            loss = loss / num_items_in_batch
-        return loss
+        return CrossEntropyOutput(
+            loss=loss,
+            token_accuracy=token_accuracy,
+        )
+
+    return loss
 
 
 def LigerForCausalLMLoss(

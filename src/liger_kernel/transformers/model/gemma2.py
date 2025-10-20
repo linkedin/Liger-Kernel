@@ -13,6 +13,7 @@ from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
+from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
 from liger_kernel.transformers.model.output_classes import LigerCausalLMOutputWithPast
 
 logger = logging.getLogger(__name__)
@@ -246,11 +247,7 @@ def lce_forward(
             final_logit_softcapping=self.config.final_logit_softcapping,
             **kwargs,
         )
-        # Unpack loss and token_accuracy if returned as tuple
-        if isinstance(result, tuple):
-            loss, token_accuracy = result
-        else:
-            loss = result
+        loss, _, token_accuracy = unpack_cross_entropy_result(result)
 
     else:
         logits = self.lm_head(kept_hidden_states)

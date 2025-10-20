@@ -1,4 +1,7 @@
+from dataclasses import dataclass
 from typing import Optional
+
+import torch
 
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.dyt import LigerDyTFunction
@@ -20,6 +23,13 @@ from liger_kernel.ops.softmax import LigerSoftmaxFunction
 from liger_kernel.ops.sparsemax import LigerSparsemaxFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.tvd import LigerTVDLossFunction
+
+
+@dataclass
+class CrossEntropyOutput:
+    loss: torch.Tensor
+    z_loss: Optional[torch.Tensor] = None
+    token_accuracy: Optional[torch.Tensor] = None
 
 
 # conform to the function signature in https://pytorch.org/docs/stable/generated/torch.nn.functional.cross_entropy.html
@@ -51,17 +61,14 @@ def liger_cross_entropy(
         return_token_accuracy,
     )
 
-    # Return based on what was requested
     if not return_z_loss and not return_token_accuracy:
         return loss
 
-    result = [loss]
-    if return_z_loss:
-        result.append(z_loss)
-    if return_token_accuracy:
-        result.append(token_accuracy)
-
-    return tuple(result) if len(result) > 1 else result[0]
+    return CrossEntropyOutput(
+        loss=loss,
+        z_loss=z_loss,
+        token_accuracy=token_accuracy,
+    )
 
 
 def liger_fused_linear_cross_entropy(
@@ -97,17 +104,14 @@ def liger_fused_linear_cross_entropy(
         return_token_accuracy,
     )
 
-    # Return based on what was requested
     if not return_z_loss and not return_token_accuracy:
         return loss
 
-    result = [loss]
-    if return_z_loss:
-        result.append(z_loss)
-    if return_token_accuracy:
-        result.append(token_accuracy)
-
-    return tuple(result) if len(result) > 1 else result[0]
+    return CrossEntropyOutput(
+        loss=loss,
+        z_loss=z_loss,
+        token_accuracy=token_accuracy,
+    )
 
 
 def liger_fused_linear_jsd(

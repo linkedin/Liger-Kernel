@@ -8,6 +8,7 @@ import torch
 from transformers.utils import can_return_tuple
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
+from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
 from liger_kernel.transformers.model.output_classes import LigerQwen2_5_VLCausalLMOutputWithPast
 
 
@@ -131,11 +132,7 @@ def lce_forward(
             hidden_size=self.config.hidden_size,
             **kwargs,
         )
-        # Unpack loss and accuracy if returned as tuple
-        if isinstance(result, tuple):
-            loss, token_accuracy = result
-        else:
-            loss = result
+        loss, _, token_accuracy = unpack_cross_entropy_result(result)
     else:
         logits = self.lm_head(hidden_states)
 

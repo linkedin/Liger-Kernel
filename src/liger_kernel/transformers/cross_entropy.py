@@ -3,6 +3,7 @@ from typing import Optional
 import torch
 
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
+from liger_kernel.transformers.functional import CrossEntropyOutput
 
 
 class LigerCrossEntropyLoss(torch.nn.Module):
@@ -15,6 +16,7 @@ class LigerCrossEntropyLoss(torch.nn.Module):
         reduction: str = "mean",
         softcap: Optional[float] = None,
         return_z_loss: bool = False,
+        return_token_accuracy: bool = False,
     ):
         super().__init__()
         assert (label_smoothing >= 0) and (label_smoothing <= 1), (
@@ -33,9 +35,10 @@ class LigerCrossEntropyLoss(torch.nn.Module):
         self.reduction = reduction
         self.softcap = softcap
         self.return_z_loss = return_z_loss
+        self.return_token_accuracy = return_token_accuracy
 
     def forward(self, _input: torch.Tensor, target: torch.Tensor):
-        loss, z_loss = LigerCrossEntropyFunction.apply(
+        loss, z_loss, token_accuracy = LigerCrossEntropyFunction.apply(
             _input,
             target,
             self.weight,
@@ -45,7 +48,13 @@ class LigerCrossEntropyLoss(torch.nn.Module):
             self.reduction,
             self.softcap,
             self.return_z_loss,
+            self.return_token_accuracy,
         )
-        if not self.return_z_loss:
+        if not self.return_z_loss and not self.return_token_accuracy:
             return loss
-        return loss, z_loss
+
+        return CrossEntropyOutput(
+            loss=loss,
+            z_loss=z_loss if self.return_z_loss else None,
+            token_accuracy=token_accuracy if self.return_token_accuracy else None,
+        )
