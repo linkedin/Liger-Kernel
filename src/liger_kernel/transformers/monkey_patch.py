@@ -1645,11 +1645,11 @@ def apply_liger_kernel_to_qwen2_5_vl(
 
 
 def apply_liger_kernel_to_qwen3_vl(
-    rope: bool = True,
+    rope: bool = False,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
-    rms_norm: bool = True,
-    swiglu: bool = True,
+    rms_norm: bool = False,
+    swiglu: bool = False,
     model: PreTrainedModel = None,
 ) -> None:
   
@@ -1669,12 +1669,13 @@ def apply_liger_kernel_to_qwen3_vl(
         loaded. Default is None.
     """
 
-
+    if rope or cross_entropy or rms_norm or swiglu: 
+        raise NotImplementedError("Under development")
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
 
-    from transformers.models.qwen2_5_vl import modeling_qwen3_vl
+    from transformers.models.qwen3_vl import modeling_qwen3_vl
     # from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel
     # from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
     # from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLModel

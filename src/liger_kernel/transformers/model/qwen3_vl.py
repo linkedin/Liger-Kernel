@@ -1,10 +1,13 @@
-from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLCausalLMOutputWithPast
-from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from typing import List
 from typing import Optional
 from typing import Tuple
 from typing import Union
+import torch
+
 from transformers.utils import can_return_tuple
+from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
+from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLCausalLMOutputWithPast
+
 
 @can_return_tuple
 def lce_forward(
@@ -28,7 +31,7 @@ def lce_forward(
     second_per_grid_ts: Optional[torch.Tensor] = None,
     skip_logits: Optional[bool] = None,
     **kwargs,
-) -> Union[Tuple, Qwen2_5_VLCausalLMOutputWithPast]:
+) -> Union[Tuple, Qwen3VLCausalLMOutputWithPast]:
 
     """
     labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -116,7 +119,7 @@ def lce_forward(
             lm_head_weight=self.lm_head.weight,
             labels=labels,
             shift_labels=shift_labels,
-            hidden_size=self.config.hidden_size,
+            hidden_size=self.config.text_config.hidden_size,
             **kwargs,
         )
     else:
@@ -124,7 +127,7 @@ def lce_forward(
 
         loss = None
         if labels is not None:
-            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size)
+            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size)
 
     if not return_dict:
         output = (logits,) + outputs[1:]

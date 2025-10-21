@@ -489,6 +489,16 @@ def revert_liger_kernel_to_qwen2_5_vl(model_config: MiniModelConfig):
     model_config.model_class = modeling_qwen2_5_vl.Qwen2_5_VLForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
+def revert_liger_kernel_to_qwen3_vl(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Qwen2.5-VL.
+    """
+    from transformers.models.qwen3_vl import modeling_qwen3_vl
+
+    importlib.reload(modeling_qwen3_vl)
+    model_config.model_class = modeling_qwen3_vl.Qwen3VLForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
 
 def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
     """

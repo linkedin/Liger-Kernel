@@ -38,6 +38,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_phi3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from liger_kernel.transformers import apply_liger_kernel_to_smollm3
@@ -66,6 +67,7 @@ from test.utils import revert_liger_kernel_to_phi3
 from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
+from test.utils import revert_liger_kernel_to_qwen3_vl
 from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import revert_liger_kernel_to_smollm3
@@ -113,6 +115,21 @@ try:
     QWEN2_5_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.52.4")
 except ImportError:
     QWEN2_5_VL_AVAILABLE = False
+
+
+
+try:
+    # Qwen2.5-VL is only available in transformers>=4.57.0
+    import transformers
+
+    from packaging import version
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLForConditionalGeneration
+
+    QWEN3_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.57.0")
+except ImportError:
+    QWEN3_VL_AVAILABLE = False
+
 
 try:
     from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
@@ -712,6 +729,58 @@ if QWEN2_5_VL_AVAILABLE:
         ),
     )
 
+
+if QWEN3_VL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_vl"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_vl,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_vl,
+        model_class=Qwen3VLForConditionalGeneration,
+        mini_model_config=Qwen3VLConfig(
+            bos_token_id=1,
+            eos_token_id=2,
+            vision_start_token_id=32765,
+            vision_end_token_id=32766,
+            image_token_id=32768,
+            video_token_id=32769,
+            tie_word_embeddings=False,
+            attn_implementation="sdpa",
+            text_config=dict(
+                attention_dropout=0.0,
+                hidden_act="silu",
+                hidden_size=1536,
+                initializer_range=0.02,
+                intermediate_size=4864,
+                max_position_embeddings=32768,
+                num_attention_heads=12,
+                num_hidden_layers=4,
+                num_key_value_heads=2,
+                rms_norm_eps=1e-6,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                use_cache=True,
+                vocab_size=32768,
+            ),
+            vision_config=dict(
+                depth=4,
+                hidden_size=128,
+                hidden_act="silu",
+                intermediate_size=256,
+                num_heads=8,
+                in_channels=3,
+                patch_size=14,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=128,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[],
+                initializer_range=0.02,
+            ),
+        ),
+    )
+
 if GRANITE_AVAILABLE:
     MINI_MODEL_SETUPS["mini_granite3"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_granite,
@@ -1156,6 +1225,10 @@ def run_mini_model(
         if "llava" in model_name:
             apply_liger_kernel_to_llama(**kwargs)
 
+        # temporary for development
+        if "qwen3_vl" in model_name: 
+            kwargs = {}
+
         # fused_linear_cross_entropy is not supported in mini_granite3
         kwargs["fused_linear_cross_entropy"] = True if model_name != "mini_granite3" else False
         kwargs["cross_entropy"] = False
@@ -1372,6 +1445,25 @@ def run_mini_model(
         ),
         pytest.param(
             "mini_qwen2_5_vl",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            1e-1,  # 1e-1
+            1e-2,  # 1e-2
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN2_5_VL_AVAILABLE,
+                    reason="Qwen2.5-VL not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_vl",
             32,
             1e-5,
             torch.bfloat16,
