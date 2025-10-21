@@ -39,6 +39,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from liger_kernel.transformers import apply_liger_kernel_to_smollm3
@@ -68,6 +69,7 @@ from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3_vl
+from test.utils import revert_liger_kernel_to_qwen3_vl_moe
 from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import revert_liger_kernel_to_smollm3
@@ -129,6 +131,18 @@ try:
     QWEN3_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.57.0")
 except ImportError:
     QWEN3_VL_AVAILABLE = False
+
+
+try:
+    import transformers
+
+    from packaging import version
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeConfig
+    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
+
+    QWEN3_VL_MOE_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.57.0")
+except ImportError:
+    QWEN3_VL_MOE_AVAILABLE = False
 
 
 try:
@@ -762,6 +776,64 @@ if QWEN3_VL_AVAILABLE:
                 ),
                 use_cache=True,
                 vocab_size=32768,
+            ),
+            vision_config=dict(
+                depth=4,
+                hidden_size=128,
+                hidden_act="silu",
+                intermediate_size=256,
+                num_heads=8,
+                in_channels=3,
+                patch_size=14,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=128,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[],
+                initializer_range=0.02,
+            ),
+        ),
+    )
+
+if QWEN3_VL_MOE_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_vl_moe"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_vl_moe,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_vl_moe,
+        model_class=Qwen3VLMoeForConditionalGeneration,
+        mini_model_config=Qwen3VLMoeConfig(
+            bos_token_id=1,
+            eos_token_id=2,
+            vision_start_token_id=32765,
+            vision_end_token_id=32766,
+            image_token_id=32768,
+            video_token_id=32769,
+            tie_word_embeddings=False,
+            attn_implementation="sdpa",
+            text_config=dict(
+                attention_dropout=0.0,
+                hidden_act="silu",
+                hidden_size=1536,
+                initializer_range=0.02,
+                intermediate_size=4864,
+                max_position_embeddings=32768,
+                num_attention_heads=12,
+                num_hidden_layers=4,
+                num_key_value_heads=2,
+                rms_norm_eps=1e-6,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                use_cache=True,
+                vocab_size=32768,
+                decoder_sparse_step=1,
+                moe_intermediate_size=1024,
+                num_experts_per_tok=2,
+                num_experts=4,
+                norm_topk_prob=False,
+                output_router_logits=False,
+                router_aux_loss_coef=0.001,
             ),
             vision_config=dict(
                 depth=4,
@@ -1478,6 +1550,25 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not QWEN2_5_VL_AVAILABLE,
                     reason="Qwen2.5-VL not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_vl_moe",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN3_VL_MOE_AVAILABLE,
+                    reason="Qwen3-VL-MoE not available in this version of transformers",
                 ),
             ],
         ),

@@ -1733,6 +1733,45 @@ def apply_liger_kernel_to_qwen3_vl(
     #                 _patch_rms_norm_module(decoder_layer.input_layernorm)
     #                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
+def apply_liger_kernel_to_qwen3_vl_moe(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = False,
+    swiglu: bool = False,
+    model: PreTrainedModel = None,
+) -> None:
+  
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Qwen3-VL-MoE models.
+
+    Args:
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Placeholder. Currently unsupported for Qwen3-VL-MoE.
+        swiglu (bool): Placeholder. Currently unsupported for Qwen3-VL-MoE.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+
+    if rope or cross_entropy or rms_norm or swiglu:
+        raise NotImplementedError("Under development")
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.qwen3_vl_moe import modeling_qwen3_vl_moe
+
+    from liger_kernel.transformers.model.qwen3_vl_moe import lce_forward as qwen3_vl_moe_lce_forward
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(qwen3_vl_moe_lce_forward, model)
+        else:
+            modeling_qwen3_vl_moe.Qwen3VLMoeForConditionalGeneration.forward = qwen3_vl_moe_lce_forward
 
 
 def apply_liger_kernel_to_phi3(
@@ -2300,6 +2339,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "qwen2_5_vl_text": apply_liger_kernel_to_qwen2_5_vl,
     "qwen3_vl": apply_liger_kernel_to_qwen3_vl,
+    "qwen3_vl_moe": apply_liger_kernel_to_qwen3_vl_moe,
     "smollm3": apply_liger_kernel_to_smollm3,
     "phi3": apply_liger_kernel_to_phi3,
     "paligemma": apply_liger_kernel_to_paligemma,
