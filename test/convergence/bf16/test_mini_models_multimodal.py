@@ -18,6 +18,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_paligemma
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from test.utils import FAKE_CONFIGS_PATH
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
@@ -37,6 +38,7 @@ from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_Paligemma
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
+from test.utils import revert_liger_kernel_to_qwen3_vl
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 from test.utils import train_bpe_tokenizer
@@ -72,6 +74,20 @@ try:
     QWEN2_5_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.52.4")
 except ImportError:
     QWEN2_5_VL_AVAILABLE = False
+
+try:
+    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLForConditionalGeneration
+    from transformers.models.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessor
+    from transformers.models.qwen3_vl.video_processing_qwen3_vl import Qwen3VLVideoProcessor
+
+    QWEN3_VL_AVAILABLE = True
+except ImportError:
+    QWEN3_VL_AVAILABLE = False
 
 
 try:
@@ -611,6 +627,58 @@ if QWEN2_5_VL_AVAILABLE:
         ),
     )
 
+if QWEN3_VL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_vl"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_vl,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_vl,
+        model_class=Qwen3VLForConditionalGeneration,
+        mini_model_config=Qwen3VLConfig(
+            attn_implementation="sdpa",
+            image_token_id=4,
+            video_token_id=5,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            tie_word_embeddings=True,
+            vision_config=Qwen3VLVisionConfig(
+                depth=4,
+                hidden_size=256,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=512,
+                num_heads=4,
+                in_channels=3,
+                patch_size=16,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=512,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[1, 2, 3],
+                initializer_range=0.02,
+            ).to_dict(),
+            text_config=Qwen3VLTextConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                intermediate_size=2048,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=64,
+                hidden_act="silu",
+                max_position_embeddings=32768,
+                initializer_range=0.02,
+                rms_norm_eps=1e-6,
+                use_cache=False,
+                tie_word_embeddings=True,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                attention_dropout=0.0,
+                attention_bias=False,
+            ).to_dict(),
+        ),
+    )
+
 
 def create_processor(model_name: str):
     if model_name == "mini_qwen2_vl":
@@ -652,6 +720,28 @@ def create_processor(model_name: str):
         image_processor = Qwen2VLImageProcessor()
         video_processor = Qwen2VLVideoProcessor()
         return Qwen2_5_VLProcessor(
+            image_processor=image_processor,
+            video_processor=video_processor,
+            tokenizer=qwen_tokenizer,
+        )
+
+    elif model_name == "mini_qwen3_vl":
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(FAKE_CONFIGS_PATH, "Qwen/Qwen3-VL-4B-Instruct/tokenizer_config.json")
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        image_processor = Qwen2VLImageProcessor(patch_size=16, temporal_patch_size=2, merge_size=2)
+        video_processor = Qwen3VLVideoProcessor()
+        return Qwen3VLProcessor(
             image_processor=image_processor,
             video_processor=video_processor,
             tokenizer=qwen_tokenizer,
@@ -914,6 +1004,11 @@ def run_mini_model_multimodal(
         else:
             kwargs["swiglu"] = True
 
+        if "qwen3_vl" in model_name:
+            kwargs.pop("layer_norm", None)
+            #temp for development
+            kwargs = {}
+
         if "llava" in model_name:
             apply_liger_kernel_to_llama(**kwargs)
 
@@ -1047,6 +1142,29 @@ def run_mini_model_multimodal(
                     reason="Qwen2.5-VL not available in this version of transformers",
                 ),
                 pytest.mark.skipif(not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_vl",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,
+            5e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN3_VL_AVAILABLE,
+                    reason="Qwen3-VL not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    not is_torchvision_available(),
+                    reason="Qwen3VLVideoProcessor requires torchvision",
+                ),
             ],
         ),
         pytest.param(
