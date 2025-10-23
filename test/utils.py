@@ -5,6 +5,7 @@ import random
 
 from abc import abstractmethod
 from dataclasses import dataclass
+from functools import wraps
 from typing import Any
 from typing import Dict
 from typing import List
@@ -57,6 +58,22 @@ def set_seed(seed=42):
 
     # Python hash seed
     os.environ["PYTHONHASHSEED"] = str(seed)
+
+
+def require_deterministic_for_xpu(test_case):
+    @wraps(test_case)
+    def wrapper(*args, **kwargs):
+        if device == "xpu":
+            original_state = torch.are_deterministic_algorithms_enabled()
+            try:
+                torch.use_deterministic_algorithms(True)
+                return test_case(*args, **kwargs)
+            finally:
+                torch.use_deterministic_algorithms(original_state)
+        else:
+            return test_case(*args, **kwargs)
+
+    return wrapper
 
 
 @torch.no_grad

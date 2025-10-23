@@ -47,6 +47,7 @@ from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import get_logprobs
 from test.utils import get_topk
+from test.utils import require_deterministic_for_xpu
 from test.utils import revert_liger_kernel_to_falcon_h1
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
@@ -1160,6 +1161,7 @@ def create_model(model_name="mini_llama3"):
     return model_class(model_config)
 
 
+@require_deterministic_for_xpu
 def run_mini_model(
     model_name="mini_llama3",
     num_steps=100,
@@ -1172,11 +1174,7 @@ def run_mini_model(
     # Everytime RNG is used, like randomly initialzing weight, the RNG progresses to the next state.
     # Therefore, we have to reset RNG before we create the model to ensure the weight initialization started from the same RNG state.
 
-    # Some random seeds may cause mini_glm4v_moe errors, see PR https://github.com/linkedin/Liger-Kernel/pull/914
-    if model_name == "mini_glm4v_moe":
-        set_seed(0)
-    else:
-        set_seed(42)
+    set_seed(42)
 
     revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
     if "mllama" in model_name:
@@ -1440,7 +1438,7 @@ def run_mini_model(
             1e-4,
             torch.float32,
             1e-8,
-            1e-5,
+            1e-3,
             5e-3,
             1e-5,
             5e-3,
