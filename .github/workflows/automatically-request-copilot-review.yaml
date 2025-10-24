@@ -1,0 +1,45 @@
+name: Automatic Copilot Code Review
+
+on:
+  pull_request_target:
+    types:
+      - opened            # brand-new PRs
+      - ready_for_review  # PR drafts marked "Ready for review"
+      - reopened          # PRs that were closed then reopened
+      - synchronize       # PRs updated with new commits
+
+jobs:
+  add-copilot-to-pr-reviews:
+    name: "Add Copilot to PR reviews"
+    if: ${{ github.event.pull_request.draft == false }}   # skip still-draft PRs
+    runs-on: ubuntu-latest
+    environment: copilot-review
+
+    steps:
+      - name: Debug environment and secrets
+        run: |
+          echo "Environment: copilot-review"
+          echo "Repository: ${{ github.repository }}"
+          echo "PR from repo: ${{ github.event.pull_request.head.repo.full_name }}"
+          echo "Is fork: ${{ github.event.pull_request.head.repo.full_name != github.repository }}"
+          echo "Secret exists: ${{ secrets.GH_TOKEN_COPILOT_REVIEW != '' }}"
+          echo "Secret length: ${#GH_TOKEN_COPILOT_REVIEW}"
+        env:
+          GH_TOKEN_COPILOT_REVIEW: ${{ secrets.GH_TOKEN_COPILOT_REVIEW }}
+      
+      - name: Test GitHub token
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Testing default GitHub token..."
+          gh auth status
+      
+      - name: Install gh-copilot-review extension
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install ChrisCarini/gh-copilot-review
+
+      - name: Ask Copilot to review this PR
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN_COPILOT_REVIEW }}   # gh CLI picks this up automatically
+        run: gh copilot-review "${{ github.event.pull_request.html_url }}"
