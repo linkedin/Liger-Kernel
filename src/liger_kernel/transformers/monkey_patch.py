@@ -1971,7 +1971,8 @@ def apply_liger_kernel_to_glm4v_moe(
     if rope:
         raise NotImplementedError("liger_rotary_pos_emb is not available for Glm4 models.")
     if rms_norm:
-        modeling_glm4v_moe.Glm4vRMSNorm = LigerRMSNormForGlm4
+        modeling_glm4v_moe.Glm4vMoeRMSNorm = LigerRMSNormForGlm4
+        modeling_glm4v_moe.Glm4vMoeTextRMSNorm = LigerRMSNormForGlm4
     if cross_entropy:
         from transformers.loss.loss_utils import nn
 

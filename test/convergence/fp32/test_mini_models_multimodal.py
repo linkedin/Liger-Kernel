@@ -1,6 +1,8 @@
 import functools
 import os
 
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Ensure deterministic behavior with CuBLAS
+
 import pytest
 import torch
 
@@ -29,6 +31,7 @@ from test.utils import load_image_processing_config
 from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
+from test.utils import require_deterministic
 from test.utils import revert_liger_kernel_to_gemma3
 from test.utils import revert_liger_kernel_to_internvl
 from test.utils import revert_liger_kernel_to_llama4
@@ -878,6 +881,7 @@ def create_model(model_name):
     return model_class(model_config)
 
 
+@require_deterministic
 def run_mini_model_multimodal(
     model_name="mini_qwen2_vl",
     num_steps=100,
