@@ -24,6 +24,7 @@ from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import get_logprobs
 from test.utils import get_topk
+from test.utils import require_deterministic
 from test.utils import is_torchvision_available
 from test.utils import load_image_processing_config
 from test.utils import load_processor_config
@@ -878,6 +879,7 @@ def create_model(model_name):
     return model_class(model_config)
 
 
+require_deterministic
 def run_mini_model_multimodal(
     model_name="mini_qwen2_vl",
     num_steps=100,

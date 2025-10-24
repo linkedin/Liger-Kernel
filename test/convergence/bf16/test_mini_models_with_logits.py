@@ -47,6 +47,7 @@ from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import get_logprobs
 from test.utils import get_topk
+from test.utils import require_deterministic
 from test.utils import revert_liger_kernel_to_falcon_h1
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
@@ -1164,6 +1165,7 @@ def create_model(model_name="mini_llama3"):
     return model_class(model_config)
 
 
+@require_deterministic
 def run_mini_model(
     model_name="mini_llama3",
     num_steps=100,
