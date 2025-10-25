@@ -6,19 +6,19 @@ from typing import Unpack
 import torch
 
 from transformers.models.smolvlm.modeling_smolvlm import SmolVLMCausalLMOutputWithPast
-from transformers.utils.generic import TransformersKwargs
+from transformers.utils.generic import can_return_tuple
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 if TYPE_CHECKING:
     from transformers.cache_utils import Cache
-    from transformers.utils.generic import can_return_tuple
+    from transformers.utils.generic import TransformersKwargs
 
 
 # Forward adapted to enable fused Linear + CE without materializing logits.
 # Mirrors the pattern used for other multimodal models (e.g., InternVL, LLaVA).
 @can_return_tuple
-def forward(
+def lce_forward(
     self,
     input_ids: Optional[torch.LongTensor] = None,
     attention_mask: Optional[torch.Tensor] = None,

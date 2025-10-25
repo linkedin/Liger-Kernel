@@ -596,6 +596,19 @@ def revert_liger_kernel_to_internvl(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_smolvlm2(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to SmolVLM2.
+    """
+
+    from transformers.models.smolvlm import modeling_smolvlm
+
+    importlib.reload(modeling_smolvlm)
+
+    model_config.model_class = modeling_smolvlm.SmolVLMForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_falcon_h1(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to FalconH1.
