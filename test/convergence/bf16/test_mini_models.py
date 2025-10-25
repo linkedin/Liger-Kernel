@@ -1,3 +1,7 @@
+import os
+
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Ensure deterministic behavior with CuBLAS
+
 import pytest
 import torch
 
@@ -47,6 +51,7 @@ from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import get_logprobs
 from test.utils import get_topk
+from test.utils import require_deterministic
 from test.utils import revert_liger_kernel_to_falcon_h1
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
@@ -1165,6 +1170,7 @@ def create_model(model_name="mini_llama4"):
     return model_class(model_config)
 
 
+@require_deterministic
 def run_mini_model(
     model_name="mini_llama4",
     num_steps=100,
@@ -1522,7 +1528,6 @@ def run_mini_model(
                     not GLM4V_AVAILABLE,
                     reason="Glm4v not available in this version of transformers",
                 ),
-                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(
@@ -1542,7 +1547,6 @@ def run_mini_model(
                     not GLM4V_MOE_AVAILABLE,
                     reason="Glm4v_moe not available in this version of transformers",
                 ),
-                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(
