@@ -170,6 +170,13 @@ try:
 except ImportError:
     SMOLVLM2_AVAILABLE = False
 
+try:
+    from num2words import num2words  # noqa: F401
+
+    NUM2WORDS_AVAILABLE = True
+except ImportError:
+    NUM2WORDS_AVAILABLE = False
+
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -1121,10 +1128,16 @@ def run_mini_model_multimodal(
             1e-5,
             5e-3,
             1e-5,
-            marks=pytest.mark.skipif(
-                not SMOLVLM2_AVAILABLE,
-                reason="SmolVLM2 not available in this version of transformers",
-            ),
+            marks=[
+                pytest.mark.skipif(
+                    not SMOLVLM2_AVAILABLE,
+                    reason="SmolVLM2 not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    not NUM2WORDS_AVAILABLE,
+                    reason="num2words must be present to run SmolVLMProcessor",
+                ),
+            ],
         ),
         pytest.param(
             "mini_qwen2_5_vl",
