@@ -3,7 +3,13 @@ from typing import Optional
 import torch
 
 from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
+from dataclasses import dataclass
 
+@dataclass
+class DapoConfig:
+    normalizer: float = None
+    entropy_adv_alpha: float = None
+    entropy_adv_kappa: float = None
 
 def k3_loss_fn(log_p, log_q):
     # computes k3 estimate of KL[q, p]
@@ -26,15 +32,18 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         ref_per_token_logps=None,  # shape: [chunk_size, seq_len]
         old_per_token_logps=None,
         ref_log_probs=None,  # used when ref_per_token_logps is None (shape: [chunk_size, seq_len, vocab_size])
+        sampling_ratio=None,
         epsilon_low=0.2,
         epsilon_high=0.2,
         beta=0.04,
-        loss_type="bnpo",  # ["grpo", "bnpo", "dr_grpo"]
+        loss_type="bnpo",  # ["grpo", "bnpo", "dr_grpo", "dapo"]
         max_completion_length=None,  # Required for dr_grpo
         importance_sampling_level="token",  # ["token", "sequence"] - new parameter for GSPO
-        **kwargs,
+        dapo_config=None,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
+        with torch.no_grad():
+            entropies = -(log_probs.exp() * log_probs).sum(dim=-1)
         per_token_logps = log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(
             -1
         )  # (batch_size, seq_len)
@@ -48,6 +57,16 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
                     )
             else:
                 ref_per_token_logps = per_token_logps.detach()
+
+        alpha = getattr(dapo_config, "entropy_adv_alpha", None)
+        kappa = getattr(dapo_config, "entropy_adv_kappa", None)
+        if alpha is not None and kappa is not None:
+            entropy_adv_alpha = alpha
+            entropy_adv_kappa = kappa
+            entropy_term = entropy_adv_alpha * entropies.detach()
+            adv_kappa_term = advantages.abs() / entropy_adv_kappa
+            entropy_term = torch.min(entropy_term, adv_kappa_term)
+            advantages = advantages + entropy_term
 
         # Compute policy gradient loss with importance sampling ratio
         old_per_token_logps = old_per_token_logps if old_per_token_logps is not None else per_token_logps.detach()
@@ -77,6 +96,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
 
+        if sampling_ratio is not None:
+            per_token_loss = per_token_loss * sampling_ratio
+
         # Note: We normalize by the number of tokens in the batch (using full_attention_mask),
         # which is consistent with the DAPO loss implementation (https://arxiv.org/html/2503.14476v1)
         # and TRL GRPO implementation
@@ -94,8 +116,21 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             if max_completion_length is None:
                 raise ValueError("max_completion_length must be provided for loss_type 'dr_grpo'")
             loss = (per_token_loss * attention_mask).sum() / (full_attention_mask.shape[0] * max_completion_length)
+        elif loss_type == "dapo":
+            norm = getattr(dapo_config, "normalizer", None)
+            if norm is None:
+                raise ValueError("DapoConfig and normalizer must be provided for loss_type 'dapo'")
+            loss = (per_token_loss * attention_mask).sum() / norm
         else:
             raise ValueError(f"Unknown loss type: {loss_type}")
+        completion_token_count = full_attention_mask.sum().clamp(min=1.0)
+
+        def masked_batch_mean(x):
+            if x.shape[1] == 1:  # when importance_sampling_level == "sequence"
+                return x.mean()
+            else:
+                return (x * attention_mask).sum() / completion_token_count
+        mean_entropy = masked_batch_mean(entropies)
 
         # Calculate metrics
         metrics = []
@@ -115,6 +150,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             is_clipped = is_clipped.unsqueeze(1).expand_as(attention_mask)
 
         metrics.append((is_clipped * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0))
+        metrics.append(mean_entropy)
         return loss, metrics
 
     @classmethod
@@ -132,6 +168,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
+        sampling_ratio=None,
         beta=0.04,
         epsilon_low=0.2,
         epsilon_high=0.2,
@@ -142,6 +179,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         compiled=True,
         use_ref_model=True,
         chunk_size=1,
+        dapo_config=None,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -181,6 +219,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             ref_input=ref_input,
             ref_weight=ref_weight,
             ref_bias=ref_bias,
+            sampling_ratio=sampling_ratio,
             beta=beta,
             epsilon_low=epsilon_low,
             epsilon_high=epsilon_high,
@@ -191,6 +230,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             use_ref_model=use_ref_model,
             chunk_size=chunk_size,
             importance_sampling_level=importance_sampling_level,
+            dapo_config=dapo_config,
         )
 
     @staticmethod
@@ -211,6 +251,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_ref_input
             None,  # grad_ref_weight
             None,  # grad_ref_bias
+            None,  # grad_sampling_ratio
             None,  # grad_beta
             None,  # grad_epsilon_low
             None,  # grad_epsilon_high
@@ -221,6 +262,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_compiled
             None,  # grad_use_ref_model
             None,  # grad_chunk_size
+            None,  # grad_dapo_config
         )
 
 
@@ -278,6 +320,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
+        sampling_ratio=None,
+        dapo_config=None,
     ):
         return LigerFusedLinearGRPOFunction.apply(
             _input,
@@ -291,6 +335,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             ref_input,
             ref_weight,
             ref_bias,
+            sampling_ratio,
             self.beta,
             self.epsilon_low,
             self.epsilon_high,
@@ -301,4 +346,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.compiled,
             self.use_ref_model,
             self.chunk_size,
+            dapo_config,
         )
