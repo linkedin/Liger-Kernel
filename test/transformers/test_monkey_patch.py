@@ -1716,6 +1716,7 @@ def test_apply_liger_kernel_to_instance_for_smolvlm2():
         assert isinstance(dummy_model_instance, SmolVLMForConditionalGeneration)
 
         # Check that model instance variables are not yet patched with Liger modules
+        # Text model checks
         assert inspect.getsource(dummy_model_instance.model.text_model.norm.forward) != inspect.getsource(
             LigerRMSNorm.forward
         )
@@ -1724,10 +1725,19 @@ def test_apply_liger_kernel_to_instance_for_smolvlm2():
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
+        # Vision model checks
+        assert inspect.getsource(dummy_model_instance.model.vision_model.post_layernorm.forward) != inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        for encoder_layer in dummy_model_instance.model.vision_model.encoder.layers:
+            assert inspect.getsource(encoder_layer.layer_norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(encoder_layer.layer_norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
+
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's instance variables were correctly patched with Liger modules
+        # Text model checks
         assert inspect.getsource(dummy_model_instance.model.text_model.norm.forward) == inspect.getsource(
             LigerRMSNorm.forward
         )
@@ -1735,6 +1745,14 @@ def test_apply_liger_kernel_to_instance_for_smolvlm2():
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        # Vision model checks
+        assert inspect.getsource(dummy_model_instance.model.vision_model.post_layernorm.forward) == inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        for encoder_layer in dummy_model_instance.model.vision_model.encoder.layers:
+            assert inspect.getsource(encoder_layer.layer_norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(encoder_layer.layer_norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
 
         try:
             print(dummy_model_instance)
