@@ -1,11 +1,11 @@
 from typing import TYPE_CHECKING
 from typing import Optional
 from typing import Union
-from transformers.processing_utils import Unpack
 
 import torch
 
 from transformers.models.smolvlm.modeling_smolvlm import SmolVLMCausalLMOutputWithPast
+from transformers.processing_utils import Unpack
 from transformers.utils.generic import can_return_tuple
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
