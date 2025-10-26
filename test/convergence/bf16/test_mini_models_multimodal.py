@@ -1134,7 +1134,7 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not NUM2WORDS_AVAILABLE,
                     reason="num2words must be present to run SmolVLMProcessor",
-                );
+                ),
             ],
         ),
         pytest.param(
