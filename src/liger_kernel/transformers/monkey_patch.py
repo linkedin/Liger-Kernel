@@ -2153,7 +2153,10 @@ def apply_liger_kernel_to_smolvlm(
 
         nn.functional.cross_entropy = liger_cross_entropy
     if fused_linear_cross_entropy:
-        modeling_smolvlm.SmolVLMForConditionalGeneration.forward = smolvlm_lce_forward
+        if model is not None:
+            model.forward = MethodType(smolvlm_lce_forward, model)
+        else:
+            modeling_smolvlm.SmolVLMForConditionalGeneration.forward = smolvlm_lce_forward
     if rms_norm:
         modeling_smolvlm.SmolVLMRMSNorm = LigerRMSNorm
 
