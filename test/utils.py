@@ -585,12 +585,10 @@ def revert_liger_kernel_to_internvl(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to InternVL.
     """
-    import torch.nn as nn
 
     from transformers.models.internvl import modeling_internvl
     from transformers.models.qwen2 import modeling_qwen2
 
-    importlib.reload(nn)
     importlib.reload(modeling_internvl)
     importlib.reload(modeling_qwen2)
 
