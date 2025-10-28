@@ -2098,7 +2098,7 @@ def apply_liger_kernel_to_internvl(
             vision_model: InternVLVisionModel = model.vision_tower
         else:
             raise TypeError(
-                f"Unsupported smolvlm model type. `model` must be `InternVLForConditionalGeneration`, `InternVLModel`. Got: {type(model)}"
+                f"Unsupported internvl model type. `model` must be `InternVLForConditionalGeneration`, `InternVLModel`. Got: {type(model)}"
             )
 
         text_model_name = model.config.text_config.model_type
