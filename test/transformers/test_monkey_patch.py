@@ -1701,7 +1701,7 @@ def test_apply_liger_kernel_to_instance_for_smolvlm2():
 
         # Instantiate a dummy model
         config = transformers.models.smolvlm.configuration_smolvlm.SmolVLMConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             text_config={
                 "rms_norm_eps": 1e-5,
                 "hidden_size": 576,
