@@ -2055,13 +2055,14 @@ def apply_liger_kernel_to_internvl(
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
     assert not (cross_entropy and fused_linear_cross_entropy), (
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
-    import torch.nn as nn
+    import torch.nn as torch_nn
 
     from transformers.models.internvl import modeling_internvl
     from transformers.models.internvl.modeling_internvl import InternVLForConditionalGeneration
@@ -2131,15 +2132,15 @@ def apply_liger_kernel_to_internvl(
         # Patch vision model LayerNorm layers
         if layer_norm:
             # Patch layernorm
-            if isinstance(vision_model.layernorm, nn.LayerNorm):
+            if isinstance(vision_model.layernorm, torch_nn.LayerNorm):
                 _patch_layer_norm_module(vision_model.layernorm)
 
             # Patch encoder layers
             for encoder_layer in vision_model.encoder.layer:
                 encoder_layer: InternVLVisionLayer
-                if isinstance(encoder_layer.layernorm_before, nn.LayerNorm):
+                if isinstance(encoder_layer.layernorm_before, torch_nn.LayerNorm):
                     _patch_layer_norm_module(encoder_layer.layernorm_before)
-                if isinstance(encoder_layer.layernorm_after, nn.LayerNorm):
+                if isinstance(encoder_layer.layernorm_after, torch_nn.LayerNorm):
                     _patch_layer_norm_module(encoder_layer.layernorm_after)
 
 
