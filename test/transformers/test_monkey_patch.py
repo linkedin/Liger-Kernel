@@ -1637,21 +1637,30 @@ def test_apply_liger_kernel_to_instance_for_internvl():
 
         # Instantiate a dummy model
         config = transformers.models.internvl.configuration_internvl.InternVLConfig(
-            torch_dtype=torch.bfloat16,
-            rms_norm_eps=1e-5,
-            hidden_size=32,
-            intermediate_size=48,
-            hidden_act="silu",
-            num_hidden_layers=2,
-            num_attention_heads=2,
-            max_position_embeddings=128,
-            vocab_size=1000,
-            vision_config={
-                "depth": 4,
-                "embed_dim": 128,
-                "num_heads": 8,
-                "hidden_size": 1024,
+            dtype=torch.bfloat16,
+            text_config={
+                "rms_norm_eps": 1e-5,
+                "hidden_size": 256,  # 1024
+                "intermediate_size": 1024,  # 4096
+                "hidden_act": "silu",
+                "num_hidden_layers": 4,  # 24
+                "num_attention_heads": 4,  # 16
+                "num_key_value_heads": 2,  # 16
+                "max_position_embeddings": 4096,  # 8192
+                "vocab_size": 32000,  # 151936
+                "bos_token_id": 1,
+                "eos_token_id": 2,
+                "pad_token_id": 2,
+                "tie_word_embeddings": False,
             },
+            vision_config={
+                "hidden_size": 256,  # 1024
+                "intermediate_size": 1024,  # 4096
+                "num_hidden_layers": 4,  # 24
+                "num_attention_heads": 4,  # 16
+            },
+            image_token_id=10,
+            attn_implementation="sdpa",  # default value, pytorch native attention
         )
         dummy_model_instance = InternVLForConditionalGeneration._from_config(config)
 
@@ -1692,7 +1701,7 @@ def test_apply_liger_kernel_to_instance_for_smolvlm2():
 
         # Instantiate a dummy model
         config = transformers.models.smolvlm.configuration_smolvlm.SmolVLMConfig(
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             text_config={
                 "rms_norm_eps": 1e-5,
                 "hidden_size": 576,
