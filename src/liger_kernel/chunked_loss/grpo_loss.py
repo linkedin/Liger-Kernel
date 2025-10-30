@@ -5,6 +5,9 @@ import torch
 from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
 from dataclasses import dataclass
 
+# For dapo compute_loss semantics check below url
+# https://github.com/MotifTechnologies/trl/blob/5e512d71e0f642ea5ac0d901cec364d3a3d55c08/trl/trainer/dapo_trainer.py#L1813
+
 @dataclass
 class DapoConfig:
     normalizer: float = None
