@@ -42,6 +42,8 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next
 from liger_kernel.transformers import apply_liger_kernel_to_smollm3
 from test.utils import DEFAULT_DATASET_PATH
@@ -73,6 +75,8 @@ from test.utils import revert_liger_kernel_to_qwen3_vl
 from test.utils import revert_liger_kernel_to_qwen3_vl_moe
 from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import revert_liger_kernel_to_qwen3_moe
+from test.utils import revert_liger_kernel_to_qwen3_vl
+from test.utils import revert_liger_kernel_to_qwen3_vl_moe
 from test.utils import revert_liger_kernel_to_qwen3_next
 from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import set_seed
@@ -118,6 +122,32 @@ try:
     QWEN2_5_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.52.4")
 except ImportError:
     QWEN2_5_VL_AVAILABLE = False
+
+
+try:
+    import transformers
+
+    from packaging import version
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLForConditionalGeneration
+
+    QWEN3_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.57.0")
+except ImportError:
+    QWEN3_VL_AVAILABLE = False
+
+
+try:
+    import transformers
+
+    from packaging import version
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeConfig
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeTextConfig
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeVisionConfig
+    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
+
+    QWEN3_VL_MOE_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.57.0")
+except ImportError:
+    QWEN3_VL_MOE_AVAILABLE = False
 
 try:
     from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
@@ -804,8 +834,9 @@ if QWEN3_VL_MOE_AVAILABLE:
             video_token_id=31998,
             vision_start_token_id=31995,
             vision_end_token_id=31996,
-            text_config=dict(
+            text_config=Qwen3VLMoeTextConfig(
                 attention_dropout=0.0,
+                attention_bias=False,
                 attn_implementation="sdpa",
                 bos_token_id=1,
                 eos_token_id=2,
@@ -830,14 +861,12 @@ if QWEN3_VL_MOE_AVAILABLE:
                 use_cache=True,
                 vocab_size=32000,
                 decoder_sparse_step=1,
-                moe_intermediate_size=512,
+                moe_intermediate_size=3072,
                 num_experts_per_tok=2,
                 num_experts=4,
-                norm_topk_prob=False,
-                output_router_logits=False,
-                router_aux_loss_coef=0.001,
-            ),
-            vision_config=dict(
+                mlp_only_layers=[],
+            ).to_dict(),
+            vision_config=Qwen3VLMoeVisionConfig(
                 depth=4,
                 hidden_size=128,
                 initializer_range=0.02,
@@ -850,7 +879,7 @@ if QWEN3_VL_MOE_AVAILABLE:
                 out_hidden_size=896,
                 num_position_embeddings=576,
                 deepstack_visual_indexes=[1, 2, 3],
-            ),
+            ).to_dict(),
         ),
     )
 
@@ -1334,9 +1363,6 @@ def run_mini_model(
 
         if "llava" in model_name:
             apply_liger_kernel_to_llama(**kwargs)
-
-        if "qwen3_vl" in model_name:
-            kwargs = {}
 
         kwargs["fused_linear_cross_entropy"] = False
         kwargs["cross_entropy"] = False

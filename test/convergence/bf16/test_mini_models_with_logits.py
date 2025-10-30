@@ -139,10 +139,15 @@ except ImportError:
     QWEN3_VL_AVAILABLE = False
 
 try:
+    import transformers
+
+    from packaging import version
     from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeConfig
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeTextConfig
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeVisionConfig
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
 
-    QWEN3_VL_MOE_AVAILABLE = True
+    QWEN3_VL_MOE_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.57.0")
 except ImportError:
     QWEN3_VL_MOE_AVAILABLE = False
 
@@ -635,11 +640,13 @@ if QWEN3_VL_MOE_AVAILABLE:
             video_token_id=31998,
             vision_start_token_id=31995,
             vision_end_token_id=31996,
-            text_config=dict(
+            text_config=Qwen3VLMoeTextConfig(
                 attention_dropout=0.0,
+                attention_bias=False,
                 attn_implementation="sdpa",
                 bos_token_id=1,
                 eos_token_id=2,
+                head_dim=112,
                 hidden_act="silu",
                 hidden_size=896,
                 initializer_range=0.02,
@@ -660,17 +667,14 @@ if QWEN3_VL_MOE_AVAILABLE:
                 use_cache=True,
                 vocab_size=32000,
                 decoder_sparse_step=1,
-                moe_intermediate_size=512,
+                moe_intermediate_size=3072,
                 num_experts_per_tok=2,
                 num_experts=4,
-                norm_topk_prob=False,
-                output_router_logits=False,
-                router_aux_loss_coef=0.001,
-            ),
-            vision_config=dict(
+                mlp_only_layers=[],
+            ).to_dict(),
+            vision_config=Qwen3VLMoeVisionConfig(
                 depth=4,
                 hidden_size=128,
-                hidden_act="gelu_pytorch_tanh",
                 initializer_range=0.02,
                 intermediate_size=256,
                 num_heads=8,
@@ -681,7 +685,7 @@ if QWEN3_VL_MOE_AVAILABLE:
                 out_hidden_size=896,
                 num_position_embeddings=576,
                 deepstack_visual_indexes=[1, 2, 3],
-            ),
+            ).to_dict(),
         ),
     )
 
@@ -1323,7 +1327,7 @@ def run_mini_model(
             "rms_norm": True,
         }
 
-        if "glm4" in model_name or "llama4" in model_name or "qwen3_next" in model_name:
+        if "glm4" in model_name or "llama4" in model_name:
             kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -1337,15 +1341,11 @@ def run_mini_model(
 
         if "llava" in model_name:
             apply_liger_kernel_to_llama(**kwargs)
-
-        # temporary for development
-        if "qwen3_vl" in model_name: 
-            kwargs = {}
-
-
+            
         kwargs["fused_linear_cross_entropy"] = False
         kwargs["cross_entropy"] = False
 
+            
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)

@@ -489,6 +489,7 @@ def revert_liger_kernel_to_qwen2_5_vl(model_config: MiniModelConfig):
     model_config.model_class = modeling_qwen2_5_vl.Qwen2_5_VLForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
+
 def revert_liger_kernel_to_qwen3_vl(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Qwen3-VL.

@@ -91,7 +91,6 @@ try:
 except ImportError:
     QWEN3_VL_AVAILABLE = False
 
-
 try:
     from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeConfig
     from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeTextConfig
@@ -744,9 +743,7 @@ if QWEN3_VL_MOE_AVAILABLE:
                 moe_intermediate_size=1024,
                 num_experts_per_tok=2,
                 num_experts=4,
-                norm_topk_prob=False,
-                output_router_logits=False,
-                router_aux_loss_coef=0.001,
+                mlp_only_layers=[],
             ).to_dict(),
         ),
     )
@@ -1068,18 +1065,13 @@ def run_mini_model_multimodal(
             "cross_entropy": False,
         }
 
-        if "qwen2_5_vl" not in model_name and "llava" not in model_name:
+        if "qwen2_5_vl" not in model_name and "llava" not in model_name and "qwen3_vl" not in model_name:
             kwargs["layer_norm"] = True
 
         if "gemma" in model_name:
             kwargs["geglu"] = True
         else:
             kwargs["swiglu"] = True
-
-        if "qwen3_vl" in model_name:
-            kwargs.pop("layer_norm", None)
-            #temp for development
-            kwargs = {}
 
         if "llava" in model_name:
             apply_liger_kernel_to_llama(**kwargs)

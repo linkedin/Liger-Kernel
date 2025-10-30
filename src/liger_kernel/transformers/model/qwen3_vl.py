@@ -2,11 +2,13 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 from typing import Union
+
 import torch
 
-from transformers.utils import can_return_tuple
-from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLCausalLMOutputWithPast
+from transformers.utils import can_return_tuple
+
+from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 
 
 @can_return_tuple
@@ -17,7 +19,7 @@ def lce_forward(
     position_ids: Optional[torch.LongTensor] = None,
     past_key_values: Optional[List[torch.FloatTensor]] = None,
     inputs_embeds: Optional[torch.FloatTensor] = None,
-    labels: Optional[torch.LongTensor] = None, 
+    labels: Optional[torch.LongTensor] = None,
     use_cache: Optional[bool] = None,
     output_attentions: Optional[bool] = None,
     output_hidden_states: Optional[bool] = None,
@@ -32,7 +34,6 @@ def lce_forward(
     skip_logits: Optional[bool] = None,
     **kwargs,
 ) -> Union[Tuple, Qwen3VLCausalLMOutputWithPast]:
-
     """
     labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
         Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
@@ -101,7 +102,7 @@ def lce_forward(
         **kwargs,
     )
 
-    hidden_states = outputs[0] 
+    hidden_states = outputs[0]
 
     shift_labels = kwargs.pop("shift_labels", None)
     loss = None
