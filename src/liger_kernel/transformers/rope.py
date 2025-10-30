@@ -1,3 +1,7 @@
+from typing import Optional, Tuple
+
+import torch
+
 from liger_kernel.ops.rope import LigerRopeFunction
 
 
@@ -18,3 +22,46 @@ def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """
 
     return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+
+
+def liger_rotary_pos_emb_with_cast(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    position_ids: Optional[torch.Tensor] = None,
+    unsqueeze_dim: int = 1,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+
+    orig_q_dtype, orig_k_dtype = q.dtype, k.dtype
+
+    q32 = q.to(torch.float32)
+    k32 = k.to(torch.float32)
+    cos32 = cos.to(torch.float32)
+    sin32 = sin.to(torch.float32)
+
+    q_out, k_out = liger_rotary_pos_emb(q32, k32, cos32, sin32, position_ids=position_ids, unsqueeze_dim=unsqueeze_dim)
+    return q_out.to(orig_q_dtype), k_out.to(orig_k_dtype)
+
+
+def liger_rotary_pos_emb_with_cast_and_leading_batch(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    position_ids: Optional[torch.Tensor] = None,
+    unsqueeze_dim: int = 1,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+
+
+    orig_q_dtype, orig_k_dtype = q.dtype, k.dtype
+
+    q32 = q.to(torch.float32).unsqueeze(0)
+    k32 = k.to(torch.float32).unsqueeze(0)
+    cos32 = cos.to(torch.float32).unsqueeze(0)
+    sin32 = sin.to(torch.float32).unsqueeze(0)
+
+    q_out, k_out = liger_rotary_pos_emb(
+        q32, k32, cos32, sin32, position_ids=position_ids, unsqueeze_dim=unsqueeze_dim
+    )
+    return q_out.to(orig_q_dtype).squeeze(0), k_out.to(orig_k_dtype).squeeze(0)

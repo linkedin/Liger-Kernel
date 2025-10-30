@@ -36,7 +36,11 @@ from liger_kernel.transformers.model.qwen3_vl_moe import lce_forward as qwen3_vl
 from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_forward
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
-from liger_kernel.transformers.rope import liger_rotary_pos_emb
+from liger_kernel.transformers.rope import (
+    liger_rotary_pos_emb,
+    liger_rotary_pos_emb_with_cast,
+    liger_rotary_pos_emb_with_cast_and_leading_batch,
+)
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
@@ -59,24 +63,6 @@ def _bind_method_to_module(module, method_name: str, new_method: Callable):
     # Binds a new method to a module instance so that self is passed as the first argument
     module.__dict__[method_name] = new_method.__get__(module, module.__class__)
 
-
-def _liger_qwen3_vl_apply_rotary_pos_emb_vision(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
-    """
-    Wrapper around liger_rotary_pos_emb used by Qwen3-VL vision attention.
-    Casts inputs to float32 before applying the kernel and restores original dtype afterwards.
-    """
-
-    orig_q_dtype, orig_k_dtype = q.dtype, k.dtype
-
-    q = q.to(torch.float32).unsqueeze(0)
-    k = k.to(torch.float32).unsqueeze(0)
-
-    cos = cos.to(torch.float32).unsqueeze(0)
-    sin = sin.to(torch.float32).unsqueeze(0)
-
-    q_out, k_out = liger_rotary_pos_emb(q, k, cos, sin, position_ids=position_ids, unsqueeze_dim=unsqueeze_dim)
-
-    return q_out.to(orig_q_dtype).squeeze(0), k_out.to(orig_k_dtype).squeeze(0)
 
 
 def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True, row_mode=None):
@@ -1699,8 +1685,8 @@ def apply_liger_kernel_to_qwen3_vl(
     from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel
 
     if rope:
-        modeling_qwen3_vl.apply_rotary_pos_emb = liger_rotary_pos_emb
-        modeling_qwen3_vl.apply_rotary_pos_emb_vision = _liger_qwen3_vl_apply_rotary_pos_emb_vision
+        modeling_qwen3_vl.apply_rotary_pos_emb = liger_rotary_pos_emb_with_cast
+        modeling_qwen3_vl.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_with_cast_and_leading_batch
 
 
     if rms_norm:
@@ -1773,8 +1759,8 @@ def apply_liger_kernel_to_qwen3_vl_moe(
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextModel
 
     if rope:
-        modeling_qwen3_vl_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
-        modeling_qwen3_vl_moe.apply_rotary_pos_emb_vision = _liger_qwen3_vl_apply_rotary_pos_emb_vision
+        modeling_qwen3_vl_moe.apply_rotary_pos_emb = liger_rotary_pos_emb_with_cast
+        modeling_qwen3_vl_moe.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_with_cast_and_leading_batch
 
     if rms_norm:
         modeling_qwen3_vl_moe.Qwen3VLMoeTextRMSNorm = LigerRMSNorm
