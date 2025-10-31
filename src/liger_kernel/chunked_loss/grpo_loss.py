@@ -171,9 +171,6 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
 
         entropy_coeff = getattr(dapo_config, "entropy_coeff", None)
         if entropy_coeff is not None:
-            norm = getattr(dapo_config, "normalizer", None)
-            if norm is None:
-                raise ValueError("DapoConfig and normalizer must be provided for loss_type 'dapo'")
             entropy_loss = get_grpo_loss(
                 per_token_loss=entropies,
                 attention_mask=attention_mask,
