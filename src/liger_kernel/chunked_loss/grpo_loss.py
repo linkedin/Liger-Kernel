@@ -13,6 +13,7 @@ class DapoConfig:
     normalizer: float = None
     entropy_adv_alpha: float = None
     entropy_adv_kappa: float = None
+    entropy_coeff: float = None
 
 def k3_loss_fn(log_p, log_q):
     # computes k3 estimate of KL[q, p]
@@ -22,6 +23,51 @@ def k3_loss_fn(log_p, log_q):
 
 def clip_coef_fn(coef, epsilon_low, epsilon_high):
     return torch.clamp(coef, 1 - epsilon_low, 1 + epsilon_high)
+
+
+def get_grpo_loss(
+    per_token_loss,
+    attention_mask,
+    full_attention_mask,
+    loss_type="bnpo",
+    max_completion_length=None,
+    dapo_config=None,
+):
+    """
+    Normalize per-token loss based on the loss type.
+    
+    Args:
+        per_token_loss: Per-token loss tensor. Shape: (batch_size, seq_len)
+        attention_mask: Attention mask tensor. Shape: (batch_size, seq_len)
+        full_attention_mask: Full attention mask tensor. Shape: (batch_size, seq_len)
+        loss_type: Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo"). Defaults to "bnpo".
+        max_completion_length: Maximum completion length, required for "dr_grpo". Defaults to None.
+        dapo_config: DapoConfig instance, required for "dapo". Defaults to None.
+    
+    Returns:
+        torch.Tensor: Normalized loss scalar.
+    """
+    if loss_type == "grpo":
+        # Average per-sequence loss
+        loss = (
+            (per_token_loss * attention_mask).sum(-1) / torch.clamp(attention_mask.sum(-1), min=1.0)
+        ).sum() / full_attention_mask.shape[0]
+    elif loss_type == "bnpo":
+        # Batch Normalized Per-token loss (original implementation)
+        loss = (per_token_loss * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
+    elif loss_type == "dr_grpo":
+        # Dimension-Reduced GRPO (normalize by batch_size * max_completion_length)
+        if max_completion_length is None:
+            raise ValueError("max_completion_length must be provided for loss_type 'dr_grpo'")
+        loss = (per_token_loss * attention_mask).sum() / (full_attention_mask.shape[0] * max_completion_length)
+    elif loss_type == "dapo":
+        norm = getattr(dapo_config, "normalizer", None)
+        if norm is None:
+            raise ValueError("DapoConfig and normalizer must be provided for loss_type 'dapo'")
+        loss = (per_token_loss * attention_mask).sum() / norm
+    else:
+        raise ValueError(f"Unknown loss type: {loss_type}")
+    return loss
 
 
 class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
@@ -106,26 +152,14 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         # which is consistent with the DAPO loss implementation (https://arxiv.org/html/2503.14476v1)
         # and TRL GRPO implementation
         # (https://github.com/huggingface/trl/blob/e751a16df56e70190fb94bed4a2035eec3303777/trl/trainer/grpo_trainer.py#L966)
-        if loss_type == "grpo":
-            # Average per-sequence loss
-            loss = (
-                (per_token_loss * attention_mask).sum(-1) / torch.clamp(attention_mask.sum(-1), min=1.0)
-            ).sum() / full_attention_mask.shape[0]
-        elif loss_type == "bnpo":
-            # Batch Normalized Per-token loss (original implementation)
-            loss = (per_token_loss * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
-        elif loss_type == "dr_grpo":
-            # Dimension-Reduced GRPO (normalize by batch_size * max_completion_length)
-            if max_completion_length is None:
-                raise ValueError("max_completion_length must be provided for loss_type 'dr_grpo'")
-            loss = (per_token_loss * attention_mask).sum() / (full_attention_mask.shape[0] * max_completion_length)
-        elif loss_type == "dapo":
-            norm = getattr(dapo_config, "normalizer", None)
-            if norm is None:
-                raise ValueError("DapoConfig and normalizer must be provided for loss_type 'dapo'")
-            loss = (per_token_loss * attention_mask).sum() / norm
-        else:
-            raise ValueError(f"Unknown loss type: {loss_type}")
+        loss = get_grpo_loss(
+            per_token_loss=per_token_loss,
+            attention_mask=attention_mask,
+            full_attention_mask=full_attention_mask,
+            loss_type=loss_type,
+            max_completion_length=max_completion_length,
+            dapo_config=dapo_config,
+        )
         completion_token_count = full_attention_mask.sum().clamp(min=1.0)
 
         def masked_batch_mean(x):
@@ -134,6 +168,21 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             else:
                 return (x * attention_mask).sum() / completion_token_count
         mean_entropy = masked_batch_mean(entropies)
+
+        entropy_coeff = getattr(dapo_config, "entropy_coeff", None)
+        if entropy_coeff is not None:
+            norm = getattr(dapo_config, "normalizer", None)
+            if norm is None:
+                raise ValueError("DapoConfig and normalizer must be provided for loss_type 'dapo'")
+            entropy_loss = get_grpo_loss(
+                per_token_loss=entropies,
+                attention_mask=attention_mask,
+                full_attention_mask=full_attention_mask,
+                loss_type=loss_type,
+                max_completion_length=max_completion_length,
+                dapo_config=dapo_config,
+            )
+            loss = loss - (entropy_coeff * entropy_loss)
 
         # Calculate metrics
         metrics = []
@@ -151,6 +200,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
                 (coef_1.squeeze(-1) > 1 + epsilon_high) & (advantages > 0)
             )
             is_clipped = is_clipped.unsqueeze(1).expand_as(attention_mask)
+
+        if entropy_coeff is not None:
+            metrics.append(entropy_loss)
 
         metrics.append((is_clipped * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0))
         metrics.append(mean_entropy)
