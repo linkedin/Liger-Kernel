@@ -1351,6 +1351,9 @@ def run_mini_model(
         if "llava" in model_name:
             apply_liger_kernel_to_llama(**kwargs)
 
+        # fused_linear_cross_entropy is not supported in mini_granite3
+        kwargs["fused_linear_cross_entropy"] = True if model_name != "mini_granite3" else False
+        kwargs["cross_entropy"] = False
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
