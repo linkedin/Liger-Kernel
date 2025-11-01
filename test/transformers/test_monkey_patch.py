@@ -80,6 +80,15 @@ def is_internvl_available():
         return False
 
 
+def is_smolvlm_available():
+    try:
+        import transformers.models.smolvlm  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_llama4_available():
     try:
         import transformers.models.llama4  # noqa: F401
@@ -2271,21 +2280,30 @@ def test_apply_liger_kernel_to_instance_for_internvl():
 
         # Instantiate a dummy model
         config = transformers.models.internvl.configuration_internvl.InternVLConfig(
-            torch_dtype=torch.bfloat16,
-            rms_norm_eps=1e-5,
-            hidden_size=32,
-            intermediate_size=48,
-            hidden_act="silu",
-            num_hidden_layers=2,
-            num_attention_heads=2,
-            max_position_embeddings=128,
-            vocab_size=1000,
-            vision_config={
-                "depth": 4,
-                "embed_dim": 128,
-                "num_heads": 8,
-                "hidden_size": 1024,
+            dtype=torch.bfloat16,
+            text_config={
+                "rms_norm_eps": 1e-5,
+                "hidden_size": 256,  # 1024
+                "intermediate_size": 1024,  # 4096
+                "hidden_act": "silu",
+                "num_hidden_layers": 4,  # 24
+                "num_attention_heads": 4,  # 16
+                "num_key_value_heads": 2,  # 16
+                "max_position_embeddings": 4096,  # 8192
+                "vocab_size": 32000,  # 151936
+                "bos_token_id": 1,
+                "eos_token_id": 2,
+                "pad_token_id": 2,
+                "tie_word_embeddings": False,
             },
+            vision_config={
+                "hidden_size": 256,  # 1024
+                "intermediate_size": 1024,  # 4096
+                "num_hidden_layers": 4,  # 24
+                "num_attention_heads": 4,  # 16
+            },
+            image_token_id=10,
+            attn_implementation="sdpa",  # default value, pytorch native attention
         )
         dummy_model_instance = InternVLForConditionalGeneration._from_config(config)
 
@@ -2311,6 +2329,82 @@ def test_apply_liger_kernel_to_instance_for_internvl():
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_smolvlm_available(), reason="smolvlm module not available")
+def test_apply_liger_kernel_to_instance_for_smolvlm2():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.smolvlm.modeling_smolvlm"):
+        from transformers.models.smolvlm.modeling_smolvlm import SmolVLMForConditionalGeneration
+
+        # Instantiate a dummy model
+        config = transformers.models.smolvlm.configuration_smolvlm.SmolVLMConfig(
+            dtype=torch.bfloat16,
+            text_config={
+                "rms_norm_eps": 1e-5,
+                "hidden_size": 576,
+                "intermediate_size": 1536,
+                "hidden_act": "silu",
+                "num_hidden_layers": 2,
+                "num_attention_heads": 9,
+                "num_key_value_heads": 3,
+                "max_position_embeddings": 128,
+                "vocab_size": 1000,
+            },
+            vision_config={
+                "hidden_size": 768,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 2,
+                "num_attention_heads": 12,
+            },
+        )
+        dummy_model_instance = SmolVLMForConditionalGeneration._from_config(config)
+
+        assert isinstance(dummy_model_instance, SmolVLMForConditionalGeneration)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        # Text model checks
+        assert inspect.getsource(dummy_model_instance.model.text_model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.model.text_model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Vision model checks
+        assert inspect.getsource(dummy_model_instance.model.vision_model.post_layernorm.forward) != inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        for encoder_layer in dummy_model_instance.model.vision_model.encoder.layers:
+            assert inspect.getsource(encoder_layer.layer_norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(encoder_layer.layer_norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        # Text model checks
+        assert inspect.getsource(dummy_model_instance.model.text_model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.model.text_model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        # Vision model checks
+        assert inspect.getsource(dummy_model_instance.model.vision_model.post_layernorm.forward) == inspect.getsource(
+            LigerLayerNorm.forward
+        )
+        for encoder_layer in dummy_model_instance.model.vision_model.encoder.layers:
+            assert inspect.getsource(encoder_layer.layer_norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(encoder_layer.layer_norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
 
         try:
             print(dummy_model_instance)

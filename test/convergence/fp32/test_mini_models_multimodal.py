@@ -1,6 +1,8 @@
 import functools
 import os
 
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Ensure deterministic behavior with CuBLAS
+
 import pytest
 import torch
 
@@ -20,6 +22,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
+from liger_kernel.transformers import apply_liger_kernel_to_smolvlm
 from test.utils import FAKE_CONFIGS_PATH
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
@@ -31,6 +34,7 @@ from test.utils import load_image_processing_config
 from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
+from test.utils import require_deterministic
 from test.utils import revert_liger_kernel_to_gemma3
 from test.utils import revert_liger_kernel_to_internvl
 from test.utils import revert_liger_kernel_to_llama4
@@ -41,6 +45,7 @@ from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3_vl
 from test.utils import revert_liger_kernel_to_qwen3_vl_moe
+from test.utils import revert_liger_kernel_to_smolvlm2
 from test.utils import set_seed
 from test.utils import train_bpe_tokenizer
 
@@ -206,6 +211,26 @@ try:
     INTERNVL_AVAILABLE = True
 except ImportError:
     INTERNVL_AVAILABLE = False
+
+try:
+    # SmolVLM2 is only available in transformers>=4.50.0
+    from transformers.models.gpt2.tokenization_gpt2_fast import GPT2TokenizerFast
+    from transformers.models.smolvlm.configuration_smolvlm import SmolVLMConfig
+    from transformers.models.smolvlm.image_processing_smolvlm import SmolVLMImageProcessor
+    from transformers.models.smolvlm.modeling_smolvlm import SmolVLMForConditionalGeneration
+    from transformers.models.smolvlm.processing_smolvlm import SmolVLMProcessor
+    from transformers.models.smolvlm.video_processing_smolvlm import SmolVLMVideoProcessor
+
+    SMOLVLM2_AVAILABLE = True
+except ImportError:
+    SMOLVLM2_AVAILABLE = False
+
+try:
+    from num2words import num2words  # noqa: F401
+
+    NUM2WORDS_AVAILABLE = True
+except ImportError:
+    NUM2WORDS_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -616,6 +641,44 @@ if INTERNVL_AVAILABLE:
         ),
     )
 
+if SMOLVLM2_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_smolvlm2"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_smolvlm,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_smolvlm2,
+        model_class=SmolVLMForConditionalGeneration,
+        mini_model_config=SmolVLMConfig(
+            text_config=LlamaConfig(
+                attention_bias=False,
+                attention_dropout=0.0,
+                bos_token_id=1,
+                eos_token_id=2,
+                pad_token_id=2,
+                hidden_act="silu",
+                hidden_size=576,  # 576 for 256M model
+                initializer_range=0.041666666666666664,
+                intermediate_size=1536,  # 1536 for 256M model
+                max_position_embeddings=8192,
+                num_attention_heads=9,  # 9 for 256M model
+                num_hidden_layers=4,  # 30 -> reduced to 4 for testing
+                num_key_value_heads=3,  # 3 for 256M model
+                rms_norm_eps=1e-5,
+                rope_theta=100000,
+                tie_word_embeddings=False,
+                vocab_size=49280,
+            ),
+            vision_config={
+                "hidden_size": 768,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 4,  # 12 -> reduced to 4 for testing
+                "num_attention_heads": 12,
+                "image_size": 512,
+                "patch_size": 16,
+            },
+            image_token_id=49190,
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
+
 if QWEN2_5_VL_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen2_5_vl"] = MiniModelConfig(
         liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_qwen2_5_vl, fused_linear_cross_entropy=False),
@@ -1011,6 +1074,28 @@ def create_processor(model_name: str):
             image_processor=image_processor, tokenizer=qwen_tokenizer, video_processor=video_processor
         )
 
+    elif model_name == "mini_smolvlm2":
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(FAKE_CONFIGS_PATH, "HuggingFaceTB/SmolVLM2-256M-Video-Instruct/tokenizer_config.json")
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        gpt2_tokenizer = GPT2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        image_processor = SmolVLMImageProcessor(size={"longest_edge": 512})
+        video_processor = SmolVLMVideoProcessor()
+
+        # Return proper SmolVLM processor
+        return SmolVLMProcessor(
+            image_processor=image_processor, tokenizer=gpt2_tokenizer, video_processor=video_processor
+        )
+
     elif model_name.startswith("mini_llama4"):
         tokenizer_config = load_tokenizer_config(
             os.path.join(
@@ -1176,6 +1261,7 @@ def create_model(model_name):
     return model_class(model_config)
 
 
+@require_deterministic
 def run_mini_model_multimodal(
     model_name="mini_qwen2_vl",
     num_steps=100,
@@ -1330,6 +1416,28 @@ def run_mini_model_multimodal(
                 not INTERNVL_AVAILABLE,
                 reason="InternVL not available in this version of transformers",
             ),
+        ),
+        pytest.param(
+            "mini_smolvlm2",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not SMOLVLM2_AVAILABLE,
+                    reason="SmolVLM2 not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    not NUM2WORDS_AVAILABLE,
+                    reason="num2words must be present to run SmolVLMProcessor",
+                ),
+            ],
         ),
         pytest.param(
             "mini_qwen2_5_vl",
