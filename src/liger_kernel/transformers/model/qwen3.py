@@ -81,6 +81,8 @@ def lce_forward(
     kept_hidden_states = hidden_states[:, slice_indices, :]
 
     shift_labels = kwargs.pop("shift_labels", None)
+    # Remove output-control parameters that shouldn't be passed to loss functions
+    kwargs.pop("return_dict", None)
     logits = None
     loss = None
 
