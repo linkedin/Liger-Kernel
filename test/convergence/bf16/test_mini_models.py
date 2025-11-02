@@ -1713,6 +1713,25 @@ def run_mini_model(
             ],
         ),
         pytest.param(
+            "mini_gpt_oss",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,
+            5e-2,
+            1e-1,
+            1e-1,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not GPT_OSS_AVAILABLE,
+                    reason="GPT-OSS not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
             "mini_qwen2_vl",
             32,
             1e-5,
