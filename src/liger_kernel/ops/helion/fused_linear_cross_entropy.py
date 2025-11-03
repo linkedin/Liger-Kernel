@@ -3,8 +3,9 @@ import helion.language as hl
 import torch
 
 
-@helion.kernel(autotune_effort="none")
-def fused_linear_cross_entropy_fwd(
+# TODO: autotune and find the best configs for different devices
+@helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
+def fused_linear_cross_entropy_fwd_bwd(
     x: torch.Tensor,
     weight: torch.Tensor,
     target: torch.Tensor,
@@ -20,7 +21,7 @@ def fused_linear_cross_entropy_fwd(
         ignore_index: index to ignore in the target
         reduction: reduction to apply to the loss
     Returns:
-        loss: loss tensor of shape [1]
+        loss: loss tensor of shape [1] if reduction is "mean" or "sum", [BT] otherwise
     """
     BT, H = x.size()
     V = weight.size(0)
@@ -28,14 +29,15 @@ def fused_linear_cross_entropy_fwd(
     block_size_h = hl.register_block_size(H)
     block_size_v = hl.register_block_size(V)
 
-    logits = torch.empty(BT, V, device=x.device, dtype=torch.float32)
-    lse = torch.full((BT,), fill_value=-torch.inf, device=x.device, dtype=torch.float32)  # DEBUG
-    nll = torch.zeros(BT, device=x.device, dtype=torch.float32)
-    neg_target_logits = torch.zeros(BT, device=x.device, dtype=torch.float32)
+    nll = torch.zeros(BT, device=x.device, dtype=torch.float32) 
     grad_x = torch.zeros_like(x, dtype=torch.float32)
     grad_w = torch.zeros_like(weight, dtype=torch.float32)
-    grad_logits = torch.zeros_like(logits, dtype=torch.float32)
 
+    # May be useful for splitting fwd and bwd
+    # lse = torch.full((BT,), fill_value=-torch.inf, device=x.device, dtype=torch.float32)  
+    # neg_target_logits = torch.zeros(BT, device=x.device, dtype=torch.float32) 
+
+    n_non_ignore = (target != ignore_index).sum().unsqueeze(0)
 
     for tile_bt in hl.tile(BT, block_size=block_size_bt):
         m_i = hl.zeros([tile_bt], dtype=torch.float32) - float("inf")
@@ -51,7 +53,6 @@ def fused_linear_cross_entropy_fwd(
                 weight_tile = weight[tile_v, tile_h]
                 acc = hl.dot(x_tile, weight_tile.T, acc=acc, out_dtype=torch.float32)
 
-            logits[tile_bt, tile_v] = acc  # DEBUG
 
             # online softmax statistics
             m_ij = torch.maximum(m_i, torch.amax(acc, dim=-1))
@@ -65,32 +66,28 @@ def fused_linear_cross_entropy_fwd(
 
         # loss computation: -logsoftmax(x_y) = -log(exp(x_y) / sum(exp(x_i))) = -x_y + log(sum(exp(x_i)))
         lse_tile = m_i + torch.log(d_i)
-        lse[tile_bt] = lse_tile
-
-        neg_target_logits[tile_bt] = nll_tile
-
         nll_tile = nll_tile + lse_tile
         nll[tile_bt] = nll_tile
 
         # gradients computation
         for tile_v in hl.tile(V, block_size=block_size_v):
             # Restore logits
-            # acc = hl.zeros([tile_bt, tile_v], dtype=torch.float32)
-            # for tile_h in hl.tile(H, block_size=block_size_h):
-            #     x_tile = x[tile_bt, tile_h]
-            #     weight_tile = weight[tile_v, tile_h]
-            #     acc = hl.dot(x_tile, weight_tile.T, acc=acc, out_dtype=torch.float32)
+            acc = hl.zeros([tile_bt, tile_v], dtype=torch.float32)
+            for tile_h in hl.tile(H, block_size=block_size_h):
+                x_tile = x[tile_bt, tile_h]
+                weight_tile = weight[tile_v, tile_h]
+                acc = hl.dot(x_tile, weight_tile.T, acc=acc, out_dtype=torch.float32)
 
-            logits_tile = logits[tile_bt, tile_v]
 
             # softmax(x_i) = exp(x_i) / sum(exp(x_i))
             #              = exp(x_i) / log(exp(sum(x_i)))
             #              = exp(x_i) / lse = exp(x_i - lse)
-            grad_logits_tile = torch.exp(logits_tile - lse_tile[:, None])
+            grad_logits_tile = torch.exp(acc - lse_tile[:, None])
             offset = tile_v.index.unsqueeze(0)  # [1, tile_v]
             mask = target_indices == offset  # [tile_bt, tile_v]
             grad_logits_tile = grad_logits_tile - mask.float()
-            grad_logits[tile_bt, tile_v] = grad_logits_tile
+            n_non_ignore_value = hl.load(n_non_ignore, [0])
+            grad_logits_tile /= n_non_ignore_value
 
             for tile_h in hl.tile(H, block_size=block_size_h):
                 # grad_x = grad_logits @ weight
@@ -103,51 +100,46 @@ def fused_linear_cross_entropy_fwd(
                 hl.atomic_add(grad_w, [tile_v, tile_h], partial_grad_w)
 
     if reduction == "mean":
-        loss = nll.mean()
+        loss = nll.sum() / n_non_ignore.squeeze()
     elif reduction == "sum":
         loss = nll.sum()
     else:
         loss = nll
 
-    return dict(
+    # return format is not determined yet
+    return loss, dict(         
         {
-            "loss": loss,
-            "grad_x": grad_x,
-            "grad_w": grad_w,
-            "grad_logits": grad_logits,
-            "lse": lse,
-            "neg_target_logits": neg_target_logits,
-            "logits": logits,
-            "nll": nll,
+            "grad_x": grad_x, 
+            "grad_w": grad_w, 
         }
     )
 
 
-# class LigerFusedLinearCrossEntropyHelionFunction(torch.autograd.Function):
-#     @staticmethod
-#     def forward(
-#         ctx,
-#         _input,
-#         weight,
-#         target,
-#         ignore_index=-100,
-#         reduction="mean",
-#     ):
-#         assert _input.ndim == weight.ndim
-#         loss, grad_input, grad_weight = fused_linear_cross_entropy_fwd_bwd(
-#             _input,
-#             weight,
-#             target,
-#             ignore_index,
-#             reduction,
-#         )
-#         ctx.save_for_backward(grad_input, grad_weight)
-#         return loss
+class LigerFusedLinearCrossEntropyHelionFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        _input,
+        weight,
+        target,
+        ignore_index=-100,
+        reduction="mean",
+    ):
+        loss, aux_output = fused_linear_cross_entropy_fwd_bwd(
+            _input,
+            weight,
+            target,
+            ignore_index,
+            reduction,
+        )
+        ctx.save_for_backward(aux_output["grad_x"], aux_output["grad_w"])
+        return loss
 
-#     @staticmethod
-#     def backward(ctx, grad_output):
-#         grad_input, grad_weight = ctx.saved_tensors
-#         return grad_input * grad_output, grad_weight * grad_output, None, None, None
+    @staticmethod
+    def backward(ctx, grad_output):
+        assert grad_output.ndim == 0, "token_scaling is not supported. grad_output must be a scalar"
+        grad_input, grad_weight = ctx.saved_tensors
+        return grad_input * grad_output, grad_weight * grad_output, None, None, None
 
 
 class LigerFusedLinearCrossEntropyHelion(torch.nn.Module):
@@ -157,15 +149,13 @@ class LigerFusedLinearCrossEntropyHelion(torch.nn.Module):
         self.reduction = reduction
 
     def forward(self, _input, weight, target):
-        # return LigerFusedLinearCrossEntropyHelionFunction.apply(
-        #     _input,
-        #     weight,
-        #     target,
-        #     self.ignore_index,
-        #     self.reduction
-        # )
-        return fused_linear_cross_entropy_fwd(_input, weight, target, self.ignore_index, self.reduction)
-
+        return LigerFusedLinearCrossEntropyHelionFunction.apply(
+            _input,
+            weight,
+            target,
+            self.ignore_index,
+            self.reduction
+        )
 
 class TorchLMHeadCE(torch.nn.Module):
     def __init__(
@@ -183,7 +173,6 @@ class TorchLMHeadCE(torch.nn.Module):
 
     def forward(self, x, target):
         self.logits = self.lm_head(x).to(torch.float32)
-        self.logits.retain_grad()
         return self.ce_loss(self.logits, target)
 
 
@@ -218,7 +207,7 @@ if __name__ == "__main__":
     hidden_size = 1024
     vocab_size = 2048
     dtype = torch.float32
-    reduction = "none"
+    reduction = "mean"
     ignore_index = -100
 
     input = torch.randn(batch_size * seq_len, hidden_size, device=device, requires_grad=True)
@@ -237,46 +226,20 @@ if __name__ == "__main__":
 
     # Forward pass
     ref_loss: torch.Tensor = ref_lm_head_ce(ref_input, target)
-    ref_logits = input @ weight.T
-    liger_output = liger_lm_head_ce(liger_input, target)
+    liger_loss: torch.Tensor = liger_lm_head_ce(liger_input, target)
 
-    liger_loss = liger_output["loss"]
-    liger_grad_x = liger_output["grad_x"]
-    liger_grad_w = liger_output["grad_w"]
-    liger_lse = liger_output["lse"]
-    liger_neg_target_logits = liger_output["neg_target_logits"]
-    liger_logits = liger_output["logits"]
-    liger_grad_logits = liger_output["grad_logits"]
-
-
-    liger_logprobs = torch.nn.functional.log_softmax(liger_logits, dim=-1)
-    ref_logprobs = torch.nn.functional.log_softmax(ref_logits, dim=-1)
-
-    ref_lse = torch.logsumexp(ref_logits, dim=-1)
-    ref_neg_target_logits = torch.nn.functional.nll_loss(ref_logits, target, reduction="none")
-    ref_neg_target_logits2 = torch.masked_select(
-        ref_logits, mask=target[:, None] == torch.arange(vocab_size, device=ref_logits.device)[None, :]
-    )
-
-    for i in range(5):
-        print("=" * 30 + f"(i = {i})" + "=" * 30)
-        print(f"{ref_lse[i]=}")
-        print(f"{ref_neg_target_logits[i]=}")
-        print(f"{ref_neg_target_logits[i] + ref_lse[i]=}")
-        print(f"{ref_loss[i]=}")
-        print(f"{liger_loss[i]=}")
-        print("=" * 64)
-
-    torch.testing.assert_close(liger_logprobs, ref_logprobs, rtol=1e-1, atol=1e-1)
-    torch.testing.assert_close(liger_lse, ref_lse, rtol=1e-1, atol=1e-1)
-    torch.testing.assert_close(liger_neg_target_logits, ref_neg_target_logits, rtol=1e-1, atol=1e-1)
     torch.testing.assert_close(liger_loss, ref_loss, rtol=1e-1, atol=1e-1)
+ 
+    # Backward pass (backward() with reduction=="none" is not supported yet)
+    if reduction == "none":
+        pass
+    else:
+        liger_loss.backward()
+        ref_loss.backward()
 
-    # Backward pass
-    ref_loss.backward(torch.ones_like(ref_loss), retain_graph=True)
-    assert liger_grad_logits is not None
-    assert ref_lm_head_ce.logits.grad is not None
-    torch.testing.assert_close(liger_grad_logits, ref_lm_head_ce.logits.grad, rtol=1e-1, atol=1e-1)
-    torch.testing.assert_close(liger_grad_x, ref_input.grad, rtol=1e-1, atol=1e-1)
-    torch.testing.assert_close(liger_grad_w, ref_lm_head_ce.lm_head.weight.grad, rtol=1e-1, atol=1e-1)
+        torch.testing.assert_close(liger_input.grad, ref_input.grad, rtol=1e-1, atol=1e-1)
+        torch.testing.assert_close(liger_lm_head_ce.lm_head.weight.grad, ref_lm_head_ce.lm_head.weight.grad, rtol=1e-1, atol=1e-1)
+
+
+
 
