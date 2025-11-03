@@ -32,7 +32,9 @@ def fused_linear_cross_entropy_fwd(
     lse = torch.full((BT,), fill_value=-torch.inf, device=x.device, dtype=torch.float32)  # DEBUG
     nll = torch.zeros(BT, device=x.device, dtype=torch.float32)
     neg_target_logits = torch.zeros(BT, device=x.device, dtype=torch.float32)
-    grad_x = torch.zeros(BT, H, device=x.device, dtype=torch.float32)
+    grad_x = torch.zeros_like(x, dtype=torch.float32)
+    grad_w = torch.zeros_like(weight, dtype=torch.float32)
+    grad_logits = torch.zeros_like(logits, dtype=torch.float32)
 
 
     for tile_bt in hl.tile(BT, block_size=block_size_bt):
@@ -48,7 +50,6 @@ def fused_linear_cross_entropy_fwd(
                 x_tile = x[tile_bt, tile_h]
                 weight_tile = weight[tile_v, tile_h]
                 acc = hl.dot(x_tile, weight_tile.T, acc=acc, out_dtype=torch.float32)
-
 
             logits[tile_bt, tile_v] = acc  # DEBUG
 
@@ -82,27 +83,44 @@ def fused_linear_cross_entropy_fwd(
 
             logits_tile = logits[tile_bt, tile_v]
 
-            # softmax(x_i) = exp(x_i) / sum(exp(x_i)) 
+            # softmax(x_i) = exp(x_i) / sum(exp(x_i))
             #              = exp(x_i) / log(exp(sum(x_i)))
             #              = exp(x_i) / lse = exp(x_i - lse)
-            grad_logits_tile = torch.exp(logits_tile - lse_tile[:, None]) 
-            
-            # grad_x = grad_logits @ weight
+            grad_logits_tile = torch.exp(logits_tile - lse_tile[:, None])
+            offset = tile_v.index.unsqueeze(0)  # [1, tile_v]
+            mask = target_indices == offset  # [tile_bt, tile_v]
+            grad_logits_tile = grad_logits_tile - mask.float()
+            grad_logits[tile_bt, tile_v] = grad_logits_tile
+
             for tile_h in hl.tile(H, block_size=block_size_h):
-                weight_tile = weight[tile_v, tile_h]
-                partial_grad_x = hl.dot(grad_logits_tile, weight_tile, out_dtype=torch.float32)
+                # grad_x = grad_logits @ weight
+                rhs_tile = weight[tile_v, tile_h]
+                partial_grad_x = hl.dot(grad_logits_tile, rhs_tile, out_dtype=torch.float32)
                 hl.atomic_add(grad_x, [tile_bt, tile_h], partial_grad_x)
+                # grad_w = grad_logits.T[tile_v, tile_bt] @ x[tile_bt, tile_h]
+                rhs_tile = x[tile_bt, tile_h]
+                partial_grad_w = hl.dot(grad_logits_tile.T, rhs_tile, out_dtype=torch.float32)
+                hl.atomic_add(grad_w, [tile_v, tile_h], partial_grad_w)
 
     if reduction == "mean":
-        loss = nll.sum() / nll.numel()
+        loss = nll.mean()
     elif reduction == "sum":
         loss = nll.sum()
     else:
         loss = nll
 
-    return loss, logits.to(x.dtype), lse, neg_target_logits, grad_x
-
-
+    return dict(
+        {
+            "loss": loss,
+            "grad_x": grad_x,
+            "grad_w": grad_w,
+            "grad_logits": grad_logits,
+            "lse": lse,
+            "neg_target_logits": neg_target_logits,
+            "logits": logits,
+            "nll": nll,
+        }
+    )
 
 
 # class LigerFusedLinearCrossEntropyHelionFunction(torch.autograd.Function):
@@ -161,10 +179,12 @@ class TorchLMHeadCE(torch.nn.Module):
         super().__init__()
         self.lm_head = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
         self.ce_loss = torch.nn.CrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
+        self.logits = None
 
     def forward(self, x, target):
-        logits = self.lm_head(x).to(torch.float32)
-        return self.ce_loss(logits, target)
+        self.logits = self.lm_head(x).to(torch.float32)
+        self.logits.retain_grad()
+        return self.ce_loss(self.logits, target)
 
 
 class LigerLMHeadCE(torch.nn.Module):
@@ -195,8 +215,8 @@ if __name__ == "__main__":
 
     batch_size = 2
     seq_len = 1024
-    hidden_size = 4096
-    vocab_size = 32000
+    hidden_size = 1024
+    vocab_size = 2048
     dtype = torch.float32
     reduction = "none"
     ignore_index = -100
@@ -216,9 +236,18 @@ if __name__ == "__main__":
     liger_input = input.detach().clone().requires_grad_(True)
 
     # Forward pass
-    ref_loss = ref_lm_head_ce(ref_input, target)
+    ref_loss: torch.Tensor = ref_lm_head_ce(ref_input, target)
     ref_logits = input @ weight.T
-    liger_loss, liger_logits, liger_lse, liger_neg_target_logits, liger_grad_x = liger_lm_head_ce(liger_input, target)
+    liger_output = liger_lm_head_ce(liger_input, target)
+
+    liger_loss = liger_output["loss"]
+    liger_grad_x = liger_output["grad_x"]
+    liger_grad_w = liger_output["grad_w"]
+    liger_lse = liger_output["lse"]
+    liger_neg_target_logits = liger_output["neg_target_logits"]
+    liger_logits = liger_output["logits"]
+    liger_grad_logits = liger_output["grad_logits"]
+
 
     liger_logprobs = torch.nn.functional.log_softmax(liger_logits, dim=-1)
     ref_logprobs = torch.nn.functional.log_softmax(ref_logits, dim=-1)
@@ -228,7 +257,6 @@ if __name__ == "__main__":
     ref_neg_target_logits2 = torch.masked_select(
         ref_logits, mask=target[:, None] == torch.arange(vocab_size, device=ref_logits.device)[None, :]
     )
-
 
     for i in range(5):
         print("=" * 30 + f"(i = {i})" + "=" * 30)
@@ -242,15 +270,13 @@ if __name__ == "__main__":
     torch.testing.assert_close(liger_logprobs, ref_logprobs, rtol=1e-1, atol=1e-1)
     torch.testing.assert_close(liger_lse, ref_lse, rtol=1e-1, atol=1e-1)
     torch.testing.assert_close(liger_neg_target_logits, ref_neg_target_logits, rtol=1e-1, atol=1e-1)
-    torch.testing.assert_close(ref_loss, liger_loss, rtol=1e-1, atol=1e-1)
-
+    torch.testing.assert_close(liger_loss, ref_loss, rtol=1e-1, atol=1e-1)
 
     # Backward pass
-    ref_loss.backward()
+    ref_loss.backward(torch.ones_like(ref_loss), retain_graph=True)
+    assert liger_grad_logits is not None
+    assert ref_lm_head_ce.logits.grad is not None
+    torch.testing.assert_close(liger_grad_logits, ref_lm_head_ce.logits.grad, rtol=1e-1, atol=1e-1)
     torch.testing.assert_close(liger_grad_x, ref_input.grad, rtol=1e-1, atol=1e-1)
+    torch.testing.assert_close(liger_grad_w, ref_lm_head_ce.lm_head.weight.grad, rtol=1e-1, atol=1e-1)
 
-    # ref_loss.backward()
-    # liger_loss.backward()
-
-    # torch.testing.assert_close(ref_input.grad, liger_input.grad)
-    # torch.testing.assert_close(ref_lm_head_ce.lm_head.weight.grad, liger_lm_head_ce.lm_head.weight.grad)
