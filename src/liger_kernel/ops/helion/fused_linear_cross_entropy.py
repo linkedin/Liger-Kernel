@@ -32,6 +32,8 @@ def fused_linear_cross_entropy_fwd(
     lse = torch.full((BT,), fill_value=-torch.inf, device=x.device, dtype=torch.float32)  # DEBUG
     nll = torch.zeros(BT, device=x.device, dtype=torch.float32)
     neg_target_logits = torch.zeros(BT, device=x.device, dtype=torch.float32)
+    grad_x = torch.zeros(BT, H, device=x.device, dtype=torch.float32)
+
 
     for tile_bt in hl.tile(BT, block_size=block_size_bt):
         m_i = hl.zeros([tile_bt], dtype=torch.float32) - float("inf")
@@ -46,6 +48,7 @@ def fused_linear_cross_entropy_fwd(
                 x_tile = x[tile_bt, tile_h]
                 weight_tile = weight[tile_v, tile_h]
                 acc = hl.dot(x_tile, weight_tile.T, acc=acc, out_dtype=torch.float32)
+
 
             logits[tile_bt, tile_v] = acc  # DEBUG
 
@@ -68,6 +71,27 @@ def fused_linear_cross_entropy_fwd(
         nll_tile = nll_tile + lse_tile
         nll[tile_bt] = nll_tile
 
+        # gradients computation
+        for tile_v in hl.tile(V, block_size=block_size_v):
+            # Restore logits
+            # acc = hl.zeros([tile_bt, tile_v], dtype=torch.float32)
+            # for tile_h in hl.tile(H, block_size=block_size_h):
+            #     x_tile = x[tile_bt, tile_h]
+            #     weight_tile = weight[tile_v, tile_h]
+            #     acc = hl.dot(x_tile, weight_tile.T, acc=acc, out_dtype=torch.float32)
+
+            logits_tile = logits[tile_bt, tile_v]
+
+            # softmax(x_i) = exp(x_i) / sum(exp(x_i)) 
+            #              = exp(x_i) / log(exp(sum(x_i)))
+            #              = exp(x_i) / lse = exp(x_i - lse)
+            grad_logits_tile = torch.exp(logits_tile - lse_tile[:, None]) 
+            
+            # grad_x = grad_logits @ weight
+            for tile_h in hl.tile(H, block_size=block_size_h):
+                weight_tile = weight[tile_v, tile_h]
+                partial_grad_x = hl.dot(grad_logits_tile, weight_tile, out_dtype=torch.float32)
+                hl.atomic_add(grad_x, [tile_bt, tile_h], partial_grad_x)
 
     if reduction == "mean":
         loss = nll.sum() / nll.numel()
@@ -76,7 +100,9 @@ def fused_linear_cross_entropy_fwd(
     else:
         loss = nll
 
-    return loss, logits.to(x.dtype), lse, neg_target_logits
+    return loss, logits.to(x.dtype), lse, neg_target_logits, grad_x
+
+
 
 
 # class LigerFusedLinearCrossEntropyHelionFunction(torch.autograd.Function):
@@ -192,7 +218,7 @@ if __name__ == "__main__":
     # Forward pass
     ref_loss = ref_lm_head_ce(ref_input, target)
     ref_logits = input @ weight.T
-    liger_loss, liger_logits, liger_lse, liger_neg_target_logits = liger_lm_head_ce(liger_input, target)
+    liger_loss, liger_logits, liger_lse, liger_neg_target_logits, liger_grad_x = liger_lm_head_ce(liger_input, target)
 
     liger_logprobs = torch.nn.functional.log_softmax(liger_logits, dim=-1)
     ref_logprobs = torch.nn.functional.log_softmax(ref_logits, dim=-1)
@@ -218,7 +244,10 @@ if __name__ == "__main__":
     torch.testing.assert_close(liger_neg_target_logits, ref_neg_target_logits, rtol=1e-1, atol=1e-1)
     torch.testing.assert_close(ref_loss, liger_loss, rtol=1e-1, atol=1e-1)
 
+
     # Backward pass
+    ref_loss.backward()
+    torch.testing.assert_close(liger_grad_x, ref_input.grad, rtol=1e-1, atol=1e-1)
 
     # ref_loss.backward()
     # liger_loss.backward()
