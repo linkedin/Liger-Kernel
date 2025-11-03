@@ -29,13 +29,13 @@ def fused_linear_cross_entropy_fwd_bwd(
     block_size_h = hl.register_block_size(H)
     block_size_v = hl.register_block_size(V)
 
-    nll = torch.zeros(BT, device=x.device, dtype=torch.float32) 
+    nll = torch.zeros(BT, device=x.device, dtype=torch.float32)
     grad_x = torch.zeros_like(x, dtype=torch.float32)
     grad_w = torch.zeros_like(weight, dtype=torch.float32)
 
     # May be useful for splitting fwd and bwd
-    # lse = torch.full((BT,), fill_value=-torch.inf, device=x.device, dtype=torch.float32)  
-    # neg_target_logits = torch.zeros(BT, device=x.device, dtype=torch.float32) 
+    # lse = torch.full((BT,), fill_value=-torch.inf, device=x.device, dtype=torch.float32)
+    # neg_target_logits = torch.zeros(BT, device=x.device, dtype=torch.float32)
 
     n_non_ignore = (target != ignore_index).sum().unsqueeze(0)
 
@@ -52,7 +52,6 @@ def fused_linear_cross_entropy_fwd_bwd(
                 x_tile = x[tile_bt, tile_h]
                 weight_tile = weight[tile_v, tile_h]
                 acc = hl.dot(x_tile, weight_tile.T, acc=acc, out_dtype=torch.float32)
-
 
             # online softmax statistics
             m_ij = torch.maximum(m_i, torch.amax(acc, dim=-1))
@@ -77,7 +76,6 @@ def fused_linear_cross_entropy_fwd_bwd(
                 x_tile = x[tile_bt, tile_h]
                 weight_tile = weight[tile_v, tile_h]
                 acc = hl.dot(x_tile, weight_tile.T, acc=acc, out_dtype=torch.float32)
-
 
             # softmax(x_i) = exp(x_i) / sum(exp(x_i))
             #              = exp(x_i) / log(exp(sum(x_i)))
@@ -107,10 +105,10 @@ def fused_linear_cross_entropy_fwd_bwd(
         loss = nll
 
     # return format is not determined yet
-    return loss, dict(         
+    return loss, dict(
         {
-            "grad_x": grad_x, 
-            "grad_w": grad_w, 
+            "grad_x": grad_x,
+            "grad_w": grad_w,
         }
     )
 
@@ -150,12 +148,9 @@ class LigerFusedLinearCrossEntropyHelion(torch.nn.Module):
 
     def forward(self, _input, weight, target):
         return LigerFusedLinearCrossEntropyHelionFunction.apply(
-            _input,
-            weight,
-            target,
-            self.ignore_index,
-            self.reduction
+            _input, weight, target, self.ignore_index, self.reduction
         )
+
 
 class TorchLMHeadCE(torch.nn.Module):
     def __init__(
@@ -229,7 +224,7 @@ if __name__ == "__main__":
     liger_loss: torch.Tensor = liger_lm_head_ce(liger_input, target)
 
     torch.testing.assert_close(liger_loss, ref_loss, rtol=1e-1, atol=1e-1)
- 
+
     # Backward pass (backward() with reduction=="none" is not supported yet)
     if reduction == "none":
         pass
@@ -238,8 +233,6 @@ if __name__ == "__main__":
         ref_loss.backward()
 
         torch.testing.assert_close(liger_input.grad, ref_input.grad, rtol=1e-1, atol=1e-1)
-        torch.testing.assert_close(liger_lm_head_ce.lm_head.weight.grad, ref_lm_head_ce.lm_head.weight.grad, rtol=1e-1, atol=1e-1)
-
-
-
-
+        torch.testing.assert_close(
+            liger_lm_head_ce.lm_head.weight.grad, ref_lm_head_ce.lm_head.weight.grad, rtol=1e-1, atol=1e-1
+        )
