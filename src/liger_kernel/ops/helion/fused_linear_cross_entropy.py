@@ -43,7 +43,10 @@ def fused_linear_cross_entropy_fwd_bwd(
         m_i = hl.zeros([tile_bt], dtype=torch.float32) - float("inf")
         d_i = hl.zeros([tile_bt], dtype=torch.float32)
         nll_tile = hl.zeros([tile_bt], dtype=torch.float32)
-        # target_indices = target[tile_bt][:, None]  # [tile_bt, 1] # ERROR
+        if reduction == "mean":
+            n_non_ignore_value = hl.load(n_non_ignore, [0])
+
+        # target_indices = target[tile_bt][:, None]  # ERROR: it introduces a new size, which is not broadcastable
         target_indices = target[tile_bt].unsqueeze(1)  # [tile_bt, 1]
         for tile_v in hl.tile(V, block_size=block_size_v):
             # logits computation
@@ -58,7 +61,7 @@ def fused_linear_cross_entropy_fwd_bwd(
             d_i = d_i * torch.exp(m_i - m_ij) + torch.exp(acc - m_ij[:, None]).sum(dim=-1)
             m_i = m_ij
 
-            # offset = tile_v.index[None, :]  # [1, tile_v] # ERROR
+            # offset = tile_v.index[None, :]  # ERROR: it introduces a new size, which is not broadcastable
             offset = tile_v.index.unsqueeze(0)  # [1, tile_v]
             mask = target_indices == offset  # [tile_bt, tile_v]
             nll_tile += torch.sum(-acc * mask, dim=-1)  # [tile_bt]
@@ -66,8 +69,11 @@ def fused_linear_cross_entropy_fwd_bwd(
         # loss computation: -logsoftmax(x_y) = -log(exp(x_y) / sum(exp(x_i))) = -x_y + log(sum(exp(x_i)))
         lse_tile = m_i + torch.log(d_i)
         nll_tile = nll_tile + lse_tile
-        nll[tile_bt] = nll_tile
 
+        if reduction == "mean":
+            nll_tile /= n_non_ignore_value
+
+        nll[tile_bt] = nll_tile
         # gradients computation
         for tile_v in hl.tile(V, block_size=block_size_v):
             # Restore logits
@@ -84,7 +90,9 @@ def fused_linear_cross_entropy_fwd_bwd(
             offset = tile_v.index.unsqueeze(0)  # [1, tile_v]
             mask = target_indices == offset  # [tile_bt, tile_v]
             grad_logits_tile = grad_logits_tile - mask.float()
-            n_non_ignore_value = hl.load(n_non_ignore, [0])
+            # handle out of bound values in grad_logits_tile
+            grad_logits_tile = grad_logits_tile * ((tile_bt.index < BT)[:, None] & (tile_v.index < V)[None, :])
+
             if reduction == "mean":
                 grad_logits_tile /= n_non_ignore_value
 
@@ -98,10 +106,8 @@ def fused_linear_cross_entropy_fwd_bwd(
                 partial_grad_w = hl.dot(grad_logits_tile.T, rhs_tile, out_dtype=torch.float32)
                 hl.atomic_add(grad_w, [tile_v, tile_h], partial_grad_w)
 
-    if reduction == "mean":
-        loss = nll.sum() / n_non_ignore.squeeze()
-    elif reduction == "sum":
-        loss = nll.sum()
+    if reduction != "none":
+        loss = nll.sum() 
     else:
         loss = nll
 
