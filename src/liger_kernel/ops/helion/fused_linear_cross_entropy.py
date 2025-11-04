@@ -85,7 +85,8 @@ def fused_linear_cross_entropy_fwd_bwd(
             mask = target_indices == offset  # [tile_bt, tile_v]
             grad_logits_tile = grad_logits_tile - mask.float()
             n_non_ignore_value = hl.load(n_non_ignore, [0])
-            grad_logits_tile /= n_non_ignore_value
+            if reduction == "mean":
+                grad_logits_tile /= n_non_ignore_value
 
             for tile_h in hl.tile(H, block_size=block_size_h):
                 # grad_x = grad_logits @ weight
@@ -202,7 +203,7 @@ if __name__ == "__main__":
     hidden_size = 1024
     vocab_size = 2048
     dtype = torch.float32
-    reduction = "mean"
+    reduction = "sum"
     ignore_index = -100
 
     input = torch.randn(batch_size * seq_len, hidden_size, device=device, requires_grad=True)
