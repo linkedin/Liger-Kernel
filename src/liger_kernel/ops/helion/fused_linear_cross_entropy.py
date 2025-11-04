@@ -2,9 +2,10 @@ import helion
 import helion.language as hl
 import torch
 
+# Best config for default llama3Config(hidden_size=4096, vocab_size=32000) with 4096 bs*seqlen input
+config = helion.Config(block_sizes=[32, 32, 256], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor'], load_eviction_policies=['first', '', 'first', 'last', '', '', 'last', 'first'], num_stages=5, num_warps=4, pid_type='flat', range_flattens=[None, True, False], range_multi_buffers=[None, True, False], range_num_stages=[0, 0, 0], range_unroll_factors=[0, 1, 1], range_warp_specializes=[])
 
-# TODO: autotune and find the best configs for different devices
-@helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
+@helion.kernel(config=config, ignore_warnings=[helion.exc.TensorOperationInWrapper])
 def fused_linear_cross_entropy_fwd_bwd(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -204,12 +205,12 @@ if __name__ == "__main__":
 
     device = "cuda"
 
-    batch_size = 2
-    seq_len = 1024
-    hidden_size = 1024
-    vocab_size = 2048
+    batch_size = 8
+    seq_len = 4096
+    hidden_size = 4096
+    vocab_size = 32000
     dtype = torch.float32
-    reduction = "sum"
+    reduction = "mean"
     ignore_index = -100
 
     input = torch.randn(batch_size * seq_len, hidden_size, device=device, requires_grad=True)
@@ -243,3 +244,19 @@ if __name__ == "__main__":
         torch.testing.assert_close(
             liger_lm_head_ce.lm_head.weight.grad, ref_lm_head_ce.lm_head.weight.grad, rtol=1e-1, atol=1e-1
         )
+
+
+    # Benchmark
+    from helion._testing import run_example
+    from functools import partial
+
+    def fwd_bwd_fn(input, target, fn):
+        loss = fn(input, target)
+        loss.backward()
+        return loss
+    liger_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=liger_lm_head_ce)
+    ref_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=ref_lm_head_ce)
+
+    
+    run_example(liger_lm_head_ce, ref_lm_head_ce, (input, target), kernel_name="helion_flce_fwd", baseline_name="torch_fwd", rtol=1e-1, atol=1e-1)
+    run_example(liger_lm_head_ce_fwd_bwd, ref_lm_head_ce_fwd_bwd, (input, target), kernel_name="helion_flce_fwd_bwd", baseline_name="torch_fwd_bwd", rtol=1e-1, atol=1e-1)
