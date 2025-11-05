@@ -498,9 +498,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
             LigerRMSNorm.forward
         )
         for decoder_layer in dummy_model_instance.language_model.layers:
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -520,9 +518,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
             LigerRMSNorm.forward
         )
         for decoder_layer in dummy_model_instance.language_model.layers:
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -603,9 +599,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
             LigerRMSNorm.forward
         )
         for decoder_layer in dummy_model_instance.language_model.layers:
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -625,9 +619,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
             LigerRMSNorm.forward
         )
         for decoder_layer in dummy_model_instance.language_model.layers:
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -681,9 +673,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_text():
         # Note: Text models don't have forward method patching, so skip this check
         assert inspect.getsource(dummy_model_instance.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for decoder_layer in dummy_model_instance.layers:
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -701,9 +691,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_text():
         # Note: Text models don't have forward method patching, so skip this check
         assert inspect.getsource(dummy_model_instance.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for decoder_layer in dummy_model_instance.layers:
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -789,9 +777,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
             LigerRMSNorm.forward
         )
         for decoder_layer in dummy_model_instance.language_model.layers:
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -811,9 +797,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
             LigerRMSNorm.forward
         )
         for decoder_layer in dummy_model_instance.language_model.layers:
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -899,9 +883,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
             LigerRMSNorm.forward
         )
         for decoder_layer in dummy_model_instance.language_model.layers:
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -921,9 +903,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
             LigerRMSNorm.forward
         )
         for decoder_layer in dummy_model_instance.language_model.layers:
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -982,9 +962,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
         # Note: Text models don't have forward method patching, so skip this check
         assert inspect.getsource(dummy_model_instance.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for decoder_layer in dummy_model_instance.layers:
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -1002,9 +980,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
         # Note: Text models don't have forward method patching, so skip this check
         assert inspect.getsource(dummy_model_instance.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for decoder_layer in dummy_model_instance.layers:
-            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -1025,10 +1001,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
 def test_qwen3_vl_rope_hooks_applied():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen3_vl.modeling_qwen3_vl") as modeling_mod:
-        from liger_kernel.transformers.monkey_patch import (
-            liger_rotary_pos_emb,
-            _liger_qwen3_vl_apply_rotary_pos_emb_vision,
-        )
+        from liger_kernel.transformers.monkey_patch import _liger_qwen3_vl_apply_rotary_pos_emb_vision
+        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb
 
         # Before applying, make sure attributes exist but are not the liger implementations
         setattr(modeling_mod, "apply_rotary_pos_emb", object())
@@ -1044,10 +1018,8 @@ def test_qwen3_vl_rope_hooks_applied():
 def test_qwen3_vl_moe_rope_hooks_applied():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe") as modeling_mod:
-        from liger_kernel.transformers.monkey_patch import (
-            liger_rotary_pos_emb,
-            _liger_qwen3_vl_apply_rotary_pos_emb_vision,
-        )
+        from liger_kernel.transformers.monkey_patch import _liger_qwen3_vl_apply_rotary_pos_emb_vision
+        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb
 
         # Before applying, make sure attributes exist but are not the liger implementations
         setattr(modeling_mod, "apply_rotary_pos_emb", object())

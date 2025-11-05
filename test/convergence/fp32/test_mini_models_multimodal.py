@@ -1281,7 +1281,6 @@ def run_mini_model_multimodal(
         revert_kwargs["model_type"] = "conditional_generation"
 
     if with_liger is True:
-            
         kwargs = {
             "rope": True,
             "rms_norm": True,

@@ -6,7 +6,6 @@ from types import MethodType
 from typing import Callable
 from typing import Optional
 
-import torch
 import transformers
 
 from packaging import version
@@ -36,11 +35,9 @@ from liger_kernel.transformers.model.qwen3_vl_moe import lce_forward as qwen3_vl
 from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_forward
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
-from liger_kernel.transformers.rope import (
-    liger_rotary_pos_emb,
-    liger_rotary_pos_emb_with_cast,
-    liger_rotary_pos_emb_with_cast_and_leading_batch,
-)
+from liger_kernel.transformers.rope import liger_rotary_pos_emb
+from liger_kernel.transformers.rope import liger_rotary_pos_emb_with_cast
+from liger_kernel.transformers.rope import liger_rotary_pos_emb_with_cast_and_leading_batch
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
@@ -62,7 +59,6 @@ TRANSFORMER_DEPRECATION_WARNING = "Support for transformers versions < 4.46.1 wi
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
     # Binds a new method to a module instance so that self is passed as the first argument
     module.__dict__[method_name] = new_method.__get__(module, module.__class__)
-
 
 
 def _patch_rms_norm_module(module, offset=0.0, eps=1e-6, casting_mode="llama", in_place=True, row_mode=None):
@@ -1651,7 +1647,6 @@ def apply_liger_kernel_to_qwen2_5_vl(
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
-
 def apply_liger_kernel_to_qwen3_vl(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -1687,7 +1682,6 @@ def apply_liger_kernel_to_qwen3_vl(
     if rope:
         modeling_qwen3_vl.apply_rotary_pos_emb = liger_rotary_pos_emb_with_cast
         modeling_qwen3_vl.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_with_cast_and_leading_batch
-
 
     if rms_norm:
         modeling_qwen3_vl.Qwen3VLTextRMSNorm = LigerRMSNorm

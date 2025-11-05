@@ -1347,11 +1347,10 @@ def run_mini_model(
 
         if "llava" in model_name:
             apply_liger_kernel_to_llama(**kwargs)
-            
+
         kwargs["fused_linear_cross_entropy"] = False
         kwargs["cross_entropy"] = False
 
-            
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)

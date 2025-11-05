@@ -5,13 +5,11 @@ from typing import Union
 
 import torch
 
+from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeCausalLMOutputWithPast
+from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import load_balancing_loss_func
 from transformers.utils import can_return_tuple
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
-from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import (
-    Qwen3VLMoeCausalLMOutputWithPast,
-    load_balancing_loss_func,
-)
 
 
 @can_return_tuple
