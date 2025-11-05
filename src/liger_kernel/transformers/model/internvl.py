@@ -5,10 +5,11 @@ from typing import Union
 
 import torch
 
-from transformers.models.internvl.modeling_internvl import InternVLCausalLMOutputWithPast
 from transformers.utils import can_return_tuple
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
+from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
+from liger_kernel.transformers.model.output_classes import LigerInternVLCausalLMOutputWithPast
 
 
 # Copied from https://github.com/huggingface/transformers/blob/d888bd435d0c0eaabaabad5b33d52af518c7187c/src/transformers/models/internvl/modeling_internvl.py#L862
@@ -33,7 +34,7 @@ def lce_forward(
     image_sizes: Optional[torch.Tensor] = None,
     skip_logits: Optional[bool] = None,  # Added argument for liger-kernel
     **lm_kwargs,  # renamed from kwargs
-) -> Union[Tuple, InternVLCausalLMOutputWithPast]:
+) -> Union[Tuple, LigerInternVLCausalLMOutputWithPast]:
     r"""
     Example:
 
@@ -111,6 +112,7 @@ def lce_forward(
     shift_labels = lm_kwargs.pop("shift_labels", None)
     logits = None
     loss = None
+    token_accuracy = None
 
     if skip_logits and labels is None and shift_labels is None:
         raise ValueError("skip_logits is True, but labels and shift_labels are None")
@@ -120,7 +122,7 @@ def lce_forward(
         skip_logits = self.training and (labels is not None or shift_labels is not None)
 
     if skip_logits:
-        loss = LigerForCausalLMLoss(
+        result = LigerForCausalLMLoss(
             hidden_states=kept_hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
@@ -128,6 +130,7 @@ def lce_forward(
             hidden_size=self.config.text_config.hidden_size,
             **lm_kwargs,
         )
+        loss, _, token_accuracy = unpack_cross_entropy_result(result)
 
     else:
         logits = self.lm_head(kept_hidden_states)
@@ -138,13 +141,17 @@ def lce_forward(
 
     if not return_dict:
         output = (logits,) + outputs[1:]
-        return (loss,) + output if loss is not None else output
+        output = (loss,) + output if loss is not None else output
+        output = output + (token_accuracy,) if token_accuracy is not None else output
+        return output
 
-    return InternVLCausalLMOutputWithPast(
+    # Return custom output class with token_accuracy field
+    return LigerInternVLCausalLMOutputWithPast(
         loss=loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
         image_hidden_states=outputs.image_hidden_states,
+        token_accuracy=token_accuracy,
     )
