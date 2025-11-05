@@ -17,8 +17,10 @@ from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast
 from transformers.models.paligemma.modeling_paligemma import PaliGemmaCausalLMOutputWithPast
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLCausalLMOutputWithPast
 from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLCausalLMOutputWithPast
-from liger_kernel.transformers.model.output_classes import Qwen3VLCausalLMOutputWithPast
 from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeCausalLMOutputWithPast
+
+from liger_kernel.transformers.model.output_classes import Qwen3VLCausalLMOutputWithPast
+
 
 @dataclass
 class LigerCausalLMOutputWithPast(CausalLMOutputWithPast):
@@ -64,9 +66,11 @@ class LigerQwen2_5_VLCausalLMOutputWithPast(Qwen2_5_VLCausalLMOutputWithPast):
 class LigerQwen2VLCausalLMOutputWithPast(Qwen2VLCausalLMOutputWithPast):
     token_accuracy: Optional[torch.FloatTensor] = None
 
+
 @dataclass
 class LigerQwen3VLCausalLMOutputWithPast(Qwen3VLCausalLMOutputWithPast):
     token_accuracy: Optional[torch.FloatTensor] = None
+
 
 @dataclass
 class LigerQwen3VLMoeCausalLMOutputWithPast(Qwen3VLMoeCausalLMOutputWithPast):

@@ -11,6 +11,7 @@ from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
 from liger_kernel.transformers.model.output_classes import LigerQwen3VLCausalLMOutputWithPast
 
+
 @can_return_tuple
 def lce_forward(
     self,
