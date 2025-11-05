@@ -62,6 +62,9 @@ def fused_linear_cross_entropy_forward(
         else:
             grad_weight = torch.zeros_like(weight, dtype=accum_dtype, device=device) if weight.requires_grad else None
             grad_bias = torch.zeros_like(bias, dtype=accum_dtype, device=device) if bias is not None else None
+    else:
+        grad_weight = None
+        grad_bias = None
 
     loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
     z_loss_1d = torch.zeros(BT, dtype=_input.dtype, device=_input.device) if return_z_loss else None
