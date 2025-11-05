@@ -5,12 +5,12 @@ from typing import Union
 
 import torch
 
-from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeCausalLMOutputWithPast
 from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import load_balancing_loss_func
 from transformers.utils import can_return_tuple
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
-
+from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
+from liger_kernel.transformers.model.output_classes import LigerQwen3VLMoeCausalLMOutputWithPast
 
 @can_return_tuple
 def lce_forward(
@@ -34,7 +34,7 @@ def lce_forward(
     second_per_grid_ts: Optional[torch.Tensor] = None,
     skip_logits: Optional[bool] = None,
     **kwargs,
-) -> Union[Tuple, Qwen3VLMoeCausalLMOutputWithPast]:
+) -> Union[Tuple, LigerQwen3VLMoeCausalLMOutputWithPast]:
     """
     Qwen3-VL-MoE forward with fused linear cross entropy support mirroring Qwen3-VL behaviour.
     """
@@ -69,6 +69,7 @@ def lce_forward(
     shift_labels = kwargs.pop("shift_labels", None)
     loss = None
     logits = None
+    token_accuracy = None
 
     if skip_logits and labels is None and shift_labels is None:
         raise ValueError("skip_logits is True, but labels and shift_labels are None")
@@ -77,7 +78,7 @@ def lce_forward(
         skip_logits = self.training and (labels is not None or shift_labels is not None)
 
     if skip_logits:
-        loss = LigerForCausalLMLoss(
+        result = LigerForCausalLMLoss(
             hidden_states=hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
@@ -85,6 +86,7 @@ def lce_forward(
             hidden_size=self.config.text_config.hidden_size,
             **kwargs,
         )
+        loss, _, token_accuracy = unpack_cross_entropy_result(result)
     else:
         logits = self.lm_head(hidden_states)
 
@@ -106,9 +108,12 @@ def lce_forward(
 
     if not return_dict:
         output = (logits,) + outputs[1:]
-        return (loss,) + output if loss is not None else output
+        output = (loss,) + output if loss is not None else output
+        output = output + (aux_loss,) if aux_loss is not None else output
+        output = output + (token_accuracy,) if token_accuracy is not None else output
+        return output
 
-    return Qwen3VLMoeCausalLMOutputWithPast(
+    return LigerQwen3VLMoeCausalLMOutputWithPast(
         loss=loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
@@ -116,4 +121,5 @@ def lce_forward(
         attentions=outputs.attentions,
         rope_deltas=outputs.rope_deltas,
         aux_loss=aux_loss,
+        token_accuracy=token_accuracy,
     )
