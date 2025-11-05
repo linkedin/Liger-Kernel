@@ -30,8 +30,6 @@ from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mi
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward_deprecated
-from liger_kernel.transformers.model.qwen3_vl import lce_forward as qwen3_vl_lce_forward
-from liger_kernel.transformers.model.qwen3_vl_moe import lce_forward as qwen3_vl_moe_lce_forward
 from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_forward
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
@@ -1679,6 +1677,8 @@ def apply_liger_kernel_to_qwen3_vl(
     from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModel
     from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel
 
+    from liger_kernel.transformers.model.qwen3_vl import lce_forward as qwen3_vl_lce_forward
+
     if rope:
         modeling_qwen3_vl.apply_rotary_pos_emb = liger_rotary_pos_emb_with_cast
         modeling_qwen3_vl.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_with_cast_and_leading_batch
@@ -1751,6 +1751,8 @@ def apply_liger_kernel_to_qwen3_vl_moe(
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeModel
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextModel
+
+    from liger_kernel.transformers.model.qwen3_vl_moe import lce_forward as qwen3_vl_moe_lce_forward
 
     if rope:
         modeling_qwen3_vl_moe.apply_rotary_pos_emb = liger_rotary_pos_emb_with_cast

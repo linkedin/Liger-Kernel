@@ -1001,8 +1001,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
 def test_qwen3_vl_rope_hooks_applied():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen3_vl.modeling_qwen3_vl") as modeling_mod:
-        from liger_kernel.transformers.monkey_patch import _liger_qwen3_vl_apply_rotary_pos_emb_vision
-        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb
+        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb_with_cast_and_leading_batch
+        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb_with_cast
 
         # Before applying, make sure attributes exist but are not the liger implementations
         setattr(modeling_mod, "apply_rotary_pos_emb", object())
@@ -1010,16 +1010,16 @@ def test_qwen3_vl_rope_hooks_applied():
 
         _apply_liger_kernel("qwen3_vl")
 
-        assert modeling_mod.apply_rotary_pos_emb is liger_rotary_pos_emb
-        assert modeling_mod.apply_rotary_pos_emb_vision is _liger_qwen3_vl_apply_rotary_pos_emb_vision
+        assert modeling_mod.apply_rotary_pos_emb is liger_rotary_pos_emb_with_cast
+        assert modeling_mod.apply_rotary_pos_emb_vision is liger_rotary_pos_emb_with_cast_and_leading_batch
 
 
 @pytest.mark.skipif(not is_qwen3_vl_moe_available(), reason="qwen3_vl_moe module not available")
 def test_qwen3_vl_moe_rope_hooks_applied():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe") as modeling_mod:
-        from liger_kernel.transformers.monkey_patch import _liger_qwen3_vl_apply_rotary_pos_emb_vision
-        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb
+        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb_with_cast_and_leading_batch
+        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb_with_cast
 
         # Before applying, make sure attributes exist but are not the liger implementations
         setattr(modeling_mod, "apply_rotary_pos_emb", object())
@@ -1027,8 +1027,8 @@ def test_qwen3_vl_moe_rope_hooks_applied():
 
         _apply_liger_kernel("qwen3_vl_moe")
 
-        assert modeling_mod.apply_rotary_pos_emb is liger_rotary_pos_emb
-        assert modeling_mod.apply_rotary_pos_emb_vision is _liger_qwen3_vl_apply_rotary_pos_emb_vision
+        assert modeling_mod.apply_rotary_pos_emb is liger_rotary_pos_emb_with_cast
+        assert modeling_mod.apply_rotary_pos_emb_vision is liger_rotary_pos_emb_with_cast_and_leading_batch
 
 
 @pytest.mark.skipif(not is_falcon_h1_available(), reason="falcon_h1 module not available")
