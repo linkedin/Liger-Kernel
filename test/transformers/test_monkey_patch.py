@@ -107,6 +107,24 @@ def is_qwen3_available():
         return False
 
 
+def is_qwen3_vl_available():
+    try:
+        import transformers.models.qwen3_vl  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def is_qwen3_vl_moe_available():
+    try:
+        import transformers.models.qwen3_vl_moe  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_smollm3_available():
     try:
         import transformers.models.smollm3  # noqa: F401
@@ -414,6 +432,603 @@ def test_apply_liger_kernel_to_instance_for_llama():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_vl_available(), reason="qwen3_vl module not available")
+def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3_vl.modeling_qwen3_vl"):
+        from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLForConditionalGeneration
+
+        from liger_kernel.transformers.model.qwen3_vl import lce_forward as qwen3_vl_lce_forward
+
+        # Instantiate a dummy model
+        config = transformers.models.qwen3_vl.configuration_qwen3_vl.Qwen3VLConfig(
+            attn_implementation="sdpa",
+            image_token_id=4,
+            video_token_id=5,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            tie_word_embeddings=True,
+            vision_config=transformers.models.qwen3_vl.configuration_qwen3_vl.Qwen3VLVisionConfig(
+                depth=4,
+                hidden_size=256,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=512,
+                num_heads=4,
+                in_channels=3,
+                patch_size=16,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=512,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[1, 2, 3],
+                initializer_range=0.02,
+            ).to_dict(),
+            text_config=transformers.models.qwen3_vl.configuration_qwen3_vl.Qwen3VLTextConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                intermediate_size=2048,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=64,
+                hidden_act="silu",
+                max_position_embeddings=32768,
+                initializer_range=0.02,
+                rms_norm_eps=1e-6,
+                use_cache=False,
+                tie_word_embeddings=True,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                attention_dropout=0.0,
+                attention_bias=False,
+            ).to_dict(),
+        )
+        dummy_model_instance = Qwen3VLForConditionalGeneration._from_config(config)
+
+        assert isinstance(dummy_model_instance, Qwen3VLForConditionalGeneration)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_vl_lce_forward)
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for decoder_layer in dummy_model_instance.language_model.layers:
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            self_attn = getattr(decoder_layer, "self_attn", None)
+            if self_attn is not None:
+                if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                    assert inspect.getsource(self_attn.q_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+                if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                    assert inspect.getsource(self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_vl_lce_forward)
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for decoder_layer in dummy_model_instance.language_model.layers:
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            self_attn = getattr(decoder_layer, "self_attn", None)
+            if self_attn is not None:
+                if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                    assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+                if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                    assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_vl_available(), reason="qwen3_vl module not available")
+def test_apply_liger_kernel_to_instance_for_qwen3_vl():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3_vl.modeling_qwen3_vl"):
+        from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModel
+
+        from liger_kernel.transformers.model.qwen3_vl import lce_forward as qwen3_vl_lce_forward
+
+        # Instantiate a dummy model
+        config = transformers.models.qwen3_vl.configuration_qwen3_vl.Qwen3VLConfig(
+            attn_implementation="sdpa",
+            image_token_id=4,
+            video_token_id=5,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            tie_word_embeddings=True,
+            vision_config=transformers.models.qwen3_vl.configuration_qwen3_vl.Qwen3VLVisionConfig(
+                depth=4,
+                hidden_size=256,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=512,
+                num_heads=4,
+                in_channels=3,
+                patch_size=16,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=512,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[1, 2, 3],
+                initializer_range=0.02,
+            ).to_dict(),
+            text_config=transformers.models.qwen3_vl.configuration_qwen3_vl.Qwen3VLTextConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                intermediate_size=2048,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=64,
+                hidden_act="silu",
+                max_position_embeddings=32768,
+                initializer_range=0.02,
+                rms_norm_eps=1e-6,
+                use_cache=False,
+                tie_word_embeddings=True,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                attention_dropout=0.0,
+                attention_bias=False,
+            ).to_dict(),
+        )
+        dummy_model_instance = Qwen3VLModel._from_config(config)
+
+        assert isinstance(dummy_model_instance, Qwen3VLModel)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_vl_lce_forward)
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for decoder_layer in dummy_model_instance.language_model.layers:
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            self_attn = getattr(decoder_layer, "self_attn", None)
+            if self_attn is not None:
+                if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                    assert inspect.getsource(self_attn.q_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+                if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                    assert inspect.getsource(self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_vl_lce_forward)
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for decoder_layer in dummy_model_instance.language_model.layers:
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            self_attn = getattr(decoder_layer, "self_attn", None)
+            if self_attn is not None:
+                if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                    assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+                if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                    assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_vl_available(), reason="qwen3_vl module not available")
+def test_apply_liger_kernel_to_instance_for_qwen3_vl_text():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3_vl.modeling_qwen3_vl"):
+        from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel
+
+        # Instantiate a dummy model
+        config = transformers.models.qwen3_vl.configuration_qwen3_vl.Qwen3VLTextConfig(
+            vocab_size=32000,
+            hidden_size=512,
+            intermediate_size=2048,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            head_dim=64,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=False,
+            tie_word_embeddings=True,
+            rope_theta=1000000.0,
+            rope_scaling=dict(
+                type="mrope",
+                mrope_section=[16, 24, 24],
+            ),
+            attention_dropout=0.0,
+            attention_bias=False,
+        )
+        dummy_model_instance = Qwen3VLTextModel._from_config(config)
+
+        assert isinstance(dummy_model_instance, Qwen3VLTextModel)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        # Note: Text models don't have forward method patching, so skip this check
+        assert inspect.getsource(dummy_model_instance.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for decoder_layer in dummy_model_instance.layers:
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            self_attn = getattr(decoder_layer, "self_attn", None)
+            if self_attn is not None:
+                if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                    assert inspect.getsource(self_attn.q_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+                if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                    assert inspect.getsource(self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        # Note: Text models don't have forward method patching, so skip this check
+        assert inspect.getsource(dummy_model_instance.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for decoder_layer in dummy_model_instance.layers:
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            self_attn = getattr(decoder_layer, "self_attn", None)
+            if self_attn is not None:
+                if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                    assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+                if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                    assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_vl_moe_available(), reason="qwen3_vl_moe module not available")
+def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generation():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe"):
+        from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
+
+        from liger_kernel.transformers.model.qwen3_vl_moe import lce_forward as qwen3_vl_moe_lce_forward
+
+        # Instantiate a dummy model
+        config = transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe.Qwen3VLMoeConfig(
+            attn_implementation="sdpa",
+            image_token_id=4,
+            video_token_id=5,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            tie_word_embeddings=True,
+            vision_config=transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe.Qwen3VLMoeVisionConfig(
+                depth=4,
+                hidden_size=256,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=512,
+                num_heads=4,
+                in_channels=3,
+                patch_size=16,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=512,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[1, 2, 3],
+                initializer_range=0.02,
+            ).to_dict(),
+            text_config=transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe.Qwen3VLMoeTextConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                intermediate_size=2048,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=64,
+                hidden_act="silu",
+                max_position_embeddings=32768,
+                initializer_range=0.02,
+                rms_norm_eps=1e-6,
+                use_cache=False,
+                tie_word_embeddings=True,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                attention_dropout=0.0,
+                attention_bias=False,
+                decoder_sparse_step=1,
+                moe_intermediate_size=1024,
+                num_experts_per_tok=2,
+                num_experts=4,
+                mlp_only_layers=[],
+            ).to_dict(),
+        )
+        dummy_model_instance = Qwen3VLMoeForConditionalGeneration._from_config(config)
+
+        assert isinstance(dummy_model_instance, Qwen3VLMoeForConditionalGeneration)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_vl_moe_lce_forward)
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for decoder_layer in dummy_model_instance.language_model.layers:
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            self_attn = getattr(decoder_layer, "self_attn", None)
+            if self_attn is not None:
+                if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                    assert inspect.getsource(self_attn.q_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+                if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                    assert inspect.getsource(self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_vl_moe_lce_forward)
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for decoder_layer in dummy_model_instance.language_model.layers:
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            self_attn = getattr(decoder_layer, "self_attn", None)
+            if self_attn is not None:
+                if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                    assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+                if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                    assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_vl_moe_available(), reason="qwen3_vl_moe module not available")
+def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe"):
+        from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeModel
+
+        from liger_kernel.transformers.model.qwen3_vl_moe import lce_forward as qwen3_vl_moe_lce_forward
+
+        # Instantiate a dummy model
+        config = transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe.Qwen3VLMoeConfig(
+            attn_implementation="sdpa",
+            image_token_id=4,
+            video_token_id=5,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            tie_word_embeddings=True,
+            vision_config=transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe.Qwen3VLMoeVisionConfig(
+                depth=4,
+                hidden_size=256,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=512,
+                num_heads=4,
+                in_channels=3,
+                patch_size=16,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=512,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[1, 2, 3],
+                initializer_range=0.02,
+            ).to_dict(),
+            text_config=transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe.Qwen3VLMoeTextConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                intermediate_size=2048,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=64,
+                hidden_act="silu",
+                max_position_embeddings=32768,
+                initializer_range=0.02,
+                rms_norm_eps=1e-6,
+                use_cache=False,
+                tie_word_embeddings=True,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                attention_dropout=0.0,
+                attention_bias=False,
+                decoder_sparse_step=1,
+                moe_intermediate_size=1024,
+                num_experts_per_tok=2,
+                num_experts=4,
+                mlp_only_layers=[],
+            ).to_dict(),
+        )
+        dummy_model_instance = Qwen3VLMoeModel._from_config(config)
+
+        assert isinstance(dummy_model_instance, Qwen3VLMoeModel)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_vl_moe_lce_forward)
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for decoder_layer in dummy_model_instance.language_model.layers:
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            self_attn = getattr(decoder_layer, "self_attn", None)
+            if self_attn is not None:
+                if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                    assert inspect.getsource(self_attn.q_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+                if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                    assert inspect.getsource(self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_vl_moe_lce_forward)
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for decoder_layer in dummy_model_instance.language_model.layers:
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            self_attn = getattr(decoder_layer, "self_attn", None)
+            if self_attn is not None:
+                if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                    assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+                if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                    assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_vl_moe_available(), reason="qwen3_vl_moe module not available")
+def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe"):
+        from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextModel
+
+        # Instantiate a dummy model
+        config = transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe.Qwen3VLMoeTextConfig(
+            vocab_size=32000,
+            hidden_size=512,
+            intermediate_size=2048,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            head_dim=64,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=False,
+            tie_word_embeddings=True,
+            rope_theta=1000000.0,
+            rope_scaling=dict(
+                type="mrope",
+                mrope_section=[16, 24, 24],
+            ),
+            attention_dropout=0.0,
+            attention_bias=False,
+            decoder_sparse_step=1,
+            moe_intermediate_size=1024,
+            num_experts_per_tok=2,
+            num_experts=4,
+            mlp_only_layers=[],
+        )
+        dummy_model_instance = Qwen3VLMoeTextModel._from_config(config)
+
+        assert isinstance(dummy_model_instance, Qwen3VLMoeTextModel)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        # Note: Text models don't have forward method patching, so skip this check
+        assert inspect.getsource(dummy_model_instance.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for decoder_layer in dummy_model_instance.layers:
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            self_attn = getattr(decoder_layer, "self_attn", None)
+            if self_attn is not None:
+                if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                    assert inspect.getsource(self_attn.q_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+                if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                    assert inspect.getsource(self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        # Note: Text models don't have forward method patching, so skip this check
+        assert inspect.getsource(dummy_model_instance.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for decoder_layer in dummy_model_instance.layers:
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            self_attn = getattr(decoder_layer, "self_attn", None)
+            if self_attn is not None:
+                if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                    assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+                if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                    assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_vl_available(), reason="qwen3_vl module not available")
+def test_qwen3_vl_rope_hooks_applied():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3_vl.modeling_qwen3_vl") as modeling_mod:
+        from liger_kernel.transformers.monkey_patch import _liger_qwen3_vl_apply_rotary_pos_emb_vision
+        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb
+
+        # Before applying, make sure attributes exist but are not the liger implementations
+        setattr(modeling_mod, "apply_rotary_pos_emb", object())
+        setattr(modeling_mod, "apply_rotary_pos_emb_vision", object())
+
+        _apply_liger_kernel("qwen3_vl")
+
+        assert modeling_mod.apply_rotary_pos_emb is liger_rotary_pos_emb
+        assert modeling_mod.apply_rotary_pos_emb_vision is _liger_qwen3_vl_apply_rotary_pos_emb_vision
+
+
+@pytest.mark.skipif(not is_qwen3_vl_moe_available(), reason="qwen3_vl_moe module not available")
+def test_qwen3_vl_moe_rope_hooks_applied():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe") as modeling_mod:
+        from liger_kernel.transformers.monkey_patch import _liger_qwen3_vl_apply_rotary_pos_emb_vision
+        from liger_kernel.transformers.monkey_patch import liger_rotary_pos_emb
+
+        # Before applying, make sure attributes exist but are not the liger implementations
+        setattr(modeling_mod, "apply_rotary_pos_emb", object())
+        setattr(modeling_mod, "apply_rotary_pos_emb_vision", object())
+
+        _apply_liger_kernel("qwen3_vl_moe")
+
+        assert modeling_mod.apply_rotary_pos_emb is liger_rotary_pos_emb
+        assert modeling_mod.apply_rotary_pos_emb_vision is _liger_qwen3_vl_apply_rotary_pos_emb_vision
 
 
 @pytest.mark.skipif(not is_falcon_h1_available(), reason="falcon_h1 module not available")

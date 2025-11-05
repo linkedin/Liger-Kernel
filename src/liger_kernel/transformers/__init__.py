@@ -56,6 +56,8 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_next  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_vl  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_vl_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_smollm3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_smolvlm  # noqa: F401
 
@@ -120,6 +122,8 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_qwen3",
         "apply_liger_kernel_to_qwen3_moe",
         "apply_liger_kernel_to_qwen3_next",
+        "apply_liger_kernel_to_qwen3_vl",
+        "apply_liger_kernel_to_qwen3_vl_moe",
         "apply_liger_kernel_to_smollm3",
         "apply_liger_kernel_to_smolvlm",
     }
@@ -190,6 +194,8 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_qwen3",
             "apply_liger_kernel_to_qwen3_moe",
             "apply_liger_kernel_to_qwen3_next",
+            "apply_liger_kernel_to_qwen3_vl",
+            "apply_liger_kernel_to_qwen3_vl_moe",
             "apply_liger_kernel_to_smollm3",
             "apply_liger_kernel_to_smolvlm",
         ]
