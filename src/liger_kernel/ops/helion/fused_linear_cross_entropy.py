@@ -407,7 +407,7 @@ if __name__ == "__main__":
         {
             "torch_fwd": ref_lm_head_ce,
             "cce_fwd": cce_lm_head_ce,
-            "triton_flce_fwd": triton_liger_lm_head_ce,
+            "triton_flce_fwd": triton_liger_lm_head_ce,  # this will ecounter illegal memory access error
         },
         (input, target),
         kernel_name="helion_flce_fwd",
@@ -420,7 +420,7 @@ if __name__ == "__main__":
             {
                 "torch_fwd_bwd": ref_lm_head_ce_fwd_bwd,
                 "cce_fwd_bwd": cce_lm_head_ce_fwd_bwd,
-                "triton_flce_fwd_bwd": triton_liger_lm_head_ce_fwd_bwd,
+                "triton_flce_fwd_bwd": triton_liger_lm_head_ce_fwd_bwd, # ditto
             },
             (input, target),
             kernel_name="helion_flce_fwd_bwd",
