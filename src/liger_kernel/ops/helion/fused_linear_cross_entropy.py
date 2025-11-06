@@ -298,13 +298,12 @@ if __name__ == "__main__":
     device = "cuda"
 
     batch_size = 2
-    seq_len = 2048
-    hidden_size = 4096
-    vocab_size = 32000
-    # batch_size = 2
-    # seq_len = 256
-    # hidden_size = 512
-    # vocab_size = 1024
+    seq_len = 4096
+    hidden_size = 2304
+    vocab_size = 262208
+
+    print(f"BT={batch_size * seq_len}, H={hidden_size}, V={vocab_size}")
+    
     dtype = torch.float32
     reduction = "mean"
     ignore_index = -100
@@ -315,41 +314,19 @@ if __name__ == "__main__":
     weight = torch.randn(vocab_size, hidden_size, device=device, requires_grad=True)
     target = torch.randint(0, vocab_size, (batch_size * seq_len,), device=device)
 
-    print(f"{input.shape=}")
-    print(f"{input.clone().detach().shape=}")
-
     # Init
     ref_lm_head_ce = TorchLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(device=device)
     liger_lm_head_ce = LigerLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(device=device)
+    cce_lm_head_ce = CutLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(device=device)
+    triton_liger_lm_head_ce = TritonLigerLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(
+        device=device
+    )
 
     ref_lm_head_ce.lm_head.weight.data = weight.data
     liger_lm_head_ce.lm_head.weight.data = weight.data
-
-    ref_input = input.detach().clone().requires_grad_(True)
-    liger_input = input.detach().clone().requires_grad_(True)
-
-    # Forward pass
-    ref_loss: torch.Tensor = ref_lm_head_ce(ref_input, target)
-    liger_loss: torch.Tensor = liger_lm_head_ce(liger_input, target)
-
-    torch.testing.assert_close(liger_loss, ref_loss, rtol=rtol, atol=atol)
-
-    # Backward pass (backward() with reduction=="none" is not supported yet)
-    if reduction == "none":
-        pass
-    else:
-        liger_loss.backward()
-        ref_loss.backward()
-
-        torch.testing.assert_close(liger_input.grad, ref_input.grad, rtol=rtol, atol=atol * 10)
-        torch.testing.assert_close(
-            liger_lm_head_ce.lm_head.weight.grad, ref_lm_head_ce.lm_head.weight.grad, rtol=rtol, atol=atol
-        )
-
-    # Benchmark
-    cce_lm_head_ce = CutLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(device=device)
     cce_lm_head_ce.lm_head.weight.data = weight.data
-
+    triton_liger_lm_head_ce.lm_head.weight.data = weight.data
+    
     def fwd_bwd_fn(input, target, fn):
         loss = fn(input, target)
         loss.backward()
@@ -358,14 +335,12 @@ if __name__ == "__main__":
     liger_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=liger_lm_head_ce)
     ref_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=ref_lm_head_ce)
     cce_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=cce_lm_head_ce)
-
-    triton_liger_lm_head_ce = TritonLigerLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(
-        device=device
-    )
-    triton_liger_lm_head_ce.lm_head.weight.data = weight.data
     triton_liger_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=triton_liger_lm_head_ce)
+    
+    # Test and Benchmark
 
-    print(f"{input.shape=}")
+
+
     run_example(
         liger_lm_head_ce,
         {
