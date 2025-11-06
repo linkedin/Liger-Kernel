@@ -274,13 +274,19 @@ if __name__ == "__main__":
 
     device = "cuda"
 
-    batch_size = 8
-    seq_len = 4096
+    batch_size = 2
+    seq_len = 1024
     hidden_size = 4096
     vocab_size = 32000
+    # batch_size = 2
+    # seq_len = 256
+    # hidden_size = 512
+    # vocab_size = 1024
     dtype = torch.float32
     reduction = "mean"
     ignore_index = -100
+    rtol = 1e-2
+    atol = 1e-2
 
     input = torch.randn(batch_size * seq_len, hidden_size, device=device, requires_grad=True)
     weight = torch.randn(vocab_size, hidden_size, device=device, requires_grad=True)
@@ -300,7 +306,7 @@ if __name__ == "__main__":
     ref_loss: torch.Tensor = ref_lm_head_ce(ref_input, target)
     liger_loss: torch.Tensor = liger_lm_head_ce(liger_input, target)
 
-    torch.testing.assert_close(liger_loss, ref_loss, rtol=1e-1, atol=1e-1)
+    torch.testing.assert_close(liger_loss, ref_loss, rtol=rtol, atol=atol)
 
     # Backward pass (backward() with reduction=="none" is not supported yet)
     if reduction == "none":
@@ -309,16 +315,16 @@ if __name__ == "__main__":
         liger_loss.backward()
         ref_loss.backward()
 
-        torch.testing.assert_close(liger_input.grad, ref_input.grad, rtol=1e-1, atol=1e-1)
+        torch.testing.assert_close(liger_input.grad, ref_input.grad, rtol=rtol, atol=atol)
         torch.testing.assert_close(
-            liger_lm_head_ce.lm_head.weight.grad, ref_lm_head_ce.lm_head.weight.grad, rtol=1e-1, atol=1e-1
+            liger_lm_head_ce.lm_head.weight.grad, ref_lm_head_ce.lm_head.weight.grad, rtol=rtol, atol=atol
         )
 
 
     # Benchmark
-    from helion._testing import run_example
     from functools import partial
 
+    from helion._testing import run_example
 
     def fwd_bwd_fn(input, target, fn):
         loss = fn(input, target)
@@ -328,5 +334,5 @@ if __name__ == "__main__":
     ref_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=ref_lm_head_ce)
 
     
-    run_example(liger_lm_head_ce, ref_lm_head_ce, (input, target), kernel_name="helion_flce_fwd", baseline_name="torch_fwd", rtol=1e-1, atol=1e-1)
-    run_example(liger_lm_head_ce_fwd_bwd, ref_lm_head_ce_fwd_bwd, (input, target), kernel_name="helion_flce_fwd_bwd", baseline_name="torch_fwd_bwd", rtol=1e-1, atol=1e-1)
+    run_example(liger_lm_head_ce, ref_lm_head_ce, (input, target), kernel_name="helion_flce_fwd", baseline_name="torch_fwd", rtol=rtol, atol=atol)
+    run_example(liger_lm_head_ce_fwd_bwd, ref_lm_head_ce_fwd_bwd, (input, target), kernel_name="helion_flce_fwd_bwd", baseline_name="torch_fwd_bwd", rtol=rtol, atol=atol)
