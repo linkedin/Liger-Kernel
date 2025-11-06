@@ -30,27 +30,6 @@ config = helion.Config(
 )
 
 
-def helion_lock_acquire(lock_ptr, lock_index):
-    hl.inline_triton(
-        """
-        while tl.atomic_cas({0} + {1}, 0, 1, sem="acquire") == 1:
-            pass
-        """,
-        args=(lock_ptr, lock_index),
-        output_like=None,
-    )
-
-
-def helion_lock_release(lock_ptr, lock_index):
-    hl.inline_triton(
-        """
-        tl.atomic_xchg({0} + {1}, 0, sem="release")
-        """,
-        args=(lock_ptr, lock_index),
-        output_like=None,
-    )
-
-
 # @helion.kernel(config=config, ignore_warnings=[helion.exc.TensorOperationInWrapper])
 @helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
 def fused_linear_cross_entropy_fwd(
@@ -186,18 +165,20 @@ def fused_linear_cross_entropy_bwd(
             # grad_x = grad_logits @ weight
             rhs_tile = weight[tile_v, tile_h]
             partial_grad_x = hl.dot(grad_logits_tile, rhs_tile, out_dtype=torch.float32)
-            helion_lock_acquire(grad_x_lock, tile_bt.id * num_block_h + tile_h.id)
+            while hl.atomic_cas(grad_x_lock, [tile_bt.id, tile_h.id], 0, 1, sem="acquire") == 1:
+                pass
             grad_x[tile_bt, tile_h] += partial_grad_x
-            helion_lock_release(grad_x_lock, tile_bt.id * num_block_h + tile_h.id)
+            hl.atomic_xchg(grad_x_lock, [tile_bt.id, tile_h.id], 0, sem="release")
             # hl.atomic_add(grad_x, [tile_bt, tile_h], partial_grad_x)
 
             # for tile_h in hl.tile(H, block_size=block_size_h):
             # grad_w = grad_logits.T[tile_v, tile_bt] @ x[tile_bt, tile_h]
             rhs_tile = x[tile_bt, tile_h]
             partial_grad_w = hl.dot(grad_logits_tile.T, rhs_tile, out_dtype=torch.float32)
-            helion_lock_acquire(grad_w_lock, tile_v.id * num_block_h + tile_h.id)
+            while hl.atomic_cas(grad_w_lock, [tile_v.id, tile_h.id], 0, 1, sem="acquire") == 1:
+                pass
             grad_w[tile_v, tile_h] += partial_grad_w
-            helion_lock_release(grad_w_lock, tile_v.id * num_block_h + tile_h.id)
+            hl.atomic_xchg(grad_w_lock, [tile_v.id, tile_h.id], 0, sem="release")
             # hl.atomic_add(grad_w, [tile_v, tile_h], partial_grad_w)
 
     return grad_x, grad_w
