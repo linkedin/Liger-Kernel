@@ -309,6 +309,24 @@ class CutLMHeadCE(torch.nn.Module):
     def forward(self, x, target):
         return self.flce(x, self.lm_head.weight, target)
 
+from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
+
+
+class TritonLigerLMHeadCE(torch.nn.Module):
+    def __init__(
+        self,
+        H: int,
+        V: int,
+        dtype: torch.dtype,
+        ignore_index: int = -100,
+        reduction: str = "mean",
+    ):
+        super().__init__()
+        self.lm_head = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
+        self.flce = LigerFusedLinearCrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
+
+    def forward(self, x, target):
+        return self.flce(x, self.lm_head.weight, target, None)
 
 if __name__ == "__main__":
     torch.manual_seed(0)
@@ -378,9 +396,19 @@ if __name__ == "__main__":
     ref_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=ref_lm_head_ce)
     cce_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=cce_lm_head_ce)
 
+    triton_liger_lm_head_ce = TritonLigerLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(
+        device=device
+    )
+    triton_liger_lm_head_ce.lm_head.weight.data = weight.data
+    triton_liger_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=triton_liger_lm_head_ce)
+
     run_example(
         liger_lm_head_ce,
-        {"torch_fwd": ref_lm_head_ce, "cce_fwd": cce_lm_head_ce},
+        {
+            "torch_fwd": ref_lm_head_ce,
+            "cce_fwd": cce_lm_head_ce,
+            "triton_flce_fwd": triton_liger_lm_head_ce,
+        },
         (input, target),
         kernel_name="helion_flce_fwd",
         rtol=rtol * 10,
@@ -389,7 +417,11 @@ if __name__ == "__main__":
     if reduction != "none":
         run_example(
             liger_lm_head_ce_fwd_bwd,
-            {"torch_fwd_bwd": ref_lm_head_ce_fwd_bwd, "cce_fwd_bwd": cce_lm_head_ce_fwd_bwd},
+            {
+                "torch_fwd_bwd": ref_lm_head_ce_fwd_bwd,
+                "cce_fwd_bwd": cce_lm_head_ce_fwd_bwd,
+                "triton_flce_fwd_bwd": triton_liger_lm_head_ce_fwd_bwd,
+            },
             (input, target),
             kernel_name="helion_flce_fwd_bwd",
             rtol=rtol,
