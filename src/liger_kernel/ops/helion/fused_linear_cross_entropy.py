@@ -5,33 +5,10 @@ import torch
 from helion._testing import run_example
 
 # Best config for default llama3Config(hidden_size=4096, vocab_size=32000) with 4096 bs*seqlen input
-config = helion.Config(
-    block_sizes=[32, 32, 256],
-    indexing=[
-        "tensor_descriptor",
-        "tensor_descriptor",
-        "pointer",
-        "tensor_descriptor",
-        "pointer",
-        "pointer",
-        "tensor_descriptor",
-        "pointer",
-        "tensor_descriptor",
-    ],
-    load_eviction_policies=["first", "", "first", "last", "", "", "last", "first"],
-    num_stages=5,
-    num_warps=4,
-    pid_type="flat",
-    range_flattens=[None, True, False],
-    range_multi_buffers=[None, True, False],
-    range_num_stages=[0, 0, 0],
-    range_unroll_factors=[0, 1, 1],
-    range_warp_specializes=[],
-)
+h100_fwd_config=helion.Config(block_sizes=[64, 32, 512], indexing=['pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor'], load_eviction_policies=['', 'last', 'last', 'last'], num_stages=8, num_warps=16, pid_type='flat', range_flattens=[None, False, None], range_multi_buffers=[None, True, False], range_num_stages=[0, 3, 3], range_unroll_factors=[0, 0, 1], range_warp_specializes=[])
 
-
-# @helion.kernel(config=config, ignore_warnings=[helion.exc.TensorOperationInWrapper])
-@helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
+@helion.kernel(config=h100_fwd_config, static_shapes=True)
+# @helion.kernel(autotune_effort="quick", ignore_warnings=[helion.exc.TensorOperationInWrapper])
 def fused_linear_cross_entropy_fwd(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -111,7 +88,9 @@ def fused_linear_cross_entropy_fwd(
     return loss, lse
 
 
-@helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
+h100_bwd_config = helion.Config(block_sizes=[128, 64, 128], indexing=['pointer', 'pointer', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor'], l2_groupings=[64], load_eviction_policies=['', 'first', 'last', '', '', 'last', 'first', 'first', ''], loop_orders=[[0, 1]], num_stages=7, num_warps=8, pid_type='flat', range_flattens=[None, True], range_multi_buffers=[None, None], range_num_stages=[0, 3], range_unroll_factors=[0, 1], range_warp_specializes=[])    
+@helion.kernel(config=h100_bwd_config, static_shapes=True)
+# @helion.kernel(autotune_effort="quick", ignore_warnings=[helion.exc.TensorOperationInWrapper])
 def fused_linear_cross_entropy_bwd(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -319,7 +298,7 @@ if __name__ == "__main__":
     device = "cuda"
 
     batch_size = 2
-    seq_len = 1024
+    seq_len = 2048
     hidden_size = 4096
     vocab_size = 32000
     # batch_size = 2
