@@ -155,14 +155,18 @@ def lce_forward(
         output = output + (token_accuracy,) if token_accuracy is not None else output
         return output
 
-    # Return GLM4V MoE output with accuracy (using dict syntax to add extra field)
-    return LigerGlm4vMoeCausalLMOutputWithPast(
+    # Build output kwargs and include aux_loss only if present (depends on transformers version)
+    output_kwargs = dict(
         loss=loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
         rope_deltas=outputs.rope_deltas,
-        aux_loss=outputs.aux_loss,
         token_accuracy=token_accuracy,
     )
+    if hasattr(outputs, "aux_loss"):
+        output_kwargs["aux_loss"] = outputs.aux_loss
+
+    # Return GLM4V MoE output with accuracy
+    return LigerGlm4vMoeCausalLMOutputWithPast(**output_kwargs)
