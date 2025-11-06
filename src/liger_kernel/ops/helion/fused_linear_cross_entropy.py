@@ -326,7 +326,7 @@ class TritonLigerLMHeadCE(torch.nn.Module):
         self.flce = LigerFusedLinearCrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
 
     def forward(self, x, target):
-        return self.flce(x, self.lm_head.weight, target, None)
+        return self.flce(self.lm_head.weight, x, target, None)
 
 if __name__ == "__main__":
     torch.manual_seed(0)
@@ -354,6 +354,9 @@ if __name__ == "__main__":
     input = torch.randn(batch_size * seq_len, hidden_size, device=device, requires_grad=True)
     weight = torch.randn(vocab_size, hidden_size, device=device, requires_grad=True)
     target = torch.randint(0, vocab_size, (batch_size * seq_len,), device=device)
+
+    print(f"{input.shape=}")
+    print(f"{input.clone().detach().shape=}")
 
     # Init
     ref_lm_head_ce = TorchLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(device=device)
@@ -402,12 +405,13 @@ if __name__ == "__main__":
     triton_liger_lm_head_ce.lm_head.weight.data = weight.data
     triton_liger_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=triton_liger_lm_head_ce)
 
+    print(f"{input.shape=}")
     run_example(
         liger_lm_head_ce,
         {
             "torch_fwd": ref_lm_head_ce,
             "cce_fwd": cce_lm_head_ce,
-            "triton_flce_fwd": triton_liger_lm_head_ce,  # this will ecounter illegal memory access error
+            "triton_flce_fwd": triton_liger_lm_head_ce, 
         },
         (input, target),
         kernel_name="helion_flce_fwd",
@@ -420,7 +424,7 @@ if __name__ == "__main__":
             {
                 "torch_fwd_bwd": ref_lm_head_ce_fwd_bwd,
                 "cce_fwd_bwd": cce_lm_head_ce_fwd_bwd,
-                "triton_flce_fwd_bwd": triton_liger_lm_head_ce_fwd_bwd, # ditto
+                "triton_flce_fwd_bwd": triton_liger_lm_head_ce_fwd_bwd,
             },
             (input, target),
             kernel_name="helion_flce_fwd_bwd",
