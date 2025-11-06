@@ -163,6 +163,5 @@ def lce_forward(
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
         rope_deltas=outputs.rope_deltas,
-        aux_loss=outputs.aux_loss,
         token_accuracy=token_accuracy,
     )
