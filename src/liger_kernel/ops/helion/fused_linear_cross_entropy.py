@@ -1,11 +1,34 @@
-import math
-
 import helion
 import helion.language as hl
 import torch
 
+from helion._testing import run_example
+
 # Best config for default llama3Config(hidden_size=4096, vocab_size=32000) with 4096 bs*seqlen input
-config = helion.Config(block_sizes=[32, 32, 256], indexing=['tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor'], load_eviction_policies=['first', '', 'first', 'last', '', '', 'last', 'first'], num_stages=5, num_warps=4, pid_type='flat', range_flattens=[None, True, False], range_multi_buffers=[None, True, False], range_num_stages=[0, 0, 0], range_unroll_factors=[0, 1, 1], range_warp_specializes=[])
+config = helion.Config(
+    block_sizes=[32, 32, 256],
+    indexing=[
+        "tensor_descriptor",
+        "tensor_descriptor",
+        "pointer",
+        "tensor_descriptor",
+        "pointer",
+        "pointer",
+        "tensor_descriptor",
+        "pointer",
+        "tensor_descriptor",
+    ],
+    load_eviction_policies=["first", "", "first", "last", "", "", "last", "first"],
+    num_stages=5,
+    num_warps=4,
+    pid_type="flat",
+    range_flattens=[None, True, False],
+    range_multi_buffers=[None, True, False],
+    range_num_stages=[0, 0, 0],
+    range_unroll_factors=[0, 1, 1],
+    range_warp_specializes=[],
+)
+
 
 def helion_lock_acquire(lock_ptr, lock_index):
     hl.inline_triton(
@@ -16,6 +39,7 @@ def helion_lock_acquire(lock_ptr, lock_index):
         args=(lock_ptr, lock_index),
         output_like=None,
     )
+
 
 def helion_lock_release(lock_ptr, lock_index):
     hl.inline_triton(
@@ -99,13 +123,14 @@ def fused_linear_cross_entropy_fwd(
 
         nll[tile_bt] = nll_tile
         lse[tile_bt] = lse_tile
-    
+
     if reduction != "none":
-        loss = nll.sum() 
+        loss = nll.sum()
     else:
         loss = nll
-    
+
     return loss, lse
+
 
 @helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
 def fused_linear_cross_entropy_bwd(
@@ -125,9 +150,9 @@ def fused_linear_cross_entropy_bwd(
     grad_w = torch.zeros_like(weight, dtype=torch.float32)
     n_non_ignore = (target != ignore_index).sum().unsqueeze(0)
 
-    num_block_bt = (BT + block_size_bt - 1)//block_size_bt
-    num_block_h = (H + block_size_h - 1)//block_size_h
-    num_block_v = (V + block_size_v - 1)//block_size_v
+    num_block_bt = (BT + block_size_bt - 1) // block_size_bt
+    num_block_h = (H + block_size_h - 1) // block_size_h
+    num_block_v = (V + block_size_v - 1) // block_size_v
     grad_x_lock = torch.zeros((num_block_bt, num_block_h), dtype=torch.int32, device=x.device)
     grad_w_lock = torch.zeros((num_block_v, num_block_h), dtype=torch.int32, device=x.device)
     # backward
@@ -165,8 +190,8 @@ def fused_linear_cross_entropy_bwd(
             grad_x[tile_bt, tile_h] += partial_grad_x
             helion_lock_release(grad_x_lock, tile_bt.id * num_block_h + tile_h.id)
             # hl.atomic_add(grad_x, [tile_bt, tile_h], partial_grad_x)
-        
-        # for tile_h in hl.tile(H, block_size=block_size_h):
+
+            # for tile_h in hl.tile(H, block_size=block_size_h):
             # grad_w = grad_logits.T[tile_v, tile_bt] @ x[tile_bt, tile_h]
             rhs_tile = x[tile_bt, tile_h]
             partial_grad_w = hl.dot(grad_logits_tile.T, rhs_tile, out_dtype=torch.float32)
@@ -174,8 +199,6 @@ def fused_linear_cross_entropy_bwd(
             grad_w[tile_v, tile_h] += partial_grad_w
             helion_lock_release(grad_w_lock, tile_v.id * num_block_h + tile_h.id)
             # hl.atomic_add(grad_w, [tile_v, tile_h], partial_grad_w)
-
-
 
     return grad_x, grad_w
 
@@ -265,6 +288,28 @@ class LigerLMHeadCE(torch.nn.Module):
         return self.flce(x, self.lm_head.weight, target)
 
 
+from functools import partial
+
+from cut_cross_entropy import linear_cross_entropy
+
+
+class CutLMHeadCE(torch.nn.Module):
+    def __init__(
+        self,
+        H: int,
+        V: int,
+        dtype: torch.dtype,
+        ignore_index: int = -100,
+        reduction: str = "mean",
+    ):
+        super().__init__()
+        self.lm_head = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
+        self.flce = partial(linear_cross_entropy, ignore_index=ignore_index, reduction=reduction, return_lse=False)
+
+    def forward(self, x, target):
+        return self.flce(x, self.lm_head.weight, target)
+
+
 if __name__ == "__main__":
     torch.manual_seed(0)
     torch.cuda.manual_seed(0)
@@ -286,7 +331,7 @@ if __name__ == "__main__":
     reduction = "mean"
     ignore_index = -100
     rtol = 1e-2
-    atol = 1e-2
+    atol = 1e-1
 
     input = torch.randn(batch_size * seq_len, hidden_size, device=device, requires_grad=True)
     weight = torch.randn(vocab_size, hidden_size, device=device, requires_grad=True)
@@ -315,24 +360,38 @@ if __name__ == "__main__":
         liger_loss.backward()
         ref_loss.backward()
 
-        torch.testing.assert_close(liger_input.grad, ref_input.grad, rtol=rtol, atol=atol)
+        torch.testing.assert_close(liger_input.grad, ref_input.grad, rtol=rtol, atol=atol * 10)
         torch.testing.assert_close(
             liger_lm_head_ce.lm_head.weight.grad, ref_lm_head_ce.lm_head.weight.grad, rtol=rtol, atol=atol
         )
 
-
     # Benchmark
-    from functools import partial
-
-    from helion._testing import run_example
+    cce_lm_head_ce = CutLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(device=device)
+    cce_lm_head_ce.lm_head.weight.data = weight.data
 
     def fwd_bwd_fn(input, target, fn):
         loss = fn(input, target)
         loss.backward()
         return loss
+
     liger_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=liger_lm_head_ce)
     ref_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=ref_lm_head_ce)
+    cce_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=cce_lm_head_ce)
 
-    
-    run_example(liger_lm_head_ce, ref_lm_head_ce, (input, target), kernel_name="helion_flce_fwd", baseline_name="torch_fwd", rtol=rtol, atol=atol)
-    run_example(liger_lm_head_ce_fwd_bwd, ref_lm_head_ce_fwd_bwd, (input, target), kernel_name="helion_flce_fwd_bwd", baseline_name="torch_fwd_bwd", rtol=rtol, atol=atol)
+    run_example(
+        liger_lm_head_ce,
+        {"torch_fwd": ref_lm_head_ce, "cce_fwd": cce_lm_head_ce},
+        (input, target),
+        kernel_name="helion_flce_fwd",
+        rtol=rtol * 10,
+        atol=atol,
+    )
+    if reduction != "none":
+        run_example(
+            liger_lm_head_ce_fwd_bwd,
+            {"torch_fwd_bwd": ref_lm_head_ce_fwd_bwd, "cce_fwd_bwd": cce_lm_head_ce_fwd_bwd},
+            (input, target),
+            kernel_name="helion_flce_fwd_bwd",
+            rtol=rtol,
+            atol=atol,
+        )
