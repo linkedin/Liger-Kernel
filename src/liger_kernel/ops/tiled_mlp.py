@@ -4,7 +4,10 @@ https://github.com/microsoft/DeepSpeed/blob/master/deepspeed/runtime/sequence_pa
 """
 
 import math
-from typing import Callable, List, Optional
+
+from typing import Callable
+from typing import List
+from typing import Optional
 
 import torch
 
