@@ -183,3 +183,49 @@ def test_correctness_functional(bs, sl, hd, dtype, atol, rtol, reference, offset
     y2.backward(grad)
 
     assert torch.allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-6),
+        pytest.param(
+            torch.bfloat16,
+            2e-1,
+            2e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "reference, offset, casting_mode",
+    [
+        (LlamaRMSNorm, 0.0, "llama"),
+        (GemmaRMSNorm, 1.0, "gemma"),
+    ],
+)
+def test_large_64k_correctness(dtype, atol, rtol, reference, offset, casting_mode):
+    """Test RMS norm with 64k hidden dimension to verify optimization works at scale"""
+    bs, sl, hd = 2, 128, 65536
+
+    _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
+
+    h1 = _tensor.clone().requires_grad_(True)
+    h2 = _tensor.clone().requires_grad_(True)
+
+    # do
+    do = torch.randn(bs, sl, hd, device=device, dtype=dtype)
+
+    ref_rms = reference(hidden_size=hd).to(device).to(dtype)
+    ref_o = ref_rms(h1)
+    ref_o.backward(do, retain_graph=True)
+
+    triton_rms = (
+        LigerRMSNorm(hidden_size=hd, offset=offset, casting_mode=casting_mode, in_place=False).to(device).to(dtype)
+    )
+    triton_o = triton_rms(h2)
+    triton_o.backward(do, retain_graph=True)
+
+    assert_verbose_allclose(ref_o, triton_o, atol=atol, rtol=rtol)
+    assert_verbose_allclose(ref_rms.weight.grad, triton_rms.weight.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol, max_print=20)

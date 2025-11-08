@@ -4,6 +4,7 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import calculate_num_stages
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import ensure_contiguous
 
@@ -119,20 +120,36 @@ def _softmax_forward(x: torch.Tensor) -> Tuple[torch.Tensor, int, int, bool]:
     n_rows = x2d.shape[0]
 
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    num_stages = calculate_num_stages()
+
     y2d = torch.empty_like(x2d)
 
     if n_cols <= BLOCK_SIZE:
         _softmax_single_block_forward_kernel[(n_rows,)](
-            y2d, y2d.stride(0), x2d, x2d.stride(0), n_cols, BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps
+            y2d,
+            y2d.stride(0),
+            x2d,
+            x2d.stride(0),
+            n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            num_stages=num_stages,
         )
         multi_block_launch = False
     else:
         _softmax_multi_block_forward_kernel[(n_rows,)](
-            y2d, y2d.stride(0), x2d, x2d.stride(0), n_cols, BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps
+            y2d,
+            y2d.stride(0),
+            x2d,
+            x2d.stride(0),
+            n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            num_stages=num_stages,
         )
         multi_block_launch = True
 
-    return y2d.view(*batch, n_cols), BLOCK_SIZE, num_warps, multi_block_launch
+    return y2d.view(*batch, n_cols), BLOCK_SIZE, num_warps, num_stages, multi_block_launch
 
 
 def _softmax_backward(
@@ -140,6 +157,7 @@ def _softmax_backward(
     y: torch.Tensor,
     BLOCK_SIZE: int,
     num_warps: int,
+    num_stages: int,
     multi_block_launch: bool,
 ) -> torch.Tensor:
     *batch, n_cols = dy.shape
@@ -159,6 +177,7 @@ def _softmax_backward(
             n_cols,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
+            num_stages=num_stages,
         )
     else:
         _softmax_multi_block_backward_kernel[(n_rows,)](
@@ -171,6 +190,7 @@ def _softmax_backward(
             n_cols,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
+            num_stages=num_stages,
         )
 
     return dx2d.view(*batch, n_cols)
@@ -180,10 +200,11 @@ class LigerSoftmaxFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(ctx, input_: torch.Tensor):
-        y, BLOCK_SIZE, num_warps, multi_block_launch = _softmax_forward(input_)
+        y, BLOCK_SIZE, num_warps, num_stages, multi_block_launch = _softmax_forward(input_)
         ctx.save_for_backward(y)
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
+        ctx.num_stages = num_stages
         ctx.multi_block_launch = multi_block_launch
         return y
 
@@ -196,6 +217,7 @@ class LigerSoftmaxFunction(torch.autograd.Function):
             y,
             ctx.BLOCK_SIZE,
             ctx.num_warps,
+            ctx.num_stages,
             ctx.multi_block_launch,
         )
         return dx

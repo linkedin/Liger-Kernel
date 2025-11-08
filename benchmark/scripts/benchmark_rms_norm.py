@@ -140,7 +140,7 @@ if __name__ == "__main__":
         "kernel_name": "rms_norm",
         "x_name": "H",
         "x_label": "hidden size",
-        "x_values": [2**i for i in range(10, 16)],
+        "x_values": [2**i for i in range(10, 17)],
         "kernel_providers": ["liger", "huggingface"],
         "extra_benchmark_configs": [{"M": 2048, "dtype": torch.bfloat16, "eps": 1e-6}],
         "overwrite": args.overwrite,
