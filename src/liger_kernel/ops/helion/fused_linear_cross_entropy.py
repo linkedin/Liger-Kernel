@@ -5,10 +5,23 @@ import torch
 from helion._testing import run_example
 
 # Best config for default llama3Config(hidden_size=4096, vocab_size=32000) with 4096 bs*seqlen input
-h100_fwd_config=helion.Config(block_sizes=[64, 32, 512], indexing=['pointer', 'pointer', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor'], load_eviction_policies=['', 'last', 'last', 'last'], num_stages=8, num_warps=16, pid_type='flat', range_flattens=[None, False, None], range_multi_buffers=[None, True, False], range_num_stages=[0, 3, 3], range_unroll_factors=[0, 0, 1], range_warp_specializes=[])
+h100_fwd_config = helion.Config(
+    block_sizes=[64, 32, 512],
+    indexing=["pointer", "pointer", "tensor_descriptor", "pointer", "tensor_descriptor", "tensor_descriptor"],
+    load_eviction_policies=["", "last", "last", "last"],
+    num_stages=8,
+    num_warps=16,
+    pid_type="flat",
+    range_flattens=[None, False, None],
+    range_multi_buffers=[None, True, False],
+    range_num_stages=[0, 3, 3],
+    range_unroll_factors=[0, 0, 1],
+    range_warp_specializes=[],
+)
 
-@helion.kernel(config=h100_fwd_config, static_shapes=True)
-# @helion.kernel(autotune_effort="quick", ignore_warnings=[helion.exc.TensorOperationInWrapper])
+
+# @helion.kernel(config=h100_fwd_config, static_shapes=True)
+@helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
 def fused_linear_cross_entropy_fwd(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -88,9 +101,37 @@ def fused_linear_cross_entropy_fwd(
     return loss, lse
 
 
-h100_bwd_config = helion.Config(block_sizes=[128, 64, 128], indexing=['pointer', 'pointer', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor', 'pointer', 'tensor_descriptor', 'tensor_descriptor'], l2_groupings=[64], load_eviction_policies=['', 'first', 'last', '', '', 'last', 'first', 'first', ''], loop_orders=[[0, 1]], num_stages=7, num_warps=8, pid_type='flat', range_flattens=[None, True], range_multi_buffers=[None, None], range_num_stages=[0, 3], range_unroll_factors=[0, 1], range_warp_specializes=[])    
-@helion.kernel(config=h100_bwd_config, static_shapes=True)
-# @helion.kernel(autotune_effort="quick", ignore_warnings=[helion.exc.TensorOperationInWrapper])
+h100_bwd_config = helion.Config(
+    block_sizes=[128, 64, 128],
+    indexing=[
+        "pointer",
+        "pointer",
+        "pointer",
+        "tensor_descriptor",
+        "tensor_descriptor",
+        "pointer",
+        "tensor_descriptor",
+        "tensor_descriptor",
+        "pointer",
+        "tensor_descriptor",
+        "tensor_descriptor",
+    ],
+    l2_groupings=[64],
+    load_eviction_policies=["", "first", "last", "", "", "last", "first", "first", ""],
+    loop_orders=[[0, 1]],
+    num_stages=7,
+    num_warps=8,
+    pid_type="flat",
+    range_flattens=[None, True],
+    range_multi_buffers=[None, None],
+    range_num_stages=[0, 3],
+    range_unroll_factors=[0, 1],
+    range_warp_specializes=[],
+)
+
+
+# @helion.kernel(config=h100_bwd_config, static_shapes=True)
+@helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
 def fused_linear_cross_entropy_bwd(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -163,16 +204,98 @@ def fused_linear_cross_entropy_bwd(
     return grad_x, grad_w
 
 
+@helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
+def _grad_logit_compute(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    target: torch.Tensor,
+    lse: torch.Tensor,
+    n_non_ignore: torch.Tensor,
+    reduction: str = "mean",
+):
+    BT, H = x.size()
+    V = weight.size(0)
+
+    block_size_bt = hl.register_block_size(BT)
+    block_size_h = hl.register_block_size(H)
+    block_size_v = hl.register_block_size(V)
+    grad_logits = torch.zeros((BT, V), dtype=torch.float32, device=x.device)
+    for tile_bt, tile_v in hl.tile([BT, V], block_size=(block_size_bt, block_size_v)):
+        if reduction == "mean":
+            n_non_ignore_value = hl.load(n_non_ignore, [0], eviction_policy="evict_last")
+        # Restore logits
+        acc2 = hl.zeros([tile_bt, tile_v], dtype=torch.float32)
+        for tile_h in hl.tile(H, block_size=block_size_h):
+            x_tile = x[tile_bt, tile_h]
+            weight_tile = weight[tile_v, tile_h]
+            acc2 = hl.dot(x_tile, weight_tile.T, acc=acc2, out_dtype=torch.float32)
+
+        # softmax(x_i) = exp(x_i) / sum(exp(x_i))
+        #              = exp(x_i) / log(exp(sum(x_i)))
+        #              = exp(x_i) / lse = exp(x_i - lse)
+        lse_tile = lse[tile_bt]
+        target_indices = target[tile_bt].unsqueeze(1)  # [tile_bt, 1]
+
+        grad_logits_tile = torch.exp(acc2 - lse_tile[:, None])
+        offset = tile_v.index.unsqueeze(0)  # [1, tile_v]
+        mask = target_indices == offset  # [tile_bt, tile_v]
+        grad_logits_tile = grad_logits_tile - mask.float()
+        # handle out of bound values in grad_logits_tile
+        grad_logits_tile = grad_logits_tile * ((tile_bt.index < BT)[:, None] & (tile_v.index < V)[None, :])
+
+        if reduction == "mean":
+            grad_logits_tile /= n_non_ignore_value
+
+        grad_logits[tile_bt, tile_v] = grad_logits_tile
+    return grad_logits
+
+
+def fused_linear_cross_entropy_bwd_chunk(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    target: torch.Tensor,
+    lse: torch.Tensor,
+    ignore_index: int = -100,
+    reduction: str = "mean",
+):
+    BT, H = x.size()
+    V = weight.size(0)
+    # for ex: if we were to achieve the same memory consumption as BT x H, then the chunk size should be:
+    # inc_factor = (V+H-1)//H, chunk_size = (BT + inc_factor - 1)//inc_factor
+    # for ex: BT = 4096*4, V = 32000, H = 4096 ==> inc_factor = 8, chunk_size = 2048
+    num_chunks = (V + H - 1) // H
+    chunk_size = (BT + num_chunks - 1) // num_chunks
+    grad_x = torch.zeros_like(x, dtype=torch.float32)
+    grad_w = torch.zeros_like(weight, dtype=torch.float32)
+    n_non_ignore = (target != ignore_index).sum().unsqueeze(0)
+
+    x_chunks = torch.chunk(x, chunks=num_chunks, dim=0)
+    lse_chunks = torch.chunk(lse, chunks=num_chunks, dim=0)
+    target_chunks = torch.chunk(target, chunks=num_chunks, dim=0)
+
+    for chunk_id, (x_chunk, target_chunk, lse_chunk) in enumerate(zip(x_chunks, target_chunks, lse_chunks)):
+        start_idx = chunk_id * chunk_size
+        end_idx = min((chunk_id + 1) * chunk_size, BT)
+
+        grad_logits_chunk = _grad_logit_compute(
+            x_chunk,
+            weight,
+            target_chunk,
+            lse_chunk,
+            n_non_ignore,
+            reduction,
+        )
+
+        grad_x[start_idx:end_idx] = grad_logits_chunk @ weight
+        grad_w += torch.mm(grad_logits_chunk.T, x_chunk).float()
+
+    return grad_x, grad_w
+
+
 class LigerFusedLinearCrossEntropyHelionFunction(torch.autograd.Function):
     @staticmethod
-    def forward(
-        ctx,
-        _input,
-        weight,
-        target,
-        ignore_index=-100,
-        reduction="mean",
-    ):
+    def forward(ctx, _input, weight, target, ignore_index=-100, reduction="mean", bwd_impl="chunk"):
+        assert bwd_impl in ["chunk", "cce"]
         loss, lse = fused_linear_cross_entropy_fwd(
             _input,
             weight,
@@ -182,6 +305,7 @@ class LigerFusedLinearCrossEntropyHelionFunction(torch.autograd.Function):
         )
         ctx.ignore_index = ignore_index
         ctx.reduction = reduction
+        ctx.bwd_impl = bwd_impl
         ctx.save_for_backward(_input, lse)
         return loss
 
@@ -189,7 +313,11 @@ class LigerFusedLinearCrossEntropyHelionFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         assert grad_output.ndim == 0, "token_scaling is not supported. grad_output must be a scalar"
         _input, lse = ctx.saved_tensors
-        grad_input, grad_weight = fused_linear_cross_entropy_bwd(
+        if ctx.bwd_impl == "cce":
+            bwd_fn = fused_linear_cross_entropy_bwd
+        elif ctx.bwd_impl == "chunk":
+            bwd_fn = fused_linear_cross_entropy_bwd_chunk
+        grad_input, grad_weight = bwd_fn(
             _input,
             weight,
             target,
@@ -197,18 +325,19 @@ class LigerFusedLinearCrossEntropyHelionFunction(torch.autograd.Function):
             ctx.ignore_index,
             ctx.reduction,
         )
-        return grad_input * grad_output, grad_weight * grad_output, None, None, None
+        return grad_input * grad_output, grad_weight * grad_output, None, None, None, None
 
 
 class LigerFusedLinearCrossEntropyHelion(torch.nn.Module):
-    def __init__(self, ignore_index=-100, reduction="mean"):
+    def __init__(self, ignore_index=-100, reduction="mean", bwd_impl="chunk"):
         super().__init__()
         self.ignore_index = ignore_index
         self.reduction = reduction
+        self.bwd_impl = bwd_impl
 
     def forward(self, _input, weight, target):
         return LigerFusedLinearCrossEntropyHelionFunction.apply(
-            _input, weight, target, self.ignore_index, self.reduction
+            _input, weight, target, self.ignore_index, self.reduction, self.bwd_impl
         )
 
 
@@ -239,10 +368,13 @@ class LigerLMHeadCE(torch.nn.Module):
         dtype: torch.dtype,
         ignore_index: int = -100,
         reduction: str = "mean",
+        bwd_impl: str = "cce",
     ):
         super().__init__()
         self.lm_head = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
-        self.flce = LigerFusedLinearCrossEntropyHelion(ignore_index=ignore_index, reduction=reduction)
+        self.flce = LigerFusedLinearCrossEntropyHelion(
+            ignore_index=ignore_index, reduction=reduction, bwd_impl=bwd_impl
+        )
 
     def forward(self, x, target):
         return self.flce(x, self.lm_head.weight, target)
@@ -269,6 +401,7 @@ class CutLMHeadCE(torch.nn.Module):
     def forward(self, x, target):
         return self.flce(x, self.lm_head.weight, target)
 
+
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 
 
@@ -288,6 +421,7 @@ class TritonLigerLMHeadCE(torch.nn.Module):
     def forward(self, x, target):
         return self.flce(self.lm_head.weight, x, target, None)
 
+
 if __name__ == "__main__":
     torch.manual_seed(0)
     torch.cuda.manual_seed(0)
@@ -297,13 +431,17 @@ if __name__ == "__main__":
 
     device = "cuda"
 
+    # batch_size = 2
+    # seq_len = 4096
+    # hidden_size = 2304
+    # vocab_size = 262208
     batch_size = 2
-    seq_len = 4096
-    hidden_size = 2304
-    vocab_size = 262208
+    seq_len = 1024
+    hidden_size = 512
+    vocab_size = 1024
 
     print(f"BT={batch_size * seq_len}, H={hidden_size}, V={vocab_size}")
-    
+
     dtype = torch.float32
     reduction = "mean"
     ignore_index = -100
@@ -316,7 +454,12 @@ if __name__ == "__main__":
 
     # Init
     ref_lm_head_ce = TorchLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(device=device)
-    liger_lm_head_ce = LigerLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(device=device)
+    liger_lm_head_ce = LigerLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction, bwd_impl="cce").to(
+        device=device
+    )
+    liger_chunk_lm_head_ce = LigerLMHeadCE(
+        hidden_size, vocab_size, dtype=dtype, reduction=reduction, bwd_impl="chunk"
+    ).to(device=device)
     cce_lm_head_ce = CutLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(device=device)
     triton_liger_lm_head_ce = TritonLigerLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(
         device=device
@@ -324,45 +467,47 @@ if __name__ == "__main__":
 
     ref_lm_head_ce.lm_head.weight.data = weight.data
     liger_lm_head_ce.lm_head.weight.data = weight.data
+    liger_chunk_lm_head_ce.lm_head.weight.data = weight.data
     cce_lm_head_ce.lm_head.weight.data = weight.data
     triton_liger_lm_head_ce.lm_head.weight.data = weight.data
-    
+
     def fwd_bwd_fn(input, target, fn):
         loss = fn(input, target)
         loss.backward()
         return loss
 
     liger_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=liger_lm_head_ce)
+    liger_chunk_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=liger_chunk_lm_head_ce)
     ref_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=ref_lm_head_ce)
     cce_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=cce_lm_head_ce)
     triton_liger_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=triton_liger_lm_head_ce)
-    
+
     # Test and Benchmark
-
-
 
     run_example(
         liger_lm_head_ce,
         {
             "torch_fwd": ref_lm_head_ce,
             "cce_fwd": cce_lm_head_ce,
-            "triton_flce_fwd": triton_liger_lm_head_ce, 
+            "triton_flce_fwd": triton_liger_lm_head_ce,
         },
         (input, target),
-        kernel_name="helion_flce_fwd",
+        kernel_name="helion_fwd",
         rtol=rtol * 10,
         atol=atol,
     )
     if reduction != "none":
         run_example(
-            liger_lm_head_ce_fwd_bwd,
+            {
+                "helion_fwd_bwd_cce": liger_lm_head_ce_fwd_bwd,
+                "helion_fwd_bwd_chunk": liger_chunk_lm_head_ce_fwd_bwd,
+            },
             {
                 "torch_fwd_bwd": ref_lm_head_ce_fwd_bwd,
                 "cce_fwd_bwd": cce_lm_head_ce_fwd_bwd,
                 "triton_flce_fwd_bwd": triton_liger_lm_head_ce_fwd_bwd,
             },
             (input, target),
-            kernel_name="helion_flce_fwd_bwd",
             rtol=rtol,
             atol=atol,
         )
