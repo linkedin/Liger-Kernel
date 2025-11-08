@@ -321,13 +321,13 @@ class LigerFusedLinearCrossEntropyHelionFunction(torch.autograd.Function):
         ctx.ignore_index = ignore_index
         ctx.reduction = reduction
         ctx.bwd_impl = bwd_impl
-        ctx.save_for_backward(_input, lse)
+        ctx.save_for_backward(_input, lse, weight, target)
         return loss
 
     @staticmethod
     def backward(ctx, grad_output):
         assert grad_output.ndim == 0, "token_scaling is not supported. grad_output must be a scalar"
-        _input, lse = ctx.saved_tensors
+        _input, lse, weight, target = ctx.saved_tensors
         if ctx.bwd_impl == "cce":
             bwd_fn = fused_linear_cross_entropy_bwd
         elif ctx.bwd_impl == "chunk":
