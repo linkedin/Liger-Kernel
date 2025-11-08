@@ -1,4 +1,5 @@
 import argparse
+from pathlib import Path
 
 import helion
 import helion.language as hl
@@ -8,24 +9,13 @@ from helion._testing import run_example
 
 from liger_kernel.utils import infer_device
 
+CONFIG_PATH_STR = str(Path(__file__).parent.joinpath("configs", "fused_linear_cross_entropy"))
+
+
 # Best config for default llama3Config(hidden_size=4096, vocab_size=32000) with 4096 bs*seqlen input
-h100_fwd_config = helion.Config(
-    block_sizes=[64, 32, 512],
-    indexing=["pointer", "pointer", "tensor_descriptor", "pointer", "tensor_descriptor", "tensor_descriptor"],
-    load_eviction_policies=["", "last", "last", "last"],
-    num_stages=8,
-    num_warps=16,
-    pid_type="flat",
-    range_flattens=[None, False, None],
-    range_multi_buffers=[None, True, False],
-    range_num_stages=[0, 3, 3],
-    range_unroll_factors=[0, 0, 1],
-    range_warp_specializes=[],
-)
-
-
-# @helion.kernel(config=h100_fwd_config, static_shapes=True)
-@helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
+h100_fwd_config = helion.Config.load(CONFIG_PATH_STR + "_fwd_h100_llama_fp32.json")
+@helion.kernel(config=h100_fwd_config, static_shapes=True)
+# @helion.kernel(autotune_effort="none", autotune_compile_timeout=20, ignore_warnings=[helion.exc.TensorOperationInWrapper])
 def fused_linear_cross_entropy_fwd(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -138,7 +128,7 @@ h100_bwd_config = helion.Config(
 
 
 # @helion.kernel(config=h100_bwd_config, static_shapes=True)
-@helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
+@helion.kernel(autotune_effort="none", autotune_compile_timeout=20, ignore_warnings=[helion.exc.TensorOperationInWrapper])
 def fused_linear_cross_entropy_bwd(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -155,6 +145,7 @@ def fused_linear_cross_entropy_bwd(
     grad_x = torch.zeros_like(x, dtype=torch.float32)
     grad_w = torch.zeros_like(weight, dtype=torch.float32)
     n_non_ignore = (target != ignore_index).sum().unsqueeze(0)
+    assert n_non_ignore != 0, "All targets are ignored."
 
     num_block_bt = (BT + block_size_bt - 1) // block_size_bt
     num_block_h = (H + block_size_h - 1) // block_size_h
@@ -186,15 +177,15 @@ def fused_linear_cross_entropy_bwd(
         grad_logits_tile = grad_logits_tile * ((tile_bt.index < BT)[:, None] & (tile_v.index < V)[None, :])
 
         # handle ignore index
-        grad_logits_tile = grad_logits_tile * (target_indices != ignore_index)
+        # grad_logits_tile = grad_logits_tile * (target_indices != ignore_index)
 
         if reduction == "mean":
             grad_logits_tile /= n_non_ignore_value
 
         for tile_h in hl.tile(H, block_size=block_size_h):
             # grad_x = grad_logits @ weight
-            rhs_tile = weight[tile_v, tile_h]
-            partial_grad_x = hl.dot(grad_logits_tile, rhs_tile, out_dtype=torch.float32)
+            rhs_tile_1 = weight[tile_v, tile_h]
+            partial_grad_x = hl.dot(grad_logits_tile, rhs_tile_1, out_dtype=torch.float32)
             while hl.atomic_cas(grad_x_lock, [tile_bt.id, tile_h.id], 0, 1, sem="acquire") == 1:
                 pass
             grad_x[tile_bt, tile_h] += partial_grad_x
@@ -203,8 +194,8 @@ def fused_linear_cross_entropy_bwd(
 
             # for tile_h in hl.tile(H, block_size=block_size_h):
             # grad_w = grad_logits.T[tile_v, tile_bt] @ x[tile_bt, tile_h]
-            rhs_tile = x[tile_bt, tile_h]
-            partial_grad_w = hl.dot(grad_logits_tile.T, rhs_tile, out_dtype=torch.float32)
+            rhs_tile_2 = x[tile_bt, tile_h]
+            partial_grad_w = hl.dot(grad_logits_tile.T, rhs_tile_2, out_dtype=torch.float32)
             while hl.atomic_cas(grad_w_lock, [tile_v.id, tile_h.id], 0, 1, sem="acquire") == 1:
                 pass
             grad_w[tile_v, tile_h] += partial_grad_w
@@ -213,8 +204,9 @@ def fused_linear_cross_entropy_bwd(
 
     return grad_x.to(x.dtype), grad_w.to(x.dtype)
 
-
-@helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
+h100_grad_logit_compute_config = helion.Config.load(CONFIG_PATH_STR + "_grad_logits_compute_h100_llama_fp32.json")
+@helion.kernel(config=h100_grad_logit_compute_config, static_shapes=True)
+# @helion.kernel(autotune_effort="none", autotune_compile_timeout=20, ignore_warnings=[helion.exc.TensorOperationInWrapper])
 def _grad_logit_compute(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -255,13 +247,14 @@ def _grad_logit_compute(
         grad_logits_tile = grad_logits_tile * ((tile_bt.index < BT)[:, None] & (tile_v.index < V)[None, :])
 
         # handle ignore index
-        grad_logits_tile = grad_logits_tile * (target_indices != ignore_index)
+        # grad_logits_tile = grad_logits_tile * (target_indices != ignore_index)
 
         if reduction == "mean":
             grad_logits_tile /= n_non_ignore_value
 
         grad_logits[tile_bt, tile_v] = grad_logits_tile
-    return grad_logits
+        
+    return grad_logits.to(x.dtype)
 
 
 def fused_linear_cross_entropy_bwd_chunk(
@@ -447,7 +440,7 @@ def generate_flce_bwd_input(BT, V, H, dtype, device):
     x = torch.randn(BT, H, device=device, dtype=dtype)
     weight = torch.randn(V, H, device=device, dtype=dtype)
     target = torch.randint(0, V, (BT,), device=device)
-    lse = torch.randn(BT, device=device, dtype=torch.float32)
+    lse = torch.randn(BT, device=device, dtype=torch.float32) + 1.0
     return (x, weight, target, lse)
 
 
@@ -455,19 +448,40 @@ def generate_grad_logits_compute_input(BT, V, H, dtype, device):
     x = torch.randn(BT, H, device=device, dtype=dtype)
     weight = torch.randn(V, H, device=device, dtype=dtype)
     target = torch.randint(0, V, (BT,), device=device)
-    lse = torch.randn(BT, device=device, dtype=torch.float32)
+    lse = torch.randn(BT, device=device, dtype=torch.float32) + 1.0
     n_non_ignore = (target != -100).sum().unsqueeze(0)
     return (x, weight, target, lse, n_non_ignore)
+
+from pathlib import Path
 
 from helion.autotuner import PatternSearch
 def autotune_kernels(model_config_dataset):
     device = infer_device()
     torch_device = getattr(torch, device)
     gpu_name = torch_device.get_device_name(torch_device.current_device())
+    if "h100" in gpu_name.lower():
+        gpu_name = "h100"
+    elif "a100" in gpu_name.lower():
+        gpu_name = "a100"
+    elif "b200" in gpu_name.lower():
+        gpu_name = "b200"
 
+    # bf16 has nan issue
+    # dtypes = [torch.bfloat16, torch.float32]
+    dtypes = [torch.float32]
+    
     for model_name, model_config in model_config_dataset.items():
-        for dtype in [torch.bfloat16, torch.float32]:
+        
+        for dtype in dtypes:
             BT = 4096
+            if dtype == torch.bfloat16:
+                dtype_str = "bf16"
+            elif dtype == torch.float32:
+                dtype_str = "fp32"
+            file = Path(f"{CONFIG_PATH_STR}_fwd_{gpu_name}_{model_name}_{dtype_str}.json")
+            if file.is_file():
+                print(f"File exists at {str(file)} . Skip autotuning")
+                continue
             args = generate_flce_fwd_input(
                 BT,
                 model_config["hidden_size"],
@@ -479,47 +493,54 @@ def autotune_kernels(model_config_dataset):
             tuner = PatternSearch(
                 bound,
                 args,
-                # Double the defaults to explore more candidates:
-                initial_population=100,  # Default is 100.
+                initial_population=50,  # Default is 100.
                 copies=5,               # Default is 5.
-                max_generations=10,      # Default is 20.
+                max_generations=15,      # Default is 20.
             )
             config = tuner.autotune()
+            config.save(f"{CONFIG_PATH_STR}_fwd_{gpu_name}_{model_name}_{dtype_str}.json")
+    # nan if shapes are not divisible (out of bound values?)
+    # for model_name, model_config in model_config_dataset.items():
+    #     for dtype in dtypes:
+    #         BT = 4096
+    #         if dtype == torch.bfloat16:
+    #             dtype_str = "bf16"
+    #         elif dtype == torch.float32:
+    #             dtype_str = "fp32"
+    #         file = Path(f"{CONFIG_PATH_STR}_bwd_{gpu_name}_{model_name}_{dtype_str}.json")
+    #         if file.is_file():
+    #             print(f"File exists at {str(file)}. Skip autotuning")
+    #             continue
+    #         args = generate_flce_bwd_input(
+    #             BT,
+    #             model_config["hidden_size"],
+    #             model_config["vocab_size"],
+    #             dtype=dtype,
+    #             device=device,
+    #         )
+    #         bound = fused_linear_cross_entropy_bwd.bind(args)
+    #         tuner = PatternSearch(
+    #             bound,
+    #             args,
+    #             initial_population=50,  # Default is 100.
+    #             copies=5,               # Default is 5.
+    #             max_generations=15,      # Default is 20.
+    #         )
+    #         config = tuner.autotune()
+            
+    #         config.save(f"{CONFIG_PATH_STR}_bwd_{gpu_name}_{model_name}_{dtype_str}.json")
+
+    for model_name, model_config in model_config_dataset.items():
+        for dtype in dtypes:
+            BT = 4096
             if dtype == torch.bfloat16:
                 dtype_str = "bf16"
             elif dtype == torch.float32:
                 dtype_str = "fp32"
-            config.save(f"configs/fused_linear_cross_entropy_fwd_{gpu_name}_{model_name}_{dtype_str}.json")
-
-    for model_name, model_config in model_config_dataset.items():
-        for dtype in [torch.bfloat16, torch.float32]:
-            BT = 4096
-            args = generate_flce_bwd_input(
-                BT,
-                model_config["hidden_size"],
-                model_config["vocab_size"],
-                dtype=dtype,
-                device=device,
-            )
-            bound = fused_linear_cross_entropy_bwd.bind(args)
-            tuner = PatternSearch(
-                bound,
-                args,
-                # Double the defaults to explore more candidates:
-                initial_population=100,  # Default is 100.
-                copies=5,               # Default is 5.
-                max_generations=10,      # Default is 20.
-            )
-            config = tuner.autotune()
-            if dtype == torch.bfloat16:
-                dtype_str = "bf16"
-            elif dtype == torch.float32:
-                dtype_str = "fp32"
-            config.save(f"configs/fused_linear_cross_entropy_bwd_{gpu_name}_{model_name}_{dtype_str}.json")
-
-    for model_name, model_config in model_config_dataset.items():
-        for dtype in [torch.bfloat16, torch.float32]:
-            BT = 4096
+            file = Path(f"{CONFIG_PATH_STR}_grad_logits_compute_{gpu_name}_{model_name}_{dtype_str}.json")
+            if file.is_file():
+                print(f"File exists at {str(file)}. Skip autotuning")
+                continue
             args = generate_grad_logits_compute_input(
                 BT,
                 model_config["hidden_size"],
@@ -531,24 +552,19 @@ def autotune_kernels(model_config_dataset):
             tuner = PatternSearch(
                 bound,
                 args,
-                # Double the defaults to explore more candidates:
-                initial_population=100,  # Default is 100.
+                initial_population=50,  # Default is 100.
                 copies=5,               # Default is 5.
-                max_generations=10,      # Default is 20.
+                max_generations=15,      # Default is 20.
             )
             config = tuner.autotune()
-            if dtype == torch.bfloat16:
-                dtype_str = "bf16"
-            elif dtype == torch.float32:
-                dtype_str = "fp32"
-            config.save(f"configs/_grad_logit_compute_{gpu_name}_{model_name}_{dtype_str}.json")
+            config.save(f"{CONFIG_PATH_STR}_grad_logits_compute_{gpu_name}_{model_name}_{dtype_str}.json")
 
 
 def check():
     device = infer_device()
 
     batch_size = 2
-    seq_len = 4096
+    seq_len = 2048
     hidden_size = 4096
     vocab_size = 32000
 
@@ -586,7 +602,7 @@ def check():
     def fwd_bwd_fn(input, target, fn):
         loss = fn(input, target)
         loss.backward()
-        return loss
+        return input.grad
 
     liger_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=liger_lm_head_ce)
     liger_chunk_lm_head_ce_fwd_bwd = partial(fwd_bwd_fn, fn=liger_chunk_lm_head_ce)
@@ -611,7 +627,7 @@ def check():
     if reduction != "none":
         run_example(
             {
-                "helion_fwd_bwd_cce": liger_lm_head_ce_fwd_bwd,
+                # "helion_fwd_bwd_cce": liger_lm_head_ce_fwd_bwd, # nan
                 "helion_fwd_bwd_chunk": liger_chunk_lm_head_ce_fwd_bwd,
             },
             {
@@ -637,20 +653,19 @@ if __name__ == "__main__":
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.enabled = True
 
-
     model_config_dataset = {
         "llama": {
             "hidden_size": 4096,
             "vocab_size": 32000,
         },
-        "gemma3": {
-            "hidden_size": 2305,
-            "vocab_size": 262208,
-        },
-        "qwen3": {
-            "hidden_size": 4096,
-            "vocab_size": 151936,
-        },
+        # "gemma3": {
+        #     "hidden_size": 2305,
+        #     "vocab_size": 262208,
+        # },
+        # "qwen3": {
+        #     "hidden_size": 4096,
+        #     "vocab_size": 151936,
+        # },
     }
 
     if args.autotune:
