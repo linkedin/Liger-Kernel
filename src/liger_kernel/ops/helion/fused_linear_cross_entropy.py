@@ -89,6 +89,9 @@ def fused_linear_cross_entropy_fwd(
         lse_tile = m_i + torch.log(d_i)
         nll_tile = nll_tile + lse_tile
 
+        # handle ignore index
+        nll_tile = nll_tile * (target_indices.ravel() != ignore_index)
+
         if reduction == "mean":
             nll_tile /= n_non_ignore_value
 
@@ -101,7 +104,7 @@ def fused_linear_cross_entropy_fwd(
     else:
         loss = nll
 
-    return loss, lse
+    return loss.to(x.dtype), lse
 
 
 h100_bwd_config = helion.Config(
@@ -159,6 +162,8 @@ def fused_linear_cross_entropy_bwd(
     grad_w_lock = torch.zeros((num_block_v, num_block_h), dtype=torch.int32, device=x.device)
     # backward
     for tile_bt, tile_v in hl.tile([BT, V], block_size=(block_size_bt, block_size_v)):
+        if reduction == "mean":
+            n_non_ignore_value = hl.load(n_non_ignore, [0], eviction_policy="evict_last")
         # Restore logits
         acc2 = hl.zeros([tile_bt, tile_v], dtype=torch.float32)
         for tile_h in hl.tile(H, block_size=block_size_h):
@@ -171,8 +176,6 @@ def fused_linear_cross_entropy_bwd(
         #              = exp(x_i) / lse = exp(x_i - lse)
         lse_tile = lse[tile_bt]
         target_indices = target[tile_bt].unsqueeze(1)  # [tile_bt, 1]
-        if reduction == "mean":
-            n_non_ignore_value = hl.load(n_non_ignore, [0])
 
         grad_logits_tile = torch.exp(acc2 - lse_tile[:, None])
         offset = tile_v.index.unsqueeze(0)  # [1, tile_v]
@@ -181,6 +184,8 @@ def fused_linear_cross_entropy_bwd(
         # handle out of bound values in grad_logits_tile
         grad_logits_tile = grad_logits_tile * ((tile_bt.index < BT)[:, None] & (tile_v.index < V)[None, :])
 
+        # handle ignore index
+        grad_logits_tile = grad_logits_tile * (target_indices != ignore_index)
 
         if reduction == "mean":
             grad_logits_tile /= n_non_ignore_value
@@ -205,7 +210,7 @@ def fused_linear_cross_entropy_bwd(
             hl.atomic_xchg(grad_w_lock, [tile_v.id, tile_h.id], 0, sem="release")
             # hl.atomic_add(grad_w, [tile_v, tile_h], partial_grad_w)
 
-    return grad_x, grad_w
+    return grad_x.to(x.dtype), grad_w.to(x.dtype)
 
 
 @helion.kernel(autotune_effort="none", ignore_warnings=[helion.exc.TensorOperationInWrapper])
@@ -215,6 +220,7 @@ def _grad_logit_compute(
     target: torch.Tensor,
     lse: torch.Tensor,
     n_non_ignore: torch.Tensor,
+    ignore_index: int = -100,
     reduction: str = "mean",
 ):
     BT, H = x.size()
@@ -247,6 +253,8 @@ def _grad_logit_compute(
         # handle out of bound values in grad_logits_tile
         grad_logits_tile = grad_logits_tile * ((tile_bt.index < BT)[:, None] & (tile_v.index < V)[None, :])
 
+        # handle ignore index
+        grad_logits_tile = grad_logits_tile * (target_indices != ignore_index)
 
         if reduction == "mean":
             grad_logits_tile /= n_non_ignore_value
@@ -296,7 +304,7 @@ def fused_linear_cross_entropy_bwd_chunk(
         grad_x[start_idx:end_idx] = grad_logits_chunk @ weight
         grad_w += torch.mm(grad_logits_chunk.T, x_chunk).float()
 
-    return grad_x, grad_w
+    return grad_x.to(x.dtype), grad_w.to(x.dtype)
 
 
 class LigerFusedLinearCrossEntropyHelionFunction(torch.autograd.Function):
