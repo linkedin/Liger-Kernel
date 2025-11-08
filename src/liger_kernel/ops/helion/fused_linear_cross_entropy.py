@@ -6,6 +6,8 @@ import torch
 
 from helion._testing import run_example
 
+from liger_kernel.utils import infer_device
+
 # Best config for default llama3Config(hidden_size=4096, vocab_size=32000) with 4096 bs*seqlen input
 h100_fwd_config = helion.Config(
     block_sizes=[64, 32, 512],
@@ -97,7 +99,6 @@ def fused_linear_cross_entropy_fwd(
 
         nll[tile_bt] = nll_tile
         lse[tile_bt] = lse_tile
-
 
     if reduction != "none":
         loss = nll.sum()
@@ -258,8 +259,6 @@ def _grad_logit_compute(
 
         if reduction == "mean":
             grad_logits_tile /= n_non_ignore_value
-
-        
 
         grad_logits[tile_bt, tile_v] = grad_logits_tile
     return grad_logits
@@ -436,86 +435,96 @@ class TritonLigerLMHeadCE(torch.nn.Module):
     def forward(self, x, target):
         return self.flce(self.lm_head.weight, x, target, None)
 
-def autotune_kernels(model_config_dataset):
 
-    def generate_flce_fwd_input(BT, V, H, dtype):
-        x = torch.randn(BT, H, device=device, dtype=dtype)
-        weight = torch.randn(V, H, device=device, dtype=dtype)
-        target = torch.randint(0, V, (BT,), device=device)
-        return (x, weight, target)
+def generate_flce_fwd_input(BT, V, H, dtype, device):
+    x = torch.randn(BT, H, device=device, dtype=dtype)
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    target = torch.randint(0, V, (BT,), device=device)
+    return (x, weight, target)
+
+
+def generate_flce_bwd_input(BT, V, H, dtype, device):
+    x = torch.randn(BT, H, device=device, dtype=dtype)
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    target = torch.randint(0, V, (BT,), device=device)
+    lse = torch.randn(BT, device=device, dtype=torch.float32)
+    return (x, weight, target, lse)
+
+
+def generate_grad_logits_compute_input(BT, V, H, dtype, device):
+    x = torch.randn(BT, H, device=device, dtype=dtype)
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    target = torch.randint(0, V, (BT,), device=device)
+    lse = torch.randn(BT, device=device, dtype=torch.float32)
+    n_non_ignore = (target != -100).sum().unsqueeze(0)
+    return (x, weight, target, lse, n_non_ignore)
+
+
+def autotune_kernels(model_config_dataset):
+    device = infer_device()
+    torch_device = getattr(torch, device)
+    gpu_name = torch_device.get_device_name(torch_device.current_device())
 
     for model_name, model_config in model_config_dataset.items():
         for dtype in [torch.bfloat16, torch.float32]:
             BT = 4096
-            args = generate_flce_fwd_input(BT, model_config["hidden_size"], model_config["vocab_size"])
+            args = generate_flce_fwd_input(
+                BT,
+                model_config["hidden_size"],
+                model_config["vocab_size"],
+                dtype=dtype,
+                device=device,
+            )
             config = fused_linear_cross_entropy_fwd.autotune(args)
             if dtype == torch.bfloat16:
                 dtype_str = "bf16"
             elif dtype == torch.float32:
                 dtype_str = "fp32"
-            config.save(f"configs/fused_linear_cross_entropy_fwd_{model_name}_{dtype_str}.json")
-
-    def generate_flce_bwd_input(BT, V, H, dtype):
-        x = torch.randn(BT, H, device=device, dtype=dtype)
-        weight = torch.randn(V, H, device=device, dtype=dtype)
-        target = torch.randint(0, V, (BT,), device=device)
-        lse = torch.randn(BT, device=device, dtype=torch.float32)
-        return (x, weight, target, lse)
+            config.save(f"configs/fused_linear_cross_entropy_fwd_{gpu_name}_{model_name}_{dtype_str}.json")
 
     for model_name, model_config in model_config_dataset.items():
         for dtype in [torch.bfloat16, torch.float32]:
             BT = 4096
-            args = generate_flce_bwd_input(BT, model_config["hidden_size"], model_config["vocab_size"])
+            args = generate_flce_bwd_input(
+                BT,
+                model_config["hidden_size"],
+                model_config["vocab_size"],
+                dtype=dtype,
+                device=device,
+            )
             config = fused_linear_cross_entropy_bwd.autotune(args)
             if dtype == torch.bfloat16:
                 dtype_str = "bf16"
             elif dtype == torch.float32:
                 dtype_str = "fp32"
-            config.save(f"configs/fused_linear_cross_entropy_bwd_{model_name}_{dtype_str}.json")
-
-    def generate_grad_logits_compute_input(BT, V, H, dtype):
-        x = torch.randn(BT, H, device=device, dtype=dtype)
-        weight = torch.randn(V, H, device=device, dtype=dtype)
-        target = torch.randint(0, V, (BT,), device=device)
-        lse = torch.randn(BT, device=device, dtype=torch.float32)
-        n_non_ignore = (target != ignore_index).sum().unsqueeze(0)
-        return (x, weight, target, lse, n_non_ignore)
+            config.save(f"configs/fused_linear_cross_entropy_bwd_{gpu_name}_{model_name}_{dtype_str}.json")
 
     for model_name, model_config in model_config_dataset.items():
         for dtype in [torch.bfloat16, torch.float32]:
             BT = 4096
-            args = generate_grad_logits_compute_input(BT, model_config["hidden_size"], model_config["vocab_size"])
+            args = generate_grad_logits_compute_input(
+                BT,
+                model_config["hidden_size"],
+                model_config["vocab_size"],
+                dtype=dtype,
+                device=device,
+            )
             config = _grad_logit_compute.autotune(args)
             if dtype == torch.bfloat16:
                 dtype_str = "bf16"
             elif dtype == torch.float32:
                 dtype_str = "fp32"
-            config.save(f"configs/_grad_logit_compute_{model_name}_{dtype_str}.json")
+            config.save(f"configs/_grad_logit_compute_{gpu_name}_{model_name}_{dtype_str}.json")
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--autotune', default=False)
-    args = parser.parse_args()
 
-    torch.manual_seed(0)
-    torch.cuda.manual_seed(0)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.enabled = True
-
-    from liger_kernel.utils import infer_device
+def check():
     device = infer_device()
-    torch_device = getattr(torch, device)
-    gpu_name = torch_device.get_device_name(torch_device.current_device())
 
-    # batch_size = 2
-    # seq_len = 4096
-    # hidden_size = 2304
-    # vocab_size = 262208
     batch_size = 2
-    seq_len = 1024
-    hidden_size = 512
-    vocab_size = 1024
+    seq_len = 4096
+    hidden_size = 4096
+    vocab_size = 32000
+
 
     print(f"BT={batch_size * seq_len}, H={hidden_size}, V={vocab_size}")
 
@@ -528,27 +537,6 @@ if __name__ == "__main__":
     input = torch.randn(batch_size * seq_len, hidden_size, device=device, requires_grad=True)
     weight = torch.randn(vocab_size, hidden_size, device=device, requires_grad=True)
     target = torch.randint(0, vocab_size, (batch_size * seq_len,), device=device)
-
-    model_config_dataset = {
-        "llama": {
-            "hidden_size": 4096,
-            "vocab_size": 32000,
-        },
-        "gemma3": {
-            "hidden_size": 2305,
-            "vocab_size": 262208,
-        },
-        "qwen3": {
-            "hidden_size": 4096,
-            "vocab_size": 151936,
-        },
-    }
-
-    if args.autotune:
-        print("autotuning all kernels...")
-        autotune_kernels(model_config_dataset=model_config_dataset)
-
-
     # Init
     ref_lm_head_ce = TorchLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction).to(device=device)
     liger_lm_head_ce = LigerLMHeadCE(hidden_size, vocab_size, dtype=dtype, reduction=reduction, bwd_impl="cce").to(
@@ -608,3 +596,38 @@ if __name__ == "__main__":
             rtol=rtol,
             atol=atol,
         )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--autotune", default=False)
+    parser.add_argument("--benchmark", default=True)
+    args = parser.parse_args()
+
+    torch.manual_seed(0)
+    torch.cuda.manual_seed(0)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.enabled = True
+
+    if args.benchmark:
+        check()
+
+    model_config_dataset = {
+        "llama": {
+            "hidden_size": 4096,
+            "vocab_size": 32000,
+        },
+        "gemma3": {
+            "hidden_size": 2305,
+            "vocab_size": 262208,
+        },
+        "qwen3": {
+            "hidden_size": 4096,
+            "vocab_size": 151936,
+        },
+    }
+
+    if args.autotune:
+        print("autotuning all kernels...")
+        autotune_kernels(model_config_dataset=model_config_dataset)
