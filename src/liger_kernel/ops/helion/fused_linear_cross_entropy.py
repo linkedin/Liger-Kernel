@@ -459,7 +459,7 @@ def generate_grad_logits_compute_input(BT, V, H, dtype, device):
     n_non_ignore = (target != -100).sum().unsqueeze(0)
     return (x, weight, target, lse, n_non_ignore)
 
-
+from helion.autotuner import PatternSearch
 def autotune_kernels(model_config_dataset):
     device = infer_device()
     torch_device = getattr(torch, device)
@@ -475,7 +475,16 @@ def autotune_kernels(model_config_dataset):
                 dtype=dtype,
                 device=device,
             )
-            config = fused_linear_cross_entropy_fwd.autotune(args)
+            bound = fused_linear_cross_entropy_fwd.bind(args)
+            tuner = PatternSearch(
+                bound,
+                args,
+                # Double the defaults to explore more candidates:
+                initial_population=100,  # Default is 100.
+                copies=5,               # Default is 5.
+                max_generations=10,      # Default is 20.
+            )
+            config = tuner.autotune()
             if dtype == torch.bfloat16:
                 dtype_str = "bf16"
             elif dtype == torch.float32:
@@ -492,7 +501,16 @@ def autotune_kernels(model_config_dataset):
                 dtype=dtype,
                 device=device,
             )
-            config = fused_linear_cross_entropy_bwd.autotune(args)
+            bound = fused_linear_cross_entropy_bwd.bind(args)
+            tuner = PatternSearch(
+                bound,
+                args,
+                # Double the defaults to explore more candidates:
+                initial_population=100,  # Default is 100.
+                copies=5,               # Default is 5.
+                max_generations=10,      # Default is 20.
+            )
+            config = tuner.autotune()
             if dtype == torch.bfloat16:
                 dtype_str = "bf16"
             elif dtype == torch.float32:
@@ -509,7 +527,16 @@ def autotune_kernels(model_config_dataset):
                 dtype=dtype,
                 device=device,
             )
-            config = _grad_logit_compute.autotune(args)
+            bound = _grad_logit_compute.bind(args)
+            tuner = PatternSearch(
+                bound,
+                args,
+                # Double the defaults to explore more candidates:
+                initial_population=100,  # Default is 100.
+                copies=5,               # Default is 5.
+                max_generations=10,      # Default is 20.
+            )
+            config = tuner.autotune()
             if dtype == torch.bfloat16:
                 dtype_str = "bf16"
             elif dtype == torch.float32:
@@ -600,8 +627,8 @@ def check():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--autotune", default=False)
-    parser.add_argument("--benchmark", default=True)
+    parser.add_argument("--autotune", action="store_true")
+    parser.add_argument("--benchmark", action="store_true")
     args = parser.parse_args()
 
     torch.manual_seed(0)
@@ -610,8 +637,6 @@ if __name__ == "__main__":
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.enabled = True
 
-    if args.benchmark:
-        check()
 
     model_config_dataset = {
         "llama": {
@@ -631,3 +656,8 @@ if __name__ == "__main__":
     if args.autotune:
         print("autotuning all kernels...")
         autotune_kernels(model_config_dataset=model_config_dataset)
+
+    if args.benchmark:
+        print("test correctness and benchmark all implementations")
+        check()
+
