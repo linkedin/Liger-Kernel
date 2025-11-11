@@ -176,6 +176,15 @@ def load_data(config: VisualizationsConfig) -> pd.DataFrame:
         print("Warning: Could not select an extra_benchmark_config. Using data from initial filter if any.")
         final_filtered_df = base_filtered_df
 
+    # if gpu_filter:
+    gpu_grouped = final_filtered_df.groupby(["gpu_name"])
+    
+    if len(gpu_grouped) > 1:
+        latest_gpu_name = list(gpu_grouped.groups.keys())[-1]
+        print(f"Collected data from more than 1 gpu. Picking the most recent data on {latest_gpu_name}")
+        final_filtered_df = gpu_grouped.get_group((latest_gpu_name,))
+        
+    
     if final_filtered_df.empty:
         raise ValueError(
             f"No data found after attempting to filter by extra_benchmark_config. "
@@ -237,7 +246,7 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
         # for i, row in group_data.iterrows():
         y_error_lower = group_data["y_value_50"] - group_data["y_value_20"]
         y_error_upper = group_data["y_value_80"] - group_data["y_value_50"]
-        y_error = [y_error_lower, y_error_upper]
+        y_error = [y_error_lower, y_error_upper] 
 
         plt.errorbar(
             group_data["x_value"],
