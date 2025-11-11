@@ -8,6 +8,7 @@ from utils import _test_memory
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
+from liger_kernel.ops.helion.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyHelion
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.utils import infer_device
 
@@ -45,6 +46,20 @@ class LigerLMHeadCE(torch.nn.Module):
         return self.ce_loss(self.lin.weight, x, y)
 
 
+class LigerLMHeadCEHelion(torch.nn.Module):
+    def __init__(
+        self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100, bwd_impl="chunk", grad_in_forward=False
+    ):
+        super().__init__()
+        self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
+        self.ce_loss = LigerFusedLinearCrossEntropyHelion(
+            ignore_index=ignore_index, reduction="mean", bwd_impl=bwd_impl, grad_in_forward=grad_in_forward
+        )
+
+    def forward(self, x, y):
+        return self.ce_loss(x, self.lin.weight, y)
+
+
 #############################################################################
 # Test the memory consumption of the linear fused cross entropy loss
 #############################################################################
@@ -64,6 +79,10 @@ def bench_memory_fused_linear_cross_entropy(
         lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     elif provider == "liger-fp32-accum":
         lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
+    elif provider == "liger-helion":
+        lm_head_ce = LigerLMHeadCEHelion(H=H, V=V, dtype=dtype, bwd_impl="chunk", grad_in_forward=False).to(device)
+    elif provider == "liger-helion-grad-in-fwd":
+        lm_head_ce = LigerLMHeadCEHelion(H=H, V=V, dtype=dtype, bwd_impl="chunk", grad_in_forward=True).to(device)
     else:
         lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
 
@@ -106,6 +125,10 @@ def bench_speed_fused_linear_cross_entropy(
         lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     elif provider == "liger-fp32-accum":
         lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
+    elif provider == "liger-helion":
+        lm_head_ce = LigerLMHeadCEHelion(H=H, V=V, dtype=dtype, bwd_impl="chunk", grad_in_forward=False).to(device)
+    elif provider == "liger-helion-grad-in-fwd":
+        lm_head_ce = LigerLMHeadCEHelion(H=H, V=V, dtype=dtype, bwd_impl="chunk", grad_in_forward=True).to(device)
     else:
         lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
 
@@ -163,7 +186,7 @@ if __name__ == "__main__":
         "x_name": "BT",
         "x_label": "B x T",
         "x_values": [2**i for i in range(12, 16)],
-        "kernel_providers": ["liger", "liger-fp32-accum", "huggingface"],
+        "kernel_providers": ["liger", "liger-fp32-accum", "huggingface", "liger-helion", "liger-helion-grad-in-fwd"],
         "extra_benchmark_configs": [{"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}],
         "overwrite": args.overwrite,
     }

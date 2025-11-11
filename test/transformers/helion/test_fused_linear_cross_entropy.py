@@ -11,6 +11,7 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
+
 def supports_bfloat16():
     if device == "cuda":
         return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
@@ -18,6 +19,7 @@ def supports_bfloat16():
         return True
     else:
         return False
+
 
 def set_seed(seed=42):
     """
@@ -45,8 +47,10 @@ def set_seed(seed=42):
 
     # Python hash seed
     os.environ["PYTHONHASHSEED"] = str(seed)
-    
+
+
 set_seed(42)
+
 
 class TorchLMHeadCE(torch.nn.Module):
     def __init__(
@@ -77,10 +81,13 @@ class LigerLMHeadCE(torch.nn.Module):
     ):
         super().__init__()
         self.lm_head = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
-        self.flce = LigerFusedLinearCrossEntropyHelion(ignore_index=ignore_index, reduction=reduction)
+        self.flce = LigerFusedLinearCrossEntropyHelion(
+            ignore_index=ignore_index, reduction=reduction, grad_in_forward=True
+        )
 
     def forward(self, x, target):
         return self.flce(x, self.lm_head.weight, target)
+
 
 @pytest.mark.parametrize(
     "B, T, H, V",
@@ -136,7 +143,8 @@ def test_fused_linear_cross_entropy_correctness(B, T, H, V, reduction, dtype, at
         assert liger_input.grad.isinf().sum() == 0
         torch.testing.assert_close(liger_input.grad, ref_input.grad, rtol=rtol, atol=atol)
         torch.testing.assert_close(
-            liger_lm_head_ce.lm_head.weight.grad, ref_lm_head_ce.lm_head.weight.grad, rtol=rtol, atol=atol,
+            liger_lm_head_ce.lm_head.weight.grad,
+            ref_lm_head_ce.lm_head.weight.grad,
+            rtol=rtol,
+            atol=atol,
         )
-
-    
