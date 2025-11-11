@@ -1,8 +1,3 @@
-"""
-Based on DeepSpeed's TiledMLP:
-https://github.com/microsoft/DeepSpeed/blob/master/deepspeed/runtime/sequence_parallel/ulysses_sp.py
-"""
-
 import math
 
 from typing import Callable
@@ -16,6 +11,9 @@ from liger_kernel.ops.utils import ensure_contiguous
 
 class LigerTiledMLPFunction(torch.autograd.Function):
     """
+    Based on DeepSpeed's TiledMLP:
+    https://github.com/deepspeedai/DeepSpeed/blob/v0.18.2/deepspeed/runtime/sequence_parallel/ulysses_sp.py#L838
+
     Perform a tiled MLP computation to massively reduce memory usage needed to compute MLP
     when using very long sequence lengths.
 
