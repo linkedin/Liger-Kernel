@@ -117,6 +117,9 @@ class TorchLMHeadGRPO(torch.nn.Module):
             loss = (per_token_loss * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0)
         elif self.loss_type == "dr_grpo":
             loss = (per_token_loss * attention_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
+        elif self.loss_type == "dapo":
+            normalizer = attention_mask.sum().clamp(min=1.0)
+            loss = (per_token_loss * attention_mask).sum() / normalizer
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
 
@@ -227,7 +230,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         (False, False, True),
     ],
 )
-@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo"])
+@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo", "dapo"])
 @pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
 def test_correctness(
     B,
