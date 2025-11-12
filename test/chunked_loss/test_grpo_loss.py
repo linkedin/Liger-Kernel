@@ -5,7 +5,8 @@ import torch.nn.functional as F
 from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
 from liger_kernel.chunked_loss.functional import liger_fused_linear_grpo
 from liger_kernel.chunked_loss.grpo_loss import LigerFusedLinearGRPOFunction
-from liger_kernel.transformers.grpo_loss import _reduce_grpo_loss, triton_grpo_loss
+from liger_kernel.transformers.grpo_loss import _reduce_grpo_loss
+from liger_kernel.transformers.grpo_loss import triton_grpo_loss
 from liger_kernel.utils import infer_device
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
@@ -166,9 +167,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         metrics = []
         if self.beta != 0.0:
             metrics.append(((kl_div * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0)))
-        metrics.append(
-            (is_clipped.float() * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0)
-        )
+        metrics.append((is_clipped.float() * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0))
         return loss, metrics
 
 
