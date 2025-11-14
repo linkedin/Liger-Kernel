@@ -40,6 +40,8 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_granite  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_hunyuan_v1_dense  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_hunyuan_v1_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_internvl  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama4  # noqa: F401
@@ -126,6 +128,8 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_qwen3_vl_moe",
         "apply_liger_kernel_to_smollm3",
         "apply_liger_kernel_to_smolvlm",
+        "apply_liger_kernel_to_hunyuan_v1_dense",
+        "apply_liger_kernel_to_hunyuan_v1_moe",
     }
 
     if name in monkey_patch_symbols:
@@ -198,5 +202,7 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_qwen3_vl_moe",
             "apply_liger_kernel_to_smollm3",
             "apply_liger_kernel_to_smolvlm",
+            "apply_liger_kernel_to_hunyuan_v1_dense",
+            "apply_liger_kernel_to_hunyuan_v1_moe",
         ]
     )
