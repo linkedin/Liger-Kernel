@@ -142,8 +142,9 @@ class LigerTiledMLPFunction(torch.autograd.Function):
                 # Check if mlp_module actually has no_sync() method (it's a DDP/FSDP wrapper)
                 if hasattr(mlp_module, "no_sync"):
                     sync_context = mlp_module.no_sync()
-                # If no no_sync() method, we can't control gradient synchronization
-                # This happens when module is wrapped externally but we only have inner module
+                # Case: module has no no_sync() method
+                # In this edge case, gradient synchronization will occur on every shard (inefficient),
+                # but the final result remains correct.
 
             x_shard.requires_grad_(x_requires_grad)
 
