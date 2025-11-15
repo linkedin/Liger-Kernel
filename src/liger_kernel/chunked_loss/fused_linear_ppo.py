@@ -246,7 +246,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
 
     @staticmethod
     def _compute_dapo_normalizer(attention_mask):
-        """Match TRL DAPO normalization: global active tokens averaged per process."""
+        """Global active tokens averaged per process."""
         normalizer = attention_mask.to(torch.float32).sum()
         world_size = 1
         if torch.distributed.is_available() and torch.distributed.is_initialized():
