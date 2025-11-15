@@ -128,7 +128,9 @@ def _grpo_loss_fwd_kernel(
     per_token_loss1 = coef_1 * advantage
     per_token_loss2 = coef_2 * advantage
     per_token_loss = -tl.minimum(per_token_loss1, per_token_loss2)
-    is_clipped = per_token_loss1 < per_token_loss2
+    is_low_clipped = (coef_1 < 1 - EPS_LOW) & (advantage < 0)
+    is_high_clipped = (coef_1 > 1 + EPS_HIGH) & (advantage > 0)
+    is_clipped = is_low_clipped | is_high_clipped
 
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
