@@ -43,8 +43,7 @@ def run_ddp_test(rank, world_size, mlp_type, config, dtype, num_shards):
         setup_distributed(rank, world_size)
         device = torch.device(f"cuda:{rank}")
 
-        # Create input
-        bsz, seq_len, hidden_size = 2, 128, config.hidden_size
+        bsz, seq_len, hidden_size = 2, 512, config.hidden_size
         x = torch.randn(bsz, seq_len, hidden_size, device=device, dtype=dtype) * 0.1
         x.requires_grad_(True)
 
@@ -128,10 +127,9 @@ def run_ddp_test(rank, world_size, mlp_type, config, dtype, num_shards):
                     msg=f"Down gradients not synchronized between rank 0 and rank {i}",
                 )
 
+    finally:
         # Barrier to ensure all ranks complete
         dist.barrier()
-
-    finally:
         cleanup_distributed()
 
 
@@ -148,8 +146,7 @@ def run_fsdp_test(rank, world_size, mlp_type, config, dtype, num_shards):
         setup_distributed(rank, world_size)
         device = torch.device(f"cuda:{rank}")
 
-        # Create input
-        bsz, seq_len, hidden_size = 2, 128, config.hidden_size
+        bsz, seq_len, hidden_size = 2, 512, config.hidden_size
         x = torch.randn(bsz, seq_len, hidden_size, device=device, dtype=dtype) * 0.1
         x.requires_grad_(True)
 
@@ -180,11 +177,8 @@ def run_fsdp_test(rank, world_size, mlp_type, config, dtype, num_shards):
         grad_output = torch.randn_like(output)
         output.backward(grad_output)
 
-        # FSDP automatically synchronizes gradients
-        # Just verify the backward pass completes without errors
-        dist.barrier()
-
     finally:
+        dist.barrier()
         cleanup_distributed()
 
 
@@ -204,7 +198,7 @@ def run_no_sync_test(rank, world_size):
         ddp_mlp = DDP(mlp, device_ids=[rank])
 
         # First backward with no_sync (should NOT synchronize)
-        x1 = torch.randn(2, 64, 128, device=device, dtype=torch.float32) * 0.1
+        x1 = torch.randn(2, 512, 128, device=device, dtype=torch.float32) * 0.1
         x1.requires_grad_(True)
 
         with ddp_mlp.no_sync():
@@ -237,7 +231,7 @@ def run_no_sync_test(rank, world_size):
 
         # Second backward WITH sync (should synchronize)
         ddp_mlp.zero_grad()
-        x2 = torch.randn(2, 64, 128, device=device, dtype=torch.float32) * 0.1
+        x2 = torch.randn(2, 512, 128, device=device, dtype=torch.float32) * 0.1
         x2.requires_grad_(True)
 
         out2 = ddp_mlp(x2)
@@ -265,9 +259,8 @@ def run_no_sync_test(rank, world_size):
                 msg="Gradients should be synchronized after normal backward",
             )
 
-        dist.barrier()
-
     finally:
+        dist.barrier()
         cleanup_distributed()
 
 
@@ -278,11 +271,6 @@ def run_no_sync_test(rank, world_size):
 def test_tiled_mlp_ddp(mlp_type, num_shards, dtype):
     """
     Test TiledMLP with DistributedDataParallel.
-
-    Note: Only num_shards=None (auto) is tested with DDP.
-    Explicit num_shards values can cause gradient synchronization issues because
-    DDP expects a single forward-backward pair, but TiledMLP calls backward
-    multiple times (once per shard) internally.
     """
     world_size = min(2, torch.cuda.device_count())
 
