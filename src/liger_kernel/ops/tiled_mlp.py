@@ -19,31 +19,65 @@ except ImportError:
     FSDP_AVAILABLE = False
 
 
+def _find_ddp_wrapper(module: torch.nn.Module) -> Optional[torch.nn.Module]:
+    """
+    Find the DDP or FSDP wrapper for a given module by traversing up the module hierarchy.
+
+    This function searches for a wrapper that has the no_sync() method, which is used
+    to prevent gradient synchronization during tiled computation.
+
+    Args:
+        module: The module to find the wrapper for
+
+    Returns:
+        The DDP/FSDP wrapper if found, None otherwise
+    """
+    # First check if the module itself is a wrapper
+    if hasattr(module, "no_sync"):
+        return module
+
+    # Check if there's a _ddp_wrapper attribute (custom tracking)
+    if hasattr(module, "_ddp_wrapper") and module._ddp_wrapper is not None:
+        return module._ddp_wrapper
+
+    return None
+
+
 def _detect_distributed_framework(mlp_module: torch.nn.Module) -> tuple:
     """
     Detect if the module is wrapped with DDP or FSDP.
 
     Returns:
-        (is_ddp, is_fsdp): tuple of booleans
+        (is_ddp, is_fsdp, wrapper): tuple of (bool, bool, wrapper_or_None)
     """
     # Direct wrapper detection
     is_ddp = isinstance(mlp_module, torch.nn.parallel.DistributedDataParallel)
     is_fsdp = FSDP_AVAILABLE and isinstance(mlp_module, FullyShardedDataParallel)
 
+    wrapper = None
+    if is_ddp or is_fsdp:
+        wrapper = mlp_module
+
     # If not directly wrapped, check if distributed training is active
     if not (is_ddp or is_fsdp):
-        try:
-            import torch.distributed as dist
+        # Try to find wrapper through custom tracking
+        wrapper = _find_ddp_wrapper(mlp_module)
+        if wrapper is not None:
+            is_ddp = isinstance(wrapper, torch.nn.parallel.DistributedDataParallel)
+            is_fsdp = FSDP_AVAILABLE and isinstance(wrapper, FullyShardedDataParallel)
 
-            if dist.is_available() and dist.is_initialized():
-                # Assume DDP if distributed is initialized but no wrapper detected
-                is_ddp = True
-        except (ImportError, RuntimeError):
-            # ImportError: torch.distributed not available
-            # RuntimeError: distributed not initialized
-            pass
+        # If still not found, check if distributed is initialized
+        if not (is_ddp or is_fsdp):
+            try:
+                import torch.distributed as dist
 
-    return is_ddp, is_fsdp
+                if dist.is_available() and dist.is_initialized():
+                    # Distributed is active but no wrapper found
+                    is_ddp = True
+            except (ImportError, RuntimeError):
+                pass
+
+    return is_ddp, is_fsdp, wrapper
 
 
 class LigerTiledMLPFunction(torch.autograd.Function):
@@ -84,7 +118,7 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         ctx.compute_params = [p for p in compute_params if p.requires_grad] if compute_params else []
 
         # Detect distributed training framework once in forward
-        ctx.is_ddp, ctx.is_fsdp = _detect_distributed_framework(mlp_module)
+        ctx.is_ddp, ctx.is_fsdp, ctx.ddp_wrapper = _detect_distributed_framework(mlp_module)
 
         ctx.save_for_backward(x)
 
@@ -106,6 +140,7 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         compute_params = ctx.compute_params
         is_ddp = ctx.is_ddp
         is_fsdp = ctx.is_fsdp
+        ddp_wrapper = ctx.ddp_wrapper
 
         x_requires_grad = x.requires_grad
         x = x.detach()
@@ -139,10 +174,13 @@ class LigerTiledMLPFunction(torch.autograd.Function):
             # Use no_sync() context to prevent gradient reduction until last shard
             sync_context = nullcontext()
             if (is_ddp or is_fsdp) and not is_last_shard:
-                # Check if mlp_module actually has no_sync() method (it's a DDP/FSDP wrapper)
-                if hasattr(mlp_module, "no_sync"):
+                # Use the DDP/FSDP wrapper's no_sync() if available
+                if ddp_wrapper is not None and hasattr(ddp_wrapper, "no_sync"):
+                    sync_context = ddp_wrapper.no_sync()
+                # Fallback: check if mlp_module itself has no_sync() (direct wrapper case)
+                elif hasattr(mlp_module, "no_sync"):
                     sync_context = mlp_module.no_sync()
-                # Case: module has no no_sync() method
+                # Case: no wrapper found with no_sync() method
                 # In this edge case, gradient synchronization will occur on every shard (inefficient),
                 # but the final result remains correct.
 
