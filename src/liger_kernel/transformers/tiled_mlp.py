@@ -1,55 +1,10 @@
 from typing import Optional
-import sys
-import torch
+
 import torch.nn as nn
 
 from liger_kernel.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.tiled_mlp import apply_tiled_mlp
-
-
-def _register_ddp_wrapper_hook(module: nn.Module) -> None:
-    """
-    Register a forward pre-hook to track the DDP/FSDP wrapper.
-
-    This allows the tiled MLP to find the wrapper and use its no_sync() method
-    for efficient gradient synchronization.
-    """
-
-    def _find_wrapper_hook(module, input):
-        # Skip if already set
-        if hasattr(module, "_ddp_wrapper") and module._ddp_wrapper is not None:
-            return
-
-        # Try to find wrapper by traversing the call stack
-        # This is a heuristic approach since PyTorch doesn't track parent modules
-
-        frame = sys._getframe()
-        max_depth = 20  # Limit search depth
-
-        for _ in range(max_depth):
-            frame = frame.f_back
-            if frame is None:
-                break
-
-            # Look for 'self' in the frame's locals
-            if "self" in frame.f_locals:
-                obj = frame.f_locals["self"]
-                # Check if it's a DDP or FSDP wrapper
-                if isinstance(obj, torch.nn.parallel.DistributedDataParallel):
-                    module._ddp_wrapper = obj
-                    return
-                # Check for FSDP
-                try:
-                    from torch.distributed.fsdp import FullyShardedDataParallel
-
-                    if isinstance(obj, FullyShardedDataParallel):
-                        module._ddp_wrapper = obj
-                        return
-                except ImportError:
-                    pass
-
-    module.register_forward_pre_hook(_find_wrapper_hook)
 
 
 class LigerTiledGEGLUMLP(nn.Module):
@@ -76,10 +31,6 @@ class LigerTiledGEGLUMLP(nn.Module):
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-
-        # Initialize DDP wrapper tracking
-        self._ddp_wrapper = None
-        _register_ddp_wrapper_hook(self)
 
         # Validate activation function
         if hasattr(config, "hidden_act") and config.hidden_act not in [
@@ -145,10 +96,6 @@ class LigerTiledSwiGLUMLP(nn.Module):
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-
-        # Initialize DDP wrapper tracking
-        self._ddp_wrapper = None
-        _register_ddp_wrapper_hook(self)
 
         # Validate activation function
         if hasattr(config, "hidden_act") and config.hidden_act not in ["silu", "swish"]:
