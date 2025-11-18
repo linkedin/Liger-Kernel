@@ -24,6 +24,8 @@ from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP  # noqa: F4
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP  # noqa: F401
+from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP  # noqa: F401
+from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401
 
 # Static-only imports for IDEs and type checkers
@@ -155,6 +157,8 @@ __all__ = [
     "LigerPhi3SwiGLUMLP",
     "LigerQwen3MoeSwiGLUMLP",
     "LigerSwiGLUMLP",
+    "LigerTiledGEGLUMLP",
+    "LigerTiledSwiGLUMLP",
     "LigerTVDLoss",
     "LigerKLDIVLoss",
     "LigerMultiTokenAttention",
