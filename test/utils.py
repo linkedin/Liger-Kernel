@@ -550,6 +550,18 @@ def revert_liger_kernel_to_olmo2(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_olmo3(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Olmo3.
+    """
+
+    from transformers.models.olmo3 import modeling_olmo3
+
+    importlib.reload(modeling_olmo3)
+    model_config.model_class = modeling_olmo3.Olmo3ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_glm4(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Glm4.

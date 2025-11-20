@@ -143,6 +143,15 @@ def is_olmo2_available():
         return False
 
 
+def is_olmo3_available():
+    try:
+        import transformers.models.olmo3  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_glm4_available():
     try:
         import transformers.models.glm4  # noqa: F401
