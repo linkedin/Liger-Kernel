@@ -1959,13 +1959,13 @@ def apply_liger_kernel_to_olmo3(
     from transformers.models.olmo3.modeling_olmo3 import Olmo3Model
 
     from liger_kernel.transformers.model.olmo3 import lce_forward as olmo3_lce_forward
-    from liger_kernel.transformers.rms_norm import LigerRMSNormForOlmo3
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForOlmo2
 
     # Olmo3 arch is very similar to Olmo2, so we can reuse all these components in the same way.
     if rope:
         modeling_olmo3.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
-        modeling_olmo3.Olmo3RMSNorm = LigerRMSNormForOlmo3
+        modeling_olmo3.Olmo3RMSNorm = LigerRMSNormForOlmo2  # same as olmo2
     if swiglu:
         modeling_olmo3.Olmo3MLP = LigerSwiGLUMLP
     if cross_entropy:
