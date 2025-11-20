@@ -86,17 +86,19 @@ def _layer_norm_forward_kernel(
 @triton.jit
 def _layer_norm_backward_kernel(
     X_ptr,  # pointer to input, shape (n_rows, n_cols)
+    stride_x,  # stride of each row in input
     W_ptr,  # pointer to weights, shape (n_cols,)
     Mean_ptr,  # pointer to mean, shape (n_rows,)
+    stride_mean,  # stride of each row in mean
     RSTD_ptr,  # pointer to rstd, shape (n_rows,)
+    stride_rstd,  # stride of each row in rstd
     DX_ptr,  # pointer to input grad, shape (n_rows, n_cols)
-    DW_ptr,  # pointer to weights grad, shape (n_cols,)
-    DB_ptr,  # pointer to bias grad, shape (n_cols,)
-    DY_ptr,  # pointer to output grad, shape (n_rows, n_cols)
-    stride_x,  # stride of each row in input
     stride_dx,  # stride of each row in input grad
+    DW_ptr,  # pointer to weights grad, shape (n_cols,)
     stride_dw,  # stride of each row in weights grad
+    DB_ptr,  # pointer to bias grad, shape (n_cols,)
     stride_db,  # stride of each row in bias grad
+    DY_ptr,  # pointer to output grad, shape (n_rows, n_cols)
     stride_dy,  # stride of each row in output grad
     n_rows,
     n_cols,
@@ -156,6 +158,13 @@ def _layer_norm_backward_kernel(
         db = dy_f32
         dW_row += dw
         db_row += db
+
+        row_X_ptr += stride_x
+        row_DX_ptr += stride_dx
+        row_DY_ptr += stride_dy
+        row_Mean_ptr += stride_mean
+        row_RSTD_ptr += stride_rstd
+
     tl.store(DW_ptr + row_block_id * stride_dw + cols, dW_row, mask=mask)
     tl.store(DB_ptr + row_block_id * stride_db + cols, db_row, mask=mask)
 
@@ -267,17 +276,19 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     # Launch kernel with one thread block per row for optimal performance
     _layer_norm_backward_kernel[grid](
         X,
+        X.stride(0),
         W,
         Mean,
+        Mean.stride(0),
         RSTD,
+        RSTD.stride(0),
         DX,
-        _DW,
-        _DB,
-        dY,
-        X.stride(0),
         DX.stride(0),
+        _DW,
         _DW.stride(0),
+        _DB,
         _DB.stride(0),
+        dY,
         dY.stride(0),
         n_rows,
         n_cols,
