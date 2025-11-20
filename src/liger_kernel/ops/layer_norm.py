@@ -1,5 +1,5 @@
-import operator
 import math
+import operator
 
 import torch
 import triton
@@ -159,6 +159,7 @@ def _layer_norm_backward_kernel(
     tl.store(DW_ptr + row_block_id * stride_dw + cols, dW_row, mask=mask)
     tl.store(DB_ptr + row_block_id * stride_db + cols, db_row, mask=mask)
 
+
 def layer_norm_forward(X, W, B, eps):
     """
     Args:
@@ -289,6 +290,7 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     DW = _DW.sum(dim=0).to(W.dtype)
     DB = _DB.sum(dim=0).to(B.dtype)
     return DX, DW, DB
+
 
 class LigerLayerNormFunction(torch.autograd.Function):
     @staticmethod
