@@ -50,10 +50,10 @@ def lce_forward(
     Example:
 
     ```python
-    >>> from transformers import AutoTokenizer, Olmo2ForCausalLM
+    >>> from transformers import AutoTokenizer, Olmo3ForCausalLM
 
-    >>> model = Olmo2ForCausalLM.from_pretrained("allenai/Olmo2-1B-hf")
-    >>> tokenizer = AutoTokenizer.from_pretrained("allenai/Olmo2-1B-hf")
+    >>> model = Olmo3ForCausalLM.from_pretrained("allenai/Olmo-3-7B-Instruct")
+    >>> tokenizer = AutoTokenizer.from_pretrained("allenai/Olmo-3-7B-Instruct")
 
     >>> prompt = "Hey, are you conscious? Can you talk to me?"
     >>> inputs = tokenizer(prompt, return_tensors="pt")
