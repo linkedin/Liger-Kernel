@@ -68,6 +68,7 @@ def test_liger_layer_norm(
     [
         (2, 8, 64),
         (4, 16, 128),
+        (3, 512, 128),
     ],
 )
 @pytest.mark.parametrize(
