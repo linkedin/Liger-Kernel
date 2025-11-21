@@ -32,7 +32,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         epsilon_low=0.2,
         epsilon_high=0.2,
         beta=0.04,
-        loss_type="bnpo",
+        loss_type="dapo",
         max_completion_length=None,
         importance_sampling_level="token",
         temperature=1.0,
@@ -60,7 +60,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             epsilon_low: Lower bound for clipping the importance sampling ratio
             epsilon_high: Upper bound for clipping the importance sampling ratio
             beta: Weight for the KL penalty
-            loss_type: Type of loss calculation ("grpo", "bnpo", "dr_grpo")
+            loss_type: Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo")
             max_completion_length: Maximum completion length required for "dr_grpo"
             temperature: Temperature for the logits
             compiled: Whether to use torch compile
@@ -245,6 +245,21 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         return loss_acc, tuple(final_metrics)
 
     @staticmethod
+    def _compute_dapo_normalizer(attention_mask):
+        """Global active tokens averaged per process."""
+        normalizer = attention_mask.to(torch.float32).sum()
+        world_size = 1
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            import torch.distributed as dist
+
+            normalizer = normalizer.clone()
+            dist.all_reduce(normalizer, op=dist.ReduceOp.SUM)
+            world_size = dist.get_world_size()
+
+        normalizer = normalizer / world_size
+        return torch.clamp(normalizer, min=1.0)
+
+    @staticmethod
     def _compute_chunk_loss(
         input_chunk,
         weight,
@@ -261,7 +276,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         epsilon_low=0.2,
         epsilon_high=0.2,
         beta=0.04,
-        loss_type="bnpo",
+        loss_type="dapo",
         max_completion_length=None,
         importance_sampling_level="token",
         temperature=1.0,
@@ -341,10 +356,11 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             None,  # grad_epsilon_low
             None,  # grad_epsilon_high
             None,  # grad_beta
+            None,  # grad_loss_type
+            None,  # grad_max_completion_length
+            None,  # grad_importance_sampling_level
             None,  # grad_temperature
             None,  # grad_compiled
             None,  # grad_use_ref_model
             None,  # grad_chunk_size
-            None,  # grad_loss_type
-            None,  # grad_max_completion_length
         )
