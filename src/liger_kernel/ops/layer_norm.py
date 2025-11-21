@@ -153,7 +153,7 @@ def _layer_norm_backward_kernel(
         # Store input gradient
         tl.store(row_DX_ptr + cols, dx, mask=mask)
 
-        # Accumulate weight and bias gradients using atomic operations
+        # Accumulate weight and bias gradients for this thread block's assigned rows
         dw = dy_f32 * x_hat
         db = dy_f32
         dW_row += dw
