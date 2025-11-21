@@ -1386,7 +1386,7 @@ if HUNYUAN_V1_AVAILABLE:
         liger_kernel_patch_func=apply_liger_kernel_to_hunyuan_v1_moe,
         liger_kernel_patch_revert_func=revert_liger_kernel_to_hunyuan_v1_moe,
         model_class=HunYuanMoEV1ForCausalLM,
-        mini_model_config = HunYuanMoEV1Config(
+        mini_model_config=HunYuanMoEV1Config(
             vocab_size=32000,
             hidden_size=128,
             intermediate_size=512,

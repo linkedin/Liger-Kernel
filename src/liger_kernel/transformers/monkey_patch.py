@@ -2657,7 +2657,7 @@ def apply_liger_kernel_to_hunyuan_v1_dense(
         from transformers.loss.loss_utils import nn
 
         nn.functional.cross_entropy = liger_cross_entropy
-    
+
     if fused_linear_cross_entropy:
         if model is not None:
             model.forward = MethodType(hunyuan_v1_lce_forward, model)
