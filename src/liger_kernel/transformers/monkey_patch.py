@@ -2626,6 +2626,123 @@ def apply_liger_kernel_to_qwen3_next(
                             _patch_swiglu_module(expert, LigerQwen3MoeSwiGLUMLP)
 
 
+def apply_liger_kernel_to_hunyuan_v1_dense(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Hunyuan v1 dense models.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.hunyuan_v1_dense import modeling_hunyuan_v1_dense
+    from transformers.models.hunyuan_v1_dense.modeling_hunyuan_v1_dense import HunYuanDenseV1Model
+
+    from liger_kernel.transformers.model.hunyuan_v1 import lce_forward as hunyuan_v1_lce_forward
+    from liger_kernel.transformers.swiglu import LigerHunyuanV1SwiGLUMLP
+
+    if rope:
+        modeling_hunyuan_v1_dense.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if rms_norm:
+        modeling_hunyuan_v1_dense.HunYuanDenseV1RMSNorm = LigerRMSNorm
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+    
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(hunyuan_v1_lce_forward, model)
+        else:
+            modeling_hunyuan_v1_dense.HunYuanDenseV1ForCausalLM.forward = hunyuan_v1_lce_forward
+
+    if swiglu:
+        modeling_hunyuan_v1_dense.HunYuanDenseV1MLP = LigerHunyuanV1SwiGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: HunYuanDenseV1Model = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp, LigerHunyuanV1SwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
+def apply_liger_kernel_to_hunyuan_v1_moe(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Qwen3 models.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.hunyuan_v1_moe import modeling_hunyuan_v1_moe
+    from transformers.models.hunyuan_v1_moe.modeling_hunyuan_v1_moe import HunYuanMoEV1Model
+
+    from liger_kernel.transformers.model.hunyuan_v1 import lce_forward as hunyuan_v1_moe_lce_forward
+    from liger_kernel.transformers.swiglu import LigerHunyuanV1SwiGLUMLP
+
+    if rope:
+        modeling_hunyuan_v1_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if rms_norm:
+        modeling_hunyuan_v1_moe.HunYuanMoEV1RMSNorm = LigerRMSNorm
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(hunyuan_v1_moe_lce_forward, model)
+        else:
+            modeling_hunyuan_v1_moe.HunYuanMoEV1ForCausalLM.forward = hunyuan_v1_moe_lce_forward
+
+    if swiglu:
+        modeling_hunyuan_v1_moe.HunYuanMoEV1MLP = LigerHunyuanV1SwiGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: HunYuanMoEV1Model = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                for mlp_expert in decoder_layer.mlp.experts:
+                    _patch_swiglu_module(mlp_expert, LigerHunyuanV1SwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
@@ -2664,6 +2781,8 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "paligemma": apply_liger_kernel_to_paligemma,
     "falcon_h1": apply_liger_kernel_to_falcon_h1,
     "smolvlm": apply_liger_kernel_to_smolvlm,
+    "hunyuan_v1_dense": apply_liger_kernel_to_hunyuan_v1_dense,
+    "hunyuan_v1_moe": apply_liger_kernel_to_hunyuan_v1_moe,
 }
 
 
