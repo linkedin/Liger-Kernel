@@ -30,6 +30,8 @@ from liger_kernel.transformers import apply_liger_kernel_to_glm4
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v_moe
 from liger_kernel.transformers import apply_liger_kernel_to_granite
+from liger_kernel.transformers import apply_liger_kernel_to_hunyuan_v1_dense
+from liger_kernel.transformers import apply_liger_kernel_to_hunyuan_v1_moe
 from liger_kernel.transformers import apply_liger_kernel_to_internvl
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_llama4
@@ -38,6 +40,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_mistral
 from liger_kernel.transformers import apply_liger_kernel_to_mixtral
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_olmo2
+from liger_kernel.transformers import apply_liger_kernel_to_olmo3
 from liger_kernel.transformers import apply_liger_kernel_to_phi3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
@@ -62,6 +65,8 @@ from test.utils import revert_liger_kernel_to_glm4
 from test.utils import revert_liger_kernel_to_glm4v
 from test.utils import revert_liger_kernel_to_glm4v_moe
 from test.utils import revert_liger_kernel_to_granite
+from test.utils import revert_liger_kernel_to_hunyuan_v1
+from test.utils import revert_liger_kernel_to_hunyuan_v1_moe
 from test.utils import revert_liger_kernel_to_internvl
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_llama4
@@ -70,6 +75,7 @@ from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
 from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_olmo2
+from test.utils import revert_liger_kernel_to_olmo3
 from test.utils import revert_liger_kernel_to_phi3
 from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
@@ -191,6 +197,15 @@ except ImportError:
     OLMO2_AVAILABLE = False
 
 try:
+    # OLMO3 is only available in transformers>=4.57.0
+    from transformers.models.olmo3.configuration_olmo3 import Olmo3Config
+    from transformers.models.olmo3.modeling_olmo3 import Olmo3ForCausalLM
+
+    OLMO3_AVAILABLE = True
+except ImportError:
+    OLMO3_AVAILABLE = False
+
+try:
     # Glm4 is only available in transformers>=4.51.3
     from transformers.models.glm4.configuration_glm4 import Glm4Config
     from transformers.models.glm4.modeling_glm4 import Glm4ForCausalLM
@@ -260,6 +275,16 @@ try:
     QWEN3NEXT_AVAILABLE = True
 except ImportError:
     QWEN3NEXT_AVAILABLE = False
+
+try:
+    from transformers.models.hunyuan_v1_dense.configuration_hunyuan_v1_dense import HunYuanDenseV1Config
+    from transformers.models.hunyuan_v1_dense.modeling_hunyuan_v1_dense import HunYuanDenseV1ForCausalLM
+    from transformers.models.hunyuan_v1_moe.configuration_hunyuan_v1_moe import HunYuanMoEV1Config
+    from transformers.models.hunyuan_v1_moe.modeling_hunyuan_v1_moe import HunYuanMoEV1ForCausalLM
+
+    HUNYUAN_V1_AVAILABLE = True
+except ImportError:
+    HUNYUAN_V1_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -995,6 +1020,35 @@ if OLMO2_AVAILABLE:
         ),
     )
 
+if OLMO3_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_olmo3"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_olmo3,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_olmo3,
+        model_class=Olmo3ForCausalLM,
+        mini_model_config=Olmo3Config(
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
+            pad_token_id=2,
+            cross_attention_layers=None,
+            dropout=0,
+            hidden_act="silu",
+            hidden_size=1024,  # 4096
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=4096,
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 40
+            num_key_value_heads=2,  # 8
+            rms_norm_eps=1e-5,
+            rope_scaling=None,
+            rope_theta=500_000,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 128256,
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
+
 if GLM4_AVAILABLE:
     MINI_MODEL_SETUPS["mini_glm4"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_glm4,
@@ -1300,6 +1354,69 @@ if QWEN3NEXT_AVAILABLE:
             router_aux_loss_coef=0.001,
             # config.dtype must be set if fla installed since there's a bug in the original code (No torch.get_current_dtype())
             dtype=torch.bfloat16,
+        ),
+    )
+
+
+if HUNYUAN_V1_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_hunyuan_v1"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_hunyuan_v1_dense,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_hunyuan_v1,
+        model_class=HunYuanDenseV1ForCausalLM,
+        mini_model_config=HunYuanDenseV1Config(
+            attention_dropout=0.0,
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            num_hidden_layers=4,
+            hidden_size=896,
+            intermediate_size=4864,
+            num_attention_heads=8,
+            head_dim=112,
+            rms_norm_eps=1e-6,
+            tie_word_embeddings=True,
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            norm_eps=1e-6,
+            num_key_value_heads=2,
+            rope_theta=10000.0,
+            partial_rotary_factor=1.0,
+            vocab_size=32000,
+            use_cache=True,
+            attn_implementation="sdpa",
+        ),
+    )
+
+    MINI_MODEL_SETUPS["mini_hunyuan_v1_moe"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_hunyuan_v1_moe,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_hunyuan_v1_moe,
+        model_class=HunYuanMoEV1ForCausalLM,
+        mini_model_config=HunYuanMoEV1Config(
+            vocab_size=32000,
+            hidden_size=128,
+            intermediate_size=512,
+            head_dim=16,
+            num_hidden_layers=2,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            rms_norm_eps=1e-5,
+            use_cache=True,
+            pad_token_id=0,
+            bos_token_id=1,
+            eos_token_id=2,
+            eod_token_id=3,
+            sep_token_id=4,
+            tie_word_embeddings=False,
+            rope_theta=10000.0,
+            rope_scaling=None,
+            attention_bias=False,
+            attention_dropout=0.0,
+            num_experts=2,
+            moe_topk=1,
+            attn_implementation="sdpa",
         ),
     )
 
@@ -1675,6 +1792,25 @@ def run_mini_model(
             ],
         ),
         pytest.param(
+            "mini_olmo3",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not OLMO3_AVAILABLE,
+                    reason="OLMO3 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
             "mini_glm4",
             32,
             1e-5,
@@ -1882,6 +2018,44 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not QWEN3NEXT_AVAILABLE,
                     reason="Qwen3Next not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_hunyuan_v1",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not HUNYUAN_V1_AVAILABLE,
+                    reason="Hunyuan_v1 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_hunyuan_v1_moe",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,
+            5e-2,
+            1e-1,  # 1e-1
+            1e-1,  # 1e-2
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not HUNYUAN_V1_AVAILABLE,
+                    reason="Hunyuan_v1_moe not available in this version of transformers",
                 ),
             ],
         ),
