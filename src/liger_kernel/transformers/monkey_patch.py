@@ -1928,6 +1928,74 @@ def apply_liger_kernel_to_olmo2(
                 _patch_rms_norm_module(decoder_layer.post_feedforward_layernorm, in_place=False)
 
 
+def apply_liger_kernel_to_olmo3(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Olmo3 models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU to Olmo3MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.olmo3 import modeling_olmo3
+    from transformers.models.olmo3.modeling_olmo3 import Olmo3Model
+
+    from liger_kernel.transformers.model.olmo3 import lce_forward as olmo3_lce_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForOlmo2
+
+    # Olmo3 arch is very similar to Olmo2, so we can reuse all these components in the same way.
+    if rope:
+        modeling_olmo3.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_olmo3.Olmo3RMSNorm = LigerRMSNormForOlmo2  # same as olmo2
+    if swiglu:
+        modeling_olmo3.Olmo3MLP = LigerSwiGLUMLP
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(olmo3_lce_forward, model)
+        else:
+            modeling_olmo3.Olmo3ForCausalLM.forward = olmo3_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: Olmo3Model = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm, in_place=False)
+                _patch_rms_norm_module(decoder_layer.post_feedforward_layernorm, in_place=False)
+
+
 def apply_liger_kernel_to_glm4(
     rope: bool = False,
     cross_entropy: bool = False,
@@ -2589,7 +2657,7 @@ def apply_liger_kernel_to_hunyuan_v1_dense(
         from transformers.loss.loss_utils import nn
 
         nn.functional.cross_entropy = liger_cross_entropy
-    
+
     if fused_linear_cross_entropy:
         if model is not None:
             model.forward = MethodType(hunyuan_v1_lce_forward, model)
@@ -2695,6 +2763,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "mistral": apply_liger_kernel_to_mistral,
     "mixtral": apply_liger_kernel_to_mixtral,
     "olmo2": apply_liger_kernel_to_olmo2,
+    "olmo3": apply_liger_kernel_to_olmo3,
     "qwen2": apply_liger_kernel_to_qwen2,
     "qwen3": apply_liger_kernel_to_qwen3,
     "qwen3_moe": apply_liger_kernel_to_qwen3_moe,
