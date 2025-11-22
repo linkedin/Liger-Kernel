@@ -29,6 +29,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text
 from liger_kernel.transformers import apply_liger_kernel_to_glm4
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v_moe
+from liger_kernel.transformers import apply_liger_kernel_to_gpt_oss
 from liger_kernel.transformers import apply_liger_kernel_to_granite
 from liger_kernel.transformers import apply_liger_kernel_to_hunyuan_v1_dense
 from liger_kernel.transformers import apply_liger_kernel_to_hunyuan_v1_moe
@@ -64,6 +65,7 @@ from test.utils import revert_liger_kernel_to_gemma3_text
 from test.utils import revert_liger_kernel_to_glm4
 from test.utils import revert_liger_kernel_to_glm4v
 from test.utils import revert_liger_kernel_to_glm4v_moe
+from test.utils import revert_liger_kernel_to_gpt_oss
 from test.utils import revert_liger_kernel_to_granite
 from test.utils import revert_liger_kernel_to_hunyuan_v1
 from test.utils import revert_liger_kernel_to_hunyuan_v1_moe
@@ -246,6 +248,15 @@ try:
     QWEN3_AVAILABLE = True
 except ImportError:
     QWEN3_AVAILABLE = False
+
+try:
+    # GPT-OSS is only available in transformers>=4.55.0
+    from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
+    from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM
+
+    GPT_OSS_AVAILABLE = True
+except ImportError:
+    GPT_OSS_AVAILABLE = False
 
 try:
     # InternVL is only available in transformers>=4.52.1
@@ -607,6 +618,43 @@ if QWEN3_AVAILABLE:
             output_router_logits=False,
             router_aux_loss_coef=0.001,
             mlp_only_layers=None,
+        ),
+    )
+
+if GPT_OSS_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_gpt_oss"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_gpt_oss,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gpt_oss,
+        model_class=GptOssForCausalLM,
+        mini_model_config=GptOssConfig(
+            vocab_size=32000,  # 201088
+            hidden_size=896,
+            intermediate_size=896,  # Same as hidden_size for GPT-OSS
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            head_dim=64,
+            hidden_act="silu",
+            max_position_embeddings=8192,
+            initializer_range=0.02,
+            rms_norm_eps=1e-5,
+            use_cache=True,
+            tie_word_embeddings=False,
+            rope_parameters={
+                "rope_type": "yarn",
+                "factor": 8.0,
+                "beta_fast": 32.0,
+                "beta_slow": 1.0,
+                "truncate": False,
+                "original_max_position_embeddings": 4096,
+            },
+            attention_dropout=0.0,
+            num_local_experts=8,  # Reduced from 32 for mini model
+            num_experts_per_tok=2,  # Reduced from 4 for mini model
+            router_aux_loss_coef=0.9,
+            output_router_logits=False,
+            sliding_window=128,
+            layer_types=["sliding_attention" if bool((i + 1) % 2) else "full_attention" for i in range(4)],
         ),
     )
 
@@ -1606,6 +1654,22 @@ def run_mini_model(
             marks=pytest.mark.skipif(
                 not QWEN3_AVAILABLE,
                 reason="Qwen3 not available in this version of transformers",
+            ),
+        ),
+        pytest.param(
+            "mini_gpt_oss",
+            32,
+            1e-5,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(
+                not GPT_OSS_AVAILABLE,
+                reason="GPT-OSS not available in this version of transformers",
             ),
         ),
         pytest.param(  # qwen2_vl requires slightly larger tolerances to pass this test after bug fix to qwen2_vl in transformers v4.47.0
