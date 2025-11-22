@@ -1,18 +1,12 @@
-from typing import TYPE_CHECKING
 from typing import List
 from typing import Optional
 from typing import Union
 
 import torch
 
-from transformers.modeling_outputs import MoeModelOutputWithPast
-
-if TYPE_CHECKING:
-    from transformers.models.qwen3_next.modeling_qwen3_next import load_balancing_loss_func
-
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
-from liger_kernel.transformers.model.output_classes import LigerMoeCausalLMOutputWithPast
+from liger_kernel.transformers.model.output_classes import LigerCausalLMOutputWithPast
 
 
 def lce_forward(
@@ -26,13 +20,12 @@ def lce_forward(
     use_cache: Optional[bool] = None,
     output_attentions: Optional[bool] = None,
     output_hidden_states: Optional[bool] = None,
-    output_router_logits: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
     return_dict: Optional[bool] = None,
     **kwargs,
-) -> LigerMoeCausalLMOutputWithPast:
+) -> LigerCausalLMOutputWithPast:
     r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
@@ -51,12 +44,12 @@ def lce_forward(
     Example:
 
     ```python
-    >>> from transformers import AutoModelForCausalLM, AutoTokenizer
+    >>> from transformers import AutoTokenizer, HunYuanDenseV1ForCausalLM
 
-    >>> model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-Next-80B-A3B-Instruct")
-    >>> tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-Next-80B-A3B-Instruct")
+    >>> model = HunYuanDenseV1ForCausalLM.from_pretrained("meta-hunyuan_v1_dense/HunYuanDenseV1-2-7b-hf")
+    >>> tokenizer = AutoTokenizer.from_pretrained("meta-hunyuan_v1_dense/HunYuanDenseV1-2-7b-hf")
 
-    >>> prompt = "Give me a short introduction to large language model."
+    >>> prompt = "Hey, are you conscious? Can you talk to me?"
     >>> inputs = tokenizer(prompt, return_tensors="pt")
 
     >>> # Generate
@@ -65,16 +58,13 @@ def lce_forward(
     "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
     ```"""
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-    output_router_logits = (
-        output_router_logits if output_router_logits is not None else self.config.output_router_logits
-    )
     output_hidden_states = (
         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-    outputs: MoeModelOutputWithPast = self.model(
+    outputs = self.model(
         input_ids=input_ids,
         attention_mask=attention_mask,
         position_ids=position_ids,
@@ -83,12 +73,11 @@ def lce_forward(
         use_cache=use_cache,
         output_attentions=output_attentions,
         output_hidden_states=output_hidden_states,
-        output_router_logits=output_router_logits,
         cache_position=cache_position,
         **kwargs,
     )
 
-    hidden_states = outputs.last_hidden_state
+    hidden_states = outputs[0]
     # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
     kept_hidden_states = hidden_states[:, slice_indices, :]
@@ -98,9 +87,14 @@ def lce_forward(
     loss = None
     token_accuracy = None
 
+    if skip_logits and labels is None and shift_labels is None:
+        raise ValueError("skip_logits is True, but labels and shift_labels are None")
+
     if skip_logits is None:
+        # By default, if in training mode, don't materialize logits
         skip_logits = self.training and (labels is not None or shift_labels is not None)
 
+    # Compute loss
     if skip_logits:
         result = LigerForCausalLMLoss(
             hidden_states=kept_hidden_states,
@@ -111,36 +105,30 @@ def lce_forward(
             **kwargs,
         )
         loss, _, token_accuracy = unpack_cross_entropy_result(result)
-    else:  # if in inference model materialize logits
+
+    else:
         logits = self.lm_head(kept_hidden_states)
         if labels is not None or shift_labels is not None:
-            loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
-
-    aux_loss = None
-    if output_router_logits:
-        aux_loss = load_balancing_loss_func(
-            outputs.router_logits,
-            self.num_experts,
-            self.num_experts_per_tok,
-            attention_mask,
-        )
-        if labels is not None:
-            loss += self.router_aux_loss_coef * aux_loss.to(loss.device)  # make sure to reside in the same device
+            loss = self.loss_function(
+                logits=logits,
+                labels=labels,
+                shift_labels=shift_labels,
+                vocab_size=self.config.vocab_size,
+                **kwargs,
+            )
 
     if not return_dict:
         output = (logits,) + outputs[1:]
-        output = ((aux_loss,) + output) if aux_loss is not None else output
         output = ((loss,) + output) if loss is not None else output
         output = output + (token_accuracy,) if token_accuracy is not None else output
         return output
 
-    return LigerMoeCausalLMOutputWithPast(
+    # Return custom output class with accuracy field
+    return LigerCausalLMOutputWithPast(
         loss=loss,
-        aux_loss=aux_loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
-        router_logits=outputs.router_logits,
         token_accuracy=token_accuracy,
     )

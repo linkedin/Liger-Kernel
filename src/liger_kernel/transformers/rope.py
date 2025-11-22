@@ -1,4 +1,5 @@
-from typing import Optional, Tuple
+from typing import Optional
+from typing import Tuple
 
 import torch
 
@@ -32,7 +33,6 @@ def liger_rotary_pos_emb_with_cast(
     position_ids: Optional[torch.Tensor] = None,
     unsqueeze_dim: int = 1,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-
     orig_q_dtype, orig_k_dtype = q.dtype, k.dtype
 
     q32 = q.to(torch.float32)
@@ -52,8 +52,6 @@ def liger_rotary_pos_emb_with_cast_and_leading_batch(
     position_ids: Optional[torch.Tensor] = None,
     unsqueeze_dim: int = 1,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-
-
     orig_q_dtype, orig_k_dtype = q.dtype, k.dtype
 
     q32 = q.to(torch.float32).unsqueeze(0)
@@ -61,7 +59,5 @@ def liger_rotary_pos_emb_with_cast_and_leading_batch(
     cos32 = cos.to(torch.float32).unsqueeze(0)
     sin32 = sin.to(torch.float32).unsqueeze(0)
 
-    q_out, k_out = liger_rotary_pos_emb(
-        q32, k32, cos32, sin32, position_ids=position_ids, unsqueeze_dim=unsqueeze_dim
-    )
+    q_out, k_out = liger_rotary_pos_emb(q32, k32, cos32, sin32, position_ids=position_ids, unsqueeze_dim=unsqueeze_dim)
     return q_out.to(orig_q_dtype).squeeze(0), k_out.to(orig_k_dtype).squeeze(0)

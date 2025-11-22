@@ -11,6 +11,7 @@ from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
+from liger_kernel.transformers.functional import CrossEntropyOutput
 from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.utils import infer_device
 
@@ -217,8 +218,12 @@ def _test_correctness_with_z_loss_once(
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
     if return_z_loss:
         output, z_output = torch_ce(_input, target)
-        output2, z_output2 = target_ce(_input2, target)
-
+        result2 = target_ce(_input2, target)
+        if isinstance(result2, CrossEntropyOutput):
+            output2 = result2.loss
+            z_output2 = result2.z_loss
+        else:
+            output2, z_output2 = result2
     else:
         output = torch_ce(_input, target)
         output2 = target_ce(_input2, target)
@@ -274,8 +279,9 @@ def _test_correctness_with_z_loss_with_other_params_once(
 
     if return_z_loss:
         output, z_output = torch_ce(_input, target)
-        output2, z_output2 = target_ce(_input2, target)
-
+        result2 = target_ce(_input2, target)
+        output2 = result2.loss
+        z_output2 = result2.z_loss
     else:
         output = torch_ce(_input, target)
         output2 = target_ce(_input2, target)
@@ -493,7 +499,7 @@ def _test_correctness_functional(
 
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
-    y1, y1_z = liger_cross_entropy(
+    result = liger_cross_entropy(
         x1,
         target,
         None,
@@ -504,7 +510,9 @@ def _test_correctness_functional(
         softcap=30.0,
         return_z_loss=True,
     )
-    y2, y2_z = LigerCrossEntropyFunction.apply(x2, target, None, 0, 1e-4, 0.1, "mean", 30.0, True)
+    y1 = result.loss
+    y1_z = result.z_loss
+    y2, y2_z, _ = LigerCrossEntropyFunction.apply(x2, target, None, 0, 1e-4, 0.1, "mean", 30.0, True, False)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
     assert torch.allclose(y1_z, y2_z, atol=atol, rtol=rtol)
@@ -1015,6 +1023,7 @@ def test_float32_internal():
     # Run kernel for bfloat16
     X_bf16 = X_init.clone()
     loss_bf16 = torch.zeros(batch_size, dtype=torch.float32, device=device)
+    token_accuracy_bf16 = torch.zeros(batch_size, dtype=torch.float32, device=device)
     liger_cross_entropy_kernel[(batch_size,)](
         X_ptr=X_bf16,
         X_stride=X_bf16.stride(-2),
@@ -1024,6 +1033,8 @@ def test_float32_internal():
         z_loss_ptr=loss_bf16,  # dummy ptr, not used
         loss_ptr=loss_bf16,
         loss_stride=loss_bf16.stride(-1),
+        token_accuracy_ptr=token_accuracy_bf16,
+        token_accuracy_stride=token_accuracy_bf16.stride(-1),
         n_cols=n_cols,
         n_non_ignore=n_non_ignore,
         sum_non_ignore_weight=n_non_ignore,  # not used
@@ -1034,6 +1045,7 @@ def test_float32_internal():
         reduction=reduction,
         softcap=softcap,
         RETURN_Z_LOSS=0,  # False
+        RETURN_TOKEN_ACCURACY=0,
         HAS_WEIGHT=False,
         HAS_SOFTCAPPING=False,
         HAS_GRADIENTS=True,
@@ -1044,6 +1056,7 @@ def test_float32_internal():
     # Run kernel for float32
     X_fp32 = X_init.float()
     loss_fp32 = torch.zeros(batch_size, dtype=torch.float32, device=device)
+    token_accuracy_fp32 = torch.zeros(batch_size, dtype=torch.float32, device=device)
     liger_cross_entropy_kernel[(batch_size,)](
         X_ptr=X_fp32,
         X_stride=X_fp32.stride(-2),
@@ -1053,6 +1066,8 @@ def test_float32_internal():
         loss_ptr=loss_fp32,
         z_loss_ptr=loss_fp32,  # dummy ptr, not used
         loss_stride=loss_fp32.stride(-1),
+        token_accuracy_ptr=token_accuracy_fp32,
+        token_accuracy_stride=token_accuracy_fp32.stride(-1),
         n_cols=n_cols,
         n_non_ignore=n_non_ignore,
         sum_non_ignore_weight=n_non_ignore,  # not used
@@ -1063,6 +1078,7 @@ def test_float32_internal():
         reduction=reduction,
         softcap=softcap,
         RETURN_Z_LOSS=0,  # False
+        RETURN_TOKEN_ACCURACY=0,
         HAS_WEIGHT=False,
         HAS_SOFTCAPPING=False,
         HAS_GRADIENTS=True,
@@ -1106,3 +1122,62 @@ def test_correctness_with_out_of_bounds_target_once(B, T, V, ignore_index):
 def test_correctness_with_forward_only(B, T, V, ignore_index, reduction, dtype, scalar, atol, rtol):
     liger_ce = LigerCrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
     _test_correctness_with_forward_only(liger_ce, B, T, V, reduction, dtype, scalar, atol, rtol)
+
+
+@pytest.mark.parametrize(
+    "return_z_loss, return_token_accuracy",
+    [
+        (False, False),
+        (True, False),
+        (False, True),
+        (True, True),
+    ],
+)
+def test_liger_cross_entropy_structured_output(return_z_loss, return_token_accuracy):
+    logits = torch.tensor(
+        [[2.0, 0.5, -1.0], [0.1, 1.5, 0.3], [0.7, -0.2, 0.9]],
+        device=device,
+        requires_grad=True,
+    )
+    targets = torch.tensor([0, 1, 2], device=device)
+
+    original_logits = logits.detach().clone()
+
+    result = liger_cross_entropy(
+        logits,
+        targets,
+        reduction="mean",
+        return_z_loss=return_z_loss,
+        return_token_accuracy=return_token_accuracy,
+    )
+
+    if not return_z_loss and not return_token_accuracy:
+        assert isinstance(result, torch.Tensor)
+        assert result.shape == ()
+        result.backward()
+        assert logits.grad is not None
+        logits.grad.zero_()
+        return
+
+    assert isinstance(result, CrossEntropyOutput)
+    assert result.loss.shape == ()
+
+    if return_z_loss:
+        assert result.z_loss is not None
+        assert isinstance(result.z_loss, torch.Tensor)
+    else:
+        assert result.z_loss is None
+
+    if return_token_accuracy:
+        assert result.token_accuracy is not None
+        with torch.no_grad():
+            predictions = original_logits.argmax(dim=-1)
+            correct = (predictions == targets).float()
+            expected_accuracy = correct.mean()
+        assert torch.allclose(result.token_accuracy, expected_accuracy, atol=1e-6)
+    else:
+        assert result.token_accuracy is None
+
+    result.loss.backward()
+    assert logits.grad is not None
+    logits.grad.zero_()

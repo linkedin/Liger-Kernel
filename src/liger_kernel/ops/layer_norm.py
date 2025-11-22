@@ -1,3 +1,4 @@
+import math
 import operator
 
 import torch
@@ -85,68 +86,87 @@ def _layer_norm_forward_kernel(
 @triton.jit
 def _layer_norm_backward_kernel(
     X_ptr,  # pointer to input, shape (n_rows, n_cols)
+    stride_x,  # stride of each row in input
     W_ptr,  # pointer to weights, shape (n_cols,)
     Mean_ptr,  # pointer to mean, shape (n_rows,)
+    stride_mean,  # stride of each row in mean
     RSTD_ptr,  # pointer to rstd, shape (n_rows,)
+    stride_rstd,  # stride of each row in rstd
     DX_ptr,  # pointer to input grad, shape (n_rows, n_cols)
-    DW_ptr,  # pointer to weights grad, shape (n_cols,)
-    DB_ptr,  # pointer to bias grad, shape (n_cols,)
-    DY_ptr,  # pointer to output grad, shape (n_rows, n_cols)
-    stride_x,  # stride of each row in input
     stride_dx,  # stride of each row in input grad
+    DW_ptr,  # pointer to weights grad, shape (n_cols,)
+    stride_dw,  # stride of each row in weights grad
+    DB_ptr,  # pointer to bias grad, shape (n_cols,)
+    stride_db,  # stride of each row in bias grad
+    DY_ptr,  # pointer to output grad, shape (n_rows, n_cols)
     stride_dy,  # stride of each row in output grad
+    n_rows,
     n_cols,
+    rows_per_program: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
-    dtype: tl.constexpr,
-    atomic_dtype: tl.constexpr,
 ):
     """
     References:
     https://arxiv.org/abs/1607.06450
     https://github.com/karpathy/llm.c/blob/master/doc/layernorm/layernorm.md
     """
-    row_idx = tl.program_id(0).to(tl.int64)
+    row_block_id = tl.program_id(0).to(tl.int64)
+    row_start = row_block_id * rows_per_program
+    row_end = min((row_block_id + 1) * rows_per_program, n_rows)
     cols = tl.arange(0, BLOCK_SIZE)
     mask = cols < n_cols
+
+    dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    db_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     # Pre-load weights once (same optimization as forward pass)
     w = tl.load(W_ptr + cols, mask=mask, other=0.0)
     w_f32 = w.to(tl.float32)
 
     # Calculate pointers for this specific row
-    row_X_ptr = X_ptr + row_idx * stride_x
-    row_DX_ptr = DX_ptr + row_idx * stride_dx
-    row_DY_ptr = DY_ptr + row_idx * stride_dy
-    row_Mean_ptr = Mean_ptr + row_idx
-    row_RSTD_ptr = RSTD_ptr + row_idx
+    row_X_ptr = X_ptr + row_start * stride_x
+    row_DX_ptr = DX_ptr + row_start * stride_dx
+    row_DY_ptr = DY_ptr + row_start * stride_dy
+    row_Mean_ptr = Mean_ptr + row_start
+    row_RSTD_ptr = RSTD_ptr + row_start
 
-    # Load data for this row
-    x = tl.load(row_X_ptr + cols, mask=mask, other=0.0)
-    dy = tl.load(row_DY_ptr + cols, mask=mask, other=0.0)
-    mean = tl.load(row_Mean_ptr)
-    rstd = tl.load(row_RSTD_ptr)
+    for _ in range(row_start, row_end):
+        # Load data for this row
+        x = tl.load(row_X_ptr + cols, mask=mask, other=0.0)
+        dy = tl.load(row_DY_ptr + cols, mask=mask, other=0.0)
+        mean = tl.load(row_Mean_ptr)
+        rstd = tl.load(row_RSTD_ptr)
 
-    # Convert to fp32 for numerical stability
-    x_f32 = x.to(tl.float32)
-    dy_f32 = dy.to(tl.float32)
-    mean_f32 = mean.to(tl.float32)
-    rstd_f32 = rstd.to(tl.float32)
+        # Convert to fp32 for numerical stability
+        x_f32 = x.to(tl.float32)
+        dy_f32 = dy.to(tl.float32)
+        mean_f32 = mean.to(tl.float32)
+        rstd_f32 = rstd.to(tl.float32)
 
-    # Compute backward pass for this row
-    x_hat = (x_f32 - mean_f32) * rstd_f32
-    wdy = w_f32 * dy_f32
-    c1 = tl.sum(x_hat * wdy, axis=0) / n_cols
-    c2 = tl.sum(wdy, axis=0) / n_cols
-    dx = (wdy - (x_hat * c1 + c2)) * rstd_f32
+        # Compute backward pass for this row
+        x_hat = (x_f32 - mean_f32) * rstd_f32
+        wdy = w_f32 * dy_f32
+        c1 = tl.sum(x_hat * wdy, axis=0) / n_cols
+        c2 = tl.sum(wdy, axis=0) / n_cols
+        dx = (wdy - (x_hat * c1 + c2)) * rstd_f32
 
-    # Store input gradient
-    tl.store(row_DX_ptr + cols, dx.to(dtype), mask=mask)
+        # Store input gradient
+        tl.store(row_DX_ptr + cols, dx, mask=mask)
 
-    # Accumulate weight and bias gradients using atomic operations
-    dw = dy_f32 * x_hat
-    db = dy_f32
-    tl.atomic_add(DW_ptr + cols, dw.to(atomic_dtype), mask=mask)
-    tl.atomic_add(DB_ptr + cols, db.to(atomic_dtype), mask=mask)
+        # Accumulate weight and bias gradients for this thread block's assigned rows
+        dw = dy_f32 * x_hat
+        db = dy_f32
+        dW_row += dw
+        db_row += db
+
+        row_X_ptr += stride_x
+        row_DX_ptr += stride_dx
+        row_DY_ptr += stride_dy
+        row_Mean_ptr += stride_mean
+        row_RSTD_ptr += stride_rstd
+
+    tl.store(DW_ptr + row_block_id * stride_dw + cols, dW_row, mask=mask)
+    tl.store(DB_ptr + row_block_id * stride_db + cols, db_row, mask=mask)
 
 
 def layer_norm_forward(X, W, B, eps):
@@ -228,31 +248,25 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     dY = dY.view(-1, dim)
     n_rows, n_cols = dY.shape
 
-    # Allocate gradient tensors
-    DX = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
-    # Use float32 for weight/bias gradients if bfloat16 (due to atomic_add limitation)
-    grad_dtype = torch.float32 if W.dtype == torch.bfloat16 else W.dtype
-    DW = torch.zeros(n_cols, dtype=grad_dtype, device=W.device)
-    DB = torch.zeros(n_cols, dtype=grad_dtype, device=W.device)
+    sm_count = 1
+    if X.device.type == "cuda":
+        sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
+    elif X.device.type == "xpu":
+        sm_count = torch.xpu.get_device_properties(X.device).gpu_eu_count
+
+    # fp32 for numerical stability especially.
+    _DW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
+    _DB = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
 
     # Calculate optimal block size and warp configuration
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     if n_cols > BLOCK_SIZE:
         raise RuntimeError(f"Feature dimension {n_cols} exceeds maximum supported size of {BLOCK_SIZE}.")
+    rows_per_program = math.ceil(n_rows / sm_count)
+    grid = (sm_count,)
 
-    # Determine dtype for triton operations
-    triton_dtype = (
-        tl.float32
-        if X.dtype == torch.float32
-        else tl.bfloat16
-        if X.dtype == torch.bfloat16
-        else tl.float16
-        if X.dtype == torch.float16
-        else tl.float32  # fallback
-    )
-
-    # Use float32 for atomic operations if bfloat16 is not supported
-    atomic_dtype = tl.float32 if triton_dtype == tl.bfloat16 else triton_dtype
+    # Allocate gradient tensors
+    DX = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
 
     kernel_args = {"num_warps": num_warps}
     # XPU-specific optimization
@@ -260,28 +274,33 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         kernel_args.update({"grf_mode": "large", "num_warps": 32, "num_stages": 4})
 
     # Launch kernel with one thread block per row for optimal performance
-    grid = (n_rows,)
     _layer_norm_backward_kernel[grid](
         X,
+        X.stride(0),
         W,
         Mean,
+        Mean.stride(0),
         RSTD,
+        RSTD.stride(0),
         DX,
-        DW,
-        DB,
-        dY,
-        X.stride(0),
         DX.stride(0),
+        _DW,
+        _DW.stride(0),
+        _DB,
+        _DB.stride(0),
+        dY,
         dY.stride(0),
+        n_rows,
         n_cols,
+        rows_per_program=rows_per_program,
         BLOCK_SIZE=BLOCK_SIZE,
-        dtype=triton_dtype,
-        atomic_dtype=atomic_dtype,
         **kernel_args,
     )
 
     DX = DX.view(*shape)
-    return DX, DW.to(W.dtype), DB.to(W.dtype)
+    DW = _DW.sum(dim=0).to(W.dtype)
+    DB = _DB.sum(dim=0).to(B.dtype)
+    return DX, DW, DB
 
 
 class LigerLayerNormFunction(torch.autograd.Function):
