@@ -1498,8 +1498,6 @@ def apply_liger_kernel_to_gpt_oss(
     from transformers.models.gpt_oss import modeling_gpt_oss
     from transformers.models.gpt_oss.modeling_gpt_oss import GptOssModel
 
-    from liger_kernel.transformers.model.gpt_oss import lce_forward as gpt_oss_lce_forward
-
     if rope:
         modeling_gpt_oss.apply_rotary_pos_emb = liger_rotary_pos_emb
 
