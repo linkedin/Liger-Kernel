@@ -550,6 +550,18 @@ def revert_liger_kernel_to_olmo2(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_olmo3(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Olmo3.
+    """
+
+    from transformers.models.olmo3 import modeling_olmo3
+
+    importlib.reload(modeling_olmo3)
+    model_config.model_class = modeling_olmo3.Olmo3ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_glm4(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Glm4.
@@ -658,6 +670,30 @@ def revert_liger_kernel_to_qwen3_next(model_config: MiniModelConfig):
 
     importlib.reload(modeling_qwen3_next)
     model_config.model_class = modeling_qwen3_next.Qwen3NextForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_hunyuan_v1(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Hunyuanv1.
+    """
+    from transformers.models.hunyuan_v1_dense import modeling_hunyuan_v1_dense
+
+    importlib.reload(modeling_hunyuan_v1_dense)
+    model_config.model_class = modeling_hunyuan_v1_dense.HunYuanDenseV1ForCausalLM
+
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_hunyuan_v1_moe(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Hunyuanv1 MoE.
+    """
+    from transformers.models.hunyuan_v1_moe import modeling_hunyuan_v1_moe
+
+    importlib.reload(modeling_hunyuan_v1_moe)
+    model_config.model_class = modeling_hunyuan_v1_moe.HunYuanMoEV1ForCausalLM
+
     print("Liger kernel patches have been reverted.")
 
 

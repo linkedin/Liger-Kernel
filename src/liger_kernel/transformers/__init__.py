@@ -24,6 +24,8 @@ from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP  # noqa: F4
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP  # noqa: F401
+from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP  # noqa: F401
+from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.tvd import LigerTVDLoss  # noqa: F401
 
 # Static-only imports for IDEs and type checkers
@@ -40,6 +42,8 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_granite  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_hunyuan_v1_dense  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_hunyuan_v1_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_internvl  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama4  # noqa: F401
@@ -48,6 +52,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mixtral  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mllama  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo2  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_paligemma  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_phi3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2  # noqa: F401
@@ -114,6 +119,7 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_mixtral",
         "apply_liger_kernel_to_mllama",
         "apply_liger_kernel_to_olmo2",
+        "apply_liger_kernel_to_olmo3",
         "apply_liger_kernel_to_paligemma",
         "apply_liger_kernel_to_phi3",
         "apply_liger_kernel_to_qwen2",
@@ -126,6 +132,8 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_qwen3_vl_moe",
         "apply_liger_kernel_to_smollm3",
         "apply_liger_kernel_to_smolvlm",
+        "apply_liger_kernel_to_hunyuan_v1_dense",
+        "apply_liger_kernel_to_hunyuan_v1_moe",
     }
 
     if name in monkey_patch_symbols:
@@ -155,6 +163,8 @@ __all__ = [
     "LigerPhi3SwiGLUMLP",
     "LigerQwen3MoeSwiGLUMLP",
     "LigerSwiGLUMLP",
+    "LigerTiledGEGLUMLP",
+    "LigerTiledSwiGLUMLP",
     "LigerTVDLoss",
     "LigerKLDIVLoss",
     "LigerMultiTokenAttention",
@@ -186,6 +196,7 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_mixtral",
             "apply_liger_kernel_to_mllama",
             "apply_liger_kernel_to_olmo2",
+            "apply_liger_kernel_to_olmo3",
             "apply_liger_kernel_to_paligemma",
             "apply_liger_kernel_to_phi3",
             "apply_liger_kernel_to_qwen2",
@@ -198,5 +209,7 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_qwen3_vl_moe",
             "apply_liger_kernel_to_smollm3",
             "apply_liger_kernel_to_smolvlm",
+            "apply_liger_kernel_to_hunyuan_v1_dense",
+            "apply_liger_kernel_to_hunyuan_v1_moe",
         ]
     )

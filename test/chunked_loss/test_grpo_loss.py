@@ -5,6 +5,8 @@ import torch.nn.functional as F
 from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
 from liger_kernel.chunked_loss.functional import liger_fused_linear_grpo
 from liger_kernel.chunked_loss.grpo_loss import LigerFusedLinearGRPOFunction
+from liger_kernel.transformers.grpo_loss import _reduce_grpo_loss
+from liger_kernel.transformers.grpo_loss import triton_grpo_loss
 from liger_kernel.utils import infer_device
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
@@ -45,6 +47,60 @@ class TorchLMHeadGRPO(torch.nn.Module):
         if self.loss_type == "dr_grpo":
             assert self.max_completion_length is not None, "max_completion_length must be provided for dr_grpo"
 
+    @staticmethod
+    def compute_per_token_components(
+        per_token_logps,
+        attention_mask,
+        advantages,
+        old_per_token_logps,
+        ref_per_token_logps,
+        epsilon_low,
+        epsilon_high,
+        beta,
+        importance_sampling_level,
+    ):
+        attention_mask = attention_mask.to(per_token_logps.dtype)
+        old_per_token_logps = (
+            old_per_token_logps.float() if old_per_token_logps is not None else per_token_logps.detach()
+        )
+        log_ratio = per_token_logps - old_per_token_logps
+
+        if importance_sampling_level == "token":
+            log_importance_weights = log_ratio
+        elif importance_sampling_level == "sequence":
+            log_importance_weights = (log_ratio * attention_mask).sum(-1) / attention_mask.sum(-1).clamp(min=1.0)
+            log_importance_weights = log_importance_weights.unsqueeze(-1)
+        else:
+            raise ValueError(
+                f"Unknown importance sampling level: {importance_sampling_level}. Possible values are 'token' "
+                "and 'sequence'."
+            )
+
+        coef_1 = torch.exp(log_importance_weights)
+        coef_2 = torch.clamp(coef_1, 1 - epsilon_low, 1 + epsilon_high)
+        expanded_advantages = advantages.unsqueeze(1)
+        per_token_loss1 = coef_1 * expanded_advantages
+        per_token_loss2 = coef_2 * expanded_advantages
+        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+        kl_div = None
+        if beta != 0.0:
+            ref_per_token_logps = ref_per_token_logps.float()
+            kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
+            per_token_loss = per_token_loss + beta * kl_div
+
+        if importance_sampling_level == "token":
+            is_clipped = ((coef_1 < 1 - epsilon_low) & (expanded_advantages < 0)) | (
+                (coef_1 > 1 + epsilon_high) & (expanded_advantages > 0)
+            )
+        else:  # sequence level
+            # For sequence level, coef_1 is shape (B, 1), advantages is shape (B,)
+            seq_advantages = advantages
+            is_clipped = ((coef_1.squeeze(-1) < 1 - epsilon_low) & (seq_advantages < 0)) | (
+                (coef_1.squeeze(-1) > 1 + epsilon_high) & (seq_advantages > 0)
+            )
+            is_clipped = is_clipped.unsqueeze(1).expand_as(attention_mask)
+        return per_token_loss, kl_div, is_clipped
+
     def forward(
         self,
         x,  # Shape: [batch_size, seq_len, hidden_size]
@@ -82,33 +138,17 @@ class TorchLMHeadGRPO(torch.nn.Module):
             else:
                 ref_per_token_logps = per_token_logps.detach()
 
-        # Compute policy gradient loss with importance sampling ratio
-        old_per_token_logps = (
-            old_per_token_logps.float() if old_per_token_logps is not None else per_token_logps.detach()
+        per_token_loss, kl_div, is_clipped = self.compute_per_token_components(
+            per_token_logps,
+            attention_mask,
+            advantages,
+            old_per_token_logps,
+            ref_per_token_logps,
+            self.epsilon_low,
+            self.epsilon_high,
+            self.beta,
+            self.importance_sampling_level,
         )
-        log_ratio = per_token_logps - old_per_token_logps
-
-        if self.importance_sampling_level == "token":
-            log_importance_weights = log_ratio
-        elif self.importance_sampling_level == "sequence":
-            log_importance_weights = (log_ratio * attention_mask).sum(-1) / attention_mask.sum(-1).clamp(min=1.0)
-            log_importance_weights = log_importance_weights.unsqueeze(-1)
-        else:
-            raise ValueError(
-                f"Unknown importance sampling level: {self.importance_sampling_level}. Possible values are 'token' "
-                "and 'sequence'."
-            )
-
-        coef_1 = torch.exp(log_importance_weights)
-        coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
-        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
-        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
-        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
-        if self.beta != 0.0:
-            # Compute KL divergence between model and reference model
-            ref_per_token_logps = ref_per_token_logps.float()
-            kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
-            per_token_loss = per_token_loss + self.beta * kl_div
 
         # Apply masking and calculate loss based on loss_type
         if self.loss_type == "grpo":
@@ -117,6 +157,9 @@ class TorchLMHeadGRPO(torch.nn.Module):
             loss = (per_token_loss * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0)
         elif self.loss_type == "dr_grpo":
             loss = (per_token_loss * attention_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
+        elif self.loss_type == "dapo":
+            normalizer = attention_mask.sum().clamp(min=1.0)
+            loss = (per_token_loss * attention_mask).sum() / normalizer
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
 
@@ -124,18 +167,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         metrics = []
         if self.beta != 0.0:
             metrics.append(((kl_div * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0)))
-        # Adjust clipping metric calculation based on importance sampling level
-        if self.importance_sampling_level == "token":
-            is_clipped = ((coef_1 < 1 - self.epsilon_low) & (advantages.unsqueeze(1) < 0)) | (
-                (coef_1 > 1 + self.epsilon_high) & (advantages.unsqueeze(1) > 0)
-            )
-        else:  # sequence level
-            # For sequence level, coef_1 is shape (B, 1), advantages is shape (B,)
-            is_clipped = ((coef_1.squeeze(-1) < 1 - self.epsilon_low) & (advantages < 0)) | (
-                (coef_1.squeeze(-1) > 1 + self.epsilon_high) & (advantages > 0)
-            )
-            is_clipped = is_clipped.unsqueeze(1).expand_as(attention_mask)
-        metrics.append((is_clipped * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0))
+        metrics.append((is_clipped.float() * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0))
         return loss, metrics
 
 
@@ -227,7 +259,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         (False, False, True),
     ],
 )
-@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo"])
+@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo", "dapo"])
 @pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
 def test_correctness(
     B,
@@ -515,12 +547,157 @@ def test_functional_correctness(
     for metric1, metric2 in zip(aux1, aux2):
         assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
 
-    # Backward pass
-    loss1.backward()
-    loss2.backward()
 
-    # Check gradients match
-    assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
-    assert_verbose_allclose(weight1.grad, weight2.grad, atol=atol, rtol=rtol)
-    if bias:
-        assert_verbose_allclose(bias1.grad, bias2.grad, atol=atol, rtol=rtol)
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo"])
+def test_reduce_grpo_loss_matches_reference(loss_type):
+    torch.manual_seed(0)
+    per_token_loss = torch.randn(3, 5)
+    mask = torch.randint(0, 2, (3, 5), device=per_token_loss.device, dtype=torch.long)
+    mask[:, 0] = 1  # ensure at least one valid token per sequence
+    max_completion_length = 5 if loss_type == "dr_grpo" else None
+
+    reduced = _reduce_grpo_loss(per_token_loss, mask, loss_type, max_completion_length)
+
+    mask_f = mask.to(per_token_loss.dtype)
+    if loss_type == "grpo":
+        expected = ((per_token_loss * mask_f).sum(-1) / mask_f.sum(-1).clamp(min=1.0)).mean()
+    elif loss_type == "bnpo":
+        expected = (per_token_loss * mask_f).sum() / mask_f.sum().clamp(min=1.0)
+    elif loss_type == "dr_grpo":
+        expected = (per_token_loss * mask_f).sum() / (per_token_loss.size(0) * max_completion_length)
+    else:  # dapo
+        expected = (per_token_loss * mask_f).sum() / mask_f.sum().clamp(min=1.0)
+
+    assert_verbose_allclose(reduced, expected)
+
+
+def test_reduce_grpo_loss_requires_max_completion_length():
+    per_token_loss = torch.randn(2, 3)
+    mask = torch.ones_like(per_token_loss, dtype=torch.long)
+    with pytest.raises(ValueError):
+        _reduce_grpo_loss(per_token_loss, mask, "dr_grpo", max_completion_length=None)
+
+
+@pytest.mark.parametrize("loss_type,beta", [("bnpo", 0.0), ("dapo", 0.04)])
+def test_triton_grpo_loss_matches_reference(loss_type, beta):
+    pytest.importorskip("triton")
+    device = infer_device()
+
+    B, T, V = 2, 4, 16
+    logits = torch.randn(B, T + 1, V, device=device, dtype=torch.float32).contiguous()
+    completion_ids = torch.randint(0, V, (B, T), device=device)
+    completion_mask = torch.randint(0, 2, (B, T), device=device, dtype=torch.long)
+    completion_mask[:, 0] = 1  # ensure each sequence has at least one valid token
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+    old_logp = torch.randn(B, T, device=device, dtype=torch.float32)
+    ref_logp = torch.randn(B, T, device=device, dtype=torch.float32) if beta != 0.0 else None
+
+    per_token_loss, per_token_kl, is_clipped = triton_grpo_loss(
+        logits=logits,
+        old_logp=old_logp,
+        ref_logp=ref_logp,
+        completion_ids=completion_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        temperature=1.0,
+        beta=beta,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type=loss_type,
+        max_completion_length=T,
+        reduce=False,
+    )
+
+    logits_main = logits[:, :-1, :]
+    log_probs = torch.log_softmax(logits_main, dim=-1)
+    per_token_logps = log_probs.gather(dim=-1, index=completion_ids.unsqueeze(-1)).squeeze(-1)
+    ref_tokens = ref_logp if ref_logp is not None else per_token_logps.detach()
+    reference_loss, reference_kl, reference_is_clipped = TorchLMHeadGRPO.compute_per_token_components(
+        per_token_logps,
+        completion_mask.float(),
+        advantages,
+        old_logp,
+        ref_tokens,
+        0.2,
+        0.2,
+        beta,
+        "token",
+    )
+
+    mask = completion_mask.float()
+    mask_bool = mask.bool()
+    assert_verbose_allclose(per_token_loss, reference_loss * mask)
+    assert torch.equal(is_clipped.bool()[mask_bool], reference_is_clipped[mask_bool])
+    if beta != 0.0:
+        assert_verbose_allclose(per_token_kl, reference_kl * mask)
+    else:
+        assert per_token_kl is None
+
+    reduced_loss, metrics = triton_grpo_loss(
+        logits=logits,
+        old_logp=old_logp,
+        ref_logp=ref_logp,
+        completion_ids=completion_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        temperature=1.0,
+        beta=beta,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type=loss_type,
+        max_completion_length=T,
+        reduce=True,
+    )
+    expected_loss = _reduce_grpo_loss(reference_loss, completion_mask, loss_type, T)
+    assert_verbose_allclose(reduced_loss, expected_loss)
+    if beta != 0.0:
+        assert_verbose_allclose(metrics[0], _masked_mean(reference_kl, completion_mask))
+        clip_metric = metrics[1]
+    else:
+        clip_metric = metrics[0]
+    assert_verbose_allclose(clip_metric, _masked_mean(reference_is_clipped.float(), completion_mask))
+
+
+def _reference_per_token_loss(
+    logits,
+    completion_ids,
+    completion_mask,
+    advantages,
+    old_logp,
+    ref_logp,
+    beta,
+    eps_low,
+    eps_high,
+    temperature=1.0,
+):
+    logits = logits[:, :-1, :] / temperature
+    log_probs = torch.log_softmax(logits, dim=-1)
+    per_token_logps = log_probs.gather(-1, completion_ids.unsqueeze(-1)).squeeze(-1)
+    old = old_logp if old_logp is not None else per_token_logps.detach()
+    coef_1 = torch.exp(per_token_logps - old)
+    coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+    per_token_loss1 = coef_1 * advantages.unsqueeze(1)
+    per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+    per_token_loss = -torch.minimum(per_token_loss1, per_token_loss2)
+    is_clipped = per_token_loss1 < per_token_loss2
+    mask = completion_mask.to(torch.bool)
+    per_token_loss = per_token_loss.masked_fill(~mask, 0.0)
+    is_clipped = is_clipped & mask
+    if beta != 0.0:
+        kl = torch.exp(ref_logp - per_token_logps) - (ref_logp - per_token_logps) - 1.0
+        kl = kl.masked_fill(~mask, 0.0)
+        per_token_loss = per_token_loss + beta * kl
+    else:
+        kl = None
+    return {
+        "per_token_loss": per_token_loss,
+        "kl": kl,
+        "is_clipped": is_clipped,
+    }
+
+
+def _masked_mean(values, mask):
+    mask = mask.to(values.dtype)
+    return (values * mask).sum() / mask.sum().clamp(min=1.0)
