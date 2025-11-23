@@ -44,10 +44,10 @@ def lce_forward(
     Example:
 
     ```python
-    >>> from transformers import AutoTokenizer, Qwen3ForCausalLM
+    >>> from transformers import AutoTokenizer, HunYuanDenseV1ForCausalLM
 
-    >>> model = Qwen3ForCausalLM.from_pretrained("Qwen/Qwen3-8B")
-    >>> tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
+    >>> model = HunYuanDenseV1ForCausalLM.from_pretrained("meta-hunyuan_v1_dense/HunYuanDenseV1-2-7b-hf")
+    >>> tokenizer = AutoTokenizer.from_pretrained("meta-hunyuan_v1_dense/HunYuanDenseV1-2-7b-hf")
 
     >>> prompt = "Hey, are you conscious? Can you talk to me?"
     >>> inputs = tokenizer(prompt, return_tensors="pt")
@@ -83,8 +83,6 @@ def lce_forward(
     kept_hidden_states = hidden_states[:, slice_indices, :]
 
     shift_labels = kwargs.pop("shift_labels", None)
-    # Remove output-control parameters that shouldn't be passed to loss functions
-    kwargs.pop("return_dict", None)
     logits = None
     loss = None
     token_accuracy = None
