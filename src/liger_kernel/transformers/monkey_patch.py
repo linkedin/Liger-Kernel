@@ -2064,6 +2064,83 @@ def apply_liger_kernel_to_glm4(
                 _patch_rms_norm_module(decoder_layer.post_self_attn_layernorm, in_place=False)
                 _patch_rms_norm_module(decoder_layer.post_mlp_layernorm, in_place=False)
 
+def apply_liger_kernel_to_glm4moe(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace GLM-4MOE models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU Glm4MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not( cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+    from transformers.models.glm4_moe import modeling_glm4_moe
+    from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeModel
+    from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeMoE
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
+    from liger_kernel.transformers.model.glm4_moe import lce_forward as glm4_moe_lce_forward
+
+
+    if rope:
+        modeling_glm4_moe.apply_rotary_pos_emb = liger_rotary_pos_emb_with_cast
+    if rms_norm:
+        modeling_glm4_moe.Glm4MoeRMSNorm = LigerRMSNormForGlm4
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(glm4_moe_lce_forward, model)
+        else:
+            modeling_glm4_moe.Glm4MoeForCausalLM.forward = glm4_moe_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: Glm4MoeModel = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+        # patch MOE layers
+        if isinstance(Glm4MoeMoE, type) and isinstance(decoder_layer.mlp):
+            experts = getattr(decoder_layer.mlp, "experts", None)
+            if experts is not None:
+                for expert in experts:
+                    _patch_swiglu_module(expert, LigerSwiGLUMLP)
+            if decoder_layer.mlp.shared_experts is not None:
+                _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
+            for decoder_layer.mlp in base_model.layers:
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 
 def apply_liger_kernel_to_glm4v(
     rope: bool = False,
