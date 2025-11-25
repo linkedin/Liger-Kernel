@@ -18,14 +18,13 @@ def clip_coef_fn(coef, epsilon_low, epsilon_high):
 class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
     @staticmethod
     def ppo_loss_fn(
-        log_probs,
+        per_token_logps,  # Changed from log_probs - now expects [B, T] already gathered
         selected_token_ids,
         attention_mask,
         advantages,
         full_attention_mask,
         ref_per_token_logps=None,  # shape: [chunk_size, seq_len]
         old_per_token_logps=None,
-        ref_log_probs=None,  # used when ref_per_token_logps is None (shape: [chunk_size, seq_len, vocab_size])
         epsilon_low=0.2,
         epsilon_high=0.2,
         beta=0.04,
@@ -34,20 +33,18 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         importance_sampling_level="token",  # ["token", "sequence"] - new parameter for GSPO
         **kwargs,
     ):
-        """GRPO Loss Function matching GRPOTrainer implementation."""
-        per_token_logps = log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(
-            -1
-        )  # (batch_size, seq_len)
+        """GRPO Loss Function matching GRPOTrainer implementation.
+
+        Args:
+            per_token_logps: [B, T] log probabilities for selected tokens (already gathered)
+            selected_token_ids: [B, T] selected token IDs (not used anymore, kept for compatibility)
+            ...
+        """
+        # per_token_logps is now already gathered, no need for .gather() operation
 
         # Get reference model probabilities
         if ref_per_token_logps is None:
-            if ref_log_probs is not None:
-                with torch.no_grad():
-                    ref_per_token_logps = ref_log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(
-                        -1
-                    )
-            else:
-                ref_per_token_logps = per_token_logps.detach()
+            ref_per_token_logps = per_token_logps.detach()
 
         # Compute policy gradient loss with importance sampling ratio
         old_per_token_logps = old_per_token_logps if old_per_token_logps is not None else per_token_logps.detach()
