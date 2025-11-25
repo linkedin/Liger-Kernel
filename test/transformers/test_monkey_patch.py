@@ -160,6 +160,7 @@ def is_glm4_available():
     except ImportError:
         return False
 
+
 def is_glm4_moe_available():
     try:
         import transformers.models.glm4_moe  # noqa: F401
@@ -2615,7 +2616,7 @@ def test_apply_liger_kernel_to_instance_for_glm4_moe():
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
-        
+
         for decoder_layer in dummy_model_instance.base_model.layers:
             # https://github.com/huggingface/transformers/blob/69f003696b55de75b7f18888c03111909a7cd537/src/transformers/models/glm4_moe/modeling_glm4_moe.py#L438
             if decoder_layer.mlp.experts is not None:
@@ -2652,7 +2653,6 @@ def test_apply_liger_kernel_to_instance_for_glm4_moe():
                 assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) == inspect.getsource(
                     LigerSwiGLUMLP.forward
                 )
-
 
         try:
             print(dummy_model_instance)
