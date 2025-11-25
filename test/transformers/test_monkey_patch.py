@@ -2597,7 +2597,7 @@ def test_apply_liger_kernel_to_instance_for_glm4_moe():
         from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
 
         # Instantiate a dummy model
-        config = transformers.models.glm4_moe._moe.Glm4MoeConfig(
+        config = transformers.models.glm4_moe.Glm4MoeConfig(
             dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
