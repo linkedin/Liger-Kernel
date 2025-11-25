@@ -2065,7 +2065,7 @@ def apply_liger_kernel_to_glm4(
                 _patch_rms_norm_module(decoder_layer.post_mlp_layernorm, in_place=False)
 
 
-def apply_liger_kernel_to_glm4moe(
+def apply_liger_kernel_to_glm4_moe(
     rope: bool = False,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
@@ -2827,6 +2827,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma3_text": apply_liger_kernel_to_gemma3_text,
     "gemma3": apply_liger_kernel_to_gemma3,
     "glm4": apply_liger_kernel_to_glm4,
+    "glm4_moe": apply_liger_kernel_to_glm4_moe,
     "glm4v": apply_liger_kernel_to_glm4v,
     "glm4v_moe": apply_liger_kernel_to_glm4v_moe,
     "internvl": apply_liger_kernel_to_internvl,
