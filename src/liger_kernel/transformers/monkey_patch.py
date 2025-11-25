@@ -2128,18 +2128,16 @@ def apply_liger_kernel_to_glm4_moe(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-        # patch MOE layers
-        if isinstance(Glm4MoeMoE, type) and isinstance(decoder_layer.mlp):
-            experts = getattr(decoder_layer.mlp, "experts", None)
-            if experts is not None:
-                for expert in experts:
-                    _patch_swiglu_module(expert, LigerSwiGLUMLP)
-            if decoder_layer.mlp.shared_experts is not None:
-                _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
-            for decoder_layer.mlp in base_model.layers:
-                if rms_norm:
-                    _patch_rms_norm_module(decoder_layer.input_layernorm)
-                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+            # patch MOE layers
+            if isinstance(decoder_layer.mlp, Glm4MoeMoE):
+                experts = decoder_layer.mlp.experts
+                if experts is not None:
+                    for expert in experts:
+                        _patch_swiglu_module(expert, LigerSwiGLUMLP)
+
+                shared_experts = decoder_layer.mlp.shared_experts
+                if shared_experts is not None:
+                    _patch_swiglu_module(shared_experts, LigerSwiGLUMLP)
 
 
 def apply_liger_kernel_to_glm4v(

@@ -2606,23 +2606,28 @@ def test_apply_liger_kernel_to_instance_for_glm4_moe():
             num_hidden_layers=2,
             n_routed_experts=1,
             n_shared_experts=1,
+            num_attention_heads=4,
+            num_key_value_heads=4,
+            head_dim=8,
+            first_k_dense_replace=1,
         )
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(glm4_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
-        for layer in dummy_model_instance.model.layers:
-            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
-            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
-
-        for decoder_layer in dummy_model_instance.base_model.layers:
+        for decoder_layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
             # https://github.com/huggingface/transformers/blob/69f003696b55de75b7f18888c03111909a7cd537/src/transformers/models/glm4_moe/modeling_glm4_moe.py#L438
-            if decoder_layer.mlp.experts is not None:
-                for expert in decoder_layer.mlp.experts:
-                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
-                if decoder_layer.mlp.shared_experts is not None:
+            if hasattr(decoder_layer.mlp, "experts") and decoder_layer.mlp.experts is not None:
+                if getattr(decoder_layer.mlp, "experts", None) is not None:
+                    for expert in decoder_layer.mlp.experts:
+                        assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+                if getattr(decoder_layer.mlp, "shared_experts", None) is not None:
                     assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) != inspect.getsource(
                         LigerSwiGLUMLP.forward
                     )
@@ -2633,10 +2638,6 @@ def test_apply_liger_kernel_to_instance_for_glm4_moe():
         # Check that the model's instance variables were correctly patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(glm4_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
-        for layer in dummy_model_instance.model.layers:
-            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
-            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for decoder_layer in dummy_model_instance.base_model.layers:
             if decoder_layer.mlp is not None:
                 assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
@@ -2646,13 +2647,14 @@ def test_apply_liger_kernel_to_instance_for_glm4_moe():
                 assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(
                     LigerRMSNormForGlm4.forward
                 )
-            if getattr(decoder_layer.mlp, "experts", None) is not None:
-                for expert in decoder_layer.mlp.experts:
-                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
-            if getattr(decoder_layer.mlp, "shared_experts", None) is not None:
-                assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) == inspect.getsource(
-                    LigerSwiGLUMLP.forward
-                )
+            if hasattr(decoder_layer.mlp, "experts") and decoder_layer.mlp.experts is not None:
+                if getattr(decoder_layer.mlp, "experts", None) is not None:
+                    for expert in decoder_layer.mlp.experts:
+                        assert inspect.getsource(expert.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+                if getattr(decoder_layer.mlp, "shared_experts", None) is not None:
+                    assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) == inspect.getsource(
+                        LigerSwiGLUMLP.forward
+                    )
 
         try:
             print(dummy_model_instance)
