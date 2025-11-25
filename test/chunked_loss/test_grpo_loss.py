@@ -701,3 +701,169 @@ def _reference_per_token_loss(
 def _masked_mean(values, mask):
     mask = mask.to(values.dtype)
     return (values * mask).sum() / mask.sum().clamp(min=1.0)
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (2, 4, 128, 4096),
+        (4, 8, 256, 8192),
+    ],
+)
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dapo"])
+@pytest.mark.parametrize("beta", [0.0, 0.04])
+@pytest.mark.parametrize("temperature", [1.0, 0.9])
+def test_chunked_vs_triton_grpo_loss(B, T, H, V, loss_type, beta, temperature):
+    """
+    Test that chunked GRPO loss (LigerFusedLinearGRPOFunction) produces
+    the same results as Triton GRPO loss (triton_grpo_loss) for the same inputs.
+
+    This validates that the memory-optimized chunked implementation with
+    vocab chunking and selected-token-only computation produces identical
+    results to the Triton kernel implementation.
+    """
+    pytest.importorskip("triton")
+    device = infer_device()
+    dtype = torch.float32
+
+    # Create shared inputs
+    _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    input_chunked = _input.detach().clone().requires_grad_(True)
+
+    _weight = torch.randn(V, H, device=device, dtype=dtype)
+    weight_chunked = _weight.detach().clone().requires_grad_(True)
+
+    bias = None  # Triton loss doesn't use bias
+
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    completion_mask = torch.ones(B, T, device=device, dtype=torch.long)
+    completion_mask[:, -1] = 0  # mask out last token for some sequences
+
+    advantages = torch.randn(B, device=device, dtype=dtype)
+
+    old_per_token_logps = torch.randn(B, T, device=device, dtype=dtype)
+    ref_per_token_logps = torch.randn(B, T, device=device, dtype=dtype) if beta != 0.0 else None
+
+    use_ref_model = beta != 0.0
+    # Only provide ref_input/ref_weight if ref_per_token_logps is not available
+    # For this test, we always provide ref_per_token_logps when beta > 0
+    ref_input = None
+    ref_weight = None
+    ref_bias = None
+
+    # ========================================
+    # Run chunked loss (our fixed implementation)
+    # ========================================
+    liger_loss_fn = LigerFusedLinearGRPOLoss(
+        beta=beta,
+        epsilon_low=0.2,
+        epsilon_high=0.2,
+        temperature=temperature,
+        use_ref_model=use_ref_model,
+        loss_type=loss_type,
+        max_completion_length=T,
+        importance_sampling_level="token",
+        chunk_size=1,
+        compiled=False,  # Disable torch compile for testing
+    )
+
+    chunked_loss, chunked_aux = liger_loss_fn.forward(
+        input_chunked,  # _input comes FIRST
+        weight_chunked,  # lin_weight comes SECOND
+        selected_token_ids,
+        completion_mask.float(),
+        advantages,
+        bias,
+        ref_per_token_logps,
+        old_per_token_logps,
+        ref_input,
+        ref_weight,
+        ref_bias,
+    )
+
+    # ========================================
+    # Prepare inputs for Triton loss
+    # ========================================
+    # Triton expects logits of shape [B, T+1, V]
+    # Compute logits from hidden states
+    with torch.no_grad():
+        logits_for_triton = torch.matmul(_input, _weight.t())  # [B, T, V]
+        # Pad with zeros to make it [B, T+1, V]
+        logits_for_triton = F.pad(logits_for_triton, (0, 0, 0, 1))  # pad sequence dim
+        logits_for_triton = logits_for_triton.contiguous()
+        logits_for_triton = logits_for_triton / temperature
+
+    # ========================================
+    # Run Triton loss
+    # ========================================
+    triton_per_token_loss, triton_per_token_kl, triton_is_clipped = triton_grpo_loss(
+        logits=logits_for_triton,
+        old_logp=old_per_token_logps,
+        ref_logp=ref_per_token_logps,
+        completion_ids=selected_token_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        temperature=1.0,  # already applied to logits
+        beta=beta,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type=loss_type,
+        max_completion_length=T,
+        importance_sampling_level="token",
+        reduce=False,
+    )
+
+    # ========================================
+    # Compare results
+    # ========================================
+    # Extract chunked results
+    chunked_per_token_loss = chunked_aux[6]  # per_token_loss
+    chunked_kl = chunked_aux[7] if beta != 0.0 else None  # per_token_kl
+    chunked_is_clipped = chunked_aux[8]  # is_clipped
+
+    # Compare per-token losses
+    mask = completion_mask.float()
+    mask_bool = mask.bool()
+
+    # Losses should match
+    assert_verbose_allclose(
+        chunked_per_token_loss * mask,
+        triton_per_token_loss,
+        atol=1e-3,
+        rtol=1e-2,
+        msg=f"Per-token losses don't match for {loss_type} with beta={beta}, temperature={temperature}"
+    )
+
+    # KL divergence should match if beta > 0
+    if beta != 0.0:
+        assert chunked_kl is not None
+        assert triton_per_token_kl is not None
+        assert_verbose_allclose(
+            chunked_kl * mask,
+            triton_per_token_kl,
+            atol=1e-3,
+            rtol=1e-2,
+            msg=f"KL divergences don't match for {loss_type} with beta={beta}"
+        )
+    else:
+        assert chunked_kl is None
+        assert triton_per_token_kl is None
+
+    # Clipping indicators should match
+    assert torch.equal(
+        chunked_is_clipped.bool()[mask_bool],
+        triton_is_clipped.bool()[mask_bool]
+    ), f"Clipping indicators don't match for {loss_type} with beta={beta}"
+
+    # Compare reduced losses
+    chunked_reduced_loss = chunked_loss
+    triton_reduced_loss = _reduce_grpo_loss(triton_per_token_loss, completion_mask, loss_type, T)
+
+    assert_verbose_allclose(
+        chunked_reduced_loss,
+        triton_reduced_loss,
+        atol=1e-3,
+        rtol=1e-2,
+        msg=f"Reduced losses don't match for {loss_type} with beta={beta}, temperature={temperature}"
+    )
