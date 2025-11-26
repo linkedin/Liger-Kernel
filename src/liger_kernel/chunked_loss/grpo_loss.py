@@ -18,7 +18,7 @@ def clip_coef_fn(coef, epsilon_low, epsilon_high):
 class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
     @staticmethod
     def ppo_loss_fn(
-        per_token_logps,  # Changed from log_probs - now expects [B, T] already gathered
+        per_token_logps,
         selected_token_ids,
         attention_mask,
         advantages,
