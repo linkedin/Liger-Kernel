@@ -304,7 +304,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         # Compute chunk loss and metrics using the provided loss function
         # Note: ppo_loss_fn expects per-token logps, not full log_probs
         chunk_loss, chunk_metrics = ppo_loss_fn(
-            per_token_logps=per_token_logps,  # Changed from log_probs
+            per_token_logps=per_token_logps,
             selected_token_ids=selected_token_ids_chunk,
             attention_mask=attention_mask_chunk,
             advantages=advantages_chunk,
