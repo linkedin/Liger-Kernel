@@ -21,8 +21,10 @@ from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import torch_to_triton_dtype
+from liger_kernel.utils import get_npu_multi_processor_count
+from liger_kernel.utils import is_npu_available
 
-if compare_version("triton", operator.ge, "3.0.0"):
+if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
     try:
         # typical import path with dispatch available
         from triton.language.extra.libdevice import rsqrt
@@ -449,6 +451,8 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
     elif X.device.type == "xpu":
         sm_count = torch.xpu.get_device_properties(X.device).gpu_eu_count
+    elif X.device.type == "npu":
+        sm_count = get_npu_multi_processor_count()
 
     # fp32 for numerical stability especially.
     _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)

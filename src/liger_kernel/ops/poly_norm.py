@@ -7,8 +7,10 @@ import triton.language as tl
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.utils import get_npu_multi_processor_count
+from liger_kernel.utils import is_npu_available
 
-if compare_version("triton", operator.ge, "3.0.0"):
+if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
     try:
         from triton.language.extra.libdevice import rsqrt
     except ModuleNotFoundError:
@@ -290,6 +292,8 @@ def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps, in_place):
         sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
     elif X.device.type == "xpu":
         sm_count = torch.xpu.get_device_properties(X.device).gpu_eu_count
+    elif X.device.type == "npu":
+        sm_count = get_npu_multi_processor_count()
 
     # Allocate or reuse gradients
     if in_place is True:
