@@ -1,3 +1,7 @@
+import os
+
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Ensure deterministic behavior with CuBLAS
+
 import pytest
 import torch
 
@@ -18,6 +22,7 @@ from transformers.models.phi3 import Phi3ForCausalLM
 from transformers.models.qwen2 import Qwen2Config
 from transformers.models.qwen2 import Qwen2ForCausalLM
 
+from liger_kernel.transformers import apply_liger_kernel_to_falcon_h1
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text
@@ -25,6 +30,8 @@ from liger_kernel.transformers import apply_liger_kernel_to_glm4
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v_moe
 from liger_kernel.transformers import apply_liger_kernel_to_granite
+from liger_kernel.transformers import apply_liger_kernel_to_hunyuan_v1_dense
+from liger_kernel.transformers import apply_liger_kernel_to_hunyuan_v1_moe
 from liger_kernel.transformers import apply_liger_kernel_to_internvl
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_llama4
@@ -33,18 +40,24 @@ from liger_kernel.transformers import apply_liger_kernel_to_mistral
 from liger_kernel.transformers import apply_liger_kernel_to_mixtral
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_olmo2
+from liger_kernel.transformers import apply_liger_kernel_to_olmo3
 from liger_kernel.transformers import apply_liger_kernel_to_phi3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_smollm3
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
 from test.utils import get_logprobs
 from test.utils import get_topk
+from test.utils import require_deterministic
+from test.utils import revert_liger_kernel_to_falcon_h1
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_gemma3_text
@@ -52,6 +65,8 @@ from test.utils import revert_liger_kernel_to_glm4
 from test.utils import revert_liger_kernel_to_glm4v
 from test.utils import revert_liger_kernel_to_glm4v_moe
 from test.utils import revert_liger_kernel_to_granite
+from test.utils import revert_liger_kernel_to_hunyuan_v1
+from test.utils import revert_liger_kernel_to_hunyuan_v1_moe
 from test.utils import revert_liger_kernel_to_internvl
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_llama4
@@ -60,12 +75,16 @@ from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
 from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_olmo2
+from test.utils import revert_liger_kernel_to_olmo3
 from test.utils import revert_liger_kernel_to_phi3
 from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import revert_liger_kernel_to_qwen3_moe
+from test.utils import revert_liger_kernel_to_qwen3_next
+from test.utils import revert_liger_kernel_to_qwen3_vl
+from test.utils import revert_liger_kernel_to_qwen3_vl_moe
 from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import set_seed
 from test.utils import simple_collate_fn
@@ -112,6 +131,35 @@ try:
 except ImportError:
     QWEN2_5_VL_AVAILABLE = False
 
+
+try:
+    # Qwen2.5-VL is only available in transformers>=4.57.0
+    import transformers
+
+    from packaging import version
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLForConditionalGeneration
+
+    QWEN3_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.57.0")
+except ImportError:
+    QWEN3_VL_AVAILABLE = False
+
+
+try:
+    # Qwen3-VL-MoE is only available in transformers>=4.57.0
+    import transformers
+
+    from packaging import version
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeConfig
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeTextConfig
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeVisionConfig
+    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
+
+    QWEN3_VL_MOE_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.57.0")
+except ImportError:
+    QWEN3_VL_MOE_AVAILABLE = False
+
+
 try:
     from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
     from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
@@ -147,6 +195,15 @@ try:
     OLMO2_AVAILABLE = True
 except ImportError:
     OLMO2_AVAILABLE = False
+
+try:
+    # OLMO3 is only available in transformers>=4.57.0
+    from transformers.models.olmo3.configuration_olmo3 import Olmo3Config
+    from transformers.models.olmo3.modeling_olmo3 import Olmo3ForCausalLM
+
+    OLMO3_AVAILABLE = True
+except ImportError:
+    OLMO3_AVAILABLE = False
 
 try:
     # Glm4 is only available in transformers>=4.51.3
@@ -200,6 +257,34 @@ try:
     INTERNVL_AVAILABLE = True
 except ImportError:
     INTERNVL_AVAILABLE = False
+
+try:
+    # FalconH1 is only available in transformers>=4.53.0
+    from transformers.models.falcon_h1.configuration_falcon_h1 import FalconH1Config
+    from transformers.models.falcon_h1.modeling_falcon_h1 import FalconH1ForCausalLM
+
+    FALCONH1_AVAILABLE = True
+except ImportError:
+    FALCONH1_AVAILABLE = False
+
+try:
+    # Qwen3Next is only available in transformers>=4.57.0
+    from transformers.models.qwen3_next.configuration_qwen3_next import Qwen3NextConfig
+    from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextForCausalLM
+
+    QWEN3NEXT_AVAILABLE = True
+except ImportError:
+    QWEN3NEXT_AVAILABLE = False
+
+try:
+    from transformers.models.hunyuan_v1_dense.configuration_hunyuan_v1_dense import HunYuanDenseV1Config
+    from transformers.models.hunyuan_v1_dense.modeling_hunyuan_v1_dense import HunYuanDenseV1ForCausalLM
+    from transformers.models.hunyuan_v1_moe.configuration_hunyuan_v1_moe import HunYuanMoEV1Config
+    from transformers.models.hunyuan_v1_moe.modeling_hunyuan_v1_moe import HunYuanMoEV1ForCausalLM
+
+    HUNYUAN_V1_AVAILABLE = True
+except ImportError:
+    HUNYUAN_V1_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -701,6 +786,117 @@ if QWEN2_5_VL_AVAILABLE:
         ),
     )
 
+
+if QWEN3_VL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_vl"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_vl,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_vl,
+        model_class=Qwen3VLForConditionalGeneration,
+        mini_model_config=Qwen3VLConfig(
+            bos_token_id=1,
+            eos_token_id=2,
+            vision_start_token_id=32765,
+            vision_end_token_id=32766,
+            image_token_id=32768,
+            video_token_id=32769,
+            tie_word_embeddings=False,
+            attn_implementation="sdpa",
+            text_config=dict(
+                attention_dropout=0.0,
+                hidden_act="silu",
+                hidden_size=1536,
+                initializer_range=0.02,
+                intermediate_size=4864,
+                max_position_embeddings=32768,
+                num_attention_heads=12,
+                num_hidden_layers=4,
+                num_key_value_heads=2,
+                rms_norm_eps=1e-6,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                use_cache=True,
+                vocab_size=32768,
+            ),
+            vision_config=dict(
+                depth=4,
+                hidden_size=128,
+                hidden_act="silu",
+                intermediate_size=256,
+                num_heads=8,
+                in_channels=3,
+                patch_size=14,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=128,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[],
+                initializer_range=0.02,
+            ),
+        ),
+    )
+
+if QWEN3_VL_MOE_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_vl_moe"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_vl_moe,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_vl_moe,
+        model_class=Qwen3VLMoeForConditionalGeneration,
+        mini_model_config=Qwen3VLMoeConfig(
+            bos_token_id=1,
+            eos_token_id=2,
+            vision_start_token_id=32765,
+            vision_end_token_id=32766,
+            image_token_id=32768,
+            video_token_id=32769,
+            tie_word_embeddings=False,
+            attn_implementation="sdpa",
+            text_config=Qwen3VLMoeTextConfig(
+                attention_dropout=0.0,
+                attention_bias=False,
+                hidden_act="silu",
+                hidden_size=1536,
+                initializer_range=0.02,
+                intermediate_size=4864,
+                max_position_embeddings=32768,
+                num_attention_heads=12,
+                num_hidden_layers=4,
+                num_key_value_heads=2,
+                head_dim=128,
+                rms_norm_eps=1e-6,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                use_cache=True,
+                vocab_size=32768,
+                decoder_sparse_step=1,
+                moe_intermediate_size=3072,
+                num_experts_per_tok=2,
+                num_experts=4,
+                tie_word_embeddings=False,
+                mlp_only_layers=[],
+            ).to_dict(),
+            vision_config=Qwen3VLMoeVisionConfig(
+                depth=4,
+                hidden_size=128,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=256,
+                num_heads=8,
+                in_channels=3,
+                patch_size=14,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=128,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[1, 2, 3],
+                initializer_range=0.02,
+            ).to_dict(),
+        ),
+    )
+
 if GRANITE_AVAILABLE:
     MINI_MODEL_SETUPS["mini_granite3"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_granite,
@@ -801,6 +997,35 @@ if OLMO2_AVAILABLE:
         liger_kernel_patch_revert_func=revert_liger_kernel_to_olmo2,
         model_class=Olmo2ForCausalLM,
         mini_model_config=Olmo2Config(
+            bos_token_id=1,  # 128000
+            eos_token_id=2,  # 128001
+            pad_token_id=2,
+            cross_attention_layers=None,
+            dropout=0,
+            hidden_act="silu",
+            hidden_size=1024,  # 4096
+            initializer_range=0.02,
+            intermediate_size=2048,  # 14336
+            max_position_embeddings=4096,
+            num_attention_heads=8,  # 32
+            num_hidden_layers=4,  # 40
+            num_key_value_heads=2,  # 8
+            rms_norm_eps=1e-5,
+            rope_scaling=None,
+            rope_theta=500_000,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 128256,
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
+
+if OLMO3_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_olmo3"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_olmo3,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_olmo3,
+        model_class=Olmo3ForCausalLM,
+        mini_model_config=Olmo3Config(
             bos_token_id=1,  # 128000
             eos_token_id=2,  # 128001
             pad_token_id=2,
@@ -977,7 +1202,7 @@ if GLM4V_MOE_AVAILABLE:
                 "moe_intermediate_size": 1408,
                 "num_experts_per_tok": 2,
                 "n_shared_experts": 1,
-                "n_routed_experts": 128,
+                "n_routed_experts": 8,
                 "routed_scaling_factor": 1.0,
                 "n_group": 1,
                 "topk_group": 1,
@@ -1065,6 +1290,136 @@ if INTERNVL_AVAILABLE:
         ),
     )
 
+if FALCONH1_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_falcon_h1"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_falcon_h1,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_falcon_h1,
+        model_class=FalconH1ForCausalLM,
+        mini_model_config=FalconH1Config(
+            model_type="falcon_h1",
+            vocab_size=32000,
+            hidden_size=256,  # 4096
+            num_hidden_layers=4,  # 24
+            num_attention_heads=4,  # 32
+            num_key_value_heads=2,  # 8
+            intermediate_size=1024,  # 11008
+            hidden_act="silu",
+            max_position_embeddings=4096,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=True,
+            pad_token_id=0,
+            bos_token_id=1,
+            eos_token_id=2,
+            tie_word_embeddings=False,
+            mamba_d_ssm=128,  # 1024
+            mamba_n_heads=16,  # 128
+            mamba_d_state=32,  # 245
+            mamba_d_conv=2,  # 4
+            attn_implementation="eager",
+        ),
+    )
+
+if QWEN3NEXT_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_next"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_next,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_next,
+        model_class=Qwen3NextForCausalLM,
+        mini_model_config=Qwen3NextConfig(  # Copypaste Qwen3MoeConfig
+            vocab_size=32000,
+            hidden_size=896,
+            intermediate_size=4864,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=True,
+            tie_word_embeddings=False,
+            rope_theta=10000.0,
+            rope_scaling=None,
+            attention_bias=False,
+            use_sliding_window=False,
+            sliding_window=4096,
+            max_window_layers=28,
+            attention_dropout=0.0,
+            decoder_sparse_step=1,
+            moe_intermediate_size=768,
+            num_experts_per_tok=2,
+            num_experts=8,
+            norm_topk_prob=False,
+            output_router_logits=False,
+            router_aux_loss_coef=0.001,
+            # config.dtype must be set if fla installed since there's a bug in the original code (No torch.get_current_dtype())
+            dtype=torch.bfloat16,
+        ),
+    )
+
+
+if HUNYUAN_V1_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_hunyuan_v1"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_hunyuan_v1_dense,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_hunyuan_v1,
+        model_class=HunYuanDenseV1ForCausalLM,
+        mini_model_config=HunYuanDenseV1Config(
+            attention_dropout=0.0,
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="silu",
+            num_hidden_layers=4,
+            hidden_size=896,
+            intermediate_size=4864,
+            num_attention_heads=8,
+            head_dim=112,
+            rms_norm_eps=1e-6,
+            tie_word_embeddings=True,
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            norm_eps=1e-6,
+            num_key_value_heads=2,
+            rope_theta=10000.0,
+            partial_rotary_factor=1.0,
+            vocab_size=32000,
+            use_cache=True,
+            attn_implementation="sdpa",
+        ),
+    )
+
+    MINI_MODEL_SETUPS["mini_hunyuan_v1_moe"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_hunyuan_v1_moe,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_hunyuan_v1_moe,
+        model_class=HunYuanMoEV1ForCausalLM,
+        mini_model_config=HunYuanMoEV1Config(
+            vocab_size=32000,
+            hidden_size=128,
+            intermediate_size=512,
+            head_dim=16,
+            num_hidden_layers=2,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            rms_norm_eps=1e-5,
+            use_cache=True,
+            pad_token_id=0,
+            bos_token_id=1,
+            eos_token_id=2,
+            eod_token_id=3,
+            sep_token_id=4,
+            tie_word_embeddings=False,
+            rope_theta=10000.0,
+            rope_scaling=None,
+            attention_bias=False,
+            attention_dropout=0.0,
+            num_experts=2,
+            moe_topk=1,
+            attn_implementation="sdpa",
+        ),
+    )
+
 
 def create_model(model_name="mini_llama4"):
     """
@@ -1076,6 +1431,7 @@ def create_model(model_name="mini_llama4"):
     return model_class(model_config)
 
 
+@require_deterministic
 def run_mini_model(
     model_name="mini_llama4",
     num_steps=100,
@@ -1100,7 +1456,7 @@ def run_mini_model(
             "rms_norm": True,
         }
 
-        if "glm4" in model_name:
+        if "glm4" in model_name or "qwen3_next" in model_name:
             kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -1122,8 +1478,6 @@ def run_mini_model(
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
-
-    print(MINI_MODEL_SETUPS[model_name])
 
     model = create_model(model_name).to(dtype).to(device)
 
@@ -1349,6 +1703,44 @@ def run_mini_model(
             ],
         ),
         pytest.param(
+            "mini_qwen3_vl",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            1e-1,  # 1e-1
+            1e-2,  # 1e-2
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN3_VL_AVAILABLE,
+                    reason="Qwen3-VL not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_vl_moe",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,
+            5e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN3_VL_MOE_AVAILABLE,
+                    reason="Qwen3-VL-MoE not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
             "mini_phi3",
             32,
             1e-5,
@@ -1400,6 +1792,25 @@ def run_mini_model(
             ],
         ),
         pytest.param(
+            "mini_olmo3",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not OLMO3_AVAILABLE,
+                    reason="OLMO3 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
             "mini_glm4",
             32,
             1e-5,
@@ -1435,7 +1846,6 @@ def run_mini_model(
                     not GLM4V_AVAILABLE,
                     reason="Glm4v not available in this version of transformers",
                 ),
-                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(
@@ -1444,9 +1854,9 @@ def run_mini_model(
             1e-5,
             torch.bfloat16,
             1e-2,
-            4e-1,
+            4e-1,  # rms_norm patch needs higher tolerance in bf16
             1e-1,
-            5e-1,  # TODO: very high tolerance set for now, need to investigate
+            5e-1,  # rms_norm patch needs higher tolerance in bf16
             2e-1,
             1e-2,
             marks=[
@@ -1455,7 +1865,6 @@ def run_mini_model(
                     not GLM4V_MOE_AVAILABLE,
                     reason="Glm4v_moe not available in this version of transformers",
                 ),
-                pytest.mark.skipif(device == "xpu", reason="skip for XPU"),
             ],
         ),
         pytest.param(
@@ -1571,6 +1980,82 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not GEMMA3_AVAILABLE,
                     reason="Gemma3 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_falcon_h1",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            1e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not FALCONH1_AVAILABLE,
+                    reason="FalconH1 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_next",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            1e-2,
+            1e-1,
+            1e-1,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN3NEXT_AVAILABLE,
+                    reason="Qwen3Next not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_hunyuan_v1",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not HUNYUAN_V1_AVAILABLE,
+                    reason="Hunyuan_v1 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_hunyuan_v1_moe",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,
+            5e-2,
+            1e-1,  # 1e-1
+            1e-1,  # 1e-2
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not HUNYUAN_V1_AVAILABLE,
+                    reason="Hunyuan_v1_moe not available in this version of transformers",
                 ),
             ],
         ),

@@ -7,12 +7,13 @@ import torch.nn as nn
 
 from transformers.cache_utils import Cache
 from transformers.cache_utils import HybridCache
-from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.gemma3.modeling_gemma3 import Gemma3CausalLMOutputWithPast
 from transformers.utils import logging
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
+from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
+from liger_kernel.transformers.model.output_classes import LigerCausalLMOutputWithPast
+from liger_kernel.transformers.model.output_classes import LigerGemma3CausalLMOutputWithPast
 
 logger = logging.get_logger(__name__)
 
@@ -33,7 +34,7 @@ def causal_forward(
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
     **loss_kwargs,
-) -> Union[Tuple, CausalLMOutputWithPast]:
+) -> Union[Tuple, LigerCausalLMOutputWithPast]:
     r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
@@ -98,12 +99,14 @@ def causal_forward(
     shift_labels = loss_kwargs.pop("shift_labels", None)
     loss = None
     logits = None
+    token_accuracy = None
 
     if skip_logits is None:
         skip_logits = self.training and (labels is not None or shift_labels is not None)
 
+    # Compute loss
     if skip_logits:
-        loss = LigerForCausalLMLoss(
+        result = LigerForCausalLMLoss(
             hidden_states=kept_hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
@@ -112,7 +115,7 @@ def causal_forward(
             final_logit_softcapping=self.config.final_logit_softcapping,
             **loss_kwargs,
         )
-
+        loss, _, token_accuracy = unpack_cross_entropy_result(result)
     else:
         logits = self.lm_head(kept_hidden_states)
         if self.config.final_logit_softcapping is not None:
@@ -129,15 +132,19 @@ def causal_forward(
             )
 
     if not return_dict:
-        output = (logits,) + outputs[1:]
-        return (loss,) + output if loss is not None else output
+        output_tuple = (logits,) + outputs[1:]
+        output_tuple = (loss,) + output_tuple if loss is not None else output_tuple
+        output_tuple = output_tuple + (token_accuracy,) if token_accuracy is not None else output_tuple
+        return output_tuple
 
-    return CausalLMOutputWithPast(
+    # Return custom output class with token_accuracy field
+    return LigerCausalLMOutputWithPast(
         loss=loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
+        token_accuracy=token_accuracy,
     )
 
 
@@ -159,7 +166,7 @@ def multimodal_forward(
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
     **lm_kwargs,
-) -> Union[tuple, Gemma3CausalLMOutputWithPast]:
+) -> Union[tuple, LigerGemma3CausalLMOutputWithPast]:
     r"""
     labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
         Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
@@ -235,6 +242,7 @@ def multimodal_forward(
 
     loss = None
     logits = None
+    token_accuracy = None
     if skip_logits and labels is None:
         raise ValueError("skip_logits is True, but labels is None")
 
@@ -261,7 +269,9 @@ def multimodal_forward(
         shift_labels = shift_labels.view(-1).to(hidden_device)
 
         lce = LigerFusedLinearCrossEntropyLoss()
-        loss = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
+        result = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
+        loss, _, token_accuracy = unpack_cross_entropy_result(result)
+
     else:
         logits = self.lm_head(kept_hidden_states)
         if labels is not None:
@@ -306,13 +316,16 @@ def multimodal_forward(
 
     if not return_dict:
         output = (logits,) + outputs[1:]
-        return (loss,) + output if loss is not None else output
+        output = (loss,) + output if loss is not None else output
+        output = output + (token_accuracy,) if token_accuracy is not None else output
+        return output
 
-    return Gemma3CausalLMOutputWithPast(
+    return LigerGemma3CausalLMOutputWithPast(
         loss=loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
         image_hidden_states=outputs.image_hidden_states,
+        token_accuracy=token_accuracy,
     )

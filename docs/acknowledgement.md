@@ -9,7 +9,6 @@
 We referenced or used the following projects:
 
 
-
 | # | Project                                                                                      | Description                                                                             | Location                                                                                                                         | License                                                                              |
 |---|----------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------|
 | 1 | [Unsloth](https://github.com/unslothai/unsloth/blob/fd753fed99ed5f10ef8a9b7139588d9de9ddecfb/unsloth/kernels/utils.py#L43)                              | `calculate_settings` to determine block size and warp; We reuse it for Norm and MLP     | [Liger Kernel Utils](https://github.com/linkedin/Liger-Kernel/blob/e249eee723978bf8610ff1ea2297d048a2417e20/src/liger_kernel/ops/utils.py#L23) | [Apache](https://github.com/unslothai/unsloth/blob/fd753fed99ed5f10ef8a9b7139588d9de9ddecfb/LICENSE) |

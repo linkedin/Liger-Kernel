@@ -1,6 +1,8 @@
 import functools
 import os
 
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Ensure deterministic behavior with CuBLAS
+
 import pytest
 import torch
 
@@ -18,6 +20,9 @@ from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_paligemma
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
+from liger_kernel.transformers import apply_liger_kernel_to_smolvlm
 from test.utils import FAKE_CONFIGS_PATH
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
@@ -29,6 +34,7 @@ from test.utils import load_image_processing_config
 from test.utils import load_processor_config
 from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
+from test.utils import require_deterministic
 from test.utils import revert_liger_kernel_to_gemma3
 from test.utils import revert_liger_kernel_to_internvl
 from test.utils import revert_liger_kernel_to_llama4
@@ -37,6 +43,9 @@ from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_Paligemma
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
+from test.utils import revert_liger_kernel_to_qwen3_vl
+from test.utils import revert_liger_kernel_to_qwen3_vl_moe
+from test.utils import revert_liger_kernel_to_smolvlm2
 from test.utils import set_seed
 from test.utils import train_bpe_tokenizer
 
@@ -71,6 +80,57 @@ try:
     QWEN2_5_VL_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.52.4")
 except ImportError:
     QWEN2_5_VL_AVAILABLE = False
+
+
+try:
+    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLForConditionalGeneration
+    from transformers.models.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessor
+    from transformers.models.qwen3_vl.video_processing_qwen3_vl import Qwen3VLVideoProcessor
+
+    QWEN3_VL_AVAILABLE = True
+except ImportError:
+    QWEN3_VL_AVAILABLE = False
+
+
+try:
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeConfig
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeTextConfig
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeVisionConfig
+    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
+
+    QWEN3_VL_MOE_AVAILABLE = True
+except ImportError:
+    QWEN3_VL_MOE_AVAILABLE = False
+
+try:
+    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLForConditionalGeneration
+    from transformers.models.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessor
+    from transformers.models.qwen3_vl.video_processing_qwen3_vl import Qwen3VLVideoProcessor
+
+    QWEN3_VL_AVAILABLE = True
+except ImportError:
+    QWEN3_VL_AVAILABLE = False
+
+
+try:
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeConfig
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeTextConfig
+    from transformers.models.qwen3_vl_moe.configuration_qwen3_vl_moe import Qwen3VLMoeVisionConfig
+    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
+
+    QWEN3_VL_MOE_AVAILABLE = True
+except ImportError:
+    QWEN3_VL_MOE_AVAILABLE = False
 
 try:
     # Mllama is only available in transformers>=4.45.0
@@ -151,6 +211,26 @@ try:
     INTERNVL_AVAILABLE = True
 except ImportError:
     INTERNVL_AVAILABLE = False
+
+try:
+    # SmolVLM2 is only available in transformers>=4.50.0
+    from transformers.models.gpt2.tokenization_gpt2_fast import GPT2TokenizerFast
+    from transformers.models.smolvlm.configuration_smolvlm import SmolVLMConfig
+    from transformers.models.smolvlm.image_processing_smolvlm import SmolVLMImageProcessor
+    from transformers.models.smolvlm.modeling_smolvlm import SmolVLMForConditionalGeneration
+    from transformers.models.smolvlm.processing_smolvlm import SmolVLMProcessor
+    from transformers.models.smolvlm.video_processing_smolvlm import SmolVLMVideoProcessor
+
+    SMOLVLM2_AVAILABLE = True
+except ImportError:
+    SMOLVLM2_AVAILABLE = False
+
+try:
+    from num2words import num2words  # noqa: F401
+
+    NUM2WORDS_AVAILABLE = True
+except ImportError:
+    NUM2WORDS_AVAILABLE = False
 
 from liger_kernel.utils import infer_device
 
@@ -561,6 +641,44 @@ if INTERNVL_AVAILABLE:
         ),
     )
 
+if SMOLVLM2_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_smolvlm2"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_smolvlm,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_smolvlm2,
+        model_class=SmolVLMForConditionalGeneration,
+        mini_model_config=SmolVLMConfig(
+            text_config=LlamaConfig(
+                attention_bias=False,
+                attention_dropout=0.0,
+                bos_token_id=1,
+                eos_token_id=2,
+                pad_token_id=2,
+                hidden_act="silu",
+                hidden_size=576,  # 576 for 256M model
+                initializer_range=0.041666666666666664,
+                intermediate_size=1536,  # 1536 for 256M model
+                max_position_embeddings=8192,
+                num_attention_heads=9,  # 9 for 256M model
+                num_hidden_layers=4,  # 30 -> reduced to 4 for testing
+                num_key_value_heads=3,  # 3 for 256M model
+                rms_norm_eps=1e-5,
+                rope_theta=100000,
+                tie_word_embeddings=False,
+                vocab_size=49280,
+            ),
+            vision_config={
+                "hidden_size": 768,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 4,  # 12 -> reduced to 4 for testing
+                "num_attention_heads": 12,
+                "image_size": 512,
+                "patch_size": 16,
+            },
+            image_token_id=49190,
+            attn_implementation="sdpa",  # default value, pytorch native attention
+        ),
+    )
+
 if QWEN2_5_VL_AVAILABLE:
     MINI_MODEL_SETUPS["mini_qwen2_5_vl"] = MiniModelConfig(
         liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_qwen2_5_vl, fused_linear_cross_entropy=False),
@@ -608,6 +726,227 @@ if QWEN2_5_VL_AVAILABLE:
         ),
     )
 
+if QWEN3_VL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_vl"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_vl,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_vl,
+        model_class=Qwen3VLForConditionalGeneration,
+        mini_model_config=Qwen3VLConfig(
+            attn_implementation="sdpa",
+            image_token_id=4,
+            video_token_id=5,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            tie_word_embeddings=True,
+            vision_config=Qwen3VLVisionConfig(
+                depth=4,
+                hidden_size=256,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=512,
+                num_heads=4,
+                in_channels=3,
+                patch_size=16,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=512,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[1, 2, 3],
+                initializer_range=0.02,
+            ).to_dict(),
+            text_config=Qwen3VLTextConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                intermediate_size=2048,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=64,
+                hidden_act="silu",
+                max_position_embeddings=32768,
+                initializer_range=0.02,
+                rms_norm_eps=1e-6,
+                use_cache=False,
+                tie_word_embeddings=True,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                attention_dropout=0.0,
+                attention_bias=False,
+            ).to_dict(),
+        ),
+    )
+
+if QWEN3_VL_MOE_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_vl_moe"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_vl_moe,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_vl_moe,
+        model_class=Qwen3VLMoeForConditionalGeneration,
+        mini_model_config=Qwen3VLMoeConfig(
+            attn_implementation="sdpa",
+            image_token_id=4,
+            video_token_id=5,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            tie_word_embeddings=True,
+            vision_config=Qwen3VLMoeVisionConfig(
+                depth=4,
+                hidden_size=256,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=512,
+                num_heads=4,
+                in_channels=3,
+                patch_size=16,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=512,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[1, 2, 3],
+                initializer_range=0.02,
+            ).to_dict(),
+            text_config=Qwen3VLMoeTextConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                intermediate_size=2048,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=64,
+                hidden_act="silu",
+                max_position_embeddings=32768,
+                initializer_range=0.02,
+                rms_norm_eps=1e-6,
+                use_cache=False,
+                tie_word_embeddings=True,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                attention_dropout=0.0,
+                attention_bias=False,
+                decoder_sparse_step=1,
+                moe_intermediate_size=1024,
+                num_experts_per_tok=2,
+                num_experts=4,
+                norm_topk_prob=False,
+                output_router_logits=False,
+                router_aux_loss_coef=0.001,
+            ).to_dict(),
+        ),
+    )
+
+
+if QWEN3_VL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_vl"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_vl,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_vl,
+        model_class=Qwen3VLForConditionalGeneration,
+        mini_model_config=Qwen3VLConfig(
+            attn_implementation="sdpa",
+            image_token_id=4,
+            video_token_id=5,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            tie_word_embeddings=True,
+            vision_config=Qwen3VLVisionConfig(
+                depth=4,
+                hidden_size=256,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=512,
+                num_heads=4,
+                in_channels=3,
+                patch_size=16,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=512,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[1, 2, 3],
+                initializer_range=0.02,
+            ).to_dict(),
+            text_config=Qwen3VLTextConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                intermediate_size=2048,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=64,
+                hidden_act="silu",
+                max_position_embeddings=32768,
+                initializer_range=0.02,
+                rms_norm_eps=1e-6,
+                use_cache=False,
+                tie_word_embeddings=True,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                attention_dropout=0.0,
+                attention_bias=False,
+            ).to_dict(),
+        ),
+    )
+
+if QWEN3_VL_MOE_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_vl_moe"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_vl_moe,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_vl_moe,
+        model_class=Qwen3VLMoeForConditionalGeneration,
+        mini_model_config=Qwen3VLMoeConfig(
+            attn_implementation="sdpa",
+            image_token_id=4,
+            video_token_id=5,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            tie_word_embeddings=True,
+            vision_config=Qwen3VLMoeVisionConfig(
+                depth=4,
+                hidden_size=256,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=512,
+                num_heads=4,
+                in_channels=3,
+                patch_size=16,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=512,
+                num_position_embeddings=256,
+                deepstack_visual_indexes=[1, 2, 3],
+                initializer_range=0.02,
+            ).to_dict(),
+            text_config=Qwen3VLMoeTextConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                intermediate_size=2048,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=64,
+                hidden_act="silu",
+                max_position_embeddings=32768,
+                initializer_range=0.02,
+                rms_norm_eps=1e-6,
+                use_cache=False,
+                tie_word_embeddings=True,
+                rope_theta=1000000.0,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],
+                ),
+                attention_dropout=0.0,
+                attention_bias=False,
+                decoder_sparse_step=1,
+                moe_intermediate_size=1024,
+                num_experts_per_tok=2,
+                num_experts=4,
+                mlp_only_layers=[],
+            ).to_dict(),
+        ),
+    )
+
 
 def create_processor(model_name: str):
     if model_name == "mini_qwen2_vl":
@@ -649,6 +988,28 @@ def create_processor(model_name: str):
         image_processor = Qwen2VLImageProcessor()
         video_processor = Qwen2VLVideoProcessor()
         return Qwen2_5_VLProcessor(
+            image_processor=image_processor,
+            video_processor=video_processor,
+            tokenizer=qwen_tokenizer,
+        )
+
+    elif model_name in ("mini_qwen3_vl", "mini_qwen3_vl_moe"):
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(FAKE_CONFIGS_PATH, "Qwen/Qwen3-VL-4B-Instruct/tokenizer_config.json")
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        image_processor = Qwen2VLImageProcessor(patch_size=16, temporal_patch_size=2, merge_size=2)
+        video_processor = Qwen3VLVideoProcessor()
+        return Qwen3VLProcessor(
             image_processor=image_processor,
             video_processor=video_processor,
             tokenizer=qwen_tokenizer,
@@ -711,6 +1072,28 @@ def create_processor(model_name: str):
         # Return proper InternVL processor
         return InternVLProcessor(
             image_processor=image_processor, tokenizer=qwen_tokenizer, video_processor=video_processor
+        )
+
+    elif model_name == "mini_smolvlm2":
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(FAKE_CONFIGS_PATH, "HuggingFaceTB/SmolVLM2-256M-Video-Instruct/tokenizer_config.json")
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        gpt2_tokenizer = GPT2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        image_processor = SmolVLMImageProcessor(size={"longest_edge": 512})
+        video_processor = SmolVLMVideoProcessor()
+
+        # Return proper SmolVLM processor
+        return SmolVLMProcessor(
+            image_processor=image_processor, tokenizer=gpt2_tokenizer, video_processor=video_processor
         )
 
     elif model_name.startswith("mini_llama4"):
@@ -878,6 +1261,7 @@ def create_model(model_name):
     return model_class(model_config)
 
 
+@require_deterministic
 def run_mini_model_multimodal(
     model_name="mini_qwen2_vl",
     num_steps=100,
@@ -904,7 +1288,7 @@ def run_mini_model_multimodal(
         }
         if "llama4" in model_name:
             kwargs["rope"] = False
-        if "qwen2_5_vl" not in model_name and "llava" not in model_name:
+        if "qwen2_5_vl" not in model_name and "llava" not in model_name and "qwen3_vl" not in model_name:
             kwargs["layer_norm"] = True
 
         if "gemma" in model_name:
@@ -916,6 +1300,7 @@ def run_mini_model_multimodal(
             apply_liger_kernel_to_llama(**kwargs)
 
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
+
     else:
         MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
 
@@ -1032,6 +1417,28 @@ def run_mini_model_multimodal(
             ),
         ),
         pytest.param(
+            "mini_smolvlm2",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not SMOLVLM2_AVAILABLE,
+                    reason="SmolVLM2 not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    not NUM2WORDS_AVAILABLE,
+                    reason="num2words must be present to run SmolVLMProcessor",
+                ),
+            ],
+        ),
+        pytest.param(
             "mini_qwen2_5_vl",
             32,
             1e-4,
@@ -1048,6 +1455,50 @@ def run_mini_model_multimodal(
                     reason="Qwen2.5-VL not available in this version of transformers",
                 ),
                 pytest.mark.skipif(not is_torchvision_available(), reason="Qwen2VLVideoProcessor requires torchvision"),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_vl",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not QWEN3_VL_AVAILABLE,
+                    reason="Qwen3-VL not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    not is_torchvision_available(),
+                    reason="Qwen3VLVideoProcessor requires torchvision",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_vl_moe",
+            32,
+            1e-4,
+            torch.float32,
+            1e-7,
+            5e-4,
+            5e-2,
+            5e-3,
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not QWEN3_VL_MOE_AVAILABLE,
+                    reason="Qwen3-VL-MoE not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    not is_torchvision_available(),
+                    reason="Qwen3VLVideoProcessor requires torchvision",
+                ),
             ],
         ),
         pytest.param(

@@ -77,3 +77,10 @@ class LigerRMSNormForGlm4(LigerRMSNorm):
         self, hidden_size, eps=1e-6, offset=0.0, casting_mode="llama", init_fn="ones", in_place=False, row_mode=None
     ):
         super().__init__(hidden_size, eps, offset, casting_mode, init_fn, in_place, row_mode)
+
+
+class LigerRMSNormForQwen3Next(LigerRMSNorm):
+    def __init__(
+        self, hidden_size, eps=1e-6, offset=1.0, casting_mode="gemma", init_fn="zeros", in_place=False, row_mode=None
+    ):
+        super().__init__(hidden_size, eps, offset, casting_mode, init_fn, in_place, row_mode)
