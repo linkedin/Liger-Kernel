@@ -1150,7 +1150,7 @@ def run_mini_model_multimodal(
             "cross_entropy": False,
         }
 
-        if "qwen2_5_vl" not in model_name and "llava" not in model_name and "qwen3_vl" not in model_name:
+        if "qwen2_5_vl" not in model_name and "llava" not in model_name:
             kwargs["layer_norm"] = True
 
         if "gemma" in model_name:
