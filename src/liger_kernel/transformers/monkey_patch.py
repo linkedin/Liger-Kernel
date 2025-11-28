@@ -1844,7 +1844,9 @@ def apply_liger_kernel_to_qwen3_vl_moe(
                 if swiglu:
                     if isinstance(decoder_layer.mlp, Qwen3VLMoeTextSparseMoeBlock):
                         # TODO(xxx): Implement LigerMoe for MoE sparse block for trasnformers v5
-                        logger.warning("Skipping MLP patching for Qwen3VLMoeTextSparseMoeBlock. There will be a breaking change in transformers v5")
+                        logger.warning(
+                            "Skipping MLP patching for Qwen3VLMoeTextSparseMoeBlock. There will be a breaking change in transformers v5"
+                        )
                     elif isinstance(decoder_layer.mlp, Qwen3VLMoeTextMLP):
                         _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
 

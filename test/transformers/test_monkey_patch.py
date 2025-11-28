@@ -535,7 +535,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
 
             assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
 
-
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
@@ -653,7 +652,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
 
             assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
 
-
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
@@ -673,7 +671,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
                     assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
                 if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
                     assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
-         
+
             assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
 
         for vision_block in dummy_model_instance.visual.blocks:
