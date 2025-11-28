@@ -767,6 +767,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe"):
         from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
+        from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextMLP
+        from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextSparseMoeBlock
 
         from liger_kernel.transformers.model.qwen3_vl_moe import lce_forward as qwen3_vl_moe_lce_forward
 
@@ -818,7 +820,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
                 moe_intermediate_size=1024,
                 num_experts_per_tok=2,
                 num_experts=4,
-                mlp_only_layers=[],
+                mlp_only_layers=[0, 2],
             ).to_dict(),
         )
         dummy_model_instance = Qwen3VLMoeForConditionalGeneration._from_config(config)
@@ -842,6 +844,18 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
                 if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
                     assert inspect.getsource(self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
+            if isinstance(decoder_layer.mlp, Qwen3VLMoeTextSparseMoeBlock):
+                # TODO(xxx): Implement LigerMoe for MoE sparse block for transformers v5
+                pass
+            elif isinstance(decoder_layer.mlp, Qwen3VLMoeTextMLP):
+                assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+
+        for vision_block in dummy_model_instance.visual.blocks:
+            assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
+
+            assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
+
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
@@ -862,6 +876,18 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
                 if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
                     assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
+            if isinstance(decoder_layer.mlp, Qwen3VLMoeTextSparseMoeBlock):
+                # TODO(xxx): Implement LigerMoe for MoE sparse block for transformers v5
+                pass
+            elif isinstance(decoder_layer.mlp, Qwen3VLMoeTextMLP):
+                assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+
+        for vision_block in dummy_model_instance.visual.blocks:
+            assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
+
+            assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
+
         try:
             print(dummy_model_instance)
         except Exception as e:
@@ -873,6 +899,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe"):
         from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeModel
+        from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextMLP
+        from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextSparseMoeBlock
 
         from liger_kernel.transformers.model.qwen3_vl_moe import lce_forward as qwen3_vl_moe_lce_forward
 
@@ -924,7 +952,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
                 moe_intermediate_size=1024,
                 num_experts_per_tok=2,
                 num_experts=4,
-                mlp_only_layers=[],
+                mlp_only_layers=[0, 2],
             ).to_dict(),
         )
         dummy_model_instance = Qwen3VLMoeModel._from_config(config)
@@ -948,6 +976,18 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
                 if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
                     assert inspect.getsource(self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
+            if isinstance(decoder_layer.mlp, Qwen3VLMoeTextSparseMoeBlock):
+                # TODO(xxx): Implement LigerMoe for MoE sparse block for transformers v5
+                pass
+            elif isinstance(decoder_layer.mlp, Qwen3VLMoeTextMLP):
+                assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+
+        for vision_block in dummy_model_instance.visual.blocks:
+            assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
+
+            assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
+
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
@@ -967,6 +1007,18 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
                     assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
                 if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
                     assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+            if isinstance(decoder_layer.mlp, Qwen3VLMoeTextSparseMoeBlock):
+                # TODO(xxx): Implement LigerMoe for MoE sparse block for transformers v5
+                pass
+            elif isinstance(decoder_layer.mlp, Qwen3VLMoeTextMLP):
+                assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+
+        for vision_block in dummy_model_instance.visual.blocks:
+            assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
+            assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
+
+            assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
 
         try:
             print(dummy_model_instance)

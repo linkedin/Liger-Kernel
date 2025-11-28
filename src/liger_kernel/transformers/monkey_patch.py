@@ -1688,8 +1688,11 @@ def apply_liger_kernel_to_qwen3_vl(
         modeling_qwen3_vl.apply_rotary_pos_emb = liger_rotary_pos_emb_with_cast
         modeling_qwen3_vl.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_with_cast_and_leading_batch
 
-    if rms_norm:
+    if rms_norm and model is None:
         modeling_qwen3_vl.Qwen3VLTextRMSNorm = LigerRMSNorm
+
+    if layer_norm and model is None:
+        modeling_qwen3_vl.nn.LayerNorm = LigerLayerNorm
 
     if cross_entropy:
         from transformers.loss.loss_utils import nn
@@ -1703,8 +1706,10 @@ def apply_liger_kernel_to_qwen3_vl(
             modeling_qwen3_vl.Qwen3VLForConditionalGeneration.forward = qwen3_vl_lce_forward
 
     if swiglu:
-        modeling_qwen3_vl.Qwen3VLVisionMLP = LigerSwiGLUMLP
         modeling_qwen3_vl.Qwen3VLTextMLP = LigerSwiGLUMLP
+
+    if geglu:
+        modeling_qwen3_vl.Qwen3VLVisionMLP = LigerGEGLUMLP
 
     if model is not None:
         if isinstance(model, (Qwen3VLForConditionalGeneration, Qwen3VLModel)):
@@ -1722,7 +1727,8 @@ def apply_liger_kernel_to_qwen3_vl(
         _patch_qwen3_vl_qk_norm = partial(_patch_rms_norm_module, offset=0.0, casting_mode="llama", row_mode=True)
 
         if text_model is not None:
-            _patch_qwen3_vl_rms_norm(text_model.norm)
+            if rms_norm:
+                _patch_qwen3_vl_rms_norm(text_model.norm)
             for decoder_layer in text_model.layers:
                 if rms_norm:
                     _patch_qwen3_vl_rms_norm(decoder_layer.input_layernorm)
@@ -1744,10 +1750,6 @@ def apply_liger_kernel_to_qwen3_vl(
                     _patch_layer_norm_module(vision_block.norm2)
                 if geglu:
                     _patch_geglu_module(vision_block.mlp)
-                
-                
-        
-
 
 
 def apply_liger_kernel_to_qwen3_vl_moe(
@@ -1755,7 +1757,9 @@ def apply_liger_kernel_to_qwen3_vl_moe(
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
-    swiglu: bool = False,
+    layer_norm: bool = True,
+    swiglu: bool = True,
+    geglu: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -1766,7 +1770,9 @@ def apply_liger_kernel_to_qwen3_vl_moe(
         fused_linear_cross_entropy (bool):
             Whether to apply Liger's fused linear cross entropy loss. Default is False.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
-        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is False.
+        layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP for text model. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP for vision model. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -1778,7 +1784,10 @@ def apply_liger_kernel_to_qwen3_vl_moe(
     from transformers.models.qwen3_vl_moe import modeling_qwen3_vl_moe
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeModel
+    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextMLP
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextModel
+    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextSparseMoeBlock
+    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeVisionModel
 
     from liger_kernel.transformers.model.qwen3_vl_moe import lce_forward as qwen3_vl_moe_lce_forward
 
@@ -1800,29 +1809,52 @@ def apply_liger_kernel_to_qwen3_vl_moe(
         else:
             modeling_qwen3_vl_moe.Qwen3VLMoeForConditionalGeneration.forward = qwen3_vl_moe_lce_forward
 
+    if swiglu:
+        modeling_qwen3_vl_moe.Qwen3VLMoeTextMLP = LigerSwiGLUMLP
+    if geglu:
+        modeling_qwen3_vl_moe.Qwen3VLMoeVisionMLP = LigerGEGLUMLP
+
     if model is not None and rms_norm:
         if isinstance(model, (Qwen3VLMoeForConditionalGeneration, Qwen3VLMoeModel)):
             text_model: Qwen3VLMoeTextModel = model.language_model
+            vision_model: Qwen3VLMoeVisionModel = model.visual
         elif isinstance(model, Qwen3VLMoeTextModel):
             text_model = model
+            vision_model = None
         else:
             raise TypeError(
                 f"Unsupported Qwen3VLMoe model type. `model` must be `Qwen3VLMoeForConditionalGeneration`, `Qwen3VLMoeModel` or `Qwen3VLMoeTextModel`. Got: {type(model)}"
             )
 
         _patch_qwen3_vl_moe_rms_norm = partial(_patch_rms_norm_module, offset=0.0, casting_mode="llama")
+        _patch_qwen3_vl_moe_qk_norm = partial(_patch_rms_norm_module, offset=0.0, casting_mode="llama", row_mode=True)
 
         if text_model is not None:
-            _patch_qwen3_vl_moe_rms_norm(text_model.norm)
+            if rms_norm:
+                _patch_qwen3_vl_moe_rms_norm(text_model.norm)
             for decoder_layer in text_model.layers:
                 _patch_qwen3_vl_moe_rms_norm(decoder_layer.input_layernorm)
                 _patch_qwen3_vl_moe_rms_norm(decoder_layer.post_attention_layernorm)
                 self_attn = getattr(decoder_layer, "self_attn", None)
                 if self_attn is not None:
                     if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
-                        _patch_qwen3_vl_moe_rms_norm(self_attn.q_norm)
+                        _patch_qwen3_vl_moe_qk_norm(self_attn.q_norm)
                     if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
-                        _patch_qwen3_vl_moe_rms_norm(self_attn.k_norm)
+                        _patch_qwen3_vl_moe_qk_norm(self_attn.k_norm)
+                if swiglu:
+                    if isinstance(decoder_layer.mlp, Qwen3VLMoeTextSparseMoeBlock):
+                        # TODO(xxx): Implement LigerMoe for MoE sparse block for trasnformers v5
+                        logger.warning("Skipping MLP patching for Qwen3VLMoeTextSparseMoeBlock. There will be a breaking change in transformers v5")
+                    elif isinstance(decoder_layer.mlp, Qwen3VLMoeTextMLP):
+                        _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+
+        if vision_model is not None:
+            for vision_block in vision_model.blocks:
+                if layer_norm:
+                    _patch_layer_norm_module(vision_block.norm1)
+                    _patch_layer_norm_module(vision_block.norm2)
+                if geglu:
+                    _patch_geglu_module(vision_block.mlp)
 
 
 def apply_liger_kernel_to_phi3(
