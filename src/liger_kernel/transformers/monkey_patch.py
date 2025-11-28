@@ -1652,7 +1652,7 @@ def apply_liger_kernel_to_qwen3_vl(
     rms_norm: bool = True,
     layer_norm: bool = True,
     swiglu: bool = True,
-    geglu: bool = True,
+    geglu: bool = False,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -1666,8 +1666,8 @@ def apply_liger_kernel_to_qwen3_vl(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.
-        swiglu (bool): Whether to apply Liger's SwiGLU MLP for text model. Default is False.
-        geglu (bool): Whether to apply Liger's GeGLU MLP for vision model. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP for text model. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP for vision model. Default is False.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -1759,7 +1759,7 @@ def apply_liger_kernel_to_qwen3_vl_moe(
     rms_norm: bool = True,
     layer_norm: bool = True,
     swiglu: bool = True,
-    geglu: bool = True,
+    geglu: bool = False,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -1772,7 +1772,7 @@ def apply_liger_kernel_to_qwen3_vl_moe(
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP for text model. Default is True.
-        geglu (bool): Whether to apply Liger's GeGLU MLP for vision model. Default is True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP for vision model. Default is False.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
