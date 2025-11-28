@@ -1650,7 +1650,9 @@ def apply_liger_kernel_to_qwen3_vl(
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
-    swiglu: bool = False,
+    layer_norm: bool = True,
+    swiglu: bool = True,
+    geglu: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -1663,7 +1665,9 @@ def apply_liger_kernel_to_qwen3_vl(
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
-        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is False.
+        layer_norm (bool): Whether to apply Liger's LayerNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP for text model. Default is False.
+        geglu (bool): Whether to apply Liger's GeGLU MLP for vision model. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -1676,6 +1680,7 @@ def apply_liger_kernel_to_qwen3_vl(
     from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLForConditionalGeneration
     from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModel
     from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel
 
     from liger_kernel.transformers.model.qwen3_vl import lce_forward as qwen3_vl_lce_forward
 
@@ -1697,29 +1702,52 @@ def apply_liger_kernel_to_qwen3_vl(
         else:
             modeling_qwen3_vl.Qwen3VLForConditionalGeneration.forward = qwen3_vl_lce_forward
 
-    if model is not None and rms_norm:
+    if swiglu:
+        modeling_qwen3_vl.Qwen3VLVisionMLP = LigerSwiGLUMLP
+        modeling_qwen3_vl.Qwen3VLTextMLP = LigerSwiGLUMLP
+
+    if model is not None:
         if isinstance(model, (Qwen3VLForConditionalGeneration, Qwen3VLModel)):
             text_model: Qwen3VLTextModel = model.language_model
+            vision_model: Qwen3VLVisionModel = model.visual
         elif isinstance(model, Qwen3VLTextModel):
-            text_model = model
+            text_model: Qwen3VLTextModel = model
+            vision_model = None
         else:
             raise TypeError(
                 f"Unsupported Qwen3VL model type. `model` must be `Qwen3VLForConditionalGeneration`, `Qwen3VLModel` or `Qwen3VLTextModel`. Got: {type(model)}"
             )
 
         _patch_qwen3_vl_rms_norm = partial(_patch_rms_norm_module, offset=0.0, casting_mode="llama")
+        _patch_qwen3_vl_qk_norm = partial(_patch_rms_norm_module, offset=0.0, casting_mode="llama", row_mode=True)
 
         if text_model is not None:
             _patch_qwen3_vl_rms_norm(text_model.norm)
             for decoder_layer in text_model.layers:
-                _patch_qwen3_vl_rms_norm(decoder_layer.input_layernorm)
-                _patch_qwen3_vl_rms_norm(decoder_layer.post_attention_layernorm)
-                self_attn = getattr(decoder_layer, "self_attn", None)
-                if self_attn is not None:
-                    if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
-                        _patch_qwen3_vl_rms_norm(self_attn.q_norm)
-                    if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
-                        _patch_qwen3_vl_rms_norm(self_attn.k_norm)
+                if rms_norm:
+                    _patch_qwen3_vl_rms_norm(decoder_layer.input_layernorm)
+                    _patch_qwen3_vl_rms_norm(decoder_layer.post_attention_layernorm)
+                    self_attn = getattr(decoder_layer, "self_attn", None)
+                    if self_attn is not None:
+                        if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                            _patch_qwen3_vl_qk_norm(self_attn.q_norm)
+                        if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                            _patch_qwen3_vl_qk_norm(self_attn.k_norm)
+
+                if swiglu:
+                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+
+        if vision_model is not None:
+            for vision_block in vision_model.blocks:
+                if layer_norm:
+                    _patch_layer_norm_module(vision_block.norm1)
+                    _patch_layer_norm_module(vision_block.norm2)
+                if geglu:
+                    _patch_geglu_module(vision_block.mlp)
+                
+                
+        
+
 
 
 def apply_liger_kernel_to_qwen3_vl_moe(
