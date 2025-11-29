@@ -30,35 +30,104 @@ def lce_forward(
     **kwargs,
 ) -> LigerMoeCausalLMOutputWithPast:
     r"""
+        Forward pass for causal language modeling with Mixture of Experts (MoE) architecture using Liger Kernel optimizations.
+
+    Args:
+        input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Indices of input sequence tokens in the vocabulary. Indices can be obtained using tokenizers.
+        attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
+            - 1 for tokens that are **not masked**,
+            - 0 for tokens that are **masked**.
+        position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Indices of positions of each input sequence tokens in the position embeddings.
+        past_key_values (`List[torch.FloatTensor]` or `Cache`, *optional*):
+            Pre-computed hidden-states (key and values in the self-attention blocks) that can be used to speed up
+            sequential decoding. See `past_key_values` input for more details.
+        inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+            Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
+            This is useful if you want more control over how to convert `input_ids` indices into associated vectors
+            than the model's internal embedding lookup matrix.
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
             config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
             (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-
-        logits_to_keep (`int` or `torch.Tensor`, *optional*):
+        use_cache (`bool`, *optional*):
+            If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
+            (see `past_key_values`).
+        output_attentions (`bool`, *optional*):
+            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
+            tensors for more detail.
+        output_hidden_states (`bool`, *optional*):
+            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
+            more detail.
+        output_router_logits (`bool`, *optional*):
+            Whether or not to return the router logits of all MoE layers. See `router_logits` under returned tensors
+            for more detail.
+        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+            Indices depicting the position of the input sequence tokens in the sequence.
+        logits_to_keep (`int` or `torch.Tensor`, *optional*, defaults to 0):
             If an `int`, compute logits for the last `logits_to_keep` tokens. If `0`, calculate logits for all
             `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
             token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
             If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
             This is useful when using packed tensor format (single dimension for batch and sequence length).
+        skip_logits (`bool`, *optional*):
+            Whether to skip logit computation and directly compute loss. If `None`, defaults to `True` during training
+            when labels are provided (to save memory), and `False` during inference.
 
     Returns:
+        `LigerMoeCausalLMOutputWithPast`: An output object containing:
+            - loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
+                Language modeling loss (for next-token prediction), including the auxiliary load balancing loss.
+            - aux_loss (`torch.FloatTensor`, *optional*, returned when `labels` is provided):
+                Auxiliary load balancing loss for the sparse MoE modules.
+            - logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`, *optional*):
+                Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
+                Note: logits are `None` during training when `skip_logits=True` to save memory.
+            - past_key_values (`Cache`, *optional*, returned when `use_cache=True` is passed):
+                Cached key and value projection states for faster sequential decoding.
+            - hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True`):
+                Tuple of `torch.FloatTensor` (one for the output of the embeddings + one for each layer) of shape
+                `(batch_size, sequence_length, hidden_size)`. Hidden-states of the model at the output of each layer.
+            - attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True`):
+                Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+                sequence_length)`. Attentions weights after the attention softmax.
+            - router_logits (`tuple(torch.FloatTensor)`, *optional*, returned when `output_router_logits=True`):
+                Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, sequence_length, num_experts)`.
+                Router logits of the MoE layers, useful to compute the auxiliary loss and z_loss.
+            - token_accuracy (`torch.FloatTensor`, *optional*, returned when `labels` is provided):
+                Token-level prediction accuracy.
 
     Example:
 
     ```python
-    >>> from transformers import AutoTokenizer, GptOssForCausalLM
+        >>> from transformers import AutoTokenizer, GptOssForCausalLM
+        >>> from liger_kernel.transformers import apply_liger_kernel_to_gpt_oss
 
-    >>> model = GptOssForCausalLM.from_pretrained("openai/gpt-oss-20b")
-    >>> tokenizer = AutoTokenizer.from_pretrained("openai/gpt-oss-20b")
+        >>> # Apply Liger Kernel patches for optimized performance
+        >>> apply_liger_kernel_to_gpt_oss()
 
-    >>> prompt = "Hey, are you conscious? Can you talk to me?"
-    >>> inputs = tokenizer(prompt, return_tensors="pt")
+        >>> model = GptOssForCausalLM.from_pretrained("openai/gpt-oss-20b")
+        >>> tokenizer = AutoTokenizer.from_pretrained("openai/gpt-oss-20b")
 
-    >>> # Generate
-    >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-    >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+        >>> # Inference: Forward pass returns logits
+        >>> outputs = model(**inputs)
+        >>> outputs.logits.shape
+        torch.Size([1, 12, 201088])
+
+        >>> # Get next token prediction
+        >>> next_token_logits = outputs.logits[:, -1, :]
+        >>> predicted_token_id = next_token_logits.argmax(dim=-1)
+
+        >>> # Training: Forward pass with labels returns loss
+        >>> labels = inputs.input_ids.clone()
+        >>> outputs = model(**inputs, labels=labels)
+        >>> outputs.loss
+        tensor(2.6454)
     ```"""
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
