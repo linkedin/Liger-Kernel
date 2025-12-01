@@ -349,6 +349,7 @@ def _block_rms_norm_backward_kernel(
 
         # calculate the gradient of W
         if casting_mode == _CASTING_MODE_LLAMA:
+			# TODO(tcc): use tl.sum(..., dtype=tl.float32) once we upgrade to triton>=3.3.0
             dW_row += tl.sum((dY_row * (X_row * rstd_row[:, None]).to(X_dtype)).to(tl.float32), 0)
         else:
             # here X_row is already in fp32 (see previous if block)
