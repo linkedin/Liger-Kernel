@@ -832,7 +832,7 @@ def test_chunked_vs_triton_grpo_loss(B, T, H, V, loss_type, beta, temperature):
         triton_per_token_loss,
         atol=1e-3,
         rtol=1e-2,
-        msg=f"Per-token losses don't match for {loss_type} with beta={beta}, temperature={temperature}"
+        msg=f"Per-token losses don't match for {loss_type} with beta={beta}, temperature={temperature}",
     )
 
     # KL divergence should match if beta > 0
@@ -844,17 +844,16 @@ def test_chunked_vs_triton_grpo_loss(B, T, H, V, loss_type, beta, temperature):
             triton_per_token_kl,
             atol=1e-3,
             rtol=1e-2,
-            msg=f"KL divergences don't match for {loss_type} with beta={beta}"
+            msg=f"KL divergences don't match for {loss_type} with beta={beta}",
         )
     else:
         assert chunked_kl is None
         assert triton_per_token_kl is None
 
     # Clipping indicators should match
-    assert torch.equal(
-        chunked_is_clipped.bool()[mask_bool],
-        triton_is_clipped.bool()[mask_bool]
-    ), f"Clipping indicators don't match for {loss_type} with beta={beta}"
+    assert torch.equal(chunked_is_clipped.bool()[mask_bool], triton_is_clipped.bool()[mask_bool]), (
+        f"Clipping indicators don't match for {loss_type} with beta={beta}"
+    )
 
     # Compare reduced losses
     chunked_reduced_loss = chunked_loss
@@ -865,5 +864,5 @@ def test_chunked_vs_triton_grpo_loss(B, T, H, V, loss_type, beta, temperature):
         triton_reduced_loss,
         atol=1e-3,
         rtol=1e-2,
-        msg=f"Reduced losses don't match for {loss_type} with beta={beta}, temperature={temperature}"
+        msg=f"Reduced losses don't match for {loss_type} with beta={beta}, temperature={temperature}",
     )

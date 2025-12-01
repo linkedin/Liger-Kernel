@@ -3,7 +3,6 @@ from functools import partial
 
 import torch
 import torch._dynamo.config
-import torch.nn.functional as F
 
 
 class LigerFusedLinearPPOBase(torch.autograd.Function):
@@ -287,8 +286,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         # Get policy log probabilities using chunk_forward
         # Pass selected_token_ids to avoid materializing full vocab logits
         per_token_logps, _ = LigerFusedLinearPPOBase.chunk_forward(
-            input_chunk, weight, bias=bias, temperature=temperature,
-            selected_token_ids=selected_token_ids_chunk
+            input_chunk, weight, bias=bias, temperature=temperature, selected_token_ids=selected_token_ids_chunk
         )
         # per_token_logps is now [B, T] instead of [B, T, V]
 
@@ -297,8 +295,11 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         if use_ref_model and ref_per_token_logps_chunk is None:
             with torch.no_grad():
                 ref_per_token_logps_computed, _ = LigerFusedLinearPPOBase.chunk_forward(
-                    ref_input_chunk, ref_weight, bias=ref_bias, temperature=temperature,
-                    selected_token_ids=selected_token_ids_chunk
+                    ref_input_chunk,
+                    ref_weight,
+                    bias=ref_bias,
+                    temperature=temperature,
+                    selected_token_ids=selected_token_ids_chunk,
                 )
 
         # Compute chunk loss and metrics using the provided loss function
@@ -309,7 +310,9 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             attention_mask=attention_mask_chunk,
             advantages=advantages_chunk,
             full_attention_mask=full_attention_mask,
-            ref_per_token_logps=ref_per_token_logps_chunk.float() if ref_per_token_logps_chunk is not None else ref_per_token_logps_computed,
+            ref_per_token_logps=ref_per_token_logps_chunk.float()
+            if ref_per_token_logps_chunk is not None
+            else ref_per_token_logps_computed,
             old_per_token_logps=old_per_token_logps_chunk.float() if old_per_token_logps_chunk is not None else None,
             epsilon_low=epsilon_low,
             epsilon_high=epsilon_high,
@@ -341,10 +344,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
 
         # Compute log-sum-exp incrementally across vocab chunks
         max_logit = torch.full(
-            input_chunk.shape[:-1],
-            float('-inf'),
-            device=input_chunk.device,
-            dtype=torch.float32
+            input_chunk.shape[:-1], float("-inf"), device=input_chunk.device, dtype=torch.float32
         )  # [B, T]
         sum_exp = torch.zeros_like(max_logit)  # [B, T]
 
@@ -367,8 +367,9 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             new_max = torch.maximum(max_logit, chunk_max)
 
             # Adjust sum_exp for new max
-            sum_exp = sum_exp * torch.exp(max_logit - new_max) + \
-                      (logits_chunk - new_max.unsqueeze(-1)).exp().sum(dim=-1)
+            sum_exp = sum_exp * torch.exp(max_logit - new_max) + (logits_chunk - new_max.unsqueeze(-1)).exp().sum(
+                dim=-1
+            )
             max_logit = new_max
 
         # log_sum_exp = max_logit + log(sum_exp)
