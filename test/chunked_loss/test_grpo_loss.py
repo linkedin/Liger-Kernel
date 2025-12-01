@@ -726,11 +726,17 @@ def test_chunked_vs_triton_grpo_loss(B, T, H, V, loss_type, beta, temperature):
     device = infer_device()
     dtype = torch.float32
 
-    # Create shared inputs
-    _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    # Set seed for reproducibility
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+
+    # Create shared inputs with scaling to prevent numerical overflow
+    # Scale by 1/sqrt(H) to keep matmul outputs in reasonable range
+    _input = torch.randn(B, T, H, device=device, dtype=dtype) / (H**0.5)
     input_chunked = _input.detach().clone().requires_grad_(True)
 
-    _weight = torch.randn(V, H, device=device, dtype=dtype)
+    _weight = torch.randn(V, H, device=device, dtype=dtype) / (H**0.5)
     weight_chunked = _weight.detach().clone().requires_grad_(True)
 
     bias = None  # Triton loss doesn't use bias
@@ -741,8 +747,10 @@ def test_chunked_vs_triton_grpo_loss(B, T, H, V, loss_type, beta, temperature):
 
     advantages = torch.randn(B, device=device, dtype=dtype)
 
-    old_per_token_logps = torch.randn(B, T, device=device, dtype=dtype)
-    ref_per_token_logps = torch.randn(B, T, device=device, dtype=dtype) if beta != 0.0 else None
+    # Use realistic log probability values (should be negative, typically in range [-20, 0])
+    # Using randn would give us unrealistic positive values that cause numerical overflow
+    old_per_token_logps = -torch.rand(B, T, device=device, dtype=dtype) * 10 - 0.1  # range: [-10.1, -0.1]
+    ref_per_token_logps = (-torch.rand(B, T, device=device, dtype=dtype) * 10 - 0.1) if beta != 0.0 else None
 
     use_ref_model = beta != 0.0
     # Only provide ref_input/ref_weight if ref_per_token_logps is not available
@@ -817,52 +825,49 @@ def test_chunked_vs_triton_grpo_loss(B, T, H, V, loss_type, beta, temperature):
     # ========================================
     # Compare results
     # ========================================
-    # Extract chunked results
-    chunked_per_token_loss = chunked_aux[6]  # per_token_loss
-    chunked_kl = chunked_aux[7] if beta != 0.0 else None  # per_token_kl
-    chunked_is_clipped = chunked_aux[8]  # is_clipped
-
-    # Compare per-token losses
-    mask = completion_mask.float()
-    mask_bool = mask.bool()
-
-    # Losses should match
-    assert_verbose_allclose(
-        chunked_per_token_loss * mask,
-        triton_per_token_loss,
-        atol=1e-3,
-        rtol=1e-2,
-        msg=f"Per-token losses don't match for {loss_type} with beta={beta}, temperature={temperature}",
-    )
-
-    # KL divergence should match if beta > 0
-    if beta != 0.0:
-        assert chunked_kl is not None
-        assert triton_per_token_kl is not None
-        assert_verbose_allclose(
-            chunked_kl * mask,
-            triton_per_token_kl,
-            atol=1e-3,
-            rtol=1e-2,
-            msg=f"KL divergences don't match for {loss_type} with beta={beta}",
-        )
-    else:
-        assert chunked_kl is None
-        assert triton_per_token_kl is None
-
-    # Clipping indicators should match
-    assert torch.equal(chunked_is_clipped.bool()[mask_bool], triton_is_clipped.bool()[mask_bool]), (
-        f"Clipping indicators don't match for {loss_type} with beta={beta}"
-    )
+    # The Module returns: (loss, (metric1, metric2, ...))
+    # For beta > 0: (loss, (kl_mean, clip_ratio_mean))
+    # For beta = 0: (loss, (clip_ratio_mean,))
 
     # Compare reduced losses
-    chunked_reduced_loss = chunked_loss
-    triton_reduced_loss = _reduce_grpo_loss(triton_per_token_loss, completion_mask, loss_type, T)
-
     assert_verbose_allclose(
-        chunked_reduced_loss,
-        triton_reduced_loss,
+        chunked_loss,
+        _reduce_grpo_loss(triton_per_token_loss, completion_mask, loss_type, T),
         atol=1e-3,
         rtol=1e-2,
-        msg=f"Reduced losses don't match for {loss_type} with beta={beta}, temperature={temperature}",
     )
+
+    # Compare aggregated metrics
+    if beta != 0.0:
+        # When beta > 0: aux = (kl_mean, clip_ratio_mean)
+        assert len(chunked_aux) == 2, f"Expected 2 metrics when beta > 0, got {len(chunked_aux)}"
+        chunked_kl_mean = chunked_aux[0]
+        chunked_clip_ratio = chunked_aux[1]
+
+        triton_kl_mean = _masked_mean(triton_per_token_kl, completion_mask)
+
+        assert_verbose_allclose(
+            chunked_kl_mean,
+            triton_kl_mean,
+            atol=1e-3,
+            rtol=1e-2,
+        )
+    else:
+        # When beta = 0: aux = (clip_ratio_mean,)
+        assert len(chunked_aux) == 1, f"Expected 1 metric when beta = 0, got {len(chunked_aux)}"
+        chunked_clip_ratio = chunked_aux[0]
+
+    # Compare clip ratio
+    triton_clip_ratio = _masked_mean(triton_is_clipped.float(), completion_mask)
+
+    # Handle edge cases where both might be non-finite
+    if not torch.isfinite(chunked_clip_ratio) and not torch.isfinite(triton_clip_ratio):
+        # Both are non-finite (NaN or inf), this is acceptable as they're both undefined
+        pass
+    else:
+        assert_verbose_allclose(
+            chunked_clip_ratio,
+            triton_clip_ratio,
+            atol=1e-3,
+            rtol=1e-2,
+        )
