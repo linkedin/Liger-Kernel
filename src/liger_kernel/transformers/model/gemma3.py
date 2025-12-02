@@ -235,6 +235,7 @@ def multimodal_forward(
         **lm_kwargs,
     )
 
+    shift_labels = lm_kwargs.pop("shift_labels", None)
     hidden_states = outputs[0]
 
     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
