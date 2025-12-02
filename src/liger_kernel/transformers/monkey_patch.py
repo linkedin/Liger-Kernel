@@ -1709,6 +1709,10 @@ def apply_liger_kernel_to_qwen3_vl(
         modeling_qwen3_vl.Qwen3VLTextMLP = LigerSwiGLUMLP
 
     if geglu:
+        logger.warning(
+            "geglu is set to True, noting that there might be numerical differences compared to the original model. "
+            "Check https://github.com/linkedin/Liger-Kernel/issues/959"
+        )
         modeling_qwen3_vl.Qwen3VLVisionMLP = LigerGEGLUMLP
 
     if model is not None:
@@ -1812,6 +1816,10 @@ def apply_liger_kernel_to_qwen3_vl_moe(
     if swiglu:
         modeling_qwen3_vl_moe.Qwen3VLMoeTextMLP = LigerSwiGLUMLP
     if geglu:
+        logger.warning(
+            "geglu is set to True, there might be numerical differences compared to the original model. "
+            "Check https://github.com/linkedin/Liger-Kernel/issues/959"
+        )
         modeling_qwen3_vl_moe.Qwen3VLMoeVisionMLP = LigerGEGLUMLP
 
     if model is not None and rms_norm:

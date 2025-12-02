@@ -533,7 +533,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
             assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
 
-            assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
+            # numerical issue with LigerGEGLUMLP, no patching check for now
+            # assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
 
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
@@ -561,7 +562,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
             assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
 
-            assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
+            # numerical issue with LigerGEGLUMLP, no patching check for now
+            # assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
 
         try:
             print(dummy_model_instance)
@@ -650,7 +652,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
             assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
 
-            assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
+            # numerical issue with LigerGEGLUMLP, no patching check for now
+            # assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
 
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
@@ -670,7 +673,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
                 if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
                     assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
                 if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
-                    assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+                    assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
             assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
 
@@ -678,9 +681,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
             assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
 
-            assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
-
-            assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            # numerical issue with LigerGEGLUMLP, no patching check for now
+            # assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
 
         try:
             print(dummy_model_instance)
@@ -852,7 +854,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
             assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
 
-            assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
+            # numerical issue with LigerGEGLUMLP, no patching check for now
+            # assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
 
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
@@ -884,7 +887,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
             assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
 
-            assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
+            # numerical issue with LigerGEGLUMLP, no patching check for now
+            # assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
 
         try:
             print(dummy_model_instance)
@@ -984,7 +988,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
             assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
 
-            assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
+            # numerical issue with LigerGEGLUMLP, no patching check for now
+            # assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
 
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
@@ -1016,7 +1021,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
             assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
 
-            assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
+            # numerical issue with LigerGEGLUMLP, no patching check for now
+            # assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
 
         try:
             print(dummy_model_instance)
