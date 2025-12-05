@@ -2206,12 +2206,13 @@ def apply_liger_kernel_to_glm4v_moe(
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
-        if isinstance(model, (Glm4vMoeForConditionalGeneration, Glm4vMoeModel)):
-            # Note: language_model and visual properties can be accessed throught conditional class for BC.
-            # Not sure if it is subject to changes in the future.
-            # Reference: https://github.com/huggingface/transformers/blob/main/src/transformers/models/glm4v_moe/modeling_glm4v_moe.py#L337
+        if isinstance(model, Glm4vMoeForConditionalGeneration):
             text_model: Glm4vMoeTextModel = model.model.language_model
             vision_model: Glm4vMoeVisionModel = model.model.visual
+            Glm4vMoeTextMoE = modeling_glm4v_moe.Glm4vMoeTextMoE
+        elif isinstance(model, Glm4vMoeModel):
+            text_model: Glm4vMoeTextModel = model.language_model
+            vision_model: Glm4vMoeVisionModel = model.visual
             Glm4vMoeTextMoE = modeling_glm4v_moe.Glm4vMoeTextMoE
         elif isinstance(model, Glm4vMoeTextModel):
             text_model: Glm4vMoeTextModel = model
