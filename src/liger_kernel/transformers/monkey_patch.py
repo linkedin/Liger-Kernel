@@ -1520,13 +1520,12 @@ def apply_liger_kernel_to_qwen2_vl(
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
-
-        if isinstance(model, (Qwen2VLForConditionalGeneration, Qwen2VLModel)):
-            # Note: language_model and visual properties can be accessed throught conditional class for BC.
-            # Not sure if it is subject to changes in the future.
-            # Reference: https://github.com/huggingface/transformers/blob/v4.52.4/src/transformers/models/qwen2_vl/modeling_qwen2_vl.py#L1698
+        if isinstance(model, Qwen2VLForConditionalGeneration):
             text_model: Qwen2VLTextModel = model.model.language_model
             vision_model: Qwen2VisionTransformerPretrainedModel = model.model.visual
+        elif isinstance(model, Qwen2VLModel):
+            text_model: Qwen2VLTextModel = model.language_model
+            vision_model: Qwen2VisionTransformerPretrainedModel = model.visual
         elif isinstance(model, Qwen2VLTextModel):
             text_model: Qwen2VLTextModel = model
             vision_model = None
