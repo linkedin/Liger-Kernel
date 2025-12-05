@@ -46,8 +46,6 @@ class TorchLMHeadGRPO(torch.nn.Module):
         self.importance_sampling_level = importance_sampling_level
         if self.loss_type == "dr_grpo":
             assert self.max_completion_length is not None, "max_completion_length must be provided for dr_grpo"
-        # Store num_items_in_batch for dapo loss (to match TRL behavior)
-        self.num_items_in_batch = None
 
     @staticmethod
     def compute_per_token_components(
