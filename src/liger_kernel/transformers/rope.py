@@ -42,19 +42,23 @@ def liger_rotary_pos_emb_vision(
         with stride (num_heads * head_dim, head_dim, 1). Same as q.
         cos (torch.Tensor): The cosine tensor of shape (seq_length, head_dim).
         sin (torch.Tensor): The sine tensor of shape (seq_length, head_dim).
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: The query and key tensors with the same shape and stride as inputs.
     """
-    print(f"{q.shape=}, {k.shape=}")
-    print(f"{cos.shape=}, {sin.shape=}")
-    print(f"{q.stride()=}, {k.stride()=}")
-    print(f"{cos.stride()=}, {sin.stride()=}")
     orig_q_dtype, orig_k_dtype = q.dtype, k.dtype
 
-    q32 = q.to(torch.float32).unsqueeze(0).transpose(1, 2)  # (1, num_heads, seq_length, head_dim)
-    k32 = k.to(torch.float32).unsqueeze(0).transpose(1, 2)  # (1, num_heads, seq_length, head_dim)
+    # tranpose to (1, num_heads, seq_length, head_dim) and cast to float32 to match liger_rotary_pos_emb input shape
+    # also unsqueeze for batch dim
+    q32 = q.to(torch.float32).unsqueeze(0).transpose(1, 2)  
+    k32 = k.to(torch.float32).unsqueeze(0).transpose(1, 2)  
     cos32 = cos.to(torch.float32)
     sin32 = sin.to(torch.float32)
 
     q_out, k_out = liger_rotary_pos_emb(q32, k32, cos32, sin32)
+
+    # transpose back to (seq_length, num_heads, head_dim) and cast back to original dtype
+    # also squeeze out batch dim
     q_out = q_out.transpose(1, 2).squeeze(0).to(orig_q_dtype)
-    k_out = k_out.transpose(1, 2).squeeze(0).to(orig_q_dtype)
+    k_out = k_out.transpose(1, 2).squeeze(0).to(orig_k_dtype)
     return q_out, k_out
