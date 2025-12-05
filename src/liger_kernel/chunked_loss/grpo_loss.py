@@ -31,6 +31,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         loss_type="dapo",  # ["grpo", "bnpo", "dr_grpo", "dapo"]
         max_completion_length=None,  # Required for dr_grpo
         importance_sampling_level="token",  # ["token", "sequence"] - new parameter for GSPO
+        num_items_in_batch=None,  # Total tokens in generation batch, required for dapo to match TRL
+        importance_sampling_ratio=None,  # vLLM importance sampling correction ratio
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation.
@@ -68,6 +70,13 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         per_token_loss1 = coef_1 * advantages.unsqueeze(1)
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        # Apply vLLM importance sampling correction if provided
+        # This corrects for the mismatch between vLLM completion logprobs and recomputed training logprobs
+        # IMPORTANT: This must be applied BEFORE adding KL penalty (to match TRL's implementation)
+        if importance_sampling_ratio is not None:
+            per_token_loss = per_token_loss * importance_sampling_ratio
+
         if beta != 0.0:
             # Compute KL penalty (approximates KL[per_token_logps, ref_per_token_logps])
             kl_div = k3_loss_fn(ref_per_token_logps, per_token_logps)
@@ -92,7 +101,14 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
                 raise ValueError("max_completion_length must be provided for loss_type 'dr_grpo'")
             loss = (per_token_loss * attention_mask).sum() / (full_attention_mask.shape[0] * max_completion_length)
         elif loss_type == "dapo":
-            loss_normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(full_attention_mask)
+            # For dapo, use num_items_in_batch if provided (matches TRL's implementation)
+            # TRL normalizes by num_items_in_batch / num_processes, where num_items_in_batch
+            # is the total completion tokens across the entire generation batch.
+            # If num_items_in_batch is not provided, fall back to attention_mask.sum()
+            if num_items_in_batch is not None:
+                loss_normalizer = torch.clamp(num_items_in_batch, min=1.0)
+            else:
+                loss_normalizer = torch.clamp(full_attention_mask.sum(), min=1.0)
             loss = (per_token_loss * attention_mask).sum() / loss_normalizer
         else:
             raise ValueError(f"Unknown loss type: {loss_type}")
@@ -142,6 +158,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         compiled=True,
         use_ref_model=True,
         chunk_size=1,
+        num_items_in_batch=None,
+        importance_sampling_ratio=None,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -164,6 +182,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             compiled (bool): Whether to use torch compile
             use_ref_model (bool): Whether to use a reference model
             chunk_size (int): Size of chunks for processing.
+            num_items_in_batch (float, optional): Total tokens in generation batch for dapo normalization (matches TRL).
+            importance_sampling_ratio (torch.Tensor, optional): vLLM importance sampling correction ratio.
         Returns:
             torch.Tensor: Computed loss
         """
@@ -191,6 +211,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             use_ref_model=use_ref_model,
             chunk_size=chunk_size,
             importance_sampling_level=importance_sampling_level,
+            num_items_in_batch=num_items_in_batch,
+            importance_sampling_ratio=importance_sampling_ratio,
         )
 
     @staticmethod
@@ -221,6 +243,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_compiled
             None,  # grad_use_ref_model
             None,  # grad_chunk_size
+            None,  # grad_num_items_in_batch
+            None,  # grad_importance_sampling_ratio
         )
 
 
@@ -278,6 +302,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
+        num_items_in_batch=None,
+        importance_sampling_ratio=None,
     ):
         return LigerFusedLinearGRPOFunction.apply(
             _input,
@@ -301,4 +327,6 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.compiled,
             self.use_ref_model,
             self.chunk_size,
+            num_items_in_batch,
+            importance_sampling_ratio,
         )

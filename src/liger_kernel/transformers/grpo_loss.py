@@ -20,6 +20,7 @@ def triton_grpo_loss(
     max_completion_length=None,
     importance_sampling_level="token",
     reduce=False,
+    num_items_in_batch=None,
 ):
     assert logits is not None and completion_ids is not None and advantages is not None, (
         "must provide logits、completion_ids and advantages"
@@ -50,6 +51,7 @@ def triton_grpo_loss(
         completion_mask,
         loss_type=loss_type,
         max_completion_length=max_completion_length,
+        num_items_in_batch=num_items_in_batch,
     )
 
     metrics = []
@@ -59,7 +61,7 @@ def triton_grpo_loss(
     return loss, metrics
 
 
-def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion_length):
+def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion_length, num_items_in_batch=None):
     mask = completion_mask
     if mask is None:
         mask = torch.ones_like(per_token_loss, dtype=per_token_loss.dtype, device=per_token_loss.device)
@@ -76,7 +78,14 @@ def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion
         batch = per_token_loss.shape[0]
         return (per_token_loss * mask).sum() / (batch * max_completion_length)
     if loss_type == "dapo":
-        normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask)
+        # For dapo, use num_items_in_batch if provided (matches TRL's implementation)
+        # TRL normalizes by num_items_in_batch / num_processes, where num_items_in_batch
+        # is the total completion tokens across the entire generation batch.
+        # If num_items_in_batch is not provided, fall back to _compute_dapo_normalizer
+        if num_items_in_batch is not None:
+            normalizer = torch.clamp(num_items_in_batch, min=1.0)
+        else:
+            normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask)
         return (per_token_loss * mask).sum() / normalizer
     raise ValueError(f"Unsupported loss_type '{loss_type}' for Triton GRPO loss.")
 

@@ -46,6 +46,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
         self.importance_sampling_level = importance_sampling_level
         if self.loss_type == "dr_grpo":
             assert self.max_completion_length is not None, "max_completion_length must be provided for dr_grpo"
+        # Store num_items_in_batch for dapo loss (to match TRL behavior)
+        self.num_items_in_batch = None
 
     @staticmethod
     def compute_per_token_components(
@@ -110,6 +112,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         ref_per_token_logps=None,  # Shape: [batch_size, seq_len]
         old_per_token_logps=None,
         ref_input=None,  # Shape: [batch_size, seq_len, hidden_size]
+        num_items_in_batch=None,  # Total tokens in generation batch for dapo normalization
     ):
         logits = x @ self.lin.weight.t()
         if self.lin.bias is not None:
@@ -158,7 +161,11 @@ class TorchLMHeadGRPO(torch.nn.Module):
         elif self.loss_type == "dr_grpo":
             loss = (per_token_loss * attention_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
         elif self.loss_type == "dapo":
-            normalizer = attention_mask.sum().clamp(min=1.0)
+            # For dapo, use num_items_in_batch if provided (matches TRL's implementation)
+            if num_items_in_batch is not None:
+                normalizer = torch.clamp(num_items_in_batch, min=1.0)
+            else:
+                normalizer = attention_mask.sum().clamp(min=1.0)
             loss = (per_token_loss * attention_mask).sum() / normalizer
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
@@ -211,6 +218,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         ref_per_token_logps=None,
         old_per_token_logps=None,
         ref_input=None,
+        num_items_in_batch=None,
     ):
         # Pass only the arguments defined in LigerFusedLinearGRPOFunction.forward()
         return self.grpo_loss(
@@ -225,6 +233,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
             ref_input,  # ref_input
             self.ref_lin.weight,  # ref_weight
             self.ref_lin.bias,  # ref_bias
+            num_items_in_batch,  # num_items_in_batch
         )
 
 
@@ -353,6 +362,11 @@ def test_correctness(
     mask_indices = torch.randperm(B * T)[:num_elements_to_mask]
     attention_mask.view(-1)[mask_indices] = 0
 
+    # Create num_items_in_batch for dapo loss (simulates TRL's generation batch normalization)
+    # In TRL, this is the total completion tokens across the entire generation batch
+    # For testing, we use attention_mask.sum() to match the fallback behavior
+    num_items_in_batch = attention_mask.sum()
+
     # Create advantages with shape [B]
     advantages = torch.rand(B, device=device, dtype=dtype)
 
@@ -379,6 +393,7 @@ def test_correctness(
         ref_per_token_logps=ref_per_token_logps,
         old_per_token_logps=old_per_token_logps,
         ref_input=ref_input,
+        num_items_in_batch=num_items_in_batch if loss_type == "dapo" else None,
     )
     loss2, aux2 = liger_lm_head_grpo(
         input2,
@@ -388,6 +403,7 @@ def test_correctness(
         ref_per_token_logps=ref_per_token_logps,
         old_per_token_logps=old_per_token_logps,
         ref_input=ref_input,
+        num_items_in_batch=num_items_in_batch if loss_type == "dapo" else None,
     )
     # Check losses match
     assert not torch.isnan(loss1)
