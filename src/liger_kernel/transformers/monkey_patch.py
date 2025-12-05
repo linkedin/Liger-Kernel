@@ -1627,7 +1627,7 @@ def apply_liger_kernel_to_qwen2_5_vl(
 
         if vision_model is not None:
             # Patch Qwen2_5_VisionTransformerPretrainedModel
-            for vision_block in model.model.visual.blocks:
+            for vision_block in vision_model.blocks:
                 if rms_norm:
                     _patch_rms_norm_module(vision_block.norm1)
                     _patch_rms_norm_module(vision_block.norm2)
