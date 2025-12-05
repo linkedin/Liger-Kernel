@@ -1773,8 +1773,10 @@ def apply_liger_kernel_to_qwen3_vl_moe(
             modeling_qwen3_vl_moe.Qwen3VLMoeForConditionalGeneration.forward = qwen3_vl_moe_lce_forward
 
     if model is not None and rms_norm:
-        if isinstance(model, (Qwen3VLMoeForConditionalGeneration, Qwen3VLMoeModel)):
+        if isinstance(model, Qwen3VLMoeForConditionalGeneration):
             text_model: Qwen3VLMoeTextModel = model.model.language_model
+        elif isinstance(model, Qwen3VLMoeModel):
+            text_model: Qwen3VLMoeTextModel = model.language_model
         elif isinstance(model, Qwen3VLMoeTextModel):
             text_model = model
         else:
