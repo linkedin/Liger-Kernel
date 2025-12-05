@@ -885,3 +885,111 @@ def test_chunked_vs_triton_grpo_loss(B, T, H, V, loss_type, beta, temperature):
             atol=1e-3,
             rtol=1e-2,
         )
+
+
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dapo"])
+@pytest.mark.parametrize("beta", [0.0, 0.04])
+@pytest.mark.parametrize("isr_shape", ["token", "sequence"])
+def test_triton_grpo_loss_with_importance_sampling_ratio(loss_type, beta, isr_shape):
+    """
+    Test that Triton GRPO loss correctly applies importance_sampling_ratio
+    for both token-level (B, L) and sequence-level (B, 1) shapes.
+    """
+    pytest.importorskip("triton")
+    device = infer_device()
+
+    B, T, V = 2, 4, 16
+    logits = torch.randn(B, T + 1, V, device=device, dtype=torch.float32).contiguous()
+    completion_ids = torch.randint(0, V, (B, T), device=device)
+    completion_mask = torch.randint(0, 2, (B, T), device=device, dtype=torch.long)
+    completion_mask[:, 0] = 1  # ensure each sequence has at least one valid token
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+    old_logp = torch.randn(B, T, device=device, dtype=torch.float32)
+    ref_logp = torch.randn(B, T, device=device, dtype=torch.float32) if beta != 0.0 else None
+
+    # Create importance_sampling_ratio with appropriate shape
+    if isr_shape == "token":
+        importance_sampling_ratio = torch.rand(B, T, device=device, dtype=torch.float32) * 2  # [0, 2]
+    else:  # sequence
+        importance_sampling_ratio = torch.rand(B, 1, device=device, dtype=torch.float32) * 2  # [0, 2]
+
+    # Run Triton loss with ISR
+    per_token_loss, per_token_kl, is_clipped = triton_grpo_loss(
+        logits=logits,
+        old_logp=old_logp,
+        ref_logp=ref_logp,
+        completion_ids=completion_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        temperature=1.0,
+        beta=beta,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type=loss_type,
+        max_completion_length=T,
+        reduce=False,
+        importance_sampling_ratio=importance_sampling_ratio,
+    )
+
+    # Compute reference without ISR
+    per_token_loss_no_isr, per_token_kl_no_isr, _ = triton_grpo_loss(
+        logits=logits.clone(),
+        old_logp=old_logp,
+        ref_logp=ref_logp,
+        completion_ids=completion_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        temperature=1.0,
+        beta=beta,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type=loss_type,
+        max_completion_length=T,
+        reduce=False,
+        importance_sampling_ratio=None,
+    )
+
+    # ISR is applied to the loss BEFORE KL is added
+    # So: loss_with_isr = (loss_no_kl * isr) + beta * kl
+    # And: loss_no_isr = loss_no_kl + beta * kl
+    # Therefore: loss_with_isr - beta * kl = (loss_no_isr - beta * kl) * isr
+    isr_expanded = importance_sampling_ratio.expand(B, T) if isr_shape == "sequence" else importance_sampling_ratio
+    mask = completion_mask.bool()
+
+    if beta != 0.0:
+        # Verify KL is unchanged (ISR doesn't affect KL computation)
+        assert_verbose_allclose(per_token_kl[mask], per_token_kl_no_isr[mask], atol=1e-5, rtol=1e-4)
+
+        # Compute expected loss: (loss_without_kl * isr) + beta * kl
+        loss_without_kl_no_isr = per_token_loss_no_isr - beta * per_token_kl_no_isr
+        expected_loss = loss_without_kl_no_isr * isr_expanded + beta * per_token_kl_no_isr
+        assert_verbose_allclose(per_token_loss[mask], expected_loss[mask], atol=1e-5, rtol=1e-4)
+    else:
+        # When beta=0, loss_with_isr = loss_no_isr * isr
+        expected_loss = per_token_loss_no_isr * isr_expanded
+        assert_verbose_allclose(per_token_loss[mask], expected_loss[mask], atol=1e-5, rtol=1e-4)
+
+    # Test reduced loss also works
+    reduced_loss, metrics = triton_grpo_loss(
+        logits=logits,
+        old_logp=old_logp,
+        ref_logp=ref_logp,
+        completion_ids=completion_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        temperature=1.0,
+        beta=beta,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type=loss_type,
+        max_completion_length=T,
+        reduce=True,
+        importance_sampling_ratio=importance_sampling_ratio,
+    )
+
+    # Verify reduced loss matches manual reduction of per_token_loss
+    expected_reduced = _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, T)
+    assert_verbose_allclose(reduced_loss, expected_reduced, atol=1e-5, rtol=1e-4)
