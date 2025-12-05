@@ -21,6 +21,7 @@ def triton_grpo_loss(
     importance_sampling_level="token",
     reduce=False,
     num_items_in_batch=None,
+    importance_sampling_ratio=None,  # vLLM importance sampling correction ratio
 ):
     assert logits is not None and completion_ids is not None and advantages is not None, (
         "must provide logits、completion_ids and advantages"
@@ -42,6 +43,7 @@ def triton_grpo_loss(
         eps_low,
         eps_high,
         inplace,
+        importance_sampling_ratio,
     )
     if not reduce:
         return per_token_loss, per_token_kl, is_clipped

@@ -75,6 +75,7 @@ def _grpo_loss_fwd_kernel(
     INPUT_IDS,
     COMPLETION_MASK,
     ADVANTAGES,
+    IMPORTANCE_SAMPLING_RATIO,  # vLLM importance sampling correction ratio
     LOSS,
     LSE,
     KL,
@@ -132,6 +133,14 @@ def _grpo_loss_fwd_kernel(
     is_high_clipped = (coef_1 > 1 + EPS_HIGH) & (advantage > 0)
     is_clipped = is_low_clipped | is_high_clipped
 
+    # Apply vLLM importance sampling correction if provided
+    # This corrects for the mismatch between vLLM completion logprobs and recomputed training logprobs
+    # IMPORTANT: This must be applied BEFORE adding KL penalty (to match TRL's implementation)
+    if IMPORTANCE_SAMPLING_RATIO is not None:
+        IMPORTANCE_SAMPLING_RATIO += off_b * L + off_l
+        isr = tl.load(IMPORTANCE_SAMPLING_RATIO).to(tl.float32)
+        per_token_loss = per_token_loss * isr
+
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
         KL += off_b * L + off_l
@@ -160,6 +169,7 @@ def _grpo_loss_bwd_kernel(
     INPUT_IDS,
     ADVANTAGES,
     COMPLETION_MASK,
+    IMPORTANCE_SAMPLING_RATIO,  # vLLM importance sampling correction ratio
     LSE,
     TEMPERATURE,
     BETA: tl.constexpr,
@@ -209,6 +219,15 @@ def _grpo_loss_bwd_kernel(
     mask = per_token_loss2 >= per_token_loss1
 
     dlogp = -per_token_loss1 * mask
+
+    # Apply vLLM importance sampling correction if provided
+    # This corrects for the mismatch between vLLM completion logprobs and recomputed training logprobs
+    # IMPORTANT: This must be applied BEFORE adding KL penalty gradient (to match TRL's implementation)
+    if IMPORTANCE_SAMPLING_RATIO is not None:
+        IMPORTANCE_SAMPLING_RATIO += off_b * L + off_l
+        isr = tl.load(IMPORTANCE_SAMPLING_RATIO).to(tl.float32)
+        dlogp = dlogp * isr
+
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
@@ -239,10 +258,12 @@ class GrpoLossFunction(torch.autograd.Function):
         eps_low,
         eps_high,
         inplace,
+        importance_sampling_ratio=None,  # vLLM importance sampling correction ratio
     ):
         assert logits.is_contiguous() and completion_ids.is_contiguous()
         assert old_logp is None or old_logp.is_contiguous()
         assert (ref_logp is not None and ref_logp.is_contiguous()) if beta != 0.0 else True
+        assert importance_sampling_ratio is None or importance_sampling_ratio.is_contiguous()
 
         B, L_ADD_1, N = logits.shape
         L = L_ADD_1 - 1
@@ -262,6 +283,7 @@ class GrpoLossFunction(torch.autograd.Function):
             completion_ids,
             completion_mask,
             advantages,
+            importance_sampling_ratio,
             loss,
             lse,
             kl,
@@ -274,7 +296,9 @@ class GrpoLossFunction(torch.autograd.Function):
             N,
             **kwargs,
         )
-        ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse)
+        ctx.save_for_backward(
+            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, importance_sampling_ratio, lse
+        )
         ctx.infos = (temperature, beta, eps_low, eps_high, inplace)
         # return loss
         return loss, kl, is_clipped
@@ -283,7 +307,16 @@ class GrpoLossFunction(torch.autograd.Function):
     def backward(ctx, *args):
         dloss = args[0]
         # print(dloss.shape)
-        logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse = ctx.saved_tensors
+        (
+            logits,
+            old_logp,
+            ref_logp,
+            completion_ids,
+            advantages,
+            completion_mask,
+            importance_sampling_ratio,
+            lse,
+        ) = ctx.saved_tensors
         temperature, beta, eps_low, eps_high, inplace = ctx.infos
         B, L_ADD_1, N = logits.shape
         L = L_ADD_1 - 1
@@ -298,6 +331,7 @@ class GrpoLossFunction(torch.autograd.Function):
             completion_ids,
             advantages,
             completion_mask,
+            importance_sampling_ratio,
             lse,
             temperature,
             beta,
@@ -309,4 +343,4 @@ class GrpoLossFunction(torch.autograd.Function):
             **kwargs,
         )
         dlogits[:, -1, :] = 0
-        return dlogits, None, None, None, None, None, None, None, None, None, None
+        return dlogits, None, None, None, None, None, None, None, None, None, None, None
