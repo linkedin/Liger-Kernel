@@ -55,6 +55,9 @@ def set_seed(seed=42):
         # If you are using XPU
         torch.xpu.manual_seed(seed)
         torch.xpu.manual_seed_all(seed)
+    elif device == "npu":
+        torch.npu.manual_seed(seed)
+        torch.npu.manual_seed_all(seed)
 
     # Python hash seed
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -257,6 +260,8 @@ def supports_bfloat16():
     if device == "cuda":
         return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
     elif device == "xpu":
+        return True
+    elif device == "npu":
         return True
     else:
         return False

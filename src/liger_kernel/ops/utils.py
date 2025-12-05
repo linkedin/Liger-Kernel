@@ -78,6 +78,8 @@ def get_amp_custom_fwd_bwd() -> Callable:
             functools.partial(torch.amp.custom_fwd, device_type=device),
             functools.partial(torch.amp.custom_bwd, device_type=device),
         )
+    if hasattr(torch, "npu") and getattr(torch.npu, "amp", None) is not None:
+        return torch.npu.amp.custom_fwd, torch.npu.amp.custom_bwd
     return torch.cuda.amp.custom_fwd, torch.cuda.amp.custom_bwd
 
 
