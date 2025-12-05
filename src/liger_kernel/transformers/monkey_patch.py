@@ -2317,10 +2317,12 @@ def apply_liger_kernel_to_internvl(
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
-        if isinstance(model, (InternVLForConditionalGeneration, InternVLModel)):
-            # NOTE: language_model and visual properties can be accessed throught conditional class.
+        if isinstance(model, InternVLForConditionalGeneration):
             text_model = model.model.language_model
             vision_model: InternVLVisionModel = model.model.vision_tower
+        elif isinstance(model, InternVLModel):
+            text_model = model.language_model
+            vision_model: InternVLVisionModel = model.vision_tower
         else:
             raise TypeError(
                 f"Unsupported internvl model type. `model` must be `InternVLForConditionalGeneration`, `InternVLModel`. Got: {type(model)}"
