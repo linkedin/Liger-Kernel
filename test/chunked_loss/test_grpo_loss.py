@@ -110,6 +110,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         ref_per_token_logps=None,  # Shape: [batch_size, seq_len]
         old_per_token_logps=None,
         ref_input=None,  # Shape: [batch_size, seq_len, hidden_size]
+        num_items_in_batch=None,  # Total tokens in generation batch for dapo normalization
     ):
         logits = x @ self.lin.weight.t()
         if self.lin.bias is not None:
@@ -158,7 +159,11 @@ class TorchLMHeadGRPO(torch.nn.Module):
         elif self.loss_type == "dr_grpo":
             loss = (per_token_loss * attention_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
         elif self.loss_type == "dapo":
-            normalizer = attention_mask.sum().clamp(min=1.0)
+            # For dapo, use num_items_in_batch if provided (matches TRL's implementation)
+            if num_items_in_batch is not None:
+                normalizer = torch.clamp(num_items_in_batch, min=1.0)
+            else:
+                normalizer = attention_mask.sum().clamp(min=1.0)
             loss = (per_token_loss * attention_mask).sum() / normalizer
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
@@ -211,6 +216,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         ref_per_token_logps=None,
         old_per_token_logps=None,
         ref_input=None,
+        num_items_in_batch=None,
     ):
         # Pass only the arguments defined in LigerFusedLinearGRPOFunction.forward()
         return self.grpo_loss(
@@ -225,6 +231,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
             ref_input,  # ref_input
             self.ref_lin.weight,  # ref_weight
             self.ref_lin.bias,  # ref_bias
+            num_items_in_batch,  # num_items_in_batch
         )
 
 
@@ -353,6 +360,11 @@ def test_correctness(
     mask_indices = torch.randperm(B * T)[:num_elements_to_mask]
     attention_mask.view(-1)[mask_indices] = 0
 
+    # Create num_items_in_batch for dapo loss (simulates TRL's generation batch normalization)
+    # In TRL, this is the total completion tokens across the entire generation batch
+    # For testing, we use attention_mask.sum() to match the fallback behavior
+    num_items_in_batch = attention_mask.sum()
+
     # Create advantages with shape [B]
     advantages = torch.rand(B, device=device, dtype=dtype)
 
@@ -379,6 +391,7 @@ def test_correctness(
         ref_per_token_logps=ref_per_token_logps,
         old_per_token_logps=old_per_token_logps,
         ref_input=ref_input,
+        num_items_in_batch=num_items_in_batch if loss_type == "dapo" else None,
     )
     loss2, aux2 = liger_lm_head_grpo(
         input2,
@@ -388,6 +401,7 @@ def test_correctness(
         ref_per_token_logps=ref_per_token_logps,
         old_per_token_logps=old_per_token_logps,
         ref_input=ref_input,
+        num_items_in_batch=num_items_in_batch if loss_type == "dapo" else None,
     )
     # Check losses match
     assert not torch.isnan(loss1)
@@ -701,3 +715,281 @@ def _reference_per_token_loss(
 def _masked_mean(values, mask):
     mask = mask.to(values.dtype)
     return (values * mask).sum() / mask.sum().clamp(min=1.0)
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (2, 4, 128, 4096),
+        (4, 8, 256, 8192),
+    ],
+)
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dapo"])
+@pytest.mark.parametrize("beta", [0.0, 0.04])
+@pytest.mark.parametrize("temperature", [1.0, 0.9])
+def test_chunked_vs_triton_grpo_loss(B, T, H, V, loss_type, beta, temperature):
+    """
+    Test that chunked GRPO loss (LigerFusedLinearGRPOFunction) produces
+    the same results as Triton GRPO loss (triton_grpo_loss) for the same inputs.
+
+    This validates that the memory-optimized chunked implementation with
+    vocab chunking and selected-token-only computation produces identical
+    results to the Triton kernel implementation.
+    """
+    pytest.importorskip("triton")
+    device = infer_device()
+    dtype = torch.float32
+
+    # Set seed for reproducibility
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+
+    # Create shared inputs with scaling to prevent numerical overflow
+    # Scale by 1/sqrt(H) to keep matmul outputs in reasonable range
+    _input = torch.randn(B, T, H, device=device, dtype=dtype) / (H**0.5)
+    input_chunked = _input.detach().clone().requires_grad_(True)
+
+    _weight = torch.randn(V, H, device=device, dtype=dtype) / (H**0.5)
+    weight_chunked = _weight.detach().clone().requires_grad_(True)
+
+    bias = None  # Triton loss doesn't use bias
+
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    completion_mask = torch.ones(B, T, device=device, dtype=torch.long)
+    completion_mask[:, -1] = 0  # mask out last token for some sequences
+
+    advantages = torch.randn(B, device=device, dtype=dtype)
+
+    # Use realistic log probability values (should be negative, typically in range [-20, 0])
+    # Using randn would give us unrealistic positive values that cause numerical overflow
+    old_per_token_logps = -torch.rand(B, T, device=device, dtype=dtype) * 10 - 0.1  # range: [-10.1, -0.1]
+    ref_per_token_logps = (-torch.rand(B, T, device=device, dtype=dtype) * 10 - 0.1) if beta != 0.0 else None
+
+    use_ref_model = beta != 0.0
+    # Only provide ref_input/ref_weight if ref_per_token_logps is not available
+    # For this test, we always provide ref_per_token_logps when beta > 0
+    ref_input = None
+    ref_weight = None
+    ref_bias = None
+
+    # ========================================
+    # Run chunked loss (our fixed implementation)
+    # ========================================
+    liger_loss_fn = LigerFusedLinearGRPOLoss(
+        beta=beta,
+        epsilon_low=0.2,
+        epsilon_high=0.2,
+        temperature=temperature,
+        use_ref_model=use_ref_model,
+        loss_type=loss_type,
+        max_completion_length=T,
+        importance_sampling_level="token",
+        chunk_size=1,
+        compiled=False,  # Disable torch compile for testing
+    )
+
+    chunked_loss, chunked_aux = liger_loss_fn.forward(
+        input_chunked,  # _input comes FIRST
+        weight_chunked,  # lin_weight comes SECOND
+        selected_token_ids,
+        completion_mask.float(),
+        advantages,
+        bias,
+        ref_per_token_logps,
+        old_per_token_logps,
+        ref_input,
+        ref_weight,
+        ref_bias,
+    )
+
+    # ========================================
+    # Prepare inputs for Triton loss
+    # ========================================
+    # Triton expects logits of shape [B, T+1, V]
+    # Compute logits from hidden states
+    with torch.no_grad():
+        logits_for_triton = torch.matmul(_input, _weight.t())  # [B, T, V]
+        # Pad with zeros to make it [B, T+1, V]
+        logits_for_triton = F.pad(logits_for_triton, (0, 0, 0, 1))  # pad sequence dim
+        logits_for_triton = logits_for_triton.contiguous()
+        logits_for_triton = logits_for_triton / temperature
+
+    # ========================================
+    # Run Triton loss
+    # ========================================
+    triton_per_token_loss, triton_per_token_kl, triton_is_clipped = triton_grpo_loss(
+        logits=logits_for_triton,
+        old_logp=old_per_token_logps,
+        ref_logp=ref_per_token_logps,
+        completion_ids=selected_token_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        temperature=1.0,  # already applied to logits
+        beta=beta,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type=loss_type,
+        max_completion_length=T,
+        importance_sampling_level="token",
+        reduce=False,
+    )
+
+    # ========================================
+    # Compare results
+    # ========================================
+    # The Module returns: (loss, (metric1, metric2, ...))
+    # For beta > 0: (loss, (kl_mean, clip_ratio_mean))
+    # For beta = 0: (loss, (clip_ratio_mean,))
+
+    # Compare reduced losses
+    assert_verbose_allclose(
+        chunked_loss,
+        _reduce_grpo_loss(triton_per_token_loss, completion_mask, loss_type, T),
+        atol=1e-3,
+        rtol=1e-2,
+    )
+
+    # Compare aggregated metrics
+    if beta != 0.0:
+        # When beta > 0: aux = (kl_mean, clip_ratio_mean)
+        assert len(chunked_aux) == 2, f"Expected 2 metrics when beta > 0, got {len(chunked_aux)}"
+        chunked_kl_mean = chunked_aux[0]
+        chunked_clip_ratio = chunked_aux[1]
+
+        triton_kl_mean = _masked_mean(triton_per_token_kl, completion_mask)
+
+        assert_verbose_allclose(
+            chunked_kl_mean,
+            triton_kl_mean,
+            atol=1e-3,
+            rtol=1e-2,
+        )
+    else:
+        # When beta = 0: aux = (clip_ratio_mean,)
+        assert len(chunked_aux) == 1, f"Expected 1 metric when beta = 0, got {len(chunked_aux)}"
+        chunked_clip_ratio = chunked_aux[0]
+
+    # Compare clip ratio
+    triton_clip_ratio = _masked_mean(triton_is_clipped.float(), completion_mask)
+
+    # Handle edge cases where both might be non-finite
+    if not torch.isfinite(chunked_clip_ratio) and not torch.isfinite(triton_clip_ratio):
+        # Both are non-finite (NaN or inf), this is acceptable as they're both undefined
+        pass
+    else:
+        assert_verbose_allclose(
+            chunked_clip_ratio,
+            triton_clip_ratio,
+            atol=1e-3,
+            rtol=1e-2,
+        )
+
+
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dapo"])
+@pytest.mark.parametrize("beta", [0.0, 0.04])
+@pytest.mark.parametrize("isr_shape", ["token", "sequence"])
+def test_triton_grpo_loss_with_importance_sampling_ratio(loss_type, beta, isr_shape):
+    """
+    Test that Triton GRPO loss correctly applies importance_sampling_ratio
+    for both token-level (B, L) and sequence-level (B, 1) shapes.
+    """
+    pytest.importorskip("triton")
+    device = infer_device()
+
+    B, T, V = 2, 4, 16
+    logits = torch.randn(B, T + 1, V, device=device, dtype=torch.float32).contiguous()
+    completion_ids = torch.randint(0, V, (B, T), device=device)
+    completion_mask = torch.randint(0, 2, (B, T), device=device, dtype=torch.long)
+    completion_mask[:, 0] = 1  # ensure each sequence has at least one valid token
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+    old_logp = torch.randn(B, T, device=device, dtype=torch.float32)
+    ref_logp = torch.randn(B, T, device=device, dtype=torch.float32) if beta != 0.0 else None
+
+    # Create importance_sampling_ratio with appropriate shape
+    if isr_shape == "token":
+        importance_sampling_ratio = torch.rand(B, T, device=device, dtype=torch.float32) * 2  # [0, 2]
+    else:  # sequence
+        importance_sampling_ratio = torch.rand(B, 1, device=device, dtype=torch.float32) * 2  # [0, 2]
+
+    # Run Triton loss with ISR
+    per_token_loss, per_token_kl, is_clipped = triton_grpo_loss(
+        logits=logits,
+        old_logp=old_logp,
+        ref_logp=ref_logp,
+        completion_ids=completion_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        temperature=1.0,
+        beta=beta,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type=loss_type,
+        max_completion_length=T,
+        reduce=False,
+        importance_sampling_ratio=importance_sampling_ratio,
+    )
+
+    # Compute reference without ISR
+    per_token_loss_no_isr, per_token_kl_no_isr, _ = triton_grpo_loss(
+        logits=logits.clone(),
+        old_logp=old_logp,
+        ref_logp=ref_logp,
+        completion_ids=completion_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        temperature=1.0,
+        beta=beta,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type=loss_type,
+        max_completion_length=T,
+        reduce=False,
+        importance_sampling_ratio=None,
+    )
+
+    # ISR is applied to the loss BEFORE KL is added
+    # So: loss_with_isr = (loss_no_kl * isr) + beta * kl
+    # And: loss_no_isr = loss_no_kl + beta * kl
+    # Therefore: loss_with_isr - beta * kl = (loss_no_isr - beta * kl) * isr
+    isr_expanded = importance_sampling_ratio.expand(B, T) if isr_shape == "sequence" else importance_sampling_ratio
+    mask = completion_mask.bool()
+
+    if beta != 0.0:
+        # Verify KL is unchanged (ISR doesn't affect KL computation)
+        assert_verbose_allclose(per_token_kl[mask], per_token_kl_no_isr[mask], atol=1e-5, rtol=1e-4)
+
+        # Compute expected loss: (loss_without_kl * isr) + beta * kl
+        loss_without_kl_no_isr = per_token_loss_no_isr - beta * per_token_kl_no_isr
+        expected_loss = loss_without_kl_no_isr * isr_expanded + beta * per_token_kl_no_isr
+        assert_verbose_allclose(per_token_loss[mask], expected_loss[mask], atol=1e-5, rtol=1e-4)
+    else:
+        # When beta=0, loss_with_isr = loss_no_isr * isr
+        expected_loss = per_token_loss_no_isr * isr_expanded
+        assert_verbose_allclose(per_token_loss[mask], expected_loss[mask], atol=1e-5, rtol=1e-4)
+
+    # Test reduced loss also works
+    reduced_loss, metrics = triton_grpo_loss(
+        logits=logits,
+        old_logp=old_logp,
+        ref_logp=ref_logp,
+        completion_ids=completion_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        temperature=1.0,
+        beta=beta,
+        eps_low=0.2,
+        eps_high=0.2,
+        inplace=False,
+        loss_type=loss_type,
+        max_completion_length=T,
+        reduce=True,
+        importance_sampling_ratio=importance_sampling_ratio,
+    )
+
+    # Verify reduced loss matches manual reduction of per_token_loss
+    expected_reduced = _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, T)
+    assert_verbose_allclose(reduced_loss, expected_reduced, atol=1e-5, rtol=1e-4)
