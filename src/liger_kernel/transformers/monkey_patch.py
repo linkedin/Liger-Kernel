@@ -35,8 +35,7 @@ from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_f
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
-from liger_kernel.transformers.rope import liger_rotary_pos_emb_with_cast
-from liger_kernel.transformers.rope import liger_rotary_pos_emb_with_cast_and_leading_batch
+from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
@@ -1754,8 +1753,8 @@ def apply_liger_kernel_to_qwen3_vl(
     from liger_kernel.transformers.model.qwen3_vl import lce_forward as qwen3_vl_lce_forward
 
     if rope:
-        modeling_qwen3_vl.apply_rotary_pos_emb = liger_rotary_pos_emb_with_cast
-        modeling_qwen3_vl.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_with_cast_and_leading_batch
+        modeling_qwen3_vl.apply_rotary_pos_emb = liger_rotary_pos_emb
+        modeling_qwen3_vl.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_vision
 
     if rms_norm:
         modeling_qwen3_vl.Qwen3VLTextRMSNorm = LigerRMSNorm
@@ -1829,8 +1828,8 @@ def apply_liger_kernel_to_qwen3_vl_moe(
     from liger_kernel.transformers.model.qwen3_vl_moe import lce_forward as qwen3_vl_moe_lce_forward
 
     if rope:
-        modeling_qwen3_vl_moe.apply_rotary_pos_emb = liger_rotary_pos_emb_with_cast
-        modeling_qwen3_vl_moe.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_with_cast_and_leading_batch
+        modeling_qwen3_vl_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
+        modeling_qwen3_vl_moe.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_vision
 
     if rms_norm:
         modeling_qwen3_vl_moe.Qwen3VLMoeTextRMSNorm = LigerRMSNorm
