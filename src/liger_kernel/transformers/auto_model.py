@@ -1,10 +1,13 @@
 import inspect
+import logging
 
 from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
 
 from liger_kernel.transformers.monkey_patch import MODEL_TYPE_TO_APPLY_LIGER_FN
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel
+
+logger = logging.getLogger(__name__)
 
 
 def _get_model_config(model_dir, **model_init_kwargs):
@@ -36,3 +39,21 @@ class AutoLigerKernelForCausalLM(AutoModelForCausalLM):
         applicable_kwargs = {key: value for key, value in kwargs.items() if key not in apply_fn_signature.parameters}
 
         return super().from_pretrained(pretrained_model_name_or_path, *model_args, **applicable_kwargs)
+
+    @classmethod
+    def from_config(cls, config, **kwargs):
+        model_type = getattr(config, "model_type", None)
+        if not model_type:
+            logger.info("Model type could not be determined from model config. No Liger kernels will be applied.")
+            return
+        model_type = config.model_type
+
+        _apply_liger_kernel(model_type, **kwargs)
+
+        # Filter out kwargs that were passed to the apply_liger_* function, which will cause
+        # model initialization errors otherwise
+        apply_fn = MODEL_TYPE_TO_APPLY_LIGER_FN[model_type]
+        apply_fn_signature = inspect.signature(apply_fn)
+        applicable_kwargs = {key: value for key, value in kwargs.items() if key not in apply_fn_signature.parameters}
+
+        return super().from_config(config, **applicable_kwargs)
