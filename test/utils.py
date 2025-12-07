@@ -55,6 +55,9 @@ def set_seed(seed=42):
         # If you are using XPU
         torch.xpu.manual_seed(seed)
         torch.xpu.manual_seed_all(seed)
+    elif device == "npu":
+        torch.npu.manual_seed(seed)
+        torch.npu.manual_seed_all(seed)
 
     # Python hash seed
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -257,6 +260,8 @@ def supports_bfloat16():
     if device == "cuda":
         return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
     elif device == "xpu":
+        return True
+    elif device == "npu":
         return True
     else:
         return False
@@ -478,6 +483,18 @@ def revert_liger_kernel_to_qwen3_moe(model_config: MiniModelConfig):
 
     importlib.reload(modeling_qwen3_moe)
     model_config.model_class = modeling_qwen3_moe.Qwen3MoeForCausalLM
+
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_gpt_oss(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to GPT-OSS.
+    """
+    from transformers.models.gpt_oss import modeling_gpt_oss
+
+    importlib.reload(modeling_gpt_oss)
+    model_config.model_class = modeling_gpt_oss.GptOssForCausalLM
 
     print("Liger kernel patches have been reverted.")
 

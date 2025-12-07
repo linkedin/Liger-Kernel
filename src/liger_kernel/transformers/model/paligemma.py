@@ -330,6 +330,7 @@ def lce_forward(
         **lm_kwargs,
     )
 
+    shift_labels = lm_kwargs.pop("shift_labels", None)
     hidden_states = outputs[0]
 
     loss = None

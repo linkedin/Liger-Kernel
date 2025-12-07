@@ -7,8 +7,10 @@ import triton.language as tl
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import infer_device
+from liger_kernel.utils import get_npu_multi_processor_count
+from liger_kernel.utils import is_npu_available
 
-if compare_version("triton", operator.ge, "3.0.0"):
+if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
     try:
         # typical import path with dispatch available
         from triton.language.extra.libdevice import tanh
@@ -125,7 +127,8 @@ def liger_dyt_bwd(dy, x, alpha, gamma, beta):
         NUM_SMS = torch.cuda.get_device_properties(x.device).multi_processor_count
     elif device == "xpu":
         NUM_SMS = torch.xpu.get_device_properties(x.device).gpu_subslice_count
-
+    elif device == "npu":
+        NUM_SMS = get_npu_multi_processor_count()
     da = torch.zeros(NUM_SMS, triton.cdiv(N, 512), dtype=torch.float32, device=x.device)
     dg = torch.empty(NUM_SMS, N, dtype=torch.float32, device=x.device)
     db = torch.empty(NUM_SMS, N, dtype=torch.float32, device=x.device) if HAVE_BETA else None
