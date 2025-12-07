@@ -50,8 +50,8 @@ def liger_rotary_pos_emb_vision(
 
     # tranpose to (1, num_heads, seq_length, head_dim) and cast to float32 to match liger_rotary_pos_emb input shape
     # also unsqueeze for batch dim
-    q32 = q.to(torch.float32).unsqueeze(0).transpose(1, 2)  
-    k32 = k.to(torch.float32).unsqueeze(0).transpose(1, 2)  
+    q32 = q.to(torch.float32).unsqueeze(0).transpose(1, 2)
+    k32 = k.to(torch.float32).unsqueeze(0).transpose(1, 2)
     cos32 = cos.to(torch.float32)
     sin32 = sin.to(torch.float32)
 
