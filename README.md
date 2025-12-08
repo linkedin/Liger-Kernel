@@ -65,6 +65,8 @@ We've also added optimized Post-Training kernels that deliver **up to 80% memory
 
 You can view the documentation site for additional installation, usage examples, and API references:https://linkedin.github.io/Liger-Kernel/
 
+You can view the Liger Kernel Technical Report: https://openreview.net/forum?id=36SjAIT42G
+
 ## Supercharge Your Model with Liger Kernel
 
 ![Banner](https://raw.githubusercontent.com/linkedin/Liger-Kernel/main/docs/images/banner.GIF)
@@ -394,3 +396,4 @@ url={https://openreview.net/forum?id=36SjAIT42G}
         ↑ Back to Top ↑
     </a>
 </p>
+
