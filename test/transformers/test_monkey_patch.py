@@ -791,10 +791,10 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
 
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_vl_moe_lce_forward)
-        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
+        assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) != inspect.getsource(
             LigerRMSNorm.forward
         )
-        for decoder_layer in dummy_model_instance.language_model.layers:
+        for decoder_layer in dummy_model_instance.model.language_model.layers:
             assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
@@ -811,10 +811,10 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
 
         # Check that the model's instance variables were correctly patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_vl_moe_lce_forward)
-        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
+        assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) == inspect.getsource(
             LigerRMSNorm.forward
         )
-        for decoder_layer in dummy_model_instance.language_model.layers:
+        for decoder_layer in dummy_model_instance.model.language_model.layers:
             assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
