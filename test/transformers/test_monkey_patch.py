@@ -1588,10 +1588,10 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(paligemma_lce_forward)
         assert inspect.getsource(
-            dummy_model_instance.vision_tower.vision_model.post_layernorm.forward
+            dummy_model_instance.model.vision_tower.vision_model.post_layernorm.forward
         ) != inspect.getsource(LigerLayerNorm.forward)
 
-        for layer in dummy_model_instance.vision_tower.vision_model.encoder.layers:
+        for layer in dummy_model_instance.model.vision_tower.vision_model.encoder.layers:
             assert inspect.getsource(layer.layer_norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(layer.layer_norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
 
@@ -1601,10 +1601,10 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
         # Check that the model's instance variables were correctly patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(paligemma_lce_forward)
         assert inspect.getsource(
-            dummy_model_instance.vision_tower.vision_model.post_layernorm.forward
+            dummy_model_instance.model.vision_tower.vision_model.post_layernorm.forward
         ) == inspect.getsource(LigerLayerNorm.forward)
 
-        for layer in dummy_model_instance.vision_tower.vision_model.encoder.layers:
+        for layer in dummy_model_instance.model.vision_tower.vision_model.encoder.layers:
             assert inspect.getsource(layer.layer_norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(layer.layer_norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
 
