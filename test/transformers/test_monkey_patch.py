@@ -1697,22 +1697,22 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(gemma3_multimodal_forward)
         assert inspect.getsource(
-            dummy_model_instance.vision_tower.vision_model.post_layernorm.forward
+            dummy_model_instance.model.vision_tower.vision_model.post_layernorm.forward
         ) != inspect.getsource(LigerLayerNorm.forward)
 
-        for layer in dummy_model_instance.vision_tower.vision_model.encoder.layers:
+        for layer in dummy_model_instance.model.vision_tower.vision_model.encoder.layers:
             assert inspect.getsource(layer.layer_norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(layer.layer_norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
 
         assert inspect.getsource(
-            dummy_model_instance.multi_modal_projector.mm_soft_emb_norm.forward
+            dummy_model_instance.model.multi_modal_projector.mm_soft_emb_norm.forward
         ) != inspect.getsource(LigerRMSNorm.forward)
 
-        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
+        assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) != inspect.getsource(
             LigerRMSNorm.forward
         )
 
-        for layer in dummy_model_instance.language_model.layers:
+        for layer in dummy_model_instance.model.language_model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
@@ -1729,21 +1729,21 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
         # Check that the model's instance variables were correctly patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(gemma3_multimodal_forward)
         assert inspect.getsource(
-            dummy_model_instance.vision_tower.vision_model.post_layernorm.forward
+            dummy_model_instance.model.vision_tower.vision_model.post_layernorm.forward
         ) == inspect.getsource(LigerLayerNorm.forward)
 
-        for layer in dummy_model_instance.vision_tower.vision_model.encoder.layers:
+        for layer in dummy_model_instance.model.vision_tower.vision_model.encoder.layers:
             assert inspect.getsource(layer.layer_norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(layer.layer_norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
 
         assert inspect.getsource(
-            dummy_model_instance.multi_modal_projector.mm_soft_emb_norm.forward
+            dummy_model_instance.model.multi_modal_projector.mm_soft_emb_norm.forward
         ) == inspect.getsource(LigerRMSNorm.forward)
 
-        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
+        assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) == inspect.getsource(
             LigerRMSNorm.forward
         )
-        for layer in dummy_model_instance.language_model.layers:
+        for layer in dummy_model_instance.model.language_model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
