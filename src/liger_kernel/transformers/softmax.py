@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.softmax import LigerSoftmaxFunction
+from liger_kernel.ops import LigerSoftmaxFunction
 
 
 class LigerSoftmax(nn.Module):

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.poly_norm import LigerPolyNormFunction
+from liger_kernel.ops import LigerPolyNormFunction
 
 
 class LigerPolyNorm(nn.Module):
