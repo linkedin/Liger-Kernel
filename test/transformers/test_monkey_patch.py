@@ -2684,17 +2684,17 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
 
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(glm4v_moe_lce_forward)
-        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
+        assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) != inspect.getsource(
             LigerRMSNormForGlm4.forward
         )
-        assert inspect.getsource(dummy_model_instance.visual.post_conv_layernorm.forward) != inspect.getsource(
+        assert inspect.getsource(dummy_model_instance.model.visual.post_conv_layernorm.forward) != inspect.getsource(
             LigerRMSNormForGlm4.forward
         )
-        assert inspect.getsource(dummy_model_instance.visual.post_layernorm.forward) != inspect.getsource(
+        assert inspect.getsource(dummy_model_instance.model.visual.post_layernorm.forward) != inspect.getsource(
             LigerRMSNormForGlm4.forward
         )
 
-        for decoder_layer in dummy_model_instance.language_model.layers:
+        for decoder_layer in dummy_model_instance.model.language_model.layers:
             assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNormForGlm4.forward
@@ -2709,7 +2709,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
                 assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) != inspect.getsource(
                     LigerSwiGLUMLP.forward
                 )
-        for vision_block in dummy_model_instance.visual.blocks:
+        for vision_block in dummy_model_instance.model.visual.blocks:
             assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
@@ -2719,17 +2719,17 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
 
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(glm4v_moe_lce_forward)
-        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
+        assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) == inspect.getsource(
             LigerRMSNormForGlm4.forward
         )
-        assert inspect.getsource(dummy_model_instance.visual.post_conv_layernorm.forward) == inspect.getsource(
+        assert inspect.getsource(dummy_model_instance.model.visual.post_conv_layernorm.forward) == inspect.getsource(
             LigerRMSNormForGlm4.forward
         )
-        assert inspect.getsource(dummy_model_instance.visual.post_layernorm.forward) == inspect.getsource(
+        assert inspect.getsource(dummy_model_instance.model.visual.post_layernorm.forward) == inspect.getsource(
             LigerRMSNormForGlm4.forward
         )
 
-        for decoder_layer in dummy_model_instance.language_model.layers:
+        for decoder_layer in dummy_model_instance.model.language_model.layers:
             if decoder_layer.mlp is not None:
                 assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
                 assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
@@ -2745,7 +2745,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
                 assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) == inspect.getsource(
                     LigerSwiGLUMLP.forward
                 )
-        for vision_block in dummy_model_instance.visual.blocks:
+        for vision_block in dummy_model_instance.model.visual.blocks:
             assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
