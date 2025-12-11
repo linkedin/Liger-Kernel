@@ -1,6 +1,5 @@
 import importlib
 import inspect
-import logging
 
 from liger_kernel.ops.backends import VENDOR_REGISTRY
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
@@ -28,7 +27,6 @@ from liger_kernel.ops.tiled_mlp import LigerTiledMLPFunction
 from liger_kernel.ops.tvd import LigerTVDLossFunction
 from liger_kernel.utils import infer_device
 
-logger = logging.getLogger(__name__)
 device = infer_device()
 
 __all__ = [
@@ -59,7 +57,6 @@ __all__ = [
 _globals = globals()
 
 if device in VENDOR_REGISTRY:
-    logger.debug(f"Loading Liger Kernel ops for device: {device}")
     backend_module_path = VENDOR_REGISTRY[device].module_path
     module = importlib.import_module(backend_module_path)
     ops = []

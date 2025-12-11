@@ -3,26 +3,26 @@ from typing import Optional
 
 import torch
 
-from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
-from liger_kernel.ops.dyt import LigerDyTFunction
-from liger_kernel.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction
-from liger_kernel.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
-from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
-from liger_kernel.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
-from liger_kernel.ops.geglu import LigerGELUMulFunction
-from liger_kernel.ops.group_norm import LigerGroupNormFunction
-from liger_kernel.ops.jsd import LigerJSDFunction
-from liger_kernel.ops.kl_div import LigerKLDivLossFunction
-from liger_kernel.ops.layer_norm import LigerLayerNormFunction
-from liger_kernel.ops.multi_token_attention import LigerMultiTokenAttentionFunction
-from liger_kernel.ops.poly_norm import LigerPolyNormFunction
-from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
-from liger_kernel.ops.rms_norm import LigerRMSNormFunction
-from liger_kernel.ops.rope import LigerRopeFunction
-from liger_kernel.ops.softmax import LigerSoftmaxFunction
-from liger_kernel.ops.sparsemax import LigerSparsemaxFunction
-from liger_kernel.ops.swiglu import LigerSiLUMulFunction
-from liger_kernel.ops.tvd import LigerTVDLossFunction
+from liger_kernel.ops import LigerCrossEntropyFunction
+from liger_kernel.ops import LigerDyTFunction
+from liger_kernel.ops import LigerFusedAddRMSNormFunction
+from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
+from liger_kernel.ops import LigerFusedLinearJSDFunction
+from liger_kernel.ops import LigerFusedNeighborhoodAttentionFunction
+from liger_kernel.ops import LigerGELUMulFunction
+from liger_kernel.ops import LigerGroupNormFunction
+from liger_kernel.ops import LigerJSDFunction
+from liger_kernel.ops import LigerKLDivLossFunction
+from liger_kernel.ops import LigerLayerNormFunction
+from liger_kernel.ops import LigerMultiTokenAttentionFunction
+from liger_kernel.ops import LigerPolyNormFunction
+from liger_kernel.ops import LigerQwen2VLMRopeFunction
+from liger_kernel.ops import LigerRMSNormFunction
+from liger_kernel.ops import LigerRopeFunction
+from liger_kernel.ops import LigerSiLUMulFunction
+from liger_kernel.ops import LigerSoftmaxFunction
+from liger_kernel.ops import LigerSparsemaxFunction
+from liger_kernel.ops import LigerTVDLossFunction
 
 
 @dataclass

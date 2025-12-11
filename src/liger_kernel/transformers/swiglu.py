@@ -1,6 +1,6 @@
 import torch.nn as nn
 
-from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+from liger_kernel.ops import LigerSiLUMulFunction
 
 
 class LigerSwiGLUMLP(nn.Module):

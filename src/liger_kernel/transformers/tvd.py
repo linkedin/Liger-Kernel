@@ -1,6 +1,6 @@
 import torch.nn as nn
 
-from liger_kernel.ops.tvd import LigerTVDLossFunction
+from liger_kernel.ops import LigerTVDLossFunction
 
 
 class LigerTVDLoss(nn.Module):

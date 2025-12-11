@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.sparsemax import LigerSparsemaxFunction
+from liger_kernel.ops import LigerSparsemaxFunction
 
 
 class LigerSparsemax(nn.Module):
