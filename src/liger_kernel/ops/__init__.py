@@ -5,12 +5,12 @@ This module provides two ways to import operators:
 
 1. Import from this package (recommended for Function classes):
        from liger_kernel.ops import LigerGELUMulFunction
-   
+
    This automatically uses vendor-specific implementation if available.
 
 2. Import from submodules (for kernel functions or specific access):
        from liger_kernel.ops.geglu import geglu_forward, geglu_backward
-   
+
    This always uses the default implementation (no auto-replacement).
 
 The replacement mechanism:
@@ -89,55 +89,53 @@ from liger_kernel.ops.tvd import LigerTVDLossFunction
 # Vendor-specific replacement logic
 # =============================================================================
 
+
 def _replace_with_vendor_ops():
     """
     Replace/add vendor-specific operator implementations.
-    
+
     This function is called automatically on module load. It:
     1. Detects the current device (cuda, npu, xpu, etc.)
     2. Looks up the vendor for that device via VENDOR_REGISTRY
     3. Loads and applies vendor-specific implementations
-    
+
     Vendor implementations should be placed in:
         liger_kernel/ops/backends/_<vendor>/ops/
-    
+
     If the vendor module defines __all__, only those symbols are exported.
     Otherwise, all public symbols (not starting with _) are auto-discovered.
-    
+
     Note: Vendor can both override existing ops AND add new vendor-specific ops.
     """
     from liger_kernel.ops.backends import get_vendor_for_device
     from liger_kernel.utils import infer_device
-    
+
     device = infer_device()
-    
+
     # Look up vendor info for this device
     vendor_info = get_vendor_for_device(device)
     if vendor_info is None:
         return
-    
+
     try:
         import importlib
+
         vendor_ops = importlib.import_module(vendor_info.module_path)
-        
+
         # Get names to export: use __all__ if defined, otherwise auto-discover
-        names_to_export = getattr(vendor_ops, '__all__', None)
-        
+        names_to_export = getattr(vendor_ops, "__all__", None)
+
         if names_to_export is None:
             # Auto-discover: find all public symbols (classes and functions)
-            names_to_export = [
-                name for name in dir(vendor_ops)
-                if not name.startswith('_')
-            ]
-        
+            names_to_export = [name for name in dir(vendor_ops) if not name.startswith("_")]
+
         # Replace or add to this module's globals
         for name in names_to_export:
             globals()[name] = getattr(vendor_ops, name)
-                
+
     except ImportError:
         # Vendor module not available, use default implementations
         pass
 
 
 _replace_with_vendor_ops()
-

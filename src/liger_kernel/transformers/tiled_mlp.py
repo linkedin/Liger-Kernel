@@ -2,7 +2,9 @@ from typing import Optional
 
 import torch.nn as nn
 
-from liger_kernel.ops import LigerGELUMulFunction, LigerSiLUMulFunction, apply_tiled_mlp
+from liger_kernel.ops import LigerGELUMulFunction
+from liger_kernel.ops import LigerSiLUMulFunction
+from liger_kernel.ops import apply_tiled_mlp
 
 
 class LigerTiledGEGLUMLP(nn.Module):
