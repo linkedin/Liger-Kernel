@@ -1494,7 +1494,7 @@ def run_mini_model(
         if "glm4" in model_name or "qwen3_next" in model_name:
             kwargs["rope"] = False
 
-        model_supports_layer_norm = "qwen2_vl" in model_name
+        model_supports_layer_norm = "qwen2_vl" in model_name or "qwen3_vl" in model_name
         if model_supports_layer_norm:
             kwargs["layer_norm"] = True
 
