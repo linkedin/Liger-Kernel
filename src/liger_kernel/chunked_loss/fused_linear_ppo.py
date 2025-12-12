@@ -3,7 +3,6 @@ from functools import partial
 
 import torch
 import torch._dynamo.config
-import torch.nn.functional as F
 
 
 class LigerFusedLinearPPOBase(torch.autograd.Function):
@@ -39,6 +38,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         compiled=True,
         use_ref_model=False,
         chunk_size=1,
+        num_items_in_batch=None,
+        importance_sampling_ratio=None,
     ):
         # TODO: check torch compile matmul
         """Chunked forward pass for PPO loss computation.
@@ -66,6 +67,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             compiled: Whether to use torch compile
             use_ref_model: Whether to use a reference model
             chunk_size: Size of chunks for processing in other loss modules
+            num_items_in_batch: Total tokens in generation batch for dapo normalization (matches TRL)
+            importance_sampling_ratio: vLLM importance sampling correction ratio tensor
         """
         if use_ref_model:
             assert ref_per_token_logps is not None or ref_input is not None, (
@@ -83,6 +86,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         aggregated_metrics = []
 
         # Create a partial function with fixed arguments
+        # Note: importance_sampling_ratio is NOT included here because it needs to be chunked per-sample
         compute_loss = partial(
             LigerFusedLinearPPOBase._compute_chunk_loss,
             ref_weight=ref_weight,
@@ -97,6 +101,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             temperature=temperature,
             use_ref_model=use_ref_model,
             ppo_loss_fn=cls.ppo_loss_fn,
+            num_items_in_batch=num_items_in_batch,
         )
 
         def fused_fwd_bwd(
@@ -107,6 +112,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             ref_per_token_logps_chunk,
             old_per_token_logps_chunk,
             ref_input_chunk,
+            importance_sampling_ratio_chunk,
         ):
             """Fused forward and backward for a chunk."""
             argnums = (0, 1, 5) if bias is not None else (0, 1)
@@ -120,6 +126,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 ref_per_token_logps_chunk=ref_per_token_logps_chunk,  # arg 6
                 old_per_token_logps_chunk=old_per_token_logps_chunk,  # arg 7
                 ref_input_chunk=ref_input_chunk,  # arg 8
+                importance_sampling_ratio=importance_sampling_ratio_chunk,  # arg 9 - chunked per-sample
             )
 
         def accumulate_chunk(
@@ -130,6 +137,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             ref_per_token_logps_chunk=None,
             old_per_token_logps_chunk=None,
             ref_input_chunk=None,
+            importance_sampling_ratio_chunk=None,
         ):
             (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (chunk_loss, chunk_metrics) = fused_fwd_bwd(
                 input_chunk,
@@ -139,6 +147,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 ref_per_token_logps_chunk,
                 old_per_token_logps_chunk,
                 ref_input_chunk,
+                importance_sampling_ratio_chunk,
             )
             if bias is not None:
                 grad_bias.add_(chunk_grad_bias[0])
@@ -189,6 +198,12 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             if use_ref_model and ref_per_token_logps is None
             else [None] * chunks
         )
+        # importance_sampling_ratio needs to be chunked per-sample (shape: [B, T] or [B, 1])
+        _importance_sampling_ratio_chunks = (
+            torch.chunk(importance_sampling_ratio, chunks=chunks, dim=0)
+            if importance_sampling_ratio is not None
+            else [None] * chunks
+        )
 
         for (
             input_chunk,
@@ -198,6 +213,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             ref_per_token_logps_chunk,
             old_per_token_logps_chunk,
             ref_input_chunk,
+            importance_sampling_ratio_chunk,
         ) in zip(
             _input_chunks,
             _selected_token_ids_chunks,
@@ -206,6 +222,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             _ref_per_token_logps_chunks,
             _old_per_token_logps_chunks,
             _ref_input_chunks,
+            _importance_sampling_ratio_chunks,
         ):
             # Mark dynamic dimensions
             torch._dynamo.mark_dynamic(input_chunk, 1)
@@ -217,6 +234,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 torch._dynamo.mark_dynamic(ref_input_chunk, 1)
             if old_per_token_logps_chunk is not None:
                 torch._dynamo.mark_dynamic(old_per_token_logps_chunk, 1)
+            if importance_sampling_ratio_chunk is not None:
+                torch._dynamo.mark_dynamic(importance_sampling_ratio_chunk, 1)
 
             accumulate_chunk(
                 input_chunk,
@@ -226,6 +245,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 ref_per_token_logps_chunk,
                 old_per_token_logps_chunk,
                 ref_input_chunk,
+                importance_sampling_ratio_chunk,
             )
 
         # Combine gradients
@@ -282,53 +302,133 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         temperature=1.0,
         use_ref_model=False,
         ppo_loss_fn=None,
+        num_items_in_batch=None,
+        importance_sampling_ratio=None,
     ):
         """Compute loss for a single chunk."""
         # Get policy log probabilities using chunk_forward
-        log_probs, _ = LigerFusedLinearPPOBase.chunk_forward(input_chunk, weight, bias=bias, temperature=temperature)
+        # Pass selected_token_ids to avoid materializing full vocab logits
+        per_token_logps, _ = LigerFusedLinearPPOBase.chunk_forward(
+            input_chunk, weight, bias=bias, temperature=temperature, selected_token_ids=selected_token_ids_chunk
+        )
+        # per_token_logps is now [B, T] instead of [B, T, V]
 
         # Get reference log probabilities if needed
-        ref_log_probs = None
+        ref_per_token_logps_computed = None
         if use_ref_model and ref_per_token_logps_chunk is None:
             with torch.no_grad():
-                ref_log_probs, _ = LigerFusedLinearPPOBase.chunk_forward(
-                    ref_input_chunk, ref_weight, bias=ref_bias, temperature=temperature
+                ref_per_token_logps_computed, _ = LigerFusedLinearPPOBase.chunk_forward(
+                    ref_input_chunk,
+                    ref_weight,
+                    bias=ref_bias,
+                    temperature=temperature,
+                    selected_token_ids=selected_token_ids_chunk,
                 )
 
         # Compute chunk loss and metrics using the provided loss function
+        # Note: ppo_loss_fn expects per-token logps, not full log_probs
         chunk_loss, chunk_metrics = ppo_loss_fn(
-            log_probs=log_probs,
+            per_token_logps=per_token_logps,
             selected_token_ids=selected_token_ids_chunk,
             attention_mask=attention_mask_chunk,
             advantages=advantages_chunk,
             full_attention_mask=full_attention_mask,
-            ref_per_token_logps=ref_per_token_logps_chunk.float() if ref_per_token_logps_chunk is not None else None,
+            ref_per_token_logps=ref_per_token_logps_chunk.float()
+            if ref_per_token_logps_chunk is not None
+            else ref_per_token_logps_computed,
             old_per_token_logps=old_per_token_logps_chunk.float() if old_per_token_logps_chunk is not None else None,
-            ref_log_probs=ref_log_probs,  # used when ref_per_token_logps is None
             epsilon_low=epsilon_low,
             epsilon_high=epsilon_high,
             beta=beta,
             loss_type=loss_type,
             max_completion_length=max_completion_length,
             importance_sampling_level=importance_sampling_level,
+            num_items_in_batch=num_items_in_batch,
+            importance_sampling_ratio=importance_sampling_ratio,
         )
 
         return chunk_loss, chunk_metrics
 
     @staticmethod
-    def chunk_forward(input_chunk, weight, bias=None, temperature=1.0):
-        """Forward pass computation for a single chunk without explicit reshaping."""
-        # Directly compute logits via batched matrix multiplication: [B, T, H] @ [H, V] -> [B, T, V]
-        logits = torch.matmul(input_chunk, weight.t())
-        if bias is not None:
-            logits = logits + bias  # Broadcasts bias to [B, T, V]
-        if temperature != 1.0:
-            logits = logits / temperature
+    def chunk_forward(input_chunk, weight, bias=None, temperature=1.0, selected_token_ids=None):
+        """Forward pass computation without materializing full vocab logits.
 
-        # Compute log probabilities using softmax over the last dimension
-        log_probs = F.log_softmax(logits.float(), dim=-1)
+        Args:
+            input_chunk: [B, T, H] hidden states
+            weight: [V, H] weight matrix
+            bias: [V] optional bias
+            temperature: float for scaling logits
+            selected_token_ids: [B, T] token IDs to compute logprobs for (optional)
 
-        return log_probs, logits
+        Returns:
+            log_probs: [B, T, V] or [B, T] if selected_token_ids provided
+            logits: None (not materialized to save memory)
+        """
+        vocab_size = weight.shape[0]
+        vocab_chunk_size = min(4096, vocab_size)  # Process vocab in chunks
+
+        # Compute log-sum-exp incrementally across vocab chunks
+        max_logit = torch.full(
+            input_chunk.shape[:-1], float("-inf"), device=input_chunk.device, dtype=torch.float32
+        )  # [B, T]
+        sum_exp = torch.zeros_like(max_logit)  # [B, T]
+
+        # First pass: compute log-sum-exp over all vocab
+        for vocab_start in range(0, vocab_size, vocab_chunk_size):
+            vocab_end = min(vocab_start + vocab_chunk_size, vocab_size)
+            weight_chunk = weight[vocab_start:vocab_end]  # [chunk_V, H]
+
+            # Compute logits for this vocab chunk: [B, T, H] @ [H, chunk_V] -> [B, T, chunk_V]
+            logits_chunk = torch.matmul(input_chunk, weight_chunk.t())
+            if bias is not None:
+                logits_chunk = logits_chunk + bias[vocab_start:vocab_end]
+            if temperature != 1.0:
+                logits_chunk = logits_chunk / temperature
+
+            logits_chunk = logits_chunk.float()
+
+            # Update running log-sum-exp
+            chunk_max = logits_chunk.max(dim=-1).values  # [B, T]
+            new_max = torch.maximum(max_logit, chunk_max)
+
+            # Adjust sum_exp for new max
+            sum_exp = sum_exp * torch.exp(max_logit - new_max) + (logits_chunk - new_max.unsqueeze(-1)).exp().sum(
+                dim=-1
+            )
+            max_logit = new_max
+
+        # log_sum_exp = max_logit + log(sum_exp)
+        log_sum_exp = max_logit + torch.log(sum_exp)  # [B, T]
+
+        if selected_token_ids is not None:
+            # Only compute logits for selected tokens
+            # Gather weight rows for selected tokens: [B, T, H]
+            selected_weights = weight[selected_token_ids]  # [B, T, H]
+
+            # Compute selected logits: sum over hidden dim
+            selected_logits = (input_chunk * selected_weights).sum(dim=-1)  # [B, T]
+
+            if bias is not None:
+                selected_bias = bias[selected_token_ids]  # [B, T]
+                selected_logits = selected_logits + selected_bias
+
+            if temperature != 1.0:
+                selected_logits = selected_logits / temperature
+
+            # Compute log_probs for selected tokens only
+            selected_log_probs = selected_logits.float() - log_sum_exp  # [B, T]
+
+            return selected_log_probs, None  # No full logits materialized
+        else:
+            # Fallback: compute full logits (for backward compatibility)
+            logits = torch.matmul(input_chunk, weight.t())
+            if bias is not None:
+                logits = logits + bias
+            if temperature != 1.0:
+                logits = logits / temperature
+
+            log_probs = logits.float() - log_sum_exp.unsqueeze(-1)
+            return log_probs, logits
 
     @staticmethod
     def backward(ctx, grad_output, *grad_metrics):
@@ -363,4 +463,6 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             None,  # grad_compiled
             None,  # grad_use_ref_model
             None,  # grad_chunk_size
+            None,  # grad_num_items_in_batch
+            None,  # grad_importance_sampling_ratio
         )
