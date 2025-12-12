@@ -1,6 +1,6 @@
 import torch.nn as nn
 
-from liger_kernel.ops.geglu import LigerGELUMulFunction
+from liger_kernel.ops import LigerGELUMulFunction
 
 
 class LigerGEGLUMLP(nn.Module):

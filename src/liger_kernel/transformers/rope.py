@@ -2,7 +2,7 @@ from typing import Tuple
 
 import torch
 
-from liger_kernel.ops.rope import LigerRopeFunction
+from liger_kernel.ops import LigerRopeFunction
 
 
 def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):

@@ -2,7 +2,7 @@ from typing import Optional
 
 import torch
 
-from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
+from liger_kernel.ops import LigerCrossEntropyFunction
 from liger_kernel.transformers.functional import CrossEntropyOutput
 
 

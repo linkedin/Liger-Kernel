@@ -5,7 +5,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
+from liger_kernel.ops import LigerFusedNeighborhoodAttentionFunction
 
 
 class LigerFusedNeighborhoodAttention(nn.Module):
