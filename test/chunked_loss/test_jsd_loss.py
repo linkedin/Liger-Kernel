@@ -363,3 +363,177 @@ def test_correctness_functional(
 
     if bias:
         assert_verbose_allclose(student_bias1.grad, student_bias2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (2, 16, 64, 128),
+        (4, 32, 128, 256),
+    ],
+)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("ignore_index", [-100, 42])
+def test_ignore_index_exclusion(B, T, H, V, dtype, ignore_index):
+    """Test that tokens with ignore_index are excluded from loss computation."""
+    set_seed(42)
+
+    student_input = torch.rand(B * T, H // 2, device=device, dtype=dtype, requires_grad=True)
+    teacher_input = torch.rand(B * T, H, device=device, dtype=dtype)
+    student_weight = torch.rand(V, H // 2, device=device, dtype=dtype, requires_grad=True)
+    teacher_weight = torch.rand(V, H, device=device, dtype=dtype)
+
+    # All valid targets (no ignore_index)
+    target_all_valid = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    target_all_valid[target_all_valid == ignore_index] = (ignore_index + 1) % V
+
+    # Some tokens ignored (~30%)
+    target_with_ignored = target_all_valid.clone()
+    num_ignored = int(B * T * 0.3)
+    target_with_ignored[:num_ignored] = ignore_index
+
+    jsd_loss = LigerFusedLinearJSDLoss(ignore_index=ignore_index)
+
+    loss_all_valid = jsd_loss(
+        student_input.detach().clone().requires_grad_(True),
+        student_weight.detach().clone(),
+        teacher_input,
+        teacher_weight,
+        target_all_valid,
+    )
+
+    loss_with_ignored = jsd_loss(
+        student_input.detach().clone().requires_grad_(True),
+        student_weight.detach().clone(),
+        teacher_input,
+        teacher_weight,
+        target_with_ignored,
+    )
+
+    # Losses should be different
+    assert not torch.allclose(loss_all_valid, loss_with_ignored), "Loss should differ when some tokens are ignored"
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_ignore_index_gradient_exclusion(dtype):
+    """Test that ignored tokens don't contribute to gradients."""
+    B, T, H, V = 2, 8, 64, 128
+    ignore_index = -100
+    set_seed(42)
+
+    student_input = torch.rand(B * T, H // 2, device=device, dtype=dtype, requires_grad=True)
+    teacher_input = torch.rand(B * T, H, device=device, dtype=dtype)
+    student_weight = torch.rand(V, H // 2, device=device, dtype=dtype, requires_grad=True)
+    teacher_weight = torch.rand(V, H, device=device, dtype=dtype)
+
+    # First half ignored, second half valid
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    target[: B * T // 2] = ignore_index
+
+    jsd_loss = LigerFusedLinearJSDLoss(ignore_index=ignore_index)
+
+    loss = jsd_loss(student_input, student_weight, teacher_input, teacher_weight, target)
+    loss.backward()
+
+    # Should have valid gradients (not NaN)
+    assert not torch.isnan(student_input.grad).any(), "Gradients should not be NaN"
+    assert not torch.isnan(student_weight.grad).any(), "Gradients should not be NaN"
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_soft_loss_only_ignore_index(dtype):
+    """Test ignore_index with soft loss only (no hard loss interference)."""
+    B, T, H, V = 2, 16, 64, 128
+    ignore_index = -100
+    set_seed(42)
+
+    student_input = torch.rand(B * T, H // 2, device=device, dtype=dtype)
+    teacher_input = torch.rand(B * T, H, device=device, dtype=dtype)
+    student_weight = torch.rand(V, H // 2, device=device, dtype=dtype)
+    teacher_weight = torch.rand(V, H, device=device, dtype=dtype)
+
+    # All valid
+    target_all_valid = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    target_all_valid[target_all_valid == ignore_index] = 0
+
+    # Some ignored
+    target_with_ignored = target_all_valid.clone()
+    target_with_ignored[: B * T // 2] = ignore_index
+
+    # Soft loss only - this tests our fix directly
+    jsd_loss = LigerFusedLinearJSDLoss(
+        weight_hard_loss=0.0,
+        weight_soft_loss=1.0,
+        ignore_index=ignore_index,
+    )
+
+    loss_all_valid = jsd_loss(student_input, student_weight, teacher_input, teacher_weight, target_all_valid)
+    loss_with_ignored = jsd_loss(student_input, student_weight, teacher_input, teacher_weight, target_with_ignored)
+
+    assert not torch.allclose(loss_all_valid, loss_with_ignored), "Soft loss should differ when tokens are ignored"
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_all_tokens_ignored(dtype):
+    """Test edge case where all tokens are ignored - should not produce NaN."""
+    B, T, H, V = 2, 8, 64, 128
+    ignore_index = -100
+    set_seed(42)
+
+    student_input = torch.rand(B * T, H // 2, device=device, dtype=dtype, requires_grad=True)
+    teacher_input = torch.rand(B * T, H, device=device, dtype=dtype)
+    student_weight = torch.rand(V, H // 2, device=device, dtype=dtype, requires_grad=True)
+    teacher_weight = torch.rand(V, H, device=device, dtype=dtype)
+
+    # All tokens ignored
+    target = torch.full((B * T,), ignore_index, device=device, dtype=torch.long)
+
+    jsd_loss = LigerFusedLinearJSDLoss(ignore_index=ignore_index)
+
+    loss = jsd_loss(student_input, student_weight, teacher_input, teacher_weight, target)
+
+    # Should not be NaN
+    assert not torch.isnan(loss), f"Loss should not be NaN, got {loss}"
+
+    # Backward should also not produce NaN
+    loss.backward()
+    assert not torch.isnan(student_input.grad).any(), "Gradients should not be NaN"
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_ignored_tokens_zero_gradient(dtype):
+    """Test that ignored token positions have zero gradient contribution."""
+    B, T, H, V = 2, 8, 64, 128
+    ignore_index = -100
+    set_seed(42)
+
+    student_input = torch.rand(B * T, H // 2, device=device, dtype=dtype, requires_grad=True)
+    teacher_input = torch.rand(B * T, H, device=device, dtype=dtype)
+    student_weight = torch.rand(V, H // 2, device=device, dtype=dtype, requires_grad=True)
+    teacher_weight = torch.rand(V, H, device=device, dtype=dtype)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    # First half ignored
+    num_ignored = B * T // 2
+    target[:num_ignored] = ignore_index
+
+    jsd_loss = LigerFusedLinearJSDLoss(
+        weight_hard_loss=0.0,  # soft loss only
+        weight_soft_loss=1.0,
+        ignore_index=ignore_index,
+    )
+
+    loss = jsd_loss(student_input, student_weight, teacher_input, teacher_weight, target)
+    loss.backward()
+
+    # Ignored positions should have zero (or near-zero) gradient
+    ignored_grad = student_input.grad[:num_ignored]
+    valid_grad = student_input.grad[num_ignored:]
+
+    # Ignored should be significantly smaller than valid
+    ignored_norm = ignored_grad.norm()
+    valid_norm = valid_grad.norm()
+
+    assert ignored_norm < valid_norm * 0.01, (
+        f"Ignored gradient norm ({ignored_norm}) should be much smaller than valid ({valid_norm})"
+    )
