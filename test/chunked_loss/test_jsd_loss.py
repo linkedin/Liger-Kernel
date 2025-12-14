@@ -37,12 +37,14 @@ class HFJSDLoss(HFDistillationLoss):
             temperature=temperature,
         )
 
-    def distillation_loss(self, student_logits, teacher_logits, beta=0.5):
+    def distillation_loss(self, student_logits, teacher_logits, target=None, ignore_index=-100, beta=0.5):
         """
         Compute JSD loss (Jensen-Shannon Divergence Loss).
         Args:
-            student_logits (torch.Tensor): Logits of student tokens. Shape: (batch_size * seq_len,).
-            teacher_logits (torch.Tensor): Logits of teacher tokens. Shape: (batch_size * seq_len,).
+            student_logits (torch.Tensor): Logits of student tokens. Shape: (batch_size * seq_len, vocab_size).
+            teacher_logits (torch.Tensor): Logits of teacher tokens. Shape: (batch_size * seq_len, vocab_size).
+            target (torch.Tensor): Target labels for masking. Shape: (batch_size * seq_len,).
+            ignore_index (int): Index to ignore in loss computation.
             beta (float): Coefficient beta of generalized JSD in the interval [0, 1]. Default: `0.5`.
         Returns:
             torch.Tensor: Jensen-Shannon Divergence loss
@@ -55,17 +57,24 @@ class HFJSDLoss(HFDistillationLoss):
         elif beta == 1:
             jsd_loss = F.kl_div(teacher_log_probs, student_log_probs, reduction="none", log_target=True)
         else:
-            # Compute probabilities (only required for mean calculation)
             log_mean_probs = torch.logsumexp(
                 torch.stack([student_log_probs + math.log(1 - beta), teacher_log_probs + math.log(beta)], dim=0), dim=0
             )
-
-            student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="batchmean", log_target=True)
-            teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="batchmean", log_target=True)
-
-            # JSD is the weighted average of the KL divergences
+            student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="none", log_target=True)
+            teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="none", log_target=True)
             jsd_loss = beta * teacher_kl + (1 - beta) * student_kl
-        return jsd_loss
+
+        # Sum over vocab dimension
+        jsd_loss = jsd_loss.sum(dim=-1)
+
+        # Apply ignore_index mask
+        if target is not None:
+            mask = target != ignore_index
+            jsd_loss = jsd_loss * mask.float()
+            num_valid_tokens = mask.sum().clamp_min(1)
+            return jsd_loss.sum() / num_valid_tokens
+
+        return jsd_loss.sum()
 
 
 class TorchLMHeadJSD(torch.nn.Module):
@@ -182,6 +191,7 @@ class LigerLMHeadJSD(torch.nn.Module):
         (0.5, 1.0, 0.0, 0.2),
     ],
 )
+@pytest.mark.parametrize("ignore_index", [-100, 42])
 def test_correctness(
     B,
     T,
@@ -196,6 +206,7 @@ def test_correctness(
     weight_hard_loss,
     weight_soft_loss,
     beta,
+    ignore_index,
 ):
     torch_lm_head_jsd = TorchLMHeadJSD(
         H=H,
@@ -207,6 +218,7 @@ def test_correctness(
         weight_hard_loss=weight_hard_loss,
         weight_soft_loss=weight_soft_loss,
         beta=beta,
+        ignore_index=ignore_index,
     )
     liger_lm_head_jsd = LigerLMHeadJSD(
         H=H,
@@ -218,6 +230,7 @@ def test_correctness(
         weight_hard_loss=weight_hard_loss,
         weight_soft_loss=weight_soft_loss,
         beta=beta,
+        ignore_index=ignore_index,
     )
 
     torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.rand(
@@ -243,6 +256,11 @@ def test_correctness(
 
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
+    num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
+    indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]
+    target[indices_to_assign] = ignore_index
+
+    # Assign some random number of elements as ignore_index
     loss1 = torch_lm_head_jsd(student_input1, teacher_input, target)
     loss2 = liger_lm_head_jsd(student_input2, teacher_input, target)
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
