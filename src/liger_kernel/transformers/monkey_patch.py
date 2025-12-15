@@ -20,6 +20,7 @@ from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forwa
 from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward_deprecated
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
 from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward_deprected
+from liger_kernel.transformers.model.gpt_oss import lce_forward as gpt_oss_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward_deprecated
 from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
@@ -34,8 +35,7 @@ from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_f
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
-from liger_kernel.transformers.rope import liger_rotary_pos_emb_with_cast
-from liger_kernel.transformers.rope import liger_rotary_pos_emb_with_cast_and_leading_batch
+from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
@@ -1459,6 +1459,79 @@ def apply_liger_kernel_to_qwen3_moe(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_gpt_oss(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = False,  # Set to False by default since GPT-OSS has custom expert implementation
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace GPT-OSS models.
+    NOTE: GPT-OSS is supported in transformers >= 4.55.0
+    NOTE: SwiGLU patching is disabled by default for GPT-OSS as it uses a custom expert
+          implementation with clamping and MXFP4 quantization.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is False.
+            Note: GPT-OSS uses a custom expert implementation, so SwiGLU patching is disabled by default.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+            loaded. Default is None.
+    """
+    if version.parse(transformers.__version__) < version.parse("4.55.0"):
+        logger.warning("GPT-OSS support requires transformers >= 4.55.0")
+        return
+
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.gpt_oss import modeling_gpt_oss
+    from transformers.models.gpt_oss.modeling_gpt_oss import GptOssModel
+
+    if rope:
+        modeling_gpt_oss.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if rms_norm:
+        modeling_gpt_oss.GptOssRMSNorm = LigerRMSNorm
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(gpt_oss_lce_forward, model)
+        else:
+            modeling_gpt_oss.GptOssForCausalLM.forward = gpt_oss_lce_forward
+
+    # Note: SwiGLU patching is not implemented for GPT-OSS due to custom expert implementation
+    # with clamping (swiglu_limit=7.0) and MXFP4 quantization
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: GptOssModel = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+        for decoder_layer in base_model.layers:
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 def apply_liger_kernel_to_qwen2_vl(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -1680,8 +1753,8 @@ def apply_liger_kernel_to_qwen3_vl(
     from liger_kernel.transformers.model.qwen3_vl import lce_forward as qwen3_vl_lce_forward
 
     if rope:
-        modeling_qwen3_vl.apply_rotary_pos_emb = liger_rotary_pos_emb_with_cast
-        modeling_qwen3_vl.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_with_cast_and_leading_batch
+        modeling_qwen3_vl.apply_rotary_pos_emb = liger_rotary_pos_emb
+        modeling_qwen3_vl.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_vision
 
     if rms_norm:
         modeling_qwen3_vl.Qwen3VLTextRMSNorm = LigerRMSNorm
@@ -1755,8 +1828,8 @@ def apply_liger_kernel_to_qwen3_vl_moe(
     from liger_kernel.transformers.model.qwen3_vl_moe import lce_forward as qwen3_vl_moe_lce_forward
 
     if rope:
-        modeling_qwen3_vl_moe.apply_rotary_pos_emb = liger_rotary_pos_emb_with_cast
-        modeling_qwen3_vl_moe.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_with_cast_and_leading_batch
+        modeling_qwen3_vl_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
+        modeling_qwen3_vl_moe.apply_rotary_pos_emb_vision = liger_rotary_pos_emb_vision
 
     if rms_norm:
         modeling_qwen3_vl_moe.Qwen3VLMoeTextRMSNorm = LigerRMSNorm
@@ -2752,6 +2825,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "glm4": apply_liger_kernel_to_glm4,
     "glm4v": apply_liger_kernel_to_glm4v,
     "glm4v_moe": apply_liger_kernel_to_glm4v_moe,
+    "gpt_oss": apply_liger_kernel_to_gpt_oss,
     "internvl": apply_liger_kernel_to_internvl,
     "llama": apply_liger_kernel_to_llama,
     "llama4_text": apply_liger_kernel_to_llama4,

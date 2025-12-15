@@ -1,6 +1,6 @@
 import torch.nn as nn
 
-from liger_kernel.ops.kl_div import LigerKLDivLossFunction
+from liger_kernel.ops import LigerKLDivLossFunction
 
 
 class LigerKLDIVLoss(nn.KLDivLoss):

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.group_norm import LigerGroupNormFunction
+from liger_kernel.ops import LigerGroupNormFunction
 
 
 class LigerGroupNorm(nn.Module):

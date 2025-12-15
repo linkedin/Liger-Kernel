@@ -5,7 +5,7 @@ Supports both text and vision RoPE variants with fused operations for optimal pe
 
 import torch
 
-from liger_kernel.ops.llama4_rope import LigerLlama4RopeFunction
+from liger_kernel.ops import LigerLlama4RopeFunction
 
 
 def liger_llama4_text_rotary_pos_emb(
