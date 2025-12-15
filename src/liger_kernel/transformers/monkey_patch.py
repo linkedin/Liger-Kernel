@@ -2821,6 +2821,78 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_exaone4(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace EXAONE4 models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.exaone4 import modeling_exaone4
+    from transformers.models.exaone4.modeling_exaone4 import Exaone4Model
+
+    from liger_kernel.transformers.model.exaone4 import lce_forward as exaone4_lce_forward
+
+    if rope:
+        modeling_exaone4.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if rms_norm:
+        modeling_exaone4.Exaone4RMSNorm = LigerRMSNorm
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(exaone4_lce_forward, model)
+        else:
+            modeling_exaone4.Exaone4ForCausalLM.forward = exaone4_lce_forward
+
+    if swiglu:
+        modeling_exaone4.Exaone4MLP = LigerSwiGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: Exaone4Model = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_feedforward_layernorm)
+                # EXAONE4 has QK norm
+                _patch_rms_norm_module(decoder_layer.self_attn.q_norm)
+                _patch_rms_norm_module(decoder_layer.self_attn.k_norm)
+
+
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma": apply_liger_kernel_to_gemma,
@@ -2862,6 +2934,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "smolvlm": apply_liger_kernel_to_smolvlm,
     "hunyuan_v1_dense": apply_liger_kernel_to_hunyuan_v1_dense,
     "hunyuan_v1_moe": apply_liger_kernel_to_hunyuan_v1_moe,
+    "exaone4": apply_liger_kernel_to_exaone4,
 }
 
 
