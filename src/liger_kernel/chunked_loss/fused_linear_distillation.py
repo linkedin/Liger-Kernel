@@ -132,10 +132,15 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             )
             student_logits_chunk = torch.cat([student_logits_chunk, pad_tensor], dim=-1)
 
-        hard_loss /= full_target.shape[0]
+        num_valid_tokens = (full_target != ignore_index).sum()
+        num_valid_tokens = num_valid_tokens.clamp_min(1)  # to avoid division by zero
 
-        soft_loss = distillation_loss_fn(student_logits_chunk, teacher_logits_chunk, **loss_kwargs)
-        soft_loss /= full_target.shape[0]
+        hard_loss /= num_valid_tokens
+
+        soft_loss = distillation_loss_fn(
+            student_logits_chunk, teacher_logits_chunk, target=target_chunk, ignore_index=ignore_index, **loss_kwargs
+        )
+        soft_loss /= num_valid_tokens
 
         loss = weight_hard_loss * hard_loss + weight_soft_loss * soft_loss
         return loss, (soft_loss, hard_loss, student_logits_chunk, teacher_logits_chunk)

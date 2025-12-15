@@ -11,35 +11,50 @@ from liger_kernel.chunked_loss.fused_linear_distillation import LigerFusedLinear
 
 class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
     @staticmethod
-    def distillation_loss_fn(student_logits, teacher_logits, beta=0.5):
+    def distillation_loss_fn(student_logits, teacher_logits, beta=0.5, target=None, ignore_index=-100):
         """
         Compute JSD loss (Jensen-Shannon Divergence Loss).
         Args:
             student_logits (torch.Tensor): Logits of student tokens. Shape: (batch_size * seq_len,).
             teacher_logits (torch.Tensor): Logits of teacher tokens. Shape: (batch_size * seq_len,).
             beta (float): Coefficient beta of generalized JSD in the interval [0, 1]. Default: `0.5`.
+            target (torch.Tensor): Target labels for masking. Shape: (chunk_size,).
+            ignore_index (int): Index to ignore in loss computation.
         Returns:
             torch.Tensor: Jensen-Shannon Divergence loss
+        Note:
+            - Uses reduction="none" to preserve per-token losses for masking
+            - KL divergence requires summing over vocab dimension (not mean)
+            - Masking excludes padding/prompt tokens from loss computation
         """
         student_log_probs = F.log_softmax(student_logits, dim=-1)
         teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
 
         if beta == 0:
-            jsd_loss = F.kl_div(student_log_probs, teacher_log_probs, reduction="sum", log_target=True)
+            jsd_loss = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)
         elif beta == 1:
-            jsd_loss = F.kl_div(teacher_log_probs, student_log_probs, reduction="sum", log_target=True)
+            jsd_loss = F.kl_div(teacher_log_probs, student_log_probs, reduction="none", log_target=True)
         else:
             # Compute probabilities (only required for mean calculation)
             log_mean_probs = torch.logsumexp(
                 torch.stack([student_log_probs + math.log(1 - beta), teacher_log_probs + math.log(beta)], dim=0), dim=0
             )
 
-            student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="sum", log_target=True)
-            teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="sum", log_target=True)
+            student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="none", log_target=True)
+            teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="none", log_target=True)
 
             # JSD is the weighted average of the KL divergences
             jsd_loss = beta * teacher_kl + (1 - beta) * student_kl
-        return jsd_loss
+
+        # Sum over vocab dimension (KL divergence definition)
+        jsd_loss = jsd_loss.sum(dim=-1)  # (chunk_size,)
+
+        # Apply ignore_index mask
+        if target is not None:
+            mask = target != ignore_index
+            jsd_loss = jsd_loss.masked_fill(~mask, 0.0)
+
+        return jsd_loss.sum()
 
     @classmethod
     def forward(
