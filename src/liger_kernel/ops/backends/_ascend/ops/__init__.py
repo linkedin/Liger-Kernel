@@ -13,3 +13,11 @@ To add a new operator:
 
 If __all__ is not defined, all public symbols will be auto-discovered.
 """
+
+from .rope import (
+    LigerRopeFunction,
+    rope_forward,
+    rope_backward,
+)
+
+__all__ = ["LigerRopeFunction", "rope_forward", "rope_backward"]
