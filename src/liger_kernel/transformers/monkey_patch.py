@@ -2857,7 +2857,13 @@ def apply_liger_kernel_to_exaone4(
         modeling_exaone4.apply_rotary_pos_emb = liger_rotary_pos_emb
 
     if rms_norm:
-        modeling_exaone4.Exaone4RMSNorm = LigerRMSNorm
+        # EXAONE4 requires in_place=False to avoid gradient issues
+        class Exaone4LigerRMSNorm(LigerRMSNorm):
+            def __init__(self, hidden_size, eps=1e-6, **kwargs):
+                super().__init__(hidden_size, eps, **kwargs)
+                self.in_place = False
+        
+        modeling_exaone4.Exaone4RMSNorm = Exaone4LigerRMSNorm
 
     if cross_entropy:
         from transformers.loss.loss_utils import nn
@@ -2881,16 +2887,15 @@ def apply_liger_kernel_to_exaone4(
         base_model: Exaone4Model = getattr(model, model.base_model_prefix, model)
 
         if rms_norm:
-            _patch_rms_norm_module(base_model.norm)
+            _patch_rms_norm_module(base_model.norm, in_place=False)
         for decoder_layer in base_model.layers:
             if swiglu:
                 _bind_method_to_module(decoder_layer.mlp, "forward", LigerSwiGLUMLP.forward)
             if rms_norm:
-                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-                _patch_rms_norm_module(decoder_layer.post_feedforward_layernorm)
-                # EXAONE4 has QK norm
-                _patch_rms_norm_module(decoder_layer.self_attn.q_norm)
-                _patch_rms_norm_module(decoder_layer.self_attn.k_norm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm, in_place=False)
+                _patch_rms_norm_module(decoder_layer.post_feedforward_layernorm, in_place=False)
+                _patch_rms_norm_module(decoder_layer.self_attn.q_norm, in_place=False)
+                _patch_rms_norm_module(decoder_layer.self_attn.k_norm, in_place=False)
 
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
