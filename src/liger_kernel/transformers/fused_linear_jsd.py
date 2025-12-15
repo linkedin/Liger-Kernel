@@ -2,7 +2,7 @@ from typing import Optional
 
 import torch
 
-from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
+from liger_kernel.ops import LigerFusedLinearJSDFunction
 
 
 class LigerFusedLinearJSD(torch.nn.Module):

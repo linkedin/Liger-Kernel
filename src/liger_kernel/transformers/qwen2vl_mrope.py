@@ -1,4 +1,4 @@
-from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
+from liger_kernel.ops import LigerQwen2VLMRopeFunction
 
 
 def liger_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section, unsqueeze_dim=1):

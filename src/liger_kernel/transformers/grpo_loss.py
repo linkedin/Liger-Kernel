@@ -1,7 +1,7 @@
 import torch
 
 from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
-from liger_kernel.ops.grpo_loss import GrpoLossFunction
+from liger_kernel.ops import GrpoLossFunction
 
 
 def triton_grpo_loss(
