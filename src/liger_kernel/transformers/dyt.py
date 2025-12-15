@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.dyt import LigerDyTFunction
+from liger_kernel.ops import LigerDyTFunction
 
 
 class LigerDyT(nn.Module):

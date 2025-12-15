@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.layer_norm import LigerLayerNormFunction
+from liger_kernel.ops import LigerLayerNormFunction
 
 
 class LigerLayerNorm(nn.Module):

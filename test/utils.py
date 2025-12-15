@@ -487,6 +487,18 @@ def revert_liger_kernel_to_qwen3_moe(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_gpt_oss(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to GPT-OSS.
+    """
+    from transformers.models.gpt_oss import modeling_gpt_oss
+
+    importlib.reload(modeling_gpt_oss)
+    model_config.model_class = modeling_gpt_oss.GptOssForCausalLM
+
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_qwen2_vl(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Qwen2-VL.
@@ -1021,7 +1033,9 @@ class HFDistillationLoss:
         student_logits /= self.temperature
         teacher_logits /= self.temperature
 
-        soft_loss = self.distillation_loss(student_logits, teacher_logits, **loss_kwargs)
+        soft_loss = self.distillation_loss(
+            student_logits, teacher_logits, target=target, ignore_index=self.ignore_index, **loss_kwargs
+        )
         # full loss
         loss = self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss
         return loss

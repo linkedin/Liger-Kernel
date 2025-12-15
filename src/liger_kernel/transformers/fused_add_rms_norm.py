@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction
+from liger_kernel.ops import LigerFusedAddRMSNormFunction
 
 
 class LigerFusedAddRMSNorm(nn.Module):

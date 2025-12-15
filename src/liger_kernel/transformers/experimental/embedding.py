@@ -3,7 +3,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.experimental.embedding import LigerEmbeddingFunction
+from liger_kernel.ops import LigerEmbeddingFunction
 
 
 class LigerEmbedding(nn.Module):
