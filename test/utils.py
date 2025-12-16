@@ -719,7 +719,7 @@ def revert_liger_kernel_to_exaone4(model_config: MiniModelConfig):
     Revert all Liger kernel patches applied to EXAONE4.
     """
     from transformers.models.exaone4 import modeling_exaone4
-    
+
     importlib.reload(modeling_exaone4)
     model_config.model_class = modeling_exaone4.Exaone4ForCausalLM
     print("Liger kernel patches have been reverted.")

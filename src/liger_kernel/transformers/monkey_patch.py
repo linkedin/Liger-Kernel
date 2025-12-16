@@ -2862,7 +2862,7 @@ def apply_liger_kernel_to_exaone4(
             def __init__(self, hidden_size, eps=1e-6, **kwargs):
                 super().__init__(hidden_size, eps, **kwargs)
                 self.in_place = False
-        
+
         modeling_exaone4.Exaone4RMSNorm = Exaone4LigerRMSNorm
 
     if cross_entropy:

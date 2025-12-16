@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.auto_model import AutoLigerKernelForCausalLM  # noqa: F401
     from liger_kernel.transformers.monkey_patch import _apply_liger_kernel  # noqa: F401
     from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_exaone4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_falcon_h1  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma2  # noqa: F401
@@ -66,7 +67,6 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_vl_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_smollm3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_smolvlm  # noqa: F401
-    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_exaone4  # noqa: F401
 
 
 # Check if 'transformers' is installed
