@@ -13,6 +13,8 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
     def distillation_loss_fn(
         student_logits,
         teacher_logits,
+        target=None,
+        ignore_index=None,
     ):
         """
         Compute distillation loss.
