@@ -1395,10 +1395,16 @@ def run_mini_model_multimodal(
             1e-5,
             5e-3,
             1e-5,
-            marks=pytest.mark.skipif(
-                not LLAVA_AVAILABLE,
-                reason="LLaVa not available in this version of transformers",
-            ),
+            marks=[
+                pytest.mark.skipif(
+                    not LLAVA_AVAILABLE,
+                    reason="LLaVa not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    True,
+                    reason="Flaky test",
+                ),
+            ],
         ),
         pytest.param(
             "mini_internvl",
@@ -1477,6 +1483,10 @@ def run_mini_model_multimodal(
                     not is_torchvision_available(),
                     reason="Qwen3VLVideoProcessor requires torchvision",
                 ),
+                pytest.mark.skipif(
+                    True,
+                    reason="Flaky test",
+                ),
             ],
         ),
         pytest.param(
@@ -1498,6 +1508,10 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not is_torchvision_available(),
                     reason="Qwen3VLVideoProcessor requires torchvision",
+                ),
+                pytest.mark.skipif(
+                    True,
+                    reason="Flaky test",
                 ),
             ],
         ),

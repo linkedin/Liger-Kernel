@@ -12,6 +12,33 @@ def is_peft_available():
     return PEFT_AVAILABLE
 
 
+def infer_comm_backend():
+    """
+    Get communication backend name based on the environment.
+    """
+    if torch.distributed.is_nccl_available():
+        # Works for Nvidia
+        # TODO: nccl may not work for AMD decices that may require use of rccl.
+        return "nccl"
+    elif is_npu_available():
+        # Use Ascend NPU if available (torch.npu)
+        # Ascend is not standard torch backend and requires extension.
+        # Assume that it is installed if NPUs are being used in
+        # multi device environment.
+        return "ascend"
+    # XPU (Intel) if available
+    elif torch.distributed.distributed_c10d.is_xccl_available():
+        return "xccl"
+    elif torch.distributed.is_mpi_available():
+        # CPU backend, first option
+        return "mpi"
+    elif torch.distributed.is_gloo_available():
+        # CPU backend, backup option
+        return "gloo"
+    else:
+        raise RuntimeError("There is no distributed backend available.")
+
+
 def infer_device():
     """
     Get current device name based on available devices
