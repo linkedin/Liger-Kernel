@@ -32,7 +32,7 @@
         </td>
         <td style="padding: 10px;">
             <a href="https://discord.gg/X4MaxPgA">
-                <img src="https://dcbadge.limes.pink/api/server/gpumode?style=flat" alt="Join Our Discord">
+                <img src="https://dcbadge.limes.pink/api/server/https://discord.gg/X4MaxPgA?style=flat" alt="Join Our Discord">
             </a>
         </td>
     </tr>
