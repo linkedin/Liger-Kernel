@@ -85,7 +85,13 @@ def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion
         # is the total completion tokens across the entire generation batch.
         # If num_items_in_batch is not provided, fall back to _compute_dapo_normalizer
         if num_items_in_batch is not None:
-            normalizer = torch.clamp(num_items_in_batch, min=1.0)
+            if isinstance(num_items_in_batch, torch.Tensor):
+                normalizer = num_items_in_batch.to(device=per_token_loss.device, dtype=per_token_loss.dtype)
+            else:
+                normalizer = torch.as_tensor(
+                    num_items_in_batch, device=per_token_loss.device, dtype=per_token_loss.dtype
+                )
+            normalizer = torch.clamp(normalizer, min=1.0)
         else:
             normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask)
         return (per_token_loss * mask).sum() / normalizer

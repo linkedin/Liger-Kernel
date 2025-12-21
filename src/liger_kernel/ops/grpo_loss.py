@@ -272,11 +272,28 @@ class GrpoLossFunction(torch.autograd.Function):
         if completion_mask is not None:
             assert completion_mask.is_contiguous()
 
-        # Handle sequence-level ISR (B, 1) by expanding to (B, L)
+        # Handle ISR shapes: (B,), (B, 1), or (B, L)
         if importance_sampling_ratio is not None:
-            if importance_sampling_ratio.shape[-1] == 1:
-                # Expand (B, 1) to (B, L) and make contiguous
-                importance_sampling_ratio = importance_sampling_ratio.expand(B, L).contiguous()
+            if importance_sampling_ratio.dim() == 1:
+                if importance_sampling_ratio.shape[0] != B:
+                    raise ValueError(
+                        "importance_sampling_ratio must have shape (B,), (B, 1), or (B, L); "
+                        f"got {tuple(importance_sampling_ratio.shape)} for B={B}."
+                    )
+                importance_sampling_ratio = importance_sampling_ratio.unsqueeze(1)
+            if importance_sampling_ratio.dim() != 2 or importance_sampling_ratio.shape[0] != B:
+                raise ValueError(
+                    "importance_sampling_ratio must have shape (B,), (B, 1), or (B, L); "
+                    f"got {tuple(importance_sampling_ratio.shape)} for B={B}."
+                )
+            if importance_sampling_ratio.shape[1] == 1:
+                importance_sampling_ratio = importance_sampling_ratio.expand(B, L)
+            elif importance_sampling_ratio.shape[1] != L:
+                raise ValueError(
+                    "importance_sampling_ratio must have shape (B,), (B, 1), or (B, L); "
+                    f"got {tuple(importance_sampling_ratio.shape)} for L={L}."
+                )
+            importance_sampling_ratio = importance_sampling_ratio.contiguous()
             assert importance_sampling_ratio.is_contiguous()
 
         loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)

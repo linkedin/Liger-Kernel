@@ -104,11 +104,19 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             # For dapo, use num_items_in_batch if provided (matches TRL's implementation)
             # TRL normalizes by num_items_in_batch / num_processes, where num_items_in_batch
             # is the total completion tokens across the entire generation batch.
-            # If num_items_in_batch is not provided, fall back to attention_mask.sum()
+            # If num_items_in_batch is not provided, fall back to distributed-normalized mask sum.
             if num_items_in_batch is not None:
-                loss_normalizer = torch.clamp(num_items_in_batch, min=1.0)
+                if isinstance(num_items_in_batch, torch.Tensor):
+                    loss_normalizer = num_items_in_batch.to(
+                        device=per_token_loss.device, dtype=per_token_loss.dtype
+                    )
+                else:
+                    loss_normalizer = torch.as_tensor(
+                        num_items_in_batch, device=per_token_loss.device, dtype=per_token_loss.dtype
+                    )
+                loss_normalizer = torch.clamp(loss_normalizer, min=1.0)
             else:
-                loss_normalizer = torch.clamp(full_attention_mask.sum(), min=1.0)
+                loss_normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(full_attention_mask)
             loss = (per_token_loss * attention_mask).sum() / loss_normalizer
         else:
             raise ValueError(f"Unknown loss type: {loss_type}")
