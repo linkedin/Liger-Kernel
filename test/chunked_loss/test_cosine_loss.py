@@ -33,7 +33,7 @@ class HFCosineLoss(HFDistillationLoss):
             temperature=temperature,
         )
 
-    def distillation_loss(self, student_logits, teacher_logits, beta=1.0):
+    def distillation_loss(self, student_logits, teacher_logits, target=None, ignore_index=None, beta=1.0, **kwargs):
         # Compute normalized logits
         print(f"student_logits.shape: {student_logits.shape}")
         student_norm = F.normalize(student_logits, p=2, dim=-1)
