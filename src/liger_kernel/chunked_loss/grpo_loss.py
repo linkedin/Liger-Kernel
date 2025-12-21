@@ -107,9 +107,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             # If num_items_in_batch is not provided, fall back to distributed-normalized mask sum.
             if num_items_in_batch is not None:
                 if isinstance(num_items_in_batch, torch.Tensor):
-                    loss_normalizer = num_items_in_batch.to(
-                        device=per_token_loss.device, dtype=per_token_loss.dtype
-                    )
+                    loss_normalizer = num_items_in_batch.to(device=per_token_loss.device, dtype=per_token_loss.dtype)
                 else:
                     loss_normalizer = torch.as_tensor(
                         num_items_in_batch, device=per_token_loss.device, dtype=per_token_loss.dtype
