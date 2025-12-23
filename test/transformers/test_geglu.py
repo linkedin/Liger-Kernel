@@ -36,8 +36,8 @@ SLEEP_SECONDS = 0.1
         (torch.float32, 1e-0, 2e-6),
         pytest.param(
             torch.bfloat16,
-            1e4,
-            6e-3,
+            1e-2,
+            1e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
@@ -117,8 +117,8 @@ def test_correctness(bsz, seq_len, hidden_size, intermediate_size, dtype, atol, 
     [
         # atol is for small values: they have more difference, so set atol higher
         # rtol is for larger values: they are very close, so set rtol lower
-        (torch.float32, 1e-0, 2e-6),
-        (torch.bfloat16, 1e4, 6e-3),
+        (torch.float32, 1e-5, 1e-5),
+        (torch.bfloat16, 1e-2, 1e-2),
     ],
 )
 def test_correctness_functional(bsz, seq_len, size, dtype, atol, rtol):
