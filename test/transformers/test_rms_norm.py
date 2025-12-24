@@ -77,17 +77,22 @@ class LlamaRMSNorm(nn.Module):
 
 # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/gemma/modeling_gemma.py#L122
 class GemmaRMSNorm(nn.Module):
-    def __init__(self, hidden_size: int, eps: float = 1e-6):
+    def __init__(self, hidden_size: int, eps: float = 1e-6, elementwise_affine=True):
         super().__init__()
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.elementwise_affine = elementwise_affine
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+        else:
+            self.register_parameter("weight", None)
 
     def _norm(self, x):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x):
         output = self._norm(x.float())
-        output = output * (1.0 + self.weight.float())
+        if self.elementwise_affine:
+            output = output * (1.0 + self.weight.float())
         return output.type_as(x)
 
 
@@ -149,12 +154,7 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
     do = torch.randn(bs, sl, hd, device=device, dtype=dtype)
 
     # reference (llama or gemma)
-    if not elementwise_affine and reference == GemmaRMSNorm:
-        return pytest.skip("GemmaRMSNorm does not support elementwise_affine=False")
-    if reference == GemmaRMSNorm:
-        ref_rms = reference(hidden_size=hd).to(device).to(dtype)
-    else:
-        ref_rms = reference(hidden_size=hd, elementwise_affine=elementwise_affine).to(device).to(dtype)
+    ref_rms = reference(hidden_size=hd, elementwise_affine=elementwise_affine).to(device).to(dtype)
     ref_o = ref_rms(h1)
     ref_o.backward(do, retain_graph=True)
 
