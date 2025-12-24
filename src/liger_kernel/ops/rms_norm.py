@@ -130,7 +130,7 @@ def _rms_norm_backward_kernel(
     n_rows,
     n_cols,
     offset,
-    rows_per_program: tl.constexpr,
+    rows_per_program,
     casting_mode: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
