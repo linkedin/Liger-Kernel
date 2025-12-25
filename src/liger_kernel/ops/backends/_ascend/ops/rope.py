@@ -118,7 +118,7 @@ def rope_forward(q, k, cos, sin):
     cos_batch_size = cos.shape[0]
 
     # Get tiling strategy from best practices
-    dtype_size = 4 if q.dtype == torch.float32 else 2
+    dtype_size = q.element_size()
     strategy = get_tiling_strategy("rope_forward", (pad_n_q_head, pad_n_kv_head, pad_hd, dtype_size))
 
     if strategy is not None:
@@ -169,7 +169,7 @@ def rope_backward(dq, dk, cos, sin):
     dk = dk.contiguous()
 
     # Get tiling strategy from best practices
-    dtype_size = 4 if dq.dtype == torch.float32 else 2
+    dtype_size = dq.element_size()
     strategy = get_tiling_strategy("rope_backward", (pad_n_q_head, pad_n_kv_head, pad_hd, dtype_size))
 
     if strategy is not None:

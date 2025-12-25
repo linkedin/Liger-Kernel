@@ -127,7 +127,7 @@ def geglu_forward(a, b):
     desired_block_size, num_warps = calculate_settings(n_cols)
 
     # Get tiling strategy from best practices
-    dtype_size = 4 if a.dtype == torch.float32 else 2
+    dtype_size = a.element_size()
     strategy = get_tiling_strategy("geglu_forward", (n_cols, dtype_size))
 
     if strategy is not None:
@@ -166,7 +166,7 @@ def geglu_backward(a, b, dc):
     desired_block_size, num_warps = calculate_settings(n_cols)
 
     # Get tiling strategy from best practices
-    dtype_size = 4 if dc.dtype == torch.float32 else 2
+    dtype_size = dc.element_size()
     strategy = get_tiling_strategy("geglu_backward", (n_cols, dtype_size))
 
     if strategy is not None:

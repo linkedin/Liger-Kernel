@@ -7,6 +7,7 @@ based on best practices for running Triton kernels on Ascend NPU.
 
 import os
 
+from collections import OrderedDict
 from typing import Callable
 from typing import Dict
 from typing import Optional
@@ -119,9 +120,10 @@ def _rope_default_strategy(key_params: Optional[Union[Tuple, Dict]]) -> Optional
 
     # Extract parameters
     if isinstance(key_params, dict):
-        pad_n_q_head = key_params["pad_n_q_head"]
-        pad_n_kv_head = key_params["pad_n_kv_head"]
-        pad_hd = key_params["pad_hd"]
+        # Support both pad_* keys (direct) and n_* keys (with fallback calculation)
+        pad_n_q_head = key_params.get("pad_n_q_head", 1)
+        pad_n_kv_head = key_params.get("pad_n_kv_head", 1)
+        pad_hd = key_params.get("pad_hd", 64)
         dtype_size = key_params.get("dtype_size", 4)
     else:
         pad_n_q_head = key_params[0]
@@ -173,15 +175,19 @@ class UBManager:
     Provides UB capacity detection and tiling strategy lookup from best practices.
     """
 
-    def __init__(self, ub_capacity_bits: Optional[int] = None):
+    def __init__(self, ub_capacity_bits: Optional[int] = None, strategy_cache_size: int = 128):
         """
         Initialize UB Manager.
 
         Args:
             ub_capacity_bits: UB capacity in bits. If None, will be detected automatically.
+            cache_size: Maximum number of cached strategy results. Default is 128.
         """
         self._npu_model = self._detect_npu_model()
         self._ub_capacity_bits = ub_capacity_bits or self._detect_ub_capacity()
+        # LRU cache for strategy results: key -> strategy tuple
+        self._strategy_cache: OrderedDict[Tuple, Tuple] = OrderedDict()
+        self._strategy_cache_size = strategy_cache_size
 
     @property
     def ub_capacity_bits(self) -> int:
@@ -240,6 +246,28 @@ class UBManager:
         model = self._npu_model
         return _DEFAULT_UB_CAPACITIES.get(model, _DEFAULT_UB_CAPACITIES["default"])
 
+    def _normalize_cache_key(self, kernel_name: str, key_params: Optional[Union[Tuple, Dict]]) -> Tuple:
+        """
+        Normalize key_params to a hashable tuple for cache key.
+
+        Args:
+            kernel_name: Name of the kernel
+            key_params: Parameters as dict or tuple
+
+        Returns:
+            Normalized tuple for cache key
+        """
+        if key_params is None:
+            return (kernel_name, self._ub_capacity_bits, None)
+
+        if isinstance(key_params, dict):
+            # Convert dict to sorted tuple of items for consistent hashing
+            sorted_items = tuple(sorted(key_params.items()))
+            return (kernel_name, self._ub_capacity_bits, sorted_items)
+
+        # Tuple format: use as is
+        return (kernel_name, self._ub_capacity_bits, key_params)
+
     def get_tiling_strategy(
         self,
         kernel_name: str,
@@ -270,6 +298,14 @@ class UBManager:
             >>> # ROPE forward (general strategy)
             >>> strategy = ub_manager.get_tiling_strategy("rope_forward")
         """
+        # Check cache first
+        cache_key = self._normalize_cache_key(kernel_name, key_params)
+        if cache_key in self._strategy_cache:
+            # Move to end (most recently used)
+            result = self._strategy_cache.pop(cache_key)
+            self._strategy_cache[cache_key] = result
+            return result
+
         # Look up strategy in best practices dictionary
         lookup_key = (kernel_name, self._ub_capacity_bits)
         strategy = _TILING_STRATEGY_BEST_PRACTICES.get(lookup_key)
@@ -277,46 +313,21 @@ class UBManager:
         if strategy is None:
             return None
 
-        # If strategy is a callable function, call it with key_params and ub_capacity_bits
+        # Compute strategy result
         if callable(strategy):
-            # Normalize key_params for function call
-            normalized_params = None
-            if key_params is not None:
-                if isinstance(key_params, dict):
-                    # Convert dict to tuple based on kernel type
-                    if kernel_name.startswith("geglu"):
-                        normalized_params = (key_params["n_cols"], key_params["dtype_size"])
-                    elif kernel_name.startswith("rope"):
-                        # ROPE strategy expects (pad_n_q_head, pad_n_kv_head, pad_hd, dtype_size)
-                        if "pad_n_q_head" in key_params:
-                            normalized_params = (
-                                key_params["pad_n_q_head"],
-                                key_params["pad_n_kv_head"],
-                                key_params["pad_hd"],
-                                key_params.get("dtype_size", 4),
-                            )
-                        else:
-                            # Fallback: calculate pad values from n_heads and head_dim
-                            import triton
+            result = strategy(key_params)
+        else:
+            # Fixed tuple strategy
+            result = strategy
 
-                            normalized_params = (
-                                triton.next_power_of_2(key_params.get("n_q_head", key_params.get("pad_n_q_head", 1))),
-                                triton.next_power_of_2(key_params.get("n_kv_head", key_params.get("pad_n_kv_head", 1))),
-                                triton.next_power_of_2(key_params.get("head_dim", key_params.get("pad_hd", 64))),
-                                key_params.get("dtype_size", 4),
-                            )
-                    else:
-                        # Generic: convert dict values to tuple (sorted for consistency)
-                        normalized_params = tuple(sorted(key_params.values()))
-                else:
-                    normalized_params = key_params
+        # Cache the result
+        if result is not None:
+            self._strategy_cache[cache_key] = result
+            # Evict oldest entry if cache is full
+            if len(self._strategy_cache) > self._strategy_cache_size:
+                self._strategy_cache.popitem(last=False)  # Remove oldest (first) item
 
-            # Call strategy function with key_params
-            # Strategy functions can access ub_manager via get_ub_manager() if needed
-            return strategy(normalized_params)
-
-        # If strategy is a fixed tuple, return it directly
-        return strategy
+        return result
 
 
 # Global singleton instance
