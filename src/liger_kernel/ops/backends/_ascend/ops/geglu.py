@@ -13,7 +13,7 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.backends._ascend.ub_manager import get_tiling_strategy
+from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
@@ -126,9 +126,21 @@ def geglu_forward(a, b):
     # Calculate desired block size
     desired_block_size, num_warps = calculate_settings(n_cols)
 
-    # Get tiling strategy from best practices
+    # Compute tiling strategy based on UB capacity
     dtype_size = a.element_size()
-    strategy = get_tiling_strategy("geglu_forward", (n_cols, dtype_size))
+    # GEGLU forward tiling strategy:
+    # - Calculates maximum safe block size based on UB capacity
+    # - Memory analysis:
+    #   * Inputs: a, b
+    #   * Intermediates: a_cubed, tanh_arg, tanh_result, geglu_a
+    #   * Output: c
+    #   * Total: ~7x * BLOCK_SIZE * dtype_size
+    # - Uses memory_multiplier=7.0 * BLOCK_SIZE * dtype_size * 8 bits for safety
+    # - compute_default_tiling_strategy returns the final tiling result:
+    #   min(triton.next_power_of_2(n_cols), max_safe_block_size)
+    strategy = compute_default_tiling_strategy(
+        safety_margin=0.80, dtype_size=dtype_size, memory_multiplier=7.0, tiling_dims=(n_cols,), unit_params=()
+    )
 
     if strategy is not None:
         # Use best practice block size
@@ -165,9 +177,19 @@ def geglu_backward(a, b, dc):
     # Calculate desired block size
     desired_block_size, num_warps = calculate_settings(n_cols)
 
-    # Get tiling strategy from best practices
+    # Compute tiling strategy based on UB capacity
     dtype_size = dc.element_size()
-    strategy = get_tiling_strategy("geglu_backward", (n_cols, dtype_size))
+    # GEGLU backward tiling strategy:
+    # - Calculates maximum safe block size based on UB capacity
+    # - Memory analysis:
+    #   * More intermediates for gradient computation compared to forward
+    #   * Total: ~10x * BLOCK_SIZE * dtype_size
+    # - Uses memory_multiplier=10.0 * BLOCK_SIZE * dtype_size * 8 bits for safety
+    # - compute_default_tiling_strategy returns the final tiling result:
+    #   min(triton.next_power_of_2(n_cols), max_safe_block_size)
+    strategy = compute_default_tiling_strategy(
+        safety_margin=0.80, dtype_size=dtype_size, memory_multiplier=10.0, tiling_dims=(n_cols,), unit_params=()
+    )
 
     if strategy is not None:
         # Use best practice block size

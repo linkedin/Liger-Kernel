@@ -1,18 +1,15 @@
 """
 Unified Buffer (UB) Manager for Ascend NPU.
 
-This module provides UB capacity detection and tiling strategy lookup
-based on best practices for running Triton kernels on Ascend NPU.
+This module provides UB capacity detection and tiling strategy computation
+for running Triton kernels on Ascend NPU. It automatically calculates
+optimal block sizes based on UB capacity constraints to prevent UB overflow.
 """
 
 import os
 
-from collections import OrderedDict
-from typing import Callable
-from typing import Dict
 from typing import Optional
 from typing import Tuple
-from typing import Union
 
 import torch
 import triton
@@ -27,167 +24,96 @@ _DEFAULT_UB_CAPACITIES = {
 }
 
 
-def _geglu_default_strategy(key_params: Optional[Union[Tuple, Dict]]) -> Optional[Tuple]:
+def _default_strategy(
+    ub_capacity_bits: int,
+    safety_margin: float,
+    dtype_size: int,
+    memory_multiplier: float,
+    tiling_dims: Optional[Tuple],
+    unit_params: Optional[Tuple],
+) -> Optional[Tuple]:
     """
-    GEGLU default tiling strategy based on UB capacity and n_cols.
+    Default tiling strategy: calculate maximum safe block size based on UB capacity.
 
-    Strategy:
-    - Calculates maximum safe block size based on UB capacity and n_cols
-    - Memory analysis for GEGLU:
-      * Forward: ~7x * BLOCK_SIZE * dtype_size (inputs: a, b; intermediates: a_cubed, tanh_arg, tanh_result, geglu_a; output: c)
-      * Backward: ~10x * BLOCK_SIZE * dtype_size (more intermediates for gradient computation)
-    - Uses conservative estimate: 10x * BLOCK_SIZE * dtype_size for safety
-    - Returns min(desired_block_size, safe_block_size) where desired_block_size = triton.next_power_of_2(n_cols)
+    This is a unified strategy function that works for all kernels by abstracting
+    the memory calculation as: memory_multiplier * BLOCK_SIZE * unit_param * dtype_size * 8 bits
 
     Args:
-        key_params: (n_cols, dtype_size) or {"n_cols": int, "dtype_size": int}
+        ub_capacity_bits: UB capacity in bits
+        safety_margin: Safety margin as a float (e.g., 0.80 for 80%)
+        dtype_size: Size of data type in bytes (e.g., 2 for float16, 4 for float32)
+        memory_multiplier: Memory multiplier for estimating peak memory usage
+        tiling_dims: Dimensions that need tiling as tuple. Used to determine return tuple length.
+            - For GEGLU: (n_cols,) -> returns (max_safe_block_size,)
+            - For ROPE: (pad_n_q_head, pad_n_kv_head) -> returns (max_safe_block_size, max_safe_block_size)
+        unit_params: Parameters related to unit length of each tile as tuple.
+            All elements in the tuple will be multiplied together to get the final unit_param.
+            - For GEGLU: () (empty tuple, unit_param = 1)
+            - For ROPE: (pad_hd,) (unit_param = pad_hd)
+            - For kernels with multiple factors: (factor1, factor2, ...) (unit_param = factor1 * factor2 * ...)
 
-    This strategy applies to both forward and backward passes.
+    Returns:
+        Tuple with same length as tiling_dims, each element is max_safe_block_size (power of 2).
+
+    Note:
+        The final block size is computed in compute_default_tiling_strategy by taking
+        min(desired_block_size, max_safe_block_size) where desired_block_size = triton.next_power_of_2(tiling_dim).
     """
-    if key_params is None:
-        return None  # Use default desired_block_size
+    if dtype_size is None or dtype_size <= 0:
+        dtype_size = 4  # Default to float32
+    if memory_multiplier is None or memory_multiplier <= 0:
+        memory_multiplier = 10.0  # Default to conservative estimate
 
-    # Get UB capacity from ub_manager
-    ub_manager = get_ub_manager()
-    ub_capacity_bits = ub_manager.ub_capacity_bits
-
-    # Extract parameters
-    if isinstance(key_params, dict):
-        n_cols = key_params["n_cols"]
-        dtype_size = key_params.get("dtype_size", 4)
-    else:
-        n_cols = key_params[0]
-        dtype_size = key_params[1] if len(key_params) > 1 else 4
-
-    # Calculate desired block size (power of 2)
-    desired_block_size = triton.next_power_of_2(n_cols)
+    # Extract unit_param from unit_params by multiplying all elements
+    # If unit_params is empty or None, unit_param = 1 (e.g., for GEGLU)
+    # If unit_params has elements, multiply all of them (e.g., for ROPE: pad_hd)
+    # This allows unit_params to contain multiple factors that need to be multiplied
+    unit_param = 1.0
+    if unit_params is not None and len(unit_params) > 0:
+        for param in unit_params:
+            param_val = float(param)
+            if param_val > 0:
+                unit_param *= param_val
+        # Ensure unit_param is at least 1.0
+        if unit_param <= 0:
+            unit_param = 1.0
 
     # Calculate maximum safe block size based on UB capacity
-    # Memory: 10x * BLOCK_SIZE * dtype_size * 8 bits
-    SAFE_UB_CAPACITY_BITS = int(ub_capacity_bits * 0.80)  # 80% safety margin
+    # Memory: memory_multiplier * BLOCK_SIZE * unit_param * dtype_size * 8 bits
+    SAFE_UB_CAPACITY_BITS = int(ub_capacity_bits * safety_margin)
 
-    # Solve: 10 * BLOCK_SIZE * dtype_size * 8 <= SAFE_UB_CAPACITY_BITS
-    # BLOCK_SIZE <= SAFE_UB_CAPACITY_BITS / (10 * dtype_size * 8)
-    max_block_size = SAFE_UB_CAPACITY_BITS // (10 * dtype_size * 8)
+    # Solve: memory_multiplier * BLOCK_SIZE * unit_param * dtype_size * 8 <= SAFE_UB_CAPACITY_BITS
+    # BLOCK_SIZE <= SAFE_UB_CAPACITY_BITS / (memory_multiplier * unit_param * dtype_size * 8)
+    max_block_size = int(SAFE_UB_CAPACITY_BITS // (memory_multiplier * unit_param * dtype_size * 8))
     max_block_size = max(1, max_block_size)
 
     # Find largest power of 2 <= max_block_size
     # Use triton.next_power_of_2(max_block_size + 1) // 2 to get the largest power of 2 <= max_block_size
     safe_block_size = triton.next_power_of_2(max_block_size + 1) // 2
 
-    # Use min(desired_block_size, safe_block_size)
-    # This ensures we use the desired size when it fits in UB, otherwise use safe size
-    block_size = min(desired_block_size, safe_block_size)
-
-    return (block_size,)
-
-
-def _rope_default_strategy(key_params: Optional[Union[Tuple, Dict]]) -> Optional[Tuple]:
-    """
-    ROPE default tiling strategy based on UB capacity, pad_n_q_head, pad_n_kv_head, and pad_hd.
-
-    Strategy (based on optimized ROPE kernel):
-    - cos_vals and sin_vals are loaded once outside loops (shared): pad_hd // 2 elements each
-    - In q heads loop (peak memory):
-      * q_left: BLOCK_Q * (pad_hd // 2) elements
-      * q_right: BLOCK_Q * (pad_hd // 2) elements
-      * new_left: BLOCK_Q * (pad_hd // 2) elements (intermediate result)
-      * new_right: BLOCK_Q * (pad_hd // 2) elements (intermediate result)
-      * Total: 4 * BLOCK_Q * (pad_hd // 2) = 2 * BLOCK_Q * pad_hd elements
-    - In k heads loop (peak memory):
-      * k_left: BLOCK_K * (pad_hd // 2) elements
-      * k_right: BLOCK_K * (pad_hd // 2) elements
-      * new_left: BLOCK_K * (pad_hd // 2) elements (intermediate result)
-      * new_right: BLOCK_K * (pad_hd // 2) elements (intermediate result)
-      * Total: 4 * BLOCK_K * (pad_hd // 2) = 2 * BLOCK_K * pad_hd elements
-    - Since q and k are processed separately, peak memory is max(BLOCK_Q, BLOCK_K) case
-    - Plus shared cos/sin: 2 * (pad_hd // 2) = pad_hd elements
-    - Conservative estimate: (2 * BLOCK_SIZE * pad_hd + pad_hd) * dtype_size * 8 bits
-    - Simplified: (2 * BLOCK_SIZE + 1) * pad_hd * dtype_size * 8 bits
-    - For safety, use: 3 * BLOCK_SIZE * pad_hd * dtype_size * 8 bits
-
-    Args:
-        key_params: (pad_n_q_head, pad_n_kv_head, pad_hd, dtype_size) or dict
-
-    Returns: (BLOCK_Q, BLOCK_K)
-    """
-    if key_params is None:
-        return None
-
-    # Get UB capacity from ub_manager
-    ub_manager = get_ub_manager()
-    ub_capacity_bits = ub_manager.ub_capacity_bits
-
-    # Extract parameters
-    if isinstance(key_params, dict):
-        # Support both pad_* keys (direct) and n_* keys (with fallback calculation)
-        pad_n_q_head = key_params.get("pad_n_q_head", 1)
-        pad_n_kv_head = key_params.get("pad_n_kv_head", 1)
-        pad_hd = key_params.get("pad_hd", 64)
-        dtype_size = key_params.get("dtype_size", 4)
-    else:
-        pad_n_q_head = key_params[0]
-        pad_n_kv_head = key_params[1]
-        pad_hd = key_params[2]
-        dtype_size = key_params[3] if len(key_params) > 3 else 4
-
-    # Calculate maximum safe block size
-    # Memory per tile: 3 * BLOCK_SIZE * pad_hd * dtype_size * 8 bits (conservative estimate)
-    SAFE_UB_CAPACITY_BITS = int(ub_capacity_bits * 0.80)  # 80% safety margin
-
-    # Solve: 3 * BLOCK_SIZE * pad_hd * dtype_size * 8 <= SAFE_UB_CAPACITY_BITS
-    # BLOCK_SIZE <= SAFE_UB_CAPACITY_BITS / (3 * pad_hd * dtype_size * 8)
-    max_block_size = SAFE_UB_CAPACITY_BITS // (3 * pad_hd * dtype_size * 8)
-    max_block_size = max(1, max_block_size)
-
-    # Find largest power of 2 <= max_block_size
-    # Use triton.next_power_of_2(max_block_size + 1) // 2 to get the largest power of 2 <= max_block_size
-    safe_block_size = triton.next_power_of_2(max_block_size + 1) // 2
-
-    # Calculate BLOCK_Q and BLOCK_K
-    # Use min(desired, safe), but ensure it's a power of 2
-    BLOCK_Q = min(triton.next_power_of_2(pad_n_q_head), safe_block_size)
-    BLOCK_K = min(triton.next_power_of_2(pad_n_kv_head), safe_block_size)
-
-    # Ensure at least 1
-    BLOCK_Q = max(1, BLOCK_Q)
-    BLOCK_K = max(1, BLOCK_K)
-
-    return (BLOCK_Q, BLOCK_K)
-
-
-_TILING_STRATEGY_BEST_PRACTICES: Dict[Tuple, Union[Tuple, Callable]] = {
-    # GEGLU strategies: default strategy based on UB capacity and n_cols
-    # Both forward and backward use the same strategy
-    ("geglu_forward", 1572864): _geglu_default_strategy,
-    ("geglu_backward", 1572864): _geglu_default_strategy,
-    # ROPE strategies: block-based (BLOCK_Q, BLOCK_K)
-    # Both forward and backward use the same strategy
-    ("rope_forward", 1572864): _rope_default_strategy,
-    ("rope_backward", 1572864): _rope_default_strategy,
-}
+    # Return tuple with same length as tiling_dims
+    if tiling_dims is None:
+        return (safe_block_size,)
+    return (safe_block_size,) * len(tiling_dims)
 
 
 class UBManager:
     """
     Unified Buffer Manager for Ascend NPU.
 
-    Provides UB capacity detection and tiling strategy lookup from best practices.
+    Provides UB capacity detection and management for Ascend NPU devices.
+    The UB capacity is used by tiling strategy functions to calculate optimal block sizes.
     """
 
-    def __init__(self, ub_capacity_bits: Optional[int] = None, strategy_cache_size: int = 128):
+    def __init__(self, ub_capacity_bits: Optional[int] = None):
         """
         Initialize UB Manager.
 
         Args:
             ub_capacity_bits: UB capacity in bits. If None, will be detected automatically.
-            cache_size: Maximum number of cached strategy results. Default is 128.
         """
         self._npu_model = self._detect_npu_model()
         self._ub_capacity_bits = ub_capacity_bits or self._detect_ub_capacity()
-        # LRU cache for strategy results: key -> strategy tuple
-        self._strategy_cache: OrderedDict[Tuple, Tuple] = OrderedDict()
-        self._strategy_cache_size = strategy_cache_size
 
     @property
     def ub_capacity_bits(self) -> int:
@@ -246,89 +172,6 @@ class UBManager:
         model = self._npu_model
         return _DEFAULT_UB_CAPACITIES.get(model, _DEFAULT_UB_CAPACITIES["default"])
 
-    def _normalize_cache_key(self, kernel_name: str, key_params: Optional[Union[Tuple, Dict]]) -> Tuple:
-        """
-        Normalize key_params to a hashable tuple for cache key.
-
-        Args:
-            kernel_name: Name of the kernel
-            key_params: Parameters as dict or tuple
-
-        Returns:
-            Normalized tuple for cache key
-        """
-        if key_params is None:
-            return (kernel_name, self._ub_capacity_bits, None)
-
-        if isinstance(key_params, dict):
-            # Convert dict to sorted tuple of items for consistent hashing
-            sorted_items = tuple(sorted(key_params.items()))
-            return (kernel_name, self._ub_capacity_bits, sorted_items)
-
-        # Tuple format: use as is
-        return (kernel_name, self._ub_capacity_bits, key_params)
-
-    def get_tiling_strategy(
-        self,
-        kernel_name: str,
-        key_params: Optional[Union[Tuple, Dict]] = None,
-    ) -> Optional[Tuple]:
-        """
-        Get tiling strategy for a specific kernel from best practices.
-
-        Args:
-            kernel_name: Name of the kernel (e.g., "geglu_forward", "rope_forward")
-            key_params: Optional key parameters for parameter-specific strategies. Can be:
-                - For GEGLU: (n_cols, dtype_size) or {"n_cols": int, "dtype_size": int}
-                - For ROPE: (n_q_head, n_kv_head, head_dim, dtype_size) or dict
-                - If None (default), uses general strategy without parameters
-
-        Returns:
-            Tiling strategy as a tuple:
-                - For GEGLU: (block_size,)
-                - For ROPE: (pad_n_q_head, pad_n_kv_head, pad_hd)
-            Returns None if not found in best practices.
-
-        Examples:
-            >>> ub_manager = get_ub_manager()
-            >>> # GEGLU forward (general strategy)
-            >>> strategy = ub_manager.get_tiling_strategy("geglu_forward")
-            >>> # GEGLU forward (parameter-specific strategy)
-            >>> strategy = ub_manager.get_tiling_strategy("geglu_forward", (4096, 2))
-            >>> # ROPE forward (general strategy)
-            >>> strategy = ub_manager.get_tiling_strategy("rope_forward")
-        """
-        # Check cache first
-        cache_key = self._normalize_cache_key(kernel_name, key_params)
-        if cache_key in self._strategy_cache:
-            # Move to end (most recently used)
-            result = self._strategy_cache.pop(cache_key)
-            self._strategy_cache[cache_key] = result
-            return result
-
-        # Look up strategy in best practices dictionary
-        lookup_key = (kernel_name, self._ub_capacity_bits)
-        strategy = _TILING_STRATEGY_BEST_PRACTICES.get(lookup_key)
-
-        if strategy is None:
-            return None
-
-        # Compute strategy result
-        if callable(strategy):
-            result = strategy(key_params)
-        else:
-            # Fixed tuple strategy
-            result = strategy
-
-        # Cache the result
-        if result is not None:
-            self._strategy_cache[cache_key] = result
-            # Evict oldest entry if cache is full
-            if len(self._strategy_cache) > self._strategy_cache_size:
-                self._strategy_cache.popitem(last=False)  # Remove oldest (first) item
-
-        return result
-
 
 # Global singleton instance
 _ub_manager: Optional[UBManager] = None
@@ -342,35 +185,80 @@ def get_ub_manager() -> UBManager:
     return _ub_manager
 
 
-def get_tiling_strategy(
-    kernel_name: str,
-    key_params: Optional[Union[Tuple, Dict]] = None,
+def compute_default_tiling_strategy(
+    safety_margin: float = 0.80,
+    dtype_size: Optional[int] = None,
+    memory_multiplier: Optional[float] = None,
+    tiling_dims: Optional[Tuple] = None,
+    unit_params: Optional[Tuple] = None,
 ) -> Optional[Tuple]:
     """
-    Get tiling strategy for a specific kernel from best practices.
+    Compute tiling strategy using the default strategy function.
 
-    This is a convenience function that wraps UBManager.get_tiling_strategy().
+    This function directly calls the default strategy and computes the final
+    tiling result. All kernels use the same unified strategy function, so
+    there's no need for kernel_name-based lookup.
 
     Args:
-        kernel_name: Name of the kernel (e.g., "geglu_forward", "rope_forward")
-        key_params: Optional key parameters for parameter-specific strategies. Can be:
-            - For GEGLU: (n_cols, dtype_size) or {"n_cols": int, "dtype_size": int}
-            - For ROPE: (n_q_head, n_kv_head, head_dim, dtype_size) or dict
-            - If None (default), uses general strategy without parameters
+        safety_margin: Safety margin as a float (e.g., 0.80 for 80%). Default is 0.80.
+        dtype_size: Size of data type in bytes (e.g., 2 for float16, 4 for float32).
+            Must be provided. If None or <= 0, defaults to 4 (float32).
+        memory_multiplier: Memory multiplier for estimating peak memory usage.
+            - For GEGLU: typically 10.0 for backward, 7.0 for forward
+            - For ROPE: typically 3.0
+            If None, defaults to 10.0 (conservative estimate).
+        tiling_dims: Dimensions that need tiling as tuple. Used for calculating desired tiling size.
+            - For GEGLU: (n_cols,)
+            - For ROPE: (pad_n_q_head, pad_n_kv_head)
+        unit_params: Parameters related to unit length of each tile as tuple. Used for calculating UB capacity limits.
+            All elements in the tuple will be multiplied together to get the final unit_param.
+            - For GEGLU: () (empty tuple, unit_param = 1)
+            - For ROPE: (pad_hd,) (unit_param = pad_hd)
+            - For kernels with multiple factors: (factor1, factor2, ...) (unit_param = factor1 * factor2 * ...)
 
     Returns:
         Tiling strategy as a tuple:
             - For GEGLU: (block_size,)
-            - For ROPE: (pad_n_q_head, pad_n_kv_head, pad_hd)
-        Returns None if not found in best practices.
+            - For ROPE: (BLOCK_Q, BLOCK_K)
+        Returns None if tiling_dims is None.
 
     Examples:
-        >>> # GEGLU forward (general strategy)
-        >>> strategy = get_tiling_strategy("geglu_forward")
-        >>> # GEGLU forward (parameter-specific strategy)
-        >>> strategy = get_tiling_strategy("geglu_forward", (4096, 2))
-        >>> # ROPE forward (general strategy)
-        >>> strategy = get_tiling_strategy("rope_forward")
+        >>> # GEGLU forward
+        >>> strategy = compute_default_tiling_strategy(safety_margin=0.80, dtype_size=2, memory_multiplier=7.0, tiling_dims=(4096,), unit_params=())
+        >>> # ROPE forward
+        >>> strategy = compute_default_tiling_strategy(safety_margin=0.90, dtype_size=4, memory_multiplier=3.0, tiling_dims=(32, 32), unit_params=(128,))
     """
     ub_manager = get_ub_manager()
-    return ub_manager.get_tiling_strategy(kernel_name, key_params)
+
+    if dtype_size is None or dtype_size <= 0:
+        dtype_size = 4  # Default to float32
+
+    if memory_multiplier is None or memory_multiplier <= 0:
+        memory_multiplier = 10.0  # Default conservative estimate
+
+    # Call strategy directly
+    max_supported = _default_strategy(
+        ub_manager.ub_capacity_bits,
+        safety_margin,
+        dtype_size,
+        memory_multiplier,
+        tiling_dims,
+        unit_params,
+    )
+
+    if max_supported is None or tiling_dims is None:
+        return None
+
+    # Calculate final result: min(desired, max_supported)
+    # For each element in tiling_dims, compute desired = triton.next_power_of_2(tiling_dims[i])
+    # and take min(desired, max_supported[i])
+    result = []
+    for i, dim_val in enumerate(tiling_dims):
+        desired = triton.next_power_of_2(dim_val)
+        max_safe = max_supported[i] if i < len(max_supported) else max_supported[0]
+        final_val = min(desired, max_safe)
+        # Ensure at least 1
+        final_val = max(1, final_val)
+        result.append(final_val)
+
+    return tuple(result)

@@ -2,7 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.backends._ascend.ub_manager import get_tiling_strategy
+from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
 
 
 @triton.jit
@@ -117,12 +117,40 @@ def rope_forward(q, k, cos, sin):
     sin = sin.contiguous()
     cos_batch_size = cos.shape[0]
 
-    # Get tiling strategy from best practices
+    # Compute tiling strategy based on UB capacity
     dtype_size = q.element_size()
-    strategy = get_tiling_strategy("rope_forward", (pad_n_q_head, pad_n_kv_head, pad_hd, dtype_size))
+    # ROPE forward tiling strategy (based on optimized ROPE kernel):
+    # - cos_vals and sin_vals are loaded once outside loops (shared): pad_hd // 2 elements each
+    # - In q heads loop (peak memory):
+    #   * q_left: BLOCK_Q * (pad_hd // 2) elements
+    #   * q_right: BLOCK_Q * (pad_hd // 2) elements
+    #   * new_left: BLOCK_Q * (pad_hd // 2) elements (intermediate result)
+    #   * new_right: BLOCK_Q * (pad_hd // 2) elements (intermediate result)
+    #   * Total: 4 * BLOCK_Q * (pad_hd // 2) = 2 * BLOCK_Q * pad_hd elements
+    # - In k heads loop (peak memory):
+    #   * k_left: BLOCK_K * (pad_hd // 2) elements
+    #   * k_right: BLOCK_K * (pad_hd // 2) elements
+    #   * new_left: BLOCK_K * (pad_hd // 2) elements (intermediate result)
+    #   * new_right: BLOCK_K * (pad_hd // 2) elements (intermediate result)
+    #   * Total: 4 * BLOCK_K * (pad_hd // 2) = 2 * BLOCK_K * pad_hd elements
+    # - Since q and k are processed separately, peak memory is max(BLOCK_Q, BLOCK_K) case
+    # - Plus shared cos/sin: 2 * (pad_hd // 2) = pad_hd elements
+    # - Conservative estimate: (2 * BLOCK_SIZE * pad_hd + pad_hd) * dtype_size * 8 bits
+    # - Simplified: (2 * BLOCK_SIZE + 1) * pad_hd * dtype_size * 8 bits
+    # - For safety, use: memory_multiplier=3.0 * BLOCK_SIZE * pad_hd * dtype_size * 8 bits
+    # - compute_default_tiling_strategy returns the final tiling result:
+    #   (min(triton.next_power_of_2(pad_n_q_head), max_safe_block_size),
+    #    min(triton.next_power_of_2(pad_n_kv_head), max_safe_block_size))
+    strategy = compute_default_tiling_strategy(
+        safety_margin=0.90,
+        dtype_size=dtype_size,
+        memory_multiplier=3.0,
+        tiling_dims=(pad_n_q_head, pad_n_kv_head),
+        unit_params=(pad_hd,),
+    )
 
     if strategy is not None:
-        # Strategy provides BLOCK_Q and BLOCK_K
+        # Strategy returns the final BLOCK_Q and BLOCK_K
         BLOCK_Q, BLOCK_K = strategy
     else:
         # Fallback to conservative defaults
@@ -168,12 +196,40 @@ def rope_backward(dq, dk, cos, sin):
     dq = dq.contiguous()
     dk = dk.contiguous()
 
-    # Get tiling strategy from best practices
+    # Compute tiling strategy based on UB capacity
     dtype_size = dq.element_size()
-    strategy = get_tiling_strategy("rope_backward", (pad_n_q_head, pad_n_kv_head, pad_hd, dtype_size))
+    # ROPE backward tiling strategy (based on optimized ROPE kernel):
+    # - cos_vals and sin_vals are loaded once outside loops (shared): pad_hd // 2 elements each
+    # - In q heads loop (peak memory):
+    #   * q_left: BLOCK_Q * (pad_hd // 2) elements
+    #   * q_right: BLOCK_Q * (pad_hd // 2) elements
+    #   * new_left: BLOCK_Q * (pad_hd // 2) elements (intermediate result)
+    #   * new_right: BLOCK_Q * (pad_hd // 2) elements (intermediate result)
+    #   * Total: 4 * BLOCK_Q * (pad_hd // 2) = 2 * BLOCK_Q * pad_hd elements
+    # - In k heads loop (peak memory):
+    #   * k_left: BLOCK_K * (pad_hd // 2) elements
+    #   * k_right: BLOCK_K * (pad_hd // 2) elements
+    #   * new_left: BLOCK_K * (pad_hd // 2) elements (intermediate result)
+    #   * new_right: BLOCK_K * (pad_hd // 2) elements (intermediate result)
+    #   * Total: 4 * BLOCK_K * (pad_hd // 2) = 2 * BLOCK_K * pad_hd elements
+    # - Since q and k are processed separately, peak memory is max(BLOCK_Q, BLOCK_K) case
+    # - Plus shared cos/sin: 2 * (pad_hd // 2) = pad_hd elements
+    # - Conservative estimate: (2 * BLOCK_SIZE * pad_hd + pad_hd) * dtype_size * 8 bits
+    # - Simplified: (2 * BLOCK_SIZE + 1) * pad_hd * dtype_size * 8 bits
+    # - For safety, use: memory_multiplier=3.0 * BLOCK_SIZE * pad_hd * dtype_size * 8 bits
+    # - compute_default_tiling_strategy returns the final tiling result:
+    #   (min(triton.next_power_of_2(pad_n_q_head), max_safe_block_size),
+    #    min(triton.next_power_of_2(pad_n_kv_head), max_safe_block_size))
+    strategy = compute_default_tiling_strategy(
+        safety_margin=0.90,
+        dtype_size=dtype_size,
+        memory_multiplier=3.0,
+        tiling_dims=(pad_n_q_head, pad_n_kv_head),
+        unit_params=(pad_hd,),
+    )
 
     if strategy is not None:
-        # Strategy provides BLOCK_Q and BLOCK_K
+        # Strategy returns the final BLOCK_Q and BLOCK_K
         BLOCK_Q, BLOCK_K = strategy
     else:
         # Fallback to conservative defaults
