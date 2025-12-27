@@ -143,13 +143,16 @@ def liger_cross_entropy_kernel(
         block_max = tl.max(X_block)
 
         # Track argmax for accuracy computation
-        if RETURN_TOKEN_ACCURACY and block_max > m:
+        if RETURN_TOKEN_ACCURACY:
             # Find the index of the maximum value in this block
             is_max_mask = X_block == block_max
             # Mask out invalid indices with a value larger than n_cols
             masked_offsets = tl.where(is_max_mask, X_offsets, n_cols)
             # Get the first (smallest) index where max occurs
-            argmax_idx = tl.min(masked_offsets)
+            current_block_argmax_idx = tl.min(masked_offsets)
+
+            is_new_max = block_max > m
+            argmax_idx = tl.where(is_new_max, current_block_argmax_idx, argmax_idx)
 
         if label_smoothing > 0:
             # scale X beforehand to avoid overflow
