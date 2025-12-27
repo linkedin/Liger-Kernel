@@ -45,38 +45,38 @@ The UB Manager (Unified Buffer Manager) is a core component in **Liger-Kernel** 
 ### Class Diagram
 
 ```
-┌─────────────────────────────────────┐
-│          UBManager                  │
-├─────────────────────────────────────┤
-│ - _npu_model: str                   │
-│ - _ub_capacity_bits: int            │
-├─────────────────────────────────────┤
-│ + ub_capacity_bits: int             │
-│ + ub_capacity_bytes: int            │
-│ + npu_model: str                    │
-│ - _detect_npu_model()               │
-│ - _detect_ub_capacity()             │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────┐
+│          UBManager                   │
+├──────────────────────────────────────┤
+│ - _npu_model: str                    │
+│ - _ub_capacity_bits: int             │
+├──────────────────────────────────────┤
+│ + ub_capacity_bits: int              │
+│ + ub_capacity_bytes: int             │
+│ + npu_model: str                     │
+│ - _detect_npu_model()                │
+│ - _detect_ub_capacity()              │
+└──────────────────────────────────────┘
 
-┌─────────────────────────────────────┐
-│   compute_default_tiling_strategy   │
-├─────────────────────────────────────┤
-│ + safety_margin: float               │
-│ + dtype_size: int                   │
-│ + memory_multiplier: float           │
+┌──────────────────────────────────────┐
+│   compute_default_tiling_strategy    │
+├──────────────────────────────────────┤
+│ + safety_margin: float                │
+│ + dtype_size: int                    │
+│ + memory_multiplier: float            │
 │ + shapes: Tuple[Tuple[int, ...], ...]│
-│ + tiling_dims: Tuple                │
-├─────────────────────────────────────┤
-│ Returns: Tuple[Tuple[int, ...], ...]│
-│   (same structure as shapes)        │
-└─────────────────────────────────────┘
+│ + tiling_dims: Tuple                 │
+├──────────────────────────────────────┤
+│ Returns: Tuple[Tuple[int, ...], ...] │
+│   (same structure as shapes)         │
+└──────────────────────────────────────┘
 
-┌─────────────────────────────────────┐
-│   _normalize_tiling_dims            │
-├─────────────────────────────────────┤
-│ Helper function to normalize        │
-│ tiling_dim (int or tuple) to set    │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────┐
+│   _normalize_tiling_dims             │
+├──────────────────────────────────────┤
+│ Helper function to normalize         │
+│ tiling_dim (int or tuple) to set     │
+└──────────────────────────────────────┘
 ```
 
 ## Core Functionality
@@ -113,7 +113,7 @@ The strategy function:
 - For each shape, identifies which dimensions can be tiled (from `tiling_dims`)
 - Calculates `unit_param` as the product of fixed (non-tiling) dimensions
 - Calculates the maximum safe block size that fits within UB capacity
-- Returns a list of max_safe_block_size values (one for each shape)
+- Returns a tuple of max_safe_block_size values (one for each shape)
 
 The `compute_default_tiling_strategy` function:
 - Calls `_default_strategy` to get max_safe_block_size for each shape
@@ -289,7 +289,7 @@ def _default_strategy(
 2. Calculate `SAFE_UB_CAPACITY_BITS = ub_capacity_bits * safety_margin`
 3. Solve for max_block_size: `SAFE_UB_CAPACITY_BITS / (memory_multiplier * unit_param * dtype_size * 8)`
 4. Find largest power of 2 <= max_block_size
-5. Return list with one max_safe_block_size per shape
+5. Return tuple with one max_safe_block_size per shape
 
 ### `compute_default_tiling_strategy` Function
 
