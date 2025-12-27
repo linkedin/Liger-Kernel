@@ -8,7 +8,6 @@ optimal block sizes based on UB capacity constraints to prevent UB overflow.
 
 import os
 
-from typing import List
 from typing import Optional
 from typing import Tuple
 from typing import Union
@@ -49,9 +48,9 @@ def _default_strategy(
     safety_margin: float,
     dtype_size: int,
     memory_multiplier: float,
-    shapes: List[List[int]],
+    shapes: Tuple[Tuple[int, ...], ...],
     tiling_dims: Tuple[Union[int, Tuple[int, ...]], ...],
-) -> List[int]:
+) -> Tuple[int, ...]:
     """
     Default tiling strategy: calculate maximum safe block size based on UB capacity.
 
@@ -63,9 +62,9 @@ def _default_strategy(
         safety_margin: Safety margin as a float (e.g., 0.80 for 80%)
         dtype_size: Size of data type in bytes (e.g., 2 for float16, 4 for float32)
         memory_multiplier: Memory multiplier for estimating peak memory usage
-        shapes: List of full shapes. Each shape is a list of dimension sizes.
-            - For ROPE: [[n_q_head, hd], [n_kv_head, hd]]
-            - For GEGLU: [[n_cols]]
+        shapes: Tuple of full shapes. Each shape is a tuple of dimension sizes.
+            - For ROPE: ((n_q_head, hd), (n_kv_head, hd))
+            - For GEGLU: ((n_cols,),)
         tiling_dims: Tuple specifying which dimensions can be tiled for each shape.
             Each element can be:
             - int: single dimension index (e.g., 0 for first dimension)
@@ -75,7 +74,7 @@ def _default_strategy(
             Length must match len(shapes).
 
     Returns:
-        List of maximum safe block sizes, one for each shape.
+        Tuple of maximum safe block sizes, one for each shape.
         Each element is a power of 2.
 
     Note:
@@ -84,7 +83,7 @@ def _default_strategy(
         min(desired_block_size, max_safe_block_size) where desired_block_size = triton.next_power_of_2(original_dim).
     """
     if not shapes or not tiling_dims:
-        return []
+        return ()
 
     # Calculate max_safe_block_size for each tiling dimension
     max_safe_sizes = []
@@ -127,7 +126,7 @@ def _default_strategy(
         safe_block_size = triton.next_power_of_2(max_block_size + 1) // 2
         max_safe_sizes.append(safe_block_size)
 
-    return max_safe_sizes
+    return tuple(max_safe_sizes)
 
 
 class UBManager:
@@ -222,9 +221,9 @@ def compute_default_tiling_strategy(
     safety_margin: float = 0.80,
     dtype_size: Optional[int] = None,
     memory_multiplier: Optional[float] = None,
-    shapes: Optional[List[List[int]]] = None,
+    shapes: Optional[Tuple[Tuple[int, ...], ...]] = None,
     tiling_dims: Optional[Tuple[Union[int, Tuple[int, ...]], ...]] = None,
-) -> Optional[List[List[int]]]:
+) -> Optional[Tuple[Tuple[int, ...], ...]]:
     """
     Compute tiling strategy using the default strategy function.
 
@@ -240,9 +239,9 @@ def compute_default_tiling_strategy(
             - For GEGLU: typically 10.0 for backward, 7.0 for forward
             - For ROPE: typically 3.0
             If None, defaults to 10.0 (conservative estimate).
-        shapes: List of full shapes. Each shape is a list of dimension sizes.
-            - For ROPE: [[n_q_head, hd], [n_kv_head, hd]]
-            - For GEGLU: [[n_cols]]
+        shapes: Tuple of full shapes. Each shape is a tuple of dimension sizes.
+            - For ROPE: ((n_q_head, hd), (n_kv_head, hd))
+            - For GEGLU: ((n_cols,),)
             Can pass original shapes (will handle padding internally) or padded shapes.
         tiling_dims: Tuple specifying which dimensions can be tiled for each shape.
             Each element can be:
@@ -253,11 +252,11 @@ def compute_default_tiling_strategy(
             Length must match len(shapes). Cannot be empty.
 
     Returns:
-        List of tiled shapes with same structure as input shapes.
+        Tuple of tiled shapes with same structure as input shapes.
         Tiling dimensions are replaced with computed block sizes (power of 2),
         while non-tiling dimensions are padded to next power of 2.
-        - For ROPE: [[block_size_q, pad_hd], [block_size_kv, pad_hd]]
-        - For GEGLU: [[block_size]]
+        - For ROPE: ((block_size_q, pad_hd), (block_size_kv, pad_hd))
+        - For GEGLU: ((block_size,),)
         Returns None if shapes or tiling_dims is None or empty.
 
     Examples:
@@ -266,19 +265,19 @@ def compute_default_tiling_strategy(
         ...     safety_margin=0.90,
         ...     dtype_size=4,
         ...     memory_multiplier=3.0,
-        ...     shapes=[[32, 128], [32, 128]],
+        ...     shapes=((32, 128), (32, 128)),
         ...     tiling_dims=(0, 0)
         ... )
-        >>> # Returns: [[block_size_q, 128], [block_size_kv, 128]]
+        >>> # Returns: ((block_size_q, 128), (block_size_kv, 128))
         >>> # GEGLU forward
         >>> strategy = compute_default_tiling_strategy(
         ...     safety_margin=0.80,
         ...     dtype_size=2,
         ...     memory_multiplier=7.0,
-        ...     shapes=[[4096]],
+        ...     shapes=((4096,),),
         ...     tiling_dims=(0,)
         ... )
-        >>> # Returns: [[block_size]]
+        >>> # Returns: ((block_size,),)
     """
     ub_manager = get_ub_manager()
 
@@ -337,6 +336,6 @@ def compute_default_tiling_strategy(
             if dim_idx not in tiling_dim_set:
                 result_shape[dim_idx] = triton.next_power_of_2(dim_size)
 
-        result.append(result_shape)
+        result.append(tuple(result_shape))
 
-    return result
+    return tuple(result)

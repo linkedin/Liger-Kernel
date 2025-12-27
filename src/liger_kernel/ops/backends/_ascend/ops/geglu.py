@@ -136,20 +136,21 @@ def geglu_forward(a, b):
     #   * Output: c
     #   * Total: ~7x * BLOCK_SIZE * dtype_size
     # - Uses memory_multiplier=7.0 * BLOCK_SIZE * dtype_size * 8 bits for safety
-    # - shapes: [[n_cols]]
+    # - shapes: ((n_cols,),)
     # - tiling_dims: (0,) means first dimension can be tiled
-    # - Returns: [[block_size]]
-    strategy = compute_default_tiling_strategy(
+    # - Returns: ((block_size,),)
+    shapes = ((n_cols,),)
+    tile_shapes = compute_default_tiling_strategy(
         safety_margin=0.80,
         dtype_size=dtype_size,
         memory_multiplier=7.0,
-        shapes=[[n_cols]],
+        shapes=shapes,
         tiling_dims=(0,),
     )
 
-    if strategy is not None and len(strategy) > 0 and len(strategy[0]) > 0:
-        # Strategy returns [[block_size]]
-        adjusted_block_size = strategy[0][0]
+    if tile_shapes is not None and len(tile_shapes) > 0 and len(tile_shapes[0]) > 0:
+        # Strategy returns ((block_size,),)
+        adjusted_block_size = tile_shapes[0][0]
     else:
         # Fallback to desired block size if no best practice found (no tiling needed)
         adjusted_block_size = desired_block_size
@@ -190,20 +191,21 @@ def geglu_backward(a, b, dc):
     #   * More intermediates for gradient computation compared to forward
     #   * Total: ~10x * BLOCK_SIZE * dtype_size
     # - Uses memory_multiplier=10.0 * BLOCK_SIZE * dtype_size * 8 bits for safety
-    # - shapes: [[n_cols]]
+    # - shapes: ((n_cols,),)
     # - tiling_dims: (0,) means first dimension can be tiled
-    # - Returns: [[block_size]]
-    strategy = compute_default_tiling_strategy(
+    # - Returns: ((block_size,),)
+    shapes = ((n_cols,),)
+    tile_shapes = compute_default_tiling_strategy(
         safety_margin=0.80,
         dtype_size=dtype_size,
         memory_multiplier=10.0,
-        shapes=[[n_cols]],
+        shapes=shapes,
         tiling_dims=(0,),
     )
 
-    if strategy is not None and len(strategy) > 0 and len(strategy[0]) > 0:
-        # Strategy returns [[block_size]]
-        adjusted_block_size = strategy[0][0]
+    if tile_shapes is not None and len(tile_shapes) > 0 and len(tile_shapes[0]) > 0:
+        # Strategy returns ((block_size,),)
+        adjusted_block_size = tile_shapes[0][0]
     else:
         # Fallback to desired block size if no best practice found (no tiling needed)
         adjusted_block_size = desired_block_size
