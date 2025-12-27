@@ -64,10 +64,18 @@ The UB Manager (Unified Buffer Manager) is a core component in **Liger-Kernel** 
 │ + safety_margin: float               │
 │ + dtype_size: int                   │
 │ + memory_multiplier: float           │
+│ + shapes: List[List[int]]           │
 │ + tiling_dims: Tuple                │
-│ + unit_params: Tuple                │
 ├─────────────────────────────────────┤
-│ Returns: Tuple (final tiling sizes)  │
+│ Returns: List[List[int]]            │
+│   (same structure as shapes)        │
+└─────────────────────────────────────┘
+
+┌─────────────────────────────────────┐
+│   _normalize_tiling_dims            │
+├─────────────────────────────────────┤
+│ Helper function to normalize        │
+│ tiling_dim (int or tuple) to set    │
 └─────────────────────────────────────┘
 ```
 
@@ -98,15 +106,19 @@ All kernels use a single unified strategy function `_default_strategy` that abst
 Memory Formula: memory_multiplier * BLOCK_SIZE * unit_param * dtype_size * 8 bits
 ```
 
+Where `unit_param` is automatically calculated as the product of all fixed (non-tiling) dimensions in each shape.
+
 The strategy function:
-- Takes UB capacity, safety margin, dtype size, memory multiplier, tiling dimensions, and unit parameters
+- Takes UB capacity, safety margin, dtype size, memory multiplier, shapes, and tiling dimension specifications
+- For each shape, identifies which dimensions can be tiled (from `tiling_dims`)
+- Calculates `unit_param` as the product of fixed (non-tiling) dimensions
 - Calculates the maximum safe block size that fits within UB capacity
-- Returns a tuple of max_safe_block_size values (one for each tiling dimension)
+- Returns a list of max_safe_block_size values (one for each shape)
 
 The `compute_default_tiling_strategy` function:
-- Calls `_default_strategy` to get max_safe_block_size
-- Computes desired block size using `triton.next_power_of_2(tiling_dim)`
-- Returns the final result: `min(desired, max_safe)` for each dimension
+- Calls `_default_strategy` to get max_safe_block_size for each shape
+- For each tiling dimension, computes desired block size using `triton.next_power_of_2(original_dim)`
+- Returns the final result with same structure as input shapes: tiling dimensions replaced with computed block sizes, non-tiling dimensions padded to next power of 2
 
 ### 3. Parameter Structure
 
@@ -117,14 +129,18 @@ The unified strategy uses the following parameters:
 - **`memory_multiplier`**: Memory multiplier for estimating peak memory usage
   - For GEGLU: typically 10.0 for backward, 7.0 for forward
   - For ROPE: typically 3.0
-- **`tiling_dims`**: Dimensions that need tiling as tuple
-  - For GEGLU: `(n_cols,)`
-  - For ROPE: `(pad_n_q_head, pad_n_kv_head)`
-- **`unit_params`**: Parameters related to unit length of each tile as tuple
-  - All elements are multiplied together to get the final unit_param
-  - For GEGLU: `()` (empty tuple, unit_param = 1)
-  - For ROPE: `(pad_hd,)` (unit_param = pad_hd)
-  - For kernels with multiple factors: `(factor1, factor2, ...)` (unit_param = factor1 * factor2 * ...)
+- **`shapes`**: List of full shapes. Each shape is a list of dimension sizes.
+  - For ROPE: `[[n_q_head, hd], [n_kv_head, hd]]`
+  - For GEGLU: `[[n_cols]]`
+  - Can pass original shapes (will handle padding internally) or padded shapes
+- **`tiling_dims`**: Tuple specifying which dimensions can be tiled for each shape.
+  - Each element can be:
+    - `int`: single dimension index (e.g., `0` for first dimension)
+    - `tuple of ints`: multiple dimensions that can be tiled together
+  - For ROPE: `(0, 0)` means first dimension of each shape can be tiled
+  - For GEGLU: `(0,)` means first dimension of the shape can be tiled
+  - Length must match `len(shapes)`
+  - Fixed dimensions (non-tiling) are automatically extracted from shapes and multiplied to get `unit_param`
 
 ### 4. Strategy Computation Flow
 
@@ -135,7 +151,10 @@ User calls compute_default_tiling_strategy()
 Get UB manager instance
          │
          ▼
-Validate and set defaults for dtype_size and memory_multiplier
+Validate shapes and tiling_dims (lengths must match)
+         │
+         ▼
+Set defaults for dtype_size (4) and memory_multiplier (10.0)
          │
          ▼
 Call _default_strategy() with:
@@ -143,32 +162,41 @@ Call _default_strategy() with:
   - safety_margin
   - dtype_size
   - memory_multiplier
+  - shapes
   - tiling_dims
-  - unit_params
          │
          ▼
-_extract unit_param from unit_params (multiply all elements)
+For each (shape, tiling_dim) pair:
+  Normalize tiling_dim to set of dimension indices
+  Validate tiling dimensions are within shape bounds
          │
          ▼
-Calculate max_block_size:
-  SAFE_UB_CAPACITY_BITS = ub_capacity_bits * safety_margin
-  max_block_size = SAFE_UB_CAPACITY_BITS / (memory_multiplier * unit_param * dtype_size * 8)
+  Calculate unit_param:
+    unit_param = product of all non-tiling dimensions
          │
          ▼
-Find largest power of 2 <= max_block_size
+  Calculate max_block_size:
+    SAFE_UB_CAPACITY_BITS = ub_capacity_bits * safety_margin
+    max_block_size = SAFE_UB_CAPACITY_BITS / (memory_multiplier * unit_param * dtype_size * 8)
          │
          ▼
-Return (max_safe_block_size,) * len(tiling_dims)
+  Find largest power of 2 <= max_block_size
          │
          ▼
-Compute final result:
-  For each tiling_dim:
-    desired = triton.next_power_of_2(tiling_dim)
-    final = min(desired, max_safe_block_size)
-    final = max(1, final)
+Return list of max_safe_block_size (one per shape)
          │
          ▼
-Return tuple of final tiling sizes
+Build result with same structure as shapes:
+  For each (shape, tiling_dim, max_safe):
+    For each tiling dimension:
+      desired = triton.next_power_of_2(original_dim)
+      final = min(desired, max_safe)
+      final = max(1, final)
+    For each non-tiling dimension:
+      pad to triton.next_power_of_2(original_dim)
+         │
+         ▼
+Return list of tiled shapes
 ```
 
 ## Usage Examples
@@ -183,11 +211,11 @@ strategy = compute_default_tiling_strategy(
     safety_margin=0.80,
     dtype_size=2,  # float16
     memory_multiplier=7.0,
-    tiling_dims=(4096,),
-    unit_params=()
+    shapes=[[4096]],
+    tiling_dims=(0,)  # First dimension can be tiled
 )
-if strategy:
-    block_size = strategy[0]
+if strategy and len(strategy) > 0:
+    block_size = strategy[0][0]
     # Call kernel with block_size
 
 # ROPE forward
@@ -195,15 +223,36 @@ strategy = compute_default_tiling_strategy(
     safety_margin=0.90,
     dtype_size=4,  # float32
     memory_multiplier=3.0,
-    tiling_dims=(32, 32),
-    unit_params=(128,)
+    shapes=[[32, 128], [32, 128]],  # [n_q_head, hd], [n_kv_head, hd]
+    tiling_dims=(0, 0)  # First dimension of each shape can be tiled
 )
-if strategy:
-    BLOCK_Q, BLOCK_K = strategy
+if strategy and len(strategy) == 2:
+    BLOCK_Q = strategy[0][0]  # Tiled dimension
+    pad_hd = strategy[0][1]   # Padded non-tiling dimension
+    BLOCK_K = strategy[1][0]  # Tiled dimension
     # Call kernel with BLOCK_Q and BLOCK_K
 ```
 
 ## Strategy Function Details
+
+### `_normalize_tiling_dims` Helper Function
+
+A helper function that normalizes tiling dimension specifications:
+
+```python
+def _normalize_tiling_dims(tiling_dim: Union[int, Tuple[int, ...]]) -> set:
+    """
+    Normalize tiling dimension specification to a set of dimension indices.
+    
+    Args:
+        tiling_dim: Either an int (single dimension) or tuple of ints (multiple dimensions).
+    
+    Returns:
+        Set of dimension indices that can be tiled.
+    """
+```
+
+This function handles the conversion of `tiling_dim` from either an `int` or `tuple` to a `set` for consistent processing.
 
 ### `_default_strategy` Function
 
@@ -215,24 +264,30 @@ def _default_strategy(
     safety_margin: float,
     dtype_size: int,
     memory_multiplier: float,
-    tiling_dims: Optional[Tuple],
-    unit_params: Optional[Tuple],
-) -> Optional[Tuple]:
+    shapes: List[List[int]],
+    tiling_dims: Tuple[Union[int, Tuple[int, ...]], ...],
+) -> List[int]:
     """
     Calculate maximum safe block size based on UB capacity.
     
     Memory formula: memory_multiplier * BLOCK_SIZE * unit_param * dtype_size * 8 bits
     
-    Returns tuple of max_safe_block_size (power of 2) for each tiling dimension.
+    For each shape, fixed dimensions (non-tiling) are multiplied together to get unit_param.
+    
+    Returns list of max_safe_block_size (power of 2), one for each shape.
     """
 ```
 
 **Key Steps:**
-1. Extract `unit_param` from `unit_params` by multiplying all elements (defaults to 1.0 if empty)
+1. For each `(shape, tiling_dim)` pair:
+   - Normalize `tiling_dim` to a set of dimension indices using `_normalize_tiling_dims`
+   - Validate tiling dimensions are within shape bounds
+   - Calculate `unit_param` as the product of all non-tiling dimensions
+   - If all dimensions are tiling, `unit_param = 1.0`
 2. Calculate `SAFE_UB_CAPACITY_BITS = ub_capacity_bits * safety_margin`
 3. Solve for max_block_size: `SAFE_UB_CAPACITY_BITS / (memory_multiplier * unit_param * dtype_size * 8)`
 4. Find largest power of 2 <= max_block_size
-5. Return tuple with same length as `tiling_dims`
+5. Return list with one max_safe_block_size per shape
 
 ### `compute_default_tiling_strategy` Function
 
@@ -243,25 +298,34 @@ def compute_default_tiling_strategy(
     safety_margin: float = 0.80,
     dtype_size: Optional[int] = None,
     memory_multiplier: Optional[float] = None,
-    tiling_dims: Optional[Tuple] = None,
-    unit_params: Optional[Tuple] = None,
-) -> Optional[Tuple]:
+    shapes: Optional[List[List[int]]] = None,
+    tiling_dims: Optional[Tuple[Union[int, Tuple[int, ...]], ...]] = None,
+) -> Optional[List[List[int]]]:
     """
     Compute tiling strategy using the default strategy function.
     
-    Returns final tiling sizes: min(desired, max_safe) for each dimension.
+    Returns list of tiled shapes with same structure as input shapes.
+    Tiling dimensions are replaced with computed block sizes (power of 2),
+    while non-tiling dimensions are padded to next power of 2.
     """
 ```
 
 **Key Steps:**
 1. Get UB manager instance
-2. Set defaults for `dtype_size` (4) and `memory_multiplier` (10.0) if not provided
-3. Call `_default_strategy` to get `max_supported`
-4. For each `tiling_dim`:
-   - Compute `desired = triton.next_power_of_2(tiling_dim)`
-   - Compute `final = min(desired, max_safe_block_size)`
-   - Ensure `final >= 1`
-5. Return tuple of final tiling sizes
+2. Validate `shapes` and `tiling_dims` (lengths must match, cannot be empty)
+3. Set defaults for `dtype_size` (4) and `memory_multiplier` (10.0) if not provided
+4. Call `_default_strategy` to get `max_supported` (list of max_safe_block_size, one per shape)
+5. For each `(shape, tiling_dim, max_safe)`:
+   - Normalize `tiling_dim` to a set of dimension indices
+   - Validate tiling dimensions are within shape bounds
+   - For each tiling dimension:
+     - Compute `desired = triton.next_power_of_2(original_dim)`
+     - Compute `final = min(desired, max_safe)`
+     - Ensure `final >= 1`
+     - Replace dimension with `final`
+   - For each non-tiling dimension:
+     - Pad to `triton.next_power_of_2(original_dim)`
+6. Return list of tiled shapes (same structure as input `shapes`)
 
 ## Memory Analysis Examples
 
@@ -275,9 +339,13 @@ Memory analysis:
 - Total: ~7x * BLOCK_SIZE * dtype_size
 
 Strategy:
+- shapes: [[n_cols]]
+- tiling_dims: (0,)  # First dimension can be tiled
+- Fixed dimensions: none (all dimensions are tiling)
+- unit_param = 1 (product of fixed dimensions)
 - memory_multiplier = 7.0
-- unit_params = () (unit_param = 1)
 - Formula: 7.0 * BLOCK_SIZE * 1 * dtype_size * 8 bits
+- Returns: [[block_size]]
 ```
 
 ### GEGLU Backward
@@ -288,9 +356,13 @@ Memory analysis:
 - Total: ~10x * BLOCK_SIZE * dtype_size
 
 Strategy:
+- shapes: [[n_cols]]
+- tiling_dims: (0,)  # First dimension can be tiled
+- Fixed dimensions: none (all dimensions are tiling)
+- unit_param = 1 (product of fixed dimensions)
 - memory_multiplier = 10.0
-- unit_params = () (unit_param = 1)
 - Formula: 10.0 * BLOCK_SIZE * 1 * dtype_size * 8 bits
+- Returns: [[block_size]]
 ```
 
 ### ROPE Forward/Backward
@@ -306,9 +378,13 @@ Memory analysis (based on optimized ROPE kernel):
 - Conservative estimate: 3 * BLOCK_SIZE * pad_hd * dtype_size * 8 bits
 
 Strategy:
+- shapes: [[pad_n_q_head, pad_hd], [pad_n_kv_head, pad_hd]]
+- tiling_dims: (0, 0)  # First dimension of each shape can be tiled
+- Fixed dimensions: pad_hd (second dimension, non-tiling)
+- unit_param = pad_hd (product of fixed dimensions)
 - memory_multiplier = 3.0
-- unit_params = (pad_hd,) (unit_param = pad_hd)
 - Formula: 3.0 * BLOCK_SIZE * pad_hd * dtype_size * 8 bits
+- Returns: [[block_size_q, pad_hd], [block_size_kv, pad_hd]]
 ```
 
 ## Extension Guide
@@ -320,7 +396,8 @@ To add tiling support for a new kernel:
 1. **Analyze memory usage**:
    - Identify peak memory usage in the kernel
    - Determine memory multiplier (e.g., 7.0, 10.0, 3.0)
-   - Identify unit parameters if any (e.g., head_dim for ROPE)
+   - Identify which dimensions can be tiled and which are fixed
+   - Fixed dimensions will be automatically extracted and multiplied to get `unit_param`
 
 2. **Use `compute_default_tiling_strategy`** in your kernel:
 
@@ -331,18 +408,25 @@ def my_kernel_forward(input):
     dtype_size = input.element_size()
     
     # Compute strategy
+    # Example 1: Simple case (all dimensions can be tiled)
     strategy = compute_default_tiling_strategy(
         safety_margin=0.80,
         dtype_size=dtype_size,
         memory_multiplier=7.0,  # Based on your memory analysis
-        tiling_dims=(n_cols,),
-        unit_params=()  # Or (factor1, factor2, ...) if needed
+        shapes=[[n_cols]],
+        tiling_dims=(0,)  # First dimension can be tiled
     )
     
-    if strategy is not None:
-        block_size = strategy[0]
+    if strategy is not None and len(strategy) > 0:
+        block_size = strategy[0][0]
     else:
         block_size = triton.next_power_of_2(n_cols)  # Fallback
+    
+    # Example 2: Multiple shapes with fixed dimensions
+    # shapes = [[M, K], [K, N]]
+    # tiling_dims = (0, 1)  # First shape: dim 0 can be tiled, dim 1 is fixed
+    #                      # Second shape: dim 0 is fixed, dim 1 can be tiled
+    # Returns: [[block_M, K], [K, block_N]]
     
     # Call kernel
     kernel[(grid_size,)](
@@ -360,9 +444,13 @@ def my_kernel_forward(input):
 #   * Intermediates: intermediate1, intermediate2
 #   * Output: output
 #   * Total: ~7x * BLOCK_SIZE * dtype_size
+# - shapes: [[n_cols]]
+# - tiling_dims: (0,) means first dimension can be tiled
+# - Fixed dimensions: none (all dimensions are tiling)
+# - unit_param = 1 (product of fixed dimensions)
 # - Uses memory_multiplier=7.0 * BLOCK_SIZE * dtype_size * 8 bits for safety
-# - compute_default_tiling_strategy returns the final tiling result:
-#   min(triton.next_power_of_2(n_cols), max_safe_block_size)
+# - compute_default_tiling_strategy returns: [[block_size]]
+#   where block_size = min(triton.next_power_of_2(n_cols), max_safe_block_size)
 ```
 
 ## Future Improvements

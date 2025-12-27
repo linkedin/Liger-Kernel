@@ -138,20 +138,21 @@ def rope_forward(q, k, cos, sin):
     # - Conservative estimate: (2 * BLOCK_SIZE * pad_hd + pad_hd) * dtype_size * 8 bits
     # - Simplified: (2 * BLOCK_SIZE + 1) * pad_hd * dtype_size * 8 bits
     # - For safety, use: memory_multiplier=3.0 * BLOCK_SIZE * pad_hd * dtype_size * 8 bits
-    # - compute_default_tiling_strategy returns the final tiling result:
-    #   (min(triton.next_power_of_2(pad_n_q_head), max_safe_block_size),
-    #    min(triton.next_power_of_2(pad_n_kv_head), max_safe_block_size))
+    # - shapes: [[pad_n_q_head, pad_hd], [pad_n_kv_head, pad_hd]]
+    # - tiling_dims: (0, 0) means first dimension of each shape can be tiled
+    # - Returns: [[block_size_q, pad_hd], [block_size_kv, pad_hd]]
     strategy = compute_default_tiling_strategy(
         safety_margin=0.90,
         dtype_size=dtype_size,
         memory_multiplier=3.0,
-        tiling_dims=(pad_n_q_head, pad_n_kv_head),
-        unit_params=(pad_hd,),
+        shapes=[[pad_n_q_head, pad_hd], [pad_n_kv_head, pad_hd]],
+        tiling_dims=(0, 0),
     )
 
-    if strategy is not None:
-        # Strategy returns the final BLOCK_Q and BLOCK_K
-        BLOCK_Q, BLOCK_K = strategy
+    if strategy is not None and len(strategy) == 2:
+        # Strategy returns [[block_size_q, pad_hd], [block_size_kv, pad_hd]]
+        BLOCK_Q = strategy[0][0]
+        BLOCK_K = strategy[1][0]
     else:
         # Fallback to conservative defaults
         BLOCK_Q = triton.next_power_of_2(pad_n_q_head)
@@ -217,20 +218,21 @@ def rope_backward(dq, dk, cos, sin):
     # - Conservative estimate: (2 * BLOCK_SIZE * pad_hd + pad_hd) * dtype_size * 8 bits
     # - Simplified: (2 * BLOCK_SIZE + 1) * pad_hd * dtype_size * 8 bits
     # - For safety, use: memory_multiplier=3.0 * BLOCK_SIZE * pad_hd * dtype_size * 8 bits
-    # - compute_default_tiling_strategy returns the final tiling result:
-    #   (min(triton.next_power_of_2(pad_n_q_head), max_safe_block_size),
-    #    min(triton.next_power_of_2(pad_n_kv_head), max_safe_block_size))
+    # - shapes: [[pad_n_q_head, pad_hd], [pad_n_kv_head, pad_hd]]
+    # - tiling_dims: (0, 0) means first dimension of each shape can be tiled
+    # - Returns: [[block_size_q, pad_hd], [block_size_kv, pad_hd]]
     strategy = compute_default_tiling_strategy(
         safety_margin=0.90,
         dtype_size=dtype_size,
         memory_multiplier=3.0,
-        tiling_dims=(pad_n_q_head, pad_n_kv_head),
-        unit_params=(pad_hd,),
+        shapes=[[pad_n_q_head, pad_hd], [pad_n_kv_head, pad_hd]],
+        tiling_dims=(0, 0),
     )
 
-    if strategy is not None:
-        # Strategy returns the final BLOCK_Q and BLOCK_K
-        BLOCK_Q, BLOCK_K = strategy
+    if strategy is not None and len(strategy) == 2:
+        # Strategy returns [[block_size_q, pad_hd], [block_size_kv, pad_hd]]
+        BLOCK_Q = strategy[0][0]
+        BLOCK_K = strategy[1][0]
     else:
         # Fallback to conservative defaults
         BLOCK_Q = min(32, triton.next_power_of_2(pad_n_q_head))
