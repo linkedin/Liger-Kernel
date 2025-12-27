@@ -13,3 +13,19 @@ To add a new operator:
 
 If __all__ is not defined, all public symbols will be auto-discovered.
 """
+
+from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
+from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
+from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
+from liger_kernel.ops.backends._ascend.ops.rope import LigerRopeFunction
+from liger_kernel.ops.backends._ascend.ops.rope import rope_backward
+from liger_kernel.ops.backends._ascend.ops.rope import rope_forward
+
+__all__ = [
+    "LigerGELUMulFunction",
+    "geglu_forward",
+    "geglu_backward",
+    "LigerRopeFunction",
+    "rope_forward",
+    "rope_backward",
+]
