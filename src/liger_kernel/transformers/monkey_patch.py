@@ -2167,6 +2167,7 @@ def apply_liger_kernel_to_glm4_moe(
         "cross_entropy and fused_linear_cross_entropy cannot both be True."
     )
     from transformers.models.glm4_moe import modeling_glm4_moe
+    from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeMLP
     from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeModel
     from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeMoE
 
@@ -2199,7 +2200,16 @@ def apply_liger_kernel_to_glm4_moe(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+                if isinstance(decoder_layer.mlp, Glm4MoeMoE):
+                    experts = decoder_layer.mlp.experts
+                    if experts is not None:
+                        for expert in experts:
+                            _patch_swiglu_module(expert, LigerSwiGLUMLP)
+                    shared_experts = decoder_layer.mlp.shared_experts
+                    if shared_experts is not None:
+                        _patch_swiglu_module(shared_experts, LigerSwiGLUMLP)
+                elif isinstance(decoder_layer.mlp, Glm4MoeMLP):
+                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
