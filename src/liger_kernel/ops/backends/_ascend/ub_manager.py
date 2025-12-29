@@ -93,10 +93,15 @@ def _default_strategy(
         tiling_dim_set = _normalize_tiling_dims(tiling_dim)
 
         # Validate tiling dimensions are within shape bounds
-        if not tiling_dim_set or any(dim_idx < 0 or dim_idx >= len(shape) for dim_idx in tiling_dim_set):
-            # Invalid tiling_dim, use conservative default
-            max_safe_sizes.append(1)
-            continue
+        if not tiling_dim_set:
+            raise ValueError(
+                f"Invalid tiling_dim: {tiling_dim}. tiling_dim must be an int or a non-empty tuple of ints."
+            )
+        if any(dim_idx < 0 or dim_idx >= len(shape) for dim_idx in tiling_dim_set):
+            raise ValueError(
+                f"Invalid tiling_dim: {tiling_dim} for shape {shape}. "
+                f"All dimension indices must be in range [0, {len(shape)})."
+            )
 
         # Calculate unit_param: product of fixed (non-tiling) dimensions
         unit_param = 1.0
@@ -315,12 +320,15 @@ def compute_default_tiling_strategy(
         tiling_dim_set = _normalize_tiling_dims(tiling_dim)
 
         # Validate tiling dimensions are within shape bounds
-        if not tiling_dim_set or any(dim_idx < 0 or dim_idx >= len(result_shape) for dim_idx in tiling_dim_set):
-            # Invalid tiling_dim, keep original shape (with padding)
-            for dim_idx, dim_size in enumerate(result_shape):
-                result_shape[dim_idx] = triton.next_power_of_2(dim_size)
-            result.append(result_shape)
-            continue
+        if not tiling_dim_set:
+            raise ValueError(
+                f"Invalid tiling_dim: {tiling_dim}. tiling_dim must be an int or a non-empty tuple of ints."
+            )
+        if any(dim_idx < 0 or dim_idx >= len(result_shape) for dim_idx in tiling_dim_set):
+            raise ValueError(
+                f"Invalid tiling_dim: {tiling_dim} for shape {shape}. "
+                f"All dimension indices must be in range [0, {len(result_shape)})."
+            )
 
         # Replace tiling dimensions with computed block sizes
         # For each tiling dimension, compute: min(desired, max_safe)

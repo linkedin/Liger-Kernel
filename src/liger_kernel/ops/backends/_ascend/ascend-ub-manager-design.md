@@ -136,11 +136,14 @@ The unified strategy uses the following parameters:
 - **`tiling_dims`**: Tuple specifying which dimensions can be tiled for each shape.
   - Each element can be:
     - `int`: single dimension index (e.g., `0` for first dimension)
-    - `tuple of ints`: multiple dimensions that can be tiled together
+    - `tuple of ints`: multiple dimensions that can be tiled together (non-empty)
   - For ROPE: `(0, 0)` means first dimension of each shape can be tiled
   - For GEGLU: `(0,)` means first dimension of the shape can be tiled
   - Length must match `len(shapes)`
   - Fixed dimensions (non-tiling) are automatically extracted from shapes and multiplied to get `unit_param`
+  - **Validation**: Raises `ValueError` if:
+    - Any `tiling_dim` is empty or invalid (e.g., empty tuple)
+    - Any dimension index is out of bounds (negative or >= shape length)
 
 ### 4. Strategy Computation Flow
 
@@ -169,6 +172,7 @@ Call _default_strategy() with:
 For each (shape, tiling_dim) pair:
   Normalize tiling_dim to set of dimension indices
   Validate tiling dimensions are within shape bounds
+  (Raises ValueError if invalid)
          │
          ▼
   Calculate unit_param:
@@ -276,7 +280,12 @@ def _default_strategy(
     
     For each shape, fixed dimensions (non-tiling) are multiplied together to get unit_param.
     
-    Returns tuple of max_safe_block_size (power of 2), one for each shape.
+    Returns:
+        Tuple of max_safe_block_size (power of 2), one for each shape.
+    
+    Raises:
+        ValueError: If any tiling_dim is empty or invalid, or if any dimension
+                    index is out of bounds for the corresponding shape.
     """
 ```
 
@@ -284,6 +293,8 @@ def _default_strategy(
 1. For each `(shape, tiling_dim)` pair:
    - Normalize `tiling_dim` to a set of dimension indices using `_normalize_tiling_dims`
    - Validate tiling dimensions are within shape bounds
+     - Raises `ValueError` if `tiling_dim` is empty or invalid
+     - Raises `ValueError` if any dimension index is out of bounds
    - Calculate `unit_param` as the product of all non-tiling dimensions
    - If all dimensions are tiling, `unit_param = 1.0`
 2. Calculate `SAFE_UB_CAPACITY_BITS = ub_capacity_bits * safety_margin`
@@ -309,17 +320,29 @@ def compute_default_tiling_strategy(
     Returns tuple of tiled shapes with same structure as input shapes.
     Tiling dimensions are replaced with computed block sizes (power of 2),
     while non-tiling dimensions are padded to next power of 2.
+    
+    Returns:
+        Tuple of tiled shapes, or None if shapes/tiling_dims are empty or
+        lengths don't match.
+    
+    Raises:
+        ValueError: If any tiling_dim is empty or invalid, or if any dimension
+                    index is out of bounds for the corresponding shape.
     """
 ```
 
 **Key Steps:**
 1. Get UB manager instance
 2. Validate `shapes` and `tiling_dims` (lengths must match, cannot be empty)
+   - Returns `None` if validation fails (empty or mismatched lengths)
 3. Set defaults for `dtype_size` (4) and `memory_multiplier` (10.0) if not provided
 4. Call `_default_strategy` to get `max_supported` (tuple of max_safe_block_size, one per shape)
+   - May raise `ValueError` if `tiling_dims` are invalid (see `_default_strategy` documentation)
 5. For each `(shape, tiling_dim, max_safe)`:
    - Normalize `tiling_dim` to a set of dimension indices
    - Validate tiling dimensions are within shape bounds
+     - Raises `ValueError` if `tiling_dim` is empty or invalid
+     - Raises `ValueError` if any dimension index is out of bounds
    - For each tiling dimension:
      - Compute `desired = triton.next_power_of_2(original_dim)`
      - Compute `final = min(desired, max_safe)`
