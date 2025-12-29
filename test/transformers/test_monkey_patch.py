@@ -2619,7 +2619,7 @@ def test_apply_liger_kernel_to_instance_for_glm4_moe():
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(glm4_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for decoder_layer in dummy_model_instance.model.layers:
-            if isinstance(decoder_layer.mlp, Glm4MoeMOE):
+            if isinstance(decoder_layer.mlp, Glm4MoeMoE):
                 experts = decoder_layer.mlp.experts
                 if experts is not None:
                     for expert in experts:
@@ -2641,7 +2641,7 @@ def test_apply_liger_kernel_to_instance_for_glm4_moe():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(glm4_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for decoder_layer in dummy_model_instance.model.layers:
-            if isinstance(decoder_layer.mlp, Glm4MoeMOE):
+            if isinstance(decoder_layer.mlp, Glm4MoeMoE):
                 experts = decoder_layer.mlp.experts
                 if experts is not None:
                     for expert in experts:
