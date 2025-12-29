@@ -2592,6 +2592,7 @@ def test_apply_liger_kernel_to_instance_for_glm4():
 @pytest.mark.skipif(not is_glm4_moe_available(), reason="glm4 module not available")
 def test_apply_liger_kernel_to_instance_for_glm4_moe():
     from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeMLP
+    from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeMOE
 
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.glm4_moe.modeling_glm4_moe"):
