@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
 from liger_kernel.chunked_loss.functional import liger_fused_linear_grpo
+from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
 from liger_kernel.chunked_loss.grpo_loss import LigerFusedLinearGRPOFunction
 from liger_kernel.transformers.grpo_loss import _reduce_grpo_loss
 from liger_kernel.transformers.grpo_loss import triton_grpo_loss
@@ -158,7 +159,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         elif self.loss_type == "dr_grpo":
             loss = (per_token_loss * attention_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
         elif self.loss_type == "dapo":
-            normalizer = attention_mask.sum().clamp(min=1.0)
+            normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(attention_mask)
             loss = (per_token_loss * attention_mask).sum() / normalizer
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
