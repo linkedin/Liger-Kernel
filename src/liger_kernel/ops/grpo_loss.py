@@ -531,8 +531,17 @@ class GrpoLossFunction(torch.autograd.Function):
 
             # Save extra tensors for backward
             ctx.save_for_backward(
-                logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, coef_1, seq_lens,
-                vllm_is_ratio_ptr
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                advantages,
+                completion_mask,
+                lse,
+                mask,
+                coef_1,
+                seq_lens,
+                vllm_is_ratio_ptr,
             )
         else:
             # Token-level: use optimized Triton kernel
@@ -612,13 +621,22 @@ class GrpoLossFunction(torch.autograd.Function):
 
         if importance_sampling_level == "sequence":
             (
-                logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, coef_1, seq_lens,
-                vllm_is_ratio
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                advantages,
+                completion_mask,
+                lse,
+                mask,
+                coef_1,
+                seq_lens,
+                vllm_is_ratio,
             ) = saved_tensors
         else:
-            (
-                logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, vllm_is_ratio
-            ) = saved_tensors
+            (logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, vllm_is_ratio) = (
+                saved_tensors
+            )
 
         _, L_ADD_1, N = logits.shape
 

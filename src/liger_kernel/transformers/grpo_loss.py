@@ -38,7 +38,7 @@ def triton_grpo_loss(
         eps_high: Upper clipping bound for importance ratio
         inplace: Whether to modify logits in-place during backward
         loss_type: Loss reduction type ("grpo", "bnpo", "dr_grpo", "dapo")
-        max_completion_length: Max completion length for dr_grpo loss type
+        max_completion_length: Max completion length for dr_grpo loss type; defaults to sequence length if None
         importance_sampling_level: "token" or "sequence" importance sampling
         reduce: If True, return reduced loss; if False, return per-token loss
         vllm_is_ratio: vLLM importance sampling ratio (B, L) or (B, 1) or None.
@@ -100,10 +100,9 @@ def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion
     if loss_type == "bnpo":
         return (per_token_loss * mask).sum() / mask.sum().clamp(min=1.0)
     if loss_type == "dr_grpo":
-        if max_completion_length is None:
-            raise ValueError("max_completion_length must be provided when using loss_type='dr_grpo'")
         batch = per_token_loss.shape[0]
-        return (per_token_loss * mask).sum() / (batch * max_completion_length)
+        max_len = max_completion_length if max_completion_length is not None else per_token_loss.shape[1]
+        return (per_token_loss * mask).sum() / (batch * max_len)
     if loss_type == "dapo":
         normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask)
         return (per_token_loss * mask).sum() / normalizer

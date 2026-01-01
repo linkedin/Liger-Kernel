@@ -575,8 +575,9 @@ def test_reduce_grpo_loss_matches_reference(loss_type):
 def test_reduce_grpo_loss_requires_max_completion_length():
     per_token_loss = torch.randn(2, 3)
     mask = torch.ones_like(per_token_loss, dtype=torch.long)
-    with pytest.raises(ValueError):
-        _reduce_grpo_loss(per_token_loss, mask, "dr_grpo", max_completion_length=None)
+    reduced = _reduce_grpo_loss(per_token_loss, mask, "dr_grpo", max_completion_length=None)
+    expected = (per_token_loss * mask).sum() / (per_token_loss.size(0) * per_token_loss.size(1))
+    assert_verbose_allclose(reduced, expected)
 
 
 @pytest.mark.parametrize("loss_type,beta", [("bnpo", 0.0), ("dapo", 0.04)])
