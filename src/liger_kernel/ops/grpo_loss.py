@@ -75,6 +75,8 @@ def _grpo_loss_fwd_kernel(
     INPUT_IDS,
     COMPLETION_MASK,
     ADVANTAGES,
+    VLLM_IS_RATIO,  # vLLM importance sampling ratio (B, L) or None
+    VLLM_IS_RATIO_STRIDE,  # stride for VLLM_IS_RATIO (L for per-token, 1 for per-sequence)
     LOSS,
     LSE,
     KL,
@@ -132,6 +134,14 @@ def _grpo_loss_fwd_kernel(
     is_high_clipped = (coef_1 > 1 + EPS_HIGH) & (advantage > 0)
     is_clipped = is_low_clipped | is_high_clipped
 
+    # Apply vLLM importance sampling correction BEFORE adding KL
+    if VLLM_IS_RATIO is not None:
+        # VLLM_IS_RATIO_STRIDE is L for per-token, 1 for per-sequence
+        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
+            tl.float32
+        )
+        per_token_loss = per_token_loss * vllm_is_ratio
+
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
         KL += off_b * L + off_l
@@ -156,6 +166,8 @@ def _grpo_loss_fwd_kernel_seq(
     COEF_1,  # Pre-computed sequence-level importance weight (B,)
     COEF_2,  # Pre-computed clipped coef (B,)
     IS_CLIPPED_SEQ,  # Pre-computed clipping indicator (B,)
+    VLLM_IS_RATIO,  # vLLM importance sampling ratio (B, L) or (B, 1) or None
+    VLLM_IS_RATIO_STRIDE,  # stride for VLLM_IS_RATIO (L for per-token, 1 for per-sequence)
     LOSS,
     LSE,
     KL,
@@ -210,6 +222,13 @@ def _grpo_loss_fwd_kernel_seq(
     per_token_loss1 = coef_1 * advantage
     per_token_loss2 = coef_2 * advantage
     per_token_loss = -tl.minimum(per_token_loss1, per_token_loss2)
+
+    # Apply vLLM importance sampling correction BEFORE adding KL
+    if VLLM_IS_RATIO is not None:
+        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
+            tl.float32
+        )
+        per_token_loss = per_token_loss * vllm_is_ratio
 
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
@@ -421,6 +440,7 @@ class GrpoLossFunction(torch.autograd.Function):
         max_completion_length=None,
         reduce=True,
         importance_sampling_level="token",
+        vllm_is_ratio=None,  # vLLM importance sampling ratio (B, L) or (B, 1) or None
     ):
         assert logits.is_contiguous() and completion_ids.is_contiguous()
         assert old_logp is None or old_logp.is_contiguous()
@@ -436,6 +456,15 @@ class GrpoLossFunction(torch.autograd.Function):
             assert completion_mask.is_contiguous()
 
         mask = completion_mask.float() if completion_mask is not None else torch.ones(B, L, device=logits.device)
+
+        # Handle vLLM IS ratio
+        vllm_is_ratio_ptr = None
+        vllm_is_ratio_stride = L  # default to per-token
+        if vllm_is_ratio is not None:
+            vllm_is_ratio = vllm_is_ratio.contiguous()
+            vllm_is_ratio_ptr = vllm_is_ratio
+            # Determine stride: L for per-token (B, L), 1 for per-sequence (B, 1)
+            vllm_is_ratio_stride = vllm_is_ratio.shape[1] if vllm_is_ratio.dim() > 1 else 1
 
         # Allocate outputs
         loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
@@ -460,31 +489,75 @@ class GrpoLossFunction(torch.autograd.Function):
             coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)  # (B,)
 
             # Compute is_clipped at sequence level
-            is_clipped_seq = ((coef_1 < 1 - eps_low) & (advantages < 0)) | (
-                (coef_1 > 1 + eps_high) & (advantages > 0)
-            )
+            is_clipped_seq = ((coef_1 < 1 - eps_low) & (advantages < 0)) | ((coef_1 > 1 + eps_high) & (advantages > 0))
             is_clipped_seq = is_clipped_seq.float()  # (B,)
 
             # Step 3: Run Triton kernel with pre-computed coefficients
             kwargs = {"BLOCK_N": 2048, "num_stages": 2, "num_warps": 1}
             _grpo_loss_fwd_kernel_seq[(B, L)](
-                logits, ref_logp, completion_ids, completion_mask, advantages,
-                coef_1.contiguous(), coef_2.contiguous(), is_clipped_seq.contiguous(),
-                loss, lse, kl, is_clipped, temperature, beta, L, N, **kwargs,
+                logits,
+                ref_logp,
+                completion_ids,
+                completion_mask,
+                advantages,
+                coef_1.contiguous(),
+                coef_2.contiguous(),
+                is_clipped_seq.contiguous(),
+                vllm_is_ratio_ptr,
+                vllm_is_ratio_stride,
+                loss,
+                lse,
+                kl,
+                is_clipped,
+                temperature,
+                beta,
+                L,
+                N,
+                **kwargs,
             )
 
             # Save extra tensors for backward
-            ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, coef_1, seq_lens)
+            ctx.save_for_backward(
+                logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, coef_1, seq_lens
+            )
         else:
             # Token-level: use optimized Triton kernel
             kwargs = {"BLOCK_N": 2048, "num_stages": 2, "num_warps": 1}
             _grpo_loss_fwd_kernel[(B, L)](
-                logits, old_logp, ref_logp, completion_ids, completion_mask, advantages,
-                loss, lse, kl, is_clipped, temperature, beta, eps_low, eps_high, L, N, **kwargs,
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                completion_mask,
+                advantages,
+                vllm_is_ratio_ptr,
+                vllm_is_ratio_stride,
+                loss,
+                lse,
+                kl,
+                is_clipped,
+                temperature,
+                beta,
+                eps_low,
+                eps_high,
+                L,
+                N,
+                **kwargs,
             )
             ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask)
 
-        ctx.infos = (temperature, beta, eps_low, eps_high, inplace, loss_type, max_completion_length, B, L, importance_sampling_level)
+        ctx.infos = (
+            temperature,
+            beta,
+            eps_low,
+            eps_high,
+            inplace,
+            loss_type,
+            max_completion_length,
+            B,
+            L,
+            importance_sampling_level,
+        )
 
         # Compute metrics before reduction
         mask_sum = mask.sum().clamp(min=1.0)
@@ -504,10 +577,23 @@ class GrpoLossFunction(torch.autograd.Function):
     def backward(ctx, *args):
         dloss_input = args[0]
         saved_tensors = ctx.saved_tensors
-        temperature, beta, eps_low, eps_high, inplace, loss_type, max_completion_length, B, L, importance_sampling_level = ctx.infos
+        (
+            temperature,
+            beta,
+            eps_low,
+            eps_high,
+            inplace,
+            loss_type,
+            max_completion_length,
+            B,
+            L,
+            importance_sampling_level,
+        ) = ctx.infos
 
         if importance_sampling_level == "sequence":
-            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, coef_1, seq_lens = saved_tensors
+            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, coef_1, seq_lens = (
+                saved_tensors
+            )
         else:
             logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask = saved_tensors
 
@@ -535,15 +621,47 @@ class GrpoLossFunction(torch.autograd.Function):
         if importance_sampling_level == "sequence":
             # Sequence-level backward kernel
             _grpo_loss_bwd_kernel_seq[(B, L)](
-                dloss, dlogits, logits, ref_logp, completion_ids, advantages, completion_mask, lse,
-                coef_1, seq_lens, temperature, beta, eps_low, eps_high, *dloss.stride(), L, N, **kwargs,
+                dloss,
+                dlogits,
+                logits,
+                ref_logp,
+                completion_ids,
+                advantages,
+                completion_mask,
+                lse,
+                coef_1,
+                seq_lens,
+                temperature,
+                beta,
+                eps_low,
+                eps_high,
+                *dloss.stride(),
+                L,
+                N,
+                **kwargs,
             )
         else:
             # Token-level backward kernel
             _grpo_loss_bwd_kernel[(B, L)](
-                dloss, dlogits, logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse,
-                temperature, beta, eps_low, eps_high, *dloss.stride(), L, N, **kwargs,
+                dloss,
+                dlogits,
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                advantages,
+                completion_mask,
+                lse,
+                temperature,
+                beta,
+                eps_low,
+                eps_high,
+                *dloss.stride(),
+                L,
+                N,
+                **kwargs,
             )
 
         dlogits[:, -1, :] = 0
-        return dlogits, None, None, None, None, None, None, None, None, None, None, None, None, None, None
+        # Return gradients for all forward inputs: dlogits + 15 None for non-differentiable params
+        return dlogits, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None

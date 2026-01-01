@@ -20,6 +20,7 @@ def triton_grpo_loss(
     max_completion_length=None,
     importance_sampling_level="token",
     reduce=False,
+    vllm_is_ratio=None,
 ):
     """
     Triton-optimized GRPO loss function.
@@ -40,6 +41,9 @@ def triton_grpo_loss(
         max_completion_length: Max completion length for dr_grpo loss type
         importance_sampling_level: "token" or "sequence" importance sampling
         reduce: If True, return reduced loss; if False, return per-token loss
+        vllm_is_ratio: vLLM importance sampling ratio (B, L) or (B, 1) or None.
+            Used to correct for distribution mismatch when using vLLM for generation.
+            Applied to PPO loss BEFORE adding KL penalty.
 
     Returns:
         If reduce=True: (loss, metrics) where metrics = [kl_mean, clip_ratio] or [clip_ratio]
@@ -68,6 +72,7 @@ def triton_grpo_loss(
         max_completion_length,
         reduce,
         importance_sampling_level,
+        vllm_is_ratio,
     )
 
     if not reduce:
@@ -112,11 +117,12 @@ def _masked_mean(values, mask):
     return (values * mask).sum() / mask.sum().clamp(min=1.0)
 
 
-# This is a demo how to use grpo_loss in GRPOTrainer. The Trl version must be 0.16
+# This is a demo how to use grpo_loss in GRPOTrainer. The Trl version must be 0.26.2+
 """
 import torch
 import trl
-assert trl.__version__.startswith("0.16"), "please pip install trl==0.16"
+from packaging.version import Version
+assert Version(trl.__version__) >= Version("0.26.2"), "please pip install trl>=0.26.2"
 from trl.extras.profiling import profiling_decorator
 
 @profiling_decorator
@@ -141,18 +147,24 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
     ref_per_token_logps = inputs["ref_per_token_logps"]
     advantages = inputs["advantages"]
     old_per_token_logps = inputs["old_per_token_logps"]
-    
 
-    per_token_loss, per_token_kl, is_clipped = triton_grpo_loss(logits, 
-                                                                old_per_token_logps,
-                                                                ref_per_token_logps,
-                                                                completion_ids,
-                                                                advantages,
-                                                                completion_mask,
-                                                                self.temperature,
-                                                                self.beta,
-                                                                self.epsilon_low,
-                                                                self.epsilon_high,)
+    # Get vLLM importance sampling ratio if using vLLM with importance sampling correction
+    vllm_is_ratio = inputs.get("importance_sampling_ratio", None)
+
+    per_token_loss, per_token_kl, is_clipped = triton_grpo_loss(
+        logits,
+        old_per_token_logps,
+        ref_per_token_logps,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature=self.temperature,
+        beta=self.beta,
+        eps_low=self.epsilon_low,
+        eps_high=self.epsilon_high,
+        importance_sampling_level=self.importance_sampling_level,  # "token" or "sequence"
+        vllm_is_ratio=vllm_is_ratio,  # vLLM distribution correction
+    )
     loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
 
     # Log the metrics
