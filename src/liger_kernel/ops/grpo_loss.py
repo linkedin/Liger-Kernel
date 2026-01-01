@@ -256,6 +256,8 @@ def _grpo_loss_bwd_kernel_seq(
     LSE,
     COEF_1,  # Pre-computed sequence-level importance weight (B,)
     SEQ_LEN,  # Number of valid tokens per sequence (B,)
+    VLLM_IS_RATIO,
+    VLLM_IS_RATIO_STRIDE,
     TEMPERATURE,
     BETA: tl.constexpr,
     EPS_LOW,
@@ -306,6 +308,13 @@ def _grpo_loss_bwd_kernel_seq(
     # d(loss)/d(logp) = -advantage * coef_1 / seq_len (when unclipped)
     dlogp = -per_token_loss1 / seq_len * is_unclipped
 
+    # Apply vLLM IS ratio to PPO gradient (before KL gradient)
+    if VLLM_IS_RATIO is not None:
+        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
+            tl.float32
+        )
+        dlogp = dlogp * vllm_is_ratio
+
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
@@ -332,6 +341,8 @@ def _grpo_loss_bwd_kernel(
     ADVANTAGES,
     COMPLETION_MASK,
     LSE,
+    VLLM_IS_RATIO,
+    VLLM_IS_RATIO_STRIDE,
     TEMPERATURE,
     BETA: tl.constexpr,
     EPS_LOW,
@@ -380,6 +391,14 @@ def _grpo_loss_bwd_kernel(
     mask = per_token_loss2 >= per_token_loss1
 
     dlogp = -per_token_loss1 * mask
+
+    # Apply vLLM IS ratio to PPO gradient (before KL gradient)
+    if VLLM_IS_RATIO is not None:
+        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
+            tl.float32
+        )
+        dlogp = dlogp * vllm_is_ratio
+
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
@@ -518,7 +537,8 @@ class GrpoLossFunction(torch.autograd.Function):
 
             # Save extra tensors for backward
             ctx.save_for_backward(
-                logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, coef_1, seq_lens
+                logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, coef_1, seq_lens,
+                vllm_is_ratio_ptr
             )
         else:
             # Token-level: use optimized Triton kernel
@@ -544,7 +564,9 @@ class GrpoLossFunction(torch.autograd.Function):
                 N,
                 **kwargs,
             )
-            ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask)
+            ctx.save_for_backward(
+                logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, vllm_is_ratio_ptr
+            )
 
         ctx.infos = (
             temperature,
@@ -557,6 +579,7 @@ class GrpoLossFunction(torch.autograd.Function):
             B,
             L,
             importance_sampling_level,
+            vllm_is_ratio_stride,
         )
 
         # Compute metrics before reduction
@@ -588,14 +611,18 @@ class GrpoLossFunction(torch.autograd.Function):
             B,
             L,
             importance_sampling_level,
+            vllm_is_ratio_stride,
         ) = ctx.infos
 
         if importance_sampling_level == "sequence":
-            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, coef_1, seq_lens = (
-                saved_tensors
-            )
+            (
+                logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, coef_1, seq_lens,
+                vllm_is_ratio
+            ) = saved_tensors
         else:
-            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask = saved_tensors
+            (
+                logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, vllm_is_ratio
+            ) = saved_tensors
 
         _, L_ADD_1, N = logits.shape
 
@@ -631,6 +658,8 @@ class GrpoLossFunction(torch.autograd.Function):
                 lse,
                 coef_1,
                 seq_lens,
+                vllm_is_ratio,
+                vllm_is_ratio_stride,
                 temperature,
                 beta,
                 eps_low,
@@ -652,6 +681,8 @@ class GrpoLossFunction(torch.autograd.Function):
                 advantages,
                 completion_mask,
                 lse,
+                vllm_is_ratio,
+                vllm_is_ratio_stride,
                 temperature,
                 beta,
                 eps_low,
