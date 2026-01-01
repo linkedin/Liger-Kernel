@@ -224,6 +224,18 @@ def _grpo_loss_bwd_kernel(
         tl.store(DLOGITS + cols, dlogits, mask=cols < N)
 
 
+def _compute_dapo_normalizer(completion_mask):
+    """Global active tokens averaged per process (for distributed DAPO loss)."""
+    normalizer = completion_mask.to(torch.float32).sum()
+    world_size = 1
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        normalizer = normalizer.clone()
+        torch.distributed.all_reduce(normalizer, op=torch.distributed.ReduceOp.SUM)
+        world_size = torch.distributed.get_world_size()
+    normalizer = normalizer / world_size
+    return torch.clamp(normalizer, min=1.0)
+
+
 class GrpoLossFunction(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -239,6 +251,9 @@ class GrpoLossFunction(torch.autograd.Function):
         eps_low,
         eps_high,
         inplace,
+        loss_type="grpo",
+        max_completion_length=None,
+        reduce=True,
     ):
         assert logits.is_contiguous() and completion_ids.is_contiguous()
         assert old_logp is None or old_logp.is_contiguous()
@@ -274,19 +289,88 @@ class GrpoLossFunction(torch.autograd.Function):
             N,
             **kwargs,
         )
-        ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse)
-        ctx.infos = (temperature, beta, eps_low, eps_high, inplace)
-        # return loss
-        return loss, kl, is_clipped
+        # Get mask for loss computation
+        mask = completion_mask.float() if completion_mask is not None else torch.ones_like(loss)
+
+        if not reduce:
+            # Return per-token loss (original behavior for backward compatibility)
+            # Apply mask to zero out padded positions
+            loss = loss * mask
+            if kl is not None:
+                kl = kl * mask
+            is_clipped = is_clipped * mask
+
+            ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse)
+            ctx.infos = (temperature, beta, eps_low, eps_high, inplace, False, None, B, L)
+            return loss, kl, is_clipped
+
+        # Apply loss reduction based on loss_type
+        if loss_type == "grpo":
+            # Average per-sequence loss, then batch mean
+            reduced_loss = ((loss * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)).mean()
+        elif loss_type == "bnpo":
+            # Batch normalized per-token
+            reduced_loss = (loss * mask).sum() / mask.sum().clamp(min=1.0)
+        elif loss_type == "dr_grpo":
+            # Dimension-reduced (use max_completion_length or L)
+            max_len = max_completion_length if max_completion_length is not None else L
+            reduced_loss = (loss * mask).sum() / (B * max_len)
+        elif loss_type == "dapo":
+            # Distributed-aware normalization (same as bnpo for single GPU)
+            normalizer = _compute_dapo_normalizer(mask)
+            reduced_loss = (loss * mask).sum() / normalizer
+        else:
+            raise ValueError(f"Unknown loss_type: {loss_type}. Expected one of: grpo, bnpo, dr_grpo, dapo")
+
+        # Compute aggregated metrics
+        mask_sum = mask.sum().clamp(min=1.0)
+        kl_mean = (kl * mask).sum() / mask_sum if kl is not None else None
+        clip_ratio = (is_clipped.float() * mask).sum() / mask_sum
+
+        # Save for backward - need per-token loss gradient scaling
+        ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask)
+        ctx.infos = (temperature, beta, eps_low, eps_high, inplace, loss_type, max_completion_length, B, L)
+
+        return reduced_loss, kl_mean, clip_ratio
 
     @staticmethod
     def backward(ctx, *args):
-        dloss = args[0]
-        # print(dloss.shape)
-        logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse = ctx.saved_tensors
-        temperature, beta, eps_low, eps_high, inplace = ctx.infos
-        B, L_ADD_1, N = logits.shape
-        L = L_ADD_1 - 1
+        dloss_input = args[0]  # Gradient - either scalar (reduce=True) or (B, L) tensor (reduce=False)
+        saved_tensors = ctx.saved_tensors
+        temperature, beta, eps_low, eps_high, inplace, loss_type, max_completion_length, B, L = ctx.infos
+        _, L_ADD_1, N = saved_tensors[0].shape  # logits shape
+
+        if loss_type is False:
+            # reduce=False case: dloss_input is (B, L) per-token gradients
+            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse = saved_tensors
+            dloss = dloss_input
+        else:
+            # reduce=True case: dloss_input is scalar, need to compute per-token gradients
+            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask = saved_tensors
+
+            # Compute per-token gradient scaling based on loss_type
+            # dloss_per_token = dloss_scalar * d(reduced_loss)/d(per_token_loss)
+            if loss_type == "grpo":
+                # For grpo: reduced = mean over batch of (sum over seq / seq_len)
+                # d(reduced)/d(per_token) = mask / (seq_len * B)
+                seq_lens = mask.sum(-1, keepdim=True).clamp(min=1.0)  # (B, 1)
+                dloss = dloss_input * mask / (seq_lens * B)
+            elif loss_type == "bnpo":
+                # For bnpo: reduced = sum(loss * mask) / sum(mask)
+                # d(reduced)/d(per_token) = mask / sum(mask)
+                dloss = dloss_input * mask / mask.sum().clamp(min=1.0)
+            elif loss_type == "dr_grpo":
+                # For dr_grpo: reduced = sum(loss * mask) / (B * max_len)
+                max_len = max_completion_length if max_completion_length is not None else L
+                dloss = dloss_input * mask / (B * max_len)
+            elif loss_type == "dapo":
+                # For dapo: reduced = sum(loss * mask) / normalizer
+                # normalizer is computed with all_reduce, gradient is mask / normalizer
+                normalizer = _compute_dapo_normalizer(mask)
+                dloss = dloss_input * mask / normalizer
+            else:
+                raise ValueError(f"Unknown loss_type: {loss_type}")
+
         dlogits = logits.data if inplace else torch.empty_like(logits)
         kwargs = {"BLOCK_N": 4096, "num_stages": 1, "num_warps": 16}
         _grpo_loss_bwd_kernel[(B, L)](
@@ -309,4 +393,5 @@ class GrpoLossFunction(torch.autograd.Function):
             **kwargs,
         )
         dlogits[:, -1, :] = 0
-        return dlogits, None, None, None, None, None, None, None, None, None, None
+        # Return gradients for all inputs (None for non-differentiable params)
+        return dlogits, None, None, None, None, None, None, None, None, None, None, None, None, None

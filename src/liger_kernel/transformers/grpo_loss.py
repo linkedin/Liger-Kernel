@@ -29,7 +29,7 @@ def triton_grpo_loss(
             f"Triton GRPO loss only supports token-level importance sampling. Got {importance_sampling_level}."
         )
 
-    per_token_loss, per_token_kl, is_clipped = GrpoLossFunction.apply(
+    result = GrpoLossFunction.apply(
         logits,
         old_logp,
         ref_logp,
@@ -41,22 +41,22 @@ def triton_grpo_loss(
         eps_low,
         eps_high,
         inplace,
+        loss_type,
+        max_completion_length,
+        reduce,
     )
+
     if not reduce:
-        return per_token_loss, per_token_kl, is_clipped
+        # Returns (per_token_loss, per_token_kl, is_clipped) - all (B, L) tensors
+        return result
 
-    loss = _reduce_grpo_loss(
-        per_token_loss,
-        completion_mask,
-        loss_type=loss_type,
-        max_completion_length=max_completion_length,
-    )
-
+    # reduce=True: Returns (reduced_loss, kl_mean, clip_ratio) - all scalars
+    reduced_loss, kl_mean, clip_ratio = result
     metrics = []
-    if beta != 0.0 and per_token_kl is not None:
-        metrics.append(_masked_mean(per_token_kl, completion_mask))
-    metrics.append(_masked_mean(is_clipped.float(), completion_mask))
-    return loss, metrics
+    if beta != 0.0 and kl_mean is not None:
+        metrics.append(kl_mean)
+    metrics.append(clip_ratio)
+    return reduced_loss, metrics
 
 
 def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion_length):
