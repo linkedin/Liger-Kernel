@@ -503,3 +503,64 @@ def test_grpo_loss_with_vllm_is_ratio(B, T, V, beta, loss_type, importance_sampl
     )
 
     torch.testing.assert_close(loss_no_ratio, loss_ones_ratio, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("beta", [0.0, 0.04])
+def test_grpo_loss_sequence_backward_matches_reference(beta):
+    """Sequence-level importance sampling should match reference gradients."""
+    pytest.importorskip("triton")
+    torch.manual_seed(0)
+
+    B, T, V = 2, 8, 32
+    logits = torch.randn(B, T + 1, V, device=device, dtype=torch.float32)
+    completion_ids = torch.randint(0, V, (B, T), device=device)
+    completion_mask = torch.ones(B, T, device=device, dtype=torch.float32)
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+
+    with torch.no_grad():
+        log_probs = torch.log_softmax(logits[:, :-1, :] / 1.1, dim=-1)
+        current_logp = log_probs.gather(-1, completion_ids.unsqueeze(-1)).squeeze(-1)
+        old_logp = current_logp + torch.randn_like(current_logp) * 0.2
+        ref_logp = current_logp + torch.randn_like(current_logp) * 0.1 if beta != 0.0 else None
+
+    temperature = 1.1
+    eps_low, eps_high = 0.2, 0.4
+
+    logits_triton = logits.clone().requires_grad_(True)
+    triton_loss, _ = triton_grpo_loss(
+        logits_triton,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature=temperature,
+        beta=beta,
+        eps_low=eps_low,
+        eps_high=eps_high,
+        importance_sampling_level="sequence",
+        loss_type="grpo",
+        max_completion_length=T,
+        reduce=True,
+    )
+    triton_loss.backward()
+
+    logits_ref = logits.clone().requires_grad_(True)
+    reference_loss = trl_reference_grpo_loss(
+        logits_ref,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        loss_type="grpo",
+        importance_sampling_level="sequence",
+    )
+    reference_loss.backward()
+
+    torch.testing.assert_close(triton_loss, reference_loss, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(logits_triton.grad, logits_ref.grad, rtol=1e-4, atol=1e-4)

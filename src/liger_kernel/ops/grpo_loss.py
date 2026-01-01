@@ -247,6 +247,7 @@ def _grpo_loss_fwd_kernel_seq(
 @triton.jit
 def _grpo_loss_bwd_kernel_seq(
     DLOSS,
+    DLOSS_SUM,
     DLOGITS,
     LOGITS,
     REF_LOGP,
@@ -256,8 +257,6 @@ def _grpo_loss_bwd_kernel_seq(
     LSE,
     COEF_1,  # Pre-computed sequence-level importance weight (B,)
     SEQ_LEN,  # Number of valid tokens per sequence (B,)
-    VLLM_IS_RATIO,
-    VLLM_IS_RATIO_STRIDE,
     TEMPERATURE,
     BETA: tl.constexpr,
     EPS_LOW,
@@ -283,6 +282,7 @@ def _grpo_loss_bwd_kernel_seq(
 
     LOGITS += off_b * (L + 1) * N + off_l * N
     DLOSS += off_b * loss_stride0 + off_l * loss_stride1
+    DLOSS_SUM += off_b
     INPUT_IDS += off_b * L + off_l
     ADVANTAGES += off_b
     LSE += off_b * L + off_l
@@ -290,6 +290,7 @@ def _grpo_loss_bwd_kernel_seq(
     SEQ_LEN += off_b
 
     dloss = tl.load(DLOSS).to(tl.float32)
+    dloss_sum = tl.load(DLOSS_SUM).to(tl.float32)
     lse = tl.load(LSE).to(tl.float32)
     coef_1 = tl.load(COEF_1).to(tl.float32)
     seq_len = tl.load(SEQ_LEN).to(tl.float32)
@@ -306,21 +307,14 @@ def _grpo_loss_bwd_kernel_seq(
 
     # For sequence-level: gradient flows through mean, so scale by coef_1/seq_len
     # d(loss)/d(logp) = -advantage * coef_1 / seq_len (when unclipped)
-    dlogp = -per_token_loss1 / seq_len * is_unclipped
-
-    # Apply vLLM IS ratio to PPO gradient (before KL gradient)
-    if VLLM_IS_RATIO is not None:
-        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
-            tl.float32
-        )
-        dlogp = dlogp * vllm_is_ratio
+    dlogp = -per_token_loss1 / seq_len * is_unclipped * dloss_sum
 
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
-        dlogp += BETA * (1 - tl.exp(ref_logp - logp))
+        dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
 
-    dlogp = dlogp * dloss / TEMPERATURE
+    dlogp = dlogp / TEMPERATURE
     tl.debug_barrier()
     for start_n in tl.range(0, N, BLOCK_N):
         cols = start_n + tl.arange(0, BLOCK_N)
@@ -580,6 +574,7 @@ class GrpoLossFunction(torch.autograd.Function):
             L,
             importance_sampling_level,
             vllm_is_ratio_stride,
+            reduce,
         )
 
         # Compute metrics before reduction
@@ -612,6 +607,7 @@ class GrpoLossFunction(torch.autograd.Function):
             L,
             importance_sampling_level,
             vllm_is_ratio_stride,
+            reduce,
         ) = ctx.infos
 
         if importance_sampling_level == "sequence":
@@ -627,7 +623,7 @@ class GrpoLossFunction(torch.autograd.Function):
         _, L_ADD_1, N = logits.shape
 
         # Compute per-token gradient scaling based on loss_type
-        if loss_type is False:
+        if not reduce:
             dloss = dloss_input
         elif loss_type == "grpo":
             seq_lens_bwd = mask.sum(-1, keepdim=True).clamp(min=1.0)
@@ -646,9 +642,18 @@ class GrpoLossFunction(torch.autograd.Function):
         kwargs = {"BLOCK_N": 4096, "num_stages": 1, "num_warps": 16}
 
         if importance_sampling_level == "sequence":
+            if vllm_is_ratio is None:
+                dloss_sum = dloss.sum(-1).contiguous()
+            else:
+                if vllm_is_ratio.dim() == 1:
+                    ratio = vllm_is_ratio.unsqueeze(-1)
+                else:
+                    ratio = vllm_is_ratio
+                dloss_sum = (dloss * ratio).sum(-1).contiguous()
             # Sequence-level backward kernel
             _grpo_loss_bwd_kernel_seq[(B, L)](
                 dloss,
+                dloss_sum,
                 dlogits,
                 logits,
                 ref_logp,
@@ -658,8 +663,6 @@ class GrpoLossFunction(torch.autograd.Function):
                 lse,
                 coef_1,
                 seq_lens,
-                vllm_is_ratio,
-                vllm_is_ratio_stride,
                 temperature,
                 beta,
                 eps_low,
