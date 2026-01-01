@@ -254,10 +254,14 @@ class GrpoLossFunction(torch.autograd.Function):
         loss_type="grpo",
         max_completion_length=None,
         reduce=True,
+        importance_sampling_level="token",
     ):
         assert logits.is_contiguous() and completion_ids.is_contiguous()
         assert old_logp is None or old_logp.is_contiguous()
         assert (ref_logp is not None and ref_logp.is_contiguous()) if beta != 0.0 else True
+        assert importance_sampling_level in ("token", "sequence"), (
+            f"importance_sampling_level must be 'token' or 'sequence', got {importance_sampling_level}"
+        )
 
         B, L_ADD_1, N = logits.shape
         L = L_ADD_1 - 1
@@ -265,32 +269,78 @@ class GrpoLossFunction(torch.autograd.Function):
         if completion_mask is not None:
             assert completion_mask.is_contiguous()
 
-        loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
-        lse = torch.zeros_like(loss)
-        is_clipped = torch.zeros_like(loss)
-        kl = torch.zeros_like(loss) if beta != 0.0 else None
-        kwargs = {"BLOCK_N": 2048, "num_stages": 2, "num_warps": 1}
-        _grpo_loss_fwd_kernel[(B, L)](
-            logits,
-            old_logp,
-            ref_logp,
-            completion_ids,
-            completion_mask,
-            advantages,
-            loss,
-            lse,
-            kl,
-            is_clipped,
-            temperature,
-            beta,
-            eps_low,
-            eps_high,
-            L,
-            N,
-            **kwargs,
-        )
-        # Get mask for loss computation
-        mask = completion_mask.float() if completion_mask is not None else torch.ones_like(loss)
+        # Get mask for computations
+        mask = completion_mask.float() if completion_mask is not None else torch.ones(B, L, device=logits.device)
+
+        # For sequence-level importance sampling, we need to pre-compute the sequence-level weights
+        if importance_sampling_level == "sequence":
+            # First compute per-token log probs
+            per_token_logps = fused_selective_log_softmax(logits, completion_ids, temperature, completion_mask)
+
+            # Compute log ratio
+            if old_logp is None:
+                log_ratio = torch.zeros_like(per_token_logps)
+            else:
+                log_ratio = per_token_logps - old_logp
+
+            # Aggregate per sequence
+            seq_log_importance = (log_ratio * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)  # (B,)
+            coef_1 = torch.exp(seq_log_importance).unsqueeze(-1)  # (B, 1)
+            coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+
+            # Compute per-token loss with sequence-level coefficients
+            advantages_expanded = advantages.unsqueeze(-1)  # (B, 1)
+            per_token_loss1 = coef_1 * advantages_expanded
+            per_token_loss2 = coef_2 * advantages_expanded
+            loss = -torch.min(per_token_loss1, per_token_loss2).expand(B, L)
+
+            # Clipping detection (sequence level)
+            is_clipped_seq = ((coef_1.squeeze(-1) < 1 - eps_low) & (advantages < 0)) | (
+                (coef_1.squeeze(-1) > 1 + eps_high) & (advantages > 0)
+            )
+            is_clipped = is_clipped_seq.unsqueeze(-1).expand(B, L).float()
+
+            # KL penalty
+            kl = None
+            if beta != 0.0:
+                kl = torch.exp(ref_logp - per_token_logps) - (ref_logp - per_token_logps) - 1.0
+                loss = loss + beta * kl
+
+            # Store lse for backward (not used for sequence-level but needed for interface)
+            lse = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
+
+            # For backward, we need per_token_logps
+            ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, per_token_logps)
+            ctx.infos = (temperature, beta, eps_low, eps_high, inplace, loss_type, max_completion_length, B, L, importance_sampling_level)
+        else:
+            # Token-level importance sampling (original kernel path)
+            loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
+            lse = torch.zeros_like(loss)
+            is_clipped = torch.zeros_like(loss)
+            kl = torch.zeros_like(loss) if beta != 0.0 else None
+            kwargs = {"BLOCK_N": 2048, "num_stages": 2, "num_warps": 1}
+            _grpo_loss_fwd_kernel[(B, L)](
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                completion_mask,
+                advantages,
+                loss,
+                lse,
+                kl,
+                is_clipped,
+                temperature,
+                beta,
+                eps_low,
+                eps_high,
+                L,
+                N,
+                **kwargs,
+            )
+
+            ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask)
+            ctx.infos = (temperature, beta, eps_low, eps_high, inplace, loss_type, max_completion_length, B, L, importance_sampling_level)
 
         if not reduce:
             # Return per-token loss (original behavior for backward compatibility)
@@ -300,8 +350,11 @@ class GrpoLossFunction(torch.autograd.Function):
                 kl = kl * mask
             is_clipped = is_clipped * mask
 
-            ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse)
-            ctx.infos = (temperature, beta, eps_low, eps_high, inplace, False, None, B, L)
+            if importance_sampling_level == "sequence":
+                ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, per_token_logps)
+            else:
+                ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse)
+            ctx.infos = (temperature, beta, eps_low, eps_high, inplace, False, None, B, L, importance_sampling_level)
             return loss, kl, is_clipped
 
         # Apply loss reduction based on loss_type
@@ -328,8 +381,11 @@ class GrpoLossFunction(torch.autograd.Function):
         clip_ratio = (is_clipped.float() * mask).sum() / mask_sum
 
         # Save for backward - need per-token loss gradient scaling
-        ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask)
-        ctx.infos = (temperature, beta, eps_low, eps_high, inplace, loss_type, max_completion_length, B, L)
+        if importance_sampling_level == "sequence":
+            ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, per_token_logps)
+        else:
+            ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask)
+        ctx.infos = (temperature, beta, eps_low, eps_high, inplace, loss_type, max_completion_length, B, L, importance_sampling_level)
 
         return reduced_loss, kl_mean, clip_ratio
 
@@ -337,9 +393,17 @@ class GrpoLossFunction(torch.autograd.Function):
     def backward(ctx, *args):
         dloss_input = args[0]  # Gradient - either scalar (reduce=True) or (B, L) tensor (reduce=False)
         saved_tensors = ctx.saved_tensors
-        temperature, beta, eps_low, eps_high, inplace, loss_type, max_completion_length, B, L = ctx.infos
+        temperature, beta, eps_low, eps_high, inplace, loss_type, max_completion_length, B, L, importance_sampling_level = ctx.infos
         _, L_ADD_1, N = saved_tensors[0].shape  # logits shape
 
+        # For sequence-level importance sampling, use autograd-based backward
+        if importance_sampling_level == "sequence":
+            return GrpoLossFunction._backward_sequence_level(
+                ctx, dloss_input, saved_tensors, temperature, beta, eps_low, eps_high,
+                inplace, loss_type, max_completion_length, B, L
+            )
+
+        # Token-level importance sampling: use Triton kernel
         if loss_type is False:
             # reduce=False case: dloss_input is (B, L) per-token gradients
             logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse = saved_tensors
@@ -394,4 +458,78 @@ class GrpoLossFunction(torch.autograd.Function):
         )
         dlogits[:, -1, :] = 0
         # Return gradients for all inputs (None for non-differentiable params)
-        return dlogits, None, None, None, None, None, None, None, None, None, None, None, None, None
+        # 15 inputs: logits, old_logp, ref_logp, completion_ids, advantages, completion_mask,
+        #            temperature, beta, eps_low, eps_high, inplace, loss_type, max_completion_length, reduce, importance_sampling_level
+        return dlogits, None, None, None, None, None, None, None, None, None, None, None, None, None, None
+
+    @staticmethod
+    def _backward_sequence_level(ctx, dloss_input, saved_tensors, temperature, beta, eps_low, eps_high,
+                                  inplace, loss_type, max_completion_length, B, L):
+        """Backward pass for sequence-level importance sampling using autograd."""
+        if loss_type is False:
+            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, per_token_logps = saved_tensors
+        else:
+            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, per_token_logps = saved_tensors
+
+        # Re-compute forward with gradients to get dlogits
+        with torch.enable_grad():
+            logits_grad = logits.detach().requires_grad_(True)
+
+            # Compute per-token log probs (need to re-do this with grad tracking)
+            # Use the same computation as fused_selective_log_softmax but with autograd
+            logits_selected = logits_grad[:, :-1, :]  # (B, L, V)
+            logits_scaled = logits_selected / temperature
+            log_probs = torch.log_softmax(logits_scaled.float(), dim=-1)
+            per_token_logps_recomputed = log_probs.gather(-1, completion_ids.unsqueeze(-1)).squeeze(-1)  # (B, L)
+
+            # Compute log ratio
+            if old_logp is None:
+                log_ratio = torch.zeros_like(per_token_logps_recomputed)
+            else:
+                log_ratio = per_token_logps_recomputed - old_logp
+
+            # Aggregate per sequence
+            seq_log_importance = (log_ratio * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)  # (B,)
+            coef_1 = torch.exp(seq_log_importance).unsqueeze(-1)  # (B, 1)
+            coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+
+            # Compute per-token loss
+            advantages_expanded = advantages.unsqueeze(-1)  # (B, 1)
+            per_token_loss1 = coef_1 * advantages_expanded
+            per_token_loss2 = coef_2 * advantages_expanded
+            loss = -torch.min(per_token_loss1, per_token_loss2).expand(B, L)
+
+            # KL penalty
+            if beta != 0.0:
+                kl = torch.exp(ref_logp - per_token_logps_recomputed) - (ref_logp - per_token_logps_recomputed) - 1.0
+                loss = loss + beta * kl
+
+            # Apply loss reduction
+            if loss_type is False:
+                # reduce=False: per-token loss, gradient from dloss_input (B, L)
+                reduced_loss = (loss * dloss_input).sum()
+            elif loss_type == "grpo":
+                reduced_loss = ((loss * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)).mean()
+            elif loss_type == "bnpo":
+                reduced_loss = (loss * mask).sum() / mask.sum().clamp(min=1.0)
+            elif loss_type == "dr_grpo":
+                max_len = max_completion_length if max_completion_length is not None else L
+                reduced_loss = (loss * mask).sum() / (B * max_len)
+            elif loss_type == "dapo":
+                normalizer = _compute_dapo_normalizer(mask)
+                reduced_loss = (loss * mask).sum() / normalizer
+
+            # Compute gradients
+            if loss_type is not False:
+                reduced_loss = reduced_loss * dloss_input
+
+            dlogits = torch.autograd.grad(reduced_loss, logits_grad, retain_graph=False)[0]
+
+        # Handle inplace
+        if inplace:
+            logits.data.copy_(dlogits)
+            result = logits
+        else:
+            result = dlogits
+
+        return result, None, None, None, None, None, None, None, None, None, None, None, None, None, None

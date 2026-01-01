@@ -21,13 +21,36 @@ def triton_grpo_loss(
     importance_sampling_level="token",
     reduce=False,
 ):
+    """
+    Triton-optimized GRPO loss function.
+
+    Args:
+        logits: Model logits (B, L+1, V)
+        old_logp: Old policy log probabilities (B, L) or None
+        ref_logp: Reference model log probabilities (B, L) or None (required if beta != 0)
+        completion_ids: Token IDs for completions (B, L)
+        advantages: Per-sequence advantages (B,)
+        completion_mask: Mask for valid tokens (B, L) or None
+        temperature: Temperature for log softmax
+        beta: KL penalty coefficient
+        eps_low: Lower clipping bound for importance ratio
+        eps_high: Upper clipping bound for importance ratio
+        inplace: Whether to modify logits in-place during backward
+        loss_type: Loss reduction type ("grpo", "bnpo", "dr_grpo", "dapo")
+        max_completion_length: Max completion length for dr_grpo loss type
+        importance_sampling_level: "token" or "sequence" importance sampling
+        reduce: If True, return reduced loss; if False, return per-token loss
+
+    Returns:
+        If reduce=True: (loss, metrics) where metrics = [kl_mean, clip_ratio] or [clip_ratio]
+        If reduce=False: (per_token_loss, per_token_kl, is_clipped)
+    """
     assert logits is not None and completion_ids is not None and advantages is not None, (
-        "must provide logits、completion_ids and advantages"
+        "must provide logits, completion_ids and advantages"
     )
-    if importance_sampling_level != "token":
-        raise ValueError(
-            f"Triton GRPO loss only supports token-level importance sampling. Got {importance_sampling_level}."
-        )
+    assert importance_sampling_level in ("token", "sequence"), (
+        f"importance_sampling_level must be 'token' or 'sequence', got {importance_sampling_level}"
+    )
 
     result = GrpoLossFunction.apply(
         logits,
@@ -44,6 +67,7 @@ def triton_grpo_loss(
         loss_type,
         max_completion_length,
         reduce,
+        importance_sampling_level,
     )
 
     if not reduce:
