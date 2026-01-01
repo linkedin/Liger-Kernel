@@ -188,3 +188,105 @@ def test_grpo_loss(B, T, V, temperature, num_iteration, beta, eps_low, eps_high,
     compare(loss2, loss3, "per_token_loss: triton-bf16 vs torch-fp32, ")
     compare(kl2, kl3, "per_token_kl: triton-bf16 vs torch-fp32, ")
     compare(logits2.grad, logits3.grad, "logits.grad: triton-bf16 vs torch-fp32, ")
+
+
+def trl_reference_grpo_loss(
+    logits, old_logp, ref_logp, completion_ids, advantages, completion_mask,
+    temperature, beta, eps_low, eps_high, loss_type, importance_sampling_level
+):
+    """TRL reference implementation from grpo_trainer.py"""
+    B, L_ADD_1, V = logits.shape
+    L = L_ADD_1 - 1
+
+    logits_scaled = logits[:, :-1, :] / temperature
+    log_probs = torch.log_softmax(logits_scaled.float(), dim=-1)
+    per_token_logps = log_probs.gather(-1, completion_ids.unsqueeze(-1)).squeeze(-1)
+
+    if old_logp is None:
+        old_logp = per_token_logps.detach()
+
+    log_ratio = per_token_logps - old_logp
+
+    if importance_sampling_level == "token":
+        log_importance_weights = log_ratio
+    else:  # sequence
+        log_importance_weights = (log_ratio * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)
+        log_importance_weights = log_importance_weights.unsqueeze(-1)
+
+    coef_1 = torch.exp(log_importance_weights)
+    coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+
+    per_token_loss1 = coef_1 * advantages.unsqueeze(-1)
+    per_token_loss2 = coef_2 * advantages.unsqueeze(-1)
+    per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+    if importance_sampling_level == "sequence":
+        per_token_loss = per_token_loss.expand(B, L)
+
+    if beta != 0.0:
+        kl = torch.exp(ref_logp - per_token_logps) - (ref_logp - per_token_logps) - 1.0
+        per_token_loss = per_token_loss + beta * kl
+
+    # Loss reduction
+    if loss_type == "grpo":
+        loss = ((per_token_loss * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
+    elif loss_type == "bnpo":
+        loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
+    elif loss_type == "dr_grpo":
+        loss = (per_token_loss * completion_mask).sum() / (B * L)
+    elif loss_type == "dapo":
+        loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
+
+    return loss
+
+
+@pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo"])
+@pytest.mark.parametrize("beta", [0.0, 0.04])
+@pytest.mark.parametrize(
+    "B, T, V",
+    [
+        (2, 128, 1000),
+    ],
+)
+def test_grpo_loss_vs_trl(B, T, V, beta, loss_type, importance_sampling_level):
+    """Test that triton_grpo_loss matches TRL's exact implementation."""
+    torch.manual_seed(42)
+
+    logits = torch.randn(B, T + 1, V, device=device, dtype=torch.float32)
+    completion_ids = torch.randint(0, V, (B, T), device=device)
+    completion_mask = torch.ones(B, T, device=device, dtype=torch.float32)
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+
+    # Compute realistic old_logp and ref_logp
+    with torch.no_grad():
+        log_probs = torch.log_softmax(logits[:, :-1, :] / 0.9, dim=-1)
+        current_logp = log_probs.gather(-1, completion_ids.unsqueeze(-1)).squeeze(-1)
+        old_logp = current_logp + torch.randn_like(current_logp) * 0.3
+        ref_logp = current_logp + torch.randn_like(current_logp) * 0.2 if beta != 0.0 else None
+
+    temperature = 0.9
+    eps_low, eps_high = 0.2, 0.4
+
+    # TRL reference
+    trl_loss = trl_reference_grpo_loss(
+        logits.clone(), old_logp, ref_logp, completion_ids, advantages, completion_mask,
+        temperature, beta, eps_low, eps_high, loss_type, importance_sampling_level
+    )
+
+    # Triton implementation
+    logits_triton = logits.clone().requires_grad_(True)
+    triton_loss, _ = triton_grpo_loss(
+        logits_triton, old_logp, ref_logp, completion_ids, advantages, completion_mask,
+        temperature=temperature, beta=beta, eps_low=eps_low, eps_high=eps_high,
+        importance_sampling_level=importance_sampling_level, loss_type=loss_type,
+        max_completion_length=T, reduce=True
+    )
+
+    # Verify forward match
+    torch.testing.assert_close(triton_loss, trl_loss, rtol=1e-4, atol=1e-4)
+
+    # Verify backward works
+    triton_loss.backward()
+    assert logits_triton.grad is not None
+    assert not torch.isnan(logits_triton.grad).any()
