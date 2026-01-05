@@ -127,3 +127,15 @@ def element_mul_kernel(
         X_offsets = i + tl.arange(0, BLOCK_SIZE)
         X_block = tl.load(X_ptr + X_offsets, mask=X_offsets < n_cols)
         tl.store(X_ptr + X_offsets, X_block * grad_output, mask=X_offsets < n_cols)
+
+
+def get_npu_core_count(default: int = 20) -> int:
+    """Return NPU vector core count.
+    Fallback to `default` if Triton runtime or NPU device is unavailable.
+    """
+    try:
+        utils = triton.runtime.driver.active.utils
+        props = utils.get_device_properties(0)
+        return int(props.get("num_vectorcore", default))
+    except Exception:
+        return default

@@ -3,6 +3,7 @@ import triton
 import triton.language as tl
 
 from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
+from liger_kernel.ops.utils import get_npu_core_count
 
 # -----------------------------------------------------------------------------
 # Kernels (High-performance 1D Flatten Implementation)
@@ -10,7 +11,9 @@ from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_
 
 
 @triton.jit
-def _swiglu_forward_kernel_flat(a_ptr, b_ptr, c_ptr, total_elements, BLOCK_SIZE: tl.constexpr):
+def _swiglu_forward_kernel_flat(
+    a_ptr, b_ptr, c_ptr, total_elements, BLOCK_SIZE: tl.constexpr, NUM_STAGES: tl.constexpr
+):
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
 
@@ -18,9 +21,10 @@ def _swiglu_forward_kernel_flat(a_ptr, b_ptr, c_ptr, total_elements, BLOCK_SIZE:
     start_idx = pid * BLOCK_SIZE
     stride = num_progs * BLOCK_SIZE
 
-    for idx in range(start_idx, total_elements, stride):
+    for idx in tl.range(start_idx, total_elements, stride, num_stages=NUM_STAGES):
         offsets = idx + tl.arange(0, BLOCK_SIZE)
         mask = offsets < total_elements
+
         a_val = tl.load(a_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         b_val = tl.load(b_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         res = (a_val * tl.sigmoid(a_val)) * b_val
@@ -28,13 +32,15 @@ def _swiglu_forward_kernel_flat(a_ptr, b_ptr, c_ptr, total_elements, BLOCK_SIZE:
 
 
 @triton.jit
-def _swiglu_backward_kernel_flat(dc_ptr, a_ptr, b_ptr, da_ptr, db_ptr, total_elements, BLOCK_SIZE: tl.constexpr):
+def _swiglu_backward_kernel_flat(
+    dc_ptr, a_ptr, b_ptr, da_ptr, db_ptr, total_elements, BLOCK_SIZE: tl.constexpr, NUM_STAGES: tl.constexpr
+):
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
     start_idx = pid * BLOCK_SIZE
     stride = num_progs * BLOCK_SIZE
 
-    for idx in range(start_idx, total_elements, stride):
+    for idx in tl.range(start_idx, total_elements, stride, num_stages=NUM_STAGES):
         offsets = idx + tl.arange(0, BLOCK_SIZE)
         mask = offsets < total_elements
 
@@ -81,19 +87,6 @@ def get_optimal_block_size(total_elements, is_backward=False):
         return 2048
 
 
-def get_npu_core_count(default: int = 20) -> int:
-    """Return NPU vector core count.
-
-    Fallback to `default` if Triton runtime or NPU device is unavailable.
-    """
-    try:
-        utils = triton.runtime.driver.active.utils
-        props = utils.get_device_properties(0)
-        return int(props.get("num_vectorcore", default))
-    except Exception:
-        return default
-
-
 def swiglu_forward(a, b):
     if not a.is_contiguous():
         a = a.contiguous()
@@ -108,7 +101,7 @@ def swiglu_forward(a, b):
     num_cores = get_npu_core_count()
     grid_size = min(num_cores, (total_elements + block_size - 1) // block_size)
 
-    _swiglu_forward_kernel_flat[(grid_size,)](a, b, c, total_elements, BLOCK_SIZE=block_size, num_warps=4, num_stages=3)
+    _swiglu_forward_kernel_flat[(grid_size,)](a, b, c, total_elements, BLOCK_SIZE=block_size, NUM_STAGES=3, num_warps=4)
     return c
 
 
@@ -130,7 +123,7 @@ def swiglu_backward(a, b, dc):
     grid_size = min(num_cores, (total_elements + block_size - 1) // block_size)
 
     _swiglu_backward_kernel_flat[(grid_size,)](
-        dc, a, b, grad_a, grad_b, total_elements, BLOCK_SIZE=block_size, num_warps=4, num_stages=3
+        dc, a, b, grad_a, grad_b, total_elements, BLOCK_SIZE=block_size, NUM_STAGES=3, num_warps=4
     )
     return grad_a, grad_b
 
