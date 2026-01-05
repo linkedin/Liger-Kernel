@@ -613,6 +613,13 @@ class LigerRMSNormFunction(torch.autograd.Function):
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
+        if isinstance(X, torch.distributed.tensor.DTensor):
+            # Input tensor is output of a tensor parallel module and
+            # needs to be gathered to a local tensor to compute
+            # RMSE layer norm on each TP worker.
+            # TODO: support CP.
+            X = X.full_tensor()
+
         Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(X, W, eps, offset, casting_mode, row_mode)
         ctx.offset = offset
         ctx.casting_mode = casting_mode
@@ -638,6 +645,13 @@ class LigerRMSNormFunction(torch.autograd.Function):
         else:
             X, RSTD = ctx.saved_tensors
             W = None
+
+        if isinstance(dY, torch.distributed.tensor.DTensor):
+            # Gradients are output of a tensor parallel module and
+            # needs to be gathered to a local tensor for computing RMSE layer.
+            # TODO: support CP.
+            dY = dY.full_tensor()
+
         dX, dW = rms_norm_backward(
             dY, X, W, RSTD, ctx.offset, ctx.casting_mode, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place, ctx.row_mode
         )
