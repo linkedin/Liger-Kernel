@@ -241,7 +241,7 @@ def compute_default_tiling_strategy(
         dtype_size: Size of data type in bytes (e.g., 2 for float16, 4 for float32).
             Must be provided. If None or <= 0, defaults to 4 (float32).
         memory_multiplier: Memory multiplier for estimating peak memory usage.
-            - For GEGLU: typically 10.0 for backward, 7.0 for forward
+            - For GEGLU: typically 10.0 for backward, 4.0 for forward
             - For ROPE: typically 3.0
             If None, defaults to 10.0 (conservative estimate).
         shapes: Tuple of full shapes. Each shape is a tuple of dimension sizes.
