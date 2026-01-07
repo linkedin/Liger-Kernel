@@ -2175,7 +2175,7 @@ def apply_liger_kernel_to_glm4_moe(
     from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
 
     if rope:
-        modeling_glm4_moe.apply_rotary_pos_emb = liger_rotary_pos_emb_with_cast
+        modeling_glm4_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         modeling_glm4_moe.Glm4MoeRMSNorm = LigerRMSNormForGlm4
     if cross_entropy:
