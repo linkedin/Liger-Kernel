@@ -1096,6 +1096,14 @@ if GLM4_MOE_AVAILABLE:
             eos_token_id=2,  # 151329, 151336, 151338
             pad_token_id=2,  # 151329
             partial_rotary_factor=0.5,
+            moe_intermediate_size=1408,
+            num_experts_per_tok=2,
+            n_shared_experts=1,
+            n_routed_experts=8,
+            routed_scaling_factor=1.0,
+            n_group=1,
+            topk_group=1,
+            first_k_dense_replace=1,
             cross_attention_layers=None,
             dropout=0,
             hidden_act="silu",
