@@ -67,8 +67,9 @@ def _geglu_tanh_backward_kernel(dc, a, b, stride, n_cols: tl.constexpr, BLOCK_SI
     tanh_arg = sqrt_2_over_pi * (a_row + 0.044715 * a_cubed)
     tanh_result = tanh(tanh_arg)
     geglu_a = 0.5 * a_row * (1 + tanh_result)
+    geglu_a = geglu_a.to(dc_row.dtype).to(tl.float32)
 
-    db_row = dc_row * geglu_a
+    db_row = dc_row.cast(tl.float32) * geglu_a
 
     # Gradient w.r.t. a can be computed with:
     # b * (0.5 * (1 + tanh(z)) + 0.5 * a * (1 - tanh(z)^2) * (sqrt(2/pi) * (1 + 3 * 0.044715 * a^2)))
@@ -79,7 +80,7 @@ def _geglu_tanh_backward_kernel(dc, a, b, stride, n_cols: tl.constexpr, BLOCK_SI
     da_row = dc_row * b_row * (term1 + term2)
 
     tl.store(a + col_offsets, da_row, mask=mask)
-    tl.store(b + col_offsets, db_row, mask=mask)
+    tl.store(b + col_offsets, db_row.to(dc_row.dtype), mask=mask)
 
 
 def geglu_forward(a, b):

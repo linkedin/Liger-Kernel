@@ -9,7 +9,13 @@ from liger_kernel.chunked_loss.fused_linear_distillation import LigerFusedLinear
 
 class LigerFusedLinearCosineSimilarityFunction(LigerFusedLinearDistillationBase):
     @staticmethod
-    def distillation_loss_fn(student_logits, teacher_logits, beta=1.0):
+    def distillation_loss_fn(
+        student_logits,
+        teacher_logits,
+        target=None,
+        ignore_index=None,
+        beta=1.0,
+    ):
         """
         Compute Cosine loss (Cosine Similarity Loss).
         Args:

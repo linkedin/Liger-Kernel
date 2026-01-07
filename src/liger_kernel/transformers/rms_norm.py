@@ -14,13 +14,18 @@ class LigerRMSNorm(nn.Module):
         init_fn="ones",
         in_place=True,
         row_mode=None,
+        elementwise_affine=True,
     ):
         super().__init__()
         assert init_fn in [
             "ones",
             "zeros",
         ], f"init_fn must be either 'ones' or 'zeros', got {init_fn}"
-        self.weight = nn.Parameter(torch.ones(hidden_size) if init_fn == "ones" else torch.zeros(hidden_size))
+        self.elementwise_affine = elementwise_affine
+        if self.elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(hidden_size) if init_fn == "ones" else torch.zeros(hidden_size))
+        else:
+            self.register_parameter("weight", None)
         self.variance_epsilon, self.offset, self.casting_mode, self.in_place, self.row_mode = (
             eps,
             offset,
@@ -41,7 +46,7 @@ class LigerRMSNorm(nn.Module):
         )
 
     def extra_repr(self):
-        return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}, offset={self.offset}, in_place={self.in_place}, row_mode={self.row_mode}"
+        return f"weight_shape={tuple(self.weight.shape) if self.weight is not None else None}, eps={self.variance_epsilon}, offset={self.offset}, in_place={self.in_place}, row_mode={self.row_mode}"
 
 
 class LigerRMSNormForGemma(LigerRMSNorm):
