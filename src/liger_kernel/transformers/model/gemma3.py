@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 from transformers.cache_utils import Cache
-from transformers.cache_utils import HybridCache
+from transformers.cache_utils import Cache
 from transformers.utils import logging
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
@@ -23,7 +23,7 @@ def causal_forward(
     input_ids: torch.LongTensor = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[HybridCache] = None,
+    past_key_values: Optional[Cache] = None,
     inputs_embeds: Optional[torch.FloatTensor] = None,
     labels: Optional[torch.LongTensor] = None,
     use_cache: Optional[bool] = None,
