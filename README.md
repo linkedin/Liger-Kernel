@@ -31,8 +31,8 @@
             </a>
         </td>
         <td style="padding: 10px;">
-            <a href="https://discord.gg/gpumode">
-                <img src="https://dcbadge.limes.pink/api/server/gpumode?style=flat" alt="Join Our Discord">
+            <a href="https://discord.gg/X4MaxPgA">
+                <img src="https://dcbadge.limes.pink/api/server/https://discord.gg/X4MaxPgA?style=flat" alt="Join Our Discord">
             </a>
         </td>
     </tr>
@@ -47,6 +47,7 @@
 <details>
   <summary>Latest News 🔥</summary>
 
+  - [2025/12/19] We announced a liger kernel discord channel at https://discord.gg/X4MaxPgA; We will be hosting Liger Kernel x Triton China Meetup in mid of January 2026
   - [2025/03/06] We release a joint blog post on TorchTune × Liger - [Peak Performance, Minimized Memory: Optimizing torchtune’s performance with torch.compile & Liger Kernel](https://pytorch.org/blog/peak-performance-minimized-memory/)
   - [2024/12/11] We release [v0.5.0](https://github.com/linkedin/Liger-Kernel/releases/tag/v0.5.0): 80% more memory efficient post training losses (DPO, ORPO, CPO, etc)!
   - [2024/12/5] We release LinkedIn Engineering Blog - [Liger-Kernel: Empowering an open source ecosystem of Triton Kernels for Efficient LLM Training](https://www.linkedin.com/blog/engineering/open-source/liger-kernel-open-source-ecosystem-for-efficient-llm-training)
@@ -396,4 +397,5 @@ url={https://openreview.net/forum?id=36SjAIT42G}
         ↑ Back to Top ↑
     </a>
 </p>
+
 
