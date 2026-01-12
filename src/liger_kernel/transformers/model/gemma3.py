@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 
 from transformers.cache_utils import Cache
-from transformers.cache_utils import Cache
 from transformers.utils import logging
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
