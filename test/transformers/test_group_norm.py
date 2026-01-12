@@ -1,5 +1,3 @@
-import random
-
 import pytest
 import torch
 
@@ -8,19 +6,15 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
-random_batch_size = random.randint(1, 16)
-random_num_groups = random.randint(1, 32)
-random_num_channels = random_num_groups * random.randint(1, 16)
-random_hidden_size = random.randint(1, 8192)
-
 
 @pytest.mark.parametrize(
     "batch_size, num_channels, num_groups, hidden_size",
     [
-        (1, 1, 1, 3),
-        (1, 4, 2, 4),
-        (16, 12, 3, 4096),
-        (random_batch_size, random_num_channels, random_num_groups, random_hidden_size),
+        (1, 1, 1, 3),                    # minimal
+        (1, 32, 32, 4),                  # group == channel
+        (16, 32, 1, 4096),               # single group
+        (2, 63, 21, 2163),               # non-aligned hidden
+        (16, 48, 12, 8192),              # large hidden
     ],
 )
 @pytest.mark.parametrize(
