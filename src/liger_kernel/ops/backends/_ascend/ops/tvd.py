@@ -156,7 +156,7 @@ def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_
 
 
 def tvd_backward_triton(grad_output, grads):
-    # If cross entropy is the last layer, grad_output is 1.0. Skip the mul then.
+    # If this is the last layer, grad_output is 1.0. Skip the mul then.
     if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
         return grads
 
