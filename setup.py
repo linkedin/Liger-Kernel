@@ -44,6 +44,7 @@ def get_optional_dependencies():
             "seaborn",
             "mkdocs-material",
             "torchvision>=0.20",
+            "prek>=0.2.28",
         ]
     }
 
