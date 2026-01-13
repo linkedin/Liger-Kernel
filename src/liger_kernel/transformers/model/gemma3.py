@@ -1,3 +1,5 @@
+import inspect
+
 from typing import Optional
 from typing import Tuple
 from typing import Union
@@ -268,7 +270,11 @@ def multimodal_forward(
         shift_hidden_states = shift_hidden_states.view(-1, self.config.text_config.hidden_size)
         shift_labels = shift_labels.view(-1).to(hidden_device)
 
-        lce = LigerFusedLinearCrossEntropyLoss()
+        accept_params = inspect.signature(LigerFusedLinearCrossEntropyLoss).parameters
+        remain_params = set(lm_kwargs) - (set(accept_params) & set(lm_kwargs))
+        loss_kwargs = {k: v for k, v in lm_kwargs.items() if k not in remain_params}
+
+        lce = LigerFusedLinearCrossEntropyLoss(**loss_kwargs)
         result = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
         loss, _, token_accuracy = unpack_cross_entropy_result(result)
 
