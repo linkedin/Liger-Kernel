@@ -6,6 +6,7 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.utils import infer_device
 from liger_kernel.utils import is_npu_available
 
 if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
@@ -18,7 +19,10 @@ if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
 else:
     from triton.language.math import rsqrt
 
-MAX_FUSED_SIZE = 65536
+if infer_device() == "npu":
+    MAX_FUSED_SIZE = 16384  # 8192
+else:
+    MAX_FUSED_SIZE = 65536
 
 
 @triton.jit
