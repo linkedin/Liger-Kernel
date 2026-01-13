@@ -10,11 +10,11 @@ device = infer_device()
 @pytest.mark.parametrize(
     "batch_size, num_channels, num_groups, hidden_size",
     [
-        (1, 1, 1, 3),                    # minimal
-        (1, 32, 32, 4),                  # group == channel
-        (16, 32, 1, 4096),               # single group
-        (2, 63, 21, 2163),               # non-aligned hidden
-        (16, 48, 12, 8192),              # large hidden
+        (1, 1, 1, 3),  # minimal
+        (1, 32, 32, 4),  # group == channel
+        (16, 32, 1, 4096),  # single group
+        (2, 63, 21, 2163),  # non-aligned hidden
+        (16, 48, 12, 8192),  # large hidden
     ],
 )
 @pytest.mark.parametrize(
