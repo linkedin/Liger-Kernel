@@ -7,6 +7,7 @@ import triton.language as tl
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import set_large_grf_mode
 from liger_kernel.utils import get_npu_multi_processor_count
 from liger_kernel.utils import is_npu_available
 
@@ -239,7 +240,7 @@ def poly_norm_forward(X, W, B, eps=1e-6):
     # XPU-specific optimization
     kernel_args = {}
     if X.device.type == "xpu":
-        kernel_args["grf_mode"] = "large"
+        set_large_grf_mode(kernel_args)
 
     # Launch kernel
     _poly_norm_forward_kernel[(n_rows,)](
@@ -310,7 +311,7 @@ def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps, in_place):
     # XPU-specific optimization
     kernel_args = {}
     if X.device.type == "xpu":
-        kernel_args["grf_mode"] = "large"
+        set_large_grf_mode(kernel_args)
 
     # Launch backward kernel
     _poly_norm_backward_kernel[grid](
