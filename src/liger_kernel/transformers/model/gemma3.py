@@ -270,13 +270,16 @@ def multimodal_forward(
 
         # Extract loss-related kwargs for LigerFusedLinearCrossEntropyLoss
         lce_param_keys = {
-            "return_token_accuracy",
-            "return_z_loss",
+            "ce_weight",
+            "ignore_index",
             "lse_square_scale",
             "label_smoothing",
             "reduction",
             "softcap",
-            "ignore_index",
+            "return_z_loss",
+            "accum_dtype",
+            "use_token_scaling",
+            "return_token_accuracy",
         }
         lce_kwargs = {k: lm_kwargs.pop(k) for k in lce_param_keys if k in lm_kwargs}
 
