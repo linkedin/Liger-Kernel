@@ -140,12 +140,12 @@ def get_npu_core_count(default: int = 20) -> int:
     except Exception:
         return default
 
+
 def set_large_grf_mode(kernel_args: dict):
     """Set large GRF mode for XPU devices."""
     # On XPU triton installed along with pytorch-xpu will be called `pytorch-triton-xpu`,
     # triton XPU installed from source will be called `triton`.
-    if (compare_version("pytorch-triton-xpu", operator.ge, "3.6.0")
-        or compare_version("triton", operator.ge, "3.6.0")):
+    if compare_version("pytorch-triton-xpu", operator.ge, "3.6.0") or compare_version("triton", operator.ge, "3.6.0"):
         kernel_args["grf_mode"] = "256"
     else:
         # API was changed in https://github.com/intel/intel-xpu-backend-for-triton/pull/5430

@@ -8,8 +8,8 @@ import triton.language as tl
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
-from liger_kernel.ops.utils import torch_to_triton_dtype
 from liger_kernel.ops.utils import set_large_grf_mode
+from liger_kernel.ops.utils import torch_to_triton_dtype
 from liger_kernel.utils import get_npu_multi_processor_count
 from liger_kernel.utils import is_npu_available
 
