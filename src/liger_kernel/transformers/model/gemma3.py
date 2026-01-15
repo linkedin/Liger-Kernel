@@ -8,6 +8,7 @@ import torch.nn as nn
 from transformers.cache_utils import Cache
 from transformers.utils import logging
 
+from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
 from liger_kernel.transformers.model.output_classes import LigerCausalLMOutputWithPast
@@ -282,15 +283,8 @@ def multimodal_forward(
         }
         lce_kwargs = {k: lm_kwargs.pop(k) for k in lce_param_keys if k in lm_kwargs}
 
-        result = LigerForCausalLMLoss(
-            hidden_states=shift_hidden_states,
-            lm_head_weight=self.lm_head.weight,
-            labels=shift_labels,
-            hidden_size=self.config.text_config.hidden_size,
-            shift_labels=shift_labels,
-            final_logit_softcapping=getattr(self.config.text_config, "final_logit_softcapping", None),
-            **lce_kwargs,
-        )
+        lce = LigerFusedLinearCrossEntropyLoss(**lce_kwargs)
+        result = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
         loss, _, token_accuracy = unpack_cross_entropy_result(result)
 
     else:
