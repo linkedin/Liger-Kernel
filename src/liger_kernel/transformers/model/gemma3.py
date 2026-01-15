@@ -283,8 +283,15 @@ def multimodal_forward(
         }
         lce_kwargs = {k: lm_kwargs.pop(k) for k in lce_param_keys if k in lm_kwargs}
 
-        lce = LigerFusedLinearCrossEntropyLoss(**lce_kwargs)
-        result = lce(self.lm_head.weight, shift_hidden_states, shift_labels)
+        result = LigerForCausalLMLoss(
+            hidden_states=shift_hidden_states,
+            lm_head_weight=self.lm_head.weight,
+            labels=shift_labels,
+            hidden_size=self.config.text_config.hidden_size,
+            shift_labels=shift_labels,
+            final_logit_softcapping=getattr(self.config.text_config, "final_logit_softcapping", None),
+            **lce_kwargs,
+        )
         loss, _, token_accuracy = unpack_cross_entropy_result(result)
 
     else:
