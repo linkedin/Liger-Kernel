@@ -497,11 +497,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
             ).to_dict(),
@@ -598,11 +593,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
             ).to_dict(),
@@ -675,11 +665,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_text():
             rms_norm_eps=1e-6,
             use_cache=False,
             tie_word_embeddings=True,
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
-                mrope_section=[16, 24, 24],
-            ),
             attention_dropout=0.0,
             attention_bias=False,
         )
@@ -771,11 +756,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
                 decoder_sparse_step=1,
@@ -877,11 +857,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
                 decoder_sparse_step=1,
@@ -959,11 +934,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
             rms_norm_eps=1e-6,
             use_cache=False,
             tie_word_embeddings=True,
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
-                mrope_section=[16, 24, 24],
-            ),
             attention_dropout=0.0,
             attention_bias=False,
             decoder_sparse_step=1,
@@ -1450,8 +1420,14 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(mixtral_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            for expert in layer.block_sparse_moe.experts:
-                assert inspect.getsource(expert.forward) != inspect.getsource(LigerBlockSparseTop2MLP.forward)
+            # Handle both transformers v4 and v5 architecture
+            if hasattr(layer, "block_sparse_moe"):
+                # Transformers v4: experts is a ModuleList
+                for expert in layer.block_sparse_moe.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerBlockSparseTop2MLP.forward)
+            elif hasattr(layer, "mlp") and hasattr(layer.mlp, "experts"):
+                # Transformers v5: experts is a single fused module
+                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerBlockSparseTop2MLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
@@ -1462,8 +1438,14 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(mixtral_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            for expert in layer.block_sparse_moe.experts:
-                assert inspect.getsource(expert.forward) == inspect.getsource(LigerBlockSparseTop2MLP.forward)
+            # Handle both transformers v4 and v5 architecture
+            if hasattr(layer, "block_sparse_moe"):
+                # Transformers v4: experts is a ModuleList
+                for expert in layer.block_sparse_moe.experts:
+                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerBlockSparseTop2MLP.forward)
+            elif hasattr(layer, "mlp") and hasattr(layer.mlp, "experts"):
+                # Transformers v5: experts is a single fused module
+                assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(LigerBlockSparseTop2MLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
@@ -1875,8 +1857,18 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            for mlp_expert in layer.mlp.experts:
-                assert inspect.getsource(mlp_expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            # Handle both transformers v4 and v5 architecture
+            # v4: layer.mlp.experts is a ModuleList (iterable)
+            # v5: layer.mlp.experts is a single Qwen3MoeExperts module (not iterable)
+            experts = getattr(layer.mlp, "experts", None)
+            if experts is not None:
+                try:
+                    # Try to iterate - works for v4 ModuleList
+                    for mlp_expert in experts:
+                        assert inspect.getsource(mlp_expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+                except TypeError:
+                    # v5: experts is not iterable, check it directly
+                    assert inspect.getsource(experts.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
@@ -2705,8 +2697,16 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
                 LigerRMSNormForGlm4.forward
             )
         if decoder_layer.mlp.experts is not None:
-            for expert in decoder_layer.mlp.experts:
-                assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            # Handle both transformers v4 and v5 architecture
+            # v4: decoder_layer.mlp.experts is a ModuleList (iterable)
+            # v5: decoder_layer.mlp.experts is a single fused module (not iterable)
+            try:
+                # Try to iterate - works for v4 ModuleList
+                for expert in decoder_layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            except TypeError:
+                # v5: experts is not iterable, check it directly
+                assert inspect.getsource(decoder_layer.mlp.experts.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             if decoder_layer.mlp.shared_experts is not None:
                 assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) != inspect.getsource(
                     LigerSwiGLUMLP.forward
@@ -2741,8 +2741,16 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
                     LigerRMSNormForGlm4.forward
                 )
             if getattr(decoder_layer.mlp, "experts", None) is not None:
-                for expert in decoder_layer.mlp.experts:
-                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+                # Handle both transformers v4 and v5 architecture
+                # v4: decoder_layer.mlp.experts is a ModuleList (iterable)
+                # v5: decoder_layer.mlp.experts is a single fused module (not iterable)
+                try:
+                    # Try to iterate - works for v4 ModuleList
+                    for expert in decoder_layer.mlp.experts:
+                        assert inspect.getsource(expert.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+                except TypeError:
+                    # v5: experts is not iterable, check it directly
+                    assert inspect.getsource(decoder_layer.mlp.experts.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             if getattr(decoder_layer.mlp, "shared_experts", None) is not None:
                 assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) == inspect.getsource(
                     LigerSwiGLUMLP.forward
@@ -2891,8 +2899,18 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_moe():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(hunyuan_v1_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            for mlp_expert in layer.mlp.experts:
-                assert inspect.getsource(mlp_expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            # Handle both transformers v4 and v5 architecture
+            # v4: layer.mlp.experts is a ModuleList (iterable)
+            # v5: layer.mlp.experts is a single HunYuanMoEV1Experts module (not iterable)
+            experts = getattr(layer.mlp, "experts", None)
+            if experts is not None:
+                try:
+                    # Try to iterate - works for v4 ModuleList
+                    for mlp_expert in experts:
+                        assert inspect.getsource(mlp_expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+                except TypeError:
+                    # v5: experts is not iterable, check it directly
+                    assert inspect.getsource(experts.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 

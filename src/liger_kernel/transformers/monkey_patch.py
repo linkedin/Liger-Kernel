@@ -797,8 +797,16 @@ def apply_liger_kernel_to_mixtral(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                for expert in decoder_layer.block_sparse_moe.experts:
-                    _patch_swiglu_module(expert, LigerBlockSparseTop2MLP)
+                # Handle both transformers v4 and v5 architecture
+                # v4: decoder_layer.block_sparse_moe.experts (ModuleList)
+                # v5: decoder_layer.mlp.experts (single MixtralExperts module)
+                if hasattr(decoder_layer, "block_sparse_moe"):
+                    # Transformers v4: experts is a ModuleList, patch each expert
+                    for expert in decoder_layer.block_sparse_moe.experts:
+                        _patch_swiglu_module(expert, LigerBlockSparseTop2MLP)
+                elif hasattr(decoder_layer, "mlp") and hasattr(decoder_layer.mlp, "experts"):
+                    # Transformers v5: experts is a single fused module
+                    _patch_swiglu_module(decoder_layer.mlp.experts, LigerBlockSparseTop2MLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -1452,8 +1460,18 @@ def apply_liger_kernel_to_qwen3_moe(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                for mlp_expert in decoder_layer.mlp.experts:
-                    _patch_swiglu_module(mlp_expert, LigerQwen3MoeSwiGLUMLP)
+                # Handle both transformers v4 and v5 architecture
+                # v4: decoder_layer.mlp.experts is a ModuleList (iterable)
+                # v5: decoder_layer.mlp.experts is a single Qwen3MoeExperts module (not iterable)
+                experts = getattr(decoder_layer.mlp, "experts", None)
+                if experts is not None:
+                    # Try to iterate - works for v4 ModuleList
+                    try:
+                        for mlp_expert in experts:
+                            _patch_swiglu_module(mlp_expert, LigerQwen3MoeSwiGLUMLP)
+                    except TypeError:
+                        # v5: experts is not iterable, patch it directly
+                        _patch_swiglu_module(experts, LigerQwen3MoeSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -2322,8 +2340,16 @@ def apply_liger_kernel_to_glm4v_moe(
         if isinstance(Glm4vMoeTextMoE, type) and isinstance(decoder_layer.mlp, Glm4vMoeTextMoE):
             experts = getattr(decoder_layer.mlp, "experts", None)
             if experts is not None:
-                for expert in experts:
-                    _patch_swiglu_module(expert, LigerSwiGLUMLP)
+                # Handle both transformers v4 and v5 architecture
+                # v4: decoder_layer.mlp.experts is a ModuleList (iterable)
+                # v5: decoder_layer.mlp.experts is a single fused module (not iterable)
+                try:
+                    # Try to iterate - works for v4 ModuleList
+                    for expert in experts:
+                        _patch_swiglu_module(expert, LigerSwiGLUMLP)
+                except TypeError:
+                    # v5: experts is not iterable, patch it directly
+                    _patch_swiglu_module(experts, LigerSwiGLUMLP)
             if decoder_layer.mlp.shared_experts is not None:
                 _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
             for decoder_layer in text_model.layers:
@@ -2814,8 +2840,18 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                for mlp_expert in decoder_layer.mlp.experts:
-                    _patch_swiglu_module(mlp_expert, LigerHunyuanV1SwiGLUMLP)
+                # Handle both transformers v4 and v5 architecture
+                # v4: decoder_layer.mlp.experts is a ModuleList (iterable)
+                # v5: decoder_layer.mlp.experts is a single fused module (not iterable)
+                experts = getattr(decoder_layer.mlp, "experts", None)
+                if experts is not None:
+                    # Try to iterate - works for v4 ModuleList
+                    try:
+                        for mlp_expert in experts:
+                            _patch_swiglu_module(mlp_expert, LigerHunyuanV1SwiGLUMLP)
+                    except TypeError:
+                        # v5: experts is not iterable, patch it directly
+                        _patch_swiglu_module(experts, LigerHunyuanV1SwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
