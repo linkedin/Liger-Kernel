@@ -1,0 +1,7 @@
+{"global_bs": 8, "micro_bs": 2, "micro_micro_bs": 1, "seq_len": 256, "loss": "my", "time(s)": 2.747136116027832, "sample/s": 2.91, "memory(G)": 3.21}
+{"global_bs": 8, "micro_bs": 2, "micro_micro_bs": 1, "seq_len": 256, "loss": "liger", "time(s)": 48.81987404823303, "sample/s": 0.16, "memory(G)": 3.53}
+{"global_bs": 8, "micro_bs": 2, "micro_micro_bs": 1, "seq_len": 2048, "loss": "my", "time(s)": 1.8485593795776367, "sample/s": 4.33, "memory(G)": 5.84}
+{"global_bs": 8, "micro_bs": 2, "micro_micro_bs": 1, "seq_len": 2048, "loss": "liger", "time(s)": 48.22935509681702, "sample/s": 0.17, "memory(G)": 7.71}
+{"global_bs": 8, "micro_bs": 2, "micro_micro_bs": 1, "seq_len": 2048, "loss": "my", "time(s)": 1.0892491340637207, "sample/s": 7.34, "memory(G)": 0.58}
+{"global_bs": 8, "micro_bs": 2, "micro_micro_bs": 1, "seq_len": 2048, "loss": "liger", "time(s)": 0.42700982093811035, "sample/s": 18.73, "memory(G)": 1.83}
+{"global_bs": 8, "micro_bs": 2, "micro_micro_bs": 1, "seq_len": 2048, "loss": "liger", "time(s)": 0.440976619720459, "sample/s": 18.14, "memory(G)": 1.42}

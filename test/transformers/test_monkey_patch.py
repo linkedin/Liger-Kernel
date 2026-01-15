@@ -1834,6 +1834,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.qwen3_moe.modeling_qwen3_moe"):
         from liger_kernel.transformers.model.qwen3_moe import lce_forward as qwen3_moe_lce_forward
+        from liger_kernel.transformers.model.qwen3_moe import liger_qwen3_moe_experts_forward
 
         # Instantiate a dummy model
         config = transformers.models.qwen3_moe.configuration_qwen3_moe.Qwen3MoeConfig(
@@ -1850,7 +1851,10 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            if hasattr(layer.mlp, "experts"):
+                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(liger_qwen3_moe_experts_forward)
+            else:
+                assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
@@ -1861,20 +1865,10 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            # Handle both transformers v4 and v5 architecture
-            # v4: layer.mlp.experts is a ModuleList (iterable)
-            # v5: layer.mlp.experts is a single Qwen3MoeExperts module (not iterable)
-            experts = getattr(layer.mlp, "experts", None)
-            if experts is not None:
-                try:
-                    # Try to iterate - works for v4 ModuleList
-                    for mlp_expert in experts:
-                        assert inspect.getsource(mlp_expert.forward) == inspect.getsource(
-                            LigerQwen3MoeSwiGLUMLP.forward
-                        )
-                except TypeError:
-                    # v5: experts is not iterable, check it directly
-                    assert inspect.getsource(experts.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            if hasattr(layer.mlp, "experts"):
+                assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(liger_qwen3_moe_experts_forward)
+            else:
+                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 

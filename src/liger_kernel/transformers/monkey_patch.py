@@ -1433,6 +1433,7 @@ def apply_liger_kernel_to_qwen3_moe(
     from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeModel
 
     from liger_kernel.transformers.model.qwen3_moe import lce_forward as qwen3_lce_forward
+    from liger_kernel.transformers.model.qwen3_moe import liger_qwen3_moe_experts_forward
     from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
 
     if rope:
@@ -1454,6 +1455,7 @@ def apply_liger_kernel_to_qwen3_moe(
 
     if swiglu:
         modeling_qwen3_moe.Qwen3MoeMLP = LigerQwen3MoeSwiGLUMLP
+        modeling_qwen3_moe.Qwen3MoeExperts.forward = liger_qwen3_moe_experts_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -1466,18 +1468,11 @@ def apply_liger_kernel_to_qwen3_moe(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                # Handle both transformers v4 and v5 architecture
-                # v4: decoder_layer.mlp.experts is a ModuleList (iterable)
-                # v5: decoder_layer.mlp.experts is a single Qwen3MoeExperts module (not iterable)
-                experts = getattr(decoder_layer.mlp, "experts", None)
-                if experts is not None:
-                    # Try to iterate - works for v4 ModuleList
-                    try:
-                        for mlp_expert in experts:
-                            _patch_swiglu_module(mlp_expert, LigerQwen3MoeSwiGLUMLP)
-                    except TypeError:
-                        # v5: experts is not iterable, patch it directly
-                        _patch_swiglu_module(experts, LigerQwen3MoeSwiGLUMLP)
+                mlp = decoder_layer.mlp
+                if hasattr(mlp, "experts"):
+                    _patch_qwen3_moe_experts_module(mlp.experts, liger_qwen3_moe_experts_forward)
+                else:
+                    _patch_swiglu_module(mlp, LigerQwen3MoeSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)

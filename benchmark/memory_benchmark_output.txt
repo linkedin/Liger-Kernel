@@ -1,0 +1,34 @@
+Running memory benchmarks for GRPO...
+
+Batch size 2...
+  Liger: 288.03 MB
+  PyTorch: 364.02 MB
+  Triton: 160.23 MB
+
+Batch size 4...
+  Liger: 344.05 MB
+  PyTorch: 504.03 MB
+  Triton: 256.45 MB
+
+Batch size 8...
+  Liger: 392.10 MB
+  PyTorch: 784.06 MB
+  Triton: 448.91 MB
+
+============================================================
+Creating visualizations...
+✓ Plot saved to grpo_memory_comparison.png
+✓ Plot saved to grpo_memory_efficiency.png
+
+Summary:
+Provider     B=2 (MB)     B=4 (MB)     B=8 (MB)    
+--------------------------------------------------
+torch        364.02       504.03       784.06      
+liger        288.03       344.05       392.10      
+triton       160.23       256.45       448.91      
+
+Memory Savings vs PyTorch:
+Provider     B=2          B=4          B=8         
+--------------------------------------------------
+liger              20.9%       31.7%       50.0%
+triton             56.0%       49.1%       42.7%

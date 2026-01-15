@@ -7,7 +7,6 @@ from typing import Union
 import torch
 
 from torch.nn import CrossEntropyLoss
-from transformers.cache_utils import Cache
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.utils.deprecation import deprecate_kwarg
 
@@ -24,7 +23,7 @@ def lce_forward_deprecated(
     input_ids: torch.LongTensor = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[Cache] = None,
+    past_key_values: Optional["HybridCache"] = None,
     inputs_embeds: Optional[torch.FloatTensor] = None,
     labels: Optional[torch.LongTensor] = None,
     use_cache: Optional[bool] = None,
@@ -149,7 +148,7 @@ def lce_forward(
     input_ids: torch.LongTensor = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[Cache] = None,
+    past_key_values: Optional["HybridCache"] = None,
     inputs_embeds: Optional[torch.FloatTensor] = None,
     labels: Optional[torch.LongTensor] = None,
     use_cache: Optional[bool] = None,
