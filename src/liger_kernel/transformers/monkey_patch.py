@@ -137,6 +137,12 @@ def _patch_geglu_module(module):
     _bind_method_to_module(module, "_get_name", lambda self: LigerGEGLUMLP.__name__)
 
 
+def _patch_qwen3_moe_experts_module(module, liger_forward: Callable):
+    """Patch the experts container to use Liger's fused activation path."""
+    _bind_method_to_module(module, "forward", liger_forward)
+    module.__class__.__name__ = "LigerMoEExperts"
+
+
 def apply_liger_kernel_to_granite(
     rope: bool = True,
     cross_entropy: bool = True,
@@ -2281,6 +2287,7 @@ def apply_liger_kernel_to_glm4v_moe(
     from transformers.models.glm4v_moe.modeling_glm4v_moe import Glm4vMoeVisionModel
 
     from liger_kernel.transformers.model.glm4v_moe import lce_forward as glm4v_moe_lce_forward
+    from liger_kernel.transformers.model.glm4v_moe import liger_glm4v_moe_experts_forward
     from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
 
     if rope:
@@ -2298,17 +2305,18 @@ def apply_liger_kernel_to_glm4v_moe(
         else:
             modeling_glm4v_moe.Glm4vMoeForConditionalGeneration.forward = glm4v_moe_lce_forward
 
+    if swiglu:
+        modeling_glm4v_moe.Glm4vMoeTextNaiveMoe.forward = liger_glm4v_moe_experts_forward
+
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
         if isinstance(model, Glm4vMoeForConditionalGeneration):
             text_model: Glm4vMoeTextModel = model.model.language_model
             vision_model: Glm4vMoeVisionModel = model.model.visual
-            Glm4vMoeTextMoE = modeling_glm4v_moe.Glm4vMoeTextMoE
         elif isinstance(model, Glm4vMoeModel):
             text_model: Glm4vMoeTextModel = model.language_model
             vision_model: Glm4vMoeVisionModel = model.visual
-            Glm4vMoeTextMoE = modeling_glm4v_moe.Glm4vMoeTextMoE
         elif isinstance(model, Glm4vMoeTextModel):
             text_model: Glm4vMoeTextModel = model
             vision_model = None
@@ -2333,26 +2341,18 @@ def apply_liger_kernel_to_glm4v_moe(
                 _patch_rms_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
                 if swiglu:
-                    decoder_layer.mlp = _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
-                if rms_norm:
-                    _patch_rms_norm_module(decoder_layer.input_layernorm)
-                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-        if isinstance(Glm4vMoeTextMoE, type) and isinstance(decoder_layer.mlp, Glm4vMoeTextMoE):
-            experts = getattr(decoder_layer.mlp, "experts", None)
-            if experts is not None:
-                # Handle both transformers v4 and v5 architecture
-                # v4: decoder_layer.mlp.experts is a ModuleList (iterable)
-                # v5: decoder_layer.mlp.experts is a single fused module (not iterable)
-                try:
-                    # Try to iterate - works for v4 ModuleList
-                    for expert in experts:
-                        _patch_swiglu_module(expert, LigerSwiGLUMLP)
-                except TypeError:
-                    # v5: experts is not iterable, patch it directly
-                    _patch_swiglu_module(experts, LigerSwiGLUMLP)
-            if decoder_layer.mlp.shared_experts is not None:
-                _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
-            for decoder_layer in text_model.layers:
+                    # Check if this layer has a MoE MLP by checking for experts attribute
+                    if hasattr(decoder_layer.mlp, "experts") and decoder_layer.mlp.experts is not None:
+                        # This is a MoE layer, patch the experts
+                        _patch_qwen3_moe_experts_module(decoder_layer.mlp.experts, liger_glm4v_moe_experts_forward)
+                        if (
+                            hasattr(decoder_layer.mlp, "shared_experts")
+                            and decoder_layer.mlp.shared_experts is not None
+                        ):
+                            _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
+                    else:
+                        # This is a dense layer, patch the whole MLP
+                        _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -2807,6 +2807,7 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
     from transformers.models.hunyuan_v1_moe.modeling_hunyuan_v1_moe import HunYuanMoEV1Model
 
     from liger_kernel.transformers.model.hunyuan_v1 import lce_forward as hunyuan_v1_moe_lce_forward
+    from liger_kernel.transformers.model.hunyuan_v1 import liger_hunyuan_v1_moe_experts_forward
     from liger_kernel.transformers.swiglu import LigerHunyuanV1SwiGLUMLP
 
     if rope:
@@ -2828,6 +2829,7 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
 
     if swiglu:
         modeling_hunyuan_v1_moe.HunYuanMoEV1MLP = LigerHunyuanV1SwiGLUMLP
+        modeling_hunyuan_v1_moe.HunYuanMoEV1Experts.forward = liger_hunyuan_v1_moe_experts_forward
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -2840,18 +2842,11 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                # Handle both transformers v4 and v5 architecture
-                # v4: decoder_layer.mlp.experts is a ModuleList (iterable)
-                # v5: decoder_layer.mlp.experts is a single fused module (not iterable)
-                experts = getattr(decoder_layer.mlp, "experts", None)
-                if experts is not None:
-                    # Try to iterate - works for v4 ModuleList
-                    try:
-                        for mlp_expert in experts:
-                            _patch_swiglu_module(mlp_expert, LigerHunyuanV1SwiGLUMLP)
-                    except TypeError:
-                        # v5: experts is not iterable, patch it directly
-                        _patch_swiglu_module(experts, LigerHunyuanV1SwiGLUMLP)
+                mlp = decoder_layer.mlp
+                if hasattr(mlp, "experts"):
+                    _patch_qwen3_moe_experts_module(mlp.experts, liger_hunyuan_v1_moe_experts_forward)
+                else:
+                    _patch_swiglu_module(mlp, LigerHunyuanV1SwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)

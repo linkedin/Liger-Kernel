@@ -3,12 +3,57 @@ from typing import Tuple
 from typing import Union
 
 import torch
+import torch.nn.functional as F
 
 from transformers.utils.deprecation import deprecate_kwarg
 
+from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
 from liger_kernel.transformers.model.output_classes import LigerGlm4vMoeCausalLMOutputWithPast
+
+
+def _get_activation_name(act_fn) -> str:
+    """Best effort name resolution for activation callables used in experts."""
+    if hasattr(act_fn, "__name__"):
+        return act_fn.__name__.lower()
+    return act_fn.__class__.__name__.lower()
+
+
+def liger_glm4v_moe_experts_forward(
+    self, hidden_states: torch.Tensor, top_k_index: torch.Tensor, top_k_weights: torch.Tensor
+) -> torch.Tensor:
+    """
+    Drop-in replacement for Glm4vMoeTextExperts.forward that uses Liger's fused SiLU*mul when applicable.
+    Mirrors the latest upstream implementation but swaps the activation for speed.
+    """
+    final_hidden_states = torch.zeros_like(hidden_states)
+    with torch.no_grad():
+        expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts)
+        expert_mask = expert_mask.permute(2, 1, 0)
+        expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+    act_name = _get_activation_name(getattr(self, "act_fn", None))
+    use_liger_act = act_name in {"silu", "swish", "swishactivation", "siluactivation"}
+
+    for expert_idx in expert_hit:
+        expert_idx = expert_idx[0]
+        if expert_idx == self.num_experts:
+            continue
+        top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+        if top_k_pos.numel() == 0:
+            continue
+        current_state = hidden_states[token_idx]
+        gate, up = F.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)
+        if use_liger_act:
+            current_hidden_states = LigerSiLUMulFunction.apply(gate, up)
+        else:
+            current_hidden_states = self.act_fn(gate) * up
+        current_hidden_states = F.linear(current_hidden_states, self.down_proj[expert_idx])
+        current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
+        final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+
+    return final_hidden_states
 
 
 @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
