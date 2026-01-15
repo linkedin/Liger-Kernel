@@ -8,6 +8,7 @@ import triton.language as tl
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import set_large_grf_mode
 from liger_kernel.ops.utils import torch_to_triton_dtype
 from liger_kernel.utils import get_npu_multi_processor_count
 from liger_kernel.utils import is_npu_available
@@ -247,7 +248,7 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
     # XPU-specific optimization
     kernel_args = {}
     if X.device.type == "xpu":
-        kernel_args["grf_mode"] = "large"
+        set_large_grf_mode(kernel_args)
 
     # TODO: add _block_fused_add_rms_norm_forward_kernel
     _fused_add_rms_norm_forward_kernel[(n_rows,)](
@@ -307,7 +308,7 @@ def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BL
     # XPU-specific optimization
     kernel_args = {}
     if S.device.type == "xpu":
-        kernel_args["grf_mode"] = "large"
+        set_large_grf_mode(kernel_args)
 
     # TODO: add _block_fused_add_rms_norm_backward_kernel
     _fused_add_rms_norm_backward_kernel[grid](
