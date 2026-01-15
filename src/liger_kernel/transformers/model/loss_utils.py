@@ -1,3 +1,5 @@
+import inspect
+
 from typing import Optional
 from typing import Tuple
 
@@ -71,6 +73,10 @@ def LigerForCausalLMLoss(
     return_token_accuracy: bool = False,
     **kwargs,
 ):
+    accept_params = inspect.signature(LigerForCausalLMLoss).parameters
+    remain_params = set(kwargs) - (set(accept_params) & set(kwargs))
+    kwargs = {k: v for k, v in kwargs.items() if k not in remain_params}
+
     # Skip upcast since intermediate values for the loss are all fp32 in kernel
     if shift_labels is None:
         # Shift so that token < n predict n
