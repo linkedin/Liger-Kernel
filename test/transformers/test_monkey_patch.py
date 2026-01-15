@@ -1852,7 +1852,9 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             if hasattr(layer.mlp, "experts"):
-                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(liger_qwen3_moe_experts_forward)
+                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(
+                    liger_qwen3_moe_experts_forward
+                )
             else:
                 assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
@@ -1866,7 +1868,9 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             if hasattr(layer.mlp, "experts"):
-                assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(liger_qwen3_moe_experts_forward)
+                assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(
+                    liger_qwen3_moe_experts_forward
+                )
             else:
                 assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)

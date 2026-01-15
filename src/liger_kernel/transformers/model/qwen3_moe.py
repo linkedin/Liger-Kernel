@@ -8,10 +8,10 @@ import torch.nn.functional as F
 from transformers.modeling_outputs import MoeModelOutputWithPast
 from transformers.models.mixtral.modeling_mixtral import load_balancing_loss_func
 
+from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
 from liger_kernel.transformers.model.output_classes import LigerMoeCausalLMOutputWithPast
-from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 
 
 def _get_activation_name(act_fn) -> str:
