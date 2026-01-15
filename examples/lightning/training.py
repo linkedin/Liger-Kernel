@@ -34,6 +34,7 @@ class Args:
     data: str = "cais/mmlu"
     output_dir: str = "mmlu_finetuning"
     max_length: int = 2048
+    # for llam3 8B model, deepspeed will OOM with 16 on 8XA100 80G and 8 will OOM with 8XA100 40G
     batch_size: int = 4
     lr: float = 6e-6
     weight_decay: float = 0.05
@@ -70,6 +71,7 @@ class LanguageModel(pl.LightningModule):
         self.model = None
 
     def configure_model(self):
+          # https://lightning.ai/docs/pytorch/stable/advanced/model_parallel/fsdp.html#speed-up-model-initialization
         if self.model is not None:
             return
         self.model = AutoLigerKernelForCausalLM.from_pretrained(
