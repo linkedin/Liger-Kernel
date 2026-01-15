@@ -140,20 +140,19 @@ def _poly_norm_backward_kernel(
     w1 = tl.load(W_ptr + 1).to(tl.float32)
     w2 = tl.load(W_ptr + 2).to(tl.float32)
 
-    dY_ptr += row_start * dY_row_stride
-    dX_ptr += row_start * dX_row_stride
-    X_ptr += row_start * X_row_stride
-    RSTD_ptr += row_start * RSTD_row_stride
+    for row_idx in range(row_start, row_end):
+        dy_base = dY_ptr + row_idx * dY_row_stride
+        x_base = X_ptr + row_idx * X_row_stride
+        dx_base = dX_ptr + row_idx * dX_row_stride
+        r_base = RSTD_ptr + row_idx * RSTD_row_stride
 
-    for _ in range(row_start, row_end):
-        # Load input and gradient
-        dY_row = tl.load(dY_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
-        X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
+        dY_row = tl.load(dy_base + col_offsets, mask=mask, other=0.0).to(tl.float32)
+        X_row = tl.load(x_base + col_offsets, mask=mask, other=0.0).to(tl.float32)
 
         # Load cached rstd values
-        rstd_3 = tl.load(RSTD_ptr + 0).to(tl.float32)
-        rstd_2 = tl.load(RSTD_ptr + 1).to(tl.float32)
-        rstd_1 = tl.load(RSTD_ptr + 2).to(tl.float32)
+        rstd_3 = tl.load(r_base + 0).to(tl.float32)
+        rstd_2 = tl.load(r_base + 1).to(tl.float32)
+        rstd_1 = tl.load(r_base + 2).to(tl.float32)
 
         # Compute powers
         X_pow3 = X_row * X_row * X_row
@@ -190,13 +189,7 @@ def _poly_norm_backward_kernel(
         dX_row = grad_x_3 + grad_x_2 + grad_x_1
 
         # Store gradient
-        tl.store(dX_ptr + col_offsets, dX_row, mask=mask)
-
-        # Update pointers
-        dY_ptr += dY_row_stride
-        dX_ptr += dX_row_stride
-        X_ptr += X_row_stride
-        RSTD_ptr += RSTD_row_stride
+        tl.store(dx_base + col_offsets, dX_row, mask=mask)
 
     # Store accumulated gradients (scalars)
     tl.store(dW_ptr + row_block_id * dW_row_stride + 0, dW0_acc)
