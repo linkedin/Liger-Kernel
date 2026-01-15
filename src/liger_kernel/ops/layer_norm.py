@@ -270,6 +270,7 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     kernel_args = {"num_warps": num_warps}
     # XPU-specific optimization
     if X.device.type == "xpu":
+        kernel_args.update({"num_warps": 32, "num_stages": 4})
         set_large_grf_mode(kernel_args)
 
     # Launch kernel with one thread block per row for optimal performance
