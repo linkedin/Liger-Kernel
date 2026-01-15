@@ -1,10 +1,9 @@
-import inspect
-
 from typing import Optional
 from typing import Tuple
 from typing import Union
 
 import torch
+import torch.nn as nn
 
 from transformers.cache_utils import Cache
 from transformers.utils import logging
@@ -240,10 +239,6 @@ def multimodal_forward(
     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
     kept_hidden_states = hidden_states[:, slice_indices, :]
 
-    accept_params = inspect.signature(LigerForCausalLMLoss).parameters
-    remain_params = set(lm_kwargs) - (set(accept_params) & set(lm_kwargs))
-    loss_kwargs = {k: v for k, v in lm_kwargs.items() if k not in remain_params}
-
     loss = None
     logits = None
     token_accuracy = None
@@ -254,29 +249,91 @@ def multimodal_forward(
         skip_logits = self.training and (labels is not None)
 
     if skip_logits:
+        shift_hidden_states = kept_hidden_states[..., :-1, :]
+        shift_labels = labels[..., 1:]
+
+        hidden_device = shift_hidden_states.device
+        if attention_mask is not None:
+            # we use the input attention mask to shift the hidden_states and labels, because it is 2D.
+            # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
+            shift_attention_mask = attention_mask[:, -shift_hidden_states.shape[1] :].to(hidden_device)
+            shift_hidden_states = shift_hidden_states[shift_attention_mask.to(hidden_device) != 0].contiguous()
+            shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
+        else:
+            shift_hidden_states = shift_hidden_states.contiguous()
+            shift_labels = shift_labels.contiguous()
+
+        # Flatten hidden state
+        shift_hidden_states = shift_hidden_states.view(-1, self.config.text_config.hidden_size)
+        shift_labels = shift_labels.view(-1).to(hidden_device)
+
+        # Extract loss-related kwargs for LigerFusedLinearCrossEntropyLoss
+        lce_param_keys = {
+            "ce_weight",
+            "ignore_index",
+            "lse_square_scale",
+            "label_smoothing",
+            "reduction",
+            "softcap",
+            "return_z_loss",
+            "accum_dtype",
+            "use_token_scaling",
+            "return_token_accuracy",
+        }
+        lce_kwargs = {k: lm_kwargs.pop(k) for k in lce_param_keys if k in lm_kwargs}
+
         result = LigerForCausalLMLoss(
-            hidden_states=kept_hidden_states,
+            hidden_states=shift_hidden_states,
             lm_head_weight=self.lm_head.weight,
-            labels=labels,
-            vocab_size=self.config.vocab_size,
-            **loss_kwargs,
+            labels=shift_labels,
+            hidden_size=self.config.text_config.hidden_size,
+            shift_labels=shift_labels,
+            final_logit_softcapping=getattr(self.config.text_config, "final_logit_softcapping", None),
+            **lce_kwargs,
         )
         loss, _, token_accuracy = unpack_cross_entropy_result(result)
 
     else:
         logits = self.lm_head(kept_hidden_states)
-        if self.config.final_logit_softcapping is not None:
-            logits = logits / self.config.final_logit_softcapping
-            logits = torch.tanh(logits)
-            logits = logits * self.config.final_logit_softcapping
-        if labels is not None or shift_labels is not None:
-            loss = self.loss_function(
-                logits=logits,
-                labels=labels,
-                shift_labels=shift_labels,
-                vocab_size=self.vocab_size,
-                **loss_kwargs,
-            )
+        if labels is not None:
+            # Upcast to float if we need to compute the loss to avoid potential precision issues
+            logits = logits.float()
+            shift_logits = logits[..., :-1, :]
+            shift_labels = labels[..., 1:]
+            if attention_mask is not None:
+                # we use the input attention mask to shift the logits and labels, because it is 2D.
+                # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
+                shift_attention_mask = attention_mask[:, -shift_logits.shape[1] :].to(logits.device)
+                shift_logits = shift_logits[shift_attention_mask.to(logits.device) != 0].contiguous()
+                shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
+            else:
+                shift_logits = shift_logits.contiguous()
+                shift_labels = shift_labels.contiguous()
+            # Flatten the tokens
+            loss_fct = nn.CrossEntropyLoss()
+
+            flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
+            flat_labels = shift_labels.view(-1).to(shift_logits.device)
+            loss = loss_fct(flat_logits, flat_labels)
+        elif shift_labels is not None:
+            # Upcast to float if we need to compute the loss to avoid potential precision issues
+            logits = logits.float()
+            shift_logits = logits[..., :-1, :]
+            if attention_mask is not None:
+                # we use the input attention mask to shift the logits and labels, because it is 2D.
+                # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
+                shift_attention_mask = attention_mask[:, -shift_logits.shape[1] :].to(logits.device)
+                shift_logits = shift_logits[shift_attention_mask.to(logits.device) != 0].contiguous()
+                shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
+            else:
+                shift_logits = shift_logits.contiguous()
+                shift_labels = shift_labels.contiguous()
+            # Flatten the tokens
+            loss_fct = nn.CrossEntropyLoss()
+
+            flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
+            flat_labels = shift_labels.view(-1).to(shift_logits.device)
+            loss = loss_fct(flat_logits, flat_labels)
 
     if not return_dict:
         output = (logits,) + outputs[1:]
