@@ -73,7 +73,7 @@ def LigerForCausalLMLoss(
     return_token_accuracy: bool = False,
     **kwargs,
 ):
-	# Filter out inapplicable kwargs to liger_fused_linear_cross_entropy
+    # Filter out inapplicable kwargs to liger_fused_linear_cross_entropy
     applicable_params = inspect.signature(F.liger_fused_linear_cross_entropy).parameters
     kwargs = {k: v for k, v in kwargs.items() if k in applicable_params}
 
