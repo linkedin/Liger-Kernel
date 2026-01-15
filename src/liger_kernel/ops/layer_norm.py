@@ -8,6 +8,7 @@ import triton.language as tl
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.utils import get_npu_multi_processor_count
 from liger_kernel.utils import is_npu_available
 
 if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
@@ -124,14 +125,14 @@ def _layer_norm_backward_kernel(
     w = tl.load(W_ptr + cols, mask=mask, other=0.0)
     w_f32 = w.to(tl.float32)
 
-    # Calculate pointers for this specific row
-    row_X_ptr = X_ptr + row_start * stride_x
-    row_DX_ptr = DX_ptr + row_start * stride_dx
-    row_DY_ptr = DY_ptr + row_start * stride_dy
-    row_Mean_ptr = Mean_ptr + row_start
-    row_RSTD_ptr = RSTD_ptr + row_start
+    for row_idx in range(row_start, row_end):
+        # Calculate pointers for this specific row
+        row_X_ptr = X_ptr + row_idx * stride_x
+        row_DX_ptr = DX_ptr + row_idx * stride_dx
+        row_DY_ptr = DY_ptr + row_idx * stride_dy
+        row_Mean_ptr = Mean_ptr + row_idx * stride_mean
+        row_RSTD_ptr = RSTD_ptr + row_idx * stride_rstd
 
-    for _ in range(row_start, row_end):
         # Load data for this row
         x = tl.load(row_X_ptr + cols, mask=mask, other=0.0)
         dy = tl.load(row_DY_ptr + cols, mask=mask, other=0.0)
@@ -159,12 +160,6 @@ def _layer_norm_backward_kernel(
         db = dy_f32
         dW_row += dw
         db_row += db
-
-        row_X_ptr += stride_x
-        row_DX_ptr += stride_dx
-        row_DY_ptr += stride_dy
-        row_Mean_ptr += stride_mean
-        row_RSTD_ptr += stride_rstd
 
     tl.store(DW_ptr + row_block_id * stride_dw + cols, dW_row, mask=mask)
     tl.store(DB_ptr + row_block_id * stride_db + cols, db_row, mask=mask)
@@ -254,6 +249,8 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
     elif X.device.type == "xpu":
         sm_count = torch.xpu.get_device_properties(X.device).gpu_eu_count
+    elif X.device.type == "npu":
+        sm_count = get_npu_multi_processor_count()
 
     # fp32 for numerical stability especially.
     _DW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
@@ -301,6 +298,7 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     DX = DX.view(*shape)
     DW = _DW.sum(dim=0).to(W.dtype)
     DB = _DB.sum(dim=0).to(B.dtype)
+
     return DX, DW, DB
 
 
