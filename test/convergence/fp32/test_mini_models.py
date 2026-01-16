@@ -711,7 +711,14 @@ if GEMMA3_AVAILABLE:
             eos_token_id=1,
             tie_word_embeddings=True,
             rope_parameters=dict(
-                rope_theta=10000.0,
+                full_attention=dict(
+                    rope_theta=10000.0,
+                    rope_type="default",
+                ),
+                sliding_attention=dict(
+                    rope_theta=10000.0,
+                    rope_type="default",
+                ),
             ),
             attention_bias=False,
             attention_dropout=0.0,
