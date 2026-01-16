@@ -1138,10 +1138,10 @@ if GLM4V_AVAILABLE:
                 "num_hidden_layers": 4,
                 "num_key_value_heads": 2,
                 "rms_norm_eps": 1e-5,
-                "rope_parameters": {
-                    "rope_theta": 500_000,
-                    "mrope_section": [8, 12, 12],  # (temporal, height, width)
-                },
+                "rope_parameters": dict(
+                    rope_theta=500_000,
+                    mrope_section=[8, 12, 12],  # (temporal, height, width)
+                ),
                 "vocab_size": 32000,
                 "attention_bias": True,
             },
@@ -1202,10 +1202,10 @@ if GLM4V_MOE_AVAILABLE:
                 "num_hidden_layers": 4,
                 "num_key_value_heads": 2,
                 "rms_norm_eps": 1e-5,
-                "rope_parameters": {
-                    "rope_theta": 500_000,
-                    "mrope_section": [8, 12, 12],  # (temporal, height, width)
-                },
+                "rope_parameters": dict(
+                    rope_theta=500_000,
+                    mrope_section=[8, 12, 12],  # (temporal, height, width)
+                ),
                 "vocab_size": 32000,
                 "attention_bias": True,
                 "attention_dropout": 0.0,
@@ -1506,7 +1506,9 @@ if EXAONE4_AVAILABLE:
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_theta=1000000.0,
+            rope_parameters=dict(
+                rope_theta=1000000.0,
+            ),
             tie_word_embeddings=True,
             use_cache=True,
             vocab_size=32000,

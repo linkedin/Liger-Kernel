@@ -9,7 +9,7 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
-from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
+from transformers.models.gemma.tokenization_gemma import GemmaTokenizer
 from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3
@@ -54,7 +54,7 @@ try:
     import transformers
 
     from packaging import version
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
@@ -70,7 +70,7 @@ try:
     import transformers
 
     from packaging import version
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
     from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
     from transformers.models.qwen2_5_vl.processing_qwen2_5_vl import Qwen2_5_VLProcessor
@@ -83,7 +83,7 @@ except ImportError:
 
 
 try:
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
@@ -108,7 +108,7 @@ except ImportError:
     QWEN3_VL_MOE_AVAILABLE = False
 
 try:
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
@@ -214,7 +214,7 @@ except ImportError:
 
 try:
     # SmolVLM2 is only available in transformers>=4.50.0
-    from transformers.models.gpt2.tokenization_gpt2_fast import GPT2TokenizerFast
+    from transformers.models.gpt2.tokenization_gpt2 import GPT2Tokenizer
     from transformers.models.smolvlm.configuration_smolvlm import SmolVLMConfig
     from transformers.models.smolvlm.image_processing_smolvlm import SmolVLMImageProcessor
     from transformers.models.smolvlm.modeling_smolvlm import SmolVLMForConditionalGeneration
@@ -886,9 +886,8 @@ if QWEN3_VL_AVAILABLE:
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
+                rope_parameters=dict(
+                    rope_theta=1000000.0,
                     mrope_section=[16, 24, 24],
                 ),
                 attention_dropout=0.0,
@@ -938,9 +937,8 @@ if QWEN3_VL_MOE_AVAILABLE:
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
+                rope_parameters=dict(
+                    rope_theta=1000000.0,
                     mrope_section=[16, 24, 24],
                 ),
                 attention_dropout=0.0,
@@ -969,7 +967,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        qwen_tokenizer = Qwen2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor()
         video_processor = Qwen2VLVideoProcessor()
         return Qwen2VLProcessor(
@@ -991,7 +989,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        qwen_tokenizer = Qwen2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor()
         video_processor = Qwen2VLVideoProcessor()
         return Qwen2_5_VLProcessor(
@@ -1013,7 +1011,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        qwen_tokenizer = Qwen2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor(patch_size=16, temporal_patch_size=2, merge_size=2)
         video_processor = Qwen3VLVideoProcessor()
         return Qwen3VLProcessor(
@@ -1070,7 +1068,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        qwen_tokenizer = Qwen2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = GotOcr2ImageProcessorFast(
             crop_to_patches=False, min_patches=1, max_patches=12, size={"height": 448, "width": 448}
         )
@@ -1094,7 +1092,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        gpt2_tokenizer = GPT2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        gpt2_tokenizer = GPT2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = SmolVLMImageProcessor(size={"longest_edge": 512})
         video_processor = SmolVLMVideoProcessor()
 
@@ -1164,7 +1162,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        fast_tokenizer = GemmaTokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = SiglipImageProcessor(size={"height": 224, "width": 224}, image_seq_length=256)
         return PaliGemmaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
 
@@ -1184,7 +1182,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        fast_tokenizer = GemmaTokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Gemma3ImageProcessor()
         return Gemma3Processor(image_processor=image_processor, tokenizer=fast_tokenizer)
 

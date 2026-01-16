@@ -345,7 +345,9 @@ MINI_MODEL_SETUPS = {
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-6,
-            rope_theta=1000000.0,
+            rope_parameters=dict(
+                rope_theta=1000000.0,
+            ),
             sliding_window=131072,
             tie_word_embeddings=True,
             use_cache=True,
@@ -374,7 +376,9 @@ MINI_MODEL_SETUPS = {
             num_hidden_layers=4,  # 32
             num_key_value_heads=None,  # defaults to num_attention_heads
             rms_norm_eps=1e-5,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             sliding_window=None,
             tie_word_embeddings=False,
             use_cache=True,
@@ -399,7 +403,9 @@ MINI_MODEL_SETUPS = {
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             sliding_window=4096,
             tie_word_embeddings=False,
             use_cache=True,
@@ -424,7 +430,9 @@ MINI_MODEL_SETUPS = {
             num_hidden_layers=4,  # 32
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-5,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             sliding_window=4096,
             tie_word_embeddings=False,
             use_cache=True,
@@ -459,7 +467,9 @@ MINI_MODEL_SETUPS = {
             bos_token_id=1,  # 128000
             eos_token_id=2,  # 128001
             tie_word_embeddings=True,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             attention_bias=False,
             attention_dropout=0.0,
         ),
@@ -487,7 +497,9 @@ MINI_MODEL_SETUPS = {
             bos_token_id=1,  # 128000
             eos_token_id=2,  # 128001
             tie_word_embeddings=True,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             attention_bias=False,
             attention_dropout=0.0,
         ),
@@ -515,7 +527,9 @@ MINI_MODEL_SETUPS = {
             bos_token_id=1,  # 128000
             eos_token_id=2,  # 128001
             tie_word_embeddings=True,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             attention_bias=False,
             attention_dropout=0.0,
             attn_implementation="eager",
@@ -573,7 +587,9 @@ if QWEN3_AVAILABLE:
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-6,
-            rope_theta=1000000.0,
+            rope_parameters=dict(
+                rope_theta=1000000.0,
+            ),
             sliding_window=131072,
             tie_word_embeddings=True,
             use_cache=True,
@@ -1384,7 +1400,9 @@ if HUNYUAN_V1_AVAILABLE:
             initializer_range=0.02,
             norm_eps=1e-6,
             num_key_value_heads=2,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             partial_rotary_factor=1.0,
             vocab_size=32000,
             use_cache=True,
@@ -1444,7 +1462,9 @@ if EXAONE4_AVAILABLE:
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_theta=1000000.0,
+            rope_parameters=dict(
+                rope_theta=1000000.0,
+            ),
             tie_word_embeddings=True,
             use_cache=True,
             vocab_size=32000,

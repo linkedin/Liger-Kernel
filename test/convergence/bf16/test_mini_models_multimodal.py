@@ -268,7 +268,9 @@ if LLAMA4_AVAILABLE:
                 num_hidden_layers=4,  # 40
                 num_key_value_heads=2,  # 8
                 rms_norm_eps=1e-5,
-                rope_theta=500_000,
+                rope_parameters=dict(
+                    rope_theta=500_000,
+                ),
                 tie_word_embeddings=False,
                 use_cache=True,
                 vocab_size=32000,  # 128256,
@@ -321,8 +323,8 @@ if MLLAMA_AVAILABLE:
                     low_freq_factor=1.0,
                     original_max_position_embeddings=8192,
                     rope_type="llama3",
+                    rope_theta=500_000,
                 ),
-                rope_theta=500_000,
                 tie_word_embeddings=False,
                 use_cache=True,
                 vocab_size=32000,  # 128256,
@@ -372,7 +374,9 @@ if PALIGEMMA_AVAILABLE:
                 bos_token_id=1,  # 128000
                 eos_token_id=2,  # 128001
                 tie_word_embeddings=True,
-                rope_theta=10000.0,
+                rope_parameters=dict(
+                    rope_theta=10000.0,
+                ),
                 attention_bias=False,
                 attention_dropout=0.0,
             ),
@@ -421,7 +425,9 @@ if PALIGEMMA_AVAILABLE:
                 bos_token_id=1,  # 128000
                 eos_token_id=2,  # 128001
                 tie_word_embeddings=True,
-                rope_theta=10000.0,
+                rope_parameters=dict(
+                    rope_theta=10000.0,
+                ),
                 attention_bias=False,
                 attention_dropout=0.0,
             ),
@@ -466,7 +472,9 @@ if GEMMA3_AVAILABLE:
                 rms_norm_eps=1e-06,
                 use_cache=True,
                 tie_word_embeddings=True,
-                rope_theta=10000.0,
+                rope_parameters=dict(
+                    rope_theta=10000.0,
+                ),
                 attention_bias=False,
                 attention_dropout=0.0,
             ).to_dict(),
@@ -637,7 +645,9 @@ if SMOLVLM2_AVAILABLE:
                 num_hidden_layers=4,  # 30 -> reduced to 4 for testing
                 num_key_value_heads=3,  # 3 for 256M model
                 rms_norm_eps=1e-5,
-                rope_theta=100000,
+                rope_parameters=dict(
+                    rope_theta=100000,
+                ),
                 tie_word_embeddings=False,
                 vocab_size=49280,
             ),
