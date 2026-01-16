@@ -46,7 +46,7 @@ def infer_device():
     if torch.cuda.is_available():  # Works for both Nvidia and AMD
         return "cuda"
     # Use Ascend NPU if available (torch.npu)
-    elif is_npu_available():
+    elif torch.npu.is_available() or is_npu_available():
         return "npu"
     # XPU (Intel) if available
     elif torch.xpu.is_available():
