@@ -315,8 +315,9 @@ MINI_MODEL_SETUPS = {
             num_key_value_heads=2,  # 8
             pretraining_tp=1,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500000.0,
+            rope_parameters=dict(
+                rope_theta=500000.0,
+            ),
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 128256,
@@ -344,7 +345,9 @@ MINI_MODEL_SETUPS = {
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-6,
-            rope_theta=1000000.0,
+            rope_parameters=dict(
+                rope_theta=1000000.0,
+            ),
             sliding_window=131072,
             tie_word_embeddings=True,
             use_cache=True,
@@ -373,7 +376,9 @@ MINI_MODEL_SETUPS = {
             num_hidden_layers=4,  # 32
             num_key_value_heads=None,  # defaults to num_attention_heads
             rms_norm_eps=1e-5,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             sliding_window=None,
             tie_word_embeddings=False,
             use_cache=True,
@@ -398,7 +403,9 @@ MINI_MODEL_SETUPS = {
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             sliding_window=4096,
             tie_word_embeddings=False,
             use_cache=True,
@@ -423,7 +430,9 @@ MINI_MODEL_SETUPS = {
             num_hidden_layers=4,  # 32
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-5,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             sliding_window=4096,
             tie_word_embeddings=False,
             use_cache=True,
@@ -458,7 +467,9 @@ MINI_MODEL_SETUPS = {
             bos_token_id=1,  # 128000
             eos_token_id=2,  # 128001
             tie_word_embeddings=True,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             attention_bias=False,
             attention_dropout=0.0,
         ),
@@ -486,7 +497,9 @@ MINI_MODEL_SETUPS = {
             bos_token_id=1,  # 128000
             eos_token_id=2,  # 128001
             tie_word_embeddings=True,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             attention_bias=False,
             attention_dropout=0.0,
         ),
@@ -514,7 +527,9 @@ MINI_MODEL_SETUPS = {
             bos_token_id=1,  # 128000
             eos_token_id=2,  # 128001
             tie_word_embeddings=True,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             attention_bias=False,
             attention_dropout=0.0,
             attn_implementation="eager",
@@ -543,8 +558,9 @@ if LLAMA4_AVAILABLE:
             num_hidden_layers=4,  # 61
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 151552
@@ -571,7 +587,9 @@ if QWEN3_AVAILABLE:
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-6,
-            rope_theta=1000000.0,
+            rope_parameters=dict(
+                rope_theta=1000000.0,
+            ),
             sliding_window=131072,
             tie_word_embeddings=True,
             use_cache=True,
@@ -597,8 +615,9 @@ if QWEN3_AVAILABLE:
             rms_norm_eps=1e-6,
             use_cache=True,
             tie_word_embeddings=False,
-            rope_theta=10000.0,
-            rope_scaling=None,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             attention_bias=False,
             use_sliding_window=False,
             sliding_window=4096,
@@ -642,9 +661,8 @@ if QWEN3_VL_AVAILABLE:
                 num_key_value_heads=2,
                 pad_token_id=2,
                 rms_norm_eps=1e-6,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
+                rope_parameters=dict(
+                    rope_theta=1000000.0,
                     mrope_section=[16, 24, 24],
                 ),
                 sliding_window=131072,
@@ -697,9 +715,8 @@ if QWEN3_VL_MOE_AVAILABLE:
                 num_key_value_heads=2,
                 pad_token_id=2,
                 rms_norm_eps=1e-6,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
+                rope_parameters=dict(
+                    rope_theta=1000000.0,
                     mrope_section=[16, 24, 24],
                 ),
                 sliding_window=131072,
@@ -778,7 +795,7 @@ if MLLAMA_AVAILABLE:
             num_hidden_layers=4,  # 40
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-5,
-            rope_scaling=dict(
+            rope_parameters=dict(
                 factor=8.0,
                 high_freq_factor=4.0,
                 low_freq_factor=1.0,
@@ -819,9 +836,8 @@ if QWEN2_VL_AVAILABLE:
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-6,  # 1e-5
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
+            rope_parameters=dict(
+                rope_theta=1000000.0,
                 mrope_section=[16, 24, 24],  # (temporal, height, width)
             ),
             sliding_window=4096,
@@ -871,9 +887,8 @@ if QWEN2_5_VL_AVAILABLE:
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-6,  # 1e-5
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
+            rope_parameters=dict(
+                rope_theta=1000000.0,
                 mrope_section=[16, 24, 24],  # (temporal, height, width)
             ),
             sliding_window=4096,
@@ -923,8 +938,9 @@ if GRANITE_AVAILABLE:
             num_key_value_heads=2,  # 8
             pretraining_tp=1,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500000.0,
+            rope_parameters=dict(
+                rope_theta=500000.0,
+            ),
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 128256,
@@ -957,8 +973,9 @@ if LLAVA_AVAILABLE:
                 num_hidden_layers=4,
                 num_key_value_heads=2,
                 pretraining_tp=1,
-                rope_scaling=None,
-                rope_theta=500000.0,
+                rope_parameters=dict(
+                    rope_theta=500000.0,
+                ),
                 tie_word_embeddings=False,
                 use_cache=True,
                 max_position_embeddings=4096,  # llava-1.5-7b-hf
@@ -1016,8 +1033,9 @@ if OLMO2_AVAILABLE:
             num_hidden_layers=4,  # 40
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500_000,
+            rope_parameters=dict(
+                rope_theta=500_000,
+            ),
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 128256,
@@ -1045,8 +1063,9 @@ if OLMO3_AVAILABLE:
             num_hidden_layers=4,  # 40
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500_000,
+            rope_parameters=dict(
+                rope_theta=500_000,
+            ),
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 128256,
@@ -1075,8 +1094,9 @@ if GLM4_AVAILABLE:
             num_hidden_layers=4,  # 61
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500_000,
+            rope_parameters=dict(
+                rope_theta=500_000,
+            ),
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 151552
@@ -1111,8 +1131,6 @@ if GLM4V_AVAILABLE:
             num_hidden_layers=4,  # 61
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500_000,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 151552
@@ -1128,11 +1146,10 @@ if GLM4V_AVAILABLE:
                 "num_hidden_layers": 4,
                 "num_key_value_heads": 2,
                 "rms_norm_eps": 1e-5,
-                "rope_scaling": {
-                    "type": "default",
+                "rope_parameters": {
+                    "rope_theta": 500_000,
                     "mrope_section": [8, 12, 12],  # (temporal, height, width)
                 },
-                "rope_theta": 500_000,
                 "vocab_size": 32000,
                 "attention_bias": True,
             },
@@ -1178,8 +1195,6 @@ if GLM4V_MOE_AVAILABLE:
             num_hidden_layers=4,  # 61
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500_000,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 151552
@@ -1195,11 +1210,11 @@ if GLM4V_MOE_AVAILABLE:
                 "num_hidden_layers": 4,
                 "num_key_value_heads": 2,
                 "rms_norm_eps": 1e-5,
-                "rope_scaling": {
+                "rope_parameters": {
+                    "rope_theta": 500_000,
                     "type": "default",
                     "mrope_section": [8, 12, 12],  # (temporal, height, width)
                 },
-                "rope_theta": 500_000,
                 "vocab_size": 32000,
                 "attention_bias": True,
                 "attention_dropout": 0.0,
@@ -1249,8 +1264,9 @@ if SMOLLM3_AVAILABLE:
             num_key_value_heads=2,  # 8
             pretraining_tp=1,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500000.0,
+            rope_parameters=dict(
+                rope_theta=500000.0,
+            ),
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 128256,
@@ -1341,8 +1357,9 @@ if QWEN3NEXT_AVAILABLE:
             rms_norm_eps=1e-6,
             use_cache=True,
             tie_word_embeddings=False,
-            rope_theta=10000.0,
-            rope_scaling=None,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             attention_bias=False,
             use_sliding_window=False,
             sliding_window=4096,
@@ -1383,7 +1400,9 @@ if HUNYUAN_V1_AVAILABLE:
             initializer_range=0.02,
             norm_eps=1e-6,
             num_key_value_heads=2,
-            rope_theta=10000.0,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             partial_rotary_factor=1.0,
             vocab_size=32000,
             use_cache=True,
@@ -1414,8 +1433,9 @@ if HUNYUAN_V1_AVAILABLE:
             eod_token_id=3,
             sep_token_id=4,
             tie_word_embeddings=False,
-            rope_theta=10000.0,
-            rope_scaling=None,
+            rope_parameters=dict(
+                rope_theta=10000.0,
+            ),
             attention_bias=False,
             attention_dropout=0.0,
             num_experts=2,
@@ -1442,7 +1462,9 @@ if EXAONE4_AVAILABLE:
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_theta=1000000.0,
+            rope_parameters=dict(
+                rope_theta=1000000.0,
+            ),
             tie_word_embeddings=True,
             use_cache=True,
             vocab_size=32000,
