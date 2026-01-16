@@ -768,7 +768,16 @@ if GEMMA3_AVAILABLE:
             bos_token_id=2,
             eos_token_id=1,
             tie_word_embeddings=True,
-            rope_theta=10000.0,  # 1000000
+            rope_parameters=dict(
+                full_attention=dict(
+                    rope_theta=10000.0,
+                    rope_type="default",
+                ),
+                sliding_attention=dict(
+                    rope_theta=10000.0,
+                    rope_type="default",
+                ),
+            ),
             attention_bias=False,
             attention_dropout=0.0,
             attn_implementation="eager",
