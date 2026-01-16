@@ -29,11 +29,8 @@ def get_qwen2vl_rotary_embeddings(
             hidden_size=hidden_size,
             num_attention_heads=num_q_heads,
             num_key_value_heads=num_kv_heads,
-            rope_parameters={
-                "rope_type": "default",
-                "rope_theta": 1000000.0,
-                "mrope_section": mrope_section,
-            },
+            rope_theta=1000000.0,
+            mrope_section=mrope_section,
         )
         return Qwen2VLRotaryEmbedding(config, device=device)
     else:
