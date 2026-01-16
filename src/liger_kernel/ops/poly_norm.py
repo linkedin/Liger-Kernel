@@ -144,15 +144,15 @@ def _poly_norm_backward_kernel(
         dy_base = dY_ptr + row_idx * dY_row_stride
         x_base = X_ptr + row_idx * X_row_stride
         dx_base = dX_ptr + row_idx * dX_row_stride
-        r_base = RSTD_ptr + row_idx * RSTD_row_stride
+        rstd_base = RSTD_ptr + row_idx * RSTD_row_stride
 
         dY_row = tl.load(dy_base + col_offsets, mask=mask, other=0.0).to(tl.float32)
         X_row = tl.load(x_base + col_offsets, mask=mask, other=0.0).to(tl.float32)
 
         # Load cached rstd values
-        rstd_3 = tl.load(r_base + 0).to(tl.float32)
-        rstd_2 = tl.load(r_base + 1).to(tl.float32)
-        rstd_1 = tl.load(r_base + 2).to(tl.float32)
+        rstd_3 = tl.load(rstd_base + 0).to(tl.float32)
+        rstd_2 = tl.load(rstd_base + 1).to(tl.float32)
+        rstd_1 = tl.load(rstd_base + 2).to(tl.float32)
 
         # Compute powers
         X_pow3 = X_row * X_row * X_row
