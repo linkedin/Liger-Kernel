@@ -27,6 +27,15 @@ Leave `#take` in the comment and tag the maintainer.
      pip install -e .'[dev]'
      ```
 
+    3. **Install pre-commit hooks using [`prek`](https://prek.j178.dev/), a `pre-commit` alternative built in rust**
+    ```
+    prek install 
+    ```
+    Run pre-commit check without committing (`-a` is equivalent to `--all-files`)
+    ```
+    prek run -a
+    ```
+
 ## Structure
 
 !!! Info
