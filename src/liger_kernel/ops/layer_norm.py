@@ -8,6 +8,7 @@ import triton.language as tl
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import set_large_grf_mode
 from liger_kernel.utils import get_npu_multi_processor_count
 from liger_kernel.utils import is_npu_available
 
@@ -199,7 +200,7 @@ def layer_norm_forward(X, W, B, eps):
     # XPU-specific optimization
     kernel_args = {}
     if X.device.type == "xpu":
-        kernel_args["grf_mode"] = "large"
+        set_large_grf_mode(kernel_args)
 
     # Launch kernel with one thread block per row for optimal performance
     grid = (n_rows,)
@@ -269,7 +270,8 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     kernel_args = {"num_warps": num_warps}
     # XPU-specific optimization
     if X.device.type == "xpu":
-        kernel_args.update({"grf_mode": "large", "num_warps": 32, "num_stages": 4})
+        kernel_args.update({"num_warps": 32, "num_stages": 4})
+        set_large_grf_mode(kernel_args)
 
     # Launch kernel with one thread block per row for optimal performance
     _layer_norm_backward_kernel[grid](
