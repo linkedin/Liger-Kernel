@@ -8,7 +8,7 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
-from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
+from transformers.models.gemma.tokenization_gemma import GemmaTokenizer
 from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3
@@ -138,7 +138,7 @@ try:
 
     from packaging import version
     from transformers.models.gemma.configuration_gemma import GemmaConfig
-    from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
+    from transformers.models.gemma.tokenization_gemma import GemmaTokenizer
     from transformers.models.gemma2.configuration_gemma2 import Gemma2Config
     from transformers.models.paligemma.configuration_paligemma import PaliGemmaConfig
     from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
@@ -1020,7 +1020,7 @@ def create_processor(model_name: str):
             ]
         )
 
-        fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        fast_tokenizer = GemmaTokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = SiglipImageProcessor(size={"height": 224, "width": 224}, image_seq_length=256)
         return PaliGemmaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
 
@@ -1040,7 +1040,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        fast_tokenizer = GemmaTokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Gemma3ImageProcessor()
         return Gemma3Processor(image_processor=image_processor, tokenizer=fast_tokenizer)
 
