@@ -89,8 +89,8 @@ class LigerEmbeddingFunction(torch.autograd.Function):
         n_elements = indices.numel()
         embedding_dim = embeddings.shape[1]
 
-        BLOCK_SIZE_M = triton.next_power_of_2(min(128, embedding_dim))
-        BLOCK_SIZE_N = triton.next_power_of_2(min(128, embedding_dim))
+        BLOCK_SIZE_M = triton.next_power_of_2(min(64, embedding_dim))
+        BLOCK_SIZE_N = triton.next_power_of_2(min(64, embedding_dim))
         grid = (
             triton.cdiv(n_elements, BLOCK_SIZE_M),
             triton.cdiv(embedding_dim, BLOCK_SIZE_N),
@@ -121,8 +121,8 @@ class LigerEmbeddingFunction(torch.autograd.Function):
         n_elements = indices.numel()
         embedding_dim = embedding_table.shape[1]
 
-        BLOCK_SIZE_M = triton.next_power_of_2(min(128, embedding_dim))
-        BLOCK_SIZE_N = triton.next_power_of_2(min(128, embedding_dim))
+        BLOCK_SIZE_M = triton.next_power_of_2(min(64, embedding_dim))
+        BLOCK_SIZE_N = triton.next_power_of_2(min(64, embedding_dim))
         grid = (
             triton.cdiv(n_elements, BLOCK_SIZE_M),
             triton.cdiv(embedding_dim, BLOCK_SIZE_N),
