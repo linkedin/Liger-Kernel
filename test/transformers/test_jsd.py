@@ -18,7 +18,15 @@ device = infer_device()
 set_seed(42)
 
 
-class CustomKLDivLoss(torch.nn.Module):
+class NPUKLDivLoss(torch.nn.Module):
+    """
+    A custom KLDivLoss for NPU.
+    
+    On NPU devices, torch.nn.KLDivLoss does not compute gradients with respect to the target.
+    This leads to incorrect gradient computation when the target depends on the input,
+    such as in JSD or reverse KLDiv.
+    See https://github.com/linkedin/Liger-Kernel/issues/1021 for more details.
+    """
     def __init__(self, reduction="none", log_target=True):
         super().__init__()
         
@@ -43,7 +51,7 @@ class JSD(torch.nn.Module):
     ):
         super(JSD, self).__init__()
         if device == "npu":
-            self.kl = CustomKLDivLoss(reduction="none", log_target=True)
+            self.kl = NPUKLDivLoss(reduction="none", log_target=True)
         else:
             self.kl = KLDivLoss(reduction="none", log_target=True)
         self.beta = beta
