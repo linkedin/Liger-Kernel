@@ -546,45 +546,6 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Adding support for a new model">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#1-figure-out-the-kernels-that-can-be-monkey-patched" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        1 Figure out the kernels that can be monkey-patched
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#2-monkey-patch-the-huggingface-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2 Monkey-patch the HuggingFace model
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#3-add-unit-tests" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3 Add Unit Tests
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
         <li class="md-nav__item">
@@ -665,6 +626,17 @@
     <span class="md-ellipsis">
       
         Release (Maintainer only)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notes-on-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notes on version
       
     </span>
   </a>
@@ -854,45 +826,6 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Adding support for a new model">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#1-figure-out-the-kernels-that-can-be-monkey-patched" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        1 Figure out the kernels that can be monkey-patched
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#2-monkey-patch-the-huggingface-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2 Monkey-patch the HuggingFace model
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#3-add-unit-tests" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3 Add Unit Tests
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
         <li class="md-nav__item">
@@ -979,6 +912,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#notes-on-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notes on version
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1007,42 +951,30 @@
   <h1>Contributing</h1>
 
 <p>Thank you for your interest in contributing to Liger-Kernel! This guide will help you set up your development environment, add a new kernel, run tests, and submit a pull request (PR).</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
 <h3 id="maintainers">Maintainers<a class="headerlink" href="#maintainers" title="Permanent link">&para;</a></h3>
-<p>@ByronHsu(admin) @qingquansong @yundai424 @kvignesh1420 @lancerts @JasonZhu1313 @shimizust</p>
-</div>
+<p>@ByronHsu(admin) @qingquansong @yundai424 @kvignesh1420 @lancerts @JasonZhu1313 @shimizust @vaibhavjindal @tcc0403 @momochen</p>
 <h2 id="interested-in-the-ticket">Interested in the ticket?<a class="headerlink" href="#interested-in-the-ticket" title="Permanent link">&para;</a></h2>
 <p>Leave <code>#take</code> in the comment and tag the maintainer. </p>
 <h2 id="setting-up-your-development-environment">Setting Up Your Development Environment<a class="headerlink" href="#setting-up-your-development-environment" title="Permanent link">&para;</a></h2>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
 <ol>
 <li><strong>Clone the Repository</strong>
- <code>sh
-git clone https://github.com/linkedin/Liger-Kernel.git
-cd Liger-Kernel</code></li>
-<li>
-<p><strong>Install Dependencies and Editable Package</strong>
- <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip install . -e[dev]
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/linkedin/Liger-Kernel.git
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>Liger-Kernel
+</span></code></pre></div></li>
+<li><strong>Install Dependencies and Editable Package</strong>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip install . -e[dev]
 </span></code></pre></div>
- If encounter error <code>no matches found: .[dev]</code>, please use
- <div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip install -e .&#39;[dev]&#39;
-</span></code></pre></div></p>
-</li>
-<li>
-<p><strong>Install pre-commit hooks using <a href="https://prek.j178.dev/"><code>prek</code></a>, a <code>pre-commit</code> alternative built in rust</strong>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>prek install 
+If encounter error <code>no matches found: .[dev]</code>, please use
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>pip install -e .&#39;[dev]&#39;
+</span></code></pre></div></li>
+<li><strong>Install pre-commit hooks using <a href="https://prek.j178.dev/"><code>prek</code></a>, a <code>pre-commit</code> alternative built in rust</strong>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>prek install 
 </span></code></pre></div>
 Run pre-commit check without committing (<code>-a</code> is equivalent to <code>--all-files</code>)
-<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>prek run -a
-</span></code></pre></div></p>
-</li>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>prek run -a
+</span></code></pre></div></li>
 </ol>
-</div>
 <h2 id="structure">Structure<a class="headerlink" href="#structure" title="Permanent link">&para;</a></h2>
-<div class="admonition info">
-<p class="admonition-title">Info</p>
 <h3 id="source-code">Source Code<a class="headerlink" href="#source-code" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>ops/</code>: Core Triton operations.</li>
@@ -1057,17 +989,30 @@ Run pre-commit check without committing (<code>-a</code> is equivalent to <code>
 <ul>
 <li><code>benchmark/</code>: Execution time and memory benchmarks compared to Hugging Face layers.</li>
 </ul>
-</div>
 <h2 id="adding-support-for-a-new-model">Adding support for a new model<a class="headerlink" href="#adding-support-for-a-new-model" title="Permanent link">&para;</a></h2>
 <p>To get familiar with the folder structure, please refer <a href="https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.">here</a>.</p>
-<h4 id="1-figure-out-the-kernels-that-can-be-monkey-patched">1 Figure out the kernels that can be monkey-patched<a class="headerlink" href="#1-figure-out-the-kernels-that-can-be-monkey-patched" title="Permanent link">&para;</a></h4>
-<p>a) Check the <code>src/liger_kernel/ops</code> directory to find the kernels that can be monkey-patched.</p>
-<p>b) Kernels like Fused Linear Cross Entropy require a custom lce_forward function to allow monkey-patching. For adding kernels requiring a similar approach, ensure that you create the corresponding forward function in the <code>src/liger_kernel/transformers/model</code> directory.</p>
-<h4 id="2-monkey-patch-the-huggingface-model">2 Monkey-patch the HuggingFace model<a class="headerlink" href="#2-monkey-patch-the-huggingface-model" title="Permanent link">&para;</a></h4>
-<p>a) Add the monkey-patching code in the <code>src/liger_kernel/transformers/monkey_patch.py</code> file.</p>
-<p>b) Ensure that the monkey-patching function is added to the <code>__init__.py</code> file in the <code>src/liger_kernel/transformers/</code> directory.</p>
-<h4 id="3-add-unit-tests">3 Add Unit Tests<a class="headerlink" href="#3-add-unit-tests" title="Permanent link">&para;</a></h4>
-<p>a) Create unit tests and convergence tests for the monkey-patched model in the tests directory. Ensure that your tests cover all functionalities of the monkey-patched model.</p>
+<ol>
+<li>
+<p><strong>Figure out the kernels that can be monkey-patched</strong></p>
+<ul>
+<li>Check the <code>src/liger_kernel/ops</code> directory to find the kernels that can be monkey-patched.</li>
+<li>Kernels like Fused Linear Cross Entropy require a custom lce_forward function to allow monkey-patching. For adding kernels requiring a similar approach, ensure that you create the corresponding forward function in the <code>src/liger_kernel/transformers/model</code> directory.</li>
+</ul>
+</li>
+<li>
+<p><strong>Monkey-patch the HuggingFace model</strong></p>
+<ul>
+<li>Add the monkey-patching code in the <code>src/liger_kernel/transformers/monkey_patch.py</code> file.</li>
+<li>Ensure that the monkey-patching function is added to the <code>__init__.py</code> file in the <code>src/liger_kernel/transformers/</code> directory.</li>
+</ul>
+</li>
+<li>
+<p><strong>Add Unit Tests</strong></p>
+<ul>
+<li>Create unit tests and convergence tests for the monkey-patched model in the tests directory. Ensure that your tests cover all functionalities of the monkey-patched model.</li>
+</ul>
+</li>
+</ol>
 <h2 id="adding-a-new-kernel">Adding a New Kernel<a class="headerlink" href="#adding-a-new-kernel" title="Permanent link">&para;</a></h2>
 <p>To get familiar with the folder structure, please refer <a href="https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.">here</a>.</p>
 <ol>
@@ -1104,11 +1049,9 @@ Add a benchmarking script under <code>benchmark/scripts</code> using the naming 
 </ol>
 <h2 id="submit-pr">Submit PR<a class="headerlink" href="#submit-pr" title="Permanent link">&para;</a></h2>
 <p>Fork the repo, copy and paste the successful test logs in the PR and submit the PR followed by the PR template (<strong><a href="https://github.com/linkedin/Liger-Kernel/pull/21">example PR</a></strong>).</p>
-<div class="admonition warning">
-<p class="admonition-title">Notice</p>
-<p>As a contributor, you represent that the code you submit is your original work or that of your employer (in which case you represent you have the right to bind your employer).<br />
-By submitting code, you (and, if applicable, your employer) are licensing the submitted code to LinkedIn and the open source community subject to the BSD 2-Clause license.</p>
-</div>
+<blockquote>
+<p>As a contributor, you represent that the code you submit is your original work or that of your employer (in which case you represent you have the right to bind your employer). By submitting code, you (and, if applicable, your employer) are licensing the submitted code to LinkedIn and the open source community subject to the BSD 2-Clause license.</p>
+</blockquote>
 <h4 id="release-maintainer-only">Release (Maintainer only)<a class="headerlink" href="#release-maintainer-only" title="Permanent link">&para;</a></h4>
 <ol>
 <li>Bump the version in pyproject.toml to the desired version (for example, <code>0.2.0</code>)</li>
@@ -1117,15 +1060,13 @@ By submitting code, you (and, if applicable, your employer) are licensing the su
 <li>Adding release note: Minimum requirement is to click the <code>Generate Release Notes</code> button that will automatically generates 1) changes included, 2) new contributors. It's good to add sections on top to highlight the important changes.</li>
 <li>New pip uploading will be triggered upon a new release. NOTE: Both pre-release and official release will trigger the workflow to build wheel and publish to pypi, so please be sure that step 1-3 are followed correctly!</li>
 </ol>
-<div class="admonition note">
-<p class="admonition-title">Notes on version</p>
+<h3 id="notes-on-version">Notes on version<a class="headerlink" href="#notes-on-version" title="Permanent link">&para;</a></h3>
 <p>Here we follow the <a href="https://semver.org/">sematic versioning</a>. Denote the version as <code>major.minor.patch</code>, we increment:</p>
 <ul>
 <li>Major version when there is backward incompatible change.</li>
 <li>Minor version when there is new backward-compatible functionality.</li>
 <li>Patch version for bug fixes.</li>
 </ul>
-</div>
 
 
 
