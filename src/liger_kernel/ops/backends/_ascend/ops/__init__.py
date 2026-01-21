@@ -14,6 +14,9 @@ To add a new operator:
 If __all__ is not defined, all public symbols will be auto-discovered.
 """
 
+from liger_kernel.ops.backends._ascend.ops.embedding import LigerEmbeddingFunction
+from liger_kernel.ops.backends._ascend.ops.embedding import embedding_backward
+from liger_kernel.ops.backends._ascend.ops.embedding import embedding_forward
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
@@ -31,6 +34,9 @@ from liger_kernel.ops.backends._ascend.ops.tvd import tv_distance_forward_triton
 from liger_kernel.ops.backends._ascend.ops.tvd import tvd_backward_triton
 
 __all__ = [
+    "LigerEmbeddingFunction",
+    "embedding_forward",
+    "embedding_backward",
     "LigerGELUMulFunction",
     "geglu_forward",
     "geglu_backward",
