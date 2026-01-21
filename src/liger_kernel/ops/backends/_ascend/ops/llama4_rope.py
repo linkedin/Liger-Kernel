@@ -212,6 +212,78 @@ def llama4_rope_forward(q, k, freqs_cis, imag_sign: float = 1.0):
     return q, k
 
 
+def llama4_rope_backward(dq, dk, freqs_cis, imag_sign: float = -1.0):
+    """
+    Ascend NPU implementation of Llama4 RoPE.
+
+    q/k: (bs, sl, n_heads, hd) with interleaved complex last-dim layout.
+    freqs_cis: complex (..., hd//2) OR packed (..., 2*(hd//2)).
+    """
+    original_dtype = dq.dtype
+
+    bs, sl, n_qh, hd = dq.shape
+    _, _, n_kh, _ = dk.shape
+    if hd % 2 != 0:
+        raise ValueError(f"head_dim must be even for interleaved complex layout, got {hd}")
+    hd_half = hd // 2
+
+    freqs_real, freqs_imag = _prepare_freqs(freqs_cis, sl, hd_half)
+    dq, dk, freqs_real, freqs_imag, compute_dtype = _cast_and_contiguous(dq, dk, freqs_real, freqs_imag)
+
+    pad_hd = triton.next_power_of_2(hd)
+    pad_n_qh = triton.next_power_of_2(n_qh)
+    pad_n_kh = triton.next_power_of_2(n_kh)
+
+    # UB tiling strategy: tile heads dimension only
+    dtype_size = dq.element_size()
+    shapes = ((pad_n_qh, pad_hd), (pad_n_kh, pad_hd))
+    tile_shapes = compute_default_tiling_strategy(
+        safety_margin=0.90,
+        dtype_size=dtype_size,
+        memory_multiplier=3.0,
+        shapes=shapes,
+        tiling_dims=(0, 0),
+    )
+
+    if tile_shapes is not None and len(tile_shapes) == len(shapes):
+        q_tile_shape, k_tile_shape = tile_shapes
+        BLOCK_Q, _ = q_tile_shape
+        BLOCK_K, _ = k_tile_shape
+    else:
+        BLOCK_Q = triton.next_power_of_2(pad_n_qh)
+        BLOCK_K = triton.next_power_of_2(pad_n_kh)
+
+    n_row = bs * sl
+
+    # imag_sign must be constexpr for best codegen
+    imag_sign_const = 1.0 if imag_sign >= 0 else -1.0
+
+    _triton_llama4_rope_npu[(n_row,)](
+        dq,
+        dk,
+        freqs_real,
+        freqs_imag,
+        dq.stride(1),
+        dk.stride(1),
+        dq.stride(2),
+        dk.stride(2),
+        freqs_real.stride(0),
+        sl,
+        bs,
+        n_qh,
+        n_kh,
+        hd,
+        BLOCK_Q,
+        BLOCK_K,
+        imag_sign=imag_sign_const,
+    )
+
+    if compute_dtype != original_dtype:
+        dq = dq.to(original_dtype)
+        dk = dk.to(original_dtype)
+    return dq, dk
+
+
 class LigerLlama4RopeFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, freqs_cis, BLOCK_SIZE: int = None):
@@ -223,5 +295,5 @@ class LigerLlama4RopeFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dq, dk):
         (freqs_cis,) = ctx.saved_tensors
-        dq_out, dk_out = llama4_rope_forward(dq, dk, freqs_cis, imag_sign=-1.0)
+        dq_out, dk_out = llama4_rope_backward(dq, dk, freqs_cis, imag_sign=-1.0)
         return dq_out, dk_out, None, None
