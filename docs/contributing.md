@@ -3,7 +3,7 @@
 Thank you for your interest in contributing to Liger-Kernel! This guide will help you set up your development environment, add a new kernel, run tests, and submit a pull request (PR).
 
 ### Maintainers
-@ByronHsu(admin) @qingquansong @yundai424 @kvignesh1420 @lancerts @JasonZhu1313 @shimizust
+@ByronHsu(admin) @qingquansong @yundai424 @kvignesh1420 @lancerts @JasonZhu1313 @shimizust @vaibhavjindal @tcc0403 @momochen
 
 ## Interested in the ticket?
 
