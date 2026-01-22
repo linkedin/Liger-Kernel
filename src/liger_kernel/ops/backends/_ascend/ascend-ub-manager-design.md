@@ -56,6 +56,7 @@ The UB Manager (Unified Buffer Manager) is a core component in **Liger-Kernel** 
 │ + npu_model: str                     │
 │ - _detect_npu_model()                │
 │ - _detect_ub_capacity()              │
+│   (raises RuntimeError if fails)     │
 └──────────────────────────────────────┘
 
 ┌──────────────────────────────────────┐
@@ -85,17 +86,23 @@ The UB Manager (Unified Buffer Manager) is a core component in **Liger-Kernel** 
 
 The UB Manager detects UB capacity in the following priority order:
 
-1. **Environment Variable**: `ASCEND_UB_CAPACITY_BITS`
-2. **Device Properties**: Retrieved from `torch.npu.get_device_properties(0).ub_capacity_bits`
-3. **Model Defaults**: Use predefined values based on the detected NPU model
+1. **Environment Variable**: `ASCEND_UB_CAPACITY_BITS` (in bits)
+   - If set, this value is used directly
+   - Must be a positive integer representing UB capacity in bits
+
+2. **get_soc_spec**: Query UB size from CANN's `get_soc_spec("UB_SIZE")`
+   - Returns UB size in bytes
+   - Automatically converted to bits (bytes * 8)
+   - Requires CANN environment to be sourced (e.g., `source /usr/local/Ascend/ascend-toolkit/set_env.sh`)
+
+3. **Error Handling**: If neither method succeeds, raises `RuntimeError` with clear instructions
+
 
 ```python
-# Default UB capacity configuration
-_DEFAULT_UB_CAPACITIES = {
-    "Ascend910B1": 2097152,  # ~256 KB
-    "Ascend910B4": 1572864,  # ~192 KB
-    "default": 2097152,       # ~256 KB
-}
+# Detection flow:
+# 1. Check ASCEND_UB_CAPACITY_BITS env var (bits)
+# 2. Try get_soc_spec("UB_SIZE") (bytes) -> convert to bits
+# 3. Raise RuntimeError if both fail
 ```
 
 ### 2. Unified Strategy System
