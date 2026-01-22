@@ -168,7 +168,7 @@ def llama4_rope_forward(q, k, freqs_cis, imag_sign: float = 1.0):
     tile_shapes = compute_default_tiling_strategy(
         safety_margin=0.90,
         dtype_size=dtype_size,
-        memory_multiplier=3.0,
+        memory_multiplier=12.0,
         shapes=shapes,
         tiling_dims=(0, 0),
     )
@@ -240,7 +240,7 @@ def llama4_rope_backward(dq, dk, freqs_cis, imag_sign: float = -1.0):
     tile_shapes = compute_default_tiling_strategy(
         safety_margin=0.90,
         dtype_size=dtype_size,
-        memory_multiplier=3.0,
+        memory_multiplier=12.0,
         shapes=shapes,
         tiling_dims=(0, 0),
     )
