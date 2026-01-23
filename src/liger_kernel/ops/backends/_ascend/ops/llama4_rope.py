@@ -110,14 +110,21 @@ def _triton_llama4_rope_npu(
         qh_mask = qh_idx < n_qh
         block_mask = qh_mask[:, None] & d_mask[None, :]
 
-        # Interleaved offsets within a single head: [real0, imag0, real1, imag1, ...]
         head_ptr = q_base + qh_idx[:, None] * q_head_stride
         base = d_idx[None, :] * 2
-        q_real = tl.load(head_ptr + base, mask=block_mask, other=0.0)
-        q_imag = tl.load(head_ptr + base + 1, mask=block_mask, other=0.0)
 
-        new_real = q_real * freqs_real - q_imag * freqs_imag
-        new_imag = q_real * freqs_imag + q_imag * freqs_real
+        lane = tl.arange(0, 2)[None, None, :]
+
+        q_pair = tl.load(
+            head_ptr[:, :, None] + base[:, :, None] + lane,
+            mask=block_mask[:, :, None],
+            other=0.0,
+        )
+
+        q_real, q_imag = tl.split(q_pair)
+
+        new_real = tl.math.fma(q_real, freqs_real, -(q_imag * freqs_imag))
+        new_imag = tl.math.fma(q_real, freqs_imag, q_imag * freqs_real)
 
         tl.store(head_ptr + base, new_real, mask=block_mask)
         tl.store(head_ptr + base + 1, new_imag, mask=block_mask)
@@ -130,17 +137,25 @@ def _triton_llama4_rope_npu(
 
         head_ptr = k_base + kh_idx[:, None] * k_head_stride
         base = d_idx[None, :] * 2
-        k_real = tl.load(head_ptr + base, mask=block_mask, other=0.0)
-        k_imag = tl.load(head_ptr + base + 1, mask=block_mask, other=0.0)
 
-        new_real = k_real * freqs_real - k_imag * freqs_imag
-        new_imag = k_real * freqs_imag + k_imag * freqs_real
+        lane = tl.arange(0, 2)[None, None, :]
+
+        k_pair = tl.load(
+            head_ptr[:, :, None] + base[:, :, None] + lane,
+            mask=block_mask[:, :, None],
+            other=0.0,
+        )
+
+        k_real, k_imag = tl.split(k_pair)
+
+        new_real = tl.math.fma(k_real, freqs_real, -(k_imag * freqs_imag))
+        new_imag = tl.math.fma(k_real, freqs_imag, k_imag * freqs_real)
 
         tl.store(head_ptr + base, new_real, mask=block_mask)
         tl.store(head_ptr + base + 1, new_imag, mask=block_mask)
 
 
-def llama4_rope_forward(q, k, freqs_cis, imag_sign: float = 1.0):
+def llama4_rope_forward(q, k, freqs_cis):
     """
     Ascend NPU implementation of Llama4 RoPE.
 
@@ -183,9 +198,6 @@ def llama4_rope_forward(q, k, freqs_cis, imag_sign: float = 1.0):
 
     n_row = bs * sl
 
-    # imag_sign must be constexpr for best codegen
-    imag_sign_const = 1.0 if imag_sign >= 0 else -1.0
-
     _triton_llama4_rope_npu[(n_row,)](
         q,
         k,
@@ -203,7 +215,7 @@ def llama4_rope_forward(q, k, freqs_cis, imag_sign: float = 1.0):
         hd,
         BLOCK_Q,
         BLOCK_K,
-        imag_sign=imag_sign_const,
+        imag_sign=1.0,
     )
 
     if compute_dtype != original_dtype:
@@ -212,7 +224,7 @@ def llama4_rope_forward(q, k, freqs_cis, imag_sign: float = 1.0):
     return q, k
 
 
-def llama4_rope_backward(dq, dk, freqs_cis, imag_sign: float = -1.0):
+def llama4_rope_backward(dq, dk, freqs_cis):
     """
     Ascend NPU implementation of Llama4 RoPE.
 
@@ -255,9 +267,6 @@ def llama4_rope_backward(dq, dk, freqs_cis, imag_sign: float = -1.0):
 
     n_row = bs * sl
 
-    # imag_sign must be constexpr for best codegen
-    imag_sign_const = 1.0 if imag_sign >= 0 else -1.0
-
     _triton_llama4_rope_npu[(n_row,)](
         dq,
         dk,
@@ -275,7 +284,7 @@ def llama4_rope_backward(dq, dk, freqs_cis, imag_sign: float = -1.0):
         hd,
         BLOCK_Q,
         BLOCK_K,
-        imag_sign=imag_sign_const,
+        imag_sign=-1.0,
     )
 
     if compute_dtype != original_dtype:
@@ -288,12 +297,12 @@ class LigerLlama4RopeFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, freqs_cis, BLOCK_SIZE: int = None):
         # BLOCK_SIZE is ignored for Ascend (we auto-tile heads by UB), kept for API compatibility
-        q_out, k_out = llama4_rope_forward(q, k, freqs_cis, imag_sign=1.0)
+        q_out, k_out = llama4_rope_forward(q, k, freqs_cis)
         ctx.save_for_backward(freqs_cis.detach() if isinstance(freqs_cis, torch.Tensor) else freqs_cis)
         return q_out, k_out
 
     @staticmethod
     def backward(ctx, dq, dk):
         (freqs_cis,) = ctx.saved_tensors
-        dq_out, dk_out = llama4_rope_backward(dq, dk, freqs_cis, imag_sign=-1.0)
+        dq_out, dk_out = llama4_rope_backward(dq, dk, freqs_cis)
         return dq_out, dk_out, None, None
