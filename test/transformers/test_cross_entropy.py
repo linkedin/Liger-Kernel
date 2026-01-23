@@ -1013,7 +1013,7 @@ def test_float32_internal():
     label_smoothing = 0.0
     lse_square_scale = 0.0
     softcap = 0.0
-    BLOCK_SIZE = 32768
+    BLOCK_SIZE = 4096 if device == "npu" else 32768
     reduction = "mean"
 
     # Initialize input tensors
