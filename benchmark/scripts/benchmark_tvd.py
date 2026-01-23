@@ -9,6 +9,7 @@ from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
 from liger_kernel.transformers.tvd import LigerTVDLoss
+from liger_kernel.utils import get_total_gpu_memory
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -109,11 +110,17 @@ def bench_memory_tvd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
+    gpu_memory_gbs = get_total_gpu_memory()
+    # We know that the full test will require 66GBs for vocab size 2^17
+    if gpu_memory_gbs >= 66:
+        x_max = 17
+    else:
+        x_max = 16
     common_args = {
         "kernel_name": "tvd",
         "x_name": "V",
         "x_label": "vocab size",
-        "x_values": [2**i for i in range(12, 18)],
+        "x_values": [2**i for i in range(12, x_max + 1)],
         "kernel_providers": ["liger", "torch"],
         "extra_benchmark_configs": [{"B": 8, "T": 2048}],
         "overwrite": args.overwrite,
