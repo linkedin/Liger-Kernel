@@ -363,6 +363,11 @@ loss.backward()
                     <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?branch=main&event=push" alt="Build">
                 </a>
             </div>
+            <div style="display: block;">
+                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/ascend_npu_ci.yml">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/ascend_npu_ci.yml/badge.svg?branch=main" alt="Build">
+                </a>
+            </div>
         </td>
     </tr>
 </table>
