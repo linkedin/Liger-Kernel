@@ -83,7 +83,7 @@ def _triton_llama4_rope_npu(
 ):
     """
     Llama4 RoPE on Ascend NPU for interleaved complex layout:
-    - q/k shape: (bs, sl, n_heads, hd), where hd = 2*head_dim_half
+    - q/k shape: (bs, sl, n_heads, hd)
     - last dim layout: [real0, imag0, real1, imag1, ...]
     - freqs_real/imag: (sl, hd//2)
     """
@@ -98,61 +98,59 @@ def _triton_llama4_rope_npu(
     k_base = k_ptr + pid * k_row_stride
 
     freq_base = seq_idx * freqs_row_stride
-    d_idx = tl.arange(0, hd // 2)
-    d_mask = d_idx < (hd // 2)
+    hd_idx = tl.arange(0, hd)
+    hd_mask = hd_idx < (hd)
 
-    freqs_real = tl.load(freqs_real_ptr + freq_base + d_idx, mask=d_mask, other=0.0)
-    freqs_imag = tl.load(freqs_imag_ptr + freq_base + d_idx, mask=d_mask, other=0.0) * imag_sign
+    freq_idx = tl.arange(0, hd // 2)
+    freq_mask = freq_idx < hd // 2
+
+    freqs_real = tl.load(freqs_real_ptr + freq_base + freq_idx, mask=freq_mask, other=0.0)
+    freqs_imag = tl.load(freqs_imag_ptr + freq_base + freq_idx, mask=freq_mask, other=0.0) * imag_sign
 
     # Q heads (chunked for UB)
     for qh_block in range(0, n_qh, BLOCK_Q):
         qh_idx = tl.arange(0, BLOCK_Q) + qh_block
         qh_mask = qh_idx < n_qh
-        block_mask = qh_mask[:, None] & d_mask[None, :]
+        block_mask = qh_mask[:, None] & hd_mask[None, :]
 
         head_ptr = q_base + qh_idx[:, None] * q_head_stride
-        base = d_idx[None, :] * 2
-
-        lane = tl.arange(0, 2)[None, None, :]
 
         q_pair = tl.load(
-            head_ptr[:, :, None] + base[:, :, None] + lane,
-            mask=block_mask[:, :, None],
+            head_ptr + hd_idx[None, :],
+            mask=block_mask,
             other=0.0,
         )
-
+        q_pair = q_pair.reshape(BLOCK_Q, hd // 2, 2, can_reorder=True)
         q_real, q_imag = tl.split(q_pair)
 
         new_real = tl.math.fma(q_real, freqs_real, -(q_imag * freqs_imag))
         new_imag = tl.math.fma(q_real, freqs_imag, q_imag * freqs_real)
+        new_q_pair = tl.interleave(new_real, new_imag)
 
-        tl.store(head_ptr + base, new_real, mask=block_mask)
-        tl.store(head_ptr + base + 1, new_imag, mask=block_mask)
+        tl.store(head_ptr + hd_idx[None, :], new_q_pair, mask=block_mask)
 
     # K heads (chunked for UB)
     for kh_block in range(0, n_kh, BLOCK_K):
         kh_idx = tl.arange(0, BLOCK_K) + kh_block
         kh_mask = kh_idx < n_kh
-        block_mask = kh_mask[:, None] & d_mask[None, :]
+        block_mask = kh_mask[:, None] & hd_mask[None, :]
 
         head_ptr = k_base + kh_idx[:, None] * k_head_stride
-        base = d_idx[None, :] * 2
-
-        lane = tl.arange(0, 2)[None, None, :]
 
         k_pair = tl.load(
-            head_ptr[:, :, None] + base[:, :, None] + lane,
-            mask=block_mask[:, :, None],
+            head_ptr + hd_idx[None, :],
+            mask=block_mask,
             other=0.0,
         )
 
+        k_pair = k_pair.reshape(BLOCK_K, hd // 2, 2, can_reorder=True)
         k_real, k_imag = tl.split(k_pair)
 
         new_real = tl.math.fma(k_real, freqs_real, -(k_imag * freqs_imag))
         new_imag = tl.math.fma(k_real, freqs_imag, k_imag * freqs_real)
+        new_k_pair = tl.interleave(new_real, new_imag)
 
-        tl.store(head_ptr + base, new_real, mask=block_mask)
-        tl.store(head_ptr + base + 1, new_imag, mask=block_mask)
+        tl.store(head_ptr + hd_idx[None, :], new_k_pair, mask=block_mask)
 
 
 def llama4_rope_forward(q, k, freqs_cis):
