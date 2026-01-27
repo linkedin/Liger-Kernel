@@ -240,7 +240,7 @@ if __name__ == "__main__":
         "x_label": "B x T",
         "x_values": [2**i for i in range(10, 14)],
         "kernel_providers": ["liger", "torch"],
-        "extra_benchmark_configs": [{"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}],
+        "extra_benchmark_configs": [{"H": 4096, "V": 65536, "mode": "forward", "dtype": torch.bfloat16}],
         "overwrite": args.overwrite,
     }
 
