@@ -10,6 +10,7 @@ from utils import run_benchmarks
 
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
 from liger_kernel.utils import infer_device
+from liger_kernel.utils import get_total_gpu_memory
 
 device = infer_device()
 
@@ -233,14 +234,19 @@ def bench_speed_fused_linear_jsd(
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
-
+    gpu_memory_gbs = get_total_gpu_memory()
+    if gpu_memory_gbs >= 69:
+        vocab_size = 128256
+    else:
+        vocab_size = 65536
+        
     common_configs = {
         "kernel_name": "fused_linear_jsd",
         "x_name": "BT",
         "x_label": "B x T",
         "x_values": [2**i for i in range(10, 14)],
         "kernel_providers": ["liger", "torch"],
-        "extra_benchmark_configs": [{"H": 4096, "V": 65536, "mode": "forward", "dtype": torch.bfloat16}],
+        "extra_benchmark_configs": [{"H": 4096, "V": vocab_size, "mode": "forward", "dtype": torch.bfloat16}],
         "overwrite": args.overwrite,
     }
 
