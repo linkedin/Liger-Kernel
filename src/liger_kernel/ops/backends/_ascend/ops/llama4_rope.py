@@ -236,13 +236,9 @@ def llama4_rope_backward(dq, dk, freqs_cis):
     freqs_real, freqs_imag = _prepare_freqs(freqs_cis, sl, hd_half)
     dq, dk, freqs_real, freqs_imag, compute_dtype = _cast_and_contiguous(dq, dk, freqs_real, freqs_imag)
 
-    pad_hd = triton.next_power_of_2(hd)
-    pad_n_qh = triton.next_power_of_2(n_qh)
-    pad_n_kh = triton.next_power_of_2(n_kh)
-
     # UB tiling strategy: tile heads dimension only
     dtype_size = dq.element_size()
-    shapes = ((pad_n_qh, pad_hd), (pad_n_kh, pad_hd))
+    shapes = ((n_qh, hd), (n_kh, hd))
     tile_shapes = compute_default_tiling_strategy(
         safety_margin=0.90,
         dtype_size=dtype_size,
@@ -256,8 +252,8 @@ def llama4_rope_backward(dq, dk, freqs_cis):
         BLOCK_Q, _ = q_tile_shape
         BLOCK_K, _ = k_tile_shape
     else:
-        BLOCK_Q = triton.next_power_of_2(pad_n_qh)
-        BLOCK_K = triton.next_power_of_2(pad_n_kh)
+        BLOCK_Q = triton.next_power_of_2(n_qh)
+        BLOCK_K = triton.next_power_of_2(n_kh)
 
     n_row = bs * sl
 
