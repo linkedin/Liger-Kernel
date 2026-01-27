@@ -497,9 +497,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
+                rope_parameters=dict(
+                    rope_theta=1000000.0,
                     mrope_section=[16, 24, 24],
                 ),
                 attention_dropout=0.0,
@@ -598,9 +597,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
+                rope_parameters=dict(
+                    rope_theta=1000000.0,
                     mrope_section=[16, 24, 24],
                 ),
                 attention_dropout=0.0,
@@ -675,9 +673,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_text():
             rms_norm_eps=1e-6,
             use_cache=False,
             tie_word_embeddings=True,
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
+            rope_parameters=dict(
+                rope_theta=1000000.0,
                 mrope_section=[16, 24, 24],
             ),
             attention_dropout=0.0,
@@ -771,9 +768,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
+                rope_parameters=dict(
+                    rope_theta=1000000.0,
                     mrope_section=[16, 24, 24],
                 ),
                 attention_dropout=0.0,
@@ -877,9 +873,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
+                rope_parameters=dict(
+                    rope_theta=1000000.0,
                     mrope_section=[16, 24, 24],
                 ),
                 attention_dropout=0.0,
@@ -959,9 +954,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
             rms_norm_eps=1e-6,
             use_cache=False,
             tie_word_embeddings=True,
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
+            rope_parameters=dict(
+                rope_theta=1000000.0,
                 mrope_section=[16, 24, 24],
             ),
             attention_dropout=0.0,
@@ -1107,6 +1101,13 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
                 intermediate_size=64,
                 hidden_act="silu",
                 num_hidden_layers=2,
+                rope_parameters=dict(
+                    factor=8.0,
+                    high_freq_factor=4.0,
+                    low_freq_factor=1.0,
+                    max_position_embeddings=8192,
+                    rope_type="llama3",
+                ),
                 rope_scaling=dict(
                     factor=8.0,
                     high_freq_factor=4.0,
