@@ -109,7 +109,7 @@ def embedding_backward_kernel(
 
 def get_optimal_block_size(total_elements, dtype_size, BLOCK_SIZE_N: tl.constexpr):
     # 1. Set Memory Multiplier
-    # 3.0 are empirical values based on 910B UB (192KB)
+    # 3.0 are empirical values based on Atlas 800I A2 UB (192KB)
     # embedding_offsets, embedding_offsets : BLOCK_SIZE_N * BLOCK_SIZE_M (total 2 * BLOCK_SIZE_N * BLOCK_SIZE_M)
     # Reserve a unit of space for the remaining one-dimensional ub to occupy.
     # A conservative estimate of the total space occupation is 3 * BLOCK_SIZE_N * BLOCK_SIZE_M

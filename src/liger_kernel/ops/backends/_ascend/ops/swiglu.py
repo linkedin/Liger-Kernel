@@ -70,7 +70,7 @@ def get_optimal_block_size(total_elements, is_backward=False):
     """
     # 1. Set Memory Multiplier
     # Forward is lighter, Backward requires more memory for intermediate variables
-    # 8.0 and 12.0 are empirical values based on 910B UB (192KB)
+    # 8.0 and 12.0 are empirical values based on Atlas 800I A2 UB (192KB)
     multiplier = 12.0 if is_backward else 8.0
 
     # 2. Call calculation function
