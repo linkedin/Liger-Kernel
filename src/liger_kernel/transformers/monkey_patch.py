@@ -37,6 +37,7 @@ from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
+from liger_kernel.transformers.swiglu import LigerMoEExperts
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
@@ -137,42 +138,10 @@ def _patch_geglu_module(module):
     _bind_method_to_module(module, "_get_name", lambda self: LigerGEGLUMLP.__name__)
 
 
-def _patch_experts_interface(experts_interface, liger_moe_function):
-    """
-    Patch ExpertsInterface to use Liger MoE kernels.
-    
-    Similar to _patch_swiglu_module, patches only forward, extra_repr, and _get_name.
-    Weight initialization and other aspects are handled by transformers.
-    
-    Args:
-        experts_interface: The ExpertsInterface instance to patch
-        liger_moe_function: The Liger MoE function class to use (e.g., LigerMoESwiGLUFunction)
-    """
-
-    original_forward = experts_interface.forward
-    
-    # TODO:  forward method with MoE kernel
-    def patched_forward(self, hidden_states, expert_indices=None, **kwargs):
-        return original_forward(hidden_states, expert_indices=expert_indices, **kwargs)
-    
-    def patched_extra_repr(self):
-        return "LigerMoEExpertsInterface"
-    
-    _bind_method_to_module(experts_interface, "forward", patched_forward)
-    _bind_method_to_module(experts_interface, "extra_repr", patched_extra_repr)
-    _bind_method_to_module(experts_interface, "_get_name", lambda self: "LigerMoEExpertsInterface")
-
-
-def _patch_moe_experts(experts, liger_module):
-    """
-    Patch MoE experts for transformers v5 ExpertsInterface.
-    
-    Args:
-        experts: The experts attribute from an MoE layer (ExpertsInterface in v5)
-        liger_module: The Liger module class (for reference, not used directly in v5)
-    """
-    # TODO: Pass appropriate MoE function based on activation type
-    _patch_experts_interface(experts, liger_moe_function=None)
+def _patch_experts_module(module):
+    _bind_method_to_module(module, "forward", LigerMoEExperts.forward)
+    _bind_method_to_module(module, "extra_repr", LigerMoEExperts.extra_repr)
+    _bind_method_to_module(module, "_get_name", LigerMoEExperts._get_name)
 
 
 def apply_liger_kernel_to_granite(
@@ -1489,7 +1458,7 @@ def apply_liger_kernel_to_qwen3_moe(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                _patch_moe_experts(decoder_layer.mlp.experts, LigerQwen3MoeSwiGLUMLP)
+                _patch_experts_module(decoder_layer.mlp.experts)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
