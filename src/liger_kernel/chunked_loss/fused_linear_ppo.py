@@ -5,6 +5,8 @@ import torch
 import torch._dynamo.config
 import torch.nn.functional as F
 
+from liger_kernel.utils import is_npu_available
+
 
 class LigerFusedLinearPPOBase(torch.autograd.Function):
     @abstractmethod
@@ -320,6 +322,9 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         """Forward pass computation for a single chunk without explicit reshaping."""
         # Directly compute logits via batched matrix multiplication: [B, T, H] @ [H, V] -> [B, T, V]
         logits = torch.matmul(input_chunk, weight.t())
+        # There are issues with the calculation of NPU on BF16.
+        if is_npu_available():
+            logits = logits.float()
         if bias is not None:
             logits = logits + bias  # Broadcasts bias to [B, T, V]
         if temperature != 1.0:
