@@ -6,6 +6,7 @@ except ImportError:
     PEFT_AVAILABLE = False
 
 import torch
+import triton
 
 
 def is_peft_available():
@@ -65,15 +66,16 @@ def is_npu_available() -> bool:
         return False
 
 
-def get_npu_multi_processor_count() -> int:
-    """Return a heuristic multi-processor count for NPU."""
-    if is_npu_available():
-        NPU_MULTI_PROCESSOR_COUNT = 48
-        dev_props = torch.npu.get_device_properties()
-        # The vector_core_num attribute is supported in the torch.npu v7.2.0 release version.
-        return dev_props.vector_core_num if hasattr(dev_props, "vector_core_num") else NPU_MULTI_PROCESSOR_COUNT
-    # Reasonable default to avoid division by zero
-    return 1
+def get_npu_core_count(default: int = 20) -> int:
+    """Return NPU vector core count.
+    Fallback to `default` if Triton runtime or NPU device is unavailable.
+    """
+    try:
+        utils = triton.runtime.driver.active.utils
+        props = utils.get_device_properties(0)
+        return int(props.get("num_vectorcore", default))
+    except Exception:
+        return default
 
 
 def transformers_version_dispatch(
