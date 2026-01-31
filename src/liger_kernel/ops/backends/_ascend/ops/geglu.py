@@ -6,7 +6,7 @@ from triton.language.math import tanh
 
 from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
 from liger_kernel.ops.utils import ensure_contiguous
-from liger_kernel.ops.utils import get_npu_core_count
+from liger_kernel.utils import get_npu_core_count
 
 
 @triton.jit
