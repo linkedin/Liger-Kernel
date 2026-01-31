@@ -64,7 +64,7 @@
 
 We've also added optimized Post-Training kernels that deliver **up to 80% memory savings** for alignment and distillation tasks. We support losses like DPO, CPO, ORPO, SimPO, KTO, JSD, and many more. Check out [how we optimize the memory](https://x.com/hsu_byron/status/1866577403918917655).
 
-You can view the documentation site for additional installation, usage examples, and API references:https://linkedin.github.io/Liger-Kernel/
+You can view the documentation site for additional installation, usage examples, and API references: https://linkedin.github.io/Liger-Kernel/
 
 You can view the Liger Kernel Technical Report: https://openreview.net/forum?id=36SjAIT42G
 
@@ -128,7 +128,7 @@ y = orpo_loss(lm_head.weight, x, target)
 
 #### ROCm
 
-- `torch >= 2.5.0` Install according to the instruction in Pytorch official webpage.
+- `torch >= 2.5.0` Install according to the instructions on the PyTorch official webpage.
 - `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
 
 ```bash
@@ -138,7 +138,7 @@ pip3 install --pre torch torchvision torchaudio --index-url https://download.pyt
 
 ### Optional Dependencies
 
-- `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
+- `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working with will dictate the minimum version of transformers.
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -373,7 +373,7 @@ loss.backward()
 
 - For issues, create a Github ticket in this repository
 - For open discussion, join [our discord channel on GPUMode](https://discord.com/channels/1189498204333543425/1275130785933951039)
-- For formal collaboration, send an email to Yanning Chen(yannchen@linkedin.com) and Zhipeng Wang(zhipwang@linkedin.com)
+- For formal collaboration, send an email to Yanning Chen (yannchen@linkedin.com) and Zhipeng Wang (zhipwang@linkedin.com)
 
 ## Cite this work
 
