@@ -3,7 +3,7 @@ import triton
 import triton.language as tl
 
 from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
-from liger_kernel.utils import get_npu_core_count
+from liger_kernel.ops.utils import get_npu_core_count
 
 # -----------------------------------------------------------------------------
 # Kernels (High-performance 1D Flatten Implementation)

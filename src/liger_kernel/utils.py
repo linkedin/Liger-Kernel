@@ -6,7 +6,6 @@ except ImportError:
     PEFT_AVAILABLE = False
 
 import torch
-import triton
 
 
 def is_peft_available():
@@ -64,18 +63,6 @@ def is_npu_available() -> bool:
         return is_torch_npu_available()
     except Exception:
         return False
-
-
-def get_npu_core_count(default: int = 20) -> int:
-    """Return NPU vector core count.
-    Fallback to `default` if Triton runtime or NPU device is unavailable.
-    """
-    try:
-        utils = triton.runtime.driver.active.utils
-        props = utils.get_device_properties(0)
-        return int(props.get("num_vectorcore", default))
-    except Exception:
-        return default
 
 
 def transformers_version_dispatch(
