@@ -28,6 +28,8 @@ def triton_grpo_loss(
         raise ValueError(
             f"Triton GRPO loss only supports token-level importance sampling. Got {importance_sampling_level}."
         )
+    if loss_type == "cispo":
+        raise ValueError("Triton GRPO loss does not support loss_type='cispo'. Use the chunked GRPO loss path.")
 
     per_token_loss, per_token_kl, is_clipped = GrpoLossFunction.apply(
         logits,
@@ -76,6 +78,9 @@ def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion
         batch = per_token_loss.shape[0]
         return (per_token_loss * mask).sum() / (batch * max_completion_length)
     if loss_type == "dapo":
+        normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask)
+        return (per_token_loss * mask).sum() / normalizer
+    if loss_type == "cispo":
         normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask)
         return (per_token_loss * mask).sum() / normalizer
     raise ValueError(f"Unsupported loss_type '{loss_type}' for Triton GRPO loss.")

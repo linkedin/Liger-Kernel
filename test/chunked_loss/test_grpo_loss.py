@@ -58,6 +58,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         epsilon_high,
         beta,
         importance_sampling_level,
+        loss_type: str = "grpo",
     ):
         attention_mask = attention_mask.to(per_token_logps.dtype)
         old_per_token_logps = (
@@ -77,28 +78,38 @@ class TorchLMHeadGRPO(torch.nn.Module):
             )
 
         coef_1 = torch.exp(log_importance_weights)
-        coef_2 = torch.clamp(coef_1, 1 - epsilon_low, 1 + epsilon_high)
         expanded_advantages = advantages.unsqueeze(1)
-        per_token_loss1 = coef_1 * expanded_advantages
-        per_token_loss2 = coef_2 * expanded_advantages
-        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+        if loss_type == "cispo":
+            clipped_coef = torch.clamp(coef_1, max=epsilon_high).detach()
+            per_token_loss = -clipped_coef * expanded_advantages * per_token_logps
+        else:
+            coef_2 = torch.clamp(coef_1, 1 - epsilon_low, 1 + epsilon_high)
+            per_token_loss1 = coef_1 * expanded_advantages
+            per_token_loss2 = coef_2 * expanded_advantages
+            per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         kl_div = None
         if beta != 0.0:
             ref_per_token_logps = ref_per_token_logps.float()
             kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
             per_token_loss = per_token_loss + beta * kl_div
 
-        if importance_sampling_level == "token":
-            is_clipped = ((coef_1 < 1 - epsilon_low) & (expanded_advantages < 0)) | (
-                (coef_1 > 1 + epsilon_high) & (expanded_advantages > 0)
-            )
-        else:  # sequence level
-            # For sequence level, coef_1 is shape (B, 1), advantages is shape (B,)
-            seq_advantages = advantages
-            is_clipped = ((coef_1.squeeze(-1) < 1 - epsilon_low) & (seq_advantages < 0)) | (
-                (coef_1.squeeze(-1) > 1 + epsilon_high) & (seq_advantages > 0)
-            )
-            is_clipped = is_clipped.unsqueeze(1).expand_as(attention_mask)
+        if loss_type == "cispo":
+            if importance_sampling_level == "token":
+                is_clipped = coef_1 > epsilon_high
+            else:  # sequence level
+                is_clipped = (coef_1.squeeze(-1) > epsilon_high).unsqueeze(1).expand_as(attention_mask)
+        else:
+            if importance_sampling_level == "token":
+                is_clipped = ((coef_1 < 1 - epsilon_low) & (expanded_advantages < 0)) | (
+                    (coef_1 > 1 + epsilon_high) & (expanded_advantages > 0)
+                )
+            else:  # sequence level
+                # For sequence level, coef_1 is shape (B, 1), advantages is shape (B,)
+                seq_advantages = advantages
+                is_clipped = ((coef_1.squeeze(-1) < 1 - epsilon_low) & (seq_advantages < 0)) | (
+                    (coef_1.squeeze(-1) > 1 + epsilon_high) & (seq_advantages > 0)
+                )
+                is_clipped = is_clipped.unsqueeze(1).expand_as(attention_mask)
         return per_token_loss, kl_div, is_clipped
 
     def forward(
@@ -148,6 +159,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
             self.epsilon_high,
             self.beta,
             self.importance_sampling_level,
+            self.loss_type,
         )
 
         # Apply masking and calculate loss based on loss_type
@@ -158,6 +170,9 @@ class TorchLMHeadGRPO(torch.nn.Module):
         elif self.loss_type == "dr_grpo":
             loss = (per_token_loss * attention_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
         elif self.loss_type == "dapo":
+            normalizer = attention_mask.sum().clamp(min=1.0)
+            loss = (per_token_loss * attention_mask).sum() / normalizer
+        elif self.loss_type == "cispo":
             normalizer = attention_mask.sum().clamp(min=1.0)
             loss = (per_token_loss * attention_mask).sum() / normalizer
         else:
@@ -259,7 +274,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         (False, False, True),
     ],
 )
-@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo", "dapo"])
+@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo", "dapo", "cispo"])
 @pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
 def test_correctness(
     B,
@@ -548,7 +563,7 @@ def test_functional_correctness(
         assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
 
 
-@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo"])
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo", "cispo"])
 def test_reduce_grpo_loss_matches_reference(loss_type):
     torch.manual_seed(0)
     per_token_loss = torch.randn(3, 5)
@@ -565,7 +580,7 @@ def test_reduce_grpo_loss_matches_reference(loss_type):
         expected = (per_token_loss * mask_f).sum() / mask_f.sum().clamp(min=1.0)
     elif loss_type == "dr_grpo":
         expected = (per_token_loss * mask_f).sum() / (per_token_loss.size(0) * max_completion_length)
-    else:  # dapo
+    else:  # dapo/cispo
         expected = (per_token_loss * mask_f).sum() / mask_f.sum().clamp(min=1.0)
 
     assert_verbose_allclose(reduced, expected)
