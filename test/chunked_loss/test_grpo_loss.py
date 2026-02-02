@@ -80,8 +80,10 @@ class TorchLMHeadGRPO(torch.nn.Module):
         coef_1 = torch.exp(log_importance_weights)
         expanded_advantages = advantages.unsqueeze(1)
         if loss_type == "cispo":
-            clipped_coef = torch.clamp(coef_1, max=epsilon_high).detach()
-            per_token_loss = -clipped_coef * expanded_advantages * per_token_logps
+            # CISPO: clip and detach the importance weights, multiply by log probs
+            # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2030
+            clamped_ratios = torch.clamp(coef_1, max=epsilon_high).detach()
+            per_token_loss = -clamped_ratios * expanded_advantages * per_token_logps
         else:
             coef_2 = torch.clamp(coef_1, 1 - epsilon_low, 1 + epsilon_high)
             per_token_loss1 = coef_1 * expanded_advantages
@@ -94,10 +96,14 @@ class TorchLMHeadGRPO(torch.nn.Module):
             per_token_loss = per_token_loss + beta * kl_div
 
         if loss_type == "cispo":
+            # CISPO: clipped when coef_1 > epsilon_high AND advantages > 0
+            # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2073
             if importance_sampling_level == "token":
-                is_clipped = coef_1 > epsilon_high
+                is_clipped = (coef_1 > epsilon_high) & (expanded_advantages > 0)
             else:  # sequence level
-                is_clipped = (coef_1.squeeze(-1) > epsilon_high).unsqueeze(1).expand_as(attention_mask)
+                is_clipped = (
+                    ((coef_1.squeeze(-1) > epsilon_high) & (advantages > 0)).unsqueeze(1).expand_as(attention_mask)
+                )
         else:
             if importance_sampling_level == "token":
                 is_clipped = ((coef_1 < 1 - epsilon_low) & (expanded_advantages < 0)) | (

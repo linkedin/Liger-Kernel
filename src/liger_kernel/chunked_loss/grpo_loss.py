@@ -68,9 +68,10 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         # importance_sampling_level: "token" level: (B, T); "sequence" level: (B, 1)
         coef_1 = torch.exp(log_importance_weights)
         if loss_type == "cispo":
-            # CISPO: detach clipped importance weights and apply log-prob directly.
-            clipped_coef = torch.clamp(coef_1, max=epsilon_high).detach()
-            per_token_loss = -clipped_coef * advantages.unsqueeze(1) * per_token_logps
+            # CISPO: clip and detach the importance weights, multiply by log probs
+            # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2030
+            clamped_ratios = torch.clamp(coef_1, max=epsilon_high).detach()
+            per_token_loss = -clamped_ratios * advantages.unsqueeze(1) * per_token_logps
         else:
             coef_2 = clip_coef_fn(coef_1, epsilon_low, epsilon_high)
             per_token_loss1 = coef_1 * advantages.unsqueeze(1)
@@ -112,10 +113,14 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
 
         # Adjust clipping metric calculation based on importance sampling level
         if loss_type == "cispo":
+            # CISPO: clipped when coef_1 > epsilon_high AND advantages > 0
+            # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2073
             if importance_sampling_level == "token":
-                is_clipped = coef_1 > epsilon_high
+                is_clipped = (coef_1 > epsilon_high) & (advantages.unsqueeze(1) > 0)
             else:  # sequence level
-                is_clipped = (coef_1.squeeze(-1) > epsilon_high).unsqueeze(1).expand_as(attention_mask)
+                is_clipped = (
+                    ((coef_1.squeeze(-1) > epsilon_high) & (advantages > 0)).unsqueeze(1).expand_as(attention_mask)
+                )
         else:
             if importance_sampling_level == "token":
                 is_clipped = ((coef_1 < 1 - epsilon_low) & (advantages.unsqueeze(1) < 0)) | (
