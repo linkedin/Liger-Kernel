@@ -20,16 +20,43 @@ def triton_grpo_loss(
     max_completion_length=None,
     importance_sampling_level="token",
     reduce=False,
+    vllm_is_ratio=None,
 ):
-    assert logits is not None and completion_ids is not None and advantages is not None, (
-        "must provide logits、completion_ids and advantages"
-    )
-    if importance_sampling_level != "token":
-        raise ValueError(
-            f"Triton GRPO loss only supports token-level importance sampling. Got {importance_sampling_level}."
-        )
+    """
+    Triton-optimized GRPO loss function.
 
-    per_token_loss, per_token_kl, is_clipped = GrpoLossFunction.apply(
+    Args:
+        logits: Model logits (B, L+1, V)
+        old_logp: Old policy log probabilities (B, L) or None
+        ref_logp: Reference model log probabilities (B, L) or None (required if beta != 0)
+        completion_ids: Token IDs for completions (B, L)
+        advantages: Per-sequence advantages (B,)
+        completion_mask: Mask for valid tokens (B, L) or None
+        temperature: Temperature for log softmax
+        beta: KL penalty coefficient
+        eps_low: Lower clipping bound for importance ratio
+        eps_high: Upper clipping bound for importance ratio
+        inplace: Whether to modify logits in-place during backward
+        loss_type: Loss reduction type ("grpo", "bnpo", "dr_grpo", "dapo")
+        max_completion_length: Max completion length for dr_grpo loss type; defaults to sequence length if None
+        importance_sampling_level: "token" or "sequence" importance sampling
+        reduce: If True, return reduced loss; if False, return per-token loss
+        vllm_is_ratio: vLLM importance sampling ratio (B, L) or (B, 1) or None.
+            Used to correct for distribution mismatch when using vLLM for generation.
+            Applied to PPO loss BEFORE adding KL penalty.
+
+    Returns:
+        If reduce=True: (loss, metrics) where metrics = [kl_mean, clip_ratio] or [clip_ratio]
+        If reduce=False: (per_token_loss, per_token_kl, is_clipped)
+    """
+    assert logits is not None and completion_ids is not None and advantages is not None, (
+        "must provide logits, completion_ids and advantages"
+    )
+    assert importance_sampling_level in ("token", "sequence"), (
+        f"importance_sampling_level must be 'token' or 'sequence', got {importance_sampling_level}"
+    )
+
+    result = GrpoLossFunction.apply(
         logits,
         old_logp,
         ref_logp,
@@ -41,22 +68,24 @@ def triton_grpo_loss(
         eps_low,
         eps_high,
         inplace,
+        loss_type,
+        max_completion_length,
+        reduce,
+        importance_sampling_level,
+        vllm_is_ratio,
     )
+
     if not reduce:
-        return per_token_loss, per_token_kl, is_clipped
+        # Returns (per_token_loss, per_token_kl, is_clipped) - all (B, L) tensors
+        return result
 
-    loss = _reduce_grpo_loss(
-        per_token_loss,
-        completion_mask,
-        loss_type=loss_type,
-        max_completion_length=max_completion_length,
-    )
-
+    # reduce=True: Returns (reduced_loss, kl_mean, clip_ratio) - all scalars
+    reduced_loss, kl_mean, clip_ratio = result
     metrics = []
-    if beta != 0.0 and per_token_kl is not None:
-        metrics.append(_masked_mean(per_token_kl, completion_mask))
-    metrics.append(_masked_mean(is_clipped.float(), completion_mask))
-    return loss, metrics
+    if beta != 0.0 and kl_mean is not None:
+        metrics.append(kl_mean)
+    metrics.append(clip_ratio)
+    return reduced_loss, metrics
 
 
 def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion_length):
@@ -71,10 +100,9 @@ def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion
     if loss_type == "bnpo":
         return (per_token_loss * mask).sum() / mask.sum().clamp(min=1.0)
     if loss_type == "dr_grpo":
-        if max_completion_length is None:
-            raise ValueError("max_completion_length must be provided when using loss_type='dr_grpo'")
         batch = per_token_loss.shape[0]
-        return (per_token_loss * mask).sum() / (batch * max_completion_length)
+        max_len = max_completion_length if max_completion_length is not None else per_token_loss.shape[1]
+        return (per_token_loss * mask).sum() / (batch * max_len)
     if loss_type == "dapo":
         normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask)
         return (per_token_loss * mask).sum() / normalizer
@@ -88,11 +116,12 @@ def _masked_mean(values, mask):
     return (values * mask).sum() / mask.sum().clamp(min=1.0)
 
 
-# This is a demo how to use grpo_loss in GRPOTrainer. The Trl version must be 0.16
+# This is a demo how to use grpo_loss in GRPOTrainer. The Trl version must be 0.26.2+
 """
 import torch
 import trl
-assert trl.__version__.startswith("0.16"), "please pip install trl==0.16"
+from packaging.version import Version
+assert Version(trl.__version__) >= Version("0.26.2"), "please pip install trl>=0.26.2"
 from trl.extras.profiling import profiling_decorator
 
 @profiling_decorator
@@ -117,18 +146,24 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
     ref_per_token_logps = inputs["ref_per_token_logps"]
     advantages = inputs["advantages"]
     old_per_token_logps = inputs["old_per_token_logps"]
-    
 
-    per_token_loss, per_token_kl, is_clipped = triton_grpo_loss(logits, 
-                                                                old_per_token_logps,
-                                                                ref_per_token_logps,
-                                                                completion_ids,
-                                                                advantages,
-                                                                completion_mask,
-                                                                self.temperature,
-                                                                self.beta,
-                                                                self.epsilon_low,
-                                                                self.epsilon_high,)
+    # Get vLLM importance sampling ratio if using vLLM with importance sampling correction
+    vllm_is_ratio = inputs.get("importance_sampling_ratio", None)
+
+    per_token_loss, per_token_kl, is_clipped = triton_grpo_loss(
+        logits,
+        old_per_token_logps,
+        ref_per_token_logps,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature=self.temperature,
+        beta=self.beta,
+        eps_low=self.epsilon_low,
+        eps_high=self.epsilon_high,
+        importance_sampling_level=self.importance_sampling_level,  # "token" or "sequence"
+        vllm_is_ratio=vllm_is_ratio,  # vLLM distribution correction
+    )
     loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
 
     # Log the metrics

@@ -30,8 +30,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         epsilon_high=0.2,
         beta=0.04,
         loss_type="dapo",  # ["grpo", "bnpo", "dr_grpo", "dapo"]
-        max_completion_length=None,  # Required for dr_grpo
+        max_completion_length=None,  # Optional for dr_grpo (defaults to sequence length)
         importance_sampling_level="token",  # ["token", "sequence"] - new parameter for GSPO
+        vllm_is_ratio=None,  # vLLM importance sampling ratio (chunk_size, seq_len) or None
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -71,6 +72,11 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         per_token_loss1 = coef_1 * advantages.unsqueeze(1)
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        # Apply vLLM importance sampling correction BEFORE adding KL penalty
+        if vllm_is_ratio is not None:
+            per_token_loss = per_token_loss * vllm_is_ratio
+
         if beta != 0.0:
             # Compute KL penalty (approximates KL[per_token_logps, ref_per_token_logps])
             kl_div = k3_loss_fn(ref_per_token_logps, per_token_logps)
@@ -91,9 +97,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             loss = (per_token_loss * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
         elif loss_type == "dr_grpo":
             # Dimension-Reduced GRPO (normalize by batch_size * max_completion_length)
-            if max_completion_length is None:
-                raise ValueError("max_completion_length must be provided for loss_type 'dr_grpo'")
-            loss = (per_token_loss * attention_mask).sum() / (full_attention_mask.shape[0] * max_completion_length)
+            max_len = max_completion_length if max_completion_length is not None else attention_mask.shape[1]
+            loss = (per_token_loss * attention_mask).sum() / (full_attention_mask.shape[0] * max_len)
         elif loss_type == "dapo":
             loss_normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(full_attention_mask)
             loss = (per_token_loss * attention_mask).sum() / loss_normalizer
@@ -145,6 +150,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         compiled=True,
         use_ref_model=True,
         chunk_size=1,
+        vllm_is_ratio=None,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -161,12 +167,14 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             ref_bias (torch.Tensor, optional): Reference model bias tensor. Shape: (vocab_size,)
             beta (float): Weight for the KL penalty
             loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo"). Defaults to "dapo".
-            max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
+            max_completion_length (int, optional): Maximum completion length; if None, defaults to sequence length.
             importance_sampling_level (str): Level of importance sampling ("token" or "sequence"). Defaults to "token".
             temperature (float): Temperature for the logits
             compiled (bool): Whether to use torch compile
             use_ref_model (bool): Whether to use a reference model
             chunk_size (int): Size of chunks for processing.
+            vllm_is_ratio (torch.Tensor, optional): vLLM importance sampling ratio (batch_size, seq_len) or None.
+                Used to correct for distribution mismatch when using vLLM for generation.
         Returns:
             torch.Tensor: Computed loss
         """
@@ -194,6 +202,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             use_ref_model=use_ref_model,
             chunk_size=chunk_size,
             importance_sampling_level=importance_sampling_level,
+            vllm_is_ratio=vllm_is_ratio,
         )
 
     @staticmethod
@@ -224,6 +233,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_compiled
             None,  # grad_use_ref_model
             None,  # grad_chunk_size
+            None,  # grad_vllm_is_ratio
         )
 
 
@@ -252,7 +262,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             epsilon_low (float): Lower bound for the importance sampling ratio.
             epsilon_high (float): Upper bound for the importance sampling ratio.
             loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo"). Defaults to "dapo".
-            max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
+            max_completion_length (int, optional): Maximum completion length; if None, defaults to sequence length.
             importance_sampling_level (str): Level of importance sampling ("token" or "sequence"). Defaults to "token".
             temperature (float): Temperature for the logits.
         """
@@ -281,6 +291,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
+        vllm_is_ratio=None,
     ):
         return LigerFusedLinearGRPOFunction.apply(
             _input,
@@ -304,4 +315,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.compiled,
             self.use_ref_model,
             self.chunk_size,
+            vllm_is_ratio,
         )
