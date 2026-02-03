@@ -25,6 +25,8 @@ class VisualizationsConfig:
         extra_config_filter (str, optional): A string to filter extra_benchmark_config.
                                             Can be a substring to match or a 'key=value' pair (e.g., "'H': 4096").
                                             Defaults to None, which means the first available config will be used if multiple exist.
+        gpu_filter (str, optional): A string to filter GPU names. If multiple GPUs are found,
+                                    the most recent one matching the filter is used. Defaults to None.
         display (bool): Display the visualization. Defaults to False
         overwrite (bool): Overwrite existing visualization, if none exist this flag has no effect as ones are always created and saved. Defaults to False
 
@@ -34,6 +36,7 @@ class VisualizationsConfig:
     metric_name: str
     kernel_operation_mode: str = "full"
     extra_config_filter: str | None = None
+    gpu_filter: str | None = None
     display: bool = False
     overwrite: bool = False
 
@@ -67,6 +70,12 @@ def parse_args() -> VisualizationsConfig:
         "Can be a substring to match or a JSON-like 'key=value' pair (e.g., \"'H': 4096\" or \"H=4096\" for simple cases). "
         "Defaults to None (first available config if multiple exist).",
     )
+    parser.add_argument(
+        "--gpu-filter",
+        type=str,
+        default=None,
+        help="A string to filter GPU names. If multiple GPUs are found, the most recent one matching the filter is used.",
+    )
     parser.add_argument("--display", action="store_true", help="Display the visualization")
     parser.add_argument(
         "--overwrite",
@@ -78,43 +87,18 @@ def parse_args() -> VisualizationsConfig:
     return args
 
 
-def load_data(config: VisualizationsConfig) -> pd.DataFrame:
-    """Loads the benchmark data from the CSV file and filters it based on the configuration.
+def extra_config_filter(df: pd.DataFrame, config: VisualizationsConfig) -> pd.DataFrame:
+    """Filters the dataframe based on the extra_benchmark_config using the provided filter string.
 
     Args:
+        df (pd.DataFrame): The dataframe to filter.
         config (VisualizationsConfig): Configuration object for the visualizations script.
 
-    Raises:
-        ValueError: If no data is found for the given filters.
-
     Returns:
-        pd.DataFrame: Filtered benchmark dataframe.
+        pd.DataFrame: The filtered dataframe.
     """
-    df = pd.read_csv(DATA_PATH)
-    df["extra_benchmark_config"] = df["extra_benchmark_config_str"].apply(json.loads)
-
-    base_filtered_df = df[
-        (df["kernel_name"] == config.kernel_name)
-        & (df["metric_name"] == config.metric_name)
-        & (df["kernel_operation_mode"] == config.kernel_operation_mode)
-    ]
-
-    if base_filtered_df.empty:
-        raise ValueError(
-            f"No data found for kernel_name='{config.kernel_name}', "
-            f"metric_name='{config.metric_name}', "
-            f"kernel_operation_mode='{config.kernel_operation_mode}'."
-        )
-
-    unique_extra_configs_str = base_filtered_df["extra_benchmark_config_str"].unique()
+    unique_extra_configs_str = df["extra_benchmark_config_str"].unique()
     selected_extra_config_str = None
-
-    if len(unique_extra_configs_str) == 0:
-        print(
-            "Warning: No extra_benchmark_config found for the initial filters. "
-            "Proceeding with all data from initial filter."
-        )
-        return base_filtered_df
 
     if config.extra_config_filter:
         matched_configs = []
@@ -169,24 +153,115 @@ def load_data(config: VisualizationsConfig) -> pd.DataFrame:
         print(f"Using unique extra_benchmark_config: {selected_extra_config_str}")
 
     if selected_extra_config_str:
-        final_filtered_df = base_filtered_df[
-            base_filtered_df["extra_benchmark_config_str"] == selected_extra_config_str
-        ]
+        filtered_df = df[df["extra_benchmark_config_str"] == selected_extra_config_str]
     else:
         print("Warning: Could not select an extra_benchmark_config. Using data from initial filter if any.")
-        final_filtered_df = base_filtered_df
+        filtered_df = df
+
+    return filtered_df
+
+
+def gpu_name_filter(df: pd.DataFrame, config: VisualizationsConfig) -> pd.DataFrame:
+    """Filters the dataframe based on the GPU name using the provided filter string.
+
+    Args:
+        df (pd.DataFrame): The dataframe to filter.
+        config (VisualizationsConfig): Configuration object for the visualizations script.
+
+    Returns:
+        pd.DataFrame: The filtered dataframe.
+    """
+    gpu_grouped = df.groupby(["gpu_name"])
+
+    if config.gpu_filter:
+        try:
+            matched_gpu_names = [gpu_name for gpu_name in gpu_grouped.groups.keys() if config.gpu_filter in gpu_name]
+            if matched_gpu_names:
+                selected_gpu_name = matched_gpu_names[-1]
+                if len(matched_gpu_names) > 1:
+                    print(
+                        f"Warning: Multiple GPU names match filter '{config.gpu_filter}' for ({config.metric_name}, {config.kernel_operation_mode})"
+                    )
+                    print(f"Deafulting to use: {selected_gpu_name}.")
+                    print(f"Available GPU names: {matched_gpu_names}.")
+                    print(
+                        "Use a more specific --gpu-filter argument to select a specific one."
+                        "(e.g., --gpu-filter 'A100' or 'H100')."
+                    )
+
+            else:
+                latest_gpu_name = list(gpu_grouped.groups.keys())[-1]
+                selected_gpu_name = latest_gpu_name
+                print(
+                    f"Warning: No GPU names match filter '{config.gpu_filter}'. "
+                    f"Available GPU names: {list(gpu_grouped.groups.keys())}. "
+                    f"Picking the most recent one."
+                )
+
+        except Exception as e:
+            print(
+                f"Warning: Error occurred while filtering GPU names with filter '{config.gpu_filter}': {e}. "
+                f"Picking the most recent one."
+            )
+            selected_gpu_name = list(gpu_grouped.groups.keys())[-1]
+
+        final_filtered_df = gpu_grouped.get_group((selected_gpu_name,))
+    else:
+        if len(gpu_grouped.groups) == 1:
+            final_filtered_df = df
+        else:
+            available_keys = list(gpu_grouped.groups.keys())
+            latest_gpu_name = available_keys[-1]
+            print(f"Collected data from more than 1 gpu. Picking the most recent data on {latest_gpu_name}")
+            print(f"Available GPU names: {available_keys}.")
+            print(
+                f"Use the --gpu-filter argument to select a specific one. (e.g., --gpu-filter '{available_keys[0]}')."
+            )
+            final_filtered_df = gpu_grouped.get_group((latest_gpu_name,))
+    return final_filtered_df
+
+
+def load_data(config: VisualizationsConfig) -> pd.DataFrame:
+    """Loads the benchmark data from the CSV file and filters it based on the configuration.
+
+    Args:
+        config (VisualizationsConfig): Configuration object for the visualizations script.
+
+    Raises:
+        ValueError: If no data is found for the given filters.
+
+    Returns:
+        pd.DataFrame: Filtered benchmark dataframe.
+    """
+    df = pd.read_csv(DATA_PATH)
+    df["extra_benchmark_config"] = df["extra_benchmark_config_str"].apply(json.loads)
+
+    base_filtered_df = df[
+        (df["kernel_name"] == config.kernel_name)
+        & (df["metric_name"] == config.metric_name)
+        & (df["kernel_operation_mode"] == config.kernel_operation_mode)
+    ]
+
+    if base_filtered_df.empty:
+        raise ValueError(
+            f"No data found for kernel_name='{config.kernel_name}', "
+            f"metric_name='{config.metric_name}', "
+            f"kernel_operation_mode='{config.kernel_operation_mode}'."
+        )
+
+    config_filtered_df = extra_config_filter(base_filtered_df, config)
+    print(config_filtered_df["extra_benchmark_config_str"].unique())
+    print(config_filtered_df["gpu_name"].unique())
+    final_filtered_df = gpu_name_filter(config_filtered_df, config)
 
     if final_filtered_df.empty:
         raise ValueError(
-            f"No data found after attempting to filter by extra_benchmark_config. "
-            f"Selected/Defaulted extra_config_str: {selected_extra_config_str}"
-            if selected_extra_config_str
-            else "No specific extra_config was selected."
+            f"No data found after attempting to filter with extra_benchmark_config and gpu_name for "
+            f"kernel_name='{config.kernel_name}', "
+            f"metric_name='{config.metric_name}', "
+            f"kernel_operation_mode='{config.kernel_operation_mode}'."
         )
 
-    print(
-        f"Plotting data for extra_benchmark_config: {json.loads(selected_extra_config_str if selected_extra_config_str else '{}')}"
-    )
     return final_filtered_df
 
 
@@ -288,6 +363,8 @@ def main():
             kernel_name=args.kernel_name,
             metric_name=args.metric_name,
             kernel_operation_mode=mode,
+            extra_config_filter=args.extra_config_filter,
+            gpu_filter=args.gpu_filter,
             display=args.display,
             overwrite=args.overwrite,
         )
