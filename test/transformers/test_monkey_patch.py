@@ -497,10 +497,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_parameters=dict(
-                    rope_theta=1000000.0,
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
             ).to_dict(),
@@ -597,10 +593,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_parameters=dict(
-                    rope_theta=1000000.0,
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
             ).to_dict(),
@@ -673,10 +665,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_text():
             rms_norm_eps=1e-6,
             use_cache=False,
             tie_word_embeddings=True,
-            rope_parameters=dict(
-                rope_theta=1000000.0,
-                mrope_section=[16, 24, 24],
-            ),
             attention_dropout=0.0,
             attention_bias=False,
         )
@@ -768,10 +756,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_parameters=dict(
-                    rope_theta=1000000.0,
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
                 decoder_sparse_step=1,
@@ -874,10 +858,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_parameters=dict(
-                    rope_theta=1000000.0,
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
                 decoder_sparse_step=1,
@@ -956,10 +936,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
             rms_norm_eps=1e-6,
             use_cache=False,
             tie_word_embeddings=True,
-            rope_parameters=dict(
-                rope_theta=1000000.0,
-                mrope_section=[16, 24, 24],
-            ),
             attention_dropout=0.0,
             attention_bias=False,
             decoder_sparse_step=1,
@@ -1104,20 +1080,6 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
                 intermediate_size=64,
                 hidden_act="silu",
                 num_hidden_layers=2,
-                rope_parameters=dict(
-                    factor=8.0,
-                    high_freq_factor=4.0,
-                    low_freq_factor=1.0,
-                    max_position_embeddings=8192,
-                    rope_type="llama3",
-                ),
-                rope_scaling=dict(
-                    factor=8.0,
-                    high_freq_factor=4.0,
-                    low_freq_factor=1.0,
-                    original_max_position_embeddings=8192,
-                    rope_type="llama3",
-                ),
             ),
             vision_config=transformers.models.mllama.configuration_mllama.MllamaVisionConfig(
                 rms_norm_eps=1e-5,
@@ -1209,13 +1171,6 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
             intermediate_size=64,
             hidden_act="silu",
             num_hidden_layers=2,
-            rope_scaling=dict(
-                factor=8.0,
-                high_freq_factor=4.0,
-                low_freq_factor=1.0,
-                original_max_position_embeddings=8192,
-                rope_type="llama3",
-            ),
         )
 
         dummy_model_instance = MllamaForCausalLM._from_config(config)
