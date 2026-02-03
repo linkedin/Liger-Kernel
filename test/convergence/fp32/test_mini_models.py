@@ -708,34 +708,36 @@ if QWEN2_VL_AVAILABLE:
         liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2_vl,
         model_class=Qwen2VLForConditionalGeneration,
         mini_model_config=Qwen2VLConfig(
-            attention_dropout=0.0,
-            # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
-            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
-            bos_token_id=1,  # 151643
-            eos_token_id=2,  # 151645
+            # In transformers v5, text-related parameters must be in text_config
+            text_config={
+                "attention_dropout": 0.0,
+                # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
+                # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+                "bos_token_id": 1,  # 151643
+                "eos_token_id": 2,  # 151645
+                "hidden_act": "silu",
+                "hidden_size": 1536,  # 8192
+                "initializer_range": 0.02,
+                "intermediate_size": 4864,  # 29568
+                "max_position_embeddings": 32768,
+                "max_window_layers": 4,  # 80
+                "num_attention_heads": 12,  # 64
+                "num_hidden_layers": 4,  # 80
+                "num_key_value_heads": 2,  # 8
+                "rms_norm_eps": 1e-6,  # 1e-5
+                "rope_parameters": {
+                    "mrope_section": [16, 24, 24],  # (temporal, height, width)
+                },
+                "sliding_window": 4096,
+                "tie_word_embeddings": False,
+                "use_cache": True,
+                "vocab_size": 32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
+                "use_sliding_window": False,
+            },
             vision_start_token_id=32765,  # vocab_size - 5
             vision_end_token_id=32766,  # vocab_size - 4
-            vision_token_id=32767,  # vocab_size - 3
             image_token_id=32768,  # vocab_size - 2
             video_token_id=32769,  # vocab_size - 1
-            hidden_act="silu",
-            hidden_size=1536,  # 8192
-            initializer_range=0.02,
-            intermediate_size=4864,  # 29568
-            max_position_embeddings=32768,
-            max_window_layers=4,  # 80
-            num_attention_heads=12,  # 64
-            num_hidden_layers=4,  # 80
-            num_key_value_heads=2,  # 8
-            rms_norm_eps=1e-6,  # 1e-5
-            rope_parameters=dict(
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
-            ),
-            sliding_window=4096,
-            tie_word_embeddings=False,
-            use_cache=True,
-            vocab_size=32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
-            use_sliding_window=False,
             vision_config={
                 "depth": 4,  # 32
                 "embed_dim": 1280,
@@ -748,7 +750,6 @@ if QWEN2_VL_AVAILABLE:
                 "spatial_patch_size": 14,
                 "temporal_patch_size": 2,
             },
-            attn_implementation="sdpa",
         ),
     )
 
@@ -758,34 +759,36 @@ if QWEN2_5_VL_AVAILABLE:
         liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2_5_vl,
         model_class=Qwen2_5_VLForConditionalGeneration,
         mini_model_config=Qwen2_5_VLConfig(
-            attention_dropout=0.0,
-            # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
-            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
-            bos_token_id=1,  # 151643
-            eos_token_id=2,  # 151645
+            # In transformers v5, text-related parameters must be in text_config
+            text_config={
+                "attention_dropout": 0.0,
+                # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
+                # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+                "bos_token_id": 1,  # 151643
+                "eos_token_id": 2,  # 151645
+                "hidden_act": "silu",
+                "hidden_size": 1536,  # 8192
+                "initializer_range": 0.02,
+                "intermediate_size": 4864,  # 29568
+                "max_position_embeddings": 32768,
+                "max_window_layers": 4,  # 80
+                "num_attention_heads": 12,  # 64
+                "num_hidden_layers": 4,  # 80
+                "num_key_value_heads": 2,  # 8
+                "rms_norm_eps": 1e-6,  # 1e-5
+                "rope_parameters": {
+                    "mrope_section": [16, 24, 24],  # (temporal, height, width)
+                },
+                "sliding_window": 4096,
+                "tie_word_embeddings": False,
+                "use_cache": True,
+                "vocab_size": 32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
+                "use_sliding_window": False,
+            },
             vision_start_token_id=32765,  # vocab_size - 5
             vision_end_token_id=32766,  # vocab_size - 4
-            vision_token_id=32767,  # vocab_size - 3
             image_token_id=32768,  # vocab_size - 2
             video_token_id=32769,  # vocab_size - 1
-            hidden_act="silu",
-            hidden_size=1536,  # 8192
-            initializer_range=0.02,
-            intermediate_size=4864,  # 29568
-            max_position_embeddings=32768,
-            max_window_layers=4,  # 80
-            num_attention_heads=12,  # 64
-            num_hidden_layers=4,  # 80
-            num_key_value_heads=2,  # 8
-            rms_norm_eps=1e-6,  # 1e-5
-            rope_parameters=dict(
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
-            ),
-            sliding_window=4096,
-            tie_word_embeddings=False,
-            use_cache=True,
-            vocab_size=32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
-            use_sliding_window=False,
             vision_config={
                 "depth": 4,  # 32
                 "hidden_act": "silu",
@@ -802,7 +805,6 @@ if QWEN2_5_VL_AVAILABLE:
                 "tokens_per_second": 2,
                 "temporal_patch_size": 2,
             },
-            attn_implementation="sdpa",
         ),
     )
 

@@ -129,7 +129,7 @@ def lce_forward(
             lm_head_weight=self.lm_head.weight,
             labels=labels,
             shift_labels=shift_labels,
-            hidden_size=self.config.hidden_size,
+            hidden_size=self.config.text_config.hidden_size,
             **kwargs,
         )
         loss, _, token_accuracy = unpack_cross_entropy_result(result)
@@ -142,7 +142,7 @@ def lce_forward(
                 logits=logits,
                 labels=labels,
                 shift_labels=shift_labels,
-                vocab_size=self.config.vocab_size,
+                vocab_size=self.config.text_config.vocab_size,
             )
 
     if not return_dict:
