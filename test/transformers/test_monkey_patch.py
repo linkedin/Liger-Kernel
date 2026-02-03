@@ -779,6 +779,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
                 num_experts_per_tok=2,
                 num_experts=4,
                 mlp_only_layers=[],
+                pad_token_id=None,
             ).to_dict(),
         )
         dummy_model_instance = Qwen3VLMoeForConditionalGeneration._from_config(config)
@@ -884,6 +885,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
                 num_experts_per_tok=2,
                 num_experts=4,
                 mlp_only_layers=[],
+                pad_token_id=None,
             ).to_dict(),
         )
         dummy_model_instance = Qwen3VLMoeModel._from_config(config)
@@ -965,6 +967,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
             num_experts_per_tok=2,
             num_experts=4,
             mlp_only_layers=[],
+            pad_token_id=None,
         )
         dummy_model_instance = Qwen3VLMoeTextModel._from_config(config)
 
@@ -1321,6 +1324,7 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
                 num_hidden_layers=2,
                 vision_output_dim=64,
             ),
+            pad_token_id=None,
         )
         dummy_model_instance = Llama4ForConditionalGeneration._from_config(config)
 
@@ -2599,6 +2603,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v():
                 "hidden_size": 32,
                 "intermediate_size": 64,
                 "hidden_act": "silu",
+                "pad_token_id": None,
             },
             vision_config={
                 "num_hidden_layers": 2,
