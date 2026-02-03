@@ -97,7 +97,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
 
         if loss_type == "cispo":
             # CISPO: clipped when coef_1 > epsilon_high AND advantages > 0
-            # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2073
+            # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2120-L2124
             if importance_sampling_level == "token":
                 is_clipped = (coef_1 > epsilon_high) & (expanded_advantages > 0)
             else:  # sequence level
