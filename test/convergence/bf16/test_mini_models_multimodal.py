@@ -491,6 +491,9 @@ if QWEN2_VL_AVAILABLE:
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-6,  # 1e-5
+            rope_parameters=dict(
+                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            ),
             sliding_window=4096,
             tie_word_embeddings=True,
             use_cache=False,  # True
@@ -660,6 +663,9 @@ if QWEN2_5_VL_AVAILABLE:
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-6,  # 1e-5
+            rope_parameters=dict(
+                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            ),
             sliding_window=4096,
             tie_word_embeddings=True,
             use_cache=False,  # True
