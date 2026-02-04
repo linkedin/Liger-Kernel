@@ -35,6 +35,7 @@ test-convergence:
 	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/bf16/test_mini_models.py
 	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/bf16/test_mini_models_multimodal.py
 	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/bf16/test_mini_models_with_logits.py
+	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/bf16/test_mhc_mini_lm.py
 
 # Command to run all benchmark scripts and update benchmarking data file
 # By default this doesn't overwrite existing data for the same benchmark experiment
@@ -71,4 +72,3 @@ build:
 # Clean the output directory
 clean:
 	rm -rf $(SITE_DIR)/
-

@@ -150,6 +150,55 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
         raise AssertionError(extra_info + "\n".join(mismatch_details))
 
 
+def mhc_sinkhorn_ref(logits: torch.Tensor, *, tmax: int, eps: float) -> torch.Tensor:
+    """
+    logits: [N, HC, HC]
+    """
+    mat = torch.softmax(logits, dim=-1) + eps
+    mat = mat / (mat.sum(dim=-2, keepdim=True) + eps)
+    for _ in range(tmax - 1):
+        mat = mat / (mat.sum(dim=-1, keepdim=True) + eps)
+        mat = mat / (mat.sum(dim=-2, keepdim=True) + eps)
+    return mat
+
+
+def mhc_coeffs_ref(
+    x: torch.Tensor,
+    phi: torch.Tensor,
+    b: torch.Tensor,
+    alpha_pre: torch.Tensor,
+    alpha_post: torch.Tensor,
+    alpha_res: torch.Tensor,
+    *,
+    tmax: int,
+    rms_eps: float,
+    pre_eps: float,
+    sinkhorn_eps: float,
+    post_mult: float,
+):
+    x_flat = x.contiguous().view(-1, x.shape[-2], x.shape[-1]).float()
+    n, hc, c = x_flat.shape
+    k = hc * c
+    x_mat = x_flat.view(n, k)
+    invr = torch.rsqrt(x_mat.pow(2).mean(dim=-1, keepdim=True) + rms_eps)
+    mix = (x_mat @ phi.float()) * invr
+
+    pre_logits = mix[:, :hc] * alpha_pre + b[:hc]
+    post_logits = mix[:, hc : 2 * hc] * alpha_post + b[hc : 2 * hc]
+    res_logits = mix[:, 2 * hc :].view(n, hc, hc) * alpha_res + b[2 * hc :].view(hc, hc)
+
+    h_pre = torch.sigmoid(pre_logits) + pre_eps
+    h_post = torch.sigmoid(post_logits) * post_mult
+    h_res = mhc_sinkhorn_ref(res_logits, tmax=tmax, eps=sinkhorn_eps)
+
+    outer = x.shape[:-2]
+    return (
+        h_pre.view(*outer, hc),
+        h_post.view(*outer, hc),
+        h_res.view(*outer, hc, hc),
+    )
+
+
 # Pre-tokenized dataset using Mistral-7B tokenizer used for convergence tests
 DEFAULT_DATASET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/tiny_shakespeare_tokenized")
 
