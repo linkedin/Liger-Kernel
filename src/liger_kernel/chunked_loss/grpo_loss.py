@@ -11,8 +11,21 @@ def k3_loss_fn(log_p, log_q):
     return torch.exp(log_p - log_q) - (log_p - log_q) - 1.0
 
 
-def clip_coef_fn(coef, epsilon_low, epsilon_high):
-    return torch.clamp(coef, 1 - epsilon_low, 1 + epsilon_high)
+def clip_coef_fn(coef, epsilon_low, epsilon_high, loss_type):
+    if loss_type == "cispo":
+        # CISPO: clip and detach the importance weights
+        upper_bound = epsilon_high
+        lower_bound = None
+        clipped_coef = torch.clamp(coef, lower_bound, upper_bound).detach()
+        is_lower_clipped = False
+        is_upper_clipped = coef > upper_bound
+    else:
+        upper_bound = 1 + epsilon_high
+        lower_bound = 1 - epsilon_low
+        clipped_coef = torch.clamp(coef, lower_bound, upper_bound)
+        is_lower_clipped = coef < lower_bound
+        is_upper_clipped = coef > upper_bound
+    return clipped_coef, is_lower_clipped, is_upper_clipped
 
 
 class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
@@ -67,13 +80,12 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         # From here, log_importance_weights (and all subsequent tensors, coef_1, coef_2, etc.) shape depends on
         # importance_sampling_level: "token" level: (B, T); "sequence" level: (B, 1)
         coef_1 = torch.exp(log_importance_weights)
+        coef_2, is_lower_clipped, is_upper_clipped = clip_coef_fn(coef_1, epsilon_low, epsilon_high, loss_type)
         if loss_type == "cispo":
             # CISPO: clip and detach the importance weights, multiply by log probs
             # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2030
-            clamped_ratios = torch.clamp(coef_1, max=epsilon_high).detach()
-            per_token_loss = -clamped_ratios * advantages.unsqueeze(1) * per_token_logps
+            per_token_loss = -coef_2 * advantages.unsqueeze(1) * per_token_logps
         else:
-            coef_2 = clip_coef_fn(coef_1, epsilon_low, epsilon_high)
             per_token_loss1 = coef_1 * advantages.unsqueeze(1)
             per_token_loss2 = coef_2 * advantages.unsqueeze(1)
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
@@ -112,26 +124,14 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             metrics.append(((kl_div * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)))
 
         # Adjust clipping metric calculation based on importance sampling level
-        if loss_type == "cispo":
-            # CISPO: clipped when coef_1 > epsilon_high AND advantages > 0
-            # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2120-L2124
-            if importance_sampling_level == "token":
-                is_clipped = (coef_1 > epsilon_high) & (advantages.unsqueeze(1) > 0)
-            else:  # sequence level
-                is_clipped = (
-                    ((coef_1.squeeze(-1) > epsilon_high) & (advantages > 0)).unsqueeze(1).expand_as(attention_mask)
-                )
-        else:
-            if importance_sampling_level == "token":
-                is_clipped = ((coef_1 < 1 - epsilon_low) & (advantages.unsqueeze(1) < 0)) | (
-                    (coef_1 > 1 + epsilon_high) & (advantages.unsqueeze(1) > 0)
-                )
-            else:  # sequence level
-                # For sequence level, coef_1 is shape (B, 1), advantages is shape (B,)
-                is_clipped = ((coef_1.squeeze(-1) < 1 - epsilon_low) & (advantages < 0)) | (
-                    (coef_1.squeeze(-1) > 1 + epsilon_high) & (advantages > 0)
-                )
-                is_clipped = is_clipped.unsqueeze(1).expand_as(attention_mask)
+        if importance_sampling_level == "token":
+            is_clipped = (is_lower_clipped & (advantages.unsqueeze(1) < 0)) | (
+                is_upper_clipped & (advantages.unsqueeze(1) > 0)
+            )
+        else:  # sequence level
+            # For sequence level, coef_1 is shape (B, 1), advantages is shape (B,)
+            is_clipped = (is_lower_clipped & (advantages < 0)) | (is_upper_clipped & (advantages > 0))
+            is_clipped = is_clipped.expand_as(attention_mask)
 
         metrics.append((is_clipped * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0))
         return loss, metrics
