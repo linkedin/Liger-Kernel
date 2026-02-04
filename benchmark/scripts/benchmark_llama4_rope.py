@@ -40,8 +40,6 @@ def bench_speed_llama4_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRu
         num_key_value_heads=num_kv_heads,
         head_dim=head_dim,
         max_position_embeddings=seq_len,
-        rope_theta=10000.0,
-        rope_scaling=None,  # Use default rope type
     )
 
     rotary_emb = transformers_version_dispatch(
@@ -134,8 +132,6 @@ def bench_memory_llama4_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkR
         num_key_value_heads=num_kv_heads,
         head_dim=head_dim,
         max_position_embeddings=seq_len,
-        rope_theta=10000.0,
-        rope_scaling=None,  # Use default rope type
     )
 
     rotary_emb = transformers_version_dispatch(
