@@ -11,8 +11,21 @@ def k3_loss_fn(log_p, log_q):
     return torch.exp(log_p - log_q) - (log_p - log_q) - 1.0
 
 
-def clip_coef_fn(coef, epsilon_low, epsilon_high):
-    return torch.clamp(coef, 1 - epsilon_low, 1 + epsilon_high)
+def clip_coef_fn(coef, epsilon_low, epsilon_high, loss_type):
+    if loss_type == "cispo":
+        # CISPO: clip and detach the importance weights
+        upper_bound = epsilon_high
+        lower_bound = None
+        clipped_coef = torch.clamp(coef, lower_bound, upper_bound).detach()
+        is_lower_clipped = False
+        is_upper_clipped = coef > upper_bound
+    else:
+        upper_bound = 1 + epsilon_high
+        lower_bound = 1 - epsilon_low
+        clipped_coef = torch.clamp(coef, lower_bound, upper_bound)
+        is_lower_clipped = coef < lower_bound
+        is_upper_clipped = coef > upper_bound
+    return clipped_coef, is_lower_clipped, is_upper_clipped
 
 
 class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
@@ -29,7 +42,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         epsilon_low=0.2,
         epsilon_high=0.2,
         beta=0.04,
-        loss_type="dapo",  # ["grpo", "bnpo", "dr_grpo", "dapo"]
+        loss_type="dapo",  # ["grpo", "bnpo", "dr_grpo", "dapo", "cispo"]
         max_completion_length=None,  # Required for dr_grpo
         importance_sampling_level="token",  # ["token", "sequence"] - new parameter for GSPO
         **kwargs,
@@ -67,10 +80,15 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         # From here, log_importance_weights (and all subsequent tensors, coef_1, coef_2, etc.) shape depends on
         # importance_sampling_level: "token" level: (B, T); "sequence" level: (B, 1)
         coef_1 = torch.exp(log_importance_weights)
-        coef_2 = clip_coef_fn(coef_1, epsilon_low, epsilon_high)
-        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
-        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
-        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+        coef_2, is_lower_clipped, is_upper_clipped = clip_coef_fn(coef_1, epsilon_low, epsilon_high, loss_type)
+        if loss_type == "cispo":
+            # CISPO: clip and detach the importance weights, multiply by log probs
+            # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2030
+            per_token_loss = -coef_2 * advantages.unsqueeze(1) * per_token_logps
+        else:
+            per_token_loss1 = coef_1 * advantages.unsqueeze(1)
+            per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+            per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         if beta != 0.0:
             # Compute KL penalty (approximates KL[per_token_logps, ref_per_token_logps])
             kl_div = k3_loss_fn(ref_per_token_logps, per_token_logps)
@@ -94,7 +112,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             if max_completion_length is None:
                 raise ValueError("max_completion_length must be provided for loss_type 'dr_grpo'")
             loss = (per_token_loss * attention_mask).sum() / (full_attention_mask.shape[0] * max_completion_length)
-        elif loss_type == "dapo":
+        elif loss_type == "dapo" or loss_type == "cispo":
             loss_normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(full_attention_mask)
             loss = (per_token_loss * attention_mask).sum() / loss_normalizer
         else:
@@ -107,15 +125,15 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
 
         # Adjust clipping metric calculation based on importance sampling level
         if importance_sampling_level == "token":
-            is_clipped = ((coef_1 < 1 - epsilon_low) & (advantages.unsqueeze(1) < 0)) | (
-                (coef_1 > 1 + epsilon_high) & (advantages.unsqueeze(1) > 0)
+            is_clipped = (is_lower_clipped & (advantages.unsqueeze(1) < 0)) | (
+                is_upper_clipped & (advantages.unsqueeze(1) > 0)
             )
         else:  # sequence level
             # For sequence level, coef_1 is shape (B, 1), advantages is shape (B,)
-            is_clipped = ((coef_1.squeeze(-1) < 1 - epsilon_low) & (advantages < 0)) | (
-                (coef_1.squeeze(-1) > 1 + epsilon_high) & (advantages > 0)
+            is_clipped = (is_lower_clipped & (advantages.unsqueeze(1) < 0)) | (
+                is_upper_clipped & (advantages.unsqueeze(1) > 0)
             )
-            is_clipped = is_clipped.unsqueeze(1).expand_as(attention_mask)
+            is_clipped = is_clipped.expand_as(attention_mask)
 
         metrics.append((is_clipped * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0))
         return loss, metrics
@@ -160,7 +178,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             ref_weight (torch.Tensor, optional): Reference model weight tensor. Shape: (vocab_size, hidden_size)
             ref_bias (torch.Tensor, optional): Reference model bias tensor. Shape: (vocab_size,)
             beta (float): Weight for the KL penalty
-            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo"). Defaults to "dapo".
+            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo"). Defaults to "dapo".
             max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
             importance_sampling_level (str): Level of importance sampling ("token" or "sequence"). Defaults to "token".
             temperature (float): Temperature for the logits
@@ -251,7 +269,9 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             chunk_size (int): Size of chunks for processing.
             epsilon_low (float): Lower bound for the importance sampling ratio.
             epsilon_high (float): Upper bound for the importance sampling ratio.
-            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo"). Defaults to "dapo".
+            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo").
+                Defaults to "dapo". For "cispo", epsilon_high is typically larger (e.g. 5.0) and
+                epsilon_low is unused.
             max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
             importance_sampling_level (str): Level of importance sampling ("token" or "sequence"). Defaults to "token".
             temperature (float): Temperature for the logits.
