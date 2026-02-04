@@ -22,7 +22,7 @@ def triton_grpo_loss(
     reduce=False,
 ):
     assert logits is not None and completion_ids is not None and advantages is not None, (
-        "must provide logits、completion_ids and advantages"
+        "must provide logits, completion_ids and advantages"
     )
     if importance_sampling_level != "token":
         raise ValueError(
