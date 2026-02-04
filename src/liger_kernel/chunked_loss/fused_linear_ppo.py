@@ -60,7 +60,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             epsilon_low: Lower bound for clipping the importance sampling ratio
             epsilon_high: Upper bound for clipping the importance sampling ratio
             beta: Weight for the KL penalty
-            loss_type: Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo")
+            loss_type: Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo")
             max_completion_length: Maximum completion length required for "dr_grpo"
             temperature: Temperature for the logits
             compiled: Whether to use torch compile
