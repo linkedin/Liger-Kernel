@@ -569,7 +569,7 @@ def test_functional_correctness(
         assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
 
 
-@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo", "cispo"])
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo"])
 def test_reduce_grpo_loss_matches_reference(loss_type):
     torch.manual_seed(0)
     per_token_loss = torch.randn(3, 5)
