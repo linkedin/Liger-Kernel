@@ -65,17 +65,6 @@ def is_npu_available() -> bool:
         return False
 
 
-def get_npu_multi_processor_count() -> int:
-    """Return a heuristic multi-processor count for NPU."""
-    if is_npu_available():
-        NPU_MULTI_PROCESSOR_COUNT = 48
-        dev_props = torch.npu.get_device_properties()
-        # The vector_core_num attribute is supported in the torch.npu v7.2.0 release version.
-        return dev_props.vector_core_num if hasattr(dev_props, "vector_core_num") else NPU_MULTI_PROCESSOR_COUNT
-    # Reasonable default to avoid division by zero
-    return 1
-
-
 def transformers_version_dispatch(
     required_version: str,
     before_fn,

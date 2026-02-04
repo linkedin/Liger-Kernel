@@ -125,13 +125,11 @@ def bench_memory_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
     gpu_memory_gbs = get_total_gpu_memory()
-    # We know that the full test will require 69GBs for vocab size 2^17 and 39GBs for vocab size 2^16 on torch
-    if gpu_memory_gbs >= 69:
+    # We know that the full test will require 54GBs for vocab size 2^17 on torch
+    if gpu_memory_gbs >= 54:
         x_max = 17
-    elif gpu_memory_gbs >= 39:
-        x_max = 16
     else:
-        x_max = 15
+        x_max = 16
     common_args = {
         "kernel_name": "jsd",
         "x_name": "V",
