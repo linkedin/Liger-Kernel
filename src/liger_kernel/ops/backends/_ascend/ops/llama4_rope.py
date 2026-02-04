@@ -40,7 +40,7 @@ def _triton_llama4_rope_npu(
     """
     Llama4 RoPE on Ascend NPU for interleaved complex layout:
     - q/k shape: (bs, sl, n_heads, hd)
-    - freqs_complex_ptr: (bs, sl, hd//2)
+    - freqs_complex_ptr: (bs, sl, hd//2, 2)
     """
     pid = tl.program_id(0).to(tl.int64)
     batch_idx = pid // sl
@@ -59,10 +59,10 @@ def _triton_llama4_rope_npu(
     freq_idx = tl.arange(0, hd)
     freq_mask = freq_idx < (hd)
 
-    freqs_complex_ptr = tl.load(freqs_complex_ptr + freq_base + freq_idx, mask=freq_mask, other=0.0)
+    freqs_complex = tl.load(freqs_complex_ptr + freq_base + freq_idx, mask=freq_mask, other=0.0)
 
-    freqs_complex_ptr = freqs_complex_ptr.reshape(hd // 2, 2, can_reorder=True)
-    freqs_real, freqs_imag = tl.split(freqs_complex_ptr)
+    freqs_complex = freqs_complex.reshape(hd // 2, 2, can_reorder=True)
+    freqs_real, freqs_imag = tl.split(freqs_complex)
     freqs_imag = freqs_imag * imag_sign
 
     # Q heads (chunked for UB)
