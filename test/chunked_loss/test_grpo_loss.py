@@ -113,7 +113,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
             is_clipped = (is_lower_clipped & (expanded_advantages < 0)) | (is_upper_clipped & (expanded_advantages > 0))
         else:  # sequence level
             # For sequence level, coef_1 is shape (B, 1), advantages is shape (B,)
-            is_clipped = (is_lower_clipped & (advantages < 0)) | (is_upper_clipped & (advantages > 0))
+            is_clipped = (is_lower_clipped & (expanded_advantages < 0)) | (is_upper_clipped & (expanded_advantages > 0))
             is_clipped = is_clipped.expand_as(attention_mask)
         return per_token_loss, kl_div, is_clipped
 

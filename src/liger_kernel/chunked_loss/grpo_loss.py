@@ -130,7 +130,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             )
         else:  # sequence level
             # For sequence level, coef_1 is shape (B, 1), advantages is shape (B,)
-            is_clipped = (is_lower_clipped & (advantages < 0)) | (is_upper_clipped & (advantages > 0))
+            is_clipped = (is_lower_clipped & (advantages.unsqueeze(1) < 0)) | (
+                is_upper_clipped & (advantages.unsqueeze(1) > 0)
+            )
             is_clipped = is_clipped.expand_as(attention_mask)
 
         metrics.append((is_clipped * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0))

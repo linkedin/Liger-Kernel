@@ -21,9 +21,9 @@ def triton_grpo_loss(
     importance_sampling_level="token",
     reduce=False,
 ):
-    assert (
-        logits is not None and completion_ids is not None and advantages is not None
-    ), "must provide logits、completion_ids and advantages"
+    assert logits is not None and completion_ids is not None and advantages is not None, (
+        "must provide logits、completion_ids and advantages"
+    )
     if importance_sampling_level != "token":
         raise ValueError(
             f"Triton GRPO loss only supports token-level importance sampling. Got {importance_sampling_level}."
