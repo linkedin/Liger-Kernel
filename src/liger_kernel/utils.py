@@ -65,17 +65,6 @@ def is_npu_available() -> bool:
         return False
 
 
-def get_npu_multi_processor_count() -> int:
-    """Return a heuristic multi-processor count for NPU."""
-    if is_npu_available():
-        NPU_MULTI_PROCESSOR_COUNT = 48
-        dev_props = torch.npu.get_device_properties()
-        # The vector_core_num attribute is supported in the torch.npu v7.2.0 release version.
-        return dev_props.vector_core_num if hasattr(dev_props, "vector_core_num") else NPU_MULTI_PROCESSOR_COUNT
-    # Reasonable default to avoid division by zero
-    return 1
-
-
 def transformers_version_dispatch(
     required_version: str,
     before_fn,
@@ -121,3 +110,16 @@ def transformers_version_dispatch(
         return before_fn(*before_args, **before_kwargs)
     else:
         return after_fn(*after_args, **after_kwargs)
+
+
+def get_total_gpu_memory() -> int:
+    """Returns total GPU memory in GBs."""
+    device = infer_device()
+    if device == "cuda":
+        return torch.cuda.get_device_properties(0).total_memory // (1024**3)
+    elif device == "xpu":
+        return torch.xpu.get_device_properties(0).total_memory // (1024**3)
+    elif device == "npu":
+        return torch.npu.get_device_properties(0).total_memory // (1024**3)
+    else:
+        raise RuntimeError(f"Unsupported device: {device}")
