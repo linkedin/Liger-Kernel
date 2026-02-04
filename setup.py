@@ -33,6 +33,7 @@ def get_optional_dependencies():
     return {
         "dev": [
             "transformers>=5.0.0",
+            "transformers>=4.49.0",
             "matplotlib>=3.7.2",
             "ruff>=0.12.0",
             "pytest>=7.1.2",

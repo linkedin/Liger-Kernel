@@ -12,6 +12,7 @@ from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
 from liger_kernel.chunked_loss.jsd_loss import LigerFusedLinearJSDFunction
+from liger_kernel.utils import get_total_gpu_memory
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -224,12 +225,20 @@ def bench_speed_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
+    gpu_memory_gbs = get_total_gpu_memory()
+    # We know that the full test will require 69GBs for vocab size 2^13 and 39GBs for vocab size 2^12 on torch
+    if gpu_memory_gbs >= 69:
+        x_max = 13
+    elif gpu_memory_gbs >= 39:
+        x_max = 12
+    else:
+        x_max = 11
 
     common_configs = {
         "kernel_name": "distill_jsd_loss",
         "x_name": "BT",
         "x_label": "B x T",
-        "x_values": [2**i for i in range(10, 14)],
+        "x_values": [2**i for i in range(10, x_max + 1)],
         "kernel_providers": ["liger", "torch"],
         "extra_benchmark_configs": [
             {
