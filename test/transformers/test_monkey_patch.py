@@ -10,6 +10,8 @@ import torch
 import transformers
 
 from packaging import version
+from test.utils import get_mllama_rope_config
+from test.utils import get_qwen3_vl_rope_config
 from transformers import AutoModelForCausalLM
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
@@ -499,6 +501,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
                 tie_word_embeddings=True,
                 attention_dropout=0.0,
                 attention_bias=False,
+                **get_qwen3_vl_rope_config(),  # Version-aware rope configuration
             ).to_dict(),
         )
         dummy_model_instance = Qwen3VLForConditionalGeneration._from_config(config)
@@ -595,6 +598,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
                 tie_word_embeddings=True,
                 attention_dropout=0.0,
                 attention_bias=False,
+                **get_qwen3_vl_rope_config(),  # Version-aware rope configuration
             ).to_dict(),
         )
         dummy_model_instance = Qwen3VLModel._from_config(config)
@@ -667,6 +671,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_text():
             tie_word_embeddings=True,
             attention_dropout=0.0,
             attention_bias=False,
+            **get_qwen3_vl_rope_config(),  # Version-aware rope configuration
         )
         dummy_model_instance = Qwen3VLTextModel._from_config(config)
 
@@ -764,6 +769,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
                 num_experts=4,
                 mlp_only_layers=[],
                 pad_token_id=None,
+                **get_qwen3_vl_rope_config(),  # Version-aware rope configuration
             ).to_dict(),
         )
         dummy_model_instance = Qwen3VLMoeForConditionalGeneration._from_config(config)
@@ -866,6 +872,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
                 num_experts=4,
                 mlp_only_layers=[],
                 pad_token_id=None,
+                **get_qwen3_vl_rope_config(),  # Version-aware rope configuration
             ).to_dict(),
         )
         dummy_model_instance = Qwen3VLMoeModel._from_config(config)
@@ -944,6 +951,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
             num_experts=4,
             mlp_only_layers=[],
             pad_token_id=None,
+            **get_qwen3_vl_rope_config(),  # Version-aware rope configuration
         )
         dummy_model_instance = Qwen3VLMoeTextModel._from_config(config)
 
@@ -1171,6 +1179,7 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
             intermediate_size=64,
             hidden_act="silu",
             num_hidden_layers=2,
+            **get_mllama_rope_config(),  # Version-aware rope configuration
         )
 
         dummy_model_instance = MllamaForCausalLM._from_config(config)
