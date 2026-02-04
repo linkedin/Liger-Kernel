@@ -158,6 +158,75 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
     assert_verbose_allclose(r1.grad, r2.grad, atol=atol, rtol=rtol, max_print=20)
 
 
+@pytest.mark.flaky(reruns=3, reruns_delay=2)
+@pytest.mark.parametrize(
+    "bs, sl, hd",
+    [
+        (2, 128, 512),
+        (5, 123, 123),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-6),
+        pytest.param(
+            torch.bfloat16,
+            2e-1,
+            2e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "reference, offset, casting_mode",
+    [
+        (LlamaAddRMSNorm, 0.0, "llama"),
+        (GemmaAddRMSNorm, 1.0, "gemma"),
+    ],
+)
+def test_correctness_frozen_weight(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode):
+    """Test that frozen weight (requires_grad=False) works correctly and produces no weight gradient."""
+    _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
+    _residual = torch.randn(bs, sl, hd, device=device, dtype=dtype)
+
+    h1 = _tensor.clone().requires_grad_(True)
+    r1 = _residual.clone().requires_grad_(True)
+    h2 = _tensor.clone().requires_grad_(True)
+    r2 = _residual.clone().requires_grad_(True)
+
+    dh = torch.randn(bs, sl, hd, device=device, dtype=dtype)
+    dr = torch.randn(bs, sl, hd, device=device, dtype=dtype)
+
+    # reference with frozen weight
+    ref_rms = reference(hidden_size=hd).to(device).to(dtype)
+    ref_rms.weight.requires_grad_(False)
+    ref_h, ref_r = ref_rms(h1, r1)
+    torch.autograd.backward((ref_h, ref_r), (dh, dr), retain_graph=True)
+
+    # triton with frozen weight
+    triton_rms = (
+        LigerFusedAddRMSNorm(hidden_size=hd, offset=offset, casting_mode=casting_mode, in_place=False)
+        .to(device)
+        .to(dtype)
+    )
+    triton_rms.weight.requires_grad_(False)
+    triton_h, triton_r = triton_rms(h2, r2)
+    torch.autograd.backward((triton_h, triton_r), (dh, dr), retain_graph=True)
+
+    # Check forward output matches
+    assert_verbose_allclose(ref_h, triton_h, atol=atol, rtol=rtol)
+    assert_verbose_allclose(ref_r, triton_r, atol=atol, rtol=rtol)
+
+    # Check weight.grad is None for both (frozen weight should not have gradient)
+    assert ref_rms.weight.grad is None, "Reference weight.grad should be None when frozen"
+    assert triton_rms.weight.grad is None, "Triton weight.grad should be None when frozen"
+
+    # Check input gradients still match
+    assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol, max_print=20)
+    assert_verbose_allclose(r1.grad, r2.grad, atol=atol, rtol=rtol, max_print=20)
+
+
 @pytest.mark.parametrize(
     "bs, sl, hd",
     [

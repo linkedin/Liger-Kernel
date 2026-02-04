@@ -140,6 +140,7 @@ def _fused_add_rms_norm_backward_kernel(
     casting_mode: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     has_dS_out: tl.constexpr,
+    compute_dW: tl.constexpr,
 ):
     """
     This kernel is adapted from the rms_norm backward kernel, and is adapted to support the residual
@@ -161,10 +162,10 @@ def _fused_add_rms_norm_backward_kernel(
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
-    dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
-
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
     W_row = W_row + offset
+    if compute_dW:
+        dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     for row_idx in range(row_start, row_end):
         dy_base = dY_ptr + row_idx * dY_row_stride
@@ -202,16 +203,18 @@ def _fused_add_rms_norm_backward_kernel(
         else:
             dX_row += (rstd_row) * (-(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row)
 
-        # calculate the gradient of W
-        if casting_mode == _CASTING_MODE_LLAMA:
-            dW_row += dY_row * (X_row * rstd_row).to(X_dtype)
-        else:
-            # here X_row is already in fp32 (see previous if block)
-            dW_row += dY_row * (X_row * rstd_row)
+        if compute_dW:
+            # calculate the gradient of W
+            if casting_mode == _CASTING_MODE_LLAMA:
+                dW_row += dY_row * (X_row * rstd_row).to(X_dtype)
+            else:
+                # here X_row is already in fp32 (see previous if block)
+                dW_row += dY_row * (X_row * rstd_row)
 
         tl.store(dx_base + col_offsets, dX_row.to(X_dtype), mask=mask)
 
-    tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
+    if compute_dW:
+        tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
 
 
 _str_to_casting_mode = {
@@ -276,11 +279,14 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
     return Y.view(*shape), S.view(*shape), RSTD, BLOCK_SIZE, num_warps, casting_mode
 
 
-def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place):
+def fused_add_rms_norm_backward(
+    dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place, compute_dW
+):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
-    dS_out = dS_out.view(-1, dim)
+    if dS_out is not None:
+        dS_out = dS_out.view(-1, dim)
     S = S.view(-1, dim)
     n_rows, n_cols = dY.shape
 
@@ -292,8 +298,12 @@ def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BL
     elif S.device.type == "npu":
         sm_count = get_npu_core_count()
 
-    # fp32 for numerical stability especially.
-    _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
+    compute_dW = compute_dW and W is not None
+    if compute_dW:
+        # fp32 for numerical stability especially.
+        _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
+    else:
+        _dW = None
 
     if n_cols > BLOCK_SIZE:
         raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
@@ -325,8 +335,8 @@ def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BL
         W.stride(0),
         RSTD,
         RSTD.stride(0),
-        _dW,
-        _dW.stride(0),
+        _dW if compute_dW else S,
+        _dW.stride(0) if compute_dW else 0,
         n_rows,
         n_cols,
         offset,
@@ -335,11 +345,15 @@ def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BL
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
         has_dS_out=dS_out is not None,
+        compute_dW=compute_dW,
         **kernel_args,  # XPU-specific optimization
     )
 
     dX = dX.view(*shape)
-    dW = _dW.sum(dim=0).to(W.dtype)
+    if compute_dW:
+        dW = _dW.sum(dim=0).to(W.dtype)
+    else:
+        dW = None
 
     return dX, dX, dW  # dR is equal to dX
 
@@ -394,6 +408,7 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
         Y: (B, T, H) or (BxT, H)
         """
         S, W, RSTD = ctx.saved_tensors
+        need_dW = ctx.needs_input_grad[2]
         dX, dR, dW = fused_add_rms_norm_backward(
             dY,
             dS_out,
@@ -405,6 +420,9 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
             ctx.BLOCK_SIZE,
             ctx.num_warps,
             ctx.in_place,
+            compute_dW=need_dW,
         )
+        if not need_dW:
+            dW = None
 
         return dX, dR, dW, None, None, None, None, None

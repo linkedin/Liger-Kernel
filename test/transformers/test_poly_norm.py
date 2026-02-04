@@ -147,6 +147,85 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol):
     assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol, max_print=20)
 
 
+@pytest.mark.flaky(reruns=3, reruns_delay=2)
+@pytest.mark.parametrize(
+    "bs, sl, hd",
+    [
+        (2, 128, 512),
+        (5, 123, 123),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-6),
+        pytest.param(
+            torch.bfloat16,
+            2e-1,
+            2e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "freeze_weight, freeze_bias",
+    [
+        (True, False),
+        (False, True),
+        (True, True),
+    ],
+)
+def test_correctness_frozen_params(bs, sl, hd, dtype, atol, rtol, freeze_weight, freeze_bias):
+    """Test that frozen weight/bias (requires_grad=False) works correctly and produces no gradient."""
+    _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
+
+    x1 = _tensor.clone().requires_grad_(True)
+    x2 = _tensor.clone().requires_grad_(True)
+
+    grad_output = torch.randn(bs, sl, hd, device=device, dtype=dtype)
+
+    # Reference: Naive PyTorch implementation
+    naive_poly_norm = NaivePolyNorm(eps=1e-6).to(device).to(dtype)
+
+    # Liger implementation
+    liger_poly_norm = LigerPolyNorm(eps=1e-6).to(device).to(dtype)
+    liger_poly_norm.weight.data.copy_(naive_poly_norm.weight.data)
+    liger_poly_norm.bias.data.copy_(naive_poly_norm.bias.data)
+
+    # Freeze weight and/or bias
+    if freeze_weight:
+        naive_poly_norm.weight.requires_grad_(False)
+        liger_poly_norm.weight.requires_grad_(False)
+    if freeze_bias:
+        naive_poly_norm.bias.requires_grad_(False)
+        liger_poly_norm.bias.requires_grad_(False)
+
+    ref_output = naive_poly_norm(x1)
+    ref_output.backward(grad_output, retain_graph=True)
+
+    triton_output = liger_poly_norm(x2)
+    triton_output.backward(grad_output, retain_graph=True)
+
+    # Check forward pass
+    assert_verbose_allclose(ref_output, triton_output, atol=atol, rtol=rtol)
+
+    # Check input gradient
+    assert_verbose_allclose(x1.grad, x2.grad, atol=atol, rtol=rtol, max_print=20)
+
+    # Check frozen params have no gradient
+    if freeze_weight:
+        assert naive_poly_norm.weight.grad is None, "Naive weight.grad should be None when frozen"
+        assert liger_poly_norm.weight.grad is None, "Liger weight.grad should be None when frozen"
+    else:
+        assert_verbose_allclose(naive_poly_norm.weight.grad, liger_poly_norm.weight.grad, atol=atol, rtol=rtol)
+
+    if freeze_bias:
+        assert naive_poly_norm.bias.grad is None, "Naive bias.grad should be None when frozen"
+        assert liger_poly_norm.bias.grad is None, "Liger bias.grad should be None when frozen"
+    else:
+        assert_verbose_allclose(naive_poly_norm.bias.grad, liger_poly_norm.bias.grad, atol=atol, rtol=rtol)
+
+
 @pytest.mark.parametrize(
     "bs, sl, hd",
     [

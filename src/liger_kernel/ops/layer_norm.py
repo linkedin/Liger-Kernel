@@ -107,6 +107,8 @@ def _layer_norm_backward_kernel(
     n_cols,
     rows_per_program: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    compute_dW: tl.constexpr,
+    compute_dB: tl.constexpr,
 ):
     """
     References:
@@ -119,8 +121,10 @@ def _layer_norm_backward_kernel(
     cols = tl.arange(0, BLOCK_SIZE)
     mask = cols < n_cols
 
-    dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
-    db_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    if compute_dW:
+        dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    if compute_dB:
+        db_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
     # Pre-load weights once (same optimization as forward pass)
     w = tl.load(W_ptr + cols, mask=mask, other=0.0)
@@ -159,11 +163,15 @@ def _layer_norm_backward_kernel(
         # Accumulate weight and bias gradients for this thread block's assigned rows
         dw = dy_f32 * x_hat
         db = dy_f32
-        dW_row += dw
-        db_row += db
+        if compute_dW:
+            dW_row += dw
+        if compute_dB:
+            db_row += db
 
-    tl.store(DW_ptr + row_block_id * stride_dw + cols, dW_row, mask=mask)
-    tl.store(DB_ptr + row_block_id * stride_db + cols, db_row, mask=mask)
+    if compute_dW:
+        tl.store(DW_ptr + row_block_id * stride_dw + cols, dW_row, mask=mask)
+    if compute_dB:
+        tl.store(DB_ptr + row_block_id * stride_db + cols, db_row, mask=mask)
 
 
 def layer_norm_forward(X, W, B, eps):
@@ -227,7 +235,7 @@ def layer_norm_forward(X, W, B, eps):
     return Y.view(*shape), X, Mean, RSTD, BLOCK_SIZE, num_warps
 
 
-def layer_norm_backward(dY, X, W, B, Mean, RSTD):
+def layer_norm_backward(dY, X, W, B, Mean, RSTD, compute_dW, compute_dB):
     """
     Args:
         dY: Gradient of output
@@ -253,9 +261,15 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
     elif X.device.type == "npu":
         sm_count = get_npu_core_count()
 
-    # fp32 for numerical stability especially.
-    _DW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
-    _DB = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
+    if compute_dW:
+        # fp32 for numerical stability especially.
+        _DW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
+    else:
+        _DW = None
+    if compute_dB:
+        _DB = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
+    else:
+        _DB = None
 
     # Calculate optimal block size and warp configuration
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
@@ -284,22 +298,30 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
         RSTD.stride(0),
         DX,
         DX.stride(0),
-        _DW,
-        _DW.stride(0),
-        _DB,
-        _DB.stride(0),
+        _DW if compute_dW else X,
+        _DW.stride(0) if compute_dW else 0,
+        _DB if compute_dB else X,
+        _DB.stride(0) if compute_dB else 0,
         dY,
         dY.stride(0),
         n_rows,
         n_cols,
         rows_per_program=rows_per_program,
         BLOCK_SIZE=BLOCK_SIZE,
+        compute_dW=compute_dW,
+        compute_dB=compute_dB,
         **kernel_args,
     )
 
     DX = DX.view(*shape)
-    DW = _DW.sum(dim=0).to(W.dtype)
-    DB = _DB.sum(dim=0).to(B.dtype)
+    if compute_dW:
+        DW = _DW.sum(dim=0).to(W.dtype)
+    else:
+        DW = None
+    if compute_dB:
+        DB = _DB.sum(dim=0).to(B.dtype)
+    else:
+        DB = None
 
     return DX, DW, DB
 
@@ -316,5 +338,7 @@ class LigerLayerNormFunction(torch.autograd.Function):
     @ensure_contiguous
     def backward(ctx, dY):
         X, W, B, Mean, RSTD = ctx.saved_tensors
-        DX, DW, DB = layer_norm_backward(dY, X, W, B, Mean, RSTD)
+        need_dW = ctx.needs_input_grad[1]
+        need_dB = ctx.needs_input_grad[2]
+        DX, DW, DB = layer_norm_backward(dY, X, W, B, Mean, RSTD, compute_dW=need_dW, compute_dB=need_dB)
         return DX, DW, DB, None
