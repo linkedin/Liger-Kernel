@@ -1,3 +1,6 @@
+import os
+import sys
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,12 +10,13 @@ from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
 from utils import _test_memory
-from utils import mhc_coeffs_ref
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
 from liger_kernel.transformers.mhc import LigerMHC
 from liger_kernel.utils import infer_device
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 device = infer_device()
 
@@ -149,6 +153,8 @@ class TorchMHC(nn.Module):
         self.layer_dtype = layer_param.dtype
 
     def _coeffs(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        from test.transformers.test_mhc import mhc_coeffs_ref
+
         return mhc_coeffs_ref(
             x,
             self.phi,
