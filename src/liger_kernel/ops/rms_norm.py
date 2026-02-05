@@ -719,15 +719,14 @@ class LigerRMSNormFunction(torch.autograd.Function):
                 placements=ctx.dtensor_placements,
             )
 
-            # For dW, we need to all-reduce across the CP process group
+            # For dW, we need to all-reduce across all sharded mesh dimensions
             # since each device only computed gradients for its local sequence positions,
-            # but the weight is shared across all positions.
+            # but the weight is shared across all positions. For multi-dimensional meshes
+            # (e.g., batch + sequence sharding), we must reduce across each sharded dim.
             if dW is not None and _DTENSOR_AVAILABLE and Shard is not None:
                 for i, placement in enumerate(ctx.dtensor_placements):
                     if isinstance(placement, Shard):
-                        # Get the process group for this mesh dimension
                         pg = ctx.dtensor_device_mesh.get_group(mesh_dim=i)
                         torch.distributed.all_reduce(dW, group=pg)
-                        break
 
         return dX, dW, None, None, None, None, None
