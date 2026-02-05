@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 import torch.nn as nn
 
@@ -43,6 +45,13 @@ class LigerMHC(nn.Module):
         # hc: number of residual streams (n in the paper)
         self.hc = int(hc)
         self.c = int(c)
+
+        if hc > 16:
+            warnings.warn(
+                f"hc={hc} exceeds recommended range [2, 16]. "
+                "Large values may cause register pressure and increased compile time.",
+                stacklevel=2,
+            )
         self.tmax = int(tmax)
         self.rms_eps = float(rms_eps)
         self.pre_eps = float(pre_eps)
@@ -76,9 +85,8 @@ class LigerMHC(nn.Module):
         x: [..., HC, C] (BF16/FP16 recommended; FP32 allowed if allow_fp32=True)
         returns: [..., HC, C]
         """
-        assert x.shape[-2] == self.hc and x.shape[-1] == self.c, (
-            f"Expected x.shape[-2:]=[{self.hc}, {self.c}], got {list(x.shape[-2:])}"
-        )
+        if x.shape[-2] != self.hc or x.shape[-1] != self.c:
+            raise ValueError(f"Expected x.shape[-2:]=[{self.hc}, {self.c}], got {list(x.shape[-2:])}")
 
         h_pre, h_post, h_res = liger_mhc_coeffs(
             x,

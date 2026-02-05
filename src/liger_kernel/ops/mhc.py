@@ -13,15 +13,19 @@ import triton.language as tl
 from liger_kernel.ops.utils import ensure_contiguous
 
 
-def _as_scalar(x: torch.Tensor | float) -> float:
+def _as_scalar(x: Union[torch.Tensor, float]) -> float:
     if isinstance(x, torch.Tensor):
         return float(x.item())
     return float(x)
 
 
 def _post_res_default_meta(c: int) -> tuple[int, int, int, int]:
+    """
+    Returns default (block_n, block_c, num_warps, num_stages) for post_res kernels.
+    Tuned for different hidden dimensions on NVIDIA GPUs.
+    """
     if c >= 4096:
-        return 32, 128, 8, 3
+        return 32, 128, 8, 3  # (block_n, block_c, num_warps, num_stages)
     if c >= 2048:
         return 32, 128, 4, 2
     if c >= 1024:
@@ -1905,7 +1909,7 @@ def liger_mhc_apply(
     h_res: torch.Tensor,
     *,
     return_x_in: bool = False,
-) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Convenience API: apply coefficients to get x_in and x_out.
 
@@ -1938,7 +1942,7 @@ def liger_mhc_forward(
     sinkhorn_eps: float = 1e-6,
     post_mult: float = 2.0,
     return_coeffs: bool = False,
-) -> torch.Tensor | Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+) -> Union[torch.Tensor, Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]]:
     """
     High-level helper: compute coeffs, apply pre, run layer, then apply post+res.
     """
@@ -1970,111 +1974,3 @@ def liger_mhc_forward(
     if return_coeffs:
         return x_out, (h_pre, h_post, h_res)
     return x_out
-
-
-def mhc_coeffs(
-    x: torch.Tensor,
-    phi: torch.Tensor,
-    b: torch.Tensor,
-    alpha_pre: torch.Tensor,
-    alpha_post: torch.Tensor,
-    alpha_res: torch.Tensor,
-    *,
-    allow_fp32: bool = False,
-    tmax: int = 20,
-    rms_eps: float = 1e-6,
-    pre_eps: float = 0.0,
-    sinkhorn_eps: float = 1e-6,
-    post_mult: float = 2.0,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Backward-compatible alias for liger_mhc_coeffs.
-    """
-    return liger_mhc_coeffs(
-        x,
-        phi,
-        b,
-        alpha_pre,
-        alpha_post,
-        alpha_res,
-        allow_fp32=allow_fp32,
-        tmax=tmax,
-        rms_eps=rms_eps,
-        pre_eps=pre_eps,
-        sinkhorn_eps=sinkhorn_eps,
-        post_mult=post_mult,
-    )
-
-
-def mhc_pre(x: torch.Tensor, h_pre: torch.Tensor) -> torch.Tensor:
-    """
-    Backward-compatible alias for liger_mhc_pre.
-    """
-    return liger_mhc_pre(x, h_pre)
-
-
-def mhc_post_res(x: torch.Tensor, f_out: torch.Tensor, h_post: torch.Tensor, h_res: torch.Tensor) -> torch.Tensor:
-    """
-    Backward-compatible alias for liger_mhc_post_res.
-    """
-    return liger_mhc_post_res(x, f_out, h_post, h_res)
-
-
-def mhc_apply(
-    x: torch.Tensor,
-    f_out: torch.Tensor,
-    h_pre: torch.Tensor,
-    h_post: torch.Tensor,
-    h_res: torch.Tensor,
-    *,
-    return_x_in: bool = False,
-) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Backward-compatible alias for liger_mhc_apply.
-    """
-    return liger_mhc_apply(
-        x,
-        f_out,
-        h_pre,
-        h_post,
-        h_res,
-        return_x_in=return_x_in,
-    )
-
-
-def mhc_forward(
-    x: torch.Tensor,
-    layer: Callable[[torch.Tensor], torch.Tensor],
-    phi: torch.Tensor,
-    b: torch.Tensor,
-    alpha_pre: torch.Tensor,
-    alpha_post: torch.Tensor,
-    alpha_res: torch.Tensor,
-    *,
-    allow_fp32: bool = False,
-    tmax: int = 20,
-    rms_eps: float = 1e-6,
-    pre_eps: float = 0.0,
-    sinkhorn_eps: float = 1e-6,
-    post_mult: float = 2.0,
-    return_coeffs: bool = False,
-) -> torch.Tensor | Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
-    """
-    Backward-compatible alias for liger_mhc_forward.
-    """
-    return liger_mhc_forward(
-        x,
-        layer,
-        phi,
-        b,
-        alpha_pre,
-        alpha_post,
-        alpha_res,
-        allow_fp32=allow_fp32,
-        tmax=tmax,
-        rms_eps=rms_eps,
-        pre_eps=pre_eps,
-        sinkhorn_eps=sinkhorn_eps,
-        post_mult=post_mult,
-        return_coeffs=return_coeffs,
-    )
