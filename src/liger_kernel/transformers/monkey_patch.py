@@ -37,6 +37,7 @@ from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
+from liger_kernel.transformers.swiglu import LigerMoEExperts
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
@@ -135,6 +136,12 @@ def _patch_swiglu_module(module, liger_module):
 def _patch_geglu_module(module):
     _bind_method_to_module(module, "forward", LigerGEGLUMLP.forward)
     _bind_method_to_module(module, "_get_name", lambda self: LigerGEGLUMLP.__name__)
+
+
+def _patch_experts_module(module):
+    _bind_method_to_module(module, "forward", LigerMoEExperts.forward)
+    _bind_method_to_module(module, "extra_repr", LigerMoEExperts.extra_repr)
+    _bind_method_to_module(module, "_get_name", LigerMoEExperts._get_name)
 
 
 def apply_liger_kernel_to_granite(
@@ -797,8 +804,7 @@ def apply_liger_kernel_to_mixtral(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                for expert in decoder_layer.block_sparse_moe.experts:
-                    _patch_swiglu_module(expert, LigerBlockSparseTop2MLP)
+                _patch_moe_experts(decoder_layer.block_sparse_moe.experts, LigerBlockSparseTop2MLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -1452,8 +1458,7 @@ def apply_liger_kernel_to_qwen3_moe(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                for mlp_expert in decoder_layer.mlp.experts:
-                    _patch_swiglu_module(mlp_expert, LigerQwen3MoeSwiGLUMLP)
+                _patch_experts_module(decoder_layer.mlp.experts)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -2315,18 +2320,14 @@ def apply_liger_kernel_to_glm4v_moe(
                 _patch_rms_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
                 if swiglu:
-                    decoder_layer.mlp = _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
-                if rms_norm:
-                    _patch_rms_norm_module(decoder_layer.input_layernorm)
-                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-        if isinstance(Glm4vMoeTextMoE, type) and isinstance(decoder_layer.mlp, Glm4vMoeTextMoE):
-            experts = getattr(decoder_layer.mlp, "experts", None)
-            if experts is not None:
-                for expert in experts:
-                    _patch_swiglu_module(expert, LigerSwiGLUMLP)
-            if decoder_layer.mlp.shared_experts is not None:
-                _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
-            for decoder_layer in text_model.layers:
+                    if isinstance(Glm4vMoeTextMoE, type) and isinstance(decoder_layer.mlp, Glm4vMoeTextMoE):
+                        experts = getattr(decoder_layer.mlp, "experts", None)
+                        if experts is not None:
+                            _patch_moe_experts(experts, LigerSwiGLUMLP)
+                        if decoder_layer.mlp.shared_experts is not None:
+                            _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
+                    else:
+                        _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
                 if rms_norm:
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -2700,8 +2701,7 @@ def apply_liger_kernel_to_qwen3_next(
                     _patch_swiglu_module(decoder_layer.mlp.shared_expert, LigerQwen3MoeSwiGLUMLP)
                     experts = getattr(decoder_layer.mlp, "experts", None)
                     if experts is not None:
-                        for expert in experts:
-                            _patch_swiglu_module(expert, LigerQwen3MoeSwiGLUMLP)
+                        _patch_moe_experts(experts, LigerQwen3MoeSwiGLUMLP)
 
 
 def apply_liger_kernel_to_hunyuan_v1_dense(
@@ -2814,8 +2814,7 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                for mlp_expert in decoder_layer.mlp.experts:
-                    _patch_swiglu_module(mlp_expert, LigerHunyuanV1SwiGLUMLP)
+                _patch_moe_experts(decoder_layer.mlp.experts, LigerHunyuanV1SwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)

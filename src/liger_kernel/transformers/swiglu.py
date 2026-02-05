@@ -1,4 +1,6 @@
 import torch.nn as nn
+import torch
+import torch.nn.functional as F
 
 from liger_kernel.ops import LigerSiLUMulFunction
 
@@ -94,3 +96,54 @@ class LigerHunyuanV1SwiGLUMLP(nn.Module):
 
     def forward(self, x):
         return self.down_proj(LigerSiLUMulFunction.apply(self.gate_proj(x), self.up_proj(x)))
+
+
+class LigerMoEExperts(nn.Module):
+    """
+    nn.Module for patching MoE Experts nn.Modules (e.g. Qwen3MoeExperts, Llama4TextExperts).
+    Forward signature matches Hugging Face Experts so the patched module is interchangeable.
+    """
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        # self is the HF Qwen3MoeExperts module.
+        num_experts = self.num_experts
+        act_fn = getattr(self, "act_fn", None)
+
+        final_hidden_states = torch.zeros_like(hidden_states)
+
+        # Building expert mask as in HF 
+        with torch.no_grad():
+            expert_mask = F.one_hot(top_k_index, num_classes=num_experts)          
+            expert_mask = expert_mask.permute(2, 1, 0)                            
+            expert_hit = (expert_mask.sum(dim=(-1, -2)) > 0).nonzero()            
+
+        for expert_idx_tensor in expert_hit:
+            expert_idx = expert_idx_tensor[0]
+            if expert_idx == num_experts:
+                continue
+            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])          
+            current_state = hidden_states[token_idx]                               
+            gate, up = nn.functional.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)                                  
+
+            if act_fn in (F.silu, torch.nn.functional.silu) or getattr(getattr(act_fn, "__name__", None), "lower", lambda: "")() in {"silu", "swish"}:
+                activated = LigerSiLUMulFunction.apply(gate, up) # Qwen3MoE uses SiLU/Swish activat
+            else:
+                activated = act_fn(gate) * up
+
+            #down projection
+            current_hidden_states = nn.functional.linear(activated, self.down_proj[expert_idx])
+            current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+
+        return final_hidden_states
+
+    def extra_repr(self):
+        return "LigerMoEExperts"
+        
+    def _get_name(self):
+        return LigerMoEExperts.__name__
