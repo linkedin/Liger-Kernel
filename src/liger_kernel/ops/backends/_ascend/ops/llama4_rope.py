@@ -40,7 +40,7 @@ def _triton_llama4_rope_npu(
     """
     Llama4 RoPE on Ascend NPU for interleaved complex layout:
     - q/k shape: (bs, sl, n_heads, hd)
-    - freqs_complex_ptr: (bs, sl, hd//2, 2)
+    - freqs_complex_ptr: (sl, hd//2, 2)
     """
     pid = tl.program_id(0).to(tl.int64)
     batch_idx = pid // sl
@@ -194,6 +194,9 @@ def llama4_rope_backward(dq, dk, freqs_cis):
         raise ValueError(f"head_dim must be even for interleaved complex layout, got {hd}")
 
     if freqs_cis.is_complex():
+        freqs_cis = freqs_cis.reshape(-1, freqs_cis.shape[-1])
+        if freqs_cis.shape[0] > sl:
+            freqs_cis = freqs_cis[:sl]
         freqs_cis = torch.view_as_real(freqs_cis)
 
     dq, dk, freqs_cis, compute_dtype = _cast_and_contiguous(dq, dk, freqs_cis)
@@ -227,7 +230,7 @@ def llama4_rope_backward(dq, dk, freqs_cis):
         dk.stride(1),
         dq.stride(2),
         dk.stride(2),
-        freqs_cis.stride(1),
+        freqs_cis.stride(0),
         sl,
         bs,
         n_qh,
