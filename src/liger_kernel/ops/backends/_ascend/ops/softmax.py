@@ -165,7 +165,7 @@ def _softmax_forward(x: torch.Tensor) -> Tuple[torch.Tensor, int, int, bool]:
 
     if n_cols <= BLOCK_SIZE:
         _softmax_single_block_forward_kernel[(n_rows,)](
-            y2d, y2d.stride(0), x2d, x2d.stride(0), n_cols, BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps
+            y2d, y2d.stride(0), x2d, x2d.stride(0), n_cols, BLOCK_SIZE=BLOCK_SIZE, 
         )
         multi_block_launch = False
     else:
@@ -174,14 +174,13 @@ def _softmax_forward(x: torch.Tensor) -> Tuple[torch.Tensor, int, int, bool]:
         )
         multi_block_launch = True
 
-    return y2d.view(*batch, n_cols), BLOCK_SIZE, num_warps, multi_block_launch
+    return y2d.view(*batch, n_cols), BLOCK_SIZE, multi_block_launch
 
 
 def _softmax_backward(
     dy: torch.Tensor,
     y: torch.Tensor,
     BLOCK_SIZE: int,
-    num_warps: int,
     multi_block_launch: bool,
 ) -> torch.Tensor:
     *batch, n_cols = dy.shape
@@ -201,7 +200,6 @@ def _softmax_backward(
             dx2d.stride(0),
             n_cols,
             BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
         )
     else:
         _softmax_multi_block_backward_kernel[(num_cores,)](
@@ -224,10 +222,9 @@ class LigerSoftmaxFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(ctx, input_: torch.Tensor):
-        y, BLOCK_SIZE, num_warps, multi_block_launch = _softmax_forward(input_)
+        y, BLOCK_SIZE, multi_block_launch = _softmax_forward(input_)
         ctx.save_for_backward(y)
         ctx.BLOCK_SIZE = BLOCK_SIZE
-        ctx.num_warps = num_warps
         ctx.multi_block_launch = multi_block_launch
         return y
 
@@ -239,7 +236,6 @@ class LigerSoftmaxFunction(torch.autograd.Function):
             grad_output,
             y,
             ctx.BLOCK_SIZE,
-            ctx.num_warps,
             ctx.multi_block_launch,
         )
         return dx
