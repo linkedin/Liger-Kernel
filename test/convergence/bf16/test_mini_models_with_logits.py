@@ -92,6 +92,11 @@ from test.utils import set_seed
 from test.utils import simple_collate_fn
 from test.utils import supports_bfloat16
 
+import transformers
+from packaging import version
+
+IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
+
 try:
     from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
     from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
@@ -757,6 +762,14 @@ if MLLAMA_AVAILABLE:
             use_cache=True,
             vocab_size=32000,  # 128256,
             attn_implementation="sdpa",  # default value, pytorch native attention
+            rope_scaling=dict(
+                factor=8.0,
+                high_freq_factor=4.0,
+                low_freq_factor=1.0,
+                original_max_position_embeddings=8192,
+                rope_type="llama3",
+                rope_theta=500_000,
+            ) if not IS_TRANSFORMERS_V5_OR_LATER else None,
         ),
     )
 

@@ -8,7 +8,6 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
-from transformers.models.gemma.tokenization_gemma import GemmaTokenizer
 from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3
@@ -48,6 +47,14 @@ from test.utils import revert_liger_kernel_to_smolvlm2
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 from test.utils import train_bpe_tokenizer
+
+import transformers
+from packaging import version
+
+if version.parse(transformers.__version__) < version.parse("5.0.0"):
+    from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast as GemmaTokenizer
+else:
+    from transformers.models.gemma.tokenization_gemma import GemmaTokenizer
 
 try:
     # Qwen2-VL is only available in transformers>=4.52.4
@@ -138,7 +145,6 @@ try:
 
     from packaging import version
     from transformers.models.gemma.configuration_gemma import GemmaConfig
-    from transformers.models.gemma.tokenization_gemma import GemmaTokenizer
     from transformers.models.gemma2.configuration_gemma2 import Gemma2Config
     from transformers.models.paligemma.configuration_paligemma import PaliGemmaConfig
     from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
