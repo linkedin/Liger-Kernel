@@ -371,6 +371,8 @@ def _test_dtensor_rms_norm_context_parallel(
     # Check input gradients: dt.grad is a DTensor, t.grad is a regular tensor
     torch.testing.assert_close(dt.grad.full_tensor(), t.grad, atol=atol, rtol=rtol)
 
+    torch.distributed.destroy_process_group()
+
 
 @pytest.mark.xfail(
     torch.cuda.device_count() < 4,
@@ -381,6 +383,7 @@ def _test_dtensor_rms_norm_context_parallel(
     [
         (2, 2, 8, 16),  # sl=8 divisible by world_size=2
         (4, 2, 16, 32),  # sl=16 divisible by world_size=4
+        (2, 3, 6, 17),  # weird shapes: non-power-of-2 batch, seq, hidden dims
     ],
 )
 @pytest.mark.parametrize(
