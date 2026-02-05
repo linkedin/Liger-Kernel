@@ -4,8 +4,10 @@ import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Ensure deterministic behavior with CuBLAS
 import pytest
 import torch
+import transformers
 
 from datasets import load_dataset
+from packaging import version
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
 from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
@@ -21,6 +23,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_smolvlm
+from liger_kernel.utils import infer_device
 from test.utils import FAKE_CONFIGS_PATH
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
@@ -48,20 +51,23 @@ from test.utils import set_seed
 from test.utils import supports_bfloat16
 from test.utils import train_bpe_tokenizer
 
-import transformers
-from packaging import version
+IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
 
-if version.parse(transformers.__version__) < version.parse("5.0.0"):
-    from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast as GemmaTokenizer
-else:
+if IS_TRANSFORMERS_V5_OR_LATER:
     from transformers.models.gemma.tokenization_gemma import GemmaTokenizer
+else:
+    from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast as GemmaTokenizer
 
 try:
     # Qwen2-VL is only available in transformers>=4.52.4
     import transformers
 
     from packaging import version
-    from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+
+    if IS_TRANSFORMERS_V5_OR_LATER:
+        from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+    else:
+        from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast as Qwen2Tokenizer
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
@@ -77,7 +83,11 @@ try:
     import transformers
 
     from packaging import version
-    from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+
+    if IS_TRANSFORMERS_V5_OR_LATER:
+        from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+    else:
+        from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast as Qwen2Tokenizer
     from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
     from transformers.models.qwen2_5_vl.processing_qwen2_5_vl import Qwen2_5_VLProcessor
@@ -89,7 +99,10 @@ except ImportError:
     QWEN2_5_VL_AVAILABLE = False
 
 try:
-    from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+    if IS_TRANSFORMERS_V5_OR_LATER:
+        from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+    else:
+        from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast as Qwen2Tokenizer
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
@@ -215,7 +228,6 @@ try:
 except ImportError:
     NUM2WORDS_AVAILABLE = False
 
-from liger_kernel.utils import infer_device
 
 device = infer_device()
 
@@ -320,6 +332,15 @@ if MLLAMA_AVAILABLE:
                 num_hidden_layers=4,  # 40
                 num_key_value_heads=2,  # 8
                 rms_norm_eps=1e-5,
+                rope_scaling=dict(
+                    factor=8.0,
+                    high_freq_factor=4.0,
+                    low_freq_factor=1.0,
+                    original_max_position_embeddings=8192,
+                    rope_type="llama3",
+                )
+                if not IS_TRANSFORMERS_V5_OR_LATER
+                else None,
                 tie_word_embeddings=False,
                 use_cache=True,
                 vocab_size=32000,  # 128256,
@@ -497,8 +518,10 @@ if QWEN2_VL_AVAILABLE:
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-6,  # 1e-5
-            rope_parameters=dict(
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            **(
+                dict(rope_parameters=dict(mrope_section=[16, 24, 24]))  # (temporal, height, width)
+                if IS_TRANSFORMERS_V5_OR_LATER
+                else dict(rope_scaling=dict(type="mrope", mrope_section=[16, 24, 24]))
             ),
             sliding_window=4096,
             tie_word_embeddings=True,
@@ -669,8 +692,10 @@ if QWEN2_5_VL_AVAILABLE:
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-6,  # 1e-5
-            rope_parameters=dict(
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            **(
+                dict(rope_parameters=dict(mrope_section=[16, 24, 24]))  # (temporal, height, width)
+                if IS_TRANSFORMERS_V5_OR_LATER
+                else dict(rope_scaling=dict(type="mrope", mrope_section=[16, 24, 24]))
             ),
             sliding_window=4096,
             tie_word_embeddings=True,
@@ -729,6 +754,12 @@ if QWEN3_VL_AVAILABLE:
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],  # (temporal, height, width)
+                )
+                if not IS_TRANSFORMERS_V5_OR_LATER
+                else None,
                 attention_dropout=0.0,
                 attention_bias=False,
             ).to_dict(),
@@ -776,6 +807,12 @@ if QWEN3_VL_MOE_AVAILABLE:
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],  # (temporal, height, width)
+                )
+                if not IS_TRANSFORMERS_V5_OR_LATER
+                else None,
                 attention_dropout=0.0,
                 attention_bias=False,
                 decoder_sparse_step=1,

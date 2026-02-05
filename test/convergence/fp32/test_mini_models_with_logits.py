@@ -4,8 +4,10 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Ensure deterministic behavi
 
 import pytest
 import torch
+import transformers
 
 from datasets import load_from_disk
+from packaging import version
 from torch.utils.data import DataLoader
 from transformers.models.gemma import GemmaConfig
 from transformers.models.gemma import GemmaForCausalLM
@@ -52,6 +54,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_smollm3
+from liger_kernel.utils import infer_device
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
@@ -90,9 +93,6 @@ from test.utils import revert_liger_kernel_to_qwen3_vl_moe
 from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import set_seed
 from test.utils import simple_collate_fn
-
-import transformers
-from packaging import version
 
 IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
 
@@ -313,8 +313,6 @@ try:
 except ImportError:
     EXAONE4_AVAILABLE = False
 
-
-from liger_kernel.utils import infer_device
 
 device = infer_device()
 
@@ -684,7 +682,9 @@ if MLLAMA_AVAILABLE:
                 original_max_position_embeddings=8192,
                 rope_type="llama3",
                 rope_theta=500_000,
-            ) if not IS_TRANSFORMERS_V5_OR_LATER else None,
+            )
+            if not IS_TRANSFORMERS_V5_OR_LATER
+            else None,
         ),
     )
 
@@ -714,8 +714,10 @@ if QWEN2_VL_AVAILABLE:
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-6,  # 1e-5
-            rope_parameters=dict(
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            **(
+                dict(rope_parameters=dict(mrope_section=[16, 24, 24]))  # (temporal, height, width)
+                if IS_TRANSFORMERS_V5_OR_LATER
+                else dict(rope_scaling=dict(type="mrope", mrope_section=[16, 24, 24]))
             ),
             sliding_window=4096,
             tie_word_embeddings=False,
@@ -764,8 +766,10 @@ if QWEN2_5_VL_AVAILABLE:
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-6,  # 1e-5
-            rope_parameters=dict(
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            **(
+                dict(rope_parameters=dict(mrope_section=[16, 24, 24]))  # (temporal, height, width)
+                if IS_TRANSFORMERS_V5_OR_LATER
+                else dict(rope_scaling=dict(type="mrope", mrope_section=[16, 24, 24]))
             ),
             sliding_window=4096,
             tie_word_embeddings=False,
@@ -823,6 +827,12 @@ if QWEN3_VL_AVAILABLE:
                 tie_word_embeddings=False,
                 use_cache=True,
                 vocab_size=32000,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],  # (temporal, height, width)
+                )
+                if not IS_TRANSFORMERS_V5_OR_LATER
+                else None,
             ),
             vision_config=dict(
                 depth=4,
@@ -1114,6 +1124,11 @@ if GLM4V_AVAILABLE:
                 "rms_norm_eps": 1e-5,
                 "vocab_size": 32000,
                 "attention_bias": True,
+                **(
+                    {"rope_scaling": {"type": "default", "mrope_section": [8, 12, 12]}}
+                    if not IS_TRANSFORMERS_V5_OR_LATER
+                    else {}
+                ),
             },
             vision_config={
                 "depth": 4,  # 32
@@ -1183,6 +1198,11 @@ if GLM4V_MOE_AVAILABLE:
                 "topk_group": 1,
                 "first_k_dense_replace": 1,
                 "norm_topk_prob": True,
+                **(
+                    {"rope_scaling": {"type": "default", "mrope_section": [8, 12, 12]}}
+                    if not IS_TRANSFORMERS_V5_OR_LATER
+                    else {}
+                ),
             },
             vision_config={
                 "depth": 4,  # 32
