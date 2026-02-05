@@ -43,6 +43,16 @@ def selective_log_softmax(logits, input_ids, temperature=0.9):
     return per_token_logps
 
 
+def _get_log_probs(logits, input_ids):
+    """Helper function to compute per-token log probabilities."""
+    per_token_logps = []
+    for logits_row, input_ids_row in zip(logits, input_ids[:, -logits.size(1) :]):
+        log_probs = logits_row.log_softmax(dim=-1)
+        token_log_prob = torch.gather(log_probs, dim=1, index=input_ids_row.unsqueeze(1)).squeeze(1)
+        per_token_logps.append(token_log_prob)
+    return torch.stack(per_token_logps)
+
+
 def torch_grpo_loss(
     logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, temperature, beta, eps_low, eps_high
 ):
@@ -51,16 +61,7 @@ def torch_grpo_loss(
     assert (ref_logp is not None and ref_logp.is_contiguous()) if beta != 0.0 else True
     logits = logits[:, :-1]
 
-    def get_log_probs(logits, input_ids):
-        per_token_logps = []
-        for logits_row, input_ids_row in zip(logits, input_ids[:, -logits.size(1) :]):
-            log_probs = logits_row.log_softmax(dim=-1)
-            token_log_prob = torch.gather(log_probs, dim=1, index=input_ids_row.unsqueeze(1)).squeeze(1)
-            per_token_logps.append(token_log_prob)
-        return torch.stack(per_token_logps)
-
-    per_token_logps = get_log_probs(logits / temperature, completion_ids)
-    # return per_token_logps, None, None
+    per_token_logps = _get_log_probs(logits / temperature, completion_ids)
     ref_per_token_logps = ref_logp
 
     if old_logp is None:
@@ -79,6 +80,96 @@ def torch_grpo_loss(
             per_token_kl *= completion_mask
         per_token_loss = per_token_loss + beta * per_token_kl
     is_clipped = (per_token_loss1 < per_token_loss2).float()
+    return per_token_loss, per_token_kl, is_clipped
+
+
+def torch_cispo_loss(
+    logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, temperature, beta, eps_high
+):
+    """Reference implementation for CISPO loss.
+
+    CISPO (Clipped Importance Sampling Policy Optimization) uses:
+    - Upper-bound only clipping (no lower bound)
+    - Detached clipped coefficient (no gradient through clipping)
+    - Loss includes per_token_logps multiplication
+
+    Reference: MiniMax-M1 technical report
+    """
+    assert logits.is_contiguous() and completion_ids.is_contiguous()
+    assert old_logp is None or old_logp.is_contiguous()
+    assert (ref_logp is not None and ref_logp.is_contiguous()) if beta != 0.0 else True
+    logits = logits[:, :-1]
+
+    per_token_logps = _get_log_probs(logits / temperature, completion_ids)
+    ref_per_token_logps = ref_logp
+
+    if old_logp is None:
+        old_logp = per_token_logps.detach()
+    coef_1 = torch.exp(per_token_logps - old_logp)
+    # CISPO: upper-bound only clipping with detach
+    coef_2 = torch.clamp(coef_1, max=eps_high).detach()
+    # CISPO loss includes per_token_logps
+    per_token_loss = -coef_2 * advantages.unsqueeze(1) * per_token_logps
+    per_token_loss = per_token_loss * completion_mask if completion_mask is not None else per_token_loss
+
+    per_token_kl = None
+    if beta != 0.0:
+        per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+        if completion_mask is not None:
+            per_token_kl *= completion_mask
+        per_token_loss = per_token_loss + beta * per_token_kl
+    is_clipped = ((coef_1 > eps_high) & (advantages.unsqueeze(1) > 0)).float()
+    return per_token_loss, per_token_kl, is_clipped
+
+
+def torch_sapo_loss(
+    logits,
+    old_logp,
+    ref_logp,
+    completion_ids,
+    advantages,
+    completion_mask,
+    temperature,
+    beta,
+    sapo_temperature_pos,
+    sapo_temperature_neg,
+):
+    """Reference implementation for SAPO loss.
+
+    SAPO (Soft Adaptive Policy Optimization) uses:
+    - Sigmoid-based soft gating instead of hard clipping
+    - Different temperatures for positive/negative advantages
+
+    Reference: https://huggingface.co/papers/2511.20347
+    """
+    assert logits.is_contiguous() and completion_ids.is_contiguous()
+    assert old_logp is None or old_logp.is_contiguous()
+    assert (ref_logp is not None and ref_logp.is_contiguous()) if beta != 0.0 else True
+    logits = logits[:, :-1]
+
+    per_token_logps = _get_log_probs(logits / temperature, completion_ids)
+    ref_per_token_logps = ref_logp
+
+    if old_logp is None:
+        old_logp = per_token_logps.detach()
+    coef_1 = torch.exp(per_token_logps - old_logp)
+
+    # SAPO: sigmoid-based soft gating
+    # Select temperature based on advantage sign
+    temp = torch.where(advantages.unsqueeze(1) > 0, sapo_temperature_pos, sapo_temperature_neg)
+    sigmoid_input = temp * (coef_1 - 1.0)
+    sapo_coef = torch.sigmoid(sigmoid_input) * 4.0 / temp
+    per_token_loss = -sapo_coef * advantages.unsqueeze(1)
+    per_token_loss = per_token_loss * completion_mask if completion_mask is not None else per_token_loss
+
+    per_token_kl = None
+    if beta != 0.0:
+        per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+        if completion_mask is not None:
+            per_token_kl *= completion_mask
+        per_token_loss = per_token_loss + beta * per_token_kl
+    # SAPO has no clipping concept
+    is_clipped = torch.zeros_like(per_token_loss)
     return per_token_loss, per_token_kl, is_clipped
 
 
@@ -182,6 +273,164 @@ def test_grpo_loss(B, T, V, temperature, num_iteration, beta, eps_low, eps_high,
     loss3.backward(dy)
 
     print("\n" + "=" * 20 + " grpo_loss " + "=" * 20)
+    compare(loss1, loss3, "per_token_loss: torch-bf16 vs torch-fp32, ")
+    compare(kl1, kl3, "per_token_kl: torch-bf16 vs torch-fp32, ")
+    compare(logits1.grad, logits3.grad, "logits.grad: torch-bf16 vs torch-fp32, ")
+    compare(loss2, loss3, "per_token_loss: triton-bf16 vs torch-fp32, ")
+    compare(kl2, kl3, "per_token_kl: triton-bf16 vs torch-fp32, ")
+    compare(logits2.grad, logits3.grad, "logits.grad: triton-bf16 vs torch-fp32, ")
+
+
+@pytest.mark.parametrize(
+    "temperature, num_iteration, beta, eps_high",
+    [(0.7, num_iteration, beta, 5.0) for num_iteration in [1, 5] for beta in [0.0, 0.04]],
+)
+@pytest.mark.parametrize(
+    "B, T, V",
+    [
+        (1, 1024, 151936),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.bfloat16, 1e-5, 1e-5),
+    ],
+)
+def test_cispo_loss(B, T, V, temperature, num_iteration, beta, eps_high, dtype, atol, rtol):
+    """Test CISPO loss type support in Triton kernel."""
+    _input = torch.randn(B, T + 1, V, device=device, dtype=dtype)
+
+    logits1 = _input.clone().requires_grad_(True)
+    logits2 = _input.clone().requires_grad_(True)
+    logits3 = _input.clone().float().requires_grad_(True)
+
+    completion_ids = torch.randint(0, V - 1, (B, T), dtype=torch.int64, device=device)
+    completion_mask = torch.ones_like(completion_ids, dtype=torch.int32)
+    completion_mask[:, -100:] = 0
+
+    ref_logp = torch.randn(B, T, device=device, dtype=torch.float32) if beta != 0.0 else None
+    old_logp = torch.randn(B, T, device=device, dtype=torch.float32) if num_iteration > 1 else None
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+
+    loss1, kl1, is_clipped1 = torch_cispo_loss(
+        logits1, old_logp, ref_logp, completion_ids, advantages, completion_mask, temperature, beta, eps_high
+    )
+
+    loss2, kl2, is_clipped2 = triton_grpo_loss(
+        logits2,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low=0.2,  # not used for CISPO
+        eps_high=eps_high,
+        inplace=True,
+        loss_type="cispo",
+    )
+
+    loss3, kl3, is_clipped3 = torch_cispo_loss(
+        logits3, old_logp, ref_logp, completion_ids, advantages, completion_mask, temperature, beta, eps_high
+    )
+
+    dy = torch.randn_like(loss3)
+    loss1.backward(dy)
+    loss2.backward(dy)
+    loss3.backward(dy)
+
+    print("\n" + "=" * 20 + " cispo_loss " + "=" * 20)
+    compare(loss1, loss3, "per_token_loss: torch-bf16 vs torch-fp32, ")
+    compare(kl1, kl3, "per_token_kl: torch-bf16 vs torch-fp32, ")
+    compare(logits1.grad, logits3.grad, "logits.grad: torch-bf16 vs torch-fp32, ")
+    compare(loss2, loss3, "per_token_loss: triton-bf16 vs torch-fp32, ")
+    compare(kl2, kl3, "per_token_kl: triton-bf16 vs torch-fp32, ")
+    compare(logits2.grad, logits3.grad, "logits.grad: triton-bf16 vs torch-fp32, ")
+
+
+@pytest.mark.parametrize(
+    "temperature, num_iteration, beta, sapo_temp_pos, sapo_temp_neg",
+    [(0.7, num_iteration, beta, 1.0, 1.05) for num_iteration in [1, 5] for beta in [0.0, 0.04]],
+)
+@pytest.mark.parametrize(
+    "B, T, V",
+    [
+        (1, 1024, 151936),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.bfloat16, 1e-5, 1e-5),
+    ],
+)
+def test_sapo_loss(B, T, V, temperature, num_iteration, beta, sapo_temp_pos, sapo_temp_neg, dtype, atol, rtol):
+    """Test SAPO loss type support in Triton kernel."""
+    _input = torch.randn(B, T + 1, V, device=device, dtype=dtype)
+
+    logits1 = _input.clone().requires_grad_(True)
+    logits2 = _input.clone().requires_grad_(True)
+    logits3 = _input.clone().float().requires_grad_(True)
+
+    completion_ids = torch.randint(0, V - 1, (B, T), dtype=torch.int64, device=device)
+    completion_mask = torch.ones_like(completion_ids, dtype=torch.int32)
+    completion_mask[:, -100:] = 0
+
+    ref_logp = torch.randn(B, T, device=device, dtype=torch.float32) if beta != 0.0 else None
+    old_logp = torch.randn(B, T, device=device, dtype=torch.float32) if num_iteration > 1 else None
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+
+    loss1, kl1, is_clipped1 = torch_sapo_loss(
+        logits1,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        sapo_temp_pos,
+        sapo_temp_neg,
+    )
+
+    loss2, kl2, is_clipped2 = triton_grpo_loss(
+        logits2,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low=0.2,  # not used for SAPO
+        eps_high=0.4,  # not used for SAPO
+        inplace=True,
+        loss_type="sapo",
+        sapo_temperature_pos=sapo_temp_pos,
+        sapo_temperature_neg=sapo_temp_neg,
+    )
+
+    loss3, kl3, is_clipped3 = torch_sapo_loss(
+        logits3,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        sapo_temp_pos,
+        sapo_temp_neg,
+    )
+
+    dy = torch.randn_like(loss3)
+    loss1.backward(dy)
+    loss2.backward(dy)
+    loss3.backward(dy)
+
+    print("\n" + "=" * 20 + " sapo_loss " + "=" * 20)
     compare(loss1, loss3, "per_token_loss: torch-bf16 vs torch-fp32, ")
     compare(kl1, kl3, "per_token_kl: torch-bf16 vs torch-fp32, ")
     compare(logits1.grad, logits3.grad, "logits.grad: torch-bf16 vs torch-fp32, ")
