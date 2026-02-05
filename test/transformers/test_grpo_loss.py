@@ -291,13 +291,8 @@ def test_grpo_loss(B, T, V, temperature, num_iteration, beta, eps_low, eps_high,
         (1, 1024, 151936),
     ],
 )
-@pytest.mark.parametrize(
-    "dtype, atol, rtol",
-    [
-        (torch.bfloat16, 1e-5, 1e-5),
-    ],
-)
-def test_cispo_loss(B, T, V, temperature, num_iteration, beta, eps_high, dtype, atol, rtol):
+@pytest.mark.parametrize("dtype", [torch.bfloat16])
+def test_cispo_loss(B, T, V, temperature, num_iteration, beta, eps_high, dtype):
     """Test CISPO loss type support in Triton kernel."""
     _input = torch.randn(B, T + 1, V, device=device, dtype=dtype)
 
@@ -360,13 +355,8 @@ def test_cispo_loss(B, T, V, temperature, num_iteration, beta, eps_high, dtype, 
         (1, 1024, 151936),
     ],
 )
-@pytest.mark.parametrize(
-    "dtype, atol, rtol",
-    [
-        (torch.bfloat16, 1e-5, 1e-5),
-    ],
-)
-def test_sapo_loss(B, T, V, temperature, num_iteration, beta, sapo_temp_pos, sapo_temp_neg, dtype, atol, rtol):
+@pytest.mark.parametrize("dtype", [torch.bfloat16])
+def test_sapo_loss(B, T, V, temperature, num_iteration, beta, sapo_temp_pos, sapo_temp_neg, dtype):
     """Test SAPO loss type support in Triton kernel."""
     _input = torch.randn(B, T + 1, V, device=device, dtype=dtype)
 

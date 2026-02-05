@@ -335,6 +335,11 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             temperature (float): Temperature for the logits.
         """
         super().__init__()
+        # Validate SAPO temperatures to prevent division by zero or numerical instability
+        if sapo_temperature_pos <= 0:
+            raise ValueError(f"sapo_temperature_pos must be positive, got {sapo_temperature_pos}")
+        if sapo_temperature_neg <= 0:
+            raise ValueError(f"sapo_temperature_neg must be positive, got {sapo_temperature_neg}")
         self.beta = beta
         self.compiled = compiled
         self.use_ref_model = use_ref_model

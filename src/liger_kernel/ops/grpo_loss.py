@@ -261,13 +261,16 @@ def _grpo_loss_bwd_kernel(
     elif LOSS_TYPE == 2:  # SAPO: gradient through sigmoid gating
         # loss = -sapo_coef * advantage, where sapo_coef = sigmoid(τ*(ρ-1)) * 4/τ
         # d(loss)/d(logp) = -advantage * d(sapo_coef)/d(coef_1) * d(coef_1)/d(logp)
-        # d(coef_1)/d(logp) = coef_1
-        # d(sapo_coef)/d(coef_1) = 4 * sigmoid * (1 - sigmoid) (sigmoid derivative)
+        # d(coef_1)/d(logp) = coef_1 (since coef_1 = exp(logp - old_logp))
+        # d(sapo_coef)/d(coef_1) = d/d(coef_1)[sigmoid(τ*(coef_1-1)) * 4/τ]
+        #                       = τ * sigmoid' * 4/τ = 4 * sigmoid * (1 - sigmoid)
+        # (the τ factors cancel out in the derivative)
         temperature = tl.where(advantage > 0, SAPO_TEMP_POS, SAPO_TEMP_NEG)
         sigmoid_input = temperature * (coef_1 - 1.0)
         sigmoid_val = tl.sigmoid(sigmoid_input)
         d_sapo_d_coef1 = 4.0 * sigmoid_val * (1.0 - sigmoid_val)
         dlogp = -advantage * d_sapo_d_coef1 * coef_1
+
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
@@ -306,8 +309,19 @@ class GrpoLossFunction(torch.autograd.Function):
         assert old_logp is None or old_logp.is_contiguous()
         assert (ref_logp is not None and ref_logp.is_contiguous()) if beta != 0.0 else True
 
+        # Validate loss_type
+        if loss_type not in _str_to_loss_type:
+            raise ValueError(f"Unknown loss_type '{loss_type}'. Supported types: {list(_str_to_loss_type.keys())}")
+
+        # Validate SAPO temperatures to prevent division by zero or numerical instability
+        if loss_type == "sapo":
+            if sapo_temperature_pos <= 0:
+                raise ValueError(f"sapo_temperature_pos must be positive, got {sapo_temperature_pos}")
+            if sapo_temperature_neg <= 0:
+                raise ValueError(f"sapo_temperature_neg must be positive, got {sapo_temperature_neg}")
+
         # Convert loss_type string to integer for Triton constexpr
-        loss_type_int = _str_to_loss_type.get(loss_type, _LOSS_TYPE_GRPO.value)
+        loss_type_int = _str_to_loss_type[loss_type]
 
         B, L_ADD_1, N = logits.shape
         L = L_ADD_1 - 1
