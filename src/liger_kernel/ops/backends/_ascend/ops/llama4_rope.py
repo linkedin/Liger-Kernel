@@ -126,6 +126,9 @@ def llama4_rope_forward(q, k, freqs_cis):
         raise ValueError(f"head_dim must be even for interleaved complex layout, got {hd}")
 
     if freqs_cis.is_complex():
+        freqs_cis = freqs_cis.reshape(-1, freqs_cis.shape[-1])
+        if freqs_cis.shape[0] > sl:
+            freqs_cis = freqs_cis[:sl]
         freqs_cis = torch.view_as_real(freqs_cis)
 
     q, k, freqs_cis, compute_dtype = _cast_and_contiguous(q, k, freqs_cis)
@@ -159,7 +162,7 @@ def llama4_rope_forward(q, k, freqs_cis):
         k.stride(1),
         q.stride(2),
         k.stride(2),
-        freqs_cis.stride(1),
+        freqs_cis.stride(0),
         sl,
         bs,
         n_qh,
