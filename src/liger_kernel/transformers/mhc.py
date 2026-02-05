@@ -76,9 +76,9 @@ class LigerMHC(nn.Module):
         x: [..., HC, C] (BF16/FP16 recommended; FP32 allowed if allow_fp32=True)
         returns: [..., HC, C]
         """
-        assert (
-            x.shape[-2] == self.hc and x.shape[-1] == self.c
-        ), f"Expected x.shape[-2:]=[{self.hc}, {self.c}], got {list(x.shape[-2:])}"
+        assert x.shape[-2] == self.hc and x.shape[-1] == self.c, (
+            f"Expected x.shape[-2:]=[{self.hc}, {self.c}], got {list(x.shape[-2:])}"
+        )
 
         h_pre, h_post, h_res = liger_mhc_coeffs(
             x,
