@@ -6,10 +6,11 @@ import triton
 import triton.language as tl
 import triton.runtime.driver as driver
 
-from liger_kernel.ops._backends._ascend.ops.softmax import _softmax_backward
-from liger_kernel.ops._backends._ascend.ops.softmax import _softmax_forward
+from liger_kernel.ops.softmax import _softmax_backward
+from liger_kernel.ops.softmax import _softmax_forward
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import ensure_contiguous
+
 
 @triton.jit
 def _neighborhood_mask_kernel(
@@ -64,7 +65,8 @@ def _neighborhood_mask_kernel(
 
     base_offset = row_id * seq_len
     tl.store(mask_ptr + base_offset + col_offsets, mask_values, mask=mask)
-    
+
+
 @triton.jit
 def _fused_neighborhood_attention_qk_kernel(
     Q_ptr,
@@ -94,111 +96,81 @@ def _fused_neighborhood_attention_qk_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
 ):
-    """
-    Compute Q @ K^T with neighborhood masking and scaling.
-
-    This kernel performs the first stage of neighborhood attention by computing
-    the attention scores between queries and keys, applying scaling, and masking
-    positions outside the neighborhood window. The result is a matrix of attention
-    scores ready for softmax normalization.
-
-    The computation is tiled across sequence dimensions for memory efficiency.
-    Each tile computes a block of the attention score matrix by iterating over
-    the head dimension and accumulating dot products.
-
-    Args:
-        Q_ptr: Pointer to query tensor [batch_size, num_heads, seq_len, head_dim]
-        K_ptr: Pointer to key tensor [batch_size, num_heads, seq_len, head_dim]
-        QK_ptr: Pointer to output tensor [batch_size, num_heads, seq_len, seq_len]
-        mask_ptr: Pointer to neighborhood mask [seq_len, seq_len]
-        q_*_stride: Strides for query tensor
-        k_*_stride: Strides for key tensor
-        qk_*_stride: Strides for output tensor
-        batch_size: Number of batches
-        num_heads: Number of attention heads
-        seq_len: Sequence length
-        head_dim: Dimension of each attention head
-        scale: Scaling factor for attention scores (typically 1/sqrt(head_dim))
-        kernel_size: Size of the neighborhood window
-        dilation: Dilation factor for the neighborhood
-        BLOCK_SIZE_M: Block size for sequence dimension (rows)
-        BLOCK_SIZE_N: Block size for sequence dimension (cols)
-        BLOCK_SIZE_K: Block size for head dimension
-        num_stages: Number of pipeline stages
-        num_warps: Number of warps
-
-    Grid: (batch_size * num_heads, cdiv(seq_len, BLOCK_SIZE_M))
-    Each program computes multiple tiles along the N dimension.
-    """
-    batch_head_id = tl.program_id(0)
-    tile_m = tl.program_id(1)
-
-    batch_id = batch_head_id // num_heads
-    head_id = batch_head_id % num_heads
-
-    row_start = tile_m * BLOCK_SIZE_M
-    row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+    pid = tl.program_id(0)
     
-    # 计算需要处理的 N 维度块数
-    num_n_tiles = tl.cdiv(seq_len, BLOCK_SIZE_N)
+    num_batch_heads = batch_size * num_heads
+    num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
+    total_tiles = num_batch_heads * num_m_tiles
     
-    # 循环处理所有 N 维度的块
-    for tile_n in range(num_n_tiles):
-        col_start = tile_n * BLOCK_SIZE_N
-        col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
-
-        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-
-        # 计算 Q @ K^T
-        for k_start in range(0, head_dim, BLOCK_SIZE_K):
-            k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
-            k_mask = k_offsets < head_dim
-
-            # 加载 Q
-            q_ptrs = (
-                Q_ptr
-                + batch_id * q_batch_stride
-                + head_id * q_head_stride
-                + row_offsets[:, None] * q_seq_stride
-                + k_offsets[None, :] * q_dim_stride
-            )
-            q_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
-            q_chunk = tl.load(q_ptrs, mask=q_mask, other=0.0)
-
-            # 加载 K
-            k_ptrs = (
-                K_ptr
-                + batch_id * k_batch_stride
-                + head_id * k_head_stride
-                + col_offsets[:, None] * k_seq_stride
-                + k_offsets[None, :] * k_dim_stride
-            )
-            k_mask_n = (col_offsets[:, None] < seq_len) & k_mask[None, :]
-            k_chunk = tl.load(k_ptrs, mask=k_mask_n, other=0.0)
-
-            # 累加点积
-            acc += tl.dot(q_chunk, tl.trans(k_chunk))
-
-        # 应用缩放
-        acc = acc * scale
-
-        # 加载并应用 neighborhood mask
-        mask_ptrs = mask_ptr + row_offsets[:, None] * seq_len + col_offsets[None, :]
-        valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < seq_len)
-        neighborhood_mask = tl.load(mask_ptrs, mask=valid_mask, other=0.0)
-
-        acc = tl.where(neighborhood_mask > 0.0, acc, float("-inf"))
-
-        # 存储结果
-        qk_ptrs = (
-            QK_ptr
-            + batch_id * qk_batch_stride
-            + head_id * qk_head_stride
-            + row_offsets[:, None] * qk_seq_stride
-            + col_offsets[None, :] * qk_seq2_stride
-        )
-        tl.store(qk_ptrs, acc, mask=valid_mask)
+    num_programs: tl.constexpr = 48
+    tiles_per_program = tl.cdiv(total_tiles, num_programs)
+    
+    for tile_idx in range(tiles_per_program):
+        global_tile_id = pid + tile_idx * num_programs
         
+        # 用 if 包裹全部计算，替代 continue
+        if global_tile_id < total_tiles:
+            batch_head_id = global_tile_id // num_m_tiles
+            tile_m = global_tile_id % num_m_tiles
+            
+            batch_id = batch_head_id // num_heads
+            head_id = batch_head_id % num_heads
+
+            row_start = tile_m * BLOCK_SIZE_M
+            row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+            
+            num_n_tiles = tl.cdiv(seq_len, BLOCK_SIZE_N)
+            
+            for tile_n in range(num_n_tiles):
+                col_start = tile_n * BLOCK_SIZE_N
+                col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
+
+                acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+
+                for k_start in range(0, head_dim, BLOCK_SIZE_K):
+                    k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+                    k_mask = k_offsets < head_dim
+
+                    q_ptrs = (
+                        Q_ptr
+                        + batch_id * q_batch_stride
+                        + head_id * q_head_stride
+                        + row_offsets[:, None] * q_seq_stride
+                        + k_offsets[None, :] * q_dim_stride
+                    )
+                    q_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
+                    q_chunk = tl.load(q_ptrs, mask=q_mask, other=0.0)
+
+                    k_ptrs = (
+                        K_ptr
+                        + batch_id * k_batch_stride
+                        + head_id * k_head_stride
+                        + col_offsets[:, None] * k_seq_stride
+                        + k_offsets[None, :] * k_dim_stride
+                    )
+                    k_mask_n = (col_offsets[:, None] < seq_len) & k_mask[None, :]
+                    k_chunk = tl.load(k_ptrs, mask=k_mask_n, other=0.0)
+
+                    acc += tl.dot(q_chunk, tl.trans(k_chunk))
+
+                acc = acc * scale
+
+                mask_ptrs = mask_ptr + row_offsets[:, None] * seq_len + col_offsets[None, :]
+                valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < seq_len)
+                neighborhood_mask = tl.load(mask_ptrs, mask=valid_mask, other=0.0)
+
+                acc = tl.where(neighborhood_mask > 0.0, acc, float("-inf"))
+
+                qk_ptrs = (
+                    QK_ptr
+                    + batch_id * qk_batch_stride
+                    + head_id * qk_head_stride
+                    + row_offsets[:, None] * qk_seq_stride
+                    + col_offsets[None, :] * qk_seq2_stride
+                )
+                tl.store(qk_ptrs, acc, mask=valid_mask)
+
+
 @triton.jit
 def _fused_neighborhood_attention_av_kernel(
     Attn_ptr,
@@ -224,93 +196,74 @@ def _fused_neighborhood_attention_av_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
 ):
-    """
-    Compute Attention @ V to produce the final output.
-
-    This kernel performs the second stage of neighborhood attention by multiplying
-    the normalized attention weights with the value matrix. The computation is
-    tiled for memory efficiency, with each tile computing a block of the output.
-
-    Args:
-        Attn_ptr: Pointer to attention weights [batch_size, num_heads, seq_len, seq_len]
-        V_ptr: Pointer to value tensor [batch_size, num_heads, seq_len, head_dim]
-        Out_ptr: Pointer to output tensor [batch_size, num_heads, seq_len, head_dim]
-        attn_*_stride: Strides for attention weights tensor
-        v_*_stride: Strides for value tensor
-        out_*_stride: Strides for output tensor
-        batch_size: Number of batches
-        num_heads: Number of attention heads
-        seq_len: Sequence length
-        head_dim: Dimension of each attention head
-        BLOCK_SIZE_M: Block size for sequence dimension (rows)
-        BLOCK_SIZE_N: Block size for head dimension (cols)
-        BLOCK_SIZE_K: Block size for sequence dimension (reduction)
-        num_stages: Number of pipeline stages
-        num_warps: Number of warps
-
-    Grid: (batch_size * num_heads, cdiv(seq_len, BLOCK_SIZE_M))
-    Each program computes multiple tiles along the head_dim dimension.
-    """
-    batch_head_id = tl.program_id(0)
-    tile_m = tl.program_id(1)
-
-    batch_id = batch_head_id // num_heads
-    head_id = batch_head_id % num_heads
-
-    row_start = tile_m * BLOCK_SIZE_M
-    row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+    pid = tl.program_id(0)
     
-    # 计算需要处理的 head_dim 维度块数
-    num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
+    num_batch_heads = batch_size * num_heads
+    num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
+    total_tiles = num_batch_heads * num_m_tiles
     
-    # 循环处理所有 head_dim 维度的块
-    for tile_n in range(num_n_tiles):
-        col_start = tile_n * BLOCK_SIZE_N
-        col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
-
-        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-
-        # 计算 Attn @ V
-        for k_start in range(0, seq_len, BLOCK_SIZE_K):
-            k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
-            k_mask = k_offsets < seq_len
-
-            # 加载 Attn
-            attn_ptrs = (
-                Attn_ptr
-                + batch_id * attn_batch_stride
-                + head_id * attn_head_stride
-                + row_offsets[:, None] * attn_seq_stride
-                + k_offsets[None, :] * attn_seq2_stride
-            )
-            attn_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
-            attn_chunk = tl.load(attn_ptrs, mask=attn_mask, other=0.0)
-
-            # 加载 V
-            v_ptrs = (
-                V_ptr
-                + batch_id * v_batch_stride
-                + head_id * v_head_stride
-                + k_offsets[:, None] * v_seq_stride
-                + col_offsets[None, :] * v_dim_stride
-            )
-            v_mask = k_mask[:, None] & (col_offsets[None, :] < head_dim)
-            v_chunk = tl.load(v_ptrs, mask=v_mask, other=0.0)
-
-            # 累加点积
-            acc += tl.dot(attn_chunk, v_chunk)
-
-        # 存储结果
-        out_ptrs = (
-            Out_ptr
-            + batch_id * out_batch_stride
-            + head_id * out_head_stride
-            + row_offsets[:, None] * out_seq_stride
-            + col_offsets[None, :] * out_dim_stride
-        )
-        valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
-        tl.store(out_ptrs, acc, mask=valid_mask)
+    num_programs: tl.constexpr = 48
+    tiles_per_program = tl.cdiv(total_tiles, num_programs)
+    
+    for tile_idx in range(tiles_per_program):
+        global_tile_id = pid + tile_idx * num_programs
         
+        # 用 if 包裹全部计算，替代 continue
+        if global_tile_id < total_tiles:
+            batch_head_id = global_tile_id // num_m_tiles
+            tile_m = global_tile_id % num_m_tiles
+            
+            batch_id = batch_head_id // num_heads
+            head_id = batch_head_id % num_heads
+
+            row_start = tile_m * BLOCK_SIZE_M
+            row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+            
+            num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
+            
+            for tile_n in range(num_n_tiles):
+                col_start = tile_n * BLOCK_SIZE_N
+                col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
+
+                acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+
+                for k_start in range(0, seq_len, BLOCK_SIZE_K):
+                    k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+                    k_mask = k_offsets < seq_len
+
+                    attn_ptrs = (
+                        Attn_ptr
+                        + batch_id * attn_batch_stride
+                        + head_id * attn_head_stride
+                        + row_offsets[:, None] * attn_seq_stride
+                        + k_offsets[None, :] * attn_seq2_stride
+                    )
+                    attn_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
+                    attn_chunk = tl.load(attn_ptrs, mask=attn_mask, other=0.0)
+
+                    v_ptrs = (
+                        V_ptr
+                        + batch_id * v_batch_stride
+                        + head_id * v_head_stride
+                        + k_offsets[:, None] * v_seq_stride
+                        + col_offsets[None, :] * v_dim_stride
+                    )
+                    v_mask = k_mask[:, None] & (col_offsets[None, :] < head_dim)
+                    v_chunk = tl.load(v_ptrs, mask=v_mask, other=0.0)
+
+                    acc += tl.dot(attn_chunk, v_chunk)
+
+                out_ptrs = (
+                    Out_ptr
+                    + batch_id * out_batch_stride
+                    + head_id * out_head_stride
+                    + row_offsets[:, None] * out_seq_stride
+                    + col_offsets[None, :] * out_dim_stride
+                )
+                valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
+                tl.store(out_ptrs, acc, mask=valid_mask)
+
+
 @triton.jit
 def _fused_neighborhood_attention_grad_attn_kernel(
     grad_output_ptr,
@@ -334,60 +287,78 @@ def _fused_neighborhood_attention_grad_attn_kernel(
     head_dim: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
-    NUM_N_TILES: tl.constexpr, 
+    BLOCK_SIZE_K: tl.constexpr, 
 ):
-    batch_head_id = tl.program_id(0)
-    tile_m = tl.program_id(1)
-    batch_id = batch_head_id // num_heads
-    head_id = batch_head_id % num_heads
-
-    row_start = tile_m * BLOCK_SIZE_M
-    row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+    """
+    Compute gradient with respect to attention weights: grad_attn = grad_output @ V^T.
+    Grid: (48, 1, 1)
+    """
+    pid = tl.program_id(0)
     
-    # 使用 tl.static_range 替代 range
-    for tile_n in tl.static_range(NUM_N_TILES):
-        col_start = tile_n * BLOCK_SIZE_N
-        col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
-
-        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-
-        for k_start in range(0, head_dim, BLOCK_SIZE_K):
-            k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
-            k_mask = k_offsets < head_dim
-
-            grad_out_ptrs = (
-                grad_output_ptr
-                + batch_id * grad_out_batch_stride
-                + head_id * grad_out_head_stride
-                + row_offsets[:, None] * grad_out_seq_stride
-                + k_offsets[None, :] * grad_out_dim_stride
-            )
-            grad_out_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
-            grad_out_chunk = tl.load(grad_out_ptrs, mask=grad_out_mask, other=0.0)
-
-            v_ptrs = (
-                V_ptr
-                + batch_id * v_batch_stride
-                + head_id * v_head_stride
-                + col_offsets[None, :] * v_seq_stride
-                + k_offsets[:, None] * v_dim_stride
-            )
-            v_mask = (col_offsets[None, :] < seq_len) & k_mask[:, None]
-            v_chunk = tl.load(v_ptrs, mask=v_mask, other=0.0)
-
-            acc += tl.dot(grad_out_chunk, v_chunk)
-
-        grad_attn_ptrs = (
-            grad_attn_ptr
-            + batch_id * grad_attn_batch_stride
-            + head_id * grad_attn_head_stride
-            + row_offsets[:, None] * grad_attn_seq_stride
-            + col_offsets[None, :] * grad_attn_seq2_stride
-        )
-        valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < seq_len)
-        tl.store(grad_attn_ptrs, acc, mask=valid_mask)
+    num_batch_heads = batch_size * num_heads
+    num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
+    total_tiles = num_batch_heads * num_m_tiles
+    
+    num_programs: tl.constexpr = 48
+    tiles_per_program = tl.cdiv(total_tiles, num_programs)
+    
+    for tile_idx in range(tiles_per_program):
+        global_tile_id = pid + tile_idx * num_programs
         
+        if global_tile_id < total_tiles:
+            batch_head_id = global_tile_id // num_m_tiles
+            tile_m = global_tile_id % num_m_tiles
+            
+            batch_id = batch_head_id // num_heads
+            head_id = batch_head_id % num_heads
+
+            row_start = tile_m * BLOCK_SIZE_M
+            row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+            num_n_tiles = tl.cdiv(seq_len, BLOCK_SIZE_N)    
+            
+            for tile_n in range(num_n_tiles):
+                col_start = tile_n * BLOCK_SIZE_N
+                col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
+
+                acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+
+                for k_start in range(0, head_dim, BLOCK_SIZE_K):
+                    k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+                    k_mask = k_offsets < head_dim
+
+                    grad_out_ptrs = (
+                        grad_output_ptr
+                        + batch_id * grad_out_batch_stride
+                        + head_id * grad_out_head_stride
+                        + row_offsets[:, None] * grad_out_seq_stride
+                        + k_offsets[None, :] * grad_out_dim_stride
+                    )
+                    grad_out_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
+                    grad_out_chunk = tl.load(grad_out_ptrs, mask=grad_out_mask, other=0.0)
+
+                    v_ptrs = (
+                        V_ptr
+                        + batch_id * v_batch_stride
+                        + head_id * v_head_stride
+                        + col_offsets[None, :] * v_seq_stride
+                        + k_offsets[:, None] * v_dim_stride
+                    )
+                    v_mask = (col_offsets[None, :] < seq_len) & k_mask[:, None]
+                    v_chunk = tl.load(v_ptrs, mask=v_mask, other=0.0)
+
+                    acc += tl.dot(grad_out_chunk, v_chunk)
+
+                grad_attn_ptrs = (
+                    grad_attn_ptr
+                    + batch_id * grad_attn_batch_stride
+                    + head_id * grad_attn_head_stride
+                    + row_offsets[:, None] * grad_attn_seq_stride
+                    + col_offsets[None, :] * grad_attn_seq2_stride
+                )
+                valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < seq_len)
+                tl.store(grad_attn_ptrs, acc, mask=valid_mask)
+
+
 @triton.jit
 def _fused_neighborhood_attention_grad_qk_kernel(
     grad_attn_ptr,
@@ -416,94 +387,76 @@ def _fused_neighborhood_attention_grad_qk_kernel(
 ):
     """
     Compute gradient with respect to queries: grad_Q = grad_attn @ K * scale.
-
-    This kernel computes the gradient of the loss with respect to the query tensor
-    by multiplying the gradient of attention weights with the key tensor. The
-    computation follows the chain rule for the attention mechanism.
-
-    Args:
-        grad_attn_ptr: Pointer to gradient of attention weights [batch_size, num_heads, seq_len, seq_len]
-        K_ptr: Pointer to key tensor [batch_size, num_heads, seq_len, head_dim]
-        grad_Q_ptr: Pointer to output gradient tensor [batch_size, num_heads, seq_len, head_dim]
-        grad_attn_*_stride: Strides for gradient attention tensor
-        k_*_stride: Strides for key tensor
-        grad_q_*_stride: Strides for gradient query tensor
-        batch_size: Number of batches
-        num_heads: Number of attention heads
-        seq_len: Sequence length
-        head_dim: Dimension of each attention head
-        scale: Scaling factor applied to attention scores
-        BLOCK_SIZE_M: Block size for sequence dimension (rows)
-        BLOCK_SIZE_N: Block size for head dimension (cols)
-        BLOCK_SIZE_K: Block size for sequence dimension (reduction)
-        num_stages: Number of pipeline stages
-        num_warps: Number of warps
-
-    Grid: (batch_size * num_heads, cdiv(seq_len, BLOCK_SIZE_M))
-    Each program computes multiple tiles along the head dimension.
+    Grid: (48, 1, 1)
     """
-    batch_head_id = tl.program_id(0)
-    tile_m = tl.program_id(1)
-
-    batch_id = batch_head_id // num_heads
-    head_id = batch_head_id % num_heads
-
-    row_start = tile_m * BLOCK_SIZE_M
-    row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+    pid = tl.program_id(0)
     
-    # 计算需要处理的 head_dim 维度块数
-    num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
+    num_batch_heads = batch_size * num_heads
+    num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
+    total_tiles = num_batch_heads * num_m_tiles
     
-    # 循环处理所有 head_dim 维度的块
-    for tile_n in range(num_n_tiles):
-        col_start = tile_n * BLOCK_SIZE_N
-        col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
+    num_programs: tl.constexpr = 48
+    tiles_per_program = tl.cdiv(total_tiles, num_programs)
+    
+    for tile_idx in range(tiles_per_program):
+        global_tile_id = pid + tile_idx * num_programs
+        
+        if global_tile_id < total_tiles:
+            batch_head_id = global_tile_id // num_m_tiles
+            tile_m = global_tile_id % num_m_tiles
+            
+            batch_id = batch_head_id // num_heads
+            head_id = batch_head_id % num_heads
 
-        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+            row_start = tile_m * BLOCK_SIZE_M
+            row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+            
+            num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
+            
+            for tile_n in range(num_n_tiles):
+                col_start = tile_n * BLOCK_SIZE_N
+                col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
 
-        # 计算 grad_attn @ K
-        for k_start in range(0, seq_len, BLOCK_SIZE_K):
-            k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
-            k_mask = k_offsets < seq_len
+                acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-            # 加载 grad_attn
-            grad_attn_ptrs = (
-                grad_attn_ptr
-                + batch_id * grad_attn_batch_stride
-                + head_id * grad_attn_head_stride
-                + row_offsets[:, None] * grad_attn_seq_stride
-                + k_offsets[None, :] * grad_attn_seq2_stride
-            )
-            grad_attn_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
-            grad_attn_chunk = tl.load(grad_attn_ptrs, mask=grad_attn_mask, other=0.0)
+                for k_start in range(0, seq_len, BLOCK_SIZE_K):
+                    k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+                    k_mask = k_offsets < seq_len
 
-            # 加载 K
-            k_ptrs = (
-                K_ptr
-                + batch_id * k_batch_stride
-                + head_id * k_head_stride
-                + k_offsets[:, None] * k_seq_stride
-                + col_offsets[None, :] * k_dim_stride
-            )
-            k_mask_2d = k_mask[:, None] & (col_offsets[None, :] < head_dim)
-            k_chunk = tl.load(k_ptrs, mask=k_mask_2d, other=0.0)
+                    grad_attn_ptrs = (
+                        grad_attn_ptr
+                        + batch_id * grad_attn_batch_stride
+                        + head_id * grad_attn_head_stride
+                        + row_offsets[:, None] * grad_attn_seq_stride
+                        + k_offsets[None, :] * grad_attn_seq2_stride
+                    )
+                    grad_attn_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
+                    grad_attn_chunk = tl.load(grad_attn_ptrs, mask=grad_attn_mask, other=0.0)
 
-            # 累加点积
-            acc += tl.dot(grad_attn_chunk, k_chunk)
+                    k_ptrs = (
+                        K_ptr
+                        + batch_id * k_batch_stride
+                        + head_id * k_head_stride
+                        + k_offsets[:, None] * k_seq_stride
+                        + col_offsets[None, :] * k_dim_stride
+                    )
+                    k_mask_2d = k_mask[:, None] & (col_offsets[None, :] < head_dim)
+                    k_chunk = tl.load(k_ptrs, mask=k_mask_2d, other=0.0)
 
-        # 应用缩放
-        acc = acc * scale
+                    acc += tl.dot(grad_attn_chunk, k_chunk)
 
-        # 存储结果
-        grad_q_ptrs = (
-            grad_Q_ptr
-            + batch_id * grad_q_batch_stride
-            + head_id * grad_q_head_stride
-            + row_offsets[:, None] * grad_q_seq_stride
-            + col_offsets[None, :] * grad_q_dim_stride
-        )
-        valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
-        tl.store(grad_q_ptrs, acc, mask=valid_mask)
+                acc = acc * scale
+
+                grad_q_ptrs = (
+                    grad_Q_ptr
+                    + batch_id * grad_q_batch_stride
+                    + head_id * grad_q_head_stride
+                    + row_offsets[:, None] * grad_q_seq_stride
+                    + col_offsets[None, :] * grad_q_dim_stride
+                )
+                valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
+                tl.store(grad_q_ptrs, acc, mask=valid_mask)
+
 
 @triton.jit
 def _fused_neighborhood_attention_grad_k_kernel(
@@ -533,72 +486,76 @@ def _fused_neighborhood_attention_grad_k_kernel(
 ):
     """
     Compute gradient with respect to keys: grad_K = grad_attn^T @ Q * scale.
-
-    Grid: (batch_size * num_heads, cdiv(seq_len, BLOCK_SIZE_M))
-    Each program computes multiple tiles along the head_dim dimension.
+    Grid: (48, 1, 1)
     """
-    batch_head_id = tl.program_id(0)
-    tile_m = tl.program_id(1)
-
-    batch_id = batch_head_id // num_heads
-    head_id = batch_head_id % num_heads
-
-    row_start = tile_m * BLOCK_SIZE_M
-    row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+    pid = tl.program_id(0)
     
-    # 计算需要处理的 head_dim 维度块数
-    num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
+    num_batch_heads = batch_size * num_heads
+    num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
+    total_tiles = num_batch_heads * num_m_tiles
     
-    # 循环处理所有 head_dim 维度的块
-    for tile_n in range(num_n_tiles):
-        col_start = tile_n * BLOCK_SIZE_N
-        col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
+    num_programs: tl.constexpr = 48
+    tiles_per_program = tl.cdiv(total_tiles, num_programs)
+    
+    for tile_idx in range(tiles_per_program):
+        global_tile_id = pid + tile_idx * num_programs
+        
+        if global_tile_id < total_tiles:
+            batch_head_id = global_tile_id // num_m_tiles
+            tile_m = global_tile_id % num_m_tiles
+            
+            batch_id = batch_head_id // num_heads
+            head_id = batch_head_id % num_heads
 
-        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+            row_start = tile_m * BLOCK_SIZE_M
+            row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+            
+            num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
+            
+            for tile_n in range(num_n_tiles):
+                col_start = tile_n * BLOCK_SIZE_N
+                col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
 
-        # 计算 grad_attn^T @ Q
-        for k_start in range(0, seq_len, BLOCK_SIZE_K):
-            k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
-            k_mask = k_offsets < seq_len
+                acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-            # 加载 Q
-            q_ptrs = (
-                Q_ptr
-                + batch_id * q_batch_stride
-                + head_id * q_head_stride
-                + k_offsets[:, None] * q_seq_stride
-                + col_offsets[None, :] * q_dim_stride
-            )
-            q_mask = k_mask[:, None] & (col_offsets[None, :] < head_dim)
-            q_chunk = tl.load(q_ptrs, mask=q_mask, other=0.0)
+                for k_start in range(0, seq_len, BLOCK_SIZE_K):
+                    k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+                    k_mask = k_offsets < seq_len
 
-            # 加载 grad_attn^T
-            grad_attn_T_ptrs = (
-                grad_attn_ptr
-                + batch_id * grad_attn_batch_stride
-                + head_id * grad_attn_head_stride
-                + row_offsets[:, None] * grad_attn_seq2_stride
-                + k_offsets[None, :] * grad_attn_seq_stride
-            )
-            grad_attn_T_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
-            grad_attn_T_chunk = tl.load(grad_attn_T_ptrs, mask=grad_attn_T_mask, other=0.0)
+                    q_ptrs = (
+                        Q_ptr
+                        + batch_id * q_batch_stride
+                        + head_id * q_head_stride
+                        + k_offsets[:, None] * q_seq_stride
+                        + col_offsets[None, :] * q_dim_stride
+                    )
+                    q_mask = k_mask[:, None] & (col_offsets[None, :] < head_dim)
+                    q_chunk = tl.load(q_ptrs, mask=q_mask, other=0.0)
 
-            # 累加点积
-            acc += tl.dot(grad_attn_T_chunk, q_chunk)
+                    grad_attn_T_ptrs = (
+                        grad_attn_ptr
+                        + batch_id * grad_attn_batch_stride
+                        + head_id * grad_attn_head_stride
+                        + row_offsets[:, None] * grad_attn_seq2_stride
+                        + k_offsets[None, :] * grad_attn_seq_stride
+                    )
+                    grad_attn_T_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
+                    grad_attn_T_chunk = tl.load(grad_attn_T_ptrs, mask=grad_attn_T_mask, other=0.0)
 
-        # 应用缩放
-        acc = acc * scale
+                    acc += tl.dot(grad_attn_T_chunk, q_chunk)
 
-        # 存储结果
-        grad_k_ptrs = (
-            grad_K_ptr
-            + batch_id * grad_k_batch_stride
-            + head_id * grad_k_head_stride
-            + row_offsets[:, None] * grad_k_seq_stride
-            + col_offsets[None, :] * grad_k_dim_stride
-        )
-        valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
-        tl.store(grad_k_ptrs, acc, mask=valid_mask)
+                acc = acc * scale
+
+                grad_k_ptrs = (
+                    grad_K_ptr
+                    + batch_id * grad_k_batch_stride
+                    + head_id * grad_k_head_stride
+                    + row_offsets[:, None] * grad_k_seq_stride
+                    + col_offsets[None, :] * grad_k_dim_stride
+                )
+                valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
+                tl.store(grad_k_ptrs, acc, mask=valid_mask)
+
 
 @triton.jit
 def _fused_neighborhood_attention_grad_v_kernel(
@@ -627,69 +584,74 @@ def _fused_neighborhood_attention_grad_v_kernel(
 ):
     """
     Compute gradient with respect to values: grad_V = Attn^T @ grad_output.
-
-    Grid: (batch_size * num_heads, cdiv(seq_len, BLOCK_SIZE_M))
-    Each program computes multiple tiles along the head_dim dimension.
+    Grid: (48, 1, 1)
     """
-    batch_head_id = tl.program_id(0)
-    tile_m = tl.program_id(1)
-
-    batch_id = batch_head_id // num_heads
-    head_id = batch_head_id % num_heads
-
-    row_start = tile_m * BLOCK_SIZE_M
-    row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+    pid = tl.program_id(0)
     
-    # 计算需要处理的 head_dim 维度块数
-    num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
+    num_batch_heads = batch_size * num_heads
+    num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
+    total_tiles = num_batch_heads * num_m_tiles
     
-    # 循环处理所有 head_dim 维度的块
-    for tile_n in range(num_n_tiles):
-        col_start = tile_n * BLOCK_SIZE_N
-        col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
+    num_programs: tl.constexpr = 48
+    tiles_per_program = tl.cdiv(total_tiles, num_programs)
+    
+    for tile_idx in range(tiles_per_program):
+        global_tile_id = pid + tile_idx * num_programs
+        
+        if global_tile_id < total_tiles:
+            batch_head_id = global_tile_id // num_m_tiles
+            tile_m = global_tile_id % num_m_tiles
+            
+            batch_id = batch_head_id // num_heads
+            head_id = batch_head_id % num_heads
 
-        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+            row_start = tile_m * BLOCK_SIZE_M
+            row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+            
+            num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
+            
+            for tile_n in range(num_n_tiles):
+                col_start = tile_n * BLOCK_SIZE_N
+                col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
 
-        # 计算 Attn^T @ grad_output
-        for k_start in range(0, seq_len, BLOCK_SIZE_K):
-            k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
-            k_mask = k_offsets < seq_len
+                acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-            # 加载 Attn^T
-            attn_ptrs = (
-                Attn_ptr
-                + batch_id * attn_batch_stride
-                + head_id * attn_head_stride
-                + k_offsets[:, None] * attn_seq_stride
-                + row_offsets[None, :] * attn_seq2_stride
-            )
-            attn_mask = k_mask[:, None] & (row_offsets[None, :] < seq_len)
-            attn_chunk = tl.load(attn_ptrs, mask=attn_mask, other=0.0)
+                for k_start in range(0, seq_len, BLOCK_SIZE_K):
+                    k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+                    k_mask = k_offsets < seq_len
 
-            # 加载 grad_output
-            grad_out_ptrs = (
-                grad_output_ptr
-                + batch_id * grad_out_batch_stride
-                + head_id * grad_out_head_stride
-                + k_offsets[:, None] * grad_out_seq_stride
-                + col_offsets[None, :] * grad_out_dim_stride
-            )
-            grad_out_mask = k_mask[:, None] & (col_offsets[None, :] < head_dim)
-            grad_out_chunk = tl.load(grad_out_ptrs, mask=grad_out_mask, other=0.0)
+                    attn_ptrs = (
+                        Attn_ptr
+                        + batch_id * attn_batch_stride
+                        + head_id * attn_head_stride
+                        + k_offsets[:, None] * attn_seq_stride
+                        + row_offsets[None, :] * attn_seq2_stride
+                    )
+                    attn_mask = k_mask[:, None] & (row_offsets[None, :] < seq_len)
+                    attn_chunk = tl.load(attn_ptrs, mask=attn_mask, other=0.0)
 
-            # 累加点积
-            acc += tl.dot(tl.trans(attn_chunk), grad_out_chunk)
+                    grad_out_ptrs = (
+                        grad_output_ptr
+                        + batch_id * grad_out_batch_stride
+                        + head_id * grad_out_head_stride
+                        + k_offsets[:, None] * grad_out_seq_stride
+                        + col_offsets[None, :] * grad_out_dim_stride
+                    )
+                    grad_out_mask = k_mask[:, None] & (col_offsets[None, :] < head_dim)
+                    grad_out_chunk = tl.load(grad_out_ptrs, mask=grad_out_mask, other=0.0)
 
-        # 存储结果
-        grad_v_ptrs = (
-            grad_V_ptr
-            + batch_id * grad_v_batch_stride
-            + head_id * grad_v_head_stride
-            + row_offsets[:, None] * grad_v_seq_stride
-            + col_offsets[None, :] * grad_v_dim_stride
-        )
-        valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
-        tl.store(grad_v_ptrs, acc, mask=valid_mask)
+                    acc += tl.dot(tl.trans(attn_chunk), grad_out_chunk)
+
+                grad_v_ptrs = (
+                    grad_V_ptr
+                    + batch_id * grad_v_batch_stride
+                    + head_id * grad_v_head_stride
+                    + row_offsets[:, None] * grad_v_seq_stride
+                    + col_offsets[None, :] * grad_v_dim_stride
+                )
+                valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
+                tl.store(grad_v_ptrs, acc, mask=valid_mask)
+
 
 def fused_neighborhood_attention_forward(
     query: torch.Tensor,
@@ -700,21 +662,6 @@ def fused_neighborhood_attention_forward(
     scale: float = None,
     return_lse: bool = False,
 ) -> tuple:
-    """
-    Fused neighborhood attention forward pass.
-
-    Args:
-        query: Query tensor of shape [batch_size, num_heads, seq_len, head_dim]
-        key: Key tensor of shape [batch_size, num_heads, seq_len, head_dim]
-        value: Value tensor of shape [batch_size, num_heads, seq_len, head_dim]
-        kernel_size: Size of the neighborhood window
-        dilation: Dilation factor for the neighborhood
-        scale: Scaling factor for attention scores (default: rsqrt(head_dim))
-        return_lse: Whether to return log-sum-exp values
-
-    Returns:
-        Tuple of (output tensor, softmax parameters for backward)
-    """
     batch_size, num_heads, seq_len, head_dim = query.shape
 
     if scale is None:
@@ -730,11 +677,9 @@ def fused_neighborhood_attention_forward(
     mask = torch.zeros(seq_len, seq_len, device=query.device, dtype=torch.float32)
 
     BLOCK_SIZE, num_warps = calculate_settings(seq_len)
-    BLOCK_SIZE_M = min(64, triton.next_power_of_2(seq_len))
-    BLOCK_SIZE_N = min(64, triton.next_power_of_2(seq_len))
+    BLOCK_SIZE_M = min(32, triton.next_power_of_2(seq_len))
+    BLOCK_SIZE_N = min(32, triton.next_power_of_2(seq_len))
     BLOCK_SIZE_K = max(16, triton.next_power_of_2(head_dim))
-
-    num_stages = 4 if seq_len >= 512 else 2
 
     grid_mask = (seq_len,)
     _neighborhood_mask_kernel[grid_mask](
@@ -745,7 +690,8 @@ def fused_neighborhood_attention_forward(
         BLOCK_SIZE,
     )
 
-    grid_qk = (batch_size * num_heads, triton.cdiv(seq_len, BLOCK_SIZE_M), 1)
+    # 固定 grid 为 (48, 1, 1)
+    grid_qk = (48, 1, 1)
     _fused_neighborhood_attention_qk_kernel[grid_qk](
         query,
         key,
@@ -779,7 +725,8 @@ def fused_neighborhood_attention_forward(
     attn_reshaped, BLOCK_SIZE_softmax, num_warps_softmax, multi_block_launch = _softmax_forward(qk_reshaped)
     attn_weights = attn_reshaped.view(batch_size, num_heads, seq_len, seq_len)
 
-    grid_av = (batch_size * num_heads, triton.cdiv(seq_len, BLOCK_SIZE_M), 1)
+    # 固定 grid 为 (48, 1, 1)
+    grid_av = (48, 1, 1)
     _fused_neighborhood_attention_av_kernel[grid_av](
         attn_weights,
         value,
@@ -826,6 +773,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
         ctx.softmax_params = softmax_params
         return output
 
+    
     @staticmethod
     @ensure_contiguous
     def backward(ctx, grad_output):
@@ -834,19 +782,20 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
 
         batch_size, num_heads, seq_len, head_dim = query.shape
         scale = ctx.scale if ctx.scale is not None else 1.0 / math.sqrt(head_dim)
-
+        
         grad_query = torch.zeros_like(query)
         grad_key = torch.zeros_like(key)
         grad_value = torch.zeros_like(value)
         grad_attn_weights = torch.zeros_like(attn_weights)
 
-        BLOCK_SIZE_M = min(64, triton.next_power_of_2(seq_len))
-        BLOCK_SIZE_N = min(64, triton.next_power_of_2(seq_len))
-        BLOCK_SIZE_K = min(64, triton.next_power_of_2(head_dim))
+        BLOCK_SIZE_M = min(32, triton.next_power_of_2(seq_len))
+        BLOCK_SIZE_N = min(32, triton.next_power_of_2(seq_len))
+        BLOCK_SIZE_K = min(32, triton.next_power_of_2(head_dim))
 
-        grid_grad_attn = (batch_size * num_heads, triton.cdiv(seq_len, BLOCK_SIZE_M), 1)
-        NUM_N_TILES = triton.cdiv(seq_len, BLOCK_SIZE_N)
-        _fused_neighborhood_attention_grad_attn_kernel[grid_grad_attn](
+        # 所有 grid 改为 (48, 1, 1)
+        grid = (48, 1, 1)
+        
+        _fused_neighborhood_attention_grad_attn_kernel[grid](
             grad_output,
             value,
             grad_attn_weights,
@@ -869,7 +818,6 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_M,
             BLOCK_SIZE_N,
             BLOCK_SIZE_K,
-            NUM_N_TILES,
         )
 
         grad_attn_reshaped = grad_attn_weights.view(batch_size * num_heads * seq_len, seq_len)
@@ -880,8 +828,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
         )
         grad_qk_scores = grad_qk_reshaped.view(batch_size, num_heads, seq_len, seq_len)
 
-        grid_grad_q = (batch_size * num_heads, triton.cdiv(seq_len, BLOCK_SIZE_M), 1)
-        _fused_neighborhood_attention_grad_qk_kernel[grid_grad_q](
+        _fused_neighborhood_attention_grad_qk_kernel[grid](
             grad_qk_scores,
             key,
             grad_query,
@@ -907,8 +854,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_K,
         )
 
-        grid_grad_k = (batch_size * num_heads, triton.cdiv(seq_len, BLOCK_SIZE_M), 1)
-        _fused_neighborhood_attention_grad_k_kernel[grid_grad_k](
+        _fused_neighborhood_attention_grad_k_kernel[grid](
             grad_qk_scores,
             query,
             grad_key,
@@ -934,8 +880,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_K,
         )
 
-        grid_grad_v = (batch_size * num_heads, triton.cdiv(seq_len, BLOCK_SIZE_M), 1)
-        _fused_neighborhood_attention_grad_v_kernel[grid_grad_v](
+        _fused_neighborhood_attention_grad_v_kernel[grid](
             attn_weights,
             grad_output,
             grad_value,
