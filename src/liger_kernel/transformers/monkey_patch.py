@@ -37,6 +37,7 @@ from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
+from liger_kernel.transformers.swiglu import LigerExperts
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
@@ -52,6 +53,8 @@ transformer_version = version.parse(transformers.__version__)
 logger = logging.getLogger(__name__)
 SUPPORTED_TRANSFORMER_VERSION = "4.46.1"
 TRANSFORMER_DEPRECATION_WARNING = "Support for transformers versions < 4.46.1 will soon be discontinued due to issues with incorrect gradient accumulation. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/34191"
+
+IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
 
 
 def _bind_method_to_module(module, method_name: str, new_method: Callable):
@@ -783,7 +786,10 @@ def apply_liger_kernel_to_mixtral(
             else:
                 modeling_mixtral.MixtralForCausalLM.forward = mixtral_lce_forward_deprecated
     if swiglu:
-        modeling_mixtral.MixtralBlockSparseTop2MLP = LigerBlockSparseTop2MLP
+        if IS_TRANSFORMERS_V5_OR_LATER:
+            modeling_mixtral.MixtralExperts = LigerExperts
+        else:
+            modeling_mixtral.MixtralBlockSparseTop2MLP = LigerBlockSparseTop2MLP
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -797,8 +803,11 @@ def apply_liger_kernel_to_mixtral(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                for expert in decoder_layer.block_sparse_moe.experts:
-                    _patch_swiglu_module(expert, LigerBlockSparseTop2MLP)
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
+                else:
+                    for expert in decoder_layer.block_sparse_moe.experts:
+                        _patch_swiglu_module(expert, LigerBlockSparseTop2MLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
