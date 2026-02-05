@@ -27,6 +27,8 @@ def sapo_loss_fn(importance_ratio: torch.Tensor, temperature: float) -> torch.Te
     Returns:
         The SAPO loss value.
     """
+    if temperature <= 0:
+        raise ValueError("sapo_temperature must be > 0.")
     sigmoid_input = temperature * (importance_ratio - 1)
     sigmoid_smoothed_loss = torch.sigmoid(sigmoid_input)
     return sigmoid_smoothed_loss * 4 / temperature
