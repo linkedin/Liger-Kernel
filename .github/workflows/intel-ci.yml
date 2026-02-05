@@ -13,11 +13,14 @@ on:
     paths:
       - "src/**"
       - "test/**"
+  merge_group:
+    branches:
+      - main
   workflow_dispatch:  # Enables manual trigger
 
 concurrency:
   # This causes it to cancel previous in-progress actions on the same PR / branch,
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
