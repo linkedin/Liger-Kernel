@@ -1129,6 +1129,7 @@ if GLM4V_AVAILABLE:
                     if not IS_TRANSFORMERS_V5_OR_LATER
                     else {}
                 ),
+                "pad_token_id": None,
             },
             vision_config={
                 "depth": 4,  # 32
@@ -1426,6 +1427,7 @@ if EXAONE4_AVAILABLE:
             use_cache=True,
             vocab_size=32000,
             attn_implementation="sdpa",
+            pad_token_id=None,
         ),
     )
 
