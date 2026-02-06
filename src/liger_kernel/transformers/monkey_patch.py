@@ -1448,7 +1448,10 @@ def apply_liger_kernel_to_qwen3_moe(
             modeling_qwen3_moe.Qwen3MoeForCausalLM.forward = qwen3_lce_forward
 
     if swiglu:
-        modeling_qwen3_moe.Qwen3MoeMLP = LigerQwen3MoeSwiGLUMLP
+        if IS_TRANSFORMERS_V5_OR_LATER:
+            modeling_qwen3_moe.Qwen3MoeExperts = LigerExperts
+        else:
+            modeling_qwen3_moe.Qwen3MoeMLP = LigerQwen3MoeSwiGLUMLP
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -1461,8 +1464,11 @@ def apply_liger_kernel_to_qwen3_moe(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                for mlp_expert in decoder_layer.mlp.experts:
-                    _patch_swiglu_module(mlp_expert, LigerQwen3MoeSwiGLUMLP)
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
+                else:
+                    for mlp_expert in decoder_layer.mlp.experts:
+                        _patch_swiglu_module(mlp_expert, LigerQwen3MoeSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
@@ -2680,8 +2686,11 @@ def apply_liger_kernel_to_qwen3_next(
         else:
             modeling_qwen3_next.Qwen3NextForCausalLM.forward = qwen3_next_lce_forward
     if swiglu:
-        # Qwen3MoeMLP and Qwen3NextMLP are identical, hence we reuse LigerQwen3MoeSwiGLUMLP
-        modeling_qwen3_next.Qwen3NextMLP = LigerQwen3MoeSwiGLUMLP
+        if IS_TRANSFORMERS_V5_OR_LATER:
+            modeling_qwen3_next.Qwen3NextExperts = LigerExperts
+        else:
+            # Qwen3MoeMLP and Qwen3NextMLP are identical, hence we reuse LigerQwen3MoeSwiGLUMLP
+            modeling_qwen3_next.Qwen3NextMLP = LigerQwen3MoeSwiGLUMLP
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -2709,8 +2718,11 @@ def apply_liger_kernel_to_qwen3_next(
                     _patch_swiglu_module(decoder_layer.mlp.shared_expert, LigerQwen3MoeSwiGLUMLP)
                     experts = getattr(decoder_layer.mlp, "experts", None)
                     if experts is not None:
-                        for expert in experts:
-                            _patch_swiglu_module(expert, LigerQwen3MoeSwiGLUMLP)
+                        if IS_TRANSFORMERS_V5_OR_LATER:
+                            _patch_swiglu_module(experts, LigerExperts)
+                        else:
+                            for expert in experts:
+                                _patch_swiglu_module(expert, LigerQwen3MoeSwiGLUMLP)
 
 
 def apply_liger_kernel_to_hunyuan_v1_dense(
@@ -2810,7 +2822,10 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
             modeling_hunyuan_v1_moe.HunYuanMoEV1ForCausalLM.forward = hunyuan_v1_moe_lce_forward
 
     if swiglu:
-        modeling_hunyuan_v1_moe.HunYuanMoEV1MLP = LigerHunyuanV1SwiGLUMLP
+        if IS_TRANSFORMERS_V5_OR_LATER:
+            modeling_hunyuan_v1_moe.HunYuanMoEV1Experts = LigerExperts
+        else:
+            modeling_hunyuan_v1_moe.HunYuanMoEV1MLP = LigerHunyuanV1SwiGLUMLP
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -2823,8 +2838,11 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
             if swiglu:
-                for mlp_expert in decoder_layer.mlp.experts:
-                    _patch_swiglu_module(mlp_expert, LigerHunyuanV1SwiGLUMLP)
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    _patch_swiglu_module(decoder_layer.mlp.experts, LigerExperts)
+                else:
+                    for mlp_expert in decoder_layer.mlp.experts:
+                        _patch_swiglu_module(mlp_expert, LigerHunyuanV1SwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
