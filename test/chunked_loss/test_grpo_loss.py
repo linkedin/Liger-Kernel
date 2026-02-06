@@ -364,7 +364,7 @@ def test_correctness(
         if torch_lm_head_grpo.lin.bias is not None:
             logits = logits + torch_lm_head_grpo.lin.bias
         logits = logits / temperature
-        logps = F.log_softmax(logits.float(), dim=-1)
+        logps = F.log_softmax(logits, dim=-1)
         per_token_logps = logps.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
 
     # Create attention mask with random padding [B, T]
