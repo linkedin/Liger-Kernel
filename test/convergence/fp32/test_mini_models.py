@@ -912,6 +912,7 @@ if QWEN3_VL_MOE_AVAILABLE:
                 num_experts=4,
                 tie_word_embeddings=False,
                 mlp_only_layers=[],
+                pad_token_id=None,
                 rope_scaling=dict(
                     type="mrope",
                     mrope_section=[16, 24, 24],  # (temporal, height, width)
@@ -1102,6 +1103,7 @@ if GLM4V_AVAILABLE:
                     if not IS_TRANSFORMERS_V5_OR_LATER
                     else {}
                 ),
+                "pad_token_id": None,
             },
             vision_config={
                 "depth": 4,  # 32
@@ -1454,6 +1456,7 @@ if EXAONE4_AVAILABLE:
             use_cache=True,
             vocab_size=32000,
             attn_implementation="sdpa",
+            pad_token_id=None,
         ),
     )
 

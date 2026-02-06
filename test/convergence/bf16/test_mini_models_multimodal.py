@@ -291,6 +291,7 @@ if LLAMA4_AVAILABLE:
                 vocab_size=32000,  # 128256,
             ),
             attn_implementation="sdpa",
+            pad_token_id=None,
         ),
     )
 
@@ -820,6 +821,7 @@ if QWEN3_VL_MOE_AVAILABLE:
                 num_experts_per_tok=2,
                 num_experts=4,
                 mlp_only_layers=[],
+                pad_token_id=None,
             ).to_dict(),
         ),
     )
