@@ -10,11 +10,14 @@ import torch
 import transformers
 
 from packaging import version
+from test.utils import get_mllama_rope_config
+from test.utils import get_qwen3_vl_rope_config
 from transformers import AutoModelForCausalLM
 from transformers import PretrainedConfig
 from transformers import PreTrainedModel
 
 from liger_kernel.transformers import LigerBlockSparseTop2MLP
+from liger_kernel.transformers import LigerExperts
 from liger_kernel.transformers import LigerGEGLUMLP
 from liger_kernel.transformers import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers import LigerQwen3MoeSwiGLUMLP
@@ -29,6 +32,7 @@ from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instan
 # Import transformer version check
 transformer_version = version.parse(transformers.__version__)
 SUPPORTED_TRANSFORMER_VERSION = "4.46.1"
+IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
 
 # Import forward functions based on transformer version
 if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
@@ -497,13 +501,9 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
+                **get_qwen3_vl_rope_config(),  # Version-aware rope configuration
             ).to_dict(),
         )
         dummy_model_instance = Qwen3VLForConditionalGeneration._from_config(config)
@@ -598,13 +598,9 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
+                **get_qwen3_vl_rope_config(),  # Version-aware rope configuration
             ).to_dict(),
         )
         dummy_model_instance = Qwen3VLModel._from_config(config)
@@ -675,13 +671,9 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_text():
             rms_norm_eps=1e-6,
             use_cache=False,
             tie_word_embeddings=True,
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
-                mrope_section=[16, 24, 24],
-            ),
             attention_dropout=0.0,
             attention_bias=False,
+            **get_qwen3_vl_rope_config(),  # Version-aware rope configuration
         )
         dummy_model_instance = Qwen3VLTextModel._from_config(config)
 
@@ -771,11 +763,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
                 decoder_sparse_step=1,
@@ -783,6 +770,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
                 num_experts_per_tok=2,
                 num_experts=4,
                 mlp_only_layers=[],
+                pad_token_id=None,
+                **get_qwen3_vl_rope_config(),  # Version-aware rope configuration
             ).to_dict(),
         )
         dummy_model_instance = Qwen3VLMoeForConditionalGeneration._from_config(config)
@@ -877,11 +866,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
                 decoder_sparse_step=1,
@@ -889,6 +873,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
                 num_experts_per_tok=2,
                 num_experts=4,
                 mlp_only_layers=[],
+                pad_token_id=None,
+                **get_qwen3_vl_rope_config(),  # Version-aware rope configuration
             ).to_dict(),
         )
         dummy_model_instance = Qwen3VLMoeModel._from_config(config)
@@ -959,11 +945,6 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
             rms_norm_eps=1e-6,
             use_cache=False,
             tie_word_embeddings=True,
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
-                mrope_section=[16, 24, 24],
-            ),
             attention_dropout=0.0,
             attention_bias=False,
             decoder_sparse_step=1,
@@ -971,6 +952,8 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
             num_experts_per_tok=2,
             num_experts=4,
             mlp_only_layers=[],
+            pad_token_id=None,
+            **get_qwen3_vl_rope_config(),  # Version-aware rope configuration
         )
         dummy_model_instance = Qwen3VLMoeTextModel._from_config(config)
 
@@ -1107,13 +1090,6 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
                 intermediate_size=64,
                 hidden_act="silu",
                 num_hidden_layers=2,
-                rope_scaling=dict(
-                    factor=8.0,
-                    high_freq_factor=4.0,
-                    low_freq_factor=1.0,
-                    original_max_position_embeddings=8192,
-                    rope_type="llama3",
-                ),
             ),
             vision_config=transformers.models.mllama.configuration_mllama.MllamaVisionConfig(
                 rms_norm_eps=1e-5,
@@ -1205,13 +1181,7 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
             intermediate_size=64,
             hidden_act="silu",
             num_hidden_layers=2,
-            rope_scaling=dict(
-                factor=8.0,
-                high_freq_factor=4.0,
-                low_freq_factor=1.0,
-                original_max_position_embeddings=8192,
-                rope_type="llama3",
-            ),
+            **get_mllama_rope_config(),  # Version-aware rope configuration
         )
 
         dummy_model_instance = MllamaForCausalLM._from_config(config)
@@ -1320,6 +1290,7 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
                 num_hidden_layers=2,
                 vision_output_dim=64,
             ),
+            pad_token_id=None,
         )
         dummy_model_instance = Llama4ForConditionalGeneration._from_config(config)
 
@@ -1450,8 +1421,11 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(mixtral_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            for expert in layer.block_sparse_moe.experts:
-                assert inspect.getsource(expert.forward) != inspect.getsource(LigerBlockSparseTop2MLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.block_sparse_moe.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerBlockSparseTop2MLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
@@ -1462,8 +1436,11 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(mixtral_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            for expert in layer.block_sparse_moe.experts:
-                assert inspect.getsource(expert.forward) == inspect.getsource(LigerBlockSparseTop2MLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.block_sparse_moe.experts:
+                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerBlockSparseTop2MLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
@@ -1864,7 +1841,11 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
@@ -1875,8 +1856,11 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            for mlp_expert in layer.mlp.experts:
-                assert inspect.getsource(mlp_expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
@@ -2598,6 +2582,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v():
                 "hidden_size": 32,
                 "intermediate_size": 64,
                 "hidden_act": "silu",
+                "pad_token_id": None,
             },
             vision_config={
                 "num_hidden_layers": 2,
@@ -2705,8 +2690,11 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
                 LigerRMSNormForGlm4.forward
             )
         if decoder_layer.mlp.experts is not None:
-            for expert in decoder_layer.mlp.experts:
-                assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(decoder_layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in decoder_layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             if decoder_layer.mlp.shared_experts is not None:
                 assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) != inspect.getsource(
                     LigerSwiGLUMLP.forward
@@ -2741,8 +2729,13 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
                     LigerRMSNormForGlm4.forward
                 )
             if getattr(decoder_layer.mlp, "experts", None) is not None:
-                for expert in decoder_layer.mlp.experts:
-                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(decoder_layer.mlp.experts.forward) == inspect.getsource(
+                        LigerExperts.forward
+                    )
+                else:
+                    for expert in decoder_layer.mlp.experts:
+                        assert inspect.getsource(expert.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             if getattr(decoder_layer.mlp, "shared_experts", None) is not None:
                 assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) == inspect.getsource(
                     LigerSwiGLUMLP.forward
@@ -2824,8 +2817,15 @@ def test_apply_liger_kernel_to_instance_for_qwen3_next():
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             if hasattr(layer, "mlp") and hasattr(layer.mlp, "experts"):
-                for expert in layer.mlp.experts:
-                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+                else:
+                    for expert in layer.mlp.experts:
+                        assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+                if hasattr(layer.mlp, "shared_expert"):
+                    assert inspect.getsource(layer.mlp.shared_expert.forward) != inspect.getsource(
+                        LigerSwiGLUMLP.forward
+                    )
             else:
                 assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
 
@@ -2840,8 +2840,11 @@ def test_apply_liger_kernel_to_instance_for_qwen3_next():
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             if hasattr(layer, "mlp") and hasattr(layer.mlp, "experts"):
-                for expert in layer.mlp.experts:
-                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(LigerExperts.forward)
+                else:
+                    for expert in layer.mlp.experts:
+                        assert inspect.getsource(expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
                 if hasattr(layer.mlp, "shared_expert"):
                     assert inspect.getsource(layer.mlp.shared_expert.forward) == inspect.getsource(
                         LigerSwiGLUMLP.forward
@@ -2880,7 +2883,11 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_moe():
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(hunyuan_v1_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
@@ -2891,8 +2898,11 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_moe():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(hunyuan_v1_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            for mlp_expert in layer.mlp.experts:
-                assert inspect.getsource(mlp_expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(LigerExperts.forward)
+            else:
+                for mlp_expert in layer.mlp.experts:
+                    assert inspect.getsource(mlp_expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
