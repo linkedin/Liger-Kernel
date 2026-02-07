@@ -17,6 +17,7 @@ from transformers import PretrainedConfig
 from transformers import PreTrainedModel
 
 from liger_kernel.transformers import LigerBlockSparseTop2MLP
+from liger_kernel.transformers import LigerExperts
 from liger_kernel.transformers import LigerGEGLUMLP
 from liger_kernel.transformers import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers import LigerQwen3MoeSwiGLUMLP
@@ -31,6 +32,7 @@ from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instan
 # Import transformer version check
 transformer_version = version.parse(transformers.__version__)
 SUPPORTED_TRANSFORMER_VERSION = "4.46.1"
+IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
 
 # Import forward functions based on transformer version
 if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
@@ -1419,8 +1421,11 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(mixtral_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            for expert in layer.block_sparse_moe.experts:
-                assert inspect.getsource(expert.forward) != inspect.getsource(LigerBlockSparseTop2MLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.block_sparse_moe.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerBlockSparseTop2MLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
@@ -1431,8 +1436,11 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(mixtral_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            for expert in layer.block_sparse_moe.experts:
-                assert inspect.getsource(expert.forward) == inspect.getsource(LigerBlockSparseTop2MLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.block_sparse_moe.experts:
+                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerBlockSparseTop2MLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
@@ -1833,7 +1841,11 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
@@ -1844,8 +1856,11 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            for mlp_expert in layer.mlp.experts:
-                assert inspect.getsource(mlp_expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
@@ -2675,8 +2690,11 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
                 LigerRMSNormForGlm4.forward
             )
         if decoder_layer.mlp.experts is not None:
-            for expert in decoder_layer.mlp.experts:
-                assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(decoder_layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in decoder_layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             if decoder_layer.mlp.shared_experts is not None:
                 assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) != inspect.getsource(
                     LigerSwiGLUMLP.forward
@@ -2711,8 +2729,13 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
                     LigerRMSNormForGlm4.forward
                 )
             if getattr(decoder_layer.mlp, "experts", None) is not None:
-                for expert in decoder_layer.mlp.experts:
-                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(decoder_layer.mlp.experts.forward) == inspect.getsource(
+                        LigerExperts.forward
+                    )
+                else:
+                    for expert in decoder_layer.mlp.experts:
+                        assert inspect.getsource(expert.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             if getattr(decoder_layer.mlp, "shared_experts", None) is not None:
                 assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) == inspect.getsource(
                     LigerSwiGLUMLP.forward
@@ -2794,8 +2817,15 @@ def test_apply_liger_kernel_to_instance_for_qwen3_next():
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             if hasattr(layer, "mlp") and hasattr(layer.mlp, "experts"):
-                for expert in layer.mlp.experts:
-                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+                else:
+                    for expert in layer.mlp.experts:
+                        assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+                if hasattr(layer.mlp, "shared_expert"):
+                    assert inspect.getsource(layer.mlp.shared_expert.forward) != inspect.getsource(
+                        LigerSwiGLUMLP.forward
+                    )
             else:
                 assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
 
@@ -2810,8 +2840,11 @@ def test_apply_liger_kernel_to_instance_for_qwen3_next():
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             if hasattr(layer, "mlp") and hasattr(layer.mlp, "experts"):
-                for expert in layer.mlp.experts:
-                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(LigerExperts.forward)
+                else:
+                    for expert in layer.mlp.experts:
+                        assert inspect.getsource(expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
                 if hasattr(layer.mlp, "shared_expert"):
                     assert inspect.getsource(layer.mlp.shared_expert.forward) == inspect.getsource(
                         LigerSwiGLUMLP.forward
@@ -2850,7 +2883,11 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_moe():
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(hunyuan_v1_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
@@ -2861,8 +2898,11 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_moe():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(hunyuan_v1_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
-            for mlp_expert in layer.mlp.experts:
-                assert inspect.getsource(mlp_expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(LigerExperts.forward)
+            else:
+                for mlp_expert in layer.mlp.experts:
+                    assert inspect.getsource(mlp_expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
