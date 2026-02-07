@@ -23,6 +23,8 @@ def sapo_loss_fn(importance_ratio: torch.Tensor, temperature: float) -> torch.Te
     Reference: https://huggingface.co/papers/2511.20347
     TRL implementation: https://github.com/huggingface/trl/blob/1bd2a52ec2d8344050af736d60cdc735181ae4b8/trl/trainer/grpo_trainer.py#L1913
     """
+    if temperature <= 0:
+        raise ValueError("sapo_temperature must be > 0.")
     sigmoid_input = temperature * (importance_ratio - 1)
     sigmoid_smoothed_loss = torch.sigmoid(sigmoid_input)
     return sigmoid_smoothed_loss * 4 / temperature
@@ -120,7 +122,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
             upper_bound = epsilon_high
             lower_bound = None
             coef_2 = torch.clamp(coef_1, lower_bound, upper_bound).detach()
-            is_lower_clipped = False
+            is_lower_clipped = torch.zeros_like(coef_1, dtype=torch.bool)
             is_upper_clipped = coef_1 > upper_bound
             # CISPO: clip and detach the importance weights, multiply by log probs
             # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2030
@@ -412,8 +414,11 @@ def test_correctness(
     mask_indices = torch.randperm(B * T)[:num_elements_to_mask]
     attention_mask.view(-1)[mask_indices] = 0
 
-    # Create advantages with shape [B]
-    advantages = torch.rand(B, device=device, dtype=dtype)
+    # Create advantages with shape [B] and ensure mixed signs for SAPO
+    advantages = torch.randn(B, device=device, dtype=dtype)
+    advantages[0] = -advantages[0].abs()
+    if B > 1:
+        advantages[1] = advantages[1].abs()
 
     ref_per_token_logps = None
     ref_input = None

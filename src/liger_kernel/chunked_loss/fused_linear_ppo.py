@@ -62,12 +62,15 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             epsilon_low: Lower bound for clipping the importance sampling ratio
             epsilon_high: Upper bound for clipping the importance sampling ratio
             beta: Weight for the KL penalty
-            loss_type: Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo")
+            loss_type: Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo")
             max_completion_length: Maximum completion length required for "dr_grpo"
+            importance_sampling_level: Level of importance sampling ("token" or "sequence")
             temperature: Temperature for the logits
             compiled: Whether to use torch compile
             use_ref_model: Whether to use a reference model
             chunk_size: Size of chunks for processing in other loss modules
+            sapo_temperature_pos: Temperature for positive advantages in SAPO
+            sapo_temperature_neg: Temperature for negative advantages in SAPO
         """
         if use_ref_model:
             assert ref_per_token_logps is not None or ref_input is not None, (
@@ -371,4 +374,6 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             None,  # grad_compiled
             None,  # grad_use_ref_model
             None,  # grad_chunk_size
+            None,  # grad_sapo_temperature_pos
+            None,  # grad_sapo_temperature_neg
         )
