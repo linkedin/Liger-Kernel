@@ -26,7 +26,7 @@ def liger_correctness_tests():
         shell=True,
         cwd=REMOTE_ROOT_PATH,
     )
-    subprocess.run(["make test-convergence"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
+    subprocess.run(["make test"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
 
 
 @app.function(gpu="H100!", image=repo, timeout=90 * 60)
