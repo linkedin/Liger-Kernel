@@ -30,6 +30,8 @@ def triton_grpo_loss(
         )
     if loss_type == "cispo":
         raise ValueError("Triton GRPO loss does not support loss_type='cispo'. Use the chunked GRPO loss path.")
+    if loss_type == "sapo":
+        raise ValueError("Triton GRPO loss does not support loss_type='sapo'. Use the chunked GRPO loss path.")
 
     per_token_loss, per_token_kl, is_clipped = GrpoLossFunction.apply(
         logits,
