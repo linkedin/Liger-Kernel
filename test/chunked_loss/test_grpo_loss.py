@@ -122,7 +122,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
             upper_bound = epsilon_high
             lower_bound = None
             coef_2 = torch.clamp(coef_1, lower_bound, upper_bound).detach()
-            is_lower_clipped = False
+            is_lower_clipped = torch.zeros_like(coef_1, dtype=torch.bool)
             is_upper_clipped = coef_1 > upper_bound
             # CISPO: clip and detach the importance weights, multiply by log probs
             # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2030

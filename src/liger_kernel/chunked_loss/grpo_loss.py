@@ -42,6 +42,11 @@ def clip_coef_fn(coef, epsilon_low, epsilon_high, loss_type):
         clipped_coef = torch.clamp(coef, lower_bound, upper_bound).detach()
         is_lower_clipped = False
         is_upper_clipped = coef > upper_bound
+    elif loss_type == "sapo":
+        # SAPO doesn't use clipping metrics
+        clipped_coef = None
+        is_lower_clipped = torch.zeros_like(coef, dtype=torch.bool)
+        is_upper_clipped = torch.zeros_like(coef, dtype=torch.bool)
     else:
         upper_bound = 1 + epsilon_high
         lower_bound = 1 - epsilon_low
@@ -105,7 +110,12 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         # From here, log_importance_weights (and all subsequent tensors, coef_1, coef_2, etc.) shape depends on
         # importance_sampling_level: "token" level: (B, T); "sequence" level: (B, 1)
         coef_1 = torch.exp(log_importance_weights)
-        if loss_type == "sapo":
+        coef_2, is_lower_clipped, is_upper_clipped = clip_coef_fn(coef_1, epsilon_low, epsilon_high, loss_type)
+        if loss_type == "cispo":
+            # CISPO: clip and detach the importance weights, multiply by log probs
+            # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2030
+            per_token_loss = -coef_2 * advantages.unsqueeze(1) * per_token_logps
+        elif loss_type == "sapo":
             # SAPO: Soft Adaptive Policy Optimization
             # Uses sigmoid-based soft gating instead of hard clipping
             # Reference: https://huggingface.co/papers/2511.20347
@@ -123,19 +133,11 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
                 coef_1[~positive_advantages_mask], sapo_temperature_neg
             )
             per_token_loss = -per_token_loss * advantages_expanded
-            # SAPO doesn't use clipping metrics
-            is_lower_clipped = torch.zeros_like(coef_1, dtype=torch.bool)
-            is_upper_clipped = torch.zeros_like(coef_1, dtype=torch.bool)
         else:
-            coef_2, is_lower_clipped, is_upper_clipped = clip_coef_fn(coef_1, epsilon_low, epsilon_high, loss_type)
-            if loss_type == "cispo":
-                # CISPO: clip and detach the importance weights, multiply by log probs
-                # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2030
-                per_token_loss = -coef_2 * advantages.unsqueeze(1) * per_token_logps
-            else:
-                per_token_loss1 = coef_1 * advantages.unsqueeze(1)
-                per_token_loss2 = coef_2 * advantages.unsqueeze(1)
-                per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+            per_token_loss1 = coef_1 * advantages.unsqueeze(1)
+            per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+            per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
         if beta != 0.0:
             # Compute KL penalty (approximates KL[per_token_logps, ref_per_token_logps])
             kl_div = k3_loss_fn(ref_per_token_logps, per_token_logps)
