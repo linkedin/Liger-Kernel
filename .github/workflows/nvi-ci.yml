@@ -40,32 +40,7 @@ jobs:
     - name: Run checkstyle
       run: make checkstyle
 
-  # tests:
-  #   runs-on: ubuntu-latest
-  #   needs: [checkstyle]
-  #   env:
-  #     MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-  #     MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-
-  #   steps:
-  #   - name: Checkout code
-  #     uses: actions/checkout@v6
-
-  #   - name: Set up Python
-  #     uses: actions/setup-python@v6
-  #     with:
-  #       python-version: '3.10'
-
-  #   - name: Install dependencies
-  #     run: |
-  #       python -m pip install --upgrade pip
-  #       pip install modal
-
-  #   - name: Run tests
-  #     run: |
-  #       modal run dev.modal.tests
-
-  correctness:
+  correctness-tests:
     runs-on: ubuntu-latest
     needs: [checkstyle]
     env:
@@ -88,9 +63,9 @@ jobs:
 
     - name: Run tests
       run: |
-        modal run dev.modal.test_correctness
+        modal run dev.modal.tests::liger_tests.liger_correctness_tests
 
-  convergence:
+  convergence-tests:
     runs-on: ubuntu-latest
     needs: [checkstyle]
     env:
@@ -113,4 +88,109 @@ jobs:
 
     - name: Run tests
       run: |
-        modal run dev.modal.test_convergence
+        modal run dev.modal.tests::liger_tests.liger_convergence_tests
+
+
+  correctness-tests-with-transformers-4.49.0:
+    runs-on: ubuntu-latest
+    needs: [checkstyle]
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install modal
+
+    - name: Run tests
+      run: |
+        modal run dev.modal.tests::liger_tests.liger_oldest_v4_correctness_tests
+
+
+
+  convergence-tests-with-transformers-4.49.0:
+    runs-on: ubuntu-latest
+    needs: [checkstyle]
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install modal
+
+    - name: Run tests
+      run: |
+        modal run dev.modal.tests::liger_tests.liger_oldest_v4_convergence_tests
+
+  correctness-tests-with-transformers-4.57.6:
+    runs-on: ubuntu-latest
+    needs: [checkstyle]
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install modal
+
+    - name: Run tests
+      run: |
+        modal run dev.modal.tests::liger_tests.liger_latest_v4_correctness_tests
+
+
+
+  convergence-tests-with-transformers-4.57.6:
+    runs-on: ubuntu-latest
+    needs: [checkstyle]
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install modal
+
+    - name: Run tests
+      run: |
+        modal run dev.modal.tests::liger_tests.liger_latest_v4_convergence_tests
