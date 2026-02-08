@@ -14,6 +14,9 @@ from liger_kernel.ops import LigerGroupNormFunction
 from liger_kernel.ops import LigerJSDFunction
 from liger_kernel.ops import LigerKLDivLossFunction
 from liger_kernel.ops import LigerLayerNormFunction
+from liger_kernel.ops import LigerMHCCoeffsFunction
+from liger_kernel.ops import LigerMHCPostResFunction
+from liger_kernel.ops import LigerMHCPreFunction
 from liger_kernel.ops import LigerMultiTokenAttentionFunction
 from liger_kernel.ops import LigerPolyNormFunction
 from liger_kernel.ops import LigerQwen2VLMRopeFunction
@@ -299,3 +302,50 @@ def liger_softmax(x):
 
 def liger_dyt(x, alpha, gamma, beta):
     return LigerDyTFunction.apply(x, alpha, gamma, beta)
+
+
+def liger_mhc_coeffs(
+    x,
+    phi,
+    b,
+    alpha_pre,
+    alpha_post,
+    alpha_res,
+    *,
+    allow_fp32: bool = False,
+    tmax: int = 20,
+    rms_eps: float = 1e-6,
+    pre_eps: float = 0.0,
+    sinkhorn_eps: float = 1e-6,
+    post_mult: float = 2.0,
+):
+    return LigerMHCCoeffsFunction.apply(
+        x,
+        phi,
+        b,
+        alpha_pre,
+        alpha_post,
+        alpha_res,
+        allow_fp32,
+        int(tmax),
+        float(rms_eps),
+        float(pre_eps),
+        float(sinkhorn_eps),
+        float(post_mult),
+    )
+
+
+def liger_mhc_pre(x, h_pre):
+    return LigerMHCPreFunction.apply(x, h_pre)
+
+
+def liger_mhc_post_res(x, f_out, h_post, h_res):
+    return LigerMHCPostResFunction.apply(x, f_out, h_post, h_res)
+
+
+def liger_mhc_apply(x, f_out, h_pre, h_post, h_res, *, return_x_in: bool = False):
+    x_in = liger_mhc_pre(x, h_pre)
+    x_out = liger_mhc_post_res(x, f_out, h_post, h_res)
+    if return_x_in:
+        return x_out, x_in
+    return x_out
