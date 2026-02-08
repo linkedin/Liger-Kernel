@@ -17,6 +17,9 @@ If __all__ is not defined, all public symbols will be auto-discovered.
 from liger_kernel.ops.backends._ascend.ops.embedding import LigerEmbeddingFunction
 from liger_kernel.ops.backends._ascend.ops.embedding import embedding_backward
 from liger_kernel.ops.backends._ascend.ops.embedding import embedding_forward
+from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction
+from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_rms_norm_backward
+from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_rms_norm_forward
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
@@ -40,6 +43,9 @@ __all__ = [
     "LigerEmbeddingFunction",
     "embedding_forward",
     "embedding_backward",
+    "LigerFusedAddRMSNormFunction",
+    "fused_add_rms_norm_forward",
+    "fused_add_rms_norm_backward",
     "LigerGELUMulFunction",
     "geglu_forward",
     "geglu_backward",
