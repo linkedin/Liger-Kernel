@@ -10,9 +10,6 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - "src/liger_kernel/ops/backends/_ascend/**"
-      - "test/**"
   workflow_dispatch:
     inputs:
       runner:
