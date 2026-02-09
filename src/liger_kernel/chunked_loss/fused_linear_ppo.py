@@ -72,7 +72,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             chunk_size: Size of chunks for processing in other loss modules
             sapo_temperature_pos: Temperature for positive advantages in SAPO
             sapo_temperature_neg: Temperature for negative advantages in SAPO
-            vllm_is_ratio: vLLM importance sampling ratio tensor (batch_size, seq_len) or None.
+            vllm_is_ratio: vLLM importance sampling ratio tensor (batch_size, seq_len) or (batch_size, 1) or None.
                 Used to correct for distribution mismatch when using vLLM for generation.
         """
         if use_ref_model:

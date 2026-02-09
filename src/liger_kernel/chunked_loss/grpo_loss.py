@@ -75,7 +75,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         importance_sampling_level="token",  # ["token", "sequence"] - new parameter for GSPO
         sapo_temperature_pos=1.0,  # Temperature for positive advantages in SAPO
         sapo_temperature_neg=1.05,  # Temperature for negative advantages in SAPO
-        vllm_is_ratio=None,  # vLLM importance sampling ratio (chunk_size, seq_len) or None
+        vllm_is_ratio=None,  # vLLM importance sampling ratio (chunk_size, seq_len) or (chunk_size, 1) or None
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -245,7 +245,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             compiled (bool): Whether to use torch compile
             use_ref_model (bool): Whether to use a reference model
             chunk_size (int): Size of chunks for processing.
-            vllm_is_ratio (torch.Tensor, optional): vLLM importance sampling ratio (batch_size, seq_len) or None.
+            vllm_is_ratio (torch.Tensor, optional): vLLM importance sampling ratio (batch_size, seq_len) or (batch_size, 1) or None.
                 Used to correct for distribution mismatch when using vLLM for generation.
         Returns:
             torch.Tensor: Computed loss
