@@ -7,12 +7,9 @@ from test.utils import infer_device
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
-from liger_kernel.transformers.functional import liger_mhc_coeffs as fn_mhc_coeffs
-from liger_kernel.transformers.functional import liger_mhc_coeffs as op_mhc_coeffs
-from liger_kernel.transformers.functional import liger_mhc_post_res as fn_mhc_post_res
-from liger_kernel.transformers.functional import liger_mhc_post_res as op_mhc_post_res
-from liger_kernel.transformers.functional import liger_mhc_pre as fn_mhc_pre
-from liger_kernel.transformers.functional import liger_mhc_pre as op_mhc_pre
+from liger_kernel.transformers.functional import liger_mhc_coeffs
+from liger_kernel.transformers.functional import liger_mhc_post_res
+from liger_kernel.transformers.functional import liger_mhc_pre
 from liger_kernel.transformers.mhc import LigerMHC
 
 device = infer_device()
@@ -142,7 +139,7 @@ def test_mhc_coeffs_forward_backward(B, T, HC, C, phi_dtype, dtype, pre_post_tol
 
     cfg = dict(tmax=8, rms_eps=1e-6, pre_eps=1e-4, sinkhorn_eps=1e-6, post_mult=2.0)
 
-    h_pre, h_post, h_res = op_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res, **cfg)
+    h_pre, h_post, h_res = liger_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res, **cfg)
 
     loss = h_pre.square().mean() + h_post.square().mean() + h_res.square().mean()
     loss.backward()
@@ -201,7 +198,7 @@ def test_mhc_coeffs_allow_fp32(B, T, HC, C, dtype, pre_post_tol, res_tol, grad_t
 
     cfg = dict(tmax=8, rms_eps=1e-6, pre_eps=1e-4, sinkhorn_eps=1e-6, post_mult=2.0)
 
-    h_pre, h_post, h_res = op_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res, allow_fp32=True, **cfg)
+    h_pre, h_post, h_res = liger_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res, allow_fp32=True, **cfg)
 
     loss = h_pre.square().mean() + h_post.square().mean() + h_res.square().mean()
     loss.backward()
@@ -257,7 +254,7 @@ def test_mhc_coeffs_disallow_fp32():
     alpha_res = torch.tensor(1.0, device=device, dtype=torch.float32)
 
     with pytest.raises(AssertionError):
-        _ = op_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res)
+        _ = liger_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res)
 
 
 @pytest.mark.skipif(device != "cuda", reason="CUDA required")
@@ -284,7 +281,7 @@ def test_mhc_coeffs_backward_allows_unused_outputs(B, T, HC, C, use_pre, use_pos
 
     cfg = dict(tmax=4, rms_eps=1e-6, pre_eps=1e-4, sinkhorn_eps=1e-6, post_mult=2.0)
 
-    h_pre, h_post, h_res = op_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res, **cfg)
+    h_pre, h_post, h_res = liger_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res, **cfg)
 
     loss = torch.zeros((), device=device)
     if use_pre:
@@ -310,9 +307,9 @@ def test_mhc_pre_and_post_res_match_reference(B, T, HC, C, dtype, pre_post_tol, 
     h_post = torch.rand(B, T, HC, device=device, dtype=torch.float32, requires_grad=True)
     h_res = torch.rand(B, T, HC, HC, device=device, dtype=torch.float32, requires_grad=True)
 
-    x_in = op_mhc_pre(x, h_pre)
+    x_in = liger_mhc_pre(x, h_pre)
     f_out = torch.randn(B, T, C, device=device, dtype=dtype, requires_grad=True)
-    x_out = op_mhc_post_res(x, f_out, h_post, h_res)
+    x_out = liger_mhc_post_res(x, f_out, h_post, h_res)
 
     x_in_ref = (x.float() * h_pre.unsqueeze(-1)).sum(dim=-2)
     x_out_ref = torch.einsum("...oi,...ic->...oc", h_res, x.float()) + h_post.unsqueeze(-1) * f_out.float().unsqueeze(
@@ -340,7 +337,7 @@ def test_liger_mhc_functional(B, T, HC, C, dtype, pre_post_tol, res_tol, grad_to
 
     cfg = dict(tmax=4, rms_eps=1e-6, pre_eps=1e-4, sinkhorn_eps=1e-6, post_mult=2.0)
 
-    h_pre, h_post, h_res = fn_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res, **cfg)
+    h_pre, h_post, h_res = liger_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res, **cfg)
     rh_pre, rh_post, rh_res = mhc_coeffs_ref(x, phi, b, alpha_pre, alpha_post, alpha_res, **cfg)
 
     assert_verbose_allclose(h_pre.float(), rh_pre.float(), rtol=pre_post_tol, atol=pre_post_tol, extra_info="[h_pre]")
@@ -381,8 +378,8 @@ def test_liger_mhc_functional(B, T, HC, C, dtype, pre_post_tol, res_tol, grad_to
     h_res3 = h_res.detach().clone().requires_grad_(True)
     f_out = torch.randn(B, T, C, device=device, dtype=dtype, requires_grad=True)
 
-    x_in = fn_mhc_pre(x3, h_pre3)
-    x_out = fn_mhc_post_res(x3, f_out, h_post3, h_res3)
+    x_in = liger_mhc_pre(x3, h_pre3)
+    x_out = liger_mhc_post_res(x3, f_out, h_post3, h_res3)
 
     x_in_ref = (x3.float() * h_pre3.unsqueeze(-1)).sum(dim=-2)
     x_out_ref = torch.einsum("...oi,...ic->...oc", h_res3, x3.float()) + h_post3.unsqueeze(
