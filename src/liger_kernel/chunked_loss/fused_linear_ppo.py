@@ -39,6 +39,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         compiled=True,
         use_ref_model=False,
         chunk_size=1,
+        sapo_temperature_pos=1.0,
+        sapo_temperature_neg=1.05,
     ):
         # TODO: check torch compile matmul
         """Chunked forward pass for PPO loss computation.
@@ -60,12 +62,15 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             epsilon_low: Lower bound for clipping the importance sampling ratio
             epsilon_high: Upper bound for clipping the importance sampling ratio
             beta: Weight for the KL penalty
-            loss_type: Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo")
+            loss_type: Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo")
             max_completion_length: Maximum completion length required for "dr_grpo"
+            importance_sampling_level: Level of importance sampling ("token" or "sequence")
             temperature: Temperature for the logits
             compiled: Whether to use torch compile
             use_ref_model: Whether to use a reference model
             chunk_size: Size of chunks for processing in other loss modules
+            sapo_temperature_pos: Temperature for positive advantages in SAPO
+            sapo_temperature_neg: Temperature for negative advantages in SAPO
         """
         if use_ref_model:
             assert ref_per_token_logps is not None or ref_input is not None, (
@@ -97,6 +102,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             temperature=temperature,
             use_ref_model=use_ref_model,
             ppo_loss_fn=cls.ppo_loss_fn,
+            sapo_temperature_pos=sapo_temperature_pos,
+            sapo_temperature_neg=sapo_temperature_neg,
         )
 
         def fused_fwd_bwd(
@@ -282,6 +289,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         temperature=1.0,
         use_ref_model=False,
         ppo_loss_fn=None,
+        sapo_temperature_pos=1.0,
+        sapo_temperature_neg=1.05,
     ):
         """Compute loss for a single chunk."""
         # Get policy log probabilities using chunk_forward
@@ -311,6 +320,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             loss_type=loss_type,
             max_completion_length=max_completion_length,
             importance_sampling_level=importance_sampling_level,
+            sapo_temperature_pos=sapo_temperature_pos,
+            sapo_temperature_neg=sapo_temperature_neg,
         )
 
         return chunk_loss, chunk_metrics
@@ -363,4 +374,6 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             None,  # grad_compiled
             None,  # grad_use_ref_model
             None,  # grad_chunk_size
+            None,  # grad_sapo_temperature_pos
+            None,  # grad_sapo_temperature_neg
         )

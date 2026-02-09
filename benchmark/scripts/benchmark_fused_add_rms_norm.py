@@ -103,7 +103,7 @@ def bench_speed_fused_residual_rms_norm(input: SingleBenchmarkRunInput) -> Singl
     elif mode == "backward":
         y, s = y_fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: (torch.autograd.backward((y, s), (dy, ds), retain_graph=True)),
+            lambda: torch.autograd.backward((y, s), (dy, ds), retain_graph=True),
             grad_to_none=[x, r],
             rep=500,
             quantiles=QUANTILES,

@@ -22,12 +22,16 @@ def triton_grpo_loss(
     reduce=False,
 ):
     assert logits is not None and completion_ids is not None and advantages is not None, (
-        "must provide logits、completion_ids and advantages"
+        "must provide logits, completion_ids and advantages"
     )
     if importance_sampling_level != "token":
         raise ValueError(
             f"Triton GRPO loss only supports token-level importance sampling. Got {importance_sampling_level}."
         )
+    if loss_type == "cispo":
+        raise ValueError("Triton GRPO loss does not support loss_type='cispo'. Use the chunked GRPO loss path.")
+    if loss_type == "sapo":
+        raise ValueError("Triton GRPO loss does not support loss_type='sapo'. Use the chunked GRPO loss path.")
 
     per_token_loss, per_token_kl, is_clipped = GrpoLossFunction.apply(
         logits,

@@ -17,6 +17,19 @@ device = infer_device()
 set_seed()
 
 
+def sapo_loss_fn(importance_ratio: torch.Tensor, temperature: float) -> torch.Tensor:
+    """SAPO (Soft Adaptive Policy Optimization) loss function for torch reference.
+
+    Reference: https://huggingface.co/papers/2511.20347
+    TRL implementation: https://github.com/huggingface/trl/blob/1bd2a52ec2d8344050af736d60cdc735181ae4b8/trl/trainer/grpo_trainer.py#L1913
+    """
+    if temperature <= 0:
+        raise ValueError("sapo_temperature must be > 0.")
+    sigmoid_input = temperature * (importance_ratio - 1)
+    sigmoid_smoothed_loss = torch.sigmoid(sigmoid_input)
+    return sigmoid_smoothed_loss * 4 / temperature
+
+
 class TorchLMHeadGRPO(torch.nn.Module):
     def __init__(
         self,
@@ -32,6 +45,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
         loss_type: str = "bnpo",
         max_completion_length: int | None = None,
         importance_sampling_level: str = "token",
+        sapo_temperature_pos: float = 1.0,
+        sapo_temperature_neg: float = 1.05,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
@@ -44,6 +59,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
         self.loss_type = loss_type
         self.max_completion_length = max_completion_length
         self.importance_sampling_level = importance_sampling_level
+        self.sapo_temperature_pos = sapo_temperature_pos
+        self.sapo_temperature_neg = sapo_temperature_neg
         if self.loss_type == "dr_grpo":
             assert self.max_completion_length is not None, "max_completion_length must be provided for dr_grpo"
 
@@ -58,6 +75,9 @@ class TorchLMHeadGRPO(torch.nn.Module):
         epsilon_high,
         beta,
         importance_sampling_level,
+        loss_type: str = "grpo",
+        sapo_temperature_pos: float = 1.0,
+        sapo_temperature_neg: float = 1.05,
     ):
         attention_mask = attention_mask.to(per_token_logps.dtype)
         old_per_token_logps = (
@@ -77,28 +97,58 @@ class TorchLMHeadGRPO(torch.nn.Module):
             )
 
         coef_1 = torch.exp(log_importance_weights)
-        coef_2 = torch.clamp(coef_1, 1 - epsilon_low, 1 + epsilon_high)
         expanded_advantages = advantages.unsqueeze(1)
-        per_token_loss1 = coef_1 * expanded_advantages
-        per_token_loss2 = coef_2 * expanded_advantages
-        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        if loss_type == "sapo":
+            # SAPO: Soft Adaptive Policy Optimization
+            # Uses sigmoid-based soft gating instead of hard clipping
+            # Reference: https://github.com/huggingface/trl/blob/1bd2a52ec2d8344050af736d60cdc735181ae4b8/trl/trainer/grpo_trainer.py#L2037-L2046
+            per_token_loss = torch.empty_like(coef_1)
+            advantages_expanded = expanded_advantages.expand_as(coef_1)
+            positive_advantages_mask = advantages_expanded > 0
+
+            per_token_loss[positive_advantages_mask] = sapo_loss_fn(
+                coef_1[positive_advantages_mask], sapo_temperature_pos
+            )
+            per_token_loss[~positive_advantages_mask] = sapo_loss_fn(
+                coef_1[~positive_advantages_mask], sapo_temperature_neg
+            )
+            per_token_loss = -per_token_loss * advantages_expanded
+            # SAPO doesn't use clipping metrics
+            is_lower_clipped = torch.zeros_like(coef_1, dtype=torch.bool)
+            is_upper_clipped = torch.zeros_like(coef_1, dtype=torch.bool)
+        elif loss_type == "cispo":
+            # CISPO: clip and detach the importance weights
+            upper_bound = epsilon_high
+            lower_bound = None
+            coef_2 = torch.clamp(coef_1, lower_bound, upper_bound).detach()
+            is_lower_clipped = torch.zeros_like(coef_1, dtype=torch.bool)
+            is_upper_clipped = coef_1 > upper_bound
+            # CISPO: clip and detach the importance weights, multiply by log probs
+            # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2030
+            per_token_loss = -coef_2 * expanded_advantages * per_token_logps
+        else:
+            upper_bound = 1 + epsilon_high
+            lower_bound = 1 - epsilon_low
+            coef_2 = torch.clamp(coef_1, lower_bound, upper_bound)
+            is_lower_clipped = coef_1 < lower_bound
+            is_upper_clipped = coef_1 > upper_bound
+            per_token_loss1 = coef_1 * expanded_advantages
+            per_token_loss2 = coef_2 * expanded_advantages
+            per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         kl_div = None
         if beta != 0.0:
             ref_per_token_logps = ref_per_token_logps.float()
             kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
             per_token_loss = per_token_loss + beta * kl_div
 
+        # Adjust clipping metric calculation based on importance sampling level
         if importance_sampling_level == "token":
-            is_clipped = ((coef_1 < 1 - epsilon_low) & (expanded_advantages < 0)) | (
-                (coef_1 > 1 + epsilon_high) & (expanded_advantages > 0)
-            )
+            is_clipped = (is_lower_clipped & (expanded_advantages < 0)) | (is_upper_clipped & (expanded_advantages > 0))
         else:  # sequence level
             # For sequence level, coef_1 is shape (B, 1), advantages is shape (B,)
-            seq_advantages = advantages
-            is_clipped = ((coef_1.squeeze(-1) < 1 - epsilon_low) & (seq_advantages < 0)) | (
-                (coef_1.squeeze(-1) > 1 + epsilon_high) & (seq_advantages > 0)
-            )
-            is_clipped = is_clipped.unsqueeze(1).expand_as(attention_mask)
+            is_clipped = (is_lower_clipped & (expanded_advantages < 0)) | (is_upper_clipped & (expanded_advantages > 0))
+            is_clipped = is_clipped.expand_as(attention_mask)
         return per_token_loss, kl_div, is_clipped
 
     def forward(
@@ -148,16 +198,23 @@ class TorchLMHeadGRPO(torch.nn.Module):
             self.epsilon_high,
             self.beta,
             self.importance_sampling_level,
+            self.loss_type,
+            self.sapo_temperature_pos,
+            self.sapo_temperature_neg,
         )
 
         # Apply masking and calculate loss based on loss_type
-        if self.loss_type == "grpo":
+        if self.loss_type == "grpo" or self.loss_type == "sapo":
+            # SAPO uses same normalization as GRPO (per-sequence)
             loss = ((per_token_loss * attention_mask).sum(-1) / torch.clamp(attention_mask.sum(-1), min=1.0)).mean()
         elif self.loss_type == "bnpo":
             loss = (per_token_loss * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0)
         elif self.loss_type == "dr_grpo":
             loss = (per_token_loss * attention_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
         elif self.loss_type == "dapo":
+            normalizer = attention_mask.sum().clamp(min=1.0)
+            loss = (per_token_loss * attention_mask).sum() / normalizer
+        elif self.loss_type == "cispo":
             normalizer = attention_mask.sum().clamp(min=1.0)
             loss = (per_token_loss * attention_mask).sum() / normalizer
         else:
@@ -186,6 +243,8 @@ class LigerLMHeadGRPO(torch.nn.Module):
         loss_type: str = "bnpo",
         max_completion_length: int | None = None,
         importance_sampling_level: str = "token",
+        sapo_temperature_pos: float = 1.0,
+        sapo_temperature_neg: float = 1.05,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
@@ -200,6 +259,8 @@ class LigerLMHeadGRPO(torch.nn.Module):
             loss_type=loss_type,
             max_completion_length=max_completion_length,
             importance_sampling_level=importance_sampling_level,
+            sapo_temperature_pos=sapo_temperature_pos,
+            sapo_temperature_neg=sapo_temperature_neg,
         )
 
     def forward(
@@ -259,7 +320,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         (False, False, True),
     ],
 )
-@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo", "dapo"])
+@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo", "dapo", "cispo", "sapo"])
 @pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
 def test_correctness(
     B,
@@ -353,8 +414,11 @@ def test_correctness(
     mask_indices = torch.randperm(B * T)[:num_elements_to_mask]
     attention_mask.view(-1)[mask_indices] = 0
 
-    # Create advantages with shape [B]
-    advantages = torch.rand(B, device=device, dtype=dtype)
+    # Create advantages with shape [B] and ensure mixed signs for SAPO
+    advantages = torch.randn(B, device=device, dtype=dtype)
+    advantages[0] = -advantages[0].abs()
+    if B > 1:
+        advantages[1] = advantages[1].abs()
 
     ref_per_token_logps = None
     ref_input = None
@@ -565,7 +629,7 @@ def test_reduce_grpo_loss_matches_reference(loss_type):
         expected = (per_token_loss * mask_f).sum() / mask_f.sum().clamp(min=1.0)
     elif loss_type == "dr_grpo":
         expected = (per_token_loss * mask_f).sum() / (per_token_loss.size(0) * max_completion_length)
-    else:  # dapo
+    else:  # dapo/cispo
         expected = (per_token_loss * mask_f).sum() / mask_f.sum().clamp(min=1.0)
 
     assert_verbose_allclose(reduced, expected)

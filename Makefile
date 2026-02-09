@@ -17,8 +17,8 @@ coverage:
 
 # Command to run ruff for linting and formatting code
 checkstyle:
-	ruff check .; ruff_check_status=$$?; \
-	ruff format --check .; ruff_format_status=$$?; \
+	ruff check --output-format=concise .; ruff_check_status=$$?; \
+	ruff format --check --diff .; ruff_format_status=$$?; \
 	ruff check . --fix; \
 	ruff format .; \
 	if [ $$ruff_check_status -ne 0 ] || [ $$ruff_format_status -ne 0 ]; then \
@@ -71,4 +71,3 @@ build:
 # Clean the output directory
 clean:
 	rm -rf $(SITE_DIR)/
-
