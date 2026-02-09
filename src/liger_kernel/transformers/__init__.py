@@ -172,6 +172,7 @@ __all__ = [
     "LigerTiledSwiGLUMLP",
     "LigerTVDLoss",
     "LigerKLDIVLoss",
+    "LigerMHC",
     "LigerMultiTokenAttention",
     "LigerSoftmax",
     "LigerSparsemax",
