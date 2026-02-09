@@ -1,6 +1,7 @@
 import pytest
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from test.utils import assert_verbose_allclose
 from test.utils import infer_device
@@ -480,4 +481,118 @@ def test_liger_mhc_module(B, T, HC, C, dtype, _pre_post_tol, res_tol, grad_tol):
         rtol=grad_tol,
         atol=grad_tol,
         extra_info="[layer.weight.grad]",
+    )
+
+
+class MiniMHCLM(nn.Module):
+    """Tiny language model using mHC for end-to-end correctness testing."""
+
+    def __init__(self, *, vocab_size, hc, c, tmax, rms_eps, pre_eps, sinkhorn_eps, post_mult, use_fast, device):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.hc = hc
+        self.c = c
+        self.tmax = tmax
+        self.rms_eps = rms_eps
+        self.pre_eps = pre_eps
+        self.sinkhorn_eps = sinkhorn_eps
+        self.post_mult = post_mult
+        self.use_fast = use_fast
+        self.act_dtype = torch.bfloat16
+
+        self.embed = nn.Embedding(vocab_size, hc * c, device=device)
+        self.inner = nn.Linear(c, c, bias=False, device=device)
+        self.head = nn.Linear(hc * c, vocab_size, bias=False, device=device)
+
+        m = hc * hc + 2 * hc
+        k = hc * c
+        self.phi = nn.Parameter(torch.randn(k, m, device=device, dtype=self.act_dtype) * 0.02)
+        self.b = nn.Parameter(torch.zeros(m, device=device, dtype=torch.float32))
+        self.alpha_pre = nn.Parameter(torch.tensor(1.0, device=device, dtype=torch.float32))
+        self.alpha_post = nn.Parameter(torch.tensor(1.0, device=device, dtype=torch.float32))
+        self.alpha_res = nn.Parameter(torch.tensor(1.0, device=device, dtype=torch.float32))
+
+    def forward(self, input_ids):
+        x = self.embed(input_ids).to(self.act_dtype)
+        bsz, seq_len, _ = x.shape
+        x = x.view(bsz, seq_len, self.hc, self.c)
+
+        cfg = dict(
+            tmax=self.tmax,
+            rms_eps=self.rms_eps,
+            pre_eps=self.pre_eps,
+            sinkhorn_eps=self.sinkhorn_eps,
+            post_mult=self.post_mult,
+        )
+        if self.use_fast:
+            h_pre, h_post, h_res = liger_mhc_coeffs(
+                x, self.phi, self.b, self.alpha_pre, self.alpha_post, self.alpha_res, **cfg
+            )
+            x_in = liger_mhc_pre(x, h_pre)
+            f_out = self.inner(x_in.float())
+            x_out = liger_mhc_post_res(x, f_out, h_post, h_res)
+        else:
+            h_pre, h_post, h_res = mhc_coeffs_ref(
+                x, self.phi, self.b, self.alpha_pre, self.alpha_post, self.alpha_res, **cfg
+            )
+            x_in = (x.float() * h_pre.unsqueeze(-1)).sum(dim=-2)
+            f_out = self.inner(x_in)
+            x_out = torch.einsum("...oi,...ic->...oc", h_res, x.float()) + h_post.unsqueeze(-1) * f_out.unsqueeze(-2)
+
+        x_merge = x_out.float().view(bsz, seq_len, self.hc * self.c)
+        return self.head(x_merge)
+
+
+@pytest.mark.skipif(device != "cuda", reason="CUDA required")
+@pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
+@pytest.mark.parametrize(
+    "vocab_size, hc, c, tmax",
+    [
+        (32, 2, 16, 4),
+        (64, 4, 32, 8),
+    ],
+)
+def test_mhc_mini_lm_output_match(vocab_size, hc, c, tmax):
+    set_seed(0)
+
+    model_cfg = dict(
+        vocab_size=vocab_size, hc=hc, c=c, tmax=tmax, rms_eps=1e-6, pre_eps=1e-4, sinkhorn_eps=1e-6, post_mult=2.0
+    )
+
+    model_fast = MiniMHCLM(**model_cfg, use_fast=True, device=device)
+    model_ref = MiniMHCLM(**model_cfg, use_fast=False, device=device)
+    model_ref.load_state_dict(model_fast.state_dict())
+
+    input_ids = torch.randint(0, vocab_size, (2, 8), device=device)
+    labels = torch.randint(0, vocab_size, (2, 8), device=device)
+
+    logits_fast = model_fast(input_ids)
+    logits_ref = model_ref(input_ids)
+
+    assert_verbose_allclose(logits_fast.float(), logits_ref.float(), atol=5e-3, rtol=2e-2, extra_info="[logits]")
+
+    loss_fast = F.cross_entropy(logits_fast.view(-1, vocab_size), labels.view(-1))
+    loss_ref = F.cross_entropy(logits_ref.view(-1, vocab_size), labels.view(-1))
+
+    loss_fast.backward()
+    loss_ref.backward()
+
+    for name in ["phi", "b", "alpha_pre", "alpha_post", "alpha_res"]:
+        g_fast = getattr(model_fast, name).grad.float()
+        g_ref = getattr(model_ref, name).grad.float()
+        assert_verbose_allclose(g_fast, g_ref, atol=5e-2, rtol=5e-2, extra_info=f"[{name}.grad]")
+
+    assert_verbose_allclose(
+        model_fast.inner.weight.grad.float(),
+        model_ref.inner.weight.grad.float(),
+        atol=5e-2,
+        rtol=5e-2,
+        extra_info="[inner.weight.grad]",
+    )
+    assert_verbose_allclose(
+        model_fast.head.weight.grad.float(),
+        model_ref.head.weight.grad.float(),
+        atol=5e-2,
+        rtol=5e-2,
+        extra_info="[head.weight.grad]",
     )
