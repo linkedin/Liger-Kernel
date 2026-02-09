@@ -75,6 +75,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         importance_sampling_level="token",  # ["token", "sequence"] - new parameter for GSPO
         sapo_temperature_pos=1.0,  # Temperature for positive advantages in SAPO
         sapo_temperature_neg=1.05,  # Temperature for negative advantages in SAPO
+        vllm_is_ratio=None,  # vLLM importance sampling ratio (chunk_size, seq_len) or None
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -137,6 +138,10 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             per_token_loss1 = coef_1 * advantages.unsqueeze(1)
             per_token_loss2 = coef_2 * advantages.unsqueeze(1)
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        # Apply vLLM importance sampling correction BEFORE adding KL penalty
+        if vllm_is_ratio is not None:
+            per_token_loss = per_token_loss * vllm_is_ratio
 
         if beta != 0.0:
             # Compute KL penalty (approximates KL[per_token_logps, ref_per_token_logps])
@@ -214,6 +219,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         compiled=True,
         use_ref_model=True,
         chunk_size=1,
+        vllm_is_ratio=None,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -239,6 +245,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             compiled (bool): Whether to use torch compile
             use_ref_model (bool): Whether to use a reference model
             chunk_size (int): Size of chunks for processing.
+            vllm_is_ratio (torch.Tensor, optional): vLLM importance sampling ratio (batch_size, seq_len) or None.
+                Used to correct for distribution mismatch when using vLLM for generation.
         Returns:
             torch.Tensor: Computed loss
         """
@@ -268,6 +276,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             importance_sampling_level=importance_sampling_level,
             sapo_temperature_pos=sapo_temperature_pos,
             sapo_temperature_neg=sapo_temperature_neg,
+            vllm_is_ratio=vllm_is_ratio,
         )
 
     @staticmethod
@@ -300,6 +309,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_compiled
             None,  # grad_use_ref_model
             None,  # grad_chunk_size
+            None,  # grad_vllm_is_ratio
         )
 
 
@@ -370,6 +380,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         ref_input=None,
         ref_weight=None,
         ref_bias=None,
+        vllm_is_ratio=None,
     ):
         return LigerFusedLinearGRPOFunction.apply(
             _input,
@@ -395,4 +406,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.compiled,
             self.use_ref_model,
             self.chunk_size,
+            vllm_is_ratio,
         )

@@ -78,6 +78,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         loss_type: str = "grpo",
         sapo_temperature_pos: float = 1.0,
         sapo_temperature_neg: float = 1.05,
+        vllm_is_ratio=None,
     ):
         attention_mask = attention_mask.to(per_token_logps.dtype)
         old_per_token_logps = (
@@ -136,6 +137,11 @@ class TorchLMHeadGRPO(torch.nn.Module):
             per_token_loss1 = coef_1 * expanded_advantages
             per_token_loss2 = coef_2 * expanded_advantages
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        # Apply vLLM importance sampling correction BEFORE KL penalty
+        if vllm_is_ratio is not None:
+            per_token_loss = per_token_loss * vllm_is_ratio
+
         kl_div = None
         if beta != 0.0:
             ref_per_token_logps = ref_per_token_logps.float()
@@ -160,6 +166,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
         ref_per_token_logps=None,  # Shape: [batch_size, seq_len]
         old_per_token_logps=None,
         ref_input=None,  # Shape: [batch_size, seq_len, hidden_size]
+        vllm_is_ratio=None,  # Shape: [batch_size, seq_len] or None
     ):
         logits = x @ self.lin.weight.t()
         if self.lin.bias is not None:
@@ -201,6 +208,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
             self.loss_type,
             self.sapo_temperature_pos,
             self.sapo_temperature_neg,
+            vllm_is_ratio=vllm_is_ratio,
         )
 
         # Apply masking and calculate loss based on loss_type
@@ -272,8 +280,8 @@ class LigerLMHeadGRPO(torch.nn.Module):
         ref_per_token_logps=None,
         old_per_token_logps=None,
         ref_input=None,
+        vllm_is_ratio=None,
     ):
-        # Pass only the arguments defined in LigerFusedLinearGRPOFunction.forward()
         return self.grpo_loss(
             x,  # _input
             self.lin.weight,  # weight
@@ -286,6 +294,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
             ref_input,  # ref_input
             self.ref_lin.weight,  # ref_weight
             self.ref_lin.bias,  # ref_bias
+            vllm_is_ratio=vllm_is_ratio,
         )
 
 
@@ -322,6 +331,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
 )
 @pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo", "dapo", "cispo", "sapo"])
 @pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
+@pytest.mark.parametrize("use_vllm_is_ratio", [False, True])
 def test_correctness(
     B,
     T,
@@ -341,6 +351,7 @@ def test_correctness(
     old_per_token_logps,
     loss_type,
     importance_sampling_level,
+    use_vllm_is_ratio,
 ):
     # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
@@ -434,6 +445,11 @@ def test_correctness(
     else:
         old_per_token_logps = None
 
+    # Create vLLM IS ratio if requested
+    vllm_is_ratio = None
+    if use_vllm_is_ratio:
+        vllm_is_ratio = torch.rand(B, T, device=device, dtype=torch.float32) * 0.999 + 0.001
+
     # Forward pass with reference model
     loss1, aux1 = torch_lm_head_grpo(
         input1,
@@ -443,6 +459,7 @@ def test_correctness(
         ref_per_token_logps=ref_per_token_logps,
         old_per_token_logps=old_per_token_logps,
         ref_input=ref_input,
+        vllm_is_ratio=vllm_is_ratio,
     )
     loss2, aux2 = liger_lm_head_grpo(
         input2,
@@ -452,6 +469,7 @@ def test_correctness(
         ref_per_token_logps=ref_per_token_logps,
         old_per_token_logps=old_per_token_logps,
         ref_input=ref_input,
+        vllm_is_ratio=vllm_is_ratio,
     )
     # Check losses match
     assert not torch.isnan(loss1)

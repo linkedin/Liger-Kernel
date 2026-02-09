@@ -41,6 +41,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         chunk_size=1,
         sapo_temperature_pos=1.0,
         sapo_temperature_neg=1.05,
+        vllm_is_ratio=None,
     ):
         # TODO: check torch compile matmul
         """Chunked forward pass for PPO loss computation.
@@ -71,6 +72,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             chunk_size: Size of chunks for processing in other loss modules
             sapo_temperature_pos: Temperature for positive advantages in SAPO
             sapo_temperature_neg: Temperature for negative advantages in SAPO
+            vllm_is_ratio: vLLM importance sampling ratio tensor (batch_size, seq_len) or None.
+                Used to correct for distribution mismatch when using vLLM for generation.
         """
         if use_ref_model:
             assert ref_per_token_logps is not None or ref_input is not None, (
@@ -114,6 +117,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             ref_per_token_logps_chunk,
             old_per_token_logps_chunk,
             ref_input_chunk,
+            vllm_is_ratio_chunk,
         ):
             """Fused forward and backward for a chunk."""
             argnums = (0, 1, 5) if bias is not None else (0, 1)
@@ -127,6 +131,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 ref_per_token_logps_chunk=ref_per_token_logps_chunk,  # arg 6
                 old_per_token_logps_chunk=old_per_token_logps_chunk,  # arg 7
                 ref_input_chunk=ref_input_chunk,  # arg 8
+                vllm_is_ratio_chunk=vllm_is_ratio_chunk,  # arg 9
             )
 
         def accumulate_chunk(
@@ -137,6 +142,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             ref_per_token_logps_chunk=None,
             old_per_token_logps_chunk=None,
             ref_input_chunk=None,
+            vllm_is_ratio_chunk=None,
         ):
             (chunk_grad_input, chunk_grad_weight, *chunk_grad_bias), (chunk_loss, chunk_metrics) = fused_fwd_bwd(
                 input_chunk,
@@ -146,6 +152,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 ref_per_token_logps_chunk,
                 old_per_token_logps_chunk,
                 ref_input_chunk,
+                vllm_is_ratio_chunk,
             )
             if bias is not None:
                 grad_bias.add_(chunk_grad_bias[0])
@@ -196,6 +203,9 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             if use_ref_model and ref_per_token_logps is None
             else [None] * chunks
         )
+        _vllm_is_ratio_chunks = (
+            torch.chunk(vllm_is_ratio, chunks=chunks, dim=0) if vllm_is_ratio is not None else [None] * chunks
+        )
 
         for (
             input_chunk,
@@ -205,6 +215,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             ref_per_token_logps_chunk,
             old_per_token_logps_chunk,
             ref_input_chunk,
+            vllm_is_ratio_chunk,
         ) in zip(
             _input_chunks,
             _selected_token_ids_chunks,
@@ -213,6 +224,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             _ref_per_token_logps_chunks,
             _old_per_token_logps_chunks,
             _ref_input_chunks,
+            _vllm_is_ratio_chunks,
         ):
             # Mark dynamic dimensions
             torch._dynamo.mark_dynamic(input_chunk, 1)
@@ -224,6 +236,8 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 torch._dynamo.mark_dynamic(ref_input_chunk, 1)
             if old_per_token_logps_chunk is not None:
                 torch._dynamo.mark_dynamic(old_per_token_logps_chunk, 1)
+            if vllm_is_ratio_chunk is not None:
+                torch._dynamo.mark_dynamic(vllm_is_ratio_chunk, 1)
 
             accumulate_chunk(
                 input_chunk,
@@ -233,6 +247,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 ref_per_token_logps_chunk,
                 old_per_token_logps_chunk,
                 ref_input_chunk,
+                vllm_is_ratio_chunk,
             )
 
         # Combine gradients
@@ -277,6 +292,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         ref_per_token_logps_chunk=None,
         old_per_token_logps_chunk=None,
         ref_input_chunk=None,
+        vllm_is_ratio_chunk=None,
         ref_weight=None,
         ref_bias=None,
         full_attention_mask=None,
@@ -322,6 +338,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             importance_sampling_level=importance_sampling_level,
             sapo_temperature_pos=sapo_temperature_pos,
             sapo_temperature_neg=sapo_temperature_neg,
+            vllm_is_ratio=vllm_is_ratio_chunk,
         )
 
         return chunk_loss, chunk_metrics
@@ -376,4 +393,5 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             None,  # grad_chunk_size
             None,  # grad_sapo_temperature_pos
             None,  # grad_sapo_temperature_neg
+            None,  # grad_vllm_is_ratio
         )
