@@ -12,7 +12,7 @@ import triton.language as tl
 from liger_kernel.ops.utils import ensure_contiguous
 
 
-def _post_res_default_meta(c: int) -> tuple[int, int, int, int]:
+def _post_res_default_meta(c: int) -> Tuple[int, int, int, int]:
     """
     Returns default (block_n, block_c, num_warps, num_stages) for post_res kernels.
     Tuned for different hidden dimensions on NVIDIA GPUs.
@@ -32,7 +32,7 @@ def _post_res_meta(
     block_c: Optional[int],
     num_warps: Optional[int],
     num_stages: Optional[int],
-) -> tuple[int, int, int, int]:
+) -> Tuple[int, int, int, int]:
     bn, bc, nw, ns = _post_res_default_meta(c)
     return (
         bn if block_n is None else int(block_n),
@@ -1610,11 +1610,11 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
             grad_alpha_post,  # alpha_post
             grad_alpha_res,  # alpha_res
             None,  # allow_fp32
-            None,
-            None,
-            None,
-            None,
-            None,  # config scalars
+            None,  # tmax
+            None,  # rms_eps
+            None,  # pre_eps
+            None,  # sinkhorn_eps
+            None,  # post_mult
         )
 
 
