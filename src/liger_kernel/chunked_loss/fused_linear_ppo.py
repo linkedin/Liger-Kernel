@@ -83,6 +83,20 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
                 raise Warning("Both ref_per_token_logps and ref_input are provided. Using ref_per_token_logps.")
         if loss_type == "dr_grpo":
             assert max_completion_length is not None, "max_completion_length must be provided for loss_type 'dr_grpo'"
+        if vllm_is_ratio is not None:
+            B, T = attention_mask.shape
+            assert vllm_is_ratio.dim() in (1, 2), (
+                f"vllm_is_ratio must be 1D (B,) or 2D (B, T) / (B, 1), got {vllm_is_ratio.dim()}D"
+            )
+            if vllm_is_ratio.dim() == 2:
+                assert vllm_is_ratio.shape[0] == B and vllm_is_ratio.shape[1] in (1, T), (
+                    f"vllm_is_ratio shape must be ({B}, 1) or ({B}, {T}), got {tuple(vllm_is_ratio.shape)}"
+                )
+            else:
+                assert vllm_is_ratio.shape[0] == B, (
+                    f"vllm_is_ratio shape must be ({B},), got {tuple(vllm_is_ratio.shape)}"
+                )
+                vllm_is_ratio = vllm_is_ratio.unsqueeze(-1)  # (B,) -> (B, 1) for broadcasting
         # Initialize accumulators
         loss_acc = torch.zeros((), device=_input.device, dtype=torch.float32)
         grad_weight = torch.zeros_like(weight)  # [V, H]

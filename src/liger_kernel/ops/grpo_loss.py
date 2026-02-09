@@ -352,8 +352,19 @@ class GrpoLossFunction(torch.autograd.Function):
 
         # Handle vLLM IS ratio
         vllm_is_ratio_ptr = None
-        vllm_is_ratio_stride = L  # default to per-token
+        vllm_is_ratio_stride = L  # default to per-token (unused when ptr is None)
         if vllm_is_ratio is not None:
+            assert vllm_is_ratio.dim() in (1, 2), (
+                f"vllm_is_ratio must be 1D (B,) or 2D (B, L) / (B, 1), got {vllm_is_ratio.dim()}D"
+            )
+            if vllm_is_ratio.dim() == 2:
+                assert vllm_is_ratio.shape[0] == B and vllm_is_ratio.shape[1] in (1, L), (
+                    f"vllm_is_ratio shape must be ({B}, 1) or ({B}, {L}), got {tuple(vllm_is_ratio.shape)}"
+                )
+            else:
+                assert vllm_is_ratio.shape[0] == B, (
+                    f"vllm_is_ratio shape must be ({B},), got {tuple(vllm_is_ratio.shape)}"
+                )
             vllm_is_ratio = vllm_is_ratio.contiguous()
             vllm_is_ratio_ptr = vllm_is_ratio
             vllm_is_ratio_stride = vllm_is_ratio.shape[1] if vllm_is_ratio.dim() > 1 else 1

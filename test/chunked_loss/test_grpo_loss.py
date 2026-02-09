@@ -503,6 +503,41 @@ def test_correctness(
         )
 
 
+@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dapo"])
+def test_vllm_is_ratio_1d_matches_2d(loss_type):
+    """Test that 1D (B,) vllm_is_ratio produces the same result as (B, 1)."""
+    torch.compiler.reset()
+    B, T, H, V = 4, 32, 64, 128
+    dtype = torch.float32
+
+    _weight = torch.randn(V, H, device=device, dtype=dtype)
+    _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    input1 = _input.detach().clone().requires_grad_(True)
+    input2 = _input.detach().clone().requires_grad_(True)
+
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    advantages = torch.randn(B, device=device, dtype=dtype)
+
+    uniform_val = 0.42
+    vllm_is_ratio_1d = torch.full((B,), uniform_val, device=device, dtype=torch.float32)
+    vllm_is_ratio_2d = torch.full((B, 1), uniform_val, device=device, dtype=torch.float32)
+
+    liger1 = LigerLMHeadGRPO(H=H, V=V, dtype=dtype, beta=0.0, loss_type=loss_type, use_ref_model=False)
+    liger2 = LigerLMHeadGRPO(H=H, V=V, dtype=dtype, beta=0.0, loss_type=loss_type, use_ref_model=False)
+    liger1.lin.weight.data = liger2.lin.weight.data = _weight.clone()
+
+    loss1, aux1 = liger1(input1, selected_token_ids, attention_mask, advantages, vllm_is_ratio=vllm_is_ratio_1d)
+    loss2, aux2 = liger2(input2, selected_token_ids, attention_mask, advantages, vllm_is_ratio=vllm_is_ratio_2d)
+
+    assert_verbose_allclose(loss1, loss2, atol=1e-5, rtol=1e-5)
+
+    loss1.backward()
+    loss2.backward()
+    assert_verbose_allclose(input1.grad, input2.grad, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(liger1.lin.weight.grad, liger2.lin.weight.grad, atol=1e-5, rtol=1e-5)
+
+
 @pytest.mark.parametrize(
     "B, T, H, V",
     [

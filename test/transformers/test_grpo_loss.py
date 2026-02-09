@@ -282,8 +282,11 @@ def torch_grpo_loss_with_vllm_is(
     eps_low,
     eps_high,
     vllm_is_ratio,
+    loss_type="grpo",
+    sapo_temperature_pos=1.0,
+    sapo_temperature_neg=1.05,
 ):
-    """Reference implementation with vLLM IS ratio correction."""
+    """Reference implementation with vLLM IS ratio correction for all loss types."""
     assert logits.is_contiguous() and completion_ids.is_contiguous()
     logits = logits[:, :-1]
     per_token_logps = _get_log_probs(logits / temperature, completion_ids)
@@ -291,10 +294,24 @@ def torch_grpo_loss_with_vllm_is(
     if old_logp is None:
         old_logp = per_token_logps.detach()
     coef_1 = torch.exp(per_token_logps - old_logp)
-    coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
-    per_token_loss1 = coef_1 * advantages.unsqueeze(1)
-    per_token_loss2 = coef_2 * advantages.unsqueeze(1)
-    per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+    if loss_type == "cispo":
+        coef_2 = torch.clamp(coef_1, max=eps_high).detach()
+        per_token_loss = -coef_2 * advantages.unsqueeze(1) * per_token_logps
+        is_clipped = ((coef_1 > eps_high) & (advantages.unsqueeze(1) > 0)).float()
+    elif loss_type == "sapo":
+        temp = torch.where(advantages.unsqueeze(1) > 0, sapo_temperature_pos, sapo_temperature_neg)
+        sigmoid_input = temp * (coef_1 - 1.0)
+        sapo_coef = torch.sigmoid(sigmoid_input) * 4.0 / temp
+        per_token_loss = -sapo_coef * advantages.unsqueeze(1)
+        is_clipped = torch.zeros_like(per_token_loss)
+    else:
+        coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
+        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+        is_clipped = (per_token_loss1 < per_token_loss2).float()
+
     # Apply vLLM IS correction BEFORE KL penalty
     if vllm_is_ratio is not None:
         per_token_loss = per_token_loss * vllm_is_ratio
@@ -305,7 +322,6 @@ def torch_grpo_loss_with_vllm_is(
         if completion_mask is not None:
             per_token_kl *= completion_mask
         per_token_loss = per_token_loss + beta * per_token_kl
-    is_clipped = (per_token_loss1 < per_token_loss2).float()
     return per_token_loss, per_token_kl, is_clipped
 
 
@@ -325,8 +341,11 @@ def torch_grpo_loss_with_vllm_is(
         (torch.bfloat16, 5e-2, 5e-1),
     ],
 )
-def test_grpo_loss_with_vllm_is_ratio(B, T, V, temperature, num_iteration, beta, eps_low, eps_high, dtype, atol, rtol):
-    """Test that triton_grpo_loss with vllm_is_ratio matches PyTorch reference."""
+@pytest.mark.parametrize("loss_type", ["grpo", "cispo", "sapo"])
+def test_grpo_loss_with_vllm_is_ratio(
+    B, T, V, temperature, num_iteration, beta, eps_low, eps_high, dtype, atol, rtol, loss_type
+):
+    """Test that triton_grpo_loss with vllm_is_ratio matches PyTorch reference for all loss types."""
     _input = torch.randn(B, T + 1, V, device=device, dtype=dtype)
 
     logits1 = _input.clone().requires_grad_(True)
@@ -356,6 +375,7 @@ def test_grpo_loss_with_vllm_is_ratio(B, T, V, temperature, num_iteration, beta,
         eps_low,
         eps_high,
         vllm_is_ratio,
+        loss_type=loss_type,
     )
     loss2, kl2, _ = triton_grpo_loss(
         logits2,
@@ -370,6 +390,7 @@ def test_grpo_loss_with_vllm_is_ratio(B, T, V, temperature, num_iteration, beta,
         eps_high,
         inplace=True,
         vllm_is_ratio=vllm_is_ratio,
+        loss_type=loss_type,
     )
     loss3, kl3, _ = torch_grpo_loss_with_vllm_is(
         logits3,
@@ -383,6 +404,7 @@ def test_grpo_loss_with_vllm_is_ratio(B, T, V, temperature, num_iteration, beta,
         eps_low,
         eps_high,
         vllm_is_ratio,
+        loss_type=loss_type,
     )
 
     dy = torch.randn_like(loss3)
@@ -412,6 +434,7 @@ def test_grpo_loss_with_vllm_is_ratio(B, T, V, temperature, num_iteration, beta,
         eps_high,
         inplace=False,
         vllm_is_ratio=None,
+        loss_type=loss_type,
     )
     loss_ones, _, _ = triton_grpo_loss(
         logits_ones,
@@ -426,6 +449,7 @@ def test_grpo_loss_with_vllm_is_ratio(B, T, V, temperature, num_iteration, beta,
         eps_high,
         inplace=False,
         vllm_is_ratio=torch.ones(B, T, device=device, dtype=torch.float32),
+        loss_type=loss_type,
     )
     assert_verbose_allclose(loss_none, loss_ones, atol=1e-5, rtol=1e-5)
 
@@ -446,6 +470,7 @@ def test_grpo_loss_with_vllm_is_ratio(B, T, V, temperature, num_iteration, beta,
         eps_high,
         inplace=False,
         vllm_is_ratio=torch.full((B, 1), uniform_val, device=device, dtype=torch.float32),
+        loss_type=loss_type,
     )
     loss_bt, _, _ = triton_grpo_loss(
         logits_bt,
@@ -460,11 +485,50 @@ def test_grpo_loss_with_vllm_is_ratio(B, T, V, temperature, num_iteration, beta,
         eps_high,
         inplace=False,
         vllm_is_ratio=torch.full((B, T), uniform_val, device=device, dtype=torch.float32),
+        loss_type=loss_type,
     )
     loss_b1.backward(dy)
     loss_bt.backward(dy)
     assert_verbose_allclose(loss_b1, loss_bt, atol=1e-5, rtol=1e-5)
     assert_verbose_allclose(logits_b1.grad, logits_bt.grad, atol=1e-5, rtol=1e-5)
+
+    # Verify 1D (B,) shape gives same result as (B, 1)
+    logits_1d = _input.clone().float().requires_grad_(True)
+    logits_2d = _input.clone().float().requires_grad_(True)
+    loss_1d, _, _ = triton_grpo_loss(
+        logits_1d,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        inplace=False,
+        vllm_is_ratio=torch.full((B,), uniform_val, device=device, dtype=torch.float32),
+        loss_type=loss_type,
+    )
+    loss_2d, _, _ = triton_grpo_loss(
+        logits_2d,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        inplace=False,
+        vllm_is_ratio=torch.full((B, 1), uniform_val, device=device, dtype=torch.float32),
+        loss_type=loss_type,
+    )
+    loss_1d.backward(dy)
+    loss_2d.backward(dy)
+    assert_verbose_allclose(loss_1d, loss_2d, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(logits_1d.grad, logits_2d.grad, atol=1e-5, rtol=1e-5)
 
 
 @pytest.mark.parametrize(
