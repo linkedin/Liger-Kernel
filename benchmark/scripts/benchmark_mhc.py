@@ -20,7 +20,6 @@ device = infer_device()
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-COEFFS_CFG = dict(tmax=20, rms_eps=1e-6, pre_eps=0.0, sinkhorn_eps=1e-6, post_mult=2.0)
 B = 4
 
 
@@ -31,9 +30,15 @@ def bench_speed_mhc(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     HC = input.extra_benchmark_config["HC"]
     C = input.extra_benchmark_config["C"]
     sub_kernel = input.extra_benchmark_config["sub_kernel"]
+    tmax = input.extra_benchmark_config["tmax"]
+    rms_eps = input.extra_benchmark_config["rms_eps"]
+    pre_eps = input.extra_benchmark_config["pre_eps"]
+    sinkhorn_eps = input.extra_benchmark_config["sinkhorn_eps"]
+    post_mult = input.extra_benchmark_config["post_mult"]
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
+    coeffs_cfg = dict(tmax=tmax, rms_eps=rms_eps, pre_eps=pre_eps, sinkhorn_eps=sinkhorn_eps, post_mult=post_mult)
     need_grad = mode in ("backward", "full")
 
     x = torch.randn(B, T, HC, C, device=device, dtype=torch.bfloat16, requires_grad=need_grad)
@@ -50,8 +55,8 @@ def bench_speed_mhc(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
 
         def fwd():
             if provider == "liger":
-                return liger_mhc_coeffs(x, phi, b_param, alpha_pre, alpha_post, alpha_res, **COEFFS_CFG)
-            return mhc_coeffs_ref(x, phi, b_param, alpha_pre, alpha_post, alpha_res, **COEFFS_CFG)
+                return liger_mhc_coeffs(x, phi, b_param, alpha_pre, alpha_post, alpha_res, **coeffs_cfg)
+            return mhc_coeffs_ref(x, phi, b_param, alpha_pre, alpha_post, alpha_res, **coeffs_cfg)
 
         def fwd_loss():
             h_pre, h_post, h_res = fwd()
@@ -66,7 +71,7 @@ def bench_speed_mhc(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
                 alpha_pre.detach(),
                 alpha_post.detach(),
                 alpha_res.detach(),
-                **COEFFS_CFG,
+                **coeffs_cfg,
             )
         h_pre_c.requires_grad_(need_grad)
         grad_to_none = [x, h_pre_c] if need_grad else None
@@ -88,7 +93,7 @@ def bench_speed_mhc(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
                 alpha_pre.detach(),
                 alpha_post.detach(),
                 alpha_res.detach(),
-                **COEFFS_CFG,
+                **coeffs_cfg,
             )
         h_post_c.requires_grad_(need_grad)
         h_res_c.requires_grad_(need_grad)
@@ -133,7 +138,14 @@ def bench_memory_mhc(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
     HC = input.extra_benchmark_config["HC"]
     C = input.extra_benchmark_config["C"]
     sub_kernel = input.extra_benchmark_config["sub_kernel"]
+    tmax = input.extra_benchmark_config["tmax"]
+    rms_eps = input.extra_benchmark_config["rms_eps"]
+    pre_eps = input.extra_benchmark_config["pre_eps"]
+    sinkhorn_eps = input.extra_benchmark_config["sinkhorn_eps"]
+    post_mult = input.extra_benchmark_config["post_mult"]
     provider = input.kernel_provider
+
+    coeffs_cfg = dict(tmax=tmax, rms_eps=rms_eps, pre_eps=pre_eps, sinkhorn_eps=sinkhorn_eps, post_mult=post_mult)
 
     x = torch.randn(B, T, HC, C, device=device, dtype=torch.bfloat16, requires_grad=True)
     K, M = HC * C, HC * HC + 2 * HC
@@ -147,9 +159,9 @@ def bench_memory_mhc(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
 
         def full():
             if provider == "liger":
-                hp, hpo, hr = liger_mhc_coeffs(x, phi, b_param, alpha_pre, alpha_post, alpha_res, **COEFFS_CFG)
+                hp, hpo, hr = liger_mhc_coeffs(x, phi, b_param, alpha_pre, alpha_post, alpha_res, **coeffs_cfg)
             else:
-                hp, hpo, hr = mhc_coeffs_ref(x, phi, b_param, alpha_pre, alpha_post, alpha_res, **COEFFS_CFG)
+                hp, hpo, hr = mhc_coeffs_ref(x, phi, b_param, alpha_pre, alpha_post, alpha_res, **coeffs_cfg)
             (hp.square().mean() + hpo.square().mean() + hr.square().mean()).backward()
 
     elif sub_kernel == "pre":
@@ -161,7 +173,7 @@ def bench_memory_mhc(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
                 alpha_pre.detach(),
                 alpha_post.detach(),
                 alpha_res.detach(),
-                **COEFFS_CFG,
+                **coeffs_cfg,
             )
         h_pre_c.requires_grad_(True)
 
@@ -181,7 +193,7 @@ def bench_memory_mhc(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
                 alpha_pre.detach(),
                 alpha_post.detach(),
                 alpha_res.detach(),
-                **COEFFS_CFG,
+                **coeffs_cfg,
             )
         h_post_c.requires_grad_(True)
         h_res_c.requires_grad_(True)
@@ -215,6 +227,10 @@ if __name__ == "__main__":
                     "HC": 4,
                     "C": 4096,
                     "tmax": 20,
+                    "rms_eps": 1e-6,
+                    "pre_eps": 0.0,
+                    "sinkhorn_eps": 1e-6,
+                    "post_mult": 2.0,
                     "sub_kernel": sub_kernel,
                 }
             ],

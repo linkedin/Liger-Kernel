@@ -95,7 +95,6 @@ class MiniMHCLM(nn.Module):
         return self.head(x_merge)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
 def test_mhc_mini_lm_convergence():
     set_seed(0)
