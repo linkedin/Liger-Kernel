@@ -122,7 +122,6 @@ def mhc_coeffs_ref(
     )
 
 
-@pytest.mark.skipif(device != "cuda", reason="CUDA required")
 @pytest.mark.parametrize("B, T, HC, C", MHC_SHAPES)
 @pytest.mark.parametrize("phi_dtype", [torch.float16, torch.float32])
 @pytest.mark.parametrize("dtype, pre_post_tol, res_tol, grad_tol", MHC_DTYPE_TOLS)
@@ -182,7 +181,6 @@ def test_mhc_coeffs_forward_backward(B, T, HC, C, phi_dtype, dtype, pre_post_tol
         assert torch.allclose(gt, gr, rtol=grad_tol, atol=grad_tol)
 
 
-@pytest.mark.skipif(device != "cuda", reason="CUDA required")
 @pytest.mark.parametrize("B, T, HC, C", [MHC_SHAPES[0]])
 @pytest.mark.parametrize("dtype, pre_post_tol, res_tol, grad_tol", [(torch.float32, 5e-4, 1e-3, 2e-3)])
 def test_mhc_coeffs_allow_fp32(B, T, HC, C, dtype, pre_post_tol, res_tol, grad_tol):
@@ -241,7 +239,6 @@ def test_mhc_coeffs_allow_fp32(B, T, HC, C, dtype, pre_post_tol, res_tol, grad_t
         assert torch.allclose(gt, gr, rtol=grad_tol, atol=grad_tol)
 
 
-@pytest.mark.skipif(device != "cuda", reason="CUDA required")
 def test_mhc_coeffs_disallow_fp32():
     B, T, HC, C = 1, 2, 2, 8
     K = HC * C
@@ -258,7 +255,6 @@ def test_mhc_coeffs_disallow_fp32():
         _ = liger_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res)
 
 
-@pytest.mark.skipif(device != "cuda", reason="CUDA required")
 @pytest.mark.parametrize("B, T, HC, C", MHC_SHAPES)
 @pytest.mark.parametrize(
     "use_pre,use_post,use_res",
@@ -297,7 +293,6 @@ def test_mhc_coeffs_backward_allows_unused_outputs(B, T, HC, C, use_pre, use_pos
         assert tensor.grad is not None
 
 
-@pytest.mark.skipif(device != "cuda", reason="CUDA required")
 @pytest.mark.parametrize("B, T, HC, C", MHC_SHAPES)
 @pytest.mark.parametrize("dtype, pre_post_tol, res_tol, _grad_tol", MHC_DTYPE_TOLS)
 def test_mhc_pre_and_post_res_match_reference(B, T, HC, C, dtype, pre_post_tol, res_tol, _grad_tol):
@@ -321,7 +316,6 @@ def test_mhc_pre_and_post_res_match_reference(B, T, HC, C, dtype, pre_post_tol, 
     assert torch.allclose(x_out.float(), x_out_ref, rtol=res_tol, atol=res_tol)
 
 
-@pytest.mark.skipif(device != "cuda", reason="CUDA required")
 @pytest.mark.parametrize("B, T, HC, C", MHC_SHAPES)
 @pytest.mark.parametrize("dtype, pre_post_tol, res_tol, grad_tol", MHC_DTYPE_TOLS)
 def test_liger_mhc_functional(B, T, HC, C, dtype, pre_post_tol, res_tol, grad_tol):
@@ -391,7 +385,6 @@ def test_liger_mhc_functional(B, T, HC, C, dtype, pre_post_tol, res_tol, grad_to
     assert_verbose_allclose(x_out.float(), x_out_ref, rtol=res_tol, atol=res_tol, extra_info="[x_out]")
 
 
-@pytest.mark.skipif(device != "cuda", reason="CUDA required")
 @pytest.mark.parametrize("B, T, HC, C", MHC_SHAPES)
 @pytest.mark.parametrize("dtype, _pre_post_tol, res_tol, grad_tol", MHC_DTYPE_TOLS)
 def test_liger_mhc_module(B, T, HC, C, dtype, _pre_post_tol, res_tol, grad_tol):
@@ -543,7 +536,6 @@ class MiniMHCLM(nn.Module):
         return self.head(x_merge)
 
 
-@pytest.mark.skipif(device != "cuda", reason="CUDA required")
 @pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
 @pytest.mark.parametrize(
     "vocab_size, hc, c, tmax",

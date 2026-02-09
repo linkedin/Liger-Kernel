@@ -1374,18 +1374,13 @@ def mhc_post_res_bwd(
     return out_grad_x, out_grad_f, out_grad_hpost, out_grad_hres
 
 
-def _flatten_tokens(x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, ...]]:
+def _flatten_tokens(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Size]:
     """
     Flattens leading dimensions so x becomes [N, HC, C].
-    Returns (x_flat, outer_shape).
+    Returns (x_flat, x_shape) where x_shape is the original shape.
     """
     assert x.dim() >= 3, "x must be [..., HC, C]"
-    outer = tuple(x.shape[:-2])
-    return x.contiguous().view(-1, x.shape[-2], x.shape[-1]), outer
-
-
-def _unflatten_tokens(y: torch.Tensor, outer: Tuple[int, ...]) -> torch.Tensor:
-    return y.view(*outer, *y.shape[1:])
+    return x.contiguous().view(-1, x.shape[-2], x.shape[-1]), x.shape
 
 
 class LigerMHCCoeffsFunction(torch.autograd.Function):
@@ -1423,7 +1418,9 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
             ), "x should be BF16/FP16/FP32 when allow_fp32=True"
         else:
             assert x.dtype in (torch.bfloat16, torch.float16), "x should be BF16/FP16 (set allow_fp32=True for FP32)"
-        x_flat, outer = _flatten_tokens(x)
+        # Store original shape for restoring at the end
+        x_shape = x.shape
+        x_flat, _ = _flatten_tokens(x)
         N, HC, C = x_flat.shape
         K = HC * C
         x_mat = x_flat.view(-1, K)
@@ -1470,7 +1467,7 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
         else:
             ctx.save_for_backward(x_mat, phi, b, mix, invr, alpha_pre, alpha_post, alpha_res)
         ctx.meta = (
-            outer,
+            x_shape,
             HC,
             C,
             int(tmax),
@@ -1481,10 +1478,12 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
             hist is not None,
         )
 
+        # Reshape to original leading dims
+        outer = x_shape[:-2]
         return (
-            _unflatten_tokens(h_pre, outer),
-            _unflatten_tokens(h_post, outer),
-            _unflatten_tokens(h_res, outer),
+            h_pre.view(*outer, HC),
+            h_post.view(*outer, HC),
+            h_res.view(*outer, HC, HC),
         )
 
     @staticmethod
@@ -1496,7 +1495,7 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
         grad_h_res: torch.Tensor | None,
     ):
         saved = ctx.saved_tensors
-        outer, HC, C, tmax, rms_eps, pre_eps, sinkhorn_eps, post_mult, has_hist = ctx.meta
+        x_shape, HC, C, tmax, rms_eps, pre_eps, sinkhorn_eps, post_mult, has_hist = ctx.meta
         if has_hist:
             x_mat, phi, b, mix, invr, alpha_pre, alpha_post, alpha_res, hist = saved
         else:
@@ -1599,8 +1598,8 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
             grad_mix,
         )
 
-        grad_x = grad_x_mat.view(-1, HC, C)
-        grad_x = _unflatten_tokens(grad_x, outer)
+        # Reshape to original shape
+        grad_x = grad_x_mat.view(*x_shape[:-2], HC, C)
 
         # Return grads for each forward input
         return (
@@ -1623,24 +1622,25 @@ class LigerMHCPreFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(ctx: Any, x: torch.Tensor, h_pre: torch.Tensor) -> torch.Tensor:
-        x_flat, outer = _flatten_tokens(x)
+        x_shape = x.shape
+        x_flat, _ = _flatten_tokens(x)
         h_pre_flat = h_pre.contiguous().view(-1, x_flat.shape[1]).to(torch.float32)
         out = mhc_pre_fwd(x_flat, h_pre_flat)  # [N,C] fp32
         ctx.save_for_backward(x_flat, h_pre_flat)
-        ctx.outer = outer
+        ctx.x_shape = x_shape
         out = out.to(x_flat.dtype)
-        return _unflatten_tokens(out, outer)
+        return out.view(*x_shape[:-2], out.shape[-1])
 
     @staticmethod
     @ensure_contiguous
     def backward(ctx: Any, grad_out: torch.Tensor):
         x_flat, h_pre_flat = ctx.saved_tensors
-        outer = ctx.outer
+        x_shape = ctx.x_shape
         N, HC, C = x_flat.shape
         go = grad_out.contiguous().view(-1, C).to(torch.float32)
         grad_x, grad_h = mhc_pre_bwd(x_flat, h_pre_flat, go)
         grad_x = grad_x.to(x_flat.dtype)
-        return _unflatten_tokens(grad_x.view(-1, HC, C), outer), _unflatten_tokens(grad_h.view(-1, HC), outer)
+        return grad_x.view(*x_shape), grad_h.view(*x_shape[:-1])
 
 
 class LigerMHCPostResFunction(torch.autograd.Function):
@@ -1649,30 +1649,32 @@ class LigerMHCPostResFunction(torch.autograd.Function):
     def forward(
         ctx: Any, x: torch.Tensor, f_out: torch.Tensor, h_post: torch.Tensor, h_res: torch.Tensor
     ) -> torch.Tensor:
-        x_flat, outer = _flatten_tokens(x)
+        x_shape = x.shape
+        x_flat, _ = _flatten_tokens(x)
         N, HC, C = x_flat.shape
         f_flat = f_out.contiguous().view(-1, C)
         h_post_flat = h_post.contiguous().view(-1, HC).to(torch.float32)
         h_res_flat = h_res.contiguous().view(-1, HC, HC).to(torch.float32)
         out = mhc_post_res_fwd(x_flat, f_flat, h_post_flat, h_res_flat)  # [N,HC,C] fp32
         ctx.save_for_backward(x_flat, f_flat, h_post_flat, h_res_flat)
-        ctx.outer = outer
+        ctx.x_shape = x_shape
         out = out.to(x_flat.dtype)
-        return _unflatten_tokens(out, outer)
+        return out.view(*x_shape)
 
     @staticmethod
     @ensure_contiguous
     def backward(ctx: Any, grad_out: torch.Tensor):
         x_flat, f_flat, h_post_flat, h_res_flat = ctx.saved_tensors
-        outer = ctx.outer
+        x_shape = ctx.x_shape
         N, HC, C = x_flat.shape
         go = grad_out.contiguous().view(-1, HC, C).to(torch.float32)
 
         grad_x, grad_f, grad_hpost, grad_hres = mhc_post_res_bwd(x_flat, f_flat, h_post_flat, h_res_flat, go)
 
+        outer = x_shape[:-2]
         return (
-            _unflatten_tokens(grad_x.to(x_flat.dtype).view(-1, HC, C), outer),
-            _unflatten_tokens(grad_f.to(f_flat.dtype).view(-1, C), outer),
-            _unflatten_tokens(grad_hpost.view(-1, HC), outer),
-            _unflatten_tokens(grad_hres.view(-1, HC, HC), outer),
+            grad_x.to(x_flat.dtype).view(*x_shape),
+            grad_f.to(f_flat.dtype).view(*outer, C),
+            grad_hpost.view(*outer, HC),
+            grad_hres.view(*outer, HC, HC),
         )
