@@ -2,21 +2,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from test.utils import assert_verbose_allclose
 from test.utils import infer_device
 from test.utils import set_seed
 
 from liger_kernel.ops.grpo_loss import fused_selective_log_softmax
 from liger_kernel.transformers.grpo_loss import triton_grpo_loss
-
-
-def compare(x, y, extra_str=""):
-    if x is None or y is None:
-        return
-    if any([x.dtype == torch.float32, y.dtype == torch.float32]):
-        x, y = x.float(), y.float()
-    diff = (x - y).abs()
-    diff = diff / (torch.max(x.abs(), y.abs()) + 1e-5)
-    print(f"{extra_str}Max difference: {diff.max().item()}, Mean difference: {diff.mean().item()}")
 
 
 @torch.no_grad
@@ -187,7 +178,7 @@ device = infer_device()
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
-        (torch.bfloat16, 1e-5, 1e-5),
+        (torch.bfloat16, 5e-2, 5e-1),
     ],
 )
 def test_selective_log_softmax(B, T, V, temperature, dtype, atol, rtol):
@@ -205,11 +196,8 @@ def test_selective_log_softmax(B, T, V, temperature, dtype, atol, rtol):
     triton_bf16_logp = fused_selective_log_softmax(logit2, input_ids, temperature)
     torch_fp32_logp = selective_log_softmax(logit3, input_ids, temperature)
 
-    # assert_verbose_allclose(torch_bf16_logp, torch_fp32_logp, rtol=rtol, atol=atol)
-    # assert_verbose_allclose(triton_bf16_logp, torch_fp32_logp, rtol=rtol, atol=atol)
-    print("\n" + "=" * 20 + " selective_log_softmax " + "=" * 20)
-    compare(torch_bf16_logp, torch_fp32_logp, "torch-bf16 vs torch-fp32, ")
-    compare(triton_bf16_logp, torch_fp32_logp, "triton-bf16 vs torch-fp32, ")
+    assert_verbose_allclose(torch_bf16_logp, torch_fp32_logp.to(dtype), rtol=rtol, atol=atol)
+    assert_verbose_allclose(triton_bf16_logp, torch_fp32_logp.to(dtype), rtol=rtol, atol=atol)
 
 
 @pytest.mark.parametrize(
@@ -225,7 +213,7 @@ def test_selective_log_softmax(B, T, V, temperature, dtype, atol, rtol):
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
-        (torch.bfloat16, 1e-5, 1e-5),
+        (torch.bfloat16, 5e-2, 5e-1),
     ],
 )
 def test_grpo_loss(B, T, V, temperature, num_iteration, beta, eps_low, eps_high, dtype, atol, rtol):
@@ -272,13 +260,14 @@ def test_grpo_loss(B, T, V, temperature, num_iteration, beta, eps_low, eps_high,
     loss2.backward(dy)
     loss3.backward(dy)
 
-    print("\n" + "=" * 20 + " grpo_loss " + "=" * 20)
-    compare(loss1, loss3, "per_token_loss: torch-bf16 vs torch-fp32, ")
-    compare(kl1, kl3, "per_token_kl: torch-bf16 vs torch-fp32, ")
-    compare(logits1.grad, logits3.grad, "logits.grad: torch-bf16 vs torch-fp32, ")
-    compare(loss2, loss3, "per_token_loss: triton-bf16 vs torch-fp32, ")
-    compare(kl2, kl3, "per_token_kl: triton-bf16 vs torch-fp32, ")
-    compare(logits2.grad, logits3.grad, "logits.grad: triton-bf16 vs torch-fp32, ")
+    assert_verbose_allclose(loss1, loss3, atol=atol, rtol=rtol)
+    if kl1 is not None and kl3 is not None:
+        assert_verbose_allclose(kl1, kl3, atol=atol, rtol=rtol)
+    assert_verbose_allclose(logits1.grad, logits3.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(loss2, loss3, atol=atol, rtol=rtol)
+    if kl2 is not None and kl3 is not None:
+        assert_verbose_allclose(kl2, kl3, atol=atol, rtol=rtol)
+    assert_verbose_allclose(logits2.grad, logits3.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize(
@@ -291,8 +280,13 @@ def test_grpo_loss(B, T, V, temperature, num_iteration, beta, eps_low, eps_high,
         (1, 1024, 151936),
     ],
 )
-@pytest.mark.parametrize("dtype", [torch.bfloat16])
-def test_cispo_loss(B, T, V, temperature, num_iteration, beta, eps_high, dtype):
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.bfloat16, 5e-2, 5e-1),
+    ],
+)
+def test_cispo_loss(B, T, V, temperature, num_iteration, beta, eps_high, dtype, atol, rtol):
     """Test CISPO loss type support in Triton kernel."""
     _input = torch.randn(B, T + 1, V, device=device, dtype=dtype)
 
@@ -336,13 +330,14 @@ def test_cispo_loss(B, T, V, temperature, num_iteration, beta, eps_high, dtype):
     loss2.backward(dy)
     loss3.backward(dy)
 
-    print("\n" + "=" * 20 + " cispo_loss " + "=" * 20)
-    compare(loss1, loss3, "per_token_loss: torch-bf16 vs torch-fp32, ")
-    compare(kl1, kl3, "per_token_kl: torch-bf16 vs torch-fp32, ")
-    compare(logits1.grad, logits3.grad, "logits.grad: torch-bf16 vs torch-fp32, ")
-    compare(loss2, loss3, "per_token_loss: triton-bf16 vs torch-fp32, ")
-    compare(kl2, kl3, "per_token_kl: triton-bf16 vs torch-fp32, ")
-    compare(logits2.grad, logits3.grad, "logits.grad: triton-bf16 vs torch-fp32, ")
+    assert_verbose_allclose(loss1, loss3, atol=atol, rtol=rtol)
+    if kl1 is not None and kl3 is not None:
+        assert_verbose_allclose(kl1, kl3, atol=atol, rtol=rtol)
+    assert_verbose_allclose(logits1.grad, logits3.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(loss2, loss3, atol=atol, rtol=rtol)
+    if kl2 is not None and kl3 is not None:
+        assert_verbose_allclose(kl2, kl3, atol=atol, rtol=rtol)
+    assert_verbose_allclose(logits2.grad, logits3.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize(
@@ -355,8 +350,13 @@ def test_cispo_loss(B, T, V, temperature, num_iteration, beta, eps_high, dtype):
         (1, 1024, 151936),
     ],
 )
-@pytest.mark.parametrize("dtype", [torch.bfloat16])
-def test_sapo_loss(B, T, V, temperature, num_iteration, beta, sapo_temp_pos, sapo_temp_neg, dtype):
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.bfloat16, 5e-2, 5e-1),
+    ],
+)
+def test_sapo_loss(B, T, V, temperature, num_iteration, beta, sapo_temp_pos, sapo_temp_neg, dtype, atol, rtol):
     """Test SAPO loss type support in Triton kernel."""
     _input = torch.randn(B, T + 1, V, device=device, dtype=dtype)
 
@@ -420,10 +420,11 @@ def test_sapo_loss(B, T, V, temperature, num_iteration, beta, sapo_temp_pos, sap
     loss2.backward(dy)
     loss3.backward(dy)
 
-    print("\n" + "=" * 20 + " sapo_loss " + "=" * 20)
-    compare(loss1, loss3, "per_token_loss: torch-bf16 vs torch-fp32, ")
-    compare(kl1, kl3, "per_token_kl: torch-bf16 vs torch-fp32, ")
-    compare(logits1.grad, logits3.grad, "logits.grad: torch-bf16 vs torch-fp32, ")
-    compare(loss2, loss3, "per_token_loss: triton-bf16 vs torch-fp32, ")
-    compare(kl2, kl3, "per_token_kl: triton-bf16 vs torch-fp32, ")
-    compare(logits2.grad, logits3.grad, "logits.grad: triton-bf16 vs torch-fp32, ")
+    assert_verbose_allclose(loss1, loss3, atol=atol, rtol=rtol)
+    if kl1 is not None and kl3 is not None:
+        assert_verbose_allclose(kl1, kl3, atol=atol, rtol=rtol)
+    assert_verbose_allclose(logits1.grad, logits3.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(loss2, loss3, atol=atol, rtol=rtol)
+    if kl2 is not None and kl3 is not None:
+        assert_verbose_allclose(kl2, kl3, atol=atol, rtol=rtol)
+    assert_verbose_allclose(logits2.grad, logits3.grad, atol=atol, rtol=rtol)
