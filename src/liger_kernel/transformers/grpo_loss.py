@@ -20,6 +20,9 @@ def triton_grpo_loss(
     max_completion_length=None,
     importance_sampling_level="token",
     reduce=False,
+    sapo_temperature_pos=1.0,
+    sapo_temperature_neg=1.05,
+    vllm_is_ratio=None,
 ):
     assert logits is not None and completion_ids is not None and advantages is not None, (
         "must provide logits, completion_ids and advantages"
@@ -28,8 +31,6 @@ def triton_grpo_loss(
         raise ValueError(
             f"Triton GRPO loss only supports token-level importance sampling. Got {importance_sampling_level}."
         )
-    if loss_type == "cispo":
-        raise ValueError("Triton GRPO loss does not support loss_type='cispo'. Use the chunked GRPO loss path.")
 
     per_token_loss, per_token_kl, is_clipped = GrpoLossFunction.apply(
         logits,
@@ -43,6 +44,10 @@ def triton_grpo_loss(
         eps_low,
         eps_high,
         inplace,
+        loss_type,
+        sapo_temperature_pos,
+        sapo_temperature_neg,
+        vllm_is_ratio,
     )
     if not reduce:
         return per_token_loss, per_token_kl, is_clipped
@@ -67,7 +72,8 @@ def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion
         mask = torch.ones_like(per_token_loss, dtype=per_token_loss.dtype, device=per_token_loss.device)
     mask = mask.to(per_token_loss.dtype)
 
-    if loss_type == "grpo":
+    if loss_type == "grpo" or loss_type == "sapo":
+        # SAPO uses the same normalization as GRPO (per-sequence average)
         per_seq = (per_token_loss * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)
         return per_seq.mean()
     if loss_type == "bnpo":
@@ -77,7 +83,8 @@ def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion
             raise ValueError("max_completion_length must be provided when using loss_type='dr_grpo'")
         batch = per_token_loss.shape[0]
         return (per_token_loss * mask).sum() / (batch * max_completion_length)
-    if loss_type == "dapo":
+    if loss_type == "dapo" or loss_type == "cispo":
+        # CISPO uses the same normalization as DAPO
         normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask)
         return (per_token_loss * mask).sum() / normalizer
     raise ValueError(f"Unsupported loss_type '{loss_type}' for Triton GRPO loss.")
