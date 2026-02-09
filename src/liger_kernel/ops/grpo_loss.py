@@ -90,6 +90,8 @@ def _grpo_loss_fwd_kernel(
     INPUT_IDS,
     COMPLETION_MASK,
     ADVANTAGES,
+    VLLM_IS_RATIO,
+    VLLM_IS_RATIO_STRIDE,
     LOSS,
     LSE,
     KL,
@@ -169,6 +171,14 @@ def _grpo_loss_fwd_kernel(
         per_token_loss = -sapo_coef * advantage
         is_clipped = 0.0  # SAPO has no clipping concept
 
+    # Apply vLLM importance sampling correction BEFORE adding KL penalty
+    if VLLM_IS_RATIO is not None:
+        # Use modulo to support both (B, L) per-token and (B, 1) per-sequence shapes
+        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
+            tl.float32
+        )
+        per_token_loss = per_token_loss * vllm_is_ratio
+
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
         KL += off_b * L + off_l
@@ -198,6 +208,8 @@ def _grpo_loss_bwd_kernel(
     ADVANTAGES,
     COMPLETION_MASK,
     LSE,
+    VLLM_IS_RATIO,
+    VLLM_IS_RATIO_STRIDE,
     TEMPERATURE,
     BETA: tl.constexpr,
     EPS_LOW,
@@ -271,6 +283,14 @@ def _grpo_loss_bwd_kernel(
         d_sapo_d_coef1 = 4.0 * sigmoid_val * (1.0 - sigmoid_val)
         dlogp = -advantage * d_sapo_d_coef1 * coef_1
 
+    # Apply vLLM IS ratio to PPO gradient (before KL gradient)
+    if VLLM_IS_RATIO is not None:
+        # Use modulo to support both (B, L) per-token and (B, 1) per-sequence shapes
+        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
+            tl.float32
+        )
+        dlogp = dlogp * vllm_is_ratio
+
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
@@ -304,6 +324,7 @@ class GrpoLossFunction(torch.autograd.Function):
         loss_type="grpo",
         sapo_temperature_pos=1.0,
         sapo_temperature_neg=1.05,
+        vllm_is_ratio=None,
     ):
         assert logits.is_contiguous() and completion_ids.is_contiguous()
         assert old_logp is None or old_logp.is_contiguous()
@@ -329,6 +350,25 @@ class GrpoLossFunction(torch.autograd.Function):
         if completion_mask is not None:
             assert completion_mask.is_contiguous()
 
+        # Handle vLLM IS ratio
+        vllm_is_ratio_ptr = None
+        vllm_is_ratio_stride = L  # default to per-token (unused when ptr is None)
+        if vllm_is_ratio is not None:
+            assert vllm_is_ratio.dim() in (1, 2), (
+                f"vllm_is_ratio must be 1D (B,) or 2D (B, L) / (B, 1), got {vllm_is_ratio.dim()}D"
+            )
+            if vllm_is_ratio.dim() == 2:
+                assert vllm_is_ratio.shape[0] == B and vllm_is_ratio.shape[1] in (1, L), (
+                    f"vllm_is_ratio shape must be ({B}, 1) or ({B}, {L}), got {tuple(vllm_is_ratio.shape)}"
+                )
+            else:
+                assert vllm_is_ratio.shape[0] == B, (
+                    f"vllm_is_ratio shape must be ({B},), got {tuple(vllm_is_ratio.shape)}"
+                )
+            vllm_is_ratio = vllm_is_ratio.contiguous()
+            vllm_is_ratio_ptr = vllm_is_ratio
+            vllm_is_ratio_stride = vllm_is_ratio.shape[1] if vllm_is_ratio.dim() > 1 else 1
+
         loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
         lse = torch.zeros_like(loss)
         is_clipped = torch.zeros_like(loss)
@@ -341,6 +381,8 @@ class GrpoLossFunction(torch.autograd.Function):
             completion_ids,
             completion_mask,
             advantages,
+            vllm_is_ratio_ptr,
+            vllm_is_ratio_stride,
             loss,
             lse,
             kl,
@@ -357,6 +399,8 @@ class GrpoLossFunction(torch.autograd.Function):
             **kwargs,
         )
         ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse)
+        ctx.vllm_is_ratio = vllm_is_ratio_ptr
+        ctx.vllm_is_ratio_stride = vllm_is_ratio_stride
         ctx.infos = (
             temperature,
             beta,
@@ -376,6 +420,8 @@ class GrpoLossFunction(torch.autograd.Function):
         temperature, beta, eps_low, eps_high, inplace, loss_type_int, sapo_temperature_pos, sapo_temperature_neg = (
             ctx.infos
         )
+        vllm_is_ratio = ctx.vllm_is_ratio
+        vllm_is_ratio_stride = ctx.vllm_is_ratio_stride
         B, L_ADD_1, N = logits.shape
         L = L_ADD_1 - 1
         dlogits = logits.data if inplace else torch.empty_like(logits)
@@ -390,6 +436,8 @@ class GrpoLossFunction(torch.autograd.Function):
             advantages,
             completion_mask,
             lse,
+            vllm_is_ratio,
+            vllm_is_ratio_stride,
             temperature,
             beta,
             eps_low,
@@ -404,5 +452,6 @@ class GrpoLossFunction(torch.autograd.Function):
         )
         dlogits[:, -1, :] = 0
         # Return None for: old_logp, ref_logp, completion_ids, advantages, completion_mask,
-        # temperature, beta, eps_low, eps_high, inplace, loss_type, sapo_temperature_pos, sapo_temperature_neg
-        return dlogits, None, None, None, None, None, None, None, None, None, None, None, None, None
+        # temperature, beta, eps_low, eps_high, inplace, loss_type, sapo_temperature_pos, sapo_temperature_neg,
+        # vllm_is_ratio
+        return dlogits, None, None, None, None, None, None, None, None, None, None, None, None, None, None

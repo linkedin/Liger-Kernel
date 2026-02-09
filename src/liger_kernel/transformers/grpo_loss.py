@@ -22,6 +22,7 @@ def triton_grpo_loss(
     reduce=False,
     sapo_temperature_pos=1.0,
     sapo_temperature_neg=1.05,
+    vllm_is_ratio=None,
 ):
     assert logits is not None and completion_ids is not None and advantages is not None, (
         "must provide logits, completion_ids and advantages"
@@ -46,6 +47,7 @@ def triton_grpo_loss(
         loss_type,
         sapo_temperature_pos,
         sapo_temperature_neg,
+        vllm_is_ratio,
     )
     if not reduce:
         return per_token_loss, per_token_kl, is_clipped
