@@ -7,12 +7,12 @@ from test.utils import infer_device
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
-from liger_kernel.ops.mhc import liger_mhc_coeffs as op_mhc_coeffs
-from liger_kernel.ops.mhc import liger_mhc_post_res as op_mhc_post_res
-from liger_kernel.ops.mhc import liger_mhc_pre as op_mhc_pre
 from liger_kernel.transformers.functional import liger_mhc_coeffs as fn_mhc_coeffs
+from liger_kernel.transformers.functional import liger_mhc_coeffs as op_mhc_coeffs
 from liger_kernel.transformers.functional import liger_mhc_post_res as fn_mhc_post_res
+from liger_kernel.transformers.functional import liger_mhc_post_res as op_mhc_post_res
 from liger_kernel.transformers.functional import liger_mhc_pre as fn_mhc_pre
+from liger_kernel.transformers.functional import liger_mhc_pre as op_mhc_pre
 from liger_kernel.transformers.mhc import LigerMHC
 
 device = infer_device()

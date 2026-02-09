@@ -319,6 +319,8 @@ def liger_mhc_coeffs(
     sinkhorn_eps: float = 1e-6,
     post_mult: float = 2.0,
 ):
+    # Convert config scalars to Python types so they are not included in the
+    # autograd computation graph (they are not learnable parameters).
     return LigerMHCCoeffsFunction.apply(
         x,
         phi,
@@ -348,4 +350,52 @@ def liger_mhc_apply(x, f_out, h_pre, h_post, h_res, *, return_x_in: bool = False
     x_out = liger_mhc_post_res(x, f_out, h_post, h_res)
     if return_x_in:
         return x_out, x_in
+    return x_out
+
+
+def liger_mhc_forward(
+    x,
+    layer,
+    phi,
+    b,
+    alpha_pre,
+    alpha_post,
+    alpha_res,
+    *,
+    allow_fp32=False,
+    tmax=20,
+    rms_eps=1e-6,
+    pre_eps=0.0,
+    sinkhorn_eps=1e-6,
+    post_mult=2.0,
+    return_coeffs=False,
+):
+    """High-level helper: compute coeffs, apply pre, run layer, then apply post+res."""
+    h_pre, h_post, h_res = liger_mhc_coeffs(
+        x,
+        phi,
+        b,
+        alpha_pre,
+        alpha_post,
+        alpha_res,
+        allow_fp32=allow_fp32,
+        tmax=tmax,
+        rms_eps=rms_eps,
+        pre_eps=pre_eps,
+        sinkhorn_eps=sinkhorn_eps,
+        post_mult=post_mult,
+    )
+    x_in = liger_mhc_pre(x, h_pre)
+    layer_dtype = x_in.dtype
+    if hasattr(layer, "parameters"):
+        try:
+            layer_dtype = next(layer.parameters()).dtype
+        except StopIteration:
+            layer_dtype = x_in.dtype
+    if x_in.dtype != layer_dtype:
+        x_in = x_in.to(layer_dtype)
+    f_out = layer(x_in)
+    x_out = liger_mhc_post_res(x, f_out, h_post, h_res)
+    if return_coeffs:
+        return x_out, (h_pre, h_post, h_res)
     return x_out

@@ -3,9 +3,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from liger_kernel.ops.mhc import liger_mhc_coeffs
-from liger_kernel.ops.mhc import liger_mhc_post_res
-from liger_kernel.ops.mhc import liger_mhc_pre
+from liger_kernel.transformers.functional import liger_mhc_coeffs
+from liger_kernel.transformers.functional import liger_mhc_post_res
+from liger_kernel.transformers.functional import liger_mhc_pre
+from liger_kernel.utils import infer_device
 from test.transformers.test_mhc import mhc_coeffs_ref
 from test.utils import set_seed
 from test.utils import supports_bfloat16
@@ -99,7 +100,7 @@ class MiniMHCLM(nn.Module):
 def test_mhc_mini_lm_convergence():
     set_seed(0)
 
-    device = "cuda"
+    device = infer_device()
     vocab_size = 32
     hc = 2
     c = 16

@@ -3,27 +3,78 @@ import warnings
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.mhc import liger_mhc_coeffs
-from liger_kernel.ops.mhc import liger_mhc_post_res
-from liger_kernel.ops.mhc import liger_mhc_pre
+from liger_kernel.transformers.functional import liger_mhc_coeffs
+from liger_kernel.transformers.functional import liger_mhc_post_res
+from liger_kernel.transformers.functional import liger_mhc_pre
 
 
 class LigerMHC(nn.Module):
     """
-    Wraps a layer F: [..., C] -> [..., C] with mHC residual streams: [..., HC, C].
+    Manifold-Constrained Hyper-Connections (mHC) wrapper.
+
+    Wraps an arbitrary layer ``F: [..., C] -> [..., C]`` with multiple residual
+    streams, following the mHC architecture (arXiv:2512.24880). The input is a
+    multi-stream tensor of shape ``[..., HC, C]`` where ``HC`` is the number of
+    residual streams.
+
+    The forward pass performs:
+
+    1. **Coefficients** -- Compute data-dependent routing coefficients
+       (``h_pre``, ``h_post``, ``h_res``) via a fused matmul + RMS
+       normalization + Sinkhorn-Knopp iterations.
+    2. **Pre-aggregate** -- ``x_in = sum_i h_pre[i] * x[i]``
+       (shape: ``[..., C]``)
+    3. **Layer** -- ``f_out = layer(x_in)``  (shape: ``[..., C]``)
+    4. **Post + residual** --
+       ``x_out[o] = sum_i h_res[o,i] * x[i] + h_post[o] * f_out``
+       (shape: ``[..., HC, C]``)
 
     Args:
-        layer: module applied to the aggregated stream input
-        hc: number of residual streams (n in the paper)
-        c: per-stream channel dimension
-        allow_fp32: if True, accept FP32 input. Note that FP32 mode does NOT
-            use Tensor Cores and will be slower than BF16/FP16. Use only when
-            FP32 precision is strictly required.
+        layer: The module applied to the aggregated single-stream input.
+            Must accept ``[..., C]`` and return ``[..., C]``. Common choices
+            include ``nn.Linear``, attention layers, or MLP blocks.
+        hc: Number of residual streams (called *n* in the original paper).
+            Recommended range: [2, 16]. Larger values increase register
+            pressure and Triton compile time.
+        c: Per-stream channel dimension.
+        tmax: Maximum Sinkhorn-Knopp iterations for doubly stochastic
+            normalization of ``h_res``. Default: 20.
+        rms_eps: Epsilon for RMS normalization of the projection.
+            Default: 1e-6.
+        pre_eps: Additive epsilon for ``h_pre`` after sigmoid. Default: 0.0.
+        sinkhorn_eps: Epsilon added during Sinkhorn normalization.
+            Default: 1e-6.
+        post_mult: Scaling factor for ``h_post`` after sigmoid. Default: 2.0.
+        phi_dtype: Dtype for the projection matrix ``phi``. Using float16 or
+            bfloat16 enables Tensor Core acceleration. Default: torch.float16.
+        allow_fp32: If True, accept FP32 input tensors. Note that FP32 mode
+            does **not** use Tensor Cores and will be slower. Default: False.
 
-    Note:
-        HC (number of residual streams) is recommended to be in range [2, 16].
-        Larger values may cause register pressure and increased compile time
-        due to Triton loop unrolling.
+    Learnable Parameters:
+        - **phi** ``[HC*C, HC*HC + 2*HC]`` -- Projection matrix for computing
+          routing coefficients from flattened stream tokens.
+        - **b** ``[HC*HC + 2*HC]`` -- Bias for routing logits (float32).
+        - **alpha_pre** (scalar) -- Scales pre-routing logits before sigmoid.
+        - **alpha_post** (scalar) -- Scales post-routing logits before sigmoid.
+        - **alpha_res** (scalar) -- Scales residual logits before Sinkhorn.
+
+    Example::
+
+        import torch
+        import torch.nn as nn
+        from liger_kernel.transformers import LigerMHC
+
+        # Wrap a linear layer with 4 residual streams of dimension 256
+        layer = nn.Linear(256, 256, bias=False, device="cuda", dtype=torch.bfloat16)
+        mhc = LigerMHC(layer, hc=4, c=256, phi_dtype=torch.bfloat16).cuda()
+
+        # Input: [batch, seq_len, num_streams, channels]
+        x = torch.randn(2, 128, 4, 256, device="cuda", dtype=torch.bfloat16)
+        out = mhc(x)  # shape: [2, 128, 4, 256]
+
+        # In a transformer block (pseudocode):
+        # x = mhc_attn(x)   # attention wrapped in LigerMHC
+        # x = mhc_ffn(x)    # FFN wrapped in LigerMHC
     """
 
     def __init__(

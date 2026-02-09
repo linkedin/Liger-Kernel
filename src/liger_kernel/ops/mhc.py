@@ -1,7 +1,6 @@
 import math
 
 from typing import Any
-from typing import Callable
 from typing import Optional
 from typing import Tuple
 from typing import Union
@@ -11,12 +10,6 @@ import triton
 import triton.language as tl
 
 from liger_kernel.ops.utils import ensure_contiguous
-
-
-def _as_scalar(x: Union[torch.Tensor, float]) -> float:
-    if isinstance(x, torch.Tensor):
-        return float(x.item())
-    return float(x)
 
 
 def _post_res_default_meta(c: int) -> tuple[int, int, int, int]:
@@ -60,7 +53,7 @@ def _post_res_meta(
 
 
 @triton.jit
-def _mhc_mm_norm_fwd_tc_kernel(
+def _mhc_mm_norm_fwd_kernel(
     x_ptr,
     phi_ptr,
     mix_ptr,
@@ -78,69 +71,7 @@ def _mhc_mm_norm_fwd_tc_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
     BLOCK_M: tl.constexpr,
-):
-    pid_n = tl.program_id(0)
-    pid_m = tl.program_id(1)
-
-    n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    m_offs = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
-
-    # Accumulators
-    acc = tl.zeros((BLOCK_N, BLOCK_M), tl.float32)
-    sumsq = tl.zeros((BLOCK_N,), tl.float32)
-
-    # Loop over K
-    for k0 in tl.static_range(0, K, BLOCK_K):
-        k_offs = k0 + tl.arange(0, BLOCK_K)
-
-        x = tl.load(
-            x_ptr + n_offs[:, None] * stride_xn + k_offs[None, :] * stride_xk,
-            mask=(n_offs[:, None] < N) & (k_offs[None, :] < K),
-            other=0.0,
-        )
-        x_f = x.to(tl.float32)
-        sumsq += tl.sum(x_f * x_f, axis=1)
-
-        phi = tl.load(
-            phi_ptr + k_offs[:, None] * stride_phik + m_offs[None, :] * stride_phim,
-            mask=(k_offs[:, None] < K) & (m_offs[None, :] < M),
-            other=0.0,
-        )
-
-        # Tensor-core path
-        acc += tl.dot(x, phi)
-
-    invr = tl.rsqrt(sumsq / K + eps)
-    out = acc * invr[:, None]
-
-    tl.store(
-        mix_ptr + n_offs[:, None] * stride_mn + m_offs[None, :] * stride_mm,
-        out,
-        mask=(n_offs[:, None] < N) & (m_offs[None, :] < M),
-    )
-    if pid_m == 0:
-        tl.store(invr_ptr + n_offs, invr, mask=n_offs < N)
-
-
-@triton.jit
-def _mhc_mm_norm_fwd_tf32_kernel(
-    x_ptr,
-    phi_ptr,
-    mix_ptr,
-    invr_ptr,
-    N: tl.constexpr,
-    K: tl.constexpr,
-    M: tl.constexpr,
-    stride_xn: tl.constexpr,
-    stride_xk: tl.constexpr,
-    stride_phik: tl.constexpr,
-    stride_phim: tl.constexpr,
-    stride_mn: tl.constexpr,
-    stride_mm: tl.constexpr,
-    eps: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    BLOCK_M: tl.constexpr,
+    CAST_FP32: tl.constexpr,
 ):
     pid_n = tl.program_id(0)
     pid_m = tl.program_id(1)
@@ -158,14 +89,21 @@ def _mhc_mm_norm_fwd_tf32_kernel(
             x_ptr + n_offs[:, None] * stride_xn + k_offs[None, :] * stride_xk,
             mask=(n_offs[:, None] < N) & (k_offs[None, :] < K),
             other=0.0,
-        ).to(tl.float32)
-        sumsq += tl.sum(x * x, axis=1)
+        )
+        if CAST_FP32:
+            x = x.to(tl.float32)
+            sumsq += tl.sum(x * x, axis=1)
+        else:
+            x_f = x.to(tl.float32)
+            sumsq += tl.sum(x_f * x_f, axis=1)
 
         phi = tl.load(
             phi_ptr + k_offs[:, None] * stride_phik + m_offs[None, :] * stride_phim,
             mask=(k_offs[:, None] < K) & (m_offs[None, :] < M),
             other=0.0,
-        ).to(tl.float32)
+        )
+        if CAST_FP32:
+            phi = phi.to(tl.float32)
 
         acc += tl.dot(x, phi)
 
@@ -204,7 +142,6 @@ def mhc_mm_norm_fwd(
         mix: [N, M] float32
         invr: [N] float32
     """
-    assert x.is_cuda and phi.is_cuda
     assert x.is_contiguous(), "x must be contiguous"
     assert phi.is_contiguous(), "phi must be contiguous"
 
@@ -219,11 +156,9 @@ def mhc_mm_norm_fwd(
 
     grid = (triton.cdiv(N, block_n), triton.cdiv(M, block_m))
 
-    # Choose path
     use_tc = (x.dtype == phi.dtype) and (x.dtype in (torch.float16, torch.bfloat16))
-    kernel = _mhc_mm_norm_fwd_tc_kernel if use_tc else _mhc_mm_norm_fwd_tf32_kernel
 
-    kernel[grid](
+    _mhc_mm_norm_fwd_kernel[grid](
         x,
         phi,
         out_mix,
@@ -241,6 +176,7 @@ def mhc_mm_norm_fwd(
         BLOCK_N=block_n,
         BLOCK_K=block_k,
         BLOCK_M=block_m,
+        CAST_FP32=not use_tc,
         num_warps=num_warps,
     )
     return out_mix, out_invr
@@ -264,7 +200,7 @@ def mhc_mm_norm_fwd(
 
 
 @triton.jit
-def _mhc_mm_norm_bwd_fused_tc_kernel(
+def _mhc_mm_norm_bwd_fused_kernel(
     x_ptr,
     phi_ptr,
     mix_ptr,
@@ -291,6 +227,7 @@ def _mhc_mm_norm_bwd_fused_tc_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
     BLOCK_M: tl.constexpr,
+    CAST_FP32: tl.constexpr,
 ):
     pid_n = tl.program_id(0)
     pid_k = tl.program_id(1)
@@ -305,7 +242,11 @@ def _mhc_mm_norm_bwd_fused_tc_kernel(
         mask=(n_offs[:, None] < N) & (k_offs[None, :] < K),
         other=0.0,
     )
-    x_f = x.to(tl.float32)
+    if CAST_FP32:
+        x = x.to(tl.float32)
+        x_f = x
+    else:
+        x_f = x.to(tl.float32)
 
     acc = tl.zeros((BLOCK_N, BLOCK_K), tl.float32)
     g_acc = tl.zeros((BLOCK_N,), tl.float32)
@@ -332,100 +273,13 @@ def _mhc_mm_norm_bwd_fused_tc_kernel(
             mask=(k_offs[:, None] < K) & (m_offs[None, :] < M),
             other=0.0,
         )
-        grad_z = (grad_mix * invr[:, None]).to(phi.dtype)
-        acc += tl.dot(grad_z, tl.trans(phi))  # [BN, BK] float32
+        if CAST_FP32:
+            phi = phi.to(tl.float32)
+            grad_z = grad_mix * invr[:, None]
+        else:
+            grad_z = (grad_mix * invr[:, None]).to(phi.dtype)
 
-        dphi = tl.dot(tl.trans(x), grad_z)  # [BK, BM] float32
-        tl.atomic_add(
-            grad_phi_ptr + k_offs[:, None] * stride_gpk + m_offs[None, :] * stride_gpm,
-            dphi,
-            mask=(k_offs[:, None] < K) & (m_offs[None, :] < M),
-        )
-
-    g = g_acc / invr
-    invr3 = invr * invr * invr
-    factor = (-g * invr3) / K  # [BLOCK_N]
-
-    gx = acc + x_f * factor[:, None]
-
-    tl.store(
-        grad_x_ptr + n_offs[:, None] * stride_gxn + k_offs[None, :] * stride_gxk,
-        gx.to(x.dtype),
-        mask=(n_offs[:, None] < N) & (k_offs[None, :] < K),
-    )
-
-
-@triton.jit
-def _mhc_mm_norm_bwd_fused_tf32_kernel(
-    x_ptr,
-    phi_ptr,
-    mix_ptr,
-    invr_ptr,
-    grad_mix_ptr,
-    grad_x_ptr,
-    grad_phi_ptr,
-    N: tl.constexpr,
-    K: tl.constexpr,
-    M: tl.constexpr,
-    stride_xn: tl.constexpr,
-    stride_xk: tl.constexpr,
-    stride_phik: tl.constexpr,
-    stride_phim: tl.constexpr,
-    stride_mn: tl.constexpr,
-    stride_mm: tl.constexpr,
-    stride_invr: tl.constexpr,
-    stride_gmn: tl.constexpr,
-    stride_gmm: tl.constexpr,
-    stride_gxn: tl.constexpr,
-    stride_gxk: tl.constexpr,
-    stride_gpk: tl.constexpr,
-    stride_gpm: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-):
-    pid_n = tl.program_id(0)
-    pid_k = tl.program_id(1)
-
-    n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    k_offs = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
-
-    invr = tl.load(invr_ptr + n_offs * stride_invr, mask=n_offs < N, other=0.0).to(tl.float32)
-
-    x = tl.load(
-        x_ptr + n_offs[:, None] * stride_xn + k_offs[None, :] * stride_xk,
-        mask=(n_offs[:, None] < N) & (k_offs[None, :] < K),
-        other=0.0,
-    ).to(tl.float32)
-
-    acc = tl.zeros((BLOCK_N, BLOCK_K), tl.float32)
-    g_acc = tl.zeros((BLOCK_N,), tl.float32)
-
-    for m0 in tl.static_range(0, M, BLOCK_M):
-        m_offs = m0 + tl.arange(0, BLOCK_M)
-
-        grad_mix = tl.load(
-            grad_mix_ptr + n_offs[:, None] * stride_gmn + m_offs[None, :] * stride_gmm,
-            mask=(n_offs[:, None] < N) & (m_offs[None, :] < M),
-            other=0.0,
-        ).to(tl.float32)
-
-        mix = tl.load(
-            mix_ptr + n_offs[:, None] * stride_mn + m_offs[None, :] * stride_mm,
-            mask=(n_offs[:, None] < N) & (m_offs[None, :] < M),
-            other=0.0,
-        ).to(tl.float32)
-
-        g_acc += tl.sum(grad_mix * mix, axis=1)
-
-        phi = tl.load(
-            phi_ptr + k_offs[:, None] * stride_phik + m_offs[None, :] * stride_phim,
-            mask=(k_offs[:, None] < K) & (m_offs[None, :] < M),
-            other=0.0,
-        ).to(tl.float32)
-
-        grad_z = grad_mix * invr[:, None]
-        acc += tl.dot(grad_z, tl.trans(phi))  # float32
+        acc += tl.dot(grad_z, tl.trans(phi))
 
         dphi = tl.dot(tl.trans(x), grad_z)
         tl.atomic_add(
@@ -438,13 +292,20 @@ def _mhc_mm_norm_bwd_fused_tf32_kernel(
     invr3 = invr * invr * invr
     factor = (-g * invr3) / K
 
-    gx = acc + x * factor[:, None]
+    gx = acc + x_f * factor[:, None]
 
-    tl.store(
-        grad_x_ptr + n_offs[:, None] * stride_gxn + k_offs[None, :] * stride_gxk,
-        gx,
-        mask=(n_offs[:, None] < N) & (k_offs[None, :] < K),
-    )
+    if CAST_FP32:
+        tl.store(
+            grad_x_ptr + n_offs[:, None] * stride_gxn + k_offs[None, :] * stride_gxk,
+            gx,
+            mask=(n_offs[:, None] < N) & (k_offs[None, :] < K),
+        )
+    else:
+        tl.store(
+            grad_x_ptr + n_offs[:, None] * stride_gxn + k_offs[None, :] * stride_gxk,
+            gx.to(x.dtype),
+            mask=(n_offs[:, None] < N) & (k_offs[None, :] < K),
+        )
 
 
 def mhc_mm_norm_bwd(
@@ -474,7 +335,6 @@ def mhc_mm_norm_bwd(
         become noticeable. This is typically not an issue for standard
         training configurations.
     """
-    assert x.is_cuda and phi.is_cuda and mix.is_cuda and invr.is_cuda and grad_mix.is_cuda
     assert (
         x.is_contiguous()
         and phi.is_contiguous()
@@ -496,10 +356,9 @@ def mhc_mm_norm_bwd(
         out_grad_phi = torch.zeros((K, M), device=x.device, dtype=torch.float32)
 
     use_tc = (x.dtype == phi.dtype) and (x.dtype in (torch.float16, torch.bfloat16))
-    fused_kernel = _mhc_mm_norm_bwd_fused_tc_kernel if use_tc else _mhc_mm_norm_bwd_fused_tf32_kernel
 
     grid = (triton.cdiv(N, block_n), triton.cdiv(K, block_k))
-    fused_kernel[grid](
+    _mhc_mm_norm_bwd_fused_kernel[grid](
         x,
         phi,
         mix,
@@ -526,6 +385,7 @@ def mhc_mm_norm_bwd(
         BLOCK_N=block_n,
         BLOCK_K=block_k,
         BLOCK_M=block_m,
+        CAST_FP32=not use_tc,
         num_warps=num_warps,
     )
 
@@ -563,9 +423,9 @@ def _mhc_split_sinkhorn_fwd_kernel(
     stride_ht: tl.constexpr,
     stride_hi: tl.constexpr,
     stride_hj: tl.constexpr,
-    alpha_pre,
-    alpha_post,
-    alpha_res,
+    alpha_pre_ptr,
+    alpha_post_ptr,
+    alpha_res_ptr,
     pre_eps: tl.constexpr,
     sinkhorn_eps: tl.constexpr,
     post_mult: tl.constexpr,
@@ -575,6 +435,11 @@ def _mhc_split_sinkhorn_fwd_kernel(
     pid = tl.program_id(0)
     if pid >= N:
         return
+
+    # Load scalar alpha parameters from GPU memory (avoids CPU sync)
+    alpha_pre = tl.load(alpha_pre_ptr).to(tl.float32)
+    alpha_post = tl.load(alpha_post_ptr).to(tl.float32)
+    alpha_res = tl.load(alpha_res_ptr).to(tl.float32)
 
     # --- Pre/post logits
     j = tl.arange(0, HC)
@@ -649,13 +514,15 @@ def _mhc_sinkhorn_bwd_kernel(
     stride_gl_n: tl.constexpr,
     stride_gl_i: tl.constexpr,
     stride_gl_j: tl.constexpr,
-    alpha_res,
+    alpha_res_ptr,
     sinkhorn_eps: tl.constexpr,
     TMAX: tl.constexpr,
 ):
     pid = tl.program_id(0)
     if pid >= N:
         return
+
+    alpha_res = tl.load(alpha_res_ptr).to(tl.float32)
 
     rows = tl.arange(0, HC)[:, None]
     cols = tl.arange(0, HC)[None, :]
@@ -742,13 +609,15 @@ def _mhc_sinkhorn_bwd_hist_kernel(
     stride_gl_n: tl.constexpr,
     stride_gl_i: tl.constexpr,
     stride_gl_j: tl.constexpr,
-    alpha_res,
+    alpha_res_ptr,
     sinkhorn_eps: tl.constexpr,
     TMAX: tl.constexpr,
 ):
     pid = tl.program_id(0)
     if pid >= N:
         return
+
+    alpha_res = tl.load(alpha_res_ptr).to(tl.float32)
 
     rows = tl.arange(0, HC)[:, None]
     cols = tl.arange(0, HC)[None, :]
@@ -834,7 +703,6 @@ def mhc_split_sinkhorn_fwd(
     mix: [N, M] float32 where M = HC*HC + 2*HC
     b: [M] float32
     """
-    assert mix.is_cuda and b.is_cuda
     assert mix.is_contiguous() and b.is_contiguous()
 
     N, M = mix.shape
@@ -859,10 +727,6 @@ def mhc_split_sinkhorn_fwd(
 
     grid = (N,)
 
-    alpha_pre_f = _as_scalar(alpha_pre)
-    alpha_post_f = _as_scalar(alpha_post)
-    alpha_res_f = _as_scalar(alpha_res)
-
     _mhc_split_sinkhorn_fwd_kernel[grid](
         mix,
         b,
@@ -886,9 +750,9 @@ def mhc_split_sinkhorn_fwd(
         stride_ht=out_hist.stride(1) if out_hist.ndim > 1 else 0,
         stride_hi=out_hist.stride(2) if out_hist.ndim > 1 else 0,
         stride_hj=out_hist.stride(3) if out_hist.ndim > 1 else 0,
-        alpha_pre=alpha_pre_f,
-        alpha_post=alpha_post_f,
-        alpha_res=alpha_res_f,
+        alpha_pre_ptr=alpha_pre.contiguous(),
+        alpha_post_ptr=alpha_post.contiguous(),
+        alpha_res_ptr=alpha_res.contiguous(),
         pre_eps=pre_eps,
         sinkhorn_eps=sinkhorn_eps,
         post_mult=post_mult,
@@ -920,7 +784,6 @@ def mhc_sinkhorn_bwd(
     b: [M] float32
     grad_hres: [N, HC, HC] float32
     """
-    assert mix.is_cuda and b.is_cuda and grad_hres.is_cuda
     assert mix.is_contiguous() and b.is_contiguous() and grad_hres.is_contiguous()
 
     N, M = mix.shape
@@ -933,7 +796,7 @@ def mhc_sinkhorn_bwd(
 
     grid = (N,)
 
-    alpha_res_f = _as_scalar(alpha_res)
+    alpha_res_c = alpha_res.contiguous()
 
     if hist is not None:
         assert hist.is_contiguous()
@@ -958,7 +821,7 @@ def mhc_sinkhorn_bwd(
             stride_gl_n=out_grad_logits.stride(0),
             stride_gl_i=out_grad_logits.stride(1),
             stride_gl_j=out_grad_logits.stride(2),
-            alpha_res=alpha_res_f,
+            alpha_res_ptr=alpha_res_c,
             sinkhorn_eps=sinkhorn_eps,
             TMAX=tmax,
             num_warps=num_warps,
@@ -979,7 +842,7 @@ def mhc_sinkhorn_bwd(
             stride_gl_n=out_grad_logits.stride(0),
             stride_gl_i=out_grad_logits.stride(1),
             stride_gl_j=out_grad_logits.stride(2),
-            alpha_res=alpha_res_f,
+            alpha_res_ptr=alpha_res_c,
             sinkhorn_eps=sinkhorn_eps,
             TMAX=tmax,
             num_warps=num_warps,
@@ -1111,7 +974,6 @@ def mhc_pre_fwd(
     block_c: int = 128,
     num_warps: int = 4,
 ) -> torch.Tensor:
-    assert x.is_cuda and h_pre.is_cuda
     assert x.is_contiguous() and h_pre.is_contiguous()
     N, HC, C = x.shape
     assert h_pre.shape == (N, HC)
@@ -1152,7 +1014,6 @@ def mhc_pre_bwd(
     block_c: int = 128,
     num_warps: int = 4,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    assert x.is_cuda and h_pre.is_cuda and grad_out.is_cuda
     assert x.is_contiguous() and h_pre.is_contiguous() and grad_out.is_contiguous()
     N, HC, C = x.shape
     assert grad_out.shape == (N, C)
@@ -1387,7 +1248,6 @@ def mhc_post_res_fwd(
     num_warps: Optional[int] = None,
     num_stages: Optional[int] = None,
 ) -> torch.Tensor:
-    assert x.is_cuda and f_out.is_cuda and h_post.is_cuda and h_res.is_cuda
     assert x.is_contiguous() and f_out.is_contiguous() and h_post.is_contiguous() and h_res.is_contiguous()
 
     N, HC, C = x.shape
@@ -1447,7 +1307,6 @@ def mhc_post_res_bwd(
     num_warps: Optional[int] = None,
     num_stages: Optional[int] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    assert x.is_cuda and f_out.is_cuda and h_post.is_cuda and h_res.is_cuda and grad_out.is_cuda
     assert (
         x.is_contiguous()
         and f_out.is_contiguous()
@@ -1522,11 +1381,7 @@ def _flatten_tokens(x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, ...]]:
     """
     assert x.dim() >= 3, "x must be [..., HC, C]"
     outer = tuple(x.shape[:-2])
-    hc, c = x.shape[-2], x.shape[-1]
-    n = 1
-    for d in outer:
-        n *= int(d)
-    return x.contiguous().view(n, hc, c), outer
+    return x.contiguous().view(-1, x.shape[-2], x.shape[-1]), outer
 
 
 def _unflatten_tokens(y: torch.Tensor, outer: Tuple[int, ...]) -> torch.Tensor:
@@ -1571,7 +1426,7 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
         x_flat, outer = _flatten_tokens(x)
         N, HC, C = x_flat.shape
         K = HC * C
-        x_mat = x_flat.view(N, K)
+        x_mat = x_flat.view(-1, K)
 
         assert phi.dim() == 2 and phi.shape[0] == K, f"phi must be [HC*C, M], got {tuple(phi.shape)}"
         M = int(phi.shape[1])
@@ -1657,15 +1512,15 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
 
         # flatten grads (None -> zeros)
         if need_pre:
-            gh_pre = grad_h_pre.contiguous().view(N, HC).to(torch.float32)
+            gh_pre = grad_h_pre.contiguous().view(-1, HC).to(torch.float32)
         else:
             gh_pre = torch.zeros((N, HC), device=mix.device, dtype=torch.float32)
         if need_post:
-            gh_post = grad_h_post.contiguous().view(N, HC).to(torch.float32)
+            gh_post = grad_h_post.contiguous().view(-1, HC).to(torch.float32)
         else:
             gh_post = torch.zeros((N, HC), device=mix.device, dtype=torch.float32)
         if need_res:
-            gh_res = grad_h_res.contiguous().view(N, HC, HC).to(torch.float32)
+            gh_res = grad_h_res.contiguous().view(-1, HC, HC).to(torch.float32)
         else:
             gh_res = torch.zeros((N, HC, HC), device=mix.device, dtype=torch.float32)
 
@@ -1744,7 +1599,7 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
             grad_mix,
         )
 
-        grad_x = grad_x_mat.view(N, HC, C)
+        grad_x = grad_x_mat.view(-1, HC, C)
         grad_x = _unflatten_tokens(grad_x, outer)
 
         # Return grads for each forward input
@@ -1764,68 +1619,12 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
         )
 
 
-def liger_mhc_coeffs(
-    x: torch.Tensor,
-    phi: torch.Tensor,
-    b: torch.Tensor,
-    alpha_pre: torch.Tensor,
-    alpha_post: torch.Tensor,
-    alpha_res: torch.Tensor,
-    *,
-    allow_fp32: bool = False,
-    tmax: int = 20,
-    rms_eps: float = 1e-6,
-    pre_eps: float = 0.0,
-    sinkhorn_eps: float = 1e-6,
-    post_mult: float = 2.0,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Compute mHC coefficients (h_pre, h_post, h_res).
-
-    Args:
-        x: [..., HC, C] BF16/FP16 (or FP32 if allow_fp32=True)
-        phi: [HC*C, HC*HC + 2*HC]
-        b: [HC*HC + 2*HC]
-        alpha_pre/post/res: scalars (FP32 tensors recommended)
-        HC: number of residual streams (n in the paper)
-        allow_fp32: if True, allow FP32 input and compute/output in FP32
-    Returns:
-        h_pre: [..., HC] FP32
-        h_post: [..., HC] FP32
-        h_res: [..., HC, HC] FP32
-    """
-    assert x.is_cuda, "CUDA only"
-    if allow_fp32:
-        assert x.dtype in (
-            torch.bfloat16,
-            torch.float16,
-            torch.float32,
-        ), "x should be BF16/FP16/FP32 when allow_fp32=True"
-    else:
-        assert x.dtype in (torch.bfloat16, torch.float16), "x should be BF16/FP16 (set allow_fp32=True for FP32)"
-    assert phi.is_cuda and b.is_cuda
-    return LigerMHCCoeffsFunction.apply(
-        x,
-        phi,
-        b,
-        alpha_pre,
-        alpha_post,
-        alpha_res,
-        allow_fp32,
-        int(tmax),
-        float(rms_eps),
-        float(pre_eps),
-        float(sinkhorn_eps),
-        float(post_mult),
-    )
-
-
 class LigerMHCPreFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(ctx: Any, x: torch.Tensor, h_pre: torch.Tensor) -> torch.Tensor:
         x_flat, outer = _flatten_tokens(x)
-        h_pre_flat = h_pre.contiguous().view(x_flat.shape[0], x_flat.shape[1]).to(torch.float32)
+        h_pre_flat = h_pre.contiguous().view(-1, x_flat.shape[1]).to(torch.float32)
         out = mhc_pre_fwd(x_flat, h_pre_flat)  # [N,C] fp32
         ctx.save_for_backward(x_flat, h_pre_flat)
         ctx.outer = outer
@@ -1838,17 +1637,10 @@ class LigerMHCPreFunction(torch.autograd.Function):
         x_flat, h_pre_flat = ctx.saved_tensors
         outer = ctx.outer
         N, HC, C = x_flat.shape
-        go = grad_out.contiguous().view(N, C).to(torch.float32)
+        go = grad_out.contiguous().view(-1, C).to(torch.float32)
         grad_x, grad_h = mhc_pre_bwd(x_flat, h_pre_flat, go)
         grad_x = grad_x.to(x_flat.dtype)
-        return _unflatten_tokens(grad_x.view(N, HC, C), outer), _unflatten_tokens(grad_h.view(N, HC), outer)
-
-
-def liger_mhc_pre(x: torch.Tensor, h_pre: torch.Tensor) -> torch.Tensor:
-    """
-    Apply H_pre: x_in = sum_i h_pre[i] * x[i]
-    """
-    return LigerMHCPreFunction.apply(x, h_pre)
+        return _unflatten_tokens(grad_x.view(-1, HC, C), outer), _unflatten_tokens(grad_h.view(-1, HC), outer)
 
 
 class LigerMHCPostResFunction(torch.autograd.Function):
@@ -1859,9 +1651,9 @@ class LigerMHCPostResFunction(torch.autograd.Function):
     ) -> torch.Tensor:
         x_flat, outer = _flatten_tokens(x)
         N, HC, C = x_flat.shape
-        f_flat = f_out.contiguous().view(N, C)
-        h_post_flat = h_post.contiguous().view(N, HC).to(torch.float32)
-        h_res_flat = h_res.contiguous().view(N, HC, HC).to(torch.float32)
+        f_flat = f_out.contiguous().view(-1, C)
+        h_post_flat = h_post.contiguous().view(-1, HC).to(torch.float32)
+        h_res_flat = h_res.contiguous().view(-1, HC, HC).to(torch.float32)
         out = mhc_post_res_fwd(x_flat, f_flat, h_post_flat, h_res_flat)  # [N,HC,C] fp32
         ctx.save_for_backward(x_flat, f_flat, h_post_flat, h_res_flat)
         ctx.outer = outer
@@ -1874,103 +1666,13 @@ class LigerMHCPostResFunction(torch.autograd.Function):
         x_flat, f_flat, h_post_flat, h_res_flat = ctx.saved_tensors
         outer = ctx.outer
         N, HC, C = x_flat.shape
-        go = grad_out.contiguous().view(N, HC, C).to(torch.float32)
+        go = grad_out.contiguous().view(-1, HC, C).to(torch.float32)
 
         grad_x, grad_f, grad_hpost, grad_hres = mhc_post_res_bwd(x_flat, f_flat, h_post_flat, h_res_flat, go)
 
         return (
-            _unflatten_tokens(grad_x.to(x_flat.dtype).view(N, HC, C), outer),
-            _unflatten_tokens(grad_f.to(f_flat.dtype).view(N, C), outer),
-            _unflatten_tokens(grad_hpost.view(N, HC), outer),
-            _unflatten_tokens(grad_hres.view(N, HC, HC), outer),
+            _unflatten_tokens(grad_x.to(x_flat.dtype).view(-1, HC, C), outer),
+            _unflatten_tokens(grad_f.to(f_flat.dtype).view(-1, C), outer),
+            _unflatten_tokens(grad_hpost.view(-1, HC), outer),
+            _unflatten_tokens(grad_hres.view(-1, HC, HC), outer),
         )
-
-
-def liger_mhc_post_res(x: torch.Tensor, f_out: torch.Tensor, h_post: torch.Tensor, h_res: torch.Tensor) -> torch.Tensor:
-    """
-    Apply H_res and H_post:
-
-      x_out[o] = sum_i h_res[o,i] * x[i] + h_post[o] * f_out
-
-    Shapes:
-      x: [..., HC, C]
-      f_out: [..., C]
-      h_post: [..., HC]
-      h_res: [..., HC, HC]
-    """
-    return LigerMHCPostResFunction.apply(x, f_out, h_post, h_res)
-
-
-def liger_mhc_apply(
-    x: torch.Tensor,
-    f_out: torch.Tensor,
-    h_pre: torch.Tensor,
-    h_post: torch.Tensor,
-    h_res: torch.Tensor,
-    *,
-    return_x_in: bool = False,
-) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-    """
-    Convenience API: apply coefficients to get x_in and x_out.
-
-    Args:
-        x: [..., HC, C]
-        f_out: [..., C]
-        h_pre/h_post/h_res: coefficients from liger_mhc_coeffs
-        return_x_in: if True, returns (x_out, x_in)
-    """
-    x_in = liger_mhc_pre(x, h_pre)
-    x_out = liger_mhc_post_res(x, f_out, h_post, h_res)
-    if return_x_in:
-        return x_out, x_in
-    return x_out
-
-
-def liger_mhc_forward(
-    x: torch.Tensor,
-    layer: Callable[[torch.Tensor], torch.Tensor],
-    phi: torch.Tensor,
-    b: torch.Tensor,
-    alpha_pre: torch.Tensor,
-    alpha_post: torch.Tensor,
-    alpha_res: torch.Tensor,
-    *,
-    allow_fp32: bool = False,
-    tmax: int = 20,
-    rms_eps: float = 1e-6,
-    pre_eps: float = 0.0,
-    sinkhorn_eps: float = 1e-6,
-    post_mult: float = 2.0,
-    return_coeffs: bool = False,
-) -> Union[torch.Tensor, Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]]:
-    """
-    High-level helper: compute coeffs, apply pre, run layer, then apply post+res.
-    """
-    h_pre, h_post, h_res = liger_mhc_coeffs(
-        x,
-        phi,
-        b,
-        alpha_pre,
-        alpha_post,
-        alpha_res,
-        allow_fp32=allow_fp32,
-        tmax=tmax,
-        rms_eps=rms_eps,
-        pre_eps=pre_eps,
-        sinkhorn_eps=sinkhorn_eps,
-        post_mult=post_mult,
-    )
-    x_in = liger_mhc_pre(x, h_pre)
-    layer_dtype = x_in.dtype
-    if hasattr(layer, "parameters"):
-        try:
-            layer_dtype = next(layer.parameters()).dtype  # type: ignore[arg-type]
-        except StopIteration:
-            layer_dtype = x_in.dtype
-    if x_in.dtype != layer_dtype:
-        x_in = x_in.to(layer_dtype)
-    f_out = layer(x_in)
-    x_out = liger_mhc_post_res(x, f_out, h_post, h_res)
-    if return_coeffs:
-        return x_out, (h_pre, h_post, h_res)
-    return x_out
