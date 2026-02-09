@@ -429,6 +429,43 @@ def test_grpo_loss_with_vllm_is_ratio(B, T, V, temperature, num_iteration, beta,
     )
     assert_verbose_allclose(loss_none, loss_ones, atol=1e-5, rtol=1e-5)
 
+    # Verify (B, 1) shape gives same result as (B, T) with uniform value
+    uniform_val = 0.42
+    logits_b1 = _input.clone().float().requires_grad_(True)
+    logits_bt = _input.clone().float().requires_grad_(True)
+    loss_b1, _, _ = triton_grpo_loss(
+        logits_b1,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        inplace=False,
+        vllm_is_ratio=torch.full((B, 1), uniform_val, device=device, dtype=torch.float32),
+    )
+    loss_bt, _, _ = triton_grpo_loss(
+        logits_bt,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        inplace=False,
+        vllm_is_ratio=torch.full((B, T), uniform_val, device=device, dtype=torch.float32),
+    )
+    loss_b1.backward(dy)
+    loss_bt.backward(dy)
+    assert_verbose_allclose(loss_b1, loss_bt, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(logits_b1.grad, logits_bt.grad, atol=1e-5, rtol=1e-5)
+
 
 @pytest.mark.parametrize(
     "temperature, num_iteration, beta, eps_high",

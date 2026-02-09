@@ -173,7 +173,10 @@ def _grpo_loss_fwd_kernel(
 
     # Apply vLLM importance sampling correction BEFORE adding KL penalty
     if VLLM_IS_RATIO is not None:
-        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l).to(tl.float32)
+        # Use modulo to support both (B, L) per-token and (B, 1) per-sequence shapes
+        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
+            tl.float32
+        )
         per_token_loss = per_token_loss * vllm_is_ratio
 
     if BETA != 0.0:
@@ -282,7 +285,10 @@ def _grpo_loss_bwd_kernel(
 
     # Apply vLLM IS ratio to PPO gradient (before KL gradient)
     if VLLM_IS_RATIO is not None:
-        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l).to(tl.float32)
+        # Use modulo to support both (B, L) per-token and (B, 1) per-sequence shapes
+        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
+            tl.float32
+        )
         dlogp = dlogp * vllm_is_ratio
 
     if BETA != 0.0:
