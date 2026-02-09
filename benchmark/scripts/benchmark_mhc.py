@@ -20,13 +20,12 @@ device = infer_device()
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-B = 4
-
 
 def bench_speed_mhc(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     from test.transformers.test_mhc import mhc_coeffs_ref
 
     T = input.x
+    B = input.extra_benchmark_config["B"]
     HC = input.extra_benchmark_config["HC"]
     C = input.extra_benchmark_config["C"]
     sub_kernel = input.extra_benchmark_config["sub_kernel"]
@@ -135,6 +134,7 @@ def bench_memory_mhc(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
     from test.transformers.test_mhc import mhc_coeffs_ref
 
     T = input.x
+    B = input.extra_benchmark_config["B"]
     HC = input.extra_benchmark_config["HC"]
     C = input.extra_benchmark_config["C"]
     sub_kernel = input.extra_benchmark_config["sub_kernel"]
@@ -224,6 +224,7 @@ if __name__ == "__main__":
             "kernel_providers": ["liger", "torch"],
             "extra_benchmark_configs": [
                 {
+                    "B": 4,
                     "HC": 4,
                     "C": 4096,
                     "tmax": 20,

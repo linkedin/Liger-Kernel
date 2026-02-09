@@ -113,15 +113,9 @@ class LigerMHC(nn.Module):
         m = hc * hc + 2 * hc
         k = hc * c
 
-        layer_device = None
-        for param in self.layer.parameters(recurse=True):
-            layer_device = param.device
-            break
-        if layer_device is None:
-            for buf in self.layer.buffers(recurse=True):
-                layer_device = buf.device
-                break
-        if layer_device is None:
+        try:
+            layer_device = next(self.layer.parameters()).device
+        except StopIteration:
             layer_device = torch.device("cpu")
 
         # Note: for best speed, keep phi in BF16/FP16 to enable tensor-core matmul in Triton.

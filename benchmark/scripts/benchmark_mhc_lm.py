@@ -226,7 +226,7 @@ class MHCDecoderLayer(nn.Module):
         return x
 
 
-class MiniMHCLM(nn.Module):
+class BenchMiniMHCLM(nn.Module):
     def __init__(
         self,
         mhc_cls: type[nn.Module],
@@ -274,7 +274,8 @@ class MiniMHCLM(nn.Module):
         return self.lm_head(x)
 
 
-def _build_models(
+def _build_model(
+    provider: str,
     *,
     hidden_size: int,
     hc: int,
@@ -285,8 +286,9 @@ def _build_models(
     tmax: int,
     dtype: torch.dtype,
 ):
-    liger_model = MiniMHCLM(
-        LigerMHC,
+    mhc_cls = LigerMHC if provider == "liger" else TorchMHC
+    return BenchMiniMHCLM(
+        mhc_cls,
         vocab_size=vocab_size,
         hidden_size=hidden_size,
         hc=hc,
@@ -297,20 +299,6 @@ def _build_models(
         dtype=dtype,
         device=device,
     )
-    torch_model = MiniMHCLM(
-        TorchMHC,
-        vocab_size=vocab_size,
-        hidden_size=hidden_size,
-        hc=hc,
-        num_layers=num_layers,
-        num_heads=num_heads,
-        intermediate_mult=intermediate_mult,
-        tmax=tmax,
-        dtype=dtype,
-        device=device,
-    )
-    torch_model.load_state_dict(liger_model.state_dict())
-    return liger_model, torch_model
 
 
 def bench_speed_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -331,7 +319,8 @@ def bench_speed_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
     if hidden_size % num_heads != 0:
         raise ValueError("hidden_size must be divisible by num_heads")
 
-    liger_model, torch_model = _build_models(
+    model = _build_model(
+        provider,
         hidden_size=hidden_size,
         hc=hc,
         num_layers=num_layers,
@@ -345,16 +334,12 @@ def bench_speed_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
     input_ids = torch.randint(0, vocab_size, (bsz, seq_len), device=device)
 
     def fwd():
-        if provider == "liger":
-            return liger_model(input_ids)
-        if provider == "torch":
-            return torch_model(input_ids)
-        raise ValueError(f"Unknown provider: {provider}")
+        return model(input_ids)
 
     def fwd_loss():
         return fwd().float().mean()
 
-    grad_to_none = list(liger_model.parameters()) if provider == "liger" else list(torch_model.parameters())
+    grad_to_none = list(model.parameters())
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100)
@@ -400,7 +385,8 @@ def bench_memory_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOut
     if hidden_size % num_heads != 0:
         raise ValueError("hidden_size must be divisible by num_heads")
 
-    liger_model, torch_model = _build_models(
+    model = _build_model(
+        provider,
         hidden_size=hidden_size,
         hc=hc,
         num_layers=num_layers,
@@ -414,11 +400,7 @@ def bench_memory_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOut
     input_ids = torch.randint(0, vocab_size, (bsz, seq_len), device=device)
 
     def fwd():
-        if provider == "liger":
-            return liger_model(input_ids)
-        if provider == "torch":
-            return torch_model(input_ids)
-        raise ValueError(f"Unknown provider: {provider}")
+        return model(input_ids)
 
     def full():
         loss = fwd().float().mean()

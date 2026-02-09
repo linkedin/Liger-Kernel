@@ -546,8 +546,6 @@ def _mhc_sinkhorn_bwd_kernel(
     # Start backward from grad_out
     g = tl.load(
         grad_out_ptr + pid * stride_go_n + rows * stride_go_i + cols * stride_go_j,
-        mask=True,
-        other=0.0,
     ).to(tl.float32)
 
     # Reverse iterations (TMAX-1 .. 1), recomputing mat_t, rs_t, cs_t
@@ -641,8 +639,6 @@ def _mhc_sinkhorn_bwd_hist_kernel(
     # Start backward from grad_out
     g = tl.load(
         grad_out_ptr + pid * stride_go_n + rows * stride_go_i + cols * stride_go_j,
-        mask=True,
-        other=0.0,
     ).to(tl.float32)
 
     # Reverse iterations (TMAX-1 .. 1) using stored mats
@@ -1471,8 +1467,6 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
             HC,
             C,
             int(tmax),
-            float(rms_eps),
-            float(pre_eps),
             float(sinkhorn_eps),
             float(post_mult),
             hist is not None,
@@ -1495,7 +1489,7 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
         grad_h_res: torch.Tensor | None,
     ):
         saved = ctx.saved_tensors
-        x_shape, HC, C, tmax, rms_eps, pre_eps, sinkhorn_eps, post_mult, has_hist = ctx.meta
+        x_shape, HC, C, tmax, sinkhorn_eps, post_mult, has_hist = ctx.meta
         if has_hist:
             x_mat, phi, b, mix, invr, alpha_pre, alpha_post, alpha_res, hist = saved
         else:
@@ -1511,15 +1505,15 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
 
         # flatten grads (None -> zeros)
         if need_pre:
-            gh_pre = grad_h_pre.contiguous().view(-1, HC).to(torch.float32)
+            gh_pre = grad_h_pre.view(-1, HC).to(torch.float32)
         else:
             gh_pre = torch.zeros((N, HC), device=mix.device, dtype=torch.float32)
         if need_post:
-            gh_post = grad_h_post.contiguous().view(-1, HC).to(torch.float32)
+            gh_post = grad_h_post.view(-1, HC).to(torch.float32)
         else:
             gh_post = torch.zeros((N, HC), device=mix.device, dtype=torch.float32)
         if need_res:
-            gh_res = grad_h_res.contiguous().view(-1, HC, HC).to(torch.float32)
+            gh_res = grad_h_res.view(-1, HC, HC).to(torch.float32)
         else:
             gh_res = torch.zeros((N, HC, HC), device=mix.device, dtype=torch.float32)
 
@@ -1599,7 +1593,7 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
         )
 
         # Reshape to original shape
-        grad_x = grad_x_mat.view(*x_shape[:-2], HC, C)
+        grad_x = grad_x_mat.view(x_shape)
 
         # Return grads for each forward input
         return (
@@ -1624,7 +1618,7 @@ class LigerMHCPreFunction(torch.autograd.Function):
     def forward(ctx: Any, x: torch.Tensor, h_pre: torch.Tensor) -> torch.Tensor:
         x_shape = x.shape
         x_flat, _ = _flatten_tokens(x)
-        h_pre_flat = h_pre.contiguous().view(-1, x_flat.shape[1]).to(torch.float32)
+        h_pre_flat = h_pre.view(-1, x_flat.shape[1]).to(torch.float32)
         out = mhc_pre_fwd(x_flat, h_pre_flat)  # [N,C] fp32
         ctx.save_for_backward(x_flat, h_pre_flat)
         ctx.x_shape = x_shape
@@ -1637,7 +1631,7 @@ class LigerMHCPreFunction(torch.autograd.Function):
         x_flat, h_pre_flat = ctx.saved_tensors
         x_shape = ctx.x_shape
         N, HC, C = x_flat.shape
-        go = grad_out.contiguous().view(-1, C).to(torch.float32)
+        go = grad_out.view(-1, C).to(torch.float32)
         grad_x, grad_h = mhc_pre_bwd(x_flat, h_pre_flat, go)
         grad_x = grad_x.to(x_flat.dtype)
         return grad_x.view(*x_shape), grad_h.view(*x_shape[:-1])
@@ -1652,9 +1646,9 @@ class LigerMHCPostResFunction(torch.autograd.Function):
         x_shape = x.shape
         x_flat, _ = _flatten_tokens(x)
         N, HC, C = x_flat.shape
-        f_flat = f_out.contiguous().view(-1, C)
-        h_post_flat = h_post.contiguous().view(-1, HC).to(torch.float32)
-        h_res_flat = h_res.contiguous().view(-1, HC, HC).to(torch.float32)
+        f_flat = f_out.view(-1, C)
+        h_post_flat = h_post.view(-1, HC).to(torch.float32)
+        h_res_flat = h_res.view(-1, HC, HC).to(torch.float32)
         out = mhc_post_res_fwd(x_flat, f_flat, h_post_flat, h_res_flat)  # [N,HC,C] fp32
         ctx.save_for_backward(x_flat, f_flat, h_post_flat, h_res_flat)
         ctx.x_shape = x_shape
@@ -1667,7 +1661,7 @@ class LigerMHCPostResFunction(torch.autograd.Function):
         x_flat, f_flat, h_post_flat, h_res_flat = ctx.saved_tensors
         x_shape = ctx.x_shape
         N, HC, C = x_flat.shape
-        go = grad_out.contiguous().view(-1, HC, C).to(torch.float32)
+        go = grad_out.view(-1, HC, C).to(torch.float32)
 
         grad_x, grad_f, grad_hpost, grad_hres = mhc_post_res_bwd(x_flat, f_flat, h_post_flat, h_res_flat, go)
 

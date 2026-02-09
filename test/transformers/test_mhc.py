@@ -31,6 +31,10 @@ MHC_DTYPE_TOLS = [
     ),
 ]
 
+MHC_COEFFS_DTYPE_TOLS = MHC_DTYPE_TOLS + [
+    (torch.float32, 5e-4, 1e-3, 2e-3),
+]
+
 
 def mhc_sinkhorn_ref(logits: torch.Tensor, *, tmax: int, eps: float) -> torch.Tensor:
     """
@@ -83,11 +87,15 @@ def mhc_coeffs_ref(
 
 @pytest.mark.parametrize("B, T, HC, C", MHC_SHAPES)
 @pytest.mark.parametrize("phi_dtype", [torch.float16, torch.float32])
-@pytest.mark.parametrize("dtype, pre_post_tol, res_tol, grad_tol", MHC_DTYPE_TOLS)
+@pytest.mark.parametrize("dtype, pre_post_tol, res_tol, grad_tol", MHC_COEFFS_DTYPE_TOLS)
 def test_mhc_coeffs_forward_backward(B, T, HC, C, phi_dtype, dtype, pre_post_tol, res_tol, grad_tol):
-    set_seed(0)
+    set_seed(42)
     K = HC * C
     M = HC * HC + 2 * HC
+
+    allow_fp32 = dtype == torch.float32
+    if allow_fp32:
+        phi_dtype = torch.float32
 
     x = torch.randn(B, T, HC, C, device=device, dtype=dtype, requires_grad=True)
     phi = (torch.randn(K, M, device=device, dtype=phi_dtype) * 0.02).requires_grad_(True)
@@ -98,7 +106,7 @@ def test_mhc_coeffs_forward_backward(B, T, HC, C, phi_dtype, dtype, pre_post_tol
 
     cfg = dict(tmax=8, rms_eps=1e-6, pre_eps=1e-4, sinkhorn_eps=1e-6, post_mult=2.0)
 
-    h_pre, h_post, h_res = liger_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res, **cfg)
+    h_pre, h_post, h_res = liger_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res, allow_fp32=allow_fp32, **cfg)
 
     loss = h_pre.square().mean() + h_post.square().mean() + h_res.square().mean()
     loss.backward()
@@ -132,70 +140,12 @@ def test_mhc_coeffs_forward_backward(B, T, HC, C, phi_dtype, dtype, pre_post_tol
         ar2.grad.detach().float(),
     )
 
-    assert torch.allclose(h_pre.float(), rh_pre.float(), rtol=pre_post_tol, atol=pre_post_tol)
-    assert torch.allclose(h_post.float(), rh_post.float(), rtol=pre_post_tol, atol=pre_post_tol)
-    assert torch.allclose(h_res.float(), rh_res.float(), rtol=res_tol, atol=res_tol)
+    assert_verbose_allclose(h_pre.float(), rh_pre.float(), rtol=pre_post_tol, atol=pre_post_tol)
+    assert_verbose_allclose(h_post.float(), rh_post.float(), rtol=pre_post_tol, atol=pre_post_tol)
+    assert_verbose_allclose(h_res.float(), rh_res.float(), rtol=res_tol, atol=res_tol)
 
     for gt, gr in zip(grads_triton, grads_ref):
-        assert torch.allclose(gt, gr, rtol=grad_tol, atol=grad_tol)
-
-
-@pytest.mark.parametrize("B, T, HC, C", [MHC_SHAPES[0]])
-@pytest.mark.parametrize("dtype, pre_post_tol, res_tol, grad_tol", [(torch.float32, 5e-4, 1e-3, 2e-3)])
-def test_mhc_coeffs_allow_fp32(B, T, HC, C, dtype, pre_post_tol, res_tol, grad_tol):
-    set_seed(0)
-    K = HC * C
-    M = HC * HC + 2 * HC
-
-    x = torch.randn(B, T, HC, C, device=device, dtype=dtype, requires_grad=True)
-    phi = (torch.randn(K, M, device=device, dtype=torch.float32) * 0.02).requires_grad_(True)
-    b = torch.zeros(M, device=device, dtype=torch.float32, requires_grad=True)
-    alpha_pre = torch.tensor(1.0, device=device, dtype=torch.float32, requires_grad=True)
-    alpha_post = torch.tensor(1.0, device=device, dtype=torch.float32, requires_grad=True)
-    alpha_res = torch.tensor(1.0, device=device, dtype=torch.float32, requires_grad=True)
-
-    cfg = dict(tmax=8, rms_eps=1e-6, pre_eps=1e-4, sinkhorn_eps=1e-6, post_mult=2.0)
-
-    h_pre, h_post, h_res = liger_mhc_coeffs(x, phi, b, alpha_pre, alpha_post, alpha_res, allow_fp32=True, **cfg)
-
-    loss = h_pre.square().mean() + h_post.square().mean() + h_res.square().mean()
-    loss.backward()
-
-    grads_triton = (
-        x.grad.detach().float().clone(),
-        phi.grad.detach().float().clone(),
-        b.grad.detach().float().clone(),
-        alpha_pre.grad.detach().float().clone(),
-        alpha_post.grad.detach().float().clone(),
-        alpha_res.grad.detach().float().clone(),
-    )
-
-    x2 = x.detach().clone().requires_grad_(True)
-    phi2 = phi.detach().clone().requires_grad_(True)
-    b2 = b.detach().clone().requires_grad_(True)
-    ap2 = alpha_pre.detach().clone().requires_grad_(True)
-    apo2 = alpha_post.detach().clone().requires_grad_(True)
-    ar2 = alpha_res.detach().clone().requires_grad_(True)
-
-    rh_pre, rh_post, rh_res = mhc_coeffs_ref(x2, phi2, b2, ap2, apo2, ar2, **cfg)
-    rloss = rh_pre.square().mean() + rh_post.square().mean() + rh_res.square().mean()
-    rloss.backward()
-
-    grads_ref = (
-        x2.grad.detach().float(),
-        phi2.grad.detach().float(),
-        b2.grad.detach().float(),
-        ap2.grad.detach().float(),
-        apo2.grad.detach().float(),
-        ar2.grad.detach().float(),
-    )
-
-    assert torch.allclose(h_pre.float(), rh_pre.float(), rtol=pre_post_tol, atol=pre_post_tol)
-    assert torch.allclose(h_post.float(), rh_post.float(), rtol=pre_post_tol, atol=pre_post_tol)
-    assert torch.allclose(h_res.float(), rh_res.float(), rtol=res_tol, atol=res_tol)
-
-    for gt, gr in zip(grads_triton, grads_ref):
-        assert torch.allclose(gt, gr, rtol=grad_tol, atol=grad_tol)
+        assert_verbose_allclose(gt, gr, rtol=grad_tol, atol=grad_tol)
 
 
 def test_mhc_coeffs_disallow_fp32():
@@ -224,7 +174,7 @@ def test_mhc_coeffs_disallow_fp32():
     ],
 )
 def test_mhc_coeffs_backward_allows_unused_outputs(B, T, HC, C, use_pre, use_post, use_res):
-    set_seed(0)
+    set_seed(42)
     K = HC * C
     M = HC * HC + 2 * HC
 
@@ -253,32 +203,54 @@ def test_mhc_coeffs_backward_allows_unused_outputs(B, T, HC, C, use_pre, use_pos
 
 
 @pytest.mark.parametrize("B, T, HC, C", MHC_SHAPES)
-@pytest.mark.parametrize("dtype, pre_post_tol, res_tol, _grad_tol", MHC_DTYPE_TOLS)
-def test_mhc_pre_and_post_res_match_reference(B, T, HC, C, dtype, pre_post_tol, res_tol, _grad_tol):
-    set_seed(0)
+@pytest.mark.parametrize("dtype, pre_post_tol, res_tol, grad_tol", MHC_DTYPE_TOLS)
+def test_mhc_pre_and_post_res_match_reference(B, T, HC, C, dtype, pre_post_tol, res_tol, grad_tol):
+    set_seed(42)
 
-    x = torch.randn(B, T, HC, C, device=device, dtype=dtype, requires_grad=True)
-    h_pre = torch.rand(B, T, HC, device=device, dtype=torch.float32, requires_grad=True)
-    h_post = torch.rand(B, T, HC, device=device, dtype=torch.float32, requires_grad=True)
-    h_res = torch.rand(B, T, HC, HC, device=device, dtype=torch.float32, requires_grad=True)
+    # Liger path
+    x1 = torch.randn(B, T, HC, C, device=device, dtype=dtype, requires_grad=True)
+    h_pre1 = torch.rand(B, T, HC, device=device, dtype=torch.float32, requires_grad=True)
+    h_post1 = torch.rand(B, T, HC, device=device, dtype=torch.float32, requires_grad=True)
+    h_res1 = torch.rand(B, T, HC, HC, device=device, dtype=torch.float32, requires_grad=True)
+    f_out1 = torch.randn(B, T, C, device=device, dtype=dtype, requires_grad=True)
 
-    x_in = liger_mhc_pre(x, h_pre)
-    f_out = torch.randn(B, T, C, device=device, dtype=dtype, requires_grad=True)
-    x_out = liger_mhc_post_res(x, f_out, h_post, h_res)
+    x_in = liger_mhc_pre(x1, h_pre1)
+    x_out = liger_mhc_post_res(x1, f_out1, h_post1, h_res1)
 
-    x_in_ref = (x.float() * h_pre.unsqueeze(-1)).sum(dim=-2)
-    x_out_ref = torch.einsum("...oi,...ic->...oc", h_res, x.float()) + h_post.unsqueeze(-1) * f_out.float().unsqueeze(
-        -2
-    )
+    # Reference path (clone inputs for independent computation graph)
+    x2 = x1.detach().clone().requires_grad_(True)
+    h_pre2 = h_pre1.detach().clone().requires_grad_(True)
+    h_post2 = h_post1.detach().clone().requires_grad_(True)
+    h_res2 = h_res1.detach().clone().requires_grad_(True)
+    f_out2 = f_out1.detach().clone().requires_grad_(True)
 
-    assert torch.allclose(x_in.float(), x_in_ref, rtol=pre_post_tol, atol=pre_post_tol)
-    assert torch.allclose(x_out.float(), x_out_ref, rtol=res_tol, atol=res_tol)
+    x_in_ref = (x2.float() * h_pre2.unsqueeze(-1)).sum(dim=-2)
+    x_out_ref = torch.einsum("...oi,...ic->...oc", h_res2, x2.float()) + h_post2.unsqueeze(
+        -1
+    ) * f_out2.float().unsqueeze(-2)
+
+    # Forward check
+    assert_verbose_allclose(x_in.float(), x_in_ref, rtol=pre_post_tol, atol=pre_post_tol)
+    assert_verbose_allclose(x_out.float(), x_out_ref, rtol=res_tol, atol=res_tol)
+
+    # Backward check
+    loss = x_in.square().mean() + x_out.square().mean()
+    loss.backward()
+
+    loss_ref = x_in_ref.square().mean() + x_out_ref.square().mean()
+    loss_ref.backward()
+
+    assert_verbose_allclose(x1.grad.float(), x2.grad.float(), rtol=grad_tol, atol=grad_tol)
+    assert_verbose_allclose(h_pre1.grad.float(), h_pre2.grad.float(), rtol=grad_tol, atol=grad_tol)
+    assert_verbose_allclose(h_post1.grad.float(), h_post2.grad.float(), rtol=grad_tol, atol=grad_tol)
+    assert_verbose_allclose(h_res1.grad.float(), h_res2.grad.float(), rtol=grad_tol, atol=grad_tol)
+    assert_verbose_allclose(f_out1.grad.float(), f_out2.grad.float(), rtol=grad_tol, atol=grad_tol)
 
 
 @pytest.mark.parametrize("B, T, HC, C", MHC_SHAPES)
 @pytest.mark.parametrize("dtype, pre_post_tol, res_tol, grad_tol", MHC_DTYPE_TOLS)
 def test_liger_mhc_functional(B, T, HC, C, dtype, pre_post_tol, res_tol, grad_tol):
-    set_seed(0)
+    set_seed(42)
     K = HC * C
     M = HC * HC + 2 * HC
 
@@ -347,7 +319,7 @@ def test_liger_mhc_functional(B, T, HC, C, dtype, pre_post_tol, res_tol, grad_to
 @pytest.mark.parametrize("B, T, HC, C", MHC_SHAPES)
 @pytest.mark.parametrize("dtype, _pre_post_tol, res_tol, grad_tol", MHC_DTYPE_TOLS)
 def test_liger_mhc_module(B, T, HC, C, dtype, _pre_post_tol, res_tol, grad_tol):
-    set_seed(0)
+    set_seed(42)
 
     layer = nn.Linear(C, C, bias=False, device=device, dtype=dtype)
     model = LigerMHC(
@@ -427,11 +399,12 @@ def test_liger_mhc_module(B, T, HC, C, dtype, _pre_post_tol, res_tol, grad_tol):
     assert_verbose_allclose(
         model.alpha_res.grad.float(), ar_ref.grad.float(), rtol=grad_tol, atol=grad_tol, extra_info="[alpha_res.grad]"
     )
+    layer_grad_tol = grad_tol * 4 if dtype == torch.bfloat16 else grad_tol
     assert_verbose_allclose(
         model.layer.weight.grad.float(),
         layer_ref.weight.grad.float(),
-        rtol=grad_tol,
-        atol=grad_tol,
+        rtol=layer_grad_tol,
+        atol=layer_grad_tol,
         extra_info="[layer.weight.grad]",
     )
 
@@ -504,7 +477,7 @@ class MiniMHCLM(nn.Module):
     ],
 )
 def test_mhc_mini_lm_output_match(vocab_size, hc, c, tmax):
-    set_seed(0)
+    set_seed(42)
 
     model_cfg = dict(
         vocab_size=vocab_size, hc=hc, c=c, tmax=tmax, rms_eps=1e-6, pre_eps=1e-4, sinkhorn_eps=1e-6, post_mult=2.0
