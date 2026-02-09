@@ -32,47 +32,6 @@ MHC_DTYPE_TOLS = [
 ]
 
 
-class TorchMHCCoeffs(nn.Module):
-    def __init__(
-        self,
-        *,
-        tmax: int,
-        rms_eps: float,
-        pre_eps: float,
-        sinkhorn_eps: float,
-        post_mult: float,
-    ):
-        super().__init__()
-        self.tmax = int(tmax)
-        self.rms_eps = float(rms_eps)
-        self.pre_eps = float(pre_eps)
-        self.sinkhorn_eps = float(sinkhorn_eps)
-        self.post_mult = float(post_mult)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        phi: torch.Tensor,
-        b: torch.Tensor,
-        alpha_pre: torch.Tensor,
-        alpha_post: torch.Tensor,
-        alpha_res: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return mhc_coeffs_ref(
-            x,
-            phi,
-            b,
-            alpha_pre,
-            alpha_post,
-            alpha_res,
-            tmax=self.tmax,
-            rms_eps=self.rms_eps,
-            pre_eps=self.pre_eps,
-            sinkhorn_eps=self.sinkhorn_eps,
-            post_mult=self.post_mult,
-        )
-
-
 def mhc_sinkhorn_ref(logits: torch.Tensor, *, tmax: int, eps: float) -> torch.Tensor:
     """
     logits: [N, HC, HC]
