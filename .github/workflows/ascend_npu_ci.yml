@@ -110,7 +110,7 @@ jobs:
         uv pip install attrs==24.2.0 numpy==1.26.4 scipy==1.13.1 decorator==5.1.1 psutil==6.0.0 pytest==9.0.2 pytest-xdist==3.6.1 pyyaml pybind11 transformers==4.57.6
         uv pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
         uv pip install torch_npu==2.6.0
-        uv pip install triton-ascend==3.2.0rc4
+        uv pip install triton-ascend==3.2.0
         python3 -c "import torch; import torch_npu; print(torch_npu.npu.is_available())"
         python -c "import torch_npu; print('torch_npu version:', torch_npu.__version__)"
 
