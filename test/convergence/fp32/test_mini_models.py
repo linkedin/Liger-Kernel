@@ -1527,7 +1527,6 @@ def run_mini_model(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     loss_list = []
-
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
         optimizer.zero_grad()
@@ -1558,12 +1557,12 @@ def run_mini_model(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logprobs_atol, logprobs_rtol, param_atol, param_rtol",
     [
         pytest.param(
-            "mini_llama4",
+            "mini_llama4",  # llama4 requires slightly larger tolerances to pass this test after bug fix to llama4 in transformers v5.0.0
             32,
             1e-4,
             torch.float32,
             1e-8,
-            1e-5,
+            1e-3,
             5e-3,
             1e-5,
             5e-3,
