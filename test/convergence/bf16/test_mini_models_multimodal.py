@@ -1418,6 +1418,11 @@ def run_mini_model_multimodal(
                     not LLAMA4_AVAILABLE,
                     reason="Llama4 not available in this version of transformers",
                 ),
+                # TODO: Remove this skipif when the bug fix is released in Transformers
+                pytest.mark.skipif(
+                    version.parse(transformers.__version__) <= version.parse("5.1.0"),
+                    reason="Wait for this bug fix to be released in Transformers: https://github.com/huggingface/transformers/pull/43882",
+                ),
             ],
         ),
         pytest.param(
