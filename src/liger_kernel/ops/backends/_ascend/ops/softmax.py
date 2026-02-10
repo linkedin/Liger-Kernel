@@ -7,7 +7,7 @@ from liger_kernel.ops.utils import get_npu_core_count
 
 
 @triton.jit
-def softmax_forward_kernel(Y_ptr, X_ptr, X_row_stride, Y_row_stride, n_rows, n_cols, BLOCK_SIZE: tl.constexpr):
+def _softmax_forward_kernel(Y_ptr, X_ptr, X_row_stride, Y_row_stride, n_rows, n_cols, BLOCK_SIZE: tl.constexpr):
     row_start = tl.program_id(0)
     row_step = tl.num_programs(0)
     for row_idx in tl.range(row_start, n_rows, row_step):
@@ -29,39 +29,43 @@ def softmax_forward_kernel(Y_ptr, X_ptr, X_row_stride, Y_row_stride, n_rows, n_c
 
 
 @triton.jit
-def softmax_multi_block_forward_kernel(
+def _softmax_multi_block_forward_kernel(
     Y_ptr,
     Y_row_stride,
     X_ptr,
     X_row_stride,
+    n_rows,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
 ):
     row_start = tl.program_id(0)
-    col_offsets = tl.arange(0, BLOCK_SIZE)
+    row_step = tl.num_programs(0)
 
-    m = tl.full((), -float("inf"), tl.float32)
-    d = tl.full((), 0.0, tl.float32)
+    for row_idx in tl.range(row_start, n_rows, row_step):
+        row_start_ptr = X_ptr + row_idx * X_row_stride
+        col_offsets = tl.arange(0, BLOCK_SIZE)
+        m = tl.full((), -float("inf"), tl.float32)
+        d = tl.full((), 0.0, tl.float32)
 
-    for start in tl.range(0, n_cols, BLOCK_SIZE):
-        idx = start + col_offsets
-        mask = idx < n_cols
-        xblk = tl.load(X_ptr + row_start * X_row_stride + idx, mask=mask, other=-float("inf"))
-        blk_max = tl.max(xblk, axis=0)
-        new_m = tl.maximum(m, blk_max)
-        d = d * tl.exp(m - new_m) + tl.sum(tl.exp(xblk - new_m), axis=0)
-        m = new_m
+        for start in tl.range(0, n_cols, BLOCK_SIZE):
+            idx = start + col_offsets
+            mask = idx < n_cols
+            xblk = tl.load(row_start_ptr + idx, mask=mask, other=-float("inf"))
+            blk_max = tl.max(xblk, axis=0)
+            new_m = tl.maximum(m, blk_max)
+            d = d * tl.exp(m - new_m) + tl.sum(tl.exp(xblk - new_m), axis=0)
+            m = new_m
 
-    for start in tl.range(0, n_cols, BLOCK_SIZE):
-        idx = start + col_offsets
-        mask = idx < n_cols
-        xblk = tl.load(X_ptr + row_start * X_row_stride + idx, mask=mask, other=-float("inf"))
-        yblk = tl.exp(xblk - m) / d
-        tl.store(Y_ptr + row_start * Y_row_stride + idx, yblk, mask=mask)
+        for start in tl.range(0, n_cols, BLOCK_SIZE):
+            idx = start + col_offsets
+            mask = idx < n_cols
+            xblk = tl.load(row_start_ptr + idx, mask=mask, other=-float("inf"))
+            yblk = tl.exp(xblk - m) / d
+            tl.store(Y_ptr + row_idx * Y_row_stride + idx, yblk, mask=mask)
 
 
 @triton.jit
-def softmax_backward_kernel(
+def _softmax_backward_kernel(
     dX_ptr,
     dY_ptr,
     Y_ptr,
@@ -95,34 +99,39 @@ def softmax_backward_kernel(
 
 
 @triton.jit
-def softmax_multi_block_backward_kernel(
+def _softmax_multi_block_backward_kernel(
     dy_ptr,
     dy_stride,
     y_ptr,
     y_stride,
     dx_ptr,
     dx_stride,
+    n_rows,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
 ):
     row_start = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     acc = tl.full((), 0.0, tl.float32)
+    row_step = tl.num_programs(0)
 
-    for start in tl.range(0, n_cols, BLOCK_SIZE):
-        idx = start + col_offsets
-        mask = idx < n_cols
-        dy_blk = tl.load(dy_ptr + row_start * dy_stride + idx, mask=mask, other=0.0)
-        y_blk = tl.load(y_ptr + row_start * y_stride + idx, mask=mask, other=0.0)
-        acc += tl.sum(dy_blk * y_blk, axis=0)
+    for row_idx in tl.range(row_start, n_rows, row_step):
+        dy_start_ptr = dy_ptr + row_idx * dy_stride
+        y_start_ptr = y_ptr + row_idx * y_stride
+        for start in tl.range(0, n_cols, BLOCK_SIZE):
+            idx = start + col_offsets
+            mask = idx < n_cols
+            dy_blk = tl.load(dy_start_ptr + idx, mask=mask, other=0.0)
+            y_blk = tl.load(y_start_ptr + idx, mask=mask, other=0.0)
+            acc += tl.sum(dy_blk * y_blk, axis=0)
 
-    for start in tl.range(0, n_cols, BLOCK_SIZE):
-        idx = start + col_offsets
-        mask = idx < n_cols
-        dy_blk = tl.load(dy_ptr + row_start * dy_stride + idx, mask=mask, other=0.0)
-        y_blk = tl.load(y_ptr + row_start * y_stride + idx, mask=mask, other=0.0)
-        dx_blk = y_blk * (dy_blk - acc)
-        tl.store(dx_ptr + row_start * dx_stride + idx, dx_blk, mask=mask)
+        for start in tl.range(0, n_cols, BLOCK_SIZE):
+            idx = start + col_offsets
+            mask = idx < n_cols
+            dy_blk = tl.load(dy_start_ptr + idx, mask=mask, other=0.0)
+            y_blk = tl.load(y_start_ptr + idx, mask=mask, other=0.0)
+            dx_blk = y_blk * (dy_blk - acc)
+            tl.store(dx_ptr + row_idx * dx_stride + idx, dx_blk, mask=mask)
 
 
 def softmax_forward(x):
@@ -139,11 +148,11 @@ def softmax_forward(x):
     num_programs = min(num_cores, n_rows)
 
     if n_cols <= BLOCK_SIZE:
-        softmax_forward_kernel[(num_programs,)](y2d, x2d, x2d.stride(0), y2d.stride(0), n_rows, n_cols, BLOCK_SIZE)
+        _softmax_forward_kernel[(num_programs,)](y2d, x2d, x2d.stride(0), y2d.stride(0), n_rows, n_cols, BLOCK_SIZE)
         multi_block_launch = False
     else:
-        softmax_multi_block_forward_kernel[(n_rows,)](
-            y2d, y2d.stride(0), x2d, x2d.stride(0), n_cols, BLOCK_SIZE=BLOCK_SIZE
+        _softmax_multi_block_forward_kernel[(num_programs,)](
+            y2d, y2d.stride(0), x2d, x2d.stride(0), n_rows, n_cols, BLOCK_SIZE=BLOCK_SIZE
         )
         multi_block_launch = True
     return y2d.view(*batch, n_cols), BLOCK_SIZE, multi_block_launch
@@ -165,7 +174,7 @@ def softmax_backward(
     num_programs = min(num_cores, n_rows)
 
     if not multi_block_launch and n_cols <= BLOCK_SIZE:
-        softmax_backward_kernel[(num_programs,)](
+        _softmax_backward_kernel[(num_programs,)](
             dx2d,
             dy2d,
             y2d,
@@ -177,13 +186,14 @@ def softmax_backward(
             BLOCK_SIZE=BLOCK_SIZE,
         )
     else:
-        softmax_multi_block_backward_kernel[(n_rows,)](
+        _softmax_multi_block_backward_kernel[(num_programs,)](
             dy2d,
             dy2d.stride(0),
             y2d,
             y2d.stride(0),
             dx2d,
             dx2d.stride(0),
+            n_rows,
             n_cols,
             BLOCK_SIZE=BLOCK_SIZE,
         )
