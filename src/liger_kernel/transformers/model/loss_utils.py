@@ -13,17 +13,18 @@ from liger_kernel.transformers.functional import CrossEntropyOutput
 
 def unpack_cross_entropy_result(
     result,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
     if isinstance(result, CrossEntropyOutput):
-        return result.loss, result.z_loss, result.token_accuracy
+        return result.loss, result.z_loss, result.token_accuracy, result.predicted_tokens
 
     if isinstance(result, tuple):
         loss = result[0]
         z_loss = result[1] if len(result) > 1 else None
         token_accuracy = result[2] if len(result) > 2 else None
-        return loss, z_loss, token_accuracy
+        predicted_tokens = result[3] if len(result) > 3 else None
+        return loss, z_loss, token_accuracy, predicted_tokens
 
-    return result, None, None
+    return result, None, None, None
 
 
 def fixed_fused_linear_cross_entropy(
@@ -35,6 +36,7 @@ def fixed_fused_linear_cross_entropy(
     final_logit_softcapping: Optional[float] = None,
     accum_dtype: Optional[torch.dtype] = None,
     return_token_accuracy: bool = False,
+    return_predicted_tokens: bool = False,
     **kwargs,
 ):
     reduction = "sum" if num_items_in_batch is not None else "mean"
@@ -47,16 +49,17 @@ def fixed_fused_linear_cross_entropy(
         softcap=final_logit_softcapping,
         accum_dtype=accum_dtype,
         return_token_accuracy=return_token_accuracy,
+        return_predicted_tokens=return_predicted_tokens,
         **kwargs,
     )
 
-    loss, _, token_accuracy = unpack_cross_entropy_result(result)
+    loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
 
     if reduction == "sum":
         loss = loss / num_items_in_batch
 
-    if return_token_accuracy:
-        return CrossEntropyOutput(loss=loss, token_accuracy=token_accuracy)
+    if return_token_accuracy or return_predicted_tokens:
+        return CrossEntropyOutput(loss=loss, token_accuracy=token_accuracy, predicted_tokens=predicted_tokens)
 
     return loss
 
@@ -71,6 +74,7 @@ def LigerForCausalLMLoss(
     shift_labels: Optional[torch.Tensor] = None,
     final_logit_softcapping: Optional[float] = None,
     return_token_accuracy: bool = False,
+    return_predicted_tokens: bool = False,
     **kwargs,
 ):
     # Filter out inapplicable kwargs to liger_fused_linear_cross_entropy
@@ -96,6 +100,7 @@ def LigerForCausalLMLoss(
         ignore_index,
         final_logit_softcapping,
         return_token_accuracy=return_token_accuracy,
+        return_predicted_tokens=return_predicted_tokens,
         **kwargs,
     )
     return result

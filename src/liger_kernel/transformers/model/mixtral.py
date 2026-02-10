@@ -229,6 +229,7 @@ def lce_forward(
     logits = None
     loss = None
     token_accuracy = None
+    predicted_tokens = None
 
     if skip_logits and labels is None and shift_labels is None:
         raise ValueError("skip_logits is True, but labels and shift_labels are None")
@@ -247,7 +248,7 @@ def lce_forward(
             hidden_size=self.config.hidden_size,
             **kwargs,
         )
-        loss, _, token_accuracy = unpack_cross_entropy_result(result)
+        loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
 
     else:
         logits = self.lm_head(kept_hidden_states)
@@ -278,6 +279,8 @@ def lce_forward(
             output_tuple = (aux_loss,) + output_tuple
         if token_accuracy is not None:
             output_tuple = output_tuple + (token_accuracy,)
+        if predicted_tokens is not None:
+            output_tuple = output_tuple + (predicted_tokens,)
         return (loss,) + output_tuple if loss is not None else output_tuple
 
     # Return custom output class with token_accuracy field
@@ -290,4 +293,5 @@ def lce_forward(
         attentions=outputs.attentions,
         router_logits=outputs.router_logits if return_dict else outputs[-1],
         token_accuracy=token_accuracy,
+        predicted_tokens=predicted_tokens,
     )

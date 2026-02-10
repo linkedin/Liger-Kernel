@@ -98,6 +98,7 @@ def causal_forward(
     loss = None
     logits = None
     token_accuracy = None
+    predicted_tokens = None
 
     if skip_logits is None:
         skip_logits = self.training and (labels is not None or shift_labels is not None)
@@ -113,7 +114,7 @@ def causal_forward(
             final_logit_softcapping=self.config.final_logit_softcapping,
             **loss_kwargs,
         )
-        loss, _, token_accuracy = unpack_cross_entropy_result(result)
+        loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
     else:
         logits = self.lm_head(kept_hidden_states)
         if self.config.final_logit_softcapping is not None:
@@ -133,6 +134,7 @@ def causal_forward(
         output_tuple = (logits,) + outputs[1:]
         output_tuple = (loss,) + output_tuple if loss is not None else output_tuple
         output_tuple = output_tuple + (token_accuracy,) if token_accuracy is not None else output_tuple
+        output_tuple = output_tuple + (predicted_tokens,) if predicted_tokens is not None else output_tuple
         return output_tuple
 
     # Return custom output class with token_accuracy field
@@ -143,6 +145,7 @@ def causal_forward(
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
         token_accuracy=token_accuracy,
+        predicted_tokens=predicted_tokens,
     )
 
 
@@ -242,6 +245,7 @@ def multimodal_forward(
     loss = None
     logits = None
     token_accuracy = None
+    predicted_tokens = None
     if skip_logits and labels is None:
         raise ValueError("skip_logits is True, but labels is None")
 
@@ -276,7 +280,7 @@ def multimodal_forward(
             final_logit_softcapping=getattr(self.config.text_config, "final_logit_softcapping", None),
             **lm_kwargs,
         )
-        loss, _, token_accuracy = unpack_cross_entropy_result(result)
+        loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
 
     else:
         logits = self.lm_head(kept_hidden_states)
@@ -324,6 +328,7 @@ def multimodal_forward(
         output = (logits,) + outputs[1:]
         output = (loss,) + output if loss is not None else output
         output = output + (token_accuracy,) if token_accuracy is not None else output
+        output = output + (predicted_tokens,) if predicted_tokens is not None else output
         return output
 
     return LigerGemma3CausalLMOutputWithPast(
@@ -334,4 +339,5 @@ def multimodal_forward(
         attentions=outputs.attentions,
         image_hidden_states=outputs.image_hidden_states,
         token_accuracy=token_accuracy,
+        predicted_tokens=predicted_tokens,
     )
