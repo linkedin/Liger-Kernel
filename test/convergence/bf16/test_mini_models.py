@@ -1587,17 +1587,11 @@ def run_mini_model(
                     not LLAMA4_AVAILABLE,
                     reason="Llama not available in this version of transformers",
                 ),
-           marks=[
-               pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-               pytest.mark.skipif(
-                   not LLAMA4_AVAILABLE,
-                   reason="Llama not available in this version of transformers",
-               ),
-               pytest.mark.skipif(
-                   not IS_TRANSFORMERS_V5_OR_LATER,
-                   reason="The `attention_bias` configuration of Llama4 is not set in Transformers v4",
-               ),
-           ],
+                pytest.mark.skipif(
+                    not IS_TRANSFORMERS_V5_OR_LATER,
+                    reason="The `attention_bias` configuration of Llama4 is not set in Transformers v4",
+                ),
+            ],
         ),
         pytest.param(
             "mini_llama3",
