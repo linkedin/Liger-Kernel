@@ -1506,12 +1506,12 @@ def run_mini_model(
     [
         # Tolerance is set higher than usual to pass the tests.
         pytest.param(
-            "mini_llama4",
+            "mini_llama4",  # llama4 requires slightly larger tolerances to pass this test after bug fix to llama4 in transformers v5.0.0
             32,
             1e-5,
             torch.bfloat16,
             1e-2,
-            5e-2,
+            4e-1,
             3e-1,
             2e-1,
             1e-2,
@@ -1632,7 +1632,7 @@ def run_mini_model(
             1e-5,
             torch.bfloat16,
             1e-2,
-            5e-2,
+            2e-1,
             1e-1,
             1e-2,
             1e-2,

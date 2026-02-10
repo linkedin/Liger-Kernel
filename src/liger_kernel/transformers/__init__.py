@@ -165,7 +165,6 @@ __all__ = [
     "liger_llama4_text_rotary_pos_emb",
     "liger_llama4_vision_rotary_pos_emb",
     "LigerBlockSparseTop2MLP",
-    "LigerExperts",
     "LigerPhi3SwiGLUMLP",
     "LigerQwen3MoeSwiGLUMLP",
     "LigerSwiGLUMLP",
