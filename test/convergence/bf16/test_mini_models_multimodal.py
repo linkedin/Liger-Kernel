@@ -165,7 +165,7 @@ try:
     from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
     from transformers.models.siglip.image_processing_siglip import SiglipImageProcessor
 
-    PALIGEMMA_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.46.0")
+    PALIGEMMA_AVAILABLE = True
 except ImportError:
     PALIGEMMA_AVAILABLE = False
 
