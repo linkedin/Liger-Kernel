@@ -1805,7 +1805,7 @@ def run_mini_model(
             5e-2,
             1e-1,
             1e-1,
-            1e-2,
+            5e-2,
             1e-2,
             1e-2,
             marks=[
