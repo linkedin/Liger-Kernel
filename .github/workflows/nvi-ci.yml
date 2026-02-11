@@ -94,7 +94,7 @@ jobs:
         modal run dev.modal.tests::liger_convergence_tests
 
 
-  correctness-tests-with-transformers-4-49-0:
+  correctness-tests-with-transformers-4-52-0:
     runs-on: ubuntu-latest
     needs: [checkstyle]
     env:
@@ -121,7 +121,7 @@ jobs:
 
 
 
-  convergence-tests-with-transformers-4-49-0:
+  convergence-tests-with-transformers-4-52-0:
     runs-on: ubuntu-latest
     needs: [checkstyle]
     env:

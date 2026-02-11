@@ -35,7 +35,7 @@ device = infer_device()
 # Transformers Version Compatibility Utilities
 # =============================================================================
 # These utilities help maintain backward compatibility across different
-# versions of the transformers library (v4.49.0, v4.57.6, v5.0.0+).
+# versions of the transformers library (v4.52.0, v4.57.6, v5.0.0+).
 
 TRANSFORMERS_VERSION = version.parse(transformers.__version__)
 TRANSFORMERS_V5 = version.parse("5.0.0")

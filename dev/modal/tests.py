@@ -42,7 +42,7 @@ def liger_convergence_tests():
     subprocess.run(["make test-convergence"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
 
 
-oldest_v4_app = modal.App("liger_oldest_v4_tests", image=image)  # 4.49.0
+oldest_v4_app = modal.App("liger_oldest_v4_tests", image=image)  # 4.52.0
 
 
 @oldest_v4_app.function(gpu="H100!", image=repo, timeout=90 * 60)
@@ -83,7 +83,7 @@ def liger_oldest_v4_convergence_tests():
     subprocess.run(["make test-convergence"], check=True, shell=True, cwd=REMOTE_ROOT_PATH)
 
 
-latest_v4_app = modal.App("liger_latest_v4_tests", image=image)
+latest_v4_app = modal.App("liger_latest_v4_tests", image=image)  # 4.57.6
 
 
 @latest_v4_app.function(gpu="H100!", image=repo, timeout=90 * 60)

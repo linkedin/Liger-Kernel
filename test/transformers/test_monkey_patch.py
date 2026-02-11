@@ -1357,10 +1357,6 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
-@pytest.mark.skipif(
-    transformer_version < version.parse("4.49.0"),
-    reason="fused linear cross entropy patch doesn't work on mistral in transformers<4.49.0",
-)
 def test_apply_liger_kernel_to_instance_for_mistral():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.mistral.modeling_mistral"):
