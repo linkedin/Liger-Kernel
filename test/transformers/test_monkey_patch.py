@@ -215,6 +215,15 @@ def is_qwen3_next_available():
         return False
 
 
+def is_pixtral_available():
+    try:
+        import transformers.models.pixtral  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_hunyuan_v1_available():
     try:
         import transformers.models.hunyuan_v1_dense  # noqa: F401
@@ -1235,6 +1244,52 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_pixtral_available(), reason="pixtral module not available")
+def test_apply_liger_kernel_to_instance_for_pixtral_vision_model():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.pixtral.modeling_pixtral"):
+        from transformers.models.pixtral.modeling_pixtral import PixtralVisionModel
+
+        # Instantiate a dummy model
+        config = transformers.models.pixtral.configuration_pixtral.PixtralVisionConfig(
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_channels=3,
+            image_size=64,
+            patch_size=16,
+            hidden_act="silu",
+            attention_dropout=0.0,
+            rope_theta=10000.0,
+        )
+        dummy_model_instance = PixtralVisionModel._from_config(config)
+
+        assert isinstance(dummy_model_instance, PixtralVisionModel)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.ln_pre.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.transformer.layers:
+            assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.attention_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.ffn_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.ln_pre.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.transformer.layers:
+            assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.attention_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.ffn_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
         try:
             print(dummy_model_instance)

@@ -29,8 +29,6 @@ from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_f
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward_deprecated
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
-from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward_deprecated
-from liger_kernel.transformers.model.pixtral import lce_forward as pixtral_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward_deprecated
 from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_forward
@@ -809,28 +807,50 @@ def apply_liger_kernel_to_mixtral(
 def apply_liger_kernel_to_pixtral(
     rope: bool = True,
     rms_norm: bool = True,
-    fused_linear_cross_entropy: bool = True,
     swiglu: bool = True,
+    model: PreTrainedModel = None,
 ) -> None:
     """
-    Apply Liger kernels to replace original implementation in HuggingFace Pixtral models.
+    Apply Liger kernels to replace original implementation in HuggingFace Pixtral vision models.
+
+    Note: Pixtral's vision encoder does not have a cross-entropy loss, so there is no
+    `fused_linear_cross_entropy` or `cross_entropy` option. The language model side of
+    Pixtral uses Mistral, which can be patched separately via `apply_liger_kernel_to_mistral`.
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
-        fused_linear_cross_entropy (bool): If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model
+            has already been loaded. Default is None.
     """
     from transformers.models.pixtral import modeling_pixtral
+    from transformers.models.pixtral.modeling_pixtral import PixtralVisionModel
 
     if rope:
         modeling_pixtral.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         modeling_pixtral.PixtralRMSNorm = LigerRMSNorm
-    if fused_linear_cross_entropy:
-        modeling_pixtral.PixtralTransformer.forward = pixtral_lce_forward
     if swiglu:
         modeling_pixtral.PixtralMLP = LigerSwiGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules.
+        if isinstance(model, PixtralVisionModel):
+            transformer = model.transformer
+        else:
+            raise ValueError(f"Unsupported Pixtral model type: {type(model)}")
+
+        if rms_norm:
+            _patch_rms_norm_module(model.ln_pre, eps=1e-5)
+
+        for layer in transformer.layers:
+            if swiglu:
+                _patch_swiglu_module(layer.feed_forward, LigerSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(layer.attention_norm, eps=1e-5)
+                _patch_rms_norm_module(layer.ffn_norm, eps=1e-5)
 
 
 def apply_liger_kernel_to_gemma(
