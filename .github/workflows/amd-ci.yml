@@ -13,14 +13,14 @@ on:
     paths:
       - "src/**"
       - "test/**"
-  schedule:
-    # Runs at 00:00 UTC daily
-    - cron: '0 0 * * *'
+  merge_group:
+    branches:
+      - main
   workflow_dispatch:  # Enables manual trigger
 
 concurrency:
   # This causes it to cancel previous in-progress actions on the same PR / branch,
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -29,10 +29,10 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v6
 
     - name: Set up Python
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v6
       with:
         python-version: '3.10'
 
@@ -53,10 +53,10 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v6
 
     - name: Set up Python
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v6
       with:
         python-version: '3.10'
 
@@ -64,7 +64,8 @@ jobs:
       run: |
         rocm-smi
         python -m pip install --upgrade pip
-        pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/nightly/rocm${{ matrix.rocm_version }}
+        pip install -e .[dev]
+        pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm${{ matrix.rocm_version }}/
     
     - name: List Python Environments
       run: python -m pip list

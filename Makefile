@@ -5,12 +5,20 @@ all: checkstyle test test-convergence
 
 # Command to run pytest for correctness tests
 test:
-	python -m pytest --disable-warnings test/ --ignore=test/convergence
+	python -m pytest --disable-warnings \
+		--cov=src/liger_kernel \
+		--cov-report=term-missing \
+		--ignore=test/convergence \
+		test/
+
+# Command to run coverage report
+coverage:
+	coverage report -m
 
 # Command to run ruff for linting and formatting code
 checkstyle:
-	ruff check .; ruff_check_status=$$?; \
-	ruff format --check .; ruff_format_status=$$?; \
+	ruff check --output-format=concise .; ruff_check_status=$$?; \
+	ruff format --check --diff .; ruff_format_status=$$?; \
 	ruff check . --fix; \
 	ruff format .; \
 	if [ $$ruff_check_status -ne 0 ] || [ $$ruff_format_status -ne 0 ]; then \
@@ -63,4 +71,3 @@ build:
 # Clean the output directory
 clean:
 	rm -rf $(SITE_DIR)/
-

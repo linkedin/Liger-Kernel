@@ -7,8 +7,9 @@ import triton.language as tl
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.utils import is_npu_available
 
-if compare_version("triton", operator.ge, "3.0.0"):
+if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
     try:
         # typical import path with dispatch available
         from triton.language.extra.libdevice import tanh
@@ -40,7 +41,7 @@ def _geglu_tanh_forward_kernel(a, b, c, stride, n_cols: tl.constexpr, BLOCK_SIZE
     tanh_arg = sqrt_2_over_pi * (a_row + 0.044715 * a_cubed)
     tanh_result = tanh(tanh_arg)
     geglu_a = 0.5 * a_row * (1 + tanh_result)
-    c_row = geglu_a * b_row
+    c_row = geglu_a.cast(b_row.dtype) * b_row
     tl.store(c + col_offsets, c_row, mask=mask)
 
 
@@ -66,8 +67,9 @@ def _geglu_tanh_backward_kernel(dc, a, b, stride, n_cols: tl.constexpr, BLOCK_SI
     tanh_arg = sqrt_2_over_pi * (a_row + 0.044715 * a_cubed)
     tanh_result = tanh(tanh_arg)
     geglu_a = 0.5 * a_row * (1 + tanh_result)
+    geglu_a = geglu_a.to(dc_row.dtype).to(tl.float32)
 
-    db_row = dc_row * geglu_a
+    db_row = dc_row.cast(tl.float32) * geglu_a
 
     # Gradient w.r.t. a can be computed with:
     # b * (0.5 * (1 + tanh(z)) + 0.5 * a * (1 - tanh(z)^2) * (sqrt(2/pi) * (1 + 3 * 0.044715 * a^2)))
@@ -78,7 +80,7 @@ def _geglu_tanh_backward_kernel(dc, a, b, stride, n_cols: tl.constexpr, BLOCK_SI
     da_row = dc_row * b_row * (term1 + term2)
 
     tl.store(a + col_offsets, da_row, mask=mask)
-    tl.store(b + col_offsets, db_row, mask=mask)
+    tl.store(b + col_offsets, db_row.to(dc_row.dtype), mask=mask)
 
 
 def geglu_forward(a, b):

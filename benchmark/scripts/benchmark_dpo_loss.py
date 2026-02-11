@@ -32,12 +32,11 @@ def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     ignore_index = input.extra_benchmark_config["ignore_index"]
     provider = input.kernel_provider
 
-    torch_dpo_loss = lambda x, ref_x, target: TorchLMHeadDPO(
-        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
-    ).to(device)(x, ref_x, target)[0]
-    liger_dpo_loss = lambda x, ref_x, target: LigerLMHeadDPO(
-        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
-    ).to(device)(x, ref_x, target)[0]
+    # Instantiate once and retrieve the first output only
+    torch_dpo_loss = TorchLMHeadDPO(H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias).to(device)
+    liger_dpo_loss = LigerLMHeadDPO(H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias).to(device)
+    torch_fwd = lambda x, ref_x, target: torch_dpo_loss(x, ref_x, target)[0]
+    liger_fwd = lambda x, ref_x, target: liger_dpo_loss(x, ref_x, target)[0]
 
     # Input shape: [B, T, H]
     _input = torch.randn(B, T, H, device=device, dtype=dtype)
@@ -52,9 +51,9 @@ def bench_memory_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 
     def fwd():
         if provider == "liger":
-            return liger_dpo_loss(_input, ref_input, target)
+            return liger_fwd(_input, ref_input, target)
         elif provider == "huggingface":
-            return torch_dpo_loss(_input, ref_input, target)
+            return torch_fwd(_input, ref_input, target)
 
     def full():
         y = fwd()
@@ -83,12 +82,11 @@ def bench_speed_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
-    torch_dpo_loss = lambda x, ref_x, target: TorchLMHeadDPO(
-        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
-    ).to(device)(x, ref_x, target)[0]
-    liger_dpo_loss = lambda x, ref_x, target: LigerLMHeadDPO(
-        H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias
-    ).to(device)(x, ref_x, target)[0]
+    # Instantiate once and retrieve the first output only
+    torch_dpo_loss = TorchLMHeadDPO(H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias).to(device)
+    liger_dpo_loss = LigerLMHeadDPO(H=H, V=V, dtype=dtype, beta=beta, ignore_index=ignore_index, bias=bias).to(device)
+    torch_fwd = lambda x, ref_x, target: torch_dpo_loss(x, ref_x, target)[0]
+    liger_fwd = lambda x, ref_x, target: liger_dpo_loss(x, ref_x, target)[0]
 
     # Input shape: [B, T, H]
     _input = torch.randn(B, T, H, device=device, dtype=dtype)
@@ -103,9 +101,9 @@ def bench_speed_dpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
 
     def fwd():
         if provider == "liger":
-            return liger_dpo_loss(_input, ref_input, target)
+            return liger_fwd(_input, ref_input, target)
         elif provider == "huggingface":
-            return torch_dpo_loss(_input, ref_input, target)
+            return torch_fwd(_input, ref_input, target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -166,7 +164,7 @@ if __name__ == "__main__":
 
     run_benchmarks(
         bench_test_fn=bench_speed_dpo_loss,
-        kernel_operation_modes=["forward", "full"],
+        kernel_operation_modes=["forward", "backward", "full"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,

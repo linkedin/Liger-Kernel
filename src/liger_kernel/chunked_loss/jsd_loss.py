@@ -1,3 +1,8 @@
+import math
+
+from typing import Tuple
+from typing import Union
+
 import torch
 import torch.nn.functional as F
 
@@ -6,34 +11,50 @@ from liger_kernel.chunked_loss.fused_linear_distillation import LigerFusedLinear
 
 class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
     @staticmethod
-    def distillation_loss_fn(student_logits, teacher_logits, beta=0.5):
+    def distillation_loss_fn(student_logits, teacher_logits, beta=0.5, target=None, ignore_index=-100):
         """
         Compute JSD loss (Jensen-Shannon Divergence Loss).
         Args:
             student_logits (torch.Tensor): Logits of student tokens. Shape: (batch_size * seq_len,).
             teacher_logits (torch.Tensor): Logits of teacher tokens. Shape: (batch_size * seq_len,).
             beta (float): Coefficient beta of generalized JSD in the interval [0, 1]. Default: `0.5`.
+            target (torch.Tensor): Target labels for masking. Shape: (chunk_size,).
+            ignore_index (int): Index to ignore in loss computation.
         Returns:
             torch.Tensor: Jensen-Shannon Divergence loss
+        Note:
+            - Uses reduction="none" to preserve per-token losses for masking
+            - KL divergence requires summing over vocab dimension (not mean)
+            - Masking excludes padding/prompt tokens from loss computation
         """
         student_log_probs = F.log_softmax(student_logits, dim=-1)
         teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
 
         if beta == 0:
-            jsd_loss = F.kl_div(student_log_probs, teacher_log_probs, reduction="sum", log_target=True)
+            jsd_loss = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)
         elif beta == 1:
-            jsd_loss = F.kl_div(teacher_log_probs, student_log_probs, reduction="sum", log_target=True)
+            jsd_loss = F.kl_div(teacher_log_probs, student_log_probs, reduction="none", log_target=True)
         else:
             # Compute probabilities (only required for mean calculation)
-            mean_probs = (1 - beta) * student_log_probs.exp() + beta * teacher_log_probs.exp()
-            log_mean_probs = mean_probs.log()
+            log_mean_probs = torch.logsumexp(
+                torch.stack([student_log_probs + math.log(1 - beta), teacher_log_probs + math.log(beta)], dim=0), dim=0
+            )
 
-            student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="sum", log_target=True)
-            teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="sum", log_target=True)
+            student_kl = F.kl_div(log_mean_probs, student_log_probs, reduction="none", log_target=True)
+            teacher_kl = F.kl_div(log_mean_probs, teacher_log_probs, reduction="none", log_target=True)
 
             # JSD is the weighted average of the KL divergences
             jsd_loss = beta * teacher_kl + (1 - beta) * student_kl
-        return jsd_loss
+
+        # Sum over vocab dimension (KL divergence definition)
+        jsd_loss = jsd_loss.sum(dim=-1)  # (chunk_size,)
+
+        # Apply ignore_index mask
+        if target is not None:
+            mask = target != ignore_index
+            jsd_loss = jsd_loss.masked_fill(~mask, 0.0)
+
+        return jsd_loss.sum()
 
     @classmethod
     def forward(
@@ -53,6 +74,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         temperature: float = 1.0,
         compiled: bool = True,
         chunk_size: int = 1024,
+        return_soft_hard_loss: bool = False,
     ):
         """
         Fused linear layer with JSD distillation loss.
@@ -69,8 +91,9 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             temperature (float): Temperature for softening/sharpening distributions
             compiled (bool): Whether to use torch compile
             chunk_size (int): Size of chunks for processing.
+            return_soft_hard_loss (bool): Whether to return soft and hard losses separately. Default: False.
         Returns:
-            torch.Tensor: Computed loss
+            torch.Tensor: Computed loss, or tuple (loss, soft_loss, hard_loss) if return_soft_hard_loss=True
         """
         return super().forward(
             cls=cls,
@@ -89,11 +112,12 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             ignore_index=ignore_index,
             temperature=temperature,
             compiled=compiled,
+            return_soft_hard_loss=return_soft_hard_loss,
         )
 
     @staticmethod
-    def backward(ctx, grad_output):
-        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output)[:6]
+    def backward(ctx, grad_output, *args):
+        grads = LigerFusedLinearDistillationBase.backward(ctx, grad_output, *args)[:6]
 
         return (
             *grads,
@@ -105,6 +129,7 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
             None,  # temperature
             None,  # compiled
             None,  # chunk_size
+            None,  # return_soft_hard_loss
         )
 
 
@@ -122,6 +147,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         temperature: float = 1.0,
         compiled: bool = True,
         chunk_size: int = 1024,
+        return_soft_hard_loss: bool = False,
     ):
         """
         Args:
@@ -132,6 +158,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             compiled (bool): Whether to use torch compile
             beta (float): Coefficient beta of generalized JSD in the interval [0, 1]. Default: `0.5`.
             chunk_size (int): Size of chunks for processing.
+            return_soft_hard_loss (bool): Whether to return soft and hard losses separately. Default: False.
         """
         super().__init__()
         assert temperature != 0, "Temperature cannot be 0."
@@ -142,6 +169,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         self.compiled = compiled
         self.beta = beta
         self.chunk_size = chunk_size
+        self.return_soft_hard_loss = return_soft_hard_loss
 
     def forward(
         self,
@@ -152,7 +180,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
         true_labels: torch.LongTensor,
         student_bias: torch.Tensor = None,
         teacher_bias: torch.Tensor = None,
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Compute the JSD distillation loss.
 
@@ -164,7 +192,9 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             true_labels (torch.LongTensor): Target labels tensor
 
         Returns:
-            torch.Tensor: Computed loss
+            torch.Tensor or Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                If return_soft_hard_loss is False: Computed combined loss
+                If return_soft_hard_loss is True: Tuple of (combined_loss, soft_loss, hard_loss)
         """
         return LigerFusedLinearJSDFunction.apply(
             student_input,
@@ -181,4 +211,5 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             self.temperature,
             self.compiled,
             self.chunk_size,
+            self.return_soft_hard_loss,
         )

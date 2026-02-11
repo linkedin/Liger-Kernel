@@ -8,7 +8,7 @@ from utils import _test_memory
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
-from liger_kernel.transformers.softmax import LigerKernelSoftmax
+from liger_kernel.transformers.softmax import LigerSoftmax
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -23,7 +23,7 @@ def bench_speed_softmax(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOut
     dtype = extra_benchmark_config["dtype"]
 
     x_shape = (M, N)
-    liger_softmax = LigerKernelSoftmax().to(device).to(dtype)
+    liger_softmax = LigerSoftmax().to(device).to(dtype)
     torch_softmax = torch.nn.Softmax(dim=-1).to(device).to(dtype)
 
     x = torch.randn(x_shape, dtype=dtype, device=device)
@@ -72,7 +72,7 @@ def bench_memory_softmax(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     dtype = extra_benchmark_config.get("dtype", torch.float32)
 
     torch_softmax = torch.nn.Softmax(dim=-1)
-    liger_softmax = LigerKernelSoftmax().to(device).to(dtype)
+    liger_softmax = LigerSoftmax().to(device).to(dtype)
 
     x = torch.randn(shape, device=device, dtype=dtype, requires_grad=True)
 
@@ -124,7 +124,7 @@ if __name__ == "__main__":
 
     run_benchmarks(
         bench_test_fn=bench_speed_softmax,
-        kernel_operation_modes=["forward", "full"],
+        kernel_operation_modes=["forward", "full", "backward"],
         metric_name="speed",
         metric_unit="ms",
         overwrite=args.overwrite,

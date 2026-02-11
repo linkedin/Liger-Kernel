@@ -36,17 +36,20 @@ def bench_memory_fused_linear_cpo_loss(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    torch_lm_head_cpo = lambda x, target: TorchLMHeadCPO(H=H, V=V, dtype=dtype).to(device)(x, target)[0]
-    liger_lm_head_cpo = lambda x, target: LigerLMHeadCPO(H=H, V=V, dtype=dtype).to(device)(x, target)[0]
+    # Instantiate once and retrieve the first output only
+    torch_lm_head_cpo = TorchLMHeadCPO(H=H, V=V, dtype=dtype).to(device)
+    liger_lm_head_cpo = LigerLMHeadCPO(H=H, V=V, dtype=dtype).to(device)
+    torch_fwd = lambda x, target: torch_lm_head_cpo(x, target)[0]
+    liger_fwd = lambda x, target: liger_lm_head_cpo(x, target)[0]
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
 
     def fwd():
         if provider == "liger":
-            return liger_lm_head_cpo(_input, target)
+            return liger_fwd(_input, target)
         elif provider == "huggingface":
-            return torch_lm_head_cpo(_input, target)
+            return torch_fwd(_input, target)
 
     def full():
         y = fwd()
@@ -79,17 +82,20 @@ def bench_speed_fused_linear_cpo_loss(
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
-    torch_lm_head_cpo = lambda x, target: TorchLMHeadCPO(H=H, V=V, dtype=dtype).to(device)(x, target)[0]
-    liger_lm_head_cpo = lambda x, target: LigerLMHeadCPO(H=H, V=V, dtype=dtype).to(device)(x, target)[0]
+    # Instantiate once and retrieve the first output only
+    torch_lm_head_cpo = TorchLMHeadCPO(H=H, V=V, dtype=dtype).to(device)
+    liger_lm_head_cpo = LigerLMHeadCPO(H=H, V=V, dtype=dtype).to(device)
+    torch_fwd = lambda x, target: torch_lm_head_cpo(x, target)[0]
+    liger_fwd = lambda x, target: liger_lm_head_cpo(x, target)[0]
 
     _input = torch.randn(B, T, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
 
     def fwd():
         if provider == "liger":
-            return liger_lm_head_cpo(_input, target)
+            return liger_fwd(_input, target)
         elif provider == "huggingface":
-            return torch_lm_head_cpo(_input, target)
+            return torch_fwd(_input, target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -147,7 +153,7 @@ if __name__ == "__main__":
 
     run_benchmarks(
         bench_test_fn=bench_speed_fused_linear_cpo_loss,
-        kernel_operation_modes=["forward", "full"],
+        kernel_operation_modes=["forward", "backward", "full"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,

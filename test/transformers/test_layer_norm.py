@@ -16,12 +16,14 @@ device = infer_device()
         (4, 16, 128),
         (1, 1, 1023),  # Minimal batch/seq with near power-of-2 hidden
         (3, 7, 256),  # Prime numbers for batch/seq
+        (1, 1, 1500),
     ],
 )
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
         (torch.float32, 1e-5, 1e-5),
+        (torch.bfloat16, 2e-2, 2e-2),  # Relaxed tolerance for bfloat16 due to lower precision + atomic limitations
     ],
 )
 def test_liger_layer_norm(
@@ -66,12 +68,14 @@ def test_liger_layer_norm(
     [
         (2, 8, 64),
         (4, 16, 128),
+        (3, 512, 128),
     ],
 )
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
         (torch.float32, 1e-5, 1e-5),
+        (torch.bfloat16, 2e-2, 2e-2),  # Relaxed tolerance for bfloat16 due to lower precision + atomic limitations
     ],
 )
 def test_liger_layer_norm_functional(

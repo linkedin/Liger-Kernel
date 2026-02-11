@@ -1,6 +1,6 @@
 import torch.nn as nn
 
-from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+from liger_kernel.ops import LigerSiLUMulFunction
 
 
 class LigerSwiGLUMLP(nn.Module):
@@ -72,6 +72,23 @@ class LigerQwen3MoeSwiGLUMLP(nn.Module):
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        if config.hidden_act not in ["silu", "swish"]:
+            raise ValueError(f"Activation function {config.hidden_act} not supported.")
+
+    def forward(self, x):
+        return self.down_proj(LigerSiLUMulFunction.apply(self.gate_proj(x), self.up_proj(x)))
+
+
+class LigerHunyuanV1SwiGLUMLP(nn.Module):
+    def __init__(self, config, layer_idx=None, is_shared_mlp=False):
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        self.layer_idx = layer_idx
         if config.hidden_act not in ["silu", "swish"]:
             raise ValueError(f"Activation function {config.hidden_act} not supported.")
 

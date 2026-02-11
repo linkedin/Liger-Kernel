@@ -6,8 +6,10 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.utils import infer_device
+from liger_kernel.utils import is_npu_available
 
-if compare_version("triton", operator.ge, "3.0.0"):
+if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
     try:
         # typical import path with dispatch available
         from triton.language.extra.libdevice import rsqrt
@@ -17,7 +19,10 @@ if compare_version("triton", operator.ge, "3.0.0"):
 else:
     from triton.language.math import rsqrt
 
-MAX_FUSED_SIZE = 65536
+if infer_device() == "npu":
+    MAX_FUSED_SIZE = 16384  # 8192
+else:
+    MAX_FUSED_SIZE = 65536
 
 
 @triton.jit
@@ -77,15 +82,14 @@ def _group_norm_forward_kernel(
     for channel_idx in tl.range(group_idx * channels_per_group, (group_idx + 1) * channels_per_group):
         W = tl.load(W_ptr + channel_idx)
         B = tl.load(B_ptr + channel_idx)
-        for i in range(0, hidden_size_per_channel, BLOCK_SIZE):
+        # Calculate channel offset within the group
+        channel_offset = (channel_idx - group_idx * channels_per_group) * hidden_size_per_channel
+        for i in tl.range(0, hidden_size_per_channel, BLOCK_SIZE):
             hidden_size_offsets = i + block_range
             mask = hidden_size_offsets < hidden_size_per_channel
-            X = tl.load(X_ptr + hidden_size_offsets, mask=mask, other=m)
+            X = tl.load(X_ptr + channel_offset + hidden_size_offsets, mask=mask, other=m)
             Y = (X - m) * rstd * W + B
-            tl.store(Y_ptr + hidden_size_offsets, Y, mask=mask)
-
-        X_ptr += hidden_size_per_channel
-        Y_ptr += hidden_size_per_channel
+            tl.store(Y_ptr + channel_offset + hidden_size_offsets, Y, mask=mask)
 
     tl.store(Mean_ptr + batch_idx * Mean_row_stride + group_idx * Mean_col_stride, m)
     tl.store(RSTD_ptr + batch_idx * RSTD_row_stride + group_idx * RSTD_col_stride, rstd)

@@ -2,6 +2,7 @@ site_name: Liger-Kernel Docs
 site_url: https://linkedin.github.io/Liger-Kernel/
 site_author: LinkedIn
 site_description: Efficient Triton Kernels for LLM Training
+
 theme:
   name: material
   font:
@@ -12,15 +13,6 @@ theme:
     - toc.follow
     - navigation.top
     - navigation.sections
-  nav:
-  - Home: index.md
-  - Examples: Examples.md
-  - Getting Started: Getting-Started.md
-  - High Level APIs: High-Level-APIs.md
-  - Low Level APIs: Low-Level-APIs.md
-  - Contributing: contributing.md
-  - Acknowledgment: acknowledgement.md
-  - License: license.md
   palette:
     # Dark Mode
     - scheme: slate
@@ -37,6 +29,16 @@ theme:
         name: Light mode
       primary: blue
       accent: deep purple
+
+nav:
+  - Home: index.md
+  - Examples: Examples.md
+  - Getting Started: Getting-Started.md
+  - High Level APIs: High-Level-APIs.md
+  - Low Level APIs: Low-Level-APIs.md
+  - Contributing: contributing.md
+  - Acknowledgment: acknowledgement.md
+  - License: license.md
 
 markdown_extensions:
   - attr_list
@@ -57,6 +59,22 @@ markdown_extensions:
       alternate_style: true
   - admonition
   - pymdownx.details
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src] 
+          options:
+            show_root_heading: true
+            show_source: true
+            docstring_style: google  
+            docstring_section_style: table
+            heading_level: 3  
+            show_signature_annotations: false  # Hides type annotations to save space
+            separate_signature: true  # Separates signature from description
+
 
 # Repository
 repo_name: linkedin/Liger-Kernel

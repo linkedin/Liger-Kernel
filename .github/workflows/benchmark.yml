@@ -1,0 +1,172 @@
+name: Benchmarks
+
+on:
+  release:
+    types: [published]
+  schedule:
+    # Runs at 00:00 UTC every Friday
+    - cron: '0 0 * * 5'
+  workflow_dispatch:  # Enables manual trigger
+    inputs:
+      commit_hash:
+        description: 'Commit hash to benchmark'
+        default: 'main'
+      overwrite:
+        description: 'Overwrite existing benchmark data if it exists'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  
+concurrency:
+  # This causes it to cancel previous in-progress actions on the same PR / branch,
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+  
+jobs:
+  benchmarks:
+    runs-on: ubuntu-latest
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      GITHUB_USERNAME: linkedin
+      REPO_NAME: Liger-Kernel
+      OUTPUT_DIR: benchmarks
+      OUTPUT_FILENAME: benchmark.csv
+      GENERATED_CSV: benchmark/data/all_benchmark_data.csv
+      # Sanitize user-controlled inputs by declaring them as environment variables
+      # This prevents command injection attacks by filtering dangerous characters
+      INPUT_COMMIT_HASH: ${{ github.event.inputs.commit_hash }}
+      INPUT_OVERWRITE: ${{ github.event.inputs.overwrite }}
+
+
+    steps:
+      # Step: Decide the commit hash to use
+      # Step: Checkout full history so we can check out any commit
+      - name: Checkout full repo history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Important: so we can checkout arbitrary commit
+          
+      - name: Determine commit hash to checkout
+        id: choose_commit
+        run: |
+          if [ "${{ github.event_name}}" == "workflow_dispatch" ] && [ "$INPUT_COMMIT_HASH" != "main" ]; then
+            echo "Using manual input commit: $INPUT_COMMIT_HASH"
+            echo "hash=$INPUT_COMMIT_HASH" >> $GITHUB_OUTPUT
+          else
+            echo "Using latest commit from main"
+            echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+      # Step: Conditionally replace benchmark folder from main
+      - name: Replace benchmark folder from main (manual only, commit ≠ main)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.commit_hash != 'main' }}
+        run: |
+          echo "Detected manual trigger with commit_hash = $INPUT_COMMIT_HASH"
+          
+          # Save current branch (detached HEAD at old commit)
+          ORIG_COMMIT="$INPUT_COMMIT_HASH"
+
+          # Fetch and checkout main
+          git fetch origin main
+          git checkout origin/main -- benchmark/
+
+          # Save benchmark folder from main
+          cp -r benchmark /tmp/benchmark_main
+          # Checkout back to target commit
+          git checkout "$ORIG_COMMIT"
+          # Replace old benchmark with one from main
+          rm -rf benchmark
+          cp -r /tmp/benchmark_main benchmark
+    
+      # Step: Check if benchmark exists and exit if overwrite is false
+      - name: Check existing benchmark
+        run: |
+          COMMIT_HASH="${{ steps.choose_commit.outputs.hash }}"
+          BENCHMARK_URL="https://raw.githubusercontent.com/linkedin/Liger-Kernel/refs/heads/gh-pages/benchmarks/${COMMIT_HASH}/benchmark.csv"
+          
+          if curl --output /dev/null --silent --head --fail "$BENCHMARK_URL"; then
+            echo "Benchmark already exists for commit $COMMIT_HASH"
+            if [ "$INPUT_OVERWRITE" != "true" ]; then
+              echo "Overwrite is false - exiting"
+              exit 1
+            else
+              echo "Overwrite is true - proceeding"
+            fi
+          else
+            echo "No existing benchmark found - proceeding"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      # Install dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install modal
+
+      # Delete previous benchmark results.
+      - name: Remove previous benchmark data
+        run: |
+          rm -f benchmark/data/all_benchmark_data.csv
+          
+      - name: Run benchmarks on GPU
+        run: |
+          modal run dev.modal.benchmarks
+        
+       # Step 5: Checkout gh-pages branch in a subfolderAdd commentMore actions
+      - name: Checkout gh-pages
+        uses: actions/checkout@v6
+        with:
+          ref: gh-pages
+          path: gh-pages
+      
+      # Step 6: Copy benchmark CSV to gh-pages directory
+      - name: Copy generated benchmark to gh-pages
+        id: copy_benchmark
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "Release event detected"
+            path=${{steps.choose_commit.outputs.hash}}-${{ github.event.release.tag_name }}
+          else
+            echo "Not a release event"
+            path=${{steps.choose_commit.outputs.hash}}
+          fi
+          echo "path=$path" >> $GITHUB_OUTPUT
+          COMMIT_DIR="gh-pages/${OUTPUT_DIR}/${path}"
+
+          mkdir -p "$COMMIT_DIR"
+
+          if [ -f "$COMMIT_DIR/${OUTPUT_FILENAME}" ]; then
+            echo "Removing existing benchmark.csv for this commit"
+            rm "$COMMIT_DIR/${OUTPUT_FILENAME}"
+          fi
+
+          cp "${GENERATED_CSV}" "$COMMIT_DIR/${OUTPUT_FILENAME}"
+
+      # Step 7: Append commit hash to commits.txt if not already present
+      - name: Update commits.txt
+        run: |
+          cd gh-pages
+          echo "commits.txt file path: ${OUTPUT_DIR}/commits.txt"
+          # Create file if it doesn't exist
+          mkdir -p ${OUTPUT_DIR}
+          touch ${OUTPUT_DIR}/commits.txt
+
+          echo "${{ steps.copy_benchmark.outputs.path }}" >> ${OUTPUT_DIR}/commits.txt
+
+          echo "Added commit hash to commits.txt"
+      # Step 7: Commit and push
+      - name: Commit and push to gh-pages
+        run: |
+          cd gh-pages
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .
+          git commit -m "Add benchmark for commit ${{ steps.copy_benchmark.outputs.path }}" || echo "No changes to commit"
+          git push origin gh-pages

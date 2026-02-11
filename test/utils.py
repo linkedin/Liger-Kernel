@@ -5,6 +5,7 @@ import random
 
 from abc import abstractmethod
 from dataclasses import dataclass
+from functools import wraps
 from typing import Any
 from typing import Dict
 from typing import List
@@ -14,7 +15,9 @@ from typing import Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import transformers
 
+from packaging import version
 from tokenizers import AddedToken
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
@@ -52,12 +55,39 @@ def set_seed(seed=42):
         # If you are using XPU
         torch.xpu.manual_seed(seed)
         torch.xpu.manual_seed_all(seed)
+    elif device == "npu":
+        torch.npu.manual_seed(seed)
+        torch.npu.manual_seed_all(seed)
 
     # Python hash seed
     os.environ["PYTHONHASHSEED"] = str(seed)
 
 
-def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=5):
+def require_deterministic(test_case):
+    @wraps(test_case)
+    def wrapper(*args, **kwargs):
+        original_state = torch.are_deterministic_algorithms_enabled()
+        try:
+            torch.use_deterministic_algorithms(True)
+            return test_case(*args, **kwargs)
+        finally:
+            torch.use_deterministic_algorithms(original_state)
+
+    return wrapper
+
+
+@torch.no_grad
+def get_logprobs(tensor):
+    return torch.nn.functional.log_softmax(tensor, dim=-1, dtype=torch.float32)
+
+
+@torch.no_grad
+def get_topk(tensor, k=20):
+    topk = torch.topk(tensor, k, dim=-1)
+    return topk
+
+
+def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=5, extra_info=""):
     """
     Assert that two tensors are element-wise equal within a tolerance, providing detailed information about mismatches.
 
@@ -67,6 +97,7 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
     rtol (float): Relative tolerance.
     atol (float): Absolute tolerance.
     max_print (int): Maximum number of mismatched elements to print.
+    extra_info (str): Extra information to show at the start of the error message.
 
     Raises:
     AssertionError: If the tensors are not all close within the given tolerance.
@@ -116,7 +147,7 @@ def assert_verbose_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08, max_print=
         if num_mismatched > max_print:
             mismatch_details.append(f"... and {num_mismatched - max_print} more mismatched elements.")
 
-        raise AssertionError("\n".join(mismatch_details))
+        raise AssertionError(extra_info + "\n".join(mismatch_details))
 
 
 # Pre-tokenized dataset using Mistral-7B tokenizer used for convergence tests
@@ -137,18 +168,20 @@ class MiniModelConfig:
 
 def simple_collate_fn(data: List[Dict[str, Any]]):
     """A basic collate function to use for DataLoader"""
+    batch = {}
 
     input_ids = torch.stack([torch.tensor(item["input_ids"]) for item in data])
     attention_mask = torch.stack([torch.tensor(item["attention_mask"]) for item in data])
     labels = input_ids.clone()
+    batch["input_ids"] = input_ids
+    batch["attention_mask"] = attention_mask
+    batch["labels"] = labels
+    if version.parse("4.54.1") <= version.parse(transformers.__version__):
+        shift_labels = nn.functional.pad(labels, (0, 1), value=-100)
+        shift_labels = shift_labels[..., 1:].contiguous()
+        batch["shift_labels"] = shift_labels
 
-    return BatchEncoding(
-        {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
-        }
-    )
+    return BatchEncoding(batch)
 
 
 def multimodal_collate_fn(data: List[Dict[str, Any]]):
@@ -162,6 +195,10 @@ def multimodal_collate_fn(data: List[Dict[str, Any]]):
 
     labels = input_ids.clone()
     batch["labels"] = labels
+    if version.parse("4.54.1") <= version.parse(transformers.__version__):
+        shift_labels = nn.functional.pad(labels, (0, 1), value=-100)
+        shift_labels = shift_labels[..., 1:].contiguous()
+        batch["shift_labels"] = shift_labels
 
     # Collate all other keys, e.g. pixel_values, attention_mask, image_grid_thw, etc
     for key in keys:
@@ -224,6 +261,15 @@ def supports_bfloat16():
         return torch.cuda.get_device_capability() >= (8, 0)  # Ampere and newer
     elif device == "xpu":
         return True
+    elif device == "npu":
+        return True
+    else:
+        return False
+
+
+def is_torchvision_available():
+    if importlib.util.find_spec("torchvision") is not None:
+        return True
     else:
         return False
 
@@ -252,6 +298,18 @@ def revert_liger_kernel_to_llama(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_smollm3(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to SmolLM3.
+    """
+
+    from transformers.models.smollm3 import modeling_smollm3
+
+    importlib.reload(modeling_smollm3)
+    model_config.model_class = modeling_smollm3.SmolLM3ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_mllama(model_config: MiniModelConfig, model_type: str = "causal_lm"):
     """
     Revert all Liger kernel patches applied to MLlama.
@@ -271,6 +329,29 @@ def revert_liger_kernel_to_mllama(model_config: MiniModelConfig, model_type: str
         model_config.model_class = modeling_mllama.MllamaForCausalLM
     else:
         model_config.model_class = modeling_mllama.MllamaForConditionalGeneration
+
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_llama4(model_config: MiniModelConfig, model_type: str = "causal_lm"):
+    """
+    Revert all Liger kernel patches applied to Llama4.
+    """
+
+    assert model_type in [
+        "causal_lm",
+        "conditional_generation",
+    ], f'model_type must be "causal_lm" or "conditional_generation", Got: {model_type}'
+    import torch.nn as nn
+
+    from transformers.models.llama4 import modeling_llama4
+
+    importlib.reload(nn)
+    importlib.reload(modeling_llama4)
+    if model_type == "causal_lm":
+        model_config.model_class = modeling_llama4.Llama4ForCausalLM
+    else:
+        model_config.model_class = modeling_llama4.Llama4ForConditionalGeneration
 
     print("Liger kernel patches have been reverted.")
 
@@ -406,6 +487,18 @@ def revert_liger_kernel_to_qwen3_moe(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_gpt_oss(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to GPT-OSS.
+    """
+    from transformers.models.gpt_oss import modeling_gpt_oss
+
+    importlib.reload(modeling_gpt_oss)
+    model_config.model_class = modeling_gpt_oss.GptOssForCausalLM
+
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_qwen2_vl(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Qwen2-VL.
@@ -425,6 +518,28 @@ def revert_liger_kernel_to_qwen2_5_vl(model_config: MiniModelConfig):
 
     importlib.reload(modeling_qwen2_5_vl)
     model_config.model_class = modeling_qwen2_5_vl.Qwen2_5_VLForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_qwen3_vl(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Qwen3-VL.
+    """
+    from transformers.models.qwen3_vl import modeling_qwen3_vl
+
+    importlib.reload(modeling_qwen3_vl)
+    model_config.model_class = modeling_qwen3_vl.Qwen3VLForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_qwen3_vl_moe(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Qwen3-VL-MoE.
+    """
+    from transformers.models.qwen3_vl_moe import modeling_qwen3_vl_moe
+
+    importlib.reload(modeling_qwen3_vl_moe)
+    model_config.model_class = modeling_qwen3_vl_moe.Qwen3VLMoeForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
 
@@ -463,6 +578,18 @@ def revert_liger_kernel_to_olmo2(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_olmo3(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Olmo3.
+    """
+
+    from transformers.models.olmo3 import modeling_olmo3
+
+    importlib.reload(modeling_olmo3)
+    model_config.model_class = modeling_olmo3.Olmo3ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_glm4(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Glm4.
@@ -472,6 +599,30 @@ def revert_liger_kernel_to_glm4(model_config: MiniModelConfig):
 
     importlib.reload(modeling_glm4)
     model_config.model_class = modeling_glm4.Glm4ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_glm4v(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Glm4v.
+    """
+
+    from transformers.models.glm4v import modeling_glm4v
+
+    importlib.reload(modeling_glm4v)
+    model_config.model_class = modeling_glm4v.Glm4vForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_glm4v_moe(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Glm4v_MoE.
+    """
+
+    from transformers.models.glm4v_moe import modeling_glm4v_moe
+
+    importlib.reload(modeling_glm4v_moe)
+    model_config.model_class = modeling_glm4v_moe.Glm4vMoeForConditionalGeneration
     print("Liger kernel patches have been reverted.")
 
 
@@ -489,6 +640,99 @@ def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
     importlib.reload(modeling_llama)
 
     model_config.model_class = modeling_llava.LlavaForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_internvl(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to InternVL.
+    """
+    import torch.nn as nn
+
+    from transformers.models.internvl import modeling_internvl
+    from transformers.models.qwen2 import modeling_qwen2
+
+    importlib.reload(nn)
+    importlib.reload(modeling_internvl)
+    importlib.reload(modeling_qwen2)
+
+    model_config.model_class = modeling_internvl.InternVLForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_smolvlm2(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to SmolVLM2.
+    """
+    import torch.nn as nn
+
+    from transformers.models.llama import modeling_llama
+    from transformers.models.smolvlm import modeling_smolvlm
+
+    importlib.reload(nn)
+    importlib.reload(modeling_smolvlm)
+    importlib.reload(modeling_llama)
+
+    model_config.model_class = modeling_smolvlm.SmolVLMForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_falcon_h1(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to FalconH1.
+    """
+
+    from transformers.models.falcon_h1 import modeling_falcon_h1
+
+    importlib.reload(modeling_falcon_h1)
+    model_config.model_class = modeling_falcon_h1.FalconH1ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_qwen3_next(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Qwen3Next.
+    """
+
+    from transformers.models.qwen3_next import modeling_qwen3_next
+
+    importlib.reload(modeling_qwen3_next)
+    model_config.model_class = modeling_qwen3_next.Qwen3NextForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_hunyuan_v1(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Hunyuanv1.
+    """
+    from transformers.models.hunyuan_v1_dense import modeling_hunyuan_v1_dense
+
+    importlib.reload(modeling_hunyuan_v1_dense)
+    model_config.model_class = modeling_hunyuan_v1_dense.HunYuanDenseV1ForCausalLM
+
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_hunyuan_v1_moe(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Hunyuanv1 MoE.
+    """
+    from transformers.models.hunyuan_v1_moe import modeling_hunyuan_v1_moe
+
+    importlib.reload(modeling_hunyuan_v1_moe)
+    model_config.model_class = modeling_hunyuan_v1_moe.HunYuanMoEV1ForCausalLM
+
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_exaone4(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to EXAONE4.
+    """
+    from transformers.models.exaone4 import modeling_exaone4
+
+    importlib.reload(modeling_exaone4)
+    model_config.model_class = modeling_exaone4.Exaone4ForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
@@ -811,7 +1055,9 @@ class HFDistillationLoss:
         student_logits /= self.temperature
         teacher_logits /= self.temperature
 
-        soft_loss = self.distillation_loss(student_logits, teacher_logits, **loss_kwargs)
+        soft_loss = self.distillation_loss(
+            student_logits, teacher_logits, target=target, ignore_index=self.ignore_index, **loss_kwargs
+        )
         # full loss
         loss = self.weight_hard_loss * hard_loss + self.weight_soft_loss * soft_loss
         return loss

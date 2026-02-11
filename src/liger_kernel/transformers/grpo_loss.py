@@ -1,4 +1,7 @@
-from liger_kernel.ops.grpo_loss import GrpoLossFunction
+import torch
+
+from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
+from liger_kernel.ops import GrpoLossFunction
 
 
 def triton_grpo_loss(
@@ -13,12 +16,23 @@ def triton_grpo_loss(
     eps_low=0.2,
     eps_high=0.4,
     inplace=True,
+    loss_type="dapo",
+    max_completion_length=None,
+    importance_sampling_level="token",
+    reduce=False,
+    sapo_temperature_pos=1.0,
+    sapo_temperature_neg=1.05,
+    vllm_is_ratio=None,
 ):
     assert logits is not None and completion_ids is not None and advantages is not None, (
-        "must provide logits、completion_ids and advantages"
+        "must provide logits, completion_ids and advantages"
     )
+    if importance_sampling_level != "token":
+        raise ValueError(
+            f"Triton GRPO loss only supports token-level importance sampling. Got {importance_sampling_level}."
+        )
 
-    return GrpoLossFunction.apply(
+    per_token_loss, per_token_kl, is_clipped = GrpoLossFunction.apply(
         logits,
         old_logp,
         ref_logp,
@@ -30,7 +44,57 @@ def triton_grpo_loss(
         eps_low,
         eps_high,
         inplace,
+        loss_type,
+        sapo_temperature_pos,
+        sapo_temperature_neg,
+        vllm_is_ratio,
     )
+    if not reduce:
+        return per_token_loss, per_token_kl, is_clipped
+
+    loss = _reduce_grpo_loss(
+        per_token_loss,
+        completion_mask,
+        loss_type=loss_type,
+        max_completion_length=max_completion_length,
+    )
+
+    metrics = []
+    if beta != 0.0 and per_token_kl is not None:
+        metrics.append(_masked_mean(per_token_kl, completion_mask))
+    metrics.append(_masked_mean(is_clipped.float(), completion_mask))
+    return loss, metrics
+
+
+def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion_length):
+    mask = completion_mask
+    if mask is None:
+        mask = torch.ones_like(per_token_loss, dtype=per_token_loss.dtype, device=per_token_loss.device)
+    mask = mask.to(per_token_loss.dtype)
+
+    if loss_type == "grpo" or loss_type == "sapo":
+        # SAPO uses the same normalization as GRPO (per-sequence average)
+        per_seq = (per_token_loss * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)
+        return per_seq.mean()
+    if loss_type == "bnpo":
+        return (per_token_loss * mask).sum() / mask.sum().clamp(min=1.0)
+    if loss_type == "dr_grpo":
+        if max_completion_length is None:
+            raise ValueError("max_completion_length must be provided when using loss_type='dr_grpo'")
+        batch = per_token_loss.shape[0]
+        return (per_token_loss * mask).sum() / (batch * max_completion_length)
+    if loss_type == "dapo" or loss_type == "cispo":
+        # CISPO uses the same normalization as DAPO
+        normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask)
+        return (per_token_loss * mask).sum() / normalizer
+    raise ValueError(f"Unsupported loss_type '{loss_type}' for Triton GRPO loss.")
+
+
+def _masked_mean(values, mask):
+    if mask is None:
+        mask = torch.ones_like(values, dtype=values.dtype, device=values.device)
+    mask = mask.to(values.dtype)
+    return (values * mask).sum() / mask.sum().clamp(min=1.0)
 
 
 # This is a demo how to use grpo_loss in GRPOTrainer. The Trl version must be 0.16

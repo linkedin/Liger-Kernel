@@ -1,22 +1,35 @@
+from dataclasses import dataclass
 from typing import Optional
 
-from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
-from liger_kernel.ops.dyt import LigerDyTFunction
-from liger_kernel.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
-from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
-from liger_kernel.ops.geglu import LigerGELUMulFunction
-from liger_kernel.ops.group_norm import LigerGroupNormFunction
-from liger_kernel.ops.jsd import LigerJSDFunction
-from liger_kernel.ops.kl_div import LigerKLDivLossFunction
-from liger_kernel.ops.layer_norm import LigerLayerNormFunction
-from liger_kernel.ops.multi_token_attention import LigerMultiTokenAttentionFunction
-from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
-from liger_kernel.ops.rms_norm import LigerRMSNormFunction
-from liger_kernel.ops.rope import LigerRopeFunction
-from liger_kernel.ops.softmax import LigerSoftmaxFunction
-from liger_kernel.ops.sparsemax import LigerSparsemaxFunction
-from liger_kernel.ops.swiglu import LigerSiLUMulFunction
-from liger_kernel.ops.tvd import LigerTVDLossFunction
+import torch
+
+from liger_kernel.ops import LigerCrossEntropyFunction
+from liger_kernel.ops import LigerDyTFunction
+from liger_kernel.ops import LigerFusedAddRMSNormFunction
+from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
+from liger_kernel.ops import LigerFusedLinearJSDFunction
+from liger_kernel.ops import LigerFusedNeighborhoodAttentionFunction
+from liger_kernel.ops import LigerGELUMulFunction
+from liger_kernel.ops import LigerGroupNormFunction
+from liger_kernel.ops import LigerJSDFunction
+from liger_kernel.ops import LigerKLDivLossFunction
+from liger_kernel.ops import LigerLayerNormFunction
+from liger_kernel.ops import LigerMultiTokenAttentionFunction
+from liger_kernel.ops import LigerPolyNormFunction
+from liger_kernel.ops import LigerQwen2VLMRopeFunction
+from liger_kernel.ops import LigerRMSNormFunction
+from liger_kernel.ops import LigerRopeFunction
+from liger_kernel.ops import LigerSiLUMulFunction
+from liger_kernel.ops import LigerSoftmaxFunction
+from liger_kernel.ops import LigerSparsemaxFunction
+from liger_kernel.ops import LigerTVDLossFunction
+
+
+@dataclass
+class CrossEntropyOutput:
+    loss: torch.Tensor
+    z_loss: Optional[torch.Tensor] = None
+    token_accuracy: Optional[torch.Tensor] = None
 
 
 # conform to the function signature in https://pytorch.org/docs/stable/generated/torch.nn.functional.cross_entropy.html
@@ -33,8 +46,9 @@ def liger_cross_entropy(
     lse_square_scale: float = 0.0,
     softcap: Optional[float] = None,
     return_z_loss: bool = False,
+    return_token_accuracy: bool = False,
 ):
-    loss, z_loss = LigerCrossEntropyFunction.apply(
+    loss, z_loss, token_accuracy = LigerCrossEntropyFunction.apply(
         input,
         target,
         weight,
@@ -44,10 +58,13 @@ def liger_cross_entropy(
         reduction,
         softcap,
         return_z_loss,
+        return_token_accuracy,
     )
-    if not return_z_loss:
+
+    if not return_z_loss and not return_token_accuracy:
         return loss
-    return loss, z_loss
+
+    return CrossEntropyOutput(loss=loss, z_loss=z_loss, token_accuracy=token_accuracy)
 
 
 def liger_fused_linear_cross_entropy(
@@ -62,8 +79,11 @@ def liger_fused_linear_cross_entropy(
     reduction: str = "mean",
     softcap: Optional[float] = None,
     return_z_loss: bool = False,
+    accum_dtype=None,
+    use_token_scaling: bool = False,
+    return_token_accuracy: bool = False,
 ):
-    loss, z_loss = LigerFusedLinearCrossEntropyFunction.apply(
+    loss, z_loss, token_accuracy = LigerFusedLinearCrossEntropyFunction.apply(
         input,
         weight,
         target,
@@ -75,10 +95,15 @@ def liger_fused_linear_cross_entropy(
         reduction,
         softcap,
         return_z_loss,
+        accum_dtype,
+        use_token_scaling,
+        return_token_accuracy,
     )
-    if not return_z_loss:
+
+    if not return_z_loss and not return_token_accuracy:
         return loss
-    return loss, z_loss
+
+    return CrossEntropyOutput(loss=loss, z_loss=z_loss, token_accuracy=token_accuracy)
 
 
 def liger_fused_linear_jsd(
@@ -197,6 +222,33 @@ def liger_multi_token_attention(
     return LigerMultiTokenAttentionFunction.apply(scores, weight, bias, stride, padding, dilation, groups, sparse)
 
 
+def liger_fused_neighborhood_attention(
+    query,
+    key,
+    value,
+    kernel_size: int = 7,
+    dilation: int = 1,
+    scale: float = None,
+):
+    """
+    Liger fused neighborhood attention.
+
+    paper: https://arxiv.org/pdf/2504.16922
+
+    Args:
+        query: Query tensor of shape [batch_size, num_heads, seq_len, head_dim]
+        key: Key tensor of shape [batch_size, num_heads, seq_len, head_dim]
+        value: Value tensor of shape [batch_size, num_heads, seq_len, head_dim]
+        kernel_size: Size of the neighborhood window (default: 7)
+        dilation: Dilation factor for the neighborhood (default: 1)
+        scale: Scaling factor for attention scores (default: rsqrt(head_dim))
+
+    Returns:
+        Output tensor of shape [batch_size, num_heads, seq_len, head_dim]
+    """
+    return LigerFusedNeighborhoodAttentionFunction.apply(query, key, value, kernel_size, dilation, scale)
+
+
 def liger_tvd(
     input,
     target,
@@ -223,6 +275,14 @@ def liger_qwen2vl_mrope(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
 
 def liger_rms_norm(X, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):
     return LigerRMSNormFunction.apply(X, W, eps, offset, casting_mode, in_place)
+
+
+def liger_poly_norm(X, W, B, eps=1e-6, in_place=True):
+    return LigerPolyNormFunction.apply(X, W, B, eps, in_place)
+
+
+def liger_fused_add_rms_norm(X, R, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):
+    return LigerFusedAddRMSNormFunction.apply(X, R, W, eps, offset, casting_mode, in_place)
 
 
 def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):

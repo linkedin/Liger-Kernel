@@ -34,10 +34,12 @@ class TorchLMHeadCE(torch.nn.Module):
 
 
 class LigerLMHeadCE(torch.nn.Module):
-    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100):
+    def __init__(self, H: int, V: int, dtype: torch.dtype, ignore_index: int = -100, accum_dtype=None):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=False, dtype=dtype)
-        self.ce_loss = LigerFusedLinearCrossEntropyLoss(ignore_index=ignore_index, reduction="mean")
+        self.ce_loss = LigerFusedLinearCrossEntropyLoss(
+            ignore_index=ignore_index, reduction="mean", accum_dtype=accum_dtype
+        )
 
     def forward(self, x, y):
         return self.ce_loss(self.lin.weight, x, y)
@@ -57,23 +59,26 @@ def bench_memory_fused_linear_cross_entropy(
     dtype = input.extra_benchmark_config["dtype"]
     provider = input.kernel_provider
 
-    torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
+    lm_head_ce = None
+    if provider == "liger":
+        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
+    elif provider == "liger-fp32-accum":
+        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
+    else:
+        lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
 
     _input = torch.randn(BT, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (BT, 1), dtype=torch.long, device=device).squeeze(1)
 
     def fwd():
-        if provider == "liger":
-            return liger_lm_head_ce(_input, target)
-        elif provider == "huggingface":
-            return torch_lm_head_ce(_input, target)
+        return lm_head_ce(_input, target)
 
     def full():
         y = fwd()
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
+
     return SingleBenchmarkRunOutput(
         y_20=mem_20,
         y_50=mem_50,
@@ -96,17 +101,19 @@ def bench_speed_fused_linear_cross_entropy(
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
-    torch_lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
-    liger_lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
+    lm_head_ce = None
+    if provider == "liger":
+        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
+    elif provider == "liger-fp32-accum":
+        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
+    else:
+        lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
 
     _input = torch.randn(BT, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (BT, 1), dtype=torch.long, device=device).squeeze(1)
 
     def fwd():
-        if provider == "liger":
-            return liger_lm_head_ce(_input, target)
-        elif provider == "huggingface":
-            return torch_lm_head_ce(_input, target)
+        return lm_head_ce(_input, target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -114,6 +121,13 @@ def bench_speed_fused_linear_cross_entropy(
             rep=100,
             quantiles=QUANTILES,
         )
+    elif mode == "no-grad-forward":
+        with torch.no_grad():
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(
+                fwd,
+                rep=100,
+                quantiles=QUANTILES,
+            )
     elif mode == "backward":
         y = fwd()
 
@@ -149,14 +163,14 @@ if __name__ == "__main__":
         "x_name": "BT",
         "x_label": "B x T",
         "x_values": [2**i for i in range(12, 16)],
-        "kernel_providers": ["liger", "huggingface"],
+        "kernel_providers": ["liger", "liger-fp32-accum", "huggingface"],
         "extra_benchmark_configs": [{"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}],
         "overwrite": args.overwrite,
     }
 
     run_benchmarks(
         bench_test_fn=bench_speed_fused_linear_cross_entropy,
-        kernel_operation_modes=["forward", "full"],
+        kernel_operation_modes=["forward", "backward", "full", "no-grad-forward"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,

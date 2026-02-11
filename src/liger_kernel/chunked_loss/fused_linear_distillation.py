@@ -1,5 +1,7 @@
 from abc import abstractmethod
 from functools import partial
+from typing import Tuple
+from typing import Union
 
 import torch
 
@@ -11,6 +13,8 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
     def distillation_loss_fn(
         student_logits,
         teacher_logits,
+        target=None,
+        ignore_index=None,
     ):
         """
         Compute distillation loss.
@@ -130,10 +134,15 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             )
             student_logits_chunk = torch.cat([student_logits_chunk, pad_tensor], dim=-1)
 
-        hard_loss /= full_target.shape[0]
+        num_valid_tokens = (full_target != ignore_index).sum()
+        num_valid_tokens = num_valid_tokens.clamp_min(1)  # to avoid division by zero
 
-        soft_loss = distillation_loss_fn(student_logits_chunk, teacher_logits_chunk, **loss_kwargs)
-        soft_loss /= full_target.shape[0]
+        hard_loss /= num_valid_tokens
+
+        soft_loss = distillation_loss_fn(
+            student_logits_chunk, teacher_logits_chunk, target=target_chunk, ignore_index=ignore_index, **loss_kwargs
+        )
+        soft_loss /= num_valid_tokens
 
         loss = weight_hard_loss * hard_loss + weight_soft_loss * soft_loss
         return loss, (soft_loss, hard_loss, student_logits_chunk, teacher_logits_chunk)
@@ -157,8 +166,9 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         compute_ce_loss=True,
         temperature=1.0,
         compiled=True,
+        return_soft_hard_loss=False,
         **loss_kwargs,
-    ):
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Base class for fused linear layer with distillation loss.
         Only need to compute gradients for student model.
@@ -180,6 +190,7 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             compute_ce_loss (bool): Whether to compute CE loss.
             temperature (float): Temperature to control the input probability distribution. Default: `1.0` (i.e. no scale)
             compiled (bool): Whether to use torch compile for chunk accumulation.
+            return_soft_hard_loss (bool): Whether to return soft and hard losses separately. Default: False.
             loss_kwargs (dict): Other possible arguments that a loss function might need
         """
         CHUNK_SIZE = chunk_size
@@ -187,6 +198,8 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
         grad_inputs = []
         grad_bias = torch.zeros_like(student_bias) if student_bias is not None else None
         loss_acc = torch.zeros((), device=student_input.device)
+        soft_loss_acc = torch.zeros((), device=student_input.device) if return_soft_hard_loss else None
+        hard_loss_acc = torch.zeros((), device=student_input.device) if return_soft_hard_loss else None
 
         loss_func_to_call = partial(
             LigerFusedLinearDistillationBase._compute_loss,
@@ -247,6 +260,9 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
                 )
             grad_weight.add_(chunk_grad_weight)
             loss_acc.add_(chunk_loss)
+            if return_soft_hard_loss:
+                soft_loss_acc.add_(chunk_soft_loss)
+                hard_loss_acc.add_(chunk_hard_loss)
             return chunk_grad_input
 
         if compiled:
@@ -268,10 +284,12 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             grad_weight,
             grad_bias,
         )
+        if return_soft_hard_loss:
+            return loss_acc, soft_loss_acc, hard_loss_acc
         return loss_acc
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output, *args):
         grad_input, grad_weight, grad_bias = ctx.saved_tensors
         if torch.ne(grad_output, torch.tensor(1.0, device=grad_output.device)):
             grad_input = grad_input * grad_output

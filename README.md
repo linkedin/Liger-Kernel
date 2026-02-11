@@ -31,8 +31,8 @@
             </a>
         </td>
         <td style="padding: 10px;">
-            <a href="https://discord.gg/gpumode">
-                <img src="https://dcbadge.vercel.app/api/server/gpumode?style=flat" alt="Join Our Discord">
+            <a href="https://discord.gg/X4MaxPgA">
+                <img src="https://dcbadge.limes.pink/api/server/https://discord.gg/X4MaxPgA?style=flat" alt="Join Our Discord">
             </a>
         </td>
     </tr>
@@ -47,6 +47,7 @@
 <details>
   <summary>Latest News 🔥</summary>
 
+  - [2025/12/19] We announced a liger kernel discord channel at https://discord.gg/X4MaxPgA; We will be hosting Liger Kernel x Triton China Meetup in mid of January 2026
   - [2025/03/06] We release a joint blog post on TorchTune × Liger - [Peak Performance, Minimized Memory: Optimizing torchtune’s performance with torch.compile & Liger Kernel](https://pytorch.org/blog/peak-performance-minimized-memory/)
   - [2024/12/11] We release [v0.5.0](https://github.com/linkedin/Liger-Kernel/releases/tag/v0.5.0): 80% more memory efficient post training losses (DPO, ORPO, CPO, etc)!
   - [2024/12/5] We release LinkedIn Engineering Blog - [Liger-Kernel: Empowering an open source ecosystem of Triton Kernels for Efficient LLM Training](https://www.linkedin.com/blog/engineering/open-source/liger-kernel-open-source-ecosystem-for-efficient-llm-training)
@@ -64,6 +65,8 @@
 We've also added optimized Post-Training kernels that deliver **up to 80% memory savings** for alignment and distillation tasks. We support losses like DPO, CPO, ORPO, SimPO, KTO, JSD, and many more. Check out [how we optimize the memory](https://x.com/hsu_byron/status/1866577403918917655).
 
 You can view the documentation site for additional installation, usage examples, and API references:https://linkedin.github.io/Liger-Kernel/
+
+You can view the Liger Kernel Technical Report: https://openreview.net/forum?id=36SjAIT42G
 
 ## Supercharge Your Model with Liger Kernel
 
@@ -129,8 +132,8 @@ y = orpo_loss(lm_head.weight, x, target)
 - `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
 
 ```bash
-# Need to pass the url when installing
-pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/nightly/rocm6.2
+pip install -e .[dev]
+pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.3/
 ```
 
 ### Optional Dependencies
@@ -164,6 +167,9 @@ pip install -e .
 
 # Setup Development Dependencies
 pip install -e ".[dev]"
+
+# NOTE -> For AMD users only
+pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.3/
 ```
 
 
@@ -241,6 +247,7 @@ loss.backward()
 
 | **Model**   | **API**                                                      | **Supported Operations**                                                |
 |-------------|--------------------------------------------------------------|-------------------------------------------------------------------------|
+| Llama4 (Text) & (Multimodal)      | `liger_kernel.transformers.apply_liger_kernel_to_llama4`   | RMSNorm, LayerNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
 | LLaMA 2 & 3 | `liger_kernel.transformers.apply_liger_kernel_to_llama`   | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | LLaMA 3.2-Vision | `liger_kernel.transformers.apply_liger_kernel_to_mllama`   | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mistral     | `liger_kernel.transformers.apply_liger_kernel_to_mistral`  | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
@@ -255,11 +262,16 @@ loss.backward()
 | Qwen2-VL, & QVQ       | `liger_kernel.transformers.apply_liger_kernel_to_qwen2_vl`    | RMSNorm, LayerNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Qwen2.5-VL       | `liger_kernel.transformers.apply_liger_kernel_to_qwen2_5_vl`    | RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Qwen3   | `liger_kernel.transformers.apply_liger_kernel_to_qwen3`    |  RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy       |
-| Qwen3 MoE | `liger_kernel_transformers.apply_liger_kernel_to_qwen3_moe` | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy       |
+| Qwen3 MoE | `liger_kernel.transformers.apply_liger_kernel_to_qwen3_moe` | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy       |
 | Phi3 & Phi3.5       | `liger_kernel.transformers.apply_liger_kernel_to_phi3`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
 | Granite 3.0 & 3.1   | `liger_kernel.transformers.apply_liger_kernel_to_granite`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss |
 | OLMo2   | `liger_kernel.transformers.apply_liger_kernel_to_olmo2`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
+| Olmo3   | `liger_kernel.transformers.apply_liger_kernel_to_olmo3`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | GLM-4   | `liger_kernel.transformers.apply_liger_kernel_to_glm4`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
+| GPT-OSS   | `liger_kernel.transformers.apply_liger_kernel_to_gpt_oss`     | RoPE, RMSNorm, CrossEntropyLoss, FusedLinearCrossEntropy |
+| InternVL3   | `liger_kernel.transformers.apply_liger_kernel_to_internvl`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
+| HunyuanV1   | `liger_kernel.transformers.apply_liger_kernel_to_hunyuan_v1_dense`    |  RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy       |
+| HunyuanV1 MoE | `liger_kernel.transformers.apply_liger_kernel_to_hunyuan_v1_moe` | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy       |
 
 
 ## Low-level APIs
@@ -278,6 +290,8 @@ loss.backward()
 | GeGLU                           | `liger_kernel.transformers.LigerGEGLUMLP`                   |
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
 | Fused Linear CrossEntropy       | `liger_kernel.transformers.LigerFusedLinearCrossEntropyLoss`|
+| Multi Token Attention           | `liger_kernel.transformers.LigerMultiTokenAttention`        |
+| Softmax                         | `liger_kernel.transformers.LigerSoftmax`                    |
 | Sparsemax                       | `liger_kernel.transformers.LigerSparsemax`                  |
 
 
@@ -337,17 +351,17 @@ loss.backward()
         <td style="padding: 10px;">
             <div style="display: block;">
                 <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml/badge.svg?event=schedule" alt="Build">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/nvi-ci.yml/badge.svg?branch=main&event=push" alt="Build">
                 </a>
             </div>
             <div style="display: block;">
                 <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?event=schedule" alt="Build">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml/badge.svg?branch=main&event=push" alt="Build">
                 </a>
             </div>
             <div style="display: block;">
-                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/amd-ci.yml">
-                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?event=schedule" alt="Build">
+                <a href="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml">
+                    <img src="https://github.com/linkedin/Liger-Kernel/actions/workflows/intel-ci.yml/badge.svg?branch=main&event=push" alt="Build">
                 </a>
             </div>
         </td>
@@ -360,21 +374,19 @@ loss.backward()
 
 - For issues, create a Github ticket in this repository
 - For open discussion, join [our discord channel on GPUMode](https://discord.com/channels/1189498204333543425/1275130785933951039)
-- For formal collaboration, send an email to yannchen@linkedin.com and hning@linkedin.com
+- For formal collaboration, send an email to Yanning Chen(yannchen@linkedin.com) and Zhipeng Wang(zhipwang@linkedin.com)
 
 ## Cite this work
 
 Biblatex entry:
 ```bib
-@article{hsu2024ligerkernelefficienttriton,
-      title={Liger Kernel: Efficient Triton Kernels for LLM Training},
-      author={Pin-Lun Hsu and Yun Dai and Vignesh Kothapalli and Qingquan Song and Shao Tang and Siyu Zhu and Steven Shimizu and Shivam Sahni and Haowen Ning and Yanning Chen},
-      year={2024},
-      eprint={2410.10989},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2410.10989},
-      journal={arXiv preprint arXiv:2410.10989},
+@inproceedings{
+hsu2025ligerkernel,
+title={Liger-Kernel: Efficient Triton Kernels for {LLM} Training},
+author={Pin-Lun Hsu and Yun Dai and Vignesh Kothapalli and Qingquan Song and Shao Tang and Siyu Zhu and Steven Shimizu and Shivam Sahni and Haowen Ning and Yanning Chen and Zhipeng Wang},
+booktitle={Championing Open-source DEvelopment in ML Workshop @ ICML25},
+year={2025},
+url={https://openreview.net/forum?id=36SjAIT42G}
 }
 ```
 
@@ -386,3 +398,5 @@ Biblatex entry:
         ↑ Back to Top ↑
     </a>
 </p>
+
+

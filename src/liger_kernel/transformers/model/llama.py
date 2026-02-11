@@ -15,6 +15,8 @@ from transformers.utils.deprecation import deprecate_kwarg
 from liger_kernel.transformers.fsdp import _FSDPForwardRedirection
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
+from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
+from liger_kernel.transformers.model.output_classes import LigerCausalLMOutputWithPast
 from liger_kernel.utils import PEFT_AVAILABLE
 
 if TYPE_CHECKING:
@@ -37,6 +39,7 @@ def lce_forward_deprecated(
     output_hidden_states: Optional[bool] = None,
     return_dict: Optional[bool] = None,
     cache_position: Optional[torch.LongTensor] = None,
+    skip_logits: Optional[bool] = None,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
     r"""
     Copy paste llama forward but replace torch cross entropy with liger fused linear cross entropy
@@ -91,7 +94,15 @@ def lce_forward_deprecated(
     loss = None
     logits = None
 
-    if self.training and (labels is not None):
+    # if in training mode, don't materialize logits
+    if skip_logits and labels is None:
+        raise ValueError("skip_logits is True, but labels is None")
+
+    if skip_logits is None:
+        # By default, if in training mode, don't materialize logits
+        skip_logits = self.training and labels is not None
+
+    if skip_logits:
         shift_hidden_states = hidden_states[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
 
@@ -152,8 +163,8 @@ def lce_forward(
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
-    **loss_kwargs,
-) -> Union[Tuple, CausalLMOutputWithPast]:
+    **kwargs,
+) -> Union[Tuple, LigerCausalLMOutputWithPast]:
     r"""
     Args:
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -205,6 +216,7 @@ def lce_forward(
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
         cache_position=cache_position,
+        **kwargs,
     )
 
     hidden_states = outputs[0]
@@ -215,9 +227,11 @@ def lce_forward(
     if self.config.pretraining_tp > 1:
         raise Exception("Liger Kernel does not support pretraining_tp!!")
 
-    shift_labels = loss_kwargs.pop("shift_labels", None)
+    shift_labels = kwargs.pop("shift_labels", None)
     logits = None
     loss = None
+    token_accuracy = None
+
     # if in training mode, don't materialize logits
     if skip_logits and labels is None and shift_labels is None:
         raise ValueError("skip_logits is True, but labels and shift_labels are None")
@@ -226,36 +240,42 @@ def lce_forward(
         # By default, if in training mode, don't materialize logits
         skip_logits = self.training and (labels is not None or shift_labels is not None)
 
+    # Compute loss
     if skip_logits:
-        loss = lce_maybe_trainable_lm_head(
+        result = lce_maybe_trainable_lm_head(
             self,
             hidden_states=kept_hidden_states,
             hidden_size=self.config.hidden_size,
             labels=labels,
             shift_labels=shift_labels,
-            **loss_kwargs,
+            **kwargs,
         )
-
+        loss, _, token_accuracy = unpack_cross_entropy_result(result)
     else:
         logits = self.lm_head(kept_hidden_states)
-        if labels is not None:
+        if labels is not None or shift_labels is not None:
             loss = self.loss_function(
                 logits=logits,
                 labels=labels,
+                shift_labels=shift_labels,
                 vocab_size=self.config.vocab_size,
-                **loss_kwargs,
+                **kwargs,
             )
 
     if not return_dict:
         output = (logits,) + outputs[1:]
-        return (loss,) + output if loss is not None else output
+        output = ((loss,) + output) if loss is not None else output
+        output = output + (token_accuracy,) if token_accuracy is not None else output
+        return output
 
-    return CausalLMOutputWithPast(
+    # Return custom output class with token_accuracy field
+    return LigerCausalLMOutputWithPast(
         loss=loss,
         logits=logits,
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
+        token_accuracy=token_accuracy,
     )
 
 

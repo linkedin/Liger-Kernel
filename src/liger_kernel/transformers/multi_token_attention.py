@@ -5,11 +5,11 @@ import torch.nn as nn
 
 from torch.nn.modules.utils import _pair
 
-from liger_kernel.ops.multi_token_attention import LigerMultiTokenAttentionFunction
+from liger_kernel.ops import LigerMultiTokenAttentionFunction
 
 
 class LigerMultiTokenAttention(nn.Module):
-    """
+    r"""
     Multi-Token Attention:
         out = mask_{0}(conv2d(softmax(mask_{-\inf}(scores))))
 

@@ -12,16 +12,57 @@ def is_peft_available():
     return PEFT_AVAILABLE
 
 
+def infer_comm_backend():
+    """
+    Get communication backend name based on the environment.
+    """
+    if torch.distributed.is_nccl_available():
+        # Works for Nvidia
+        # TODO: nccl may not work for AMD decices that may require use of rccl.
+        return "nccl"
+    elif is_npu_available():
+        # Use Ascend NPU if available (torch.npu)
+        # Ascend is not standard torch backend and requires extension.
+        # Assume that it is installed if NPUs are being used in
+        # multi device environment.
+        return "ascend"
+    # XPU (Intel) if available
+    elif torch.distributed.distributed_c10d.is_xccl_available():
+        return "xccl"
+    elif torch.distributed.is_mpi_available():
+        # CPU backend, first option
+        return "mpi"
+    elif torch.distributed.is_gloo_available():
+        # CPU backend, backup option
+        return "gloo"
+    else:
+        raise RuntimeError("There is no distributed backend available.")
+
+
 def infer_device():
     """
     Get current device name based on available devices
     """
     if torch.cuda.is_available():  # Works for both Nvidia and AMD
         return "cuda"
+    # Use Ascend NPU if available (torch.npu)
+    elif is_npu_available():
+        return "npu"
+    # XPU (Intel) if available
     elif torch.xpu.is_available():
         return "xpu"
     else:
         return "cpu"
+
+
+def is_npu_available() -> bool:
+    """Detect Ascend NPU availability."""
+    try:
+        from transformers.utils import is_torch_npu_available
+
+        return is_torch_npu_available()
+    except Exception:
+        return False
 
 
 def transformers_version_dispatch(
@@ -69,3 +110,16 @@ def transformers_version_dispatch(
         return before_fn(*before_args, **before_kwargs)
     else:
         return after_fn(*after_args, **after_kwargs)
+
+
+def get_total_gpu_memory() -> int:
+    """Returns total GPU memory in GBs."""
+    device = infer_device()
+    if device == "cuda":
+        return torch.cuda.get_device_properties(0).total_memory // (1024**3)
+    elif device == "xpu":
+        return torch.xpu.get_device_properties(0).total_memory // (1024**3)
+    elif device == "npu":
+        return torch.npu.get_device_properties(0).total_memory // (1024**3)
+    else:
+        raise RuntimeError(f"Unsupported device: {device}")
