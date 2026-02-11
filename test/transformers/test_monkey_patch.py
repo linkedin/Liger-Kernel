@@ -25,44 +25,32 @@ from liger_kernel.transformers import LigerRMSNorm
 from liger_kernel.transformers import LigerSwiGLUMLP
 from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
+from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
+from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
+from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
+from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
+from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
+from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
+from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
+from liger_kernel.transformers.model.paligemma import lce_forward as paligemma_lce_forward
+from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
+from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
+from liger_kernel.transformers.model.qwen3_next import lce_forward as qwen3_next_lce_forward
+from liger_kernel.transformers.model.smollm3 import lce_forward as smolllm3_lce_forward
 from liger_kernel.transformers.monkey_patch import MODEL_TYPE_TO_APPLY_LIGER_FN
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel
 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
 
-# Import transformer version check
+# We only support transformers >= 4.52.0
 transformer_version = version.parse(transformers.__version__)
-SUPPORTED_TRANSFORMER_VERSION = "4.46.1"
-IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
+MIN_SUPPORTED_TRANSFORMERS_VERSION = version.parse("4.52.0")
+if transformer_version < MIN_SUPPORTED_TRANSFORMERS_VERSION:
+    pytest.skip(
+        f"tests require transformers >= {MIN_SUPPORTED_TRANSFORMERS_VERSION}, got {transformers.__version__}",
+        allow_module_level=True,
+    )
 
-# Import forward functions based on transformer version
-if transformer_version >= version.parse(SUPPORTED_TRANSFORMER_VERSION):
-    from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
-    from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
-    from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
-    from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
-    from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
-    from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
-    from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
-    from liger_kernel.transformers.model.paligemma import lce_forward as paligemma_lce_forward
-    from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
-    from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
-    from liger_kernel.transformers.model.qwen3_next import lce_forward as qwen3_next_lce_forward
-    from liger_kernel.transformers.model.smollm3 import lce_forward as smolllm3_lce_forward
-else:
-    from liger_kernel.transformers.model.gemma import lce_forward_deprecated as gemma_lce_forward
-    from liger_kernel.transformers.model.gemma2 import lce_forward_deprecated as gemma2_lce_forward
-    from liger_kernel.transformers.model.llama import lce_forward_deprecated as llama_lce_forward
-    from liger_kernel.transformers.model.mistral import (
-        lce_forward as mistral_lce_forward,  # mistral doesn't have deprecated version
-    )
-    from liger_kernel.transformers.model.mixtral import lce_forward_deprecated as mixtral_lce_forward
-    from liger_kernel.transformers.model.mllama import lce_forward_deprecated as mllama_lce_forward
-    from liger_kernel.transformers.model.paligemma import lce_forward_deprecated as paligemma_lce_forward
-    from liger_kernel.transformers.model.phi3 import lce_forward_deprecated as phi3_lce_forward
-    from liger_kernel.transformers.model.qwen2 import lce_forward_deprecated as qwen2_lce_forward
-    from liger_kernel.transformers.model.qwen3_next import (
-        lce_forward as qwen3_next_lce_forward,  # qwen3_next doesn't have deprecated version
-    )
+IS_TRANSFORMERS_V5_OR_LATER = transformer_version >= version.parse("5.0.0")
 
 
 # Check if optional modules are available
