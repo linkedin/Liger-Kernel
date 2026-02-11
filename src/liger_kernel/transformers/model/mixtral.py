@@ -6,14 +6,12 @@ from typing import Union
 import torch
 
 from transformers.models.mixtral.modeling_mixtral import load_balancing_loss_func
-from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
 from liger_kernel.transformers.model.output_classes import LigerMoeCausalLMOutputWithPast
 
 
-@deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
 # Ignore copy
 def lce_forward(
     self,

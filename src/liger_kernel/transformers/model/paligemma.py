@@ -9,7 +9,6 @@ from torch.nn import CrossEntropyLoss
 from transformers.cache_utils import Cache
 from transformers.utils import is_torchdynamo_compiling
 from transformers.utils import logging
-from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
@@ -18,7 +17,6 @@ from liger_kernel.transformers.model.output_classes import LigerPaliGemmaCausalL
 logger = logging.get_logger(__name__)
 
 
-@deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,

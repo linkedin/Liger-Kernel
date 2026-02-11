@@ -7,7 +7,6 @@ from typing import Union
 import torch
 
 from torch.distributed.fsdp import FullyShardedDataParallel
-from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fsdp import _FSDPForwardRedirection
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
@@ -22,7 +21,6 @@ if PEFT_AVAILABLE:
     from peft.utils.other import ModulesToSaveWrapper
 
 
-@deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
