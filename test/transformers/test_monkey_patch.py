@@ -1077,6 +1077,7 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
                 intermediate_size=64,
                 hidden_act="silu",
                 num_hidden_layers=2,
+                **get_mllama_rope_config(),  # Version-aware rope configuration
             ),
             vision_config=transformers.models.mllama.configuration_mllama.MllamaVisionConfig(
                 rms_norm_eps=1e-5,
