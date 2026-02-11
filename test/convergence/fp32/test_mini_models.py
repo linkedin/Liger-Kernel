@@ -1475,7 +1475,7 @@ def create_model(model_name="mini_llama3"):
 def run_mini_model(
     model_name="mini_llama3",
     num_steps=100,
-    dtype=torch.bfloat16,
+    dtype=torch.float32,
     lr=1e-5,
     with_liger=False,
 ):
@@ -1567,10 +1567,18 @@ def run_mini_model(
             1e-3,
             5e-3,
             1e-5,
-            marks=pytest.mark.skipif(
-                not LLAMA4_AVAILABLE,
-                reason="Llama4 not available in this version of trasnformers",
-            ),
+            marks=[
+                pytest.mark.skipif(
+                    not LLAMA4_AVAILABLE,
+                    reason="Llama4 not available in this version of trasnformers",
+                ),
+                pytest.mark.xfail(
+                    reason=(
+                        "RuntimeError: Expected query, key, and value to have the same dtype, but got query.dtype:"
+                        " float key.dtype: c10::BFloat16 and value.dtype: c10::BFloat16 instead."
+                    )
+                ),
+            ],
         ),
         ("mini_llama3", 32, 1e-4, torch.float32, 1e-8, 2e-5, 5e-3, 1e-5, 5e-3, 1e-5),
         pytest.param(

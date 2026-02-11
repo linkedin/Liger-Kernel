@@ -6,7 +6,7 @@ ROOT_PATH = Path(__file__).parent.parent.parent
 REMOTE_ROOT_PATH = "/root/liger-kernel"
 PYTHON_VERSION = "3.12"
 
-OLDEST_SUPPORTED_TRANSFORMERS_V4_VERSION = "4.49.0"
+OLDEST_SUPPORTED_TRANSFORMERS_V4_VERSION = "4.52.0"
 
 image = modal.Image.debian_slim(python_version=PYTHON_VERSION).pip_install("uv")
 
