@@ -16,6 +16,9 @@ on:
   merge_group:
     branches:
       - main
+    paths:
+      - "src/**"
+      - "test/**"
   workflow_dispatch:  # Enables manual trigger
 
 concurrency:
