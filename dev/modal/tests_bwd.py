@@ -24,9 +24,9 @@ def liger_bwd_tests():
         shell=True,
         cwd=REMOTE_ROOT_PATH,
     )
-    # force install transformers==4.49.0
+    # force install transformers==4.52.0
     subprocess.run(
-        ["uv pip install transformers==4.49.0 --system"],
+        ["uv pip install transformers==4.52.0 --system"],
         check=True,
         shell=True,
         cwd=REMOTE_ROOT_PATH,

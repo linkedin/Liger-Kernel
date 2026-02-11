@@ -1090,7 +1090,6 @@ def test_apply_liger_kernel_to_falcon_h1_for_causal_lm():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
-@pytest.mark.xfail(reason="'MllamaForConditionalGeneration' object has no attribute 'model'")
 @pytest.mark.skipif(not is_mllama_available(), reason="mllama module not available")
 def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
@@ -1559,7 +1558,6 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
-@pytest.mark.xfail(reason="'PaliGemmaForConditionalGeneration' object has no attribute 'model'")
 @pytest.mark.skipif(not is_paligemma_available(), reason="paligemma module not available")
 def test_apply_liger_kernel_to_instance_for_paligemma():
     # Ensure any monkey patching is cleaned up for subsequent tests
