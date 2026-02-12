@@ -170,7 +170,7 @@ class TorchLMHeadGRPO(torch.nn.Module):
     ):
         logits = x @ self.lin.weight.t()
         if self.lin.bias is not None:
-            logits = logits + self.lin.bias.float()
+            logits = logits + self.lin.bias
         if self.temperature != 1.0:
             logits = logits / self.temperature
         # Get log probabilities
@@ -414,7 +414,7 @@ def test_correctness(
         if torch_lm_head_grpo.lin.bias is not None:
             logits = logits + torch_lm_head_grpo.lin.bias
         logits = logits / temperature
-        logps = F.log_softmax(logits.float(), dim=-1)
+        logps = F.log_softmax(logits, dim=-1)
         per_token_logps = logps.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
 
     # Create attention mask with random padding [B, T]
