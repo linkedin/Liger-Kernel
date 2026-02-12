@@ -2105,6 +2105,82 @@ def apply_liger_kernel_to_glm4(
                 _patch_rms_norm_module(decoder_layer.post_mlp_layernorm, in_place=False)
 
 
+def apply_liger_kernel_to_glm4_moe(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace GLM-4MOE models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU Glm4MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+    from transformers.models.glm4_moe import modeling_glm4_moe
+    from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeMLP
+    from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeModel
+    from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeMoE
+
+    from liger_kernel.transformers.model.glm4_moe import lce_forward as glm4_moe_lce_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGlm4
+
+    if rope:
+        modeling_glm4_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_glm4_moe.Glm4MoeRMSNorm = LigerRMSNormForGlm4
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(glm4_moe_lce_forward, model)
+        else:
+            modeling_glm4_moe.Glm4MoeForCausalLM.forward = glm4_moe_lce_forward
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: Glm4MoeModel = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                # patch moe layer
+                if isinstance(decoder_layer.mlp, Glm4MoeMoE):
+                    experts = decoder_layer.mlp.experts
+                    if experts is not None:
+                        for expert in experts:
+                            _patch_swiglu_module(expert, LigerSwiGLUMLP)
+                    shared_experts = decoder_layer.mlp.shared_experts
+                    if shared_experts is not None:
+                        _patch_swiglu_module(shared_experts, LigerSwiGLUMLP)
+                elif isinstance(decoder_layer.mlp, Glm4MoeMLP):
+                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 def apply_liger_kernel_to_glm4v(
     rope: bool = False,
     cross_entropy: bool = False,
@@ -2882,6 +2958,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma3_text": apply_liger_kernel_to_gemma3_text,
     "gemma3": apply_liger_kernel_to_gemma3,
     "glm4": apply_liger_kernel_to_glm4,
+    "glm4_moe": apply_liger_kernel_to_glm4_moe,
     "glm4v": apply_liger_kernel_to_glm4v,
     "glm4v_moe": apply_liger_kernel_to_glm4v_moe,
     "gpt_oss": apply_liger_kernel_to_gpt_oss,

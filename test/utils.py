@@ -660,6 +660,18 @@ def revert_liger_kernel_to_glm4(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_glm4_moe(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Glm4_moe.
+    """
+
+    from transformers.models.glm4_moe import modeling_glm4_moe
+
+    importlib.reload(modeling_glm4_moe)
+    model_config.model_class = modeling_glm4_moe.Glm4MoeForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_glm4v(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Glm4v.
