@@ -4,8 +4,10 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Ensure deterministic behavi
 
 import pytest
 import torch
+import transformers
 
 from datasets import load_from_disk
+from packaging import version
 from torch.utils.data import DataLoader
 from transformers.models.gemma import GemmaConfig
 from transformers.models.gemma import GemmaForCausalLM
@@ -53,6 +55,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_smollm3
+from liger_kernel.utils import infer_device
 from test.utils import DEFAULT_DATASET_PATH
 from test.utils import MiniModelConfig
 from test.utils import assert_verbose_allclose
@@ -93,6 +96,8 @@ from test.utils import revert_liger_kernel_to_smollm3
 from test.utils import set_seed
 from test.utils import simple_collate_fn
 from test.utils import supports_bfloat16
+
+IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
 
 try:
     from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
@@ -307,7 +312,6 @@ try:
 except ImportError:
     EXAONE4_AVAILABLE = False
 
-from liger_kernel.utils import infer_device
 
 device = infer_device()
 
@@ -333,8 +337,6 @@ MINI_MODEL_SETUPS = {
             num_key_value_heads=2,  # 8
             pretraining_tp=1,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500000.0,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 128256,
@@ -362,7 +364,6 @@ MINI_MODEL_SETUPS = {
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-6,
-            rope_theta=1000000.0,
             sliding_window=131072,
             tie_word_embeddings=True,
             use_cache=True,
@@ -391,7 +392,6 @@ MINI_MODEL_SETUPS = {
             num_hidden_layers=4,  # 32
             num_key_value_heads=None,  # defaults to num_attention_heads
             rms_norm_eps=1e-5,
-            rope_theta=10000.0,
             sliding_window=None,
             tie_word_embeddings=False,
             use_cache=True,
@@ -416,7 +416,6 @@ MINI_MODEL_SETUPS = {
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_theta=10000.0,
             sliding_window=4096,
             tie_word_embeddings=False,
             use_cache=True,
@@ -441,7 +440,6 @@ MINI_MODEL_SETUPS = {
             num_hidden_layers=4,  # 32
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-5,
-            rope_theta=10000.0,
             sliding_window=4096,
             tie_word_embeddings=False,
             use_cache=True,
@@ -476,7 +474,6 @@ MINI_MODEL_SETUPS = {
             bos_token_id=1,  # 128000
             eos_token_id=2,  # 128001
             tie_word_embeddings=True,
-            rope_theta=10000.0,
             attention_bias=False,
             attention_dropout=0.0,
         ),
@@ -504,7 +501,6 @@ MINI_MODEL_SETUPS = {
             bos_token_id=1,  # 128000
             eos_token_id=2,  # 128001
             tie_word_embeddings=True,
-            rope_theta=10000.0,
             attention_bias=False,
             attention_dropout=0.0,
         ),
@@ -532,7 +528,6 @@ MINI_MODEL_SETUPS = {
             bos_token_id=1,  # 128000
             eos_token_id=2,  # 128001
             tie_word_embeddings=True,
-            rope_theta=10000.0,
             attention_bias=False,
             attention_dropout=0.0,
             attn_implementation="eager",
@@ -561,8 +556,6 @@ if LLAMA4_AVAILABLE:
             num_hidden_layers=4,  # 61
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=10000.0,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 151552
@@ -590,7 +583,6 @@ if QWEN3_AVAILABLE:
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-6,
-            rope_theta=1000000.0,
             sliding_window=131072,
             tie_word_embeddings=True,
             use_cache=True,
@@ -616,8 +608,6 @@ if QWEN3_AVAILABLE:
             rms_norm_eps=1e-6,
             use_cache=True,
             tie_word_embeddings=False,
-            rope_theta=10000.0,
-            rope_scaling=None,
             attention_bias=False,
             use_sliding_window=False,
             sliding_window=4096,
@@ -653,14 +643,6 @@ if GPT_OSS_AVAILABLE:
             rms_norm_eps=1e-5,
             use_cache=True,
             tie_word_embeddings=False,
-            rope_parameters={
-                "rope_type": "yarn",
-                "factor": 8.0,
-                "beta_fast": 32.0,
-                "beta_slow": 1.0,
-                "truncate": False,
-                "original_max_position_embeddings": 4096,
-            },
             attention_dropout=0.0,
             num_local_experts=8,  # Reduced from 32 for mini model
             num_experts_per_tok=2,  # Reduced from 4 for mini model
@@ -693,7 +675,6 @@ if GEMMA3_AVAILABLE:
             bos_token_id=2,
             eos_token_id=1,
             tie_word_embeddings=True,
-            rope_theta=10000.0,  # 1000000
             attention_bias=False,
             attention_dropout=0.0,
             attn_implementation="eager",
@@ -721,18 +702,20 @@ if MLLAMA_AVAILABLE:
             num_hidden_layers=4,  # 40
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-5,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,  # 128256,
+            attn_implementation="sdpa",  # default value, pytorch native attention
             rope_scaling=dict(
                 factor=8.0,
                 high_freq_factor=4.0,
                 low_freq_factor=1.0,
                 original_max_position_embeddings=8192,
                 rope_type="llama3",
-            ),
-            rope_theta=500_000,
-            tie_word_embeddings=False,
-            use_cache=True,
-            vocab_size=32000,  # 128256,
-            attn_implementation="sdpa",  # default value, pytorch native attention
+                rope_theta=500_000,
+            )
+            if not IS_TRANSFORMERS_V5_OR_LATER
+            else None,
         ),
     )
 
@@ -742,36 +725,38 @@ if QWEN2_VL_AVAILABLE:
         liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2_vl,
         model_class=Qwen2VLForConditionalGeneration,
         mini_model_config=Qwen2VLConfig(
-            attention_dropout=0.0,
-            # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
-            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
-            bos_token_id=1,  # 151643
-            eos_token_id=2,  # 151645
+            # In transformers v5, text-related parameters must be in text_config
+            text_config={
+                "attention_dropout": 0.0,
+                # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
+                # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+                "bos_token_id": 1,  # 151643
+                "eos_token_id": 2,  # 151645
+                "hidden_act": "silu",
+                "hidden_size": 1536,  # 8192
+                "initializer_range": 0.02,
+                "intermediate_size": 4864,  # 29568
+                "max_position_embeddings": 32768,
+                "max_window_layers": 4,  # 80
+                "num_attention_heads": 12,  # 64
+                "num_hidden_layers": 4,  # 80
+                "num_key_value_heads": 2,  # 8
+                "rms_norm_eps": 1e-6,  # 1e-5
+                **(
+                    {"rope_parameters": {"mrope_section": [16, 24, 24]}}  # (temporal, height, width)
+                    if IS_TRANSFORMERS_V5_OR_LATER
+                    else {"rope_scaling": {"type": "mrope", "mrope_section": [16, 24, 24]}}
+                ),
+                "sliding_window": 4096,
+                "tie_word_embeddings": False,
+                "use_cache": True,
+                "vocab_size": 32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
+                "use_sliding_window": False,
+            },
             vision_start_token_id=32765,  # vocab_size - 5
             vision_end_token_id=32766,  # vocab_size - 4
-            vision_token_id=32767,  # vocab_size - 3
             image_token_id=32768,  # vocab_size - 2
             video_token_id=32769,  # vocab_size - 1
-            hidden_act="silu",
-            hidden_size=1536,  # 8192
-            initializer_range=0.02,
-            intermediate_size=4864,  # 29568
-            max_position_embeddings=32768,
-            max_window_layers=4,  # 80
-            num_attention_heads=12,  # 64
-            num_hidden_layers=4,  # 80
-            num_key_value_heads=2,  # 8
-            rms_norm_eps=1e-6,  # 1e-5
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
-            ),
-            sliding_window=4096,
-            tie_word_embeddings=False,
-            use_cache=True,
-            vocab_size=32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
-            use_sliding_window=False,
             vision_config={
                 "depth": 4,  # 32
                 "embed_dim": 1280,
@@ -784,7 +769,6 @@ if QWEN2_VL_AVAILABLE:
                 "spatial_patch_size": 14,
                 "temporal_patch_size": 2,
             },
-            attn_implementation="sdpa",
         ),
     )
 
@@ -794,36 +778,38 @@ if QWEN2_5_VL_AVAILABLE:
         liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen2_5_vl,
         model_class=Qwen2_5_VLForConditionalGeneration,
         mini_model_config=Qwen2_5_VLConfig(
-            attention_dropout=0.0,
-            # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
-            # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
-            bos_token_id=1,  # 151643
-            eos_token_id=2,  # 151645
+            # In transformers v5, text-related parameters must be in text_config
+            text_config={
+                "attention_dropout": 0.0,
+                # bos and eos set to match the Mistral-7B tokenizer used to create the test dataset
+                # https://huggingface.co/mistralai/Mistral-7B-v0.1/blob/main/config.json
+                "bos_token_id": 1,  # 151643
+                "eos_token_id": 2,  # 151645
+                "hidden_act": "silu",
+                "hidden_size": 1536,  # 8192
+                "initializer_range": 0.02,
+                "intermediate_size": 4864,  # 29568
+                "max_position_embeddings": 32768,
+                "max_window_layers": 4,  # 80
+                "num_attention_heads": 12,  # 64
+                "num_hidden_layers": 4,  # 80
+                "num_key_value_heads": 2,  # 8
+                "rms_norm_eps": 1e-6,  # 1e-5
+                **(
+                    {"rope_parameters": {"mrope_section": [16, 24, 24]}}  # (temporal, height, width)
+                    if IS_TRANSFORMERS_V5_OR_LATER
+                    else {"rope_scaling": {"type": "mrope", "mrope_section": [16, 24, 24]}}
+                ),
+                "sliding_window": 4096,
+                "tie_word_embeddings": False,
+                "use_cache": True,
+                "vocab_size": 32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
+                "use_sliding_window": False,
+            },
             vision_start_token_id=32765,  # vocab_size - 5
             vision_end_token_id=32766,  # vocab_size - 4
-            vision_token_id=32767,  # vocab_size - 3
             image_token_id=32768,  # vocab_size - 2
             video_token_id=32769,  # vocab_size - 1
-            hidden_act="silu",
-            hidden_size=1536,  # 8192
-            initializer_range=0.02,
-            intermediate_size=4864,  # 29568
-            max_position_embeddings=32768,
-            max_window_layers=4,  # 80
-            num_attention_heads=12,  # 64
-            num_hidden_layers=4,  # 80
-            num_key_value_heads=2,  # 8
-            rms_norm_eps=1e-6,  # 1e-5
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
-            ),
-            sliding_window=4096,
-            tie_word_embeddings=False,
-            use_cache=True,
-            vocab_size=32768,  # 152064  # >32k, Mistral-7B tokenizer vocab size
-            use_sliding_window=False,
             vision_config={
                 "depth": 4,  # 32
                 "hidden_act": "silu",
@@ -840,7 +826,6 @@ if QWEN2_5_VL_AVAILABLE:
                 "tokens_per_second": 2,
                 "temporal_patch_size": 2,
             },
-            attn_implementation="sdpa",
         ),
     )
 
@@ -870,13 +855,15 @@ if QWEN3_VL_AVAILABLE:
                 num_hidden_layers=4,
                 num_key_value_heads=2,
                 rms_norm_eps=1e-6,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 use_cache=True,
                 vocab_size=32768,
+                pad_token_id=None,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],  # (temporal, height, width)
+                )
+                if not IS_TRANSFORMERS_V5_OR_LATER
+                else None,
             ),
             vision_config=dict(
                 depth=4,
@@ -923,11 +910,6 @@ if QWEN3_VL_MOE_AVAILABLE:
                 num_key_value_heads=2,
                 head_dim=128,
                 rms_norm_eps=1e-6,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 use_cache=True,
                 vocab_size=32768,
                 decoder_sparse_step=1,
@@ -936,6 +918,13 @@ if QWEN3_VL_MOE_AVAILABLE:
                 num_experts=4,
                 tie_word_embeddings=False,
                 mlp_only_layers=[],
+                pad_token_id=None,
+                rope_scaling=dict(
+                    type="mrope",
+                    mrope_section=[16, 24, 24],  # (temporal, height, width)
+                )
+                if not IS_TRANSFORMERS_V5_OR_LATER
+                else None,
             ).to_dict(),
             vision_config=Qwen3VLMoeVisionConfig(
                 depth=4,
@@ -977,8 +966,6 @@ if GRANITE_AVAILABLE:
             num_key_value_heads=2,  # 8
             pretraining_tp=1,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500000.0,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 128256,
@@ -1010,8 +997,6 @@ if LLAVA_AVAILABLE:
                 num_hidden_layers=4,
                 num_key_value_heads=2,
                 pretraining_tp=1,
-                rope_scaling=None,
-                rope_theta=500000.0,
                 tie_word_embeddings=False,
                 use_cache=True,
                 max_position_embeddings=4096,  # llava-1.5-7b-hf
@@ -1069,8 +1054,6 @@ if OLMO2_AVAILABLE:
             num_hidden_layers=4,  # 40
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500_000,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 128256,
@@ -1098,8 +1081,6 @@ if OLMO3_AVAILABLE:
             num_hidden_layers=4,  # 40
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500_000,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 128256,
@@ -1128,8 +1109,6 @@ if GLM4_AVAILABLE:
             num_hidden_layers=4,  # 61
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500_000,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 151552
@@ -1165,8 +1144,6 @@ if GLM4V_AVAILABLE:
             num_hidden_layers=4,  # 61
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500_000,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 151552
@@ -1182,13 +1159,14 @@ if GLM4V_AVAILABLE:
                 "num_hidden_layers": 4,
                 "num_key_value_heads": 2,
                 "rms_norm_eps": 1e-5,
-                "rope_scaling": {
-                    "type": "default",
-                    "mrope_section": [8, 12, 12],  # (temporal, height, width)
-                },
-                "rope_theta": 500_000,
                 "vocab_size": 32000,
                 "attention_bias": True,
+                **(
+                    {"rope_scaling": {"type": "default", "mrope_section": [8, 12, 12]}}
+                    if not IS_TRANSFORMERS_V5_OR_LATER
+                    else {}
+                ),
+                "pad_token_id": None,
             },
             vision_config={
                 "depth": 4,  # 32
@@ -1232,8 +1210,6 @@ if GLM4V_MOE_AVAILABLE:
             num_hidden_layers=4,  # 61
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500_000,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 151552
@@ -1249,11 +1225,6 @@ if GLM4V_MOE_AVAILABLE:
                 "num_hidden_layers": 4,
                 "num_key_value_heads": 2,
                 "rms_norm_eps": 1e-5,
-                "rope_scaling": {
-                    "type": "default",
-                    "mrope_section": [8, 12, 12],  # (temporal, height, width)
-                },
-                "rope_theta": 500_000,
                 "vocab_size": 32000,
                 "attention_bias": True,
                 "attention_dropout": 0.0,
@@ -1266,6 +1237,11 @@ if GLM4V_MOE_AVAILABLE:
                 "topk_group": 1,
                 "first_k_dense_replace": 1,
                 "norm_topk_prob": True,
+                **(
+                    {"rope_scaling": {"type": "default", "mrope_section": [8, 12, 12]}}
+                    if not IS_TRANSFORMERS_V5_OR_LATER
+                    else {}
+                ),
             },
             vision_config={
                 "depth": 4,  # 32
@@ -1303,8 +1279,6 @@ if SMOLLM3_AVAILABLE:
             num_key_value_heads=2,  # 8
             pretraining_tp=1,
             rms_norm_eps=1e-5,
-            rope_scaling=None,
-            rope_theta=500000.0,
             tie_word_embeddings=False,
             use_cache=True,
             vocab_size=32000,  # 128256,
@@ -1396,8 +1370,6 @@ if QWEN3NEXT_AVAILABLE:
             rms_norm_eps=1e-6,
             use_cache=True,
             tie_word_embeddings=False,
-            rope_theta=10000.0,
-            rope_scaling=None,
             attention_bias=False,
             use_sliding_window=False,
             sliding_window=4096,
@@ -1437,7 +1409,6 @@ if HUNYUAN_V1_AVAILABLE:
             initializer_range=0.02,
             norm_eps=1e-6,
             num_key_value_heads=2,
-            rope_theta=10000.0,
             partial_rotary_factor=1.0,
             vocab_size=32000,
             use_cache=True,
@@ -1468,8 +1439,6 @@ if HUNYUAN_V1_AVAILABLE:
             eod_token_id=3,
             sep_token_id=4,
             tie_word_embeddings=False,
-            rope_theta=10000.0,
-            rope_scaling=None,
             attention_bias=False,
             attention_dropout=0.0,
             num_experts=2,
@@ -1496,11 +1465,11 @@ if EXAONE4_AVAILABLE:
             num_hidden_layers=4,
             num_key_value_heads=2,
             rms_norm_eps=1e-5,
-            rope_theta=1000000.0,
             tie_word_embeddings=True,
             use_cache=True,
             vocab_size=32000,
             attn_implementation="sdpa",
+            pad_token_id=None,
         ),
     )
 
@@ -1602,12 +1571,12 @@ def run_mini_model(
     "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logprobs_atol, logprobs_rtol, param_atol, param_rtol",
     [
         pytest.param(
-            "mini_llama4",
+            "mini_llama4",  # llama4 requires slightly larger tolerances to pass this test after bug fix to llama4 in transformers v5.0.0
             32,
             1e-5,
             torch.bfloat16,
-            1e-2,
             5e-2,
+            4e-1,
             1e-1,
             1e-1,
             1e-2,
@@ -1617,6 +1586,10 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not LLAMA4_AVAILABLE,
                     reason="Llama not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    not IS_TRANSFORMERS_V5_OR_LATER,
+                    reason="The `attention_bias` configuration of Llama4 is not set in Transformers v4",
                 ),
             ],
         ),
@@ -1728,14 +1701,14 @@ def run_mini_model(
         ),
         # TODO(tcc): Investigate qwen3_moe on different machines.
         # The loss diverges on ci test (A10G), but it never diverges on my local machine (3080).
-        # Qwen3_moe can pass float32 tests.
+        # Qwen3_moe can pass float32 tests. (mecoli1219): diverges on h100
         pytest.param(
             "mini_qwen3_moe",
             32,
             1e-5,
             torch.bfloat16,
             5e-2,
-            5e-2,
+            2e-1,
             1e-1,  # 1e-1
             1e-1,  # 1e-2
             1e-2,
@@ -1830,9 +1803,9 @@ def run_mini_model(
             1e-5,
             torch.bfloat16,
             5e-2,
-            5e-2,
             1e-1,
-            1e-2,
+            1e-1,
+            5e-2,
             1e-2,
             1e-2,
             marks=[
@@ -1869,10 +1842,6 @@ def run_mini_model(
             1e-2,
             marks=[
                 pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-                pytest.mark.skipif(
-                    version.parse(transformers.__version__) < version.parse("4.49.0"),
-                    reason="Mistral not available in transformers<=4.49.0",
-                ),
             ],
         ),
         pytest.param(

@@ -7,7 +7,6 @@ import torch
 
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.utils.deprecation import deprecate_kwarg
 
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
@@ -130,7 +129,6 @@ def lce_forward_deprecated(
     )
 
 
-@deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
