@@ -441,7 +441,7 @@ def test_apply_liger_kernel_to_instance_for_llama():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_qwen3_vl_available(), reason="qwen3_vl module not available")
@@ -538,7 +538,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_qwen3_vl_available(), reason="qwen3_vl module not available")
@@ -635,7 +635,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_qwen3_vl_available(), reason="qwen3_vl module not available")
@@ -703,7 +703,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_text():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_qwen3_vl_moe_available(), reason="qwen3_vl_moe module not available")
@@ -806,7 +806,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_qwen3_vl_moe_available(), reason="qwen3_vl_moe module not available")
@@ -909,7 +909,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_qwen3_vl_moe_available(), reason="qwen3_vl_moe module not available")
@@ -983,7 +983,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_qwen3_vl_available(), reason="qwen3_vl module not available")
@@ -1058,7 +1058,7 @@ def test_apply_liger_kernel_to_falcon_h1_for_causal_lm():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_mllama_available(), reason="mllama module not available")
@@ -1153,7 +1153,7 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_conditional_generation():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_mllama_available(), reason="mllama module not available")
@@ -1198,7 +1198,7 @@ def test_apply_liger_kernel_to_instance_for_mllama_for_causal_lm():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
@@ -1249,7 +1249,7 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_llama4_available(), reason="llama4 module not available")
@@ -1343,7 +1343,7 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 def test_apply_liger_kernel_to_instance_for_mistral():
@@ -1382,7 +1382,7 @@ def test_apply_liger_kernel_to_instance_for_mistral():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 def test_apply_liger_kernel_to_instance_for_mixtral():
@@ -1431,7 +1431,7 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 def test_apply_liger_kernel_to_instance_for_gemma():
@@ -1470,7 +1470,7 @@ def test_apply_liger_kernel_to_instance_for_gemma():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 def test_apply_liger_kernel_to_instance_for_gemma2():
@@ -1517,7 +1517,7 @@ def test_apply_liger_kernel_to_instance_for_gemma2():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_paligemma_available(), reason="paligemma module not available")
@@ -1573,7 +1573,7 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_gemma3_available(), reason="gemma3 module not available")
@@ -1626,7 +1626,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_text():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_gemma3_available(), reason="gemma3 module not available")
@@ -1719,7 +1719,7 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 def test_apply_liger_kernel_to_instance_for_qwen2():
@@ -1758,7 +1758,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_qwen3_available(), reason="qwen3 module not available")
@@ -1800,7 +1800,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_qwen3_available(), reason="qwen3 module not available")
@@ -1850,7 +1850,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_moe():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(
@@ -1919,7 +1919,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl_for_conditional_generation(
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(
@@ -1988,7 +1988,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(
@@ -2039,7 +2039,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_vl_text():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(
@@ -2108,7 +2108,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(
@@ -2177,7 +2177,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_for_conditional_generatio
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(
@@ -2228,7 +2228,7 @@ def test_apply_liger_kernel_to_instance_for_qwen2_5_vl_text():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_internvl_available(), reason="internvl module not available")
@@ -2292,7 +2292,7 @@ def test_apply_liger_kernel_to_instance_for_internvl():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_smolvlm_available(), reason="smolvlm module not available")
@@ -2368,7 +2368,7 @@ def test_apply_liger_kernel_to_instance_for_smolvlm2():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 def test_apply_liger_kernel_to_instance_for_phi3():
@@ -2407,7 +2407,7 @@ def test_apply_liger_kernel_to_instance_for_phi3():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_olmo2_available(), reason="olmo2 module not available")
@@ -2453,7 +2453,7 @@ def test_apply_liger_kernel_to_instance_for_olmo2():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_olmo3_available(), reason="olmo3 module not available")
@@ -2499,7 +2499,7 @@ def test_apply_liger_kernel_to_instance_for_olmo3():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_glm4_available(), reason="glm4 module not available")
@@ -2545,7 +2545,7 @@ def test_apply_liger_kernel_to_instance_for_glm4():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_glm4v_available(), reason="glm4v module not available")
@@ -2615,7 +2615,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_glm4v_moe_available(), reason="glm4v_moe module not available")
@@ -2731,7 +2731,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_smollm3_available(), reason="smollm3 module not available")
@@ -2772,7 +2772,7 @@ def test_apply_liger_kernel_to_instance_for_smollm3():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_qwen3_next_available(), reason="qwen3_next module not available")
@@ -2841,7 +2841,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_next():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_hunyuan_v1_available(), reason="hunyuan_v1 module not available")
@@ -2892,7 +2892,7 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_moe():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
 
 
 @pytest.mark.skipif(not is_hunyuan_v1_available(), reason="hunyuan_v1_dense module not available")
@@ -2935,4 +2935,4 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_dense():
         try:
             print(dummy_model_instance)
         except Exception as e:
-            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+            pytest.fail(f"An exception occurred in extra_expr: {type(e).__name__} - {e}")
