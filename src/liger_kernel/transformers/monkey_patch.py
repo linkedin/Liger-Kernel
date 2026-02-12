@@ -755,6 +755,55 @@ def apply_liger_kernel_to_mixtral(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_pixtral(
+    rope: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Pixtral vision models.
+
+    Note: Pixtral's vision encoder does not have a cross-entropy loss, so there is no
+    `fused_linear_cross_entropy` or `cross_entropy` option. The language model side of
+    Pixtral uses Mistral, which can be patched separately via `apply_liger_kernel_to_mistral`.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model
+            has already been loaded. Default is None.
+    """
+    from transformers.models.pixtral import modeling_pixtral
+    from transformers.models.pixtral.modeling_pixtral import PixtralVisionModel
+
+    if rope:
+        modeling_pixtral.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_pixtral.PixtralRMSNorm = LigerRMSNorm
+    if swiglu:
+        modeling_pixtral.PixtralMLP = LigerSwiGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules.
+        if isinstance(model, PixtralVisionModel):
+            transformer = model.transformer
+        else:
+            raise ValueError(f"Unsupported Pixtral model type: {type(model)}")
+
+        if rms_norm:
+            _patch_rms_norm_module(model.ln_pre, eps=1e-5)
+
+        for layer in transformer.layers:
+            if swiglu:
+                _patch_swiglu_module(layer.feed_forward, LigerSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(layer.attention_norm, eps=1e-5)
+                _patch_rms_norm_module(layer.ffn_norm, eps=1e-5)
+
+
 def apply_liger_kernel_to_gemma(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -2847,6 +2896,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "mistral": apply_liger_kernel_to_mistral,
     "mixtral": apply_liger_kernel_to_mixtral,
     "olmo2": apply_liger_kernel_to_olmo2,
+    "pixtral": apply_liger_kernel_to_pixtral,
     "olmo3": apply_liger_kernel_to_olmo3,
     "qwen2": apply_liger_kernel_to_qwen2,
     "qwen3": apply_liger_kernel_to_qwen3,

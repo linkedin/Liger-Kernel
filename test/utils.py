@@ -613,6 +613,17 @@ def revert_liger_kernel_to_phi3(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_pixtral(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Pixtral.
+    """
+    from transformers.models.pixtral import modeling_pixtral
+
+    importlib.reload(modeling_pixtral)
+    model_config.model_class = modeling_pixtral.PixtralVisionModel
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_olmo2(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Olmo2.
