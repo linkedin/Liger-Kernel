@@ -26,6 +26,9 @@ from liger_kernel.ops.backends._ascend.ops.llama4_rope import llama4_rope_forwar
 from liger_kernel.ops.backends._ascend.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.backends._ascend.ops.qwen2vl_mrope import qwen2vl_mrope_backward
 from liger_kernel.ops.backends._ascend.ops.qwen2vl_mrope import qwen2vl_mrope_forward
+from liger_kernel.ops.backends._ascend.ops.rms_norm import LigerRMSNormFunction
+from liger_kernel.ops.backends._ascend.ops.rms_norm import rms_norm_backward
+from liger_kernel.ops.backends._ascend.ops.rms_norm import rms_norm_forward
 from liger_kernel.ops.backends._ascend.ops.rope import LigerRopeFunction
 from liger_kernel.ops.backends._ascend.ops.rope import rope_backward
 from liger_kernel.ops.backends._ascend.ops.rope import rope_forward
@@ -46,6 +49,9 @@ __all__ = [
     "LigerQwen2VLMRopeFunction",
     "qwen2vl_mrope_forward",
     "qwen2vl_mrope_backward",
+    "LigerRMSNormFunction",
+    "rms_norm_forward",
+    "rms_norm_backward",
     "LigerRopeFunction",
     "rope_forward",
     "rope_backward",
