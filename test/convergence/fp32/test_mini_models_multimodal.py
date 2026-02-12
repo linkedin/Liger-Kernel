@@ -5,11 +5,12 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Ensure deterministic behavi
 
 import pytest
 import torch
+import transformers
 
 from datasets import load_dataset
+from packaging import version
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
-from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
 from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3
@@ -23,6 +24,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_smolvlm
+from liger_kernel.utils import infer_device
 from test.utils import FAKE_CONFIGS_PATH
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
@@ -49,12 +51,23 @@ from test.utils import revert_liger_kernel_to_smolvlm2
 from test.utils import set_seed
 from test.utils import train_bpe_tokenizer
 
+IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
+
+if IS_TRANSFORMERS_V5_OR_LATER:
+    from transformers.models.gemma.tokenization_gemma import GemmaTokenizer
+else:
+    from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast as GemmaTokenizer
+
 try:
     # Qwen2-VL is only available in transformers>=4.52.4
     import transformers
 
     from packaging import version
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+
+    if IS_TRANSFORMERS_V5_OR_LATER:
+        from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+    else:
+        from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast as Qwen2Tokenizer
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
@@ -70,7 +83,11 @@ try:
     import transformers
 
     from packaging import version
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+
+    if IS_TRANSFORMERS_V5_OR_LATER:
+        from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+    else:
+        from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast as Qwen2Tokenizer
     from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
     from transformers.models.qwen2_5_vl.processing_qwen2_5_vl import Qwen2_5_VLProcessor
@@ -83,7 +100,10 @@ except ImportError:
 
 
 try:
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    if IS_TRANSFORMERS_V5_OR_LATER:
+        from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+    else:
+        from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast as Qwen2Tokenizer
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
@@ -108,7 +128,10 @@ except ImportError:
     QWEN3_VL_MOE_AVAILABLE = False
 
 try:
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    if IS_TRANSFORMERS_V5_OR_LATER:
+        from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+    else:
+        from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast as Qwen2Tokenizer
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
@@ -183,7 +206,7 @@ try:
     from transformers.models.paligemma.processing_paligemma import PaliGemmaProcessor
     from transformers.models.siglip.image_processing_siglip import SiglipImageProcessor
 
-    PALIGEMMA_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.46.0")
+    PALIGEMMA_AVAILABLE = True
 except ImportError:
     PALIGEMMA_AVAILABLE = False
 
@@ -214,7 +237,7 @@ except ImportError:
 
 try:
     # SmolVLM2 is only available in transformers>=4.50.0
-    from transformers.models.gpt2.tokenization_gpt2_fast import GPT2TokenizerFast
+    from transformers.models.gpt2.tokenization_gpt2 import GPT2Tokenizer
     from transformers.models.smolvlm.configuration_smolvlm import SmolVLMConfig
     from transformers.models.smolvlm.image_processing_smolvlm import SmolVLMImageProcessor
     from transformers.models.smolvlm.modeling_smolvlm import SmolVLMForConditionalGeneration
@@ -232,7 +255,6 @@ try:
 except ImportError:
     NUM2WORDS_AVAILABLE = False
 
-from liger_kernel.utils import infer_device
 
 device = infer_device()
 
@@ -291,7 +313,6 @@ if LLAMA4_AVAILABLE:
                 num_hidden_layers=4,  # 40
                 num_key_value_heads=2,  # 8
                 rms_norm_eps=1e-5,
-                rope_theta=500_000,
                 tie_word_embeddings=False,
                 use_cache=True,
                 vocab_size=32000,  # 128256,
@@ -345,8 +366,9 @@ if MLLAMA_AVAILABLE:
                     low_freq_factor=1.0,
                     original_max_position_embeddings=8192,
                     rope_type="llama3",
-                ),
-                rope_theta=500_000,
+                )
+                if not IS_TRANSFORMERS_V5_OR_LATER
+                else None,
                 tie_word_embeddings=False,
                 use_cache=True,
                 vocab_size=32000,  # 128256,
@@ -396,7 +418,6 @@ if PALIGEMMA_AVAILABLE:
                 bos_token_id=1,  # 128000
                 eos_token_id=2,  # 128001
                 tie_word_embeddings=True,
-                rope_theta=10000.0,
                 attention_bias=False,
                 attention_dropout=0.0,
             ),
@@ -446,7 +467,6 @@ if PALIGEMMA_AVAILABLE:
                 bos_token_id=1,  # 128000
                 eos_token_id=2,  # 128001
                 tie_word_embeddings=True,
-                rope_theta=10000.0,
                 attention_bias=False,
                 attention_dropout=0.0,
             ),
@@ -492,7 +512,6 @@ if GEMMA3_AVAILABLE:
                 rms_norm_eps=1e-06,
                 use_cache=True,
                 tie_word_embeddings=True,
-                rope_theta=10000.0,
                 attention_bias=False,
                 attention_dropout=0.0,
             ),
@@ -528,10 +547,10 @@ if QWEN2_VL_AVAILABLE:
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-6,  # 1e-5
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            **(
+                dict(rope_parameters=dict(mrope_section=[16, 24, 24]))  # (temporal, height, width)
+                if IS_TRANSFORMERS_V5_OR_LATER
+                else dict(rope_scaling=dict(type="mrope", mrope_section=[16, 24, 24]))
             ),
             sliding_window=4096,
             tie_word_embeddings=True,
@@ -570,8 +589,6 @@ if LLAVA_AVAILABLE:
                 num_hidden_layers=4,
                 num_key_value_heads=2,
                 pretraining_tp=1,
-                rope_scaling=None,
-                rope_theta=500000.0,
                 tie_word_embeddings=False,
                 use_cache=True,
                 max_position_embeddings=4096,  # llava-1.5-7b-hf
@@ -662,7 +679,6 @@ if SMOLVLM2_AVAILABLE:
                 num_hidden_layers=4,  # 30 -> reduced to 4 for testing
                 num_key_value_heads=3,  # 3 for 256M model
                 rms_norm_eps=1e-5,
-                rope_theta=100000,
                 tie_word_embeddings=False,
                 vocab_size=49280,
             ),
@@ -705,10 +721,10 @@ if QWEN2_5_VL_AVAILABLE:
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-6,  # 1e-5
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            **(
+                dict(rope_parameters=dict(mrope_section=[16, 24, 24]))  # (temporal, height, width)
+                if IS_TRANSFORMERS_V5_OR_LATER
+                else dict(rope_scaling=dict(type="mrope", mrope_section=[16, 24, 24]))
             ),
             sliding_window=4096,
             tie_word_embeddings=True,
@@ -767,11 +783,6 @@ if QWEN3_VL_AVAILABLE:
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
             ).to_dict(),
@@ -819,11 +830,6 @@ if QWEN3_VL_MOE_AVAILABLE:
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
                 decoder_sparse_step=1,
@@ -879,11 +885,6 @@ if QWEN3_VL_AVAILABLE:
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
             ).to_dict(),
@@ -931,11 +932,6 @@ if QWEN3_VL_MOE_AVAILABLE:
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
                 decoder_sparse_step=1,
@@ -962,7 +958,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        qwen_tokenizer = Qwen2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor()
         video_processor = Qwen2VLVideoProcessor()
         return Qwen2VLProcessor(
@@ -984,7 +980,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        qwen_tokenizer = Qwen2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor()
         video_processor = Qwen2VLVideoProcessor()
         return Qwen2_5_VLProcessor(
@@ -1006,7 +1002,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        qwen_tokenizer = Qwen2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor(patch_size=16, temporal_patch_size=2, merge_size=2)
         video_processor = Qwen3VLVideoProcessor()
         return Qwen3VLProcessor(
@@ -1063,7 +1059,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        qwen_tokenizer = Qwen2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = GotOcr2ImageProcessorFast(
             crop_to_patches=False, min_patches=1, max_patches=12, size={"height": 448, "width": 448}
         )
@@ -1087,7 +1083,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        gpt2_tokenizer = GPT2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        gpt2_tokenizer = GPT2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = SmolVLMImageProcessor(size={"longest_edge": 512})
         video_processor = SmolVLMVideoProcessor()
 
@@ -1157,7 +1153,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        fast_tokenizer = GemmaTokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = SiglipImageProcessor(size={"height": 224, "width": 224}, image_seq_length=256)
         return PaliGemmaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
 
@@ -1177,7 +1173,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        fast_tokenizer = GemmaTokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Gemma3ImageProcessor()
         return Gemma3Processor(image_processor=image_processor, tokenizer=fast_tokenizer)
 

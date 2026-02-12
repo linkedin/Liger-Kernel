@@ -31,6 +31,64 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
+# =============================================================================
+# Transformers Version Compatibility Utilities
+# =============================================================================
+# These utilities help maintain backward compatibility across different
+# versions of the transformers library (v4.52.0, v4.57.6, v5.0.0+).
+
+TRANSFORMERS_VERSION = version.parse(transformers.__version__)
+TRANSFORMERS_V5 = version.parse("5.0.0")
+
+
+def is_transformers_v5_or_later() -> bool:
+    """Check if the installed transformers version is 5.0.0 or later."""
+    return TRANSFORMERS_VERSION >= TRANSFORMERS_V5
+
+
+def get_mllama_rope_config() -> dict:
+    """
+    Get the correct rope configuration for MLlama models.
+
+    In transformers v4.x: requires explicit rope_scaling with llama3 rope_type
+    In transformers v5.0+: uses defaults, no explicit config needed
+
+    Returns:
+        dict: Configuration dictionary with rope_scaling for v4.x, empty for v5.0+
+    """
+    if is_transformers_v5_or_later():
+        return {}
+    return {
+        "rope_scaling": {
+            "factor": 8.0,
+            "high_freq_factor": 4.0,
+            "low_freq_factor": 1.0,
+            "original_max_position_embeddings": 8192,
+            "rope_type": "llama3",
+        },
+    }
+
+
+def get_qwen3_vl_rope_config() -> dict:
+    """
+    Get the correct rope configuration for Qwen3-VL models.
+
+    In transformers v4.x: requires rope_scaling with type="mrope"
+    In transformers v5.0+: uses defaults, no explicit config needed
+
+    Returns:
+        dict: Configuration dictionary with rope_scaling for v4.x, empty for v5.0+
+    """
+    if is_transformers_v5_or_later():
+        return {}
+    return {
+        "rope_theta": 1000000.0,
+        "rope_scaling": {
+            "type": "mrope",
+            "mrope_section": [16, 24, 24],
+        },
+    }
+
 
 def set_seed(seed=42):
     """
@@ -620,11 +678,12 @@ def revert_liger_kernel_to_llava(model_config: MiniModelConfig):
     Revert all Liger kernel patches applied to llava.
     """
 
-    from transformers.models.clip import modeling_clip
     from transformers.models.llama import modeling_llama
     from transformers.models.llava import modeling_llava
 
-    importlib.reload(modeling_clip)
+    # Note: Do NOT reload modeling_clip as it breaks CLIPVisionModel's
+    # output_hidden_states functionality in transformers v5.
+    # Liger kernel does not patch modeling_clip when model=None.
     importlib.reload(modeling_llava)
     importlib.reload(modeling_llama)
 

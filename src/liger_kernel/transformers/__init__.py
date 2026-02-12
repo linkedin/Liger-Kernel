@@ -21,6 +21,7 @@ from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.softmax import LigerSoftmax  # noqa: F401
 from liger_kernel.transformers.sparsemax import LigerSparsemax  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP  # noqa: F401
+from liger_kernel.transformers.swiglu import LigerExperts  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP  # noqa: F401
