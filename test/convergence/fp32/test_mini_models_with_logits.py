@@ -1501,13 +1501,11 @@ def run_mini_model(
     for i in range(num_steps):
         batch = next(loader_iter).to(model.device)
         optimizer.zero_grad()
-        batch_on_device = {k: v.to(model.device) for k, v in batch.items()}
-        output = model(**batch_on_device)
-        loss = output.loss
-        loss.backward()
+        output = model(**batch)
+        output.loss.backward()
         optimizer.step()
-        print(f"Step {i}, Loss: {loss.item()}")
-        loss_list.append(loss.item())
+        print(f"Step {i}, Loss: {output.loss.item()}")
+        loss_list.append(output.loss.item())
 
     topk_logprobs = get_topk(get_logprobs(output.logits))
     MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
