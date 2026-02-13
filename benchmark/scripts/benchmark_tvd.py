@@ -114,8 +114,10 @@ if __name__ == "__main__":
     # We know that the full test will require 66GBs for vocab size 2^17
     if gpu_memory_gbs >= 66:
         x_max = 17
-    else:
+    elif gpu_memory_gbs >= 32:
         x_max = 16
+    else:
+        x_max = 15
     common_args = {
         "kernel_name": "tvd",
         "x_name": "V",
