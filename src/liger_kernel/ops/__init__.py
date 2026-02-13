@@ -60,6 +60,9 @@ from liger_kernel.ops.layer_norm import LigerLayerNormFunction  # noqa: F401
 from liger_kernel.ops.layer_norm import layer_norm_backward  # noqa: F401
 from liger_kernel.ops.layer_norm import layer_norm_forward  # noqa: F401
 from liger_kernel.ops.llama4_rope import LigerLlama4RopeFunction  # noqa: F401
+from liger_kernel.ops.mhc import LigerMHCCoeffsFunction  # noqa: F401
+from liger_kernel.ops.mhc import LigerMHCPostResFunction  # noqa: F401
+from liger_kernel.ops.mhc import LigerMHCPreFunction  # noqa: F401
 from liger_kernel.ops.multi_token_attention import LigerMultiTokenAttentionFunction  # noqa: F401
 from liger_kernel.ops.poly_norm import LigerPolyNormFunction  # noqa: F401
 from liger_kernel.ops.poly_norm import poly_norm_backward  # noqa: F401
