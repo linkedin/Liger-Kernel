@@ -13,7 +13,7 @@ from liger_kernel.utils import infer_device
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
-MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536 // 2
+MAX_FUSED_SIZE = 4096 if infer_device() == "npu" else 65536 // 2
 
 
 def fused_linear_jsd_forward(
