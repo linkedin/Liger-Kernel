@@ -50,3 +50,78 @@ def test_liger_group_norm(batch_size, num_channels, num_groups, hidden_size, dty
     assert torch.allclose(liger_x.grad, torch_x.grad, atol=atol, rtol=rtol)
     assert torch.allclose(liger_ln.bias.grad, torch_ln.bias.grad, atol=atol, rtol=rtol), "Bias grads different"
     assert torch.allclose(liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol), "Weight grads different"
+
+
+@pytest.mark.parametrize(
+    "batch_size, num_channels, num_groups, hidden_size",
+    [
+        (1, 32, 32, 4),
+        (16, 48, 12, 8192),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-4),
+    ],
+)
+@pytest.mark.parametrize(
+    "freeze_weight, freeze_bias",
+    [
+        (True, False),
+        (False, True),
+        (True, True),
+    ],
+)
+def test_liger_group_norm_frozen_params(
+    batch_size, num_channels, num_groups, hidden_size, dtype, atol, rtol, freeze_weight, freeze_bias
+):
+    """Test that frozen weight/bias (requires_grad=False) works correctly and produces no gradient."""
+    torch.manual_seed(0)
+
+    _tensor = torch.randn(batch_size, num_channels, hidden_size, dtype=dtype, device=device)
+
+    liger_x = _tensor.clone().detach().requires_grad_(True)
+    torch_x = _tensor.clone().detach().requires_grad_(True)
+
+    liger_ln = LigerGroupNorm(num_channels, num_groups, eps=1e-6).to(dtype).to(device)
+    torch_ln = torch.nn.GroupNorm(num_channels=num_channels, num_groups=num_groups, eps=1e-6).to(dtype).to(device)
+
+    with torch.no_grad():
+        torch_ln.weight.copy_(liger_ln.weight)
+        torch_ln.bias.copy_(liger_ln.bias)
+
+    # Freeze weight and/or bias
+    if freeze_weight:
+        liger_ln.weight.requires_grad_(False)
+        torch_ln.weight.requires_grad_(False)
+    if freeze_bias:
+        liger_ln.bias.requires_grad_(False)
+        torch_ln.bias.requires_grad_(False)
+
+    liger_output = liger_ln(liger_x)
+    torch_output = torch_ln(torch_x)
+
+    assert torch.allclose(liger_output, torch_output, atol=atol, rtol=rtol)
+
+    grad_output = torch.randn_like(torch_x)
+    liger_output.backward(grad_output, retain_graph=True)
+    torch_output.backward(grad_output, retain_graph=True)
+
+    # Check input gradients match
+    assert torch.allclose(liger_x.grad, torch_x.grad, atol=atol, rtol=rtol)
+
+    # Check frozen params have no gradient
+    if freeze_weight:
+        assert liger_ln.weight.grad is None, "Liger weight.grad should be None when frozen"
+        assert torch_ln.weight.grad is None, "Torch weight.grad should be None when frozen"
+    else:
+        assert torch.allclose(liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol), (
+            "Weight grads different"
+        )
+
+    if freeze_bias:
+        assert liger_ln.bias.grad is None, "Liger bias.grad should be None when frozen"
+        assert torch_ln.bias.grad is None, "Torch bias.grad should be None when frozen"
+    else:
+        assert torch.allclose(liger_ln.bias.grad, torch_ln.bias.grad, atol=atol, rtol=rtol), "Bias grads different"

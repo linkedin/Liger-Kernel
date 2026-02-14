@@ -113,6 +113,8 @@ def _group_norm_backward_kernel(
     channels_per_group: tl.constexpr,  # number of groups in group norm
     BLOCK_SIZE: tl.constexpr,
     dtype: tl.constexpr,
+    compute_dW: tl.constexpr,
+    compute_dB: tl.constexpr,
 ):
     """
     References:
@@ -144,8 +146,10 @@ def _group_norm_backward_kernel(
 
     # We need to compute the sum terms of the backprop equations across all channels in the group
     for channel_idx in range(group_idx * channels_per_group, (group_idx + 1) * channels_per_group):
-        dW = 0.0
-        dB = 0.0
+        if compute_dW:
+            dW = 0.0
+        if compute_dB:
+            dB = 0.0
         # Move the pointers to the correct channel
         W = tl.load(W_ptr + channel_idx)
         for i in tl.range(0, hidden_size, BLOCK_SIZE):
@@ -163,16 +167,20 @@ def _group_norm_backward_kernel(
             )
 
             x_hat = (X - mean) * rstd
-            dW += tl.sum(UPSTREAM_grad * x_hat)
-            dB += tl.sum(UPSTREAM_grad)
+            if compute_dW:
+                dW += tl.sum(UPSTREAM_grad * x_hat)
+            if compute_dB:
+                dB += tl.sum(UPSTREAM_grad)
 
             wdy = W * UPSTREAM_grad
             c1 += tl.sum(x_hat * wdy)
             c2 += tl.sum(wdy)
 
         # Need to ensure additions to the same channel are atomic
-        tl.atomic_add(DW_ptr + channel_idx, dW.to(dtype))
-        tl.atomic_add(DB_ptr + channel_idx, dB.to(dtype))
+        if compute_dW:
+            tl.atomic_add(DW_ptr + channel_idx, dW.to(dtype))
+        if compute_dB:
+            tl.atomic_add(DB_ptr + channel_idx, dB.to(dtype))
 
     N = hidden_size * channels_per_group
     c1 = c1 / N
@@ -237,7 +245,7 @@ def group_norm_forward(X, num_channels, num_groups, W, B, eps):
     return Y.view(*shape), X.view(*shape), Mean, RSTD, BLOCK_SIZE
 
 
-def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
+def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups, compute_dW, compute_dB):
     shape = dY.shape
     batch_size = shape[0]
     hidden_size = dY.shape[-1]
@@ -248,8 +256,14 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
         dtype=X.dtype,
         device=X.device,
     )
-    DW = torch.zeros((num_channels), dtype=W.dtype, device=W.device)
-    DB = torch.zeros((num_channels), dtype=B.dtype, device=B.device)
+    if compute_dW:
+        DW = torch.zeros((num_channels), dtype=W.dtype, device=W.device)
+    else:
+        DW = None
+    if compute_dB:
+        DB = torch.zeros((num_channels), dtype=B.dtype, device=B.device)
+    else:
+        DB = None
     triton_dtype = tl.float32 if X.dtype == torch.float32 else tl.bfloat16
 
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(hidden_size))
@@ -263,13 +277,15 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
         Mean.stride(1),
         RSTD,
         DX,
-        DW,
-        DB,
+        DW if compute_dW else X,
+        DB if compute_dB else X,
         dY,
         hidden_size,
         channels_per_group,
         BLOCK_SIZE=BLOCK_SIZE,
         dtype=triton_dtype,
+        compute_dW=compute_dW,
+        compute_dB=compute_dB,
     )
 
     # Return tensors in the original shape
@@ -305,5 +321,9 @@ class LigerGroupNormFunction(torch.autograd.Function):
     @ensure_contiguous
     def backward(ctx, dY):
         X, W, B, Mean, RSTD = ctx.saved_tensors
-        DX, DW, DB = group_norm_backward(dY, X, W, B, Mean, RSTD, ctx.num_channels, ctx.num_groups)
+        need_dW = ctx.needs_input_grad[1]
+        need_dB = ctx.needs_input_grad[2]
+        DX, DW, DB = group_norm_backward(
+            dY, X, W, B, Mean, RSTD, ctx.num_channels, ctx.num_groups, compute_dW=need_dW, compute_dB=need_dB
+        )
         return DX, DW, DB, None, None, None
