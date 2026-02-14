@@ -29,6 +29,9 @@ from liger_kernel.ops.backends._ascend.ops.qwen2vl_mrope import qwen2vl_mrope_fo
 from liger_kernel.ops.backends._ascend.ops.rope import LigerRopeFunction
 from liger_kernel.ops.backends._ascend.ops.rope import rope_backward
 from liger_kernel.ops.backends._ascend.ops.rope import rope_forward
+from liger_kernel.ops.backends._ascend.ops.sparsemax import LigerSparsemaxFunction
+from liger_kernel.ops.backends._ascend.ops.sparsemax import sparsemax_backward
+from liger_kernel.ops.backends._ascend.ops.sparsemax import sparsemax_forward
 from liger_kernel.ops.backends._ascend.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_backward
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_forward
@@ -58,4 +61,7 @@ __all__ = [
     "LigerLlama4RopeFunction",
     "llama4_rope_forward",
     "llama4_rope_backward",
+    "LigerSparsemaxFunction",
+    "sparsemax_forward",
+    "sparsemax_backward",
 ]
