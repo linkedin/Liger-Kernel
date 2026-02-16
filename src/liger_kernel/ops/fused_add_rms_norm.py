@@ -8,8 +8,9 @@ import triton.language as tl
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import get_npu_core_count
+from liger_kernel.ops.utils import set_large_grf_mode
 from liger_kernel.ops.utils import torch_to_triton_dtype
-from liger_kernel.utils import get_npu_multi_processor_count
 from liger_kernel.utils import is_npu_available
 
 if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
@@ -162,23 +163,21 @@ def _fused_add_rms_norm_backward_kernel(
 
     dW_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 
-    dY_ptr += row_start * dY_row_stride
-    dX_ptr += row_start * dX_row_stride
-    if has_dS_out:
-        dS_out_ptr += row_start * dS_out_row_stride
-
-    X_ptr += row_start * X_row_stride
-    RSTD_ptr += row_start
-
     W_row = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
     W_row = W_row + offset
 
-    for _ in range(row_start, row_end):
-        dY_row = tl.load(dY_ptr + col_offsets, mask=mask, other=0.0)
-        X_row = tl.load(X_ptr + col_offsets, mask=mask, other=0.0)
+    for row_idx in range(row_start, row_end):
+        dy_base = dY_ptr + row_idx * dY_row_stride
+        dx_base = dX_ptr + row_idx * dX_row_stride
+
+        x_base = X_ptr + row_idx * X_row_stride
+        rstd_base = RSTD_ptr + row_idx * RSTD_row_stride
+
+        dY_row = tl.load(dy_base + col_offsets, mask=mask, other=0.0)
+        X_row = tl.load(x_base + col_offsets, mask=mask, other=0.0)
 
         # Get cached rms
-        rstd_row = tl.load(RSTD_ptr)
+        rstd_row = tl.load(rstd_base)
 
         X_row = X_row.to(tl.float32)
 
@@ -195,11 +194,11 @@ def _fused_add_rms_norm_backward_kernel(
         dX_row = rstd_row * m
 
         if has_dS_out:
-            dS_out_row = tl.load(dS_out_ptr + col_offsets, mask=mask, other=0.0)
+            ds_base = dS_out_ptr + row_idx * dS_out_row_stride
+            dS_out_row = tl.load(ds_base + col_offsets, mask=mask, other=0.0)
             dX_row += (rstd_row) * (
                 -(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row
             ) + dS_out_row
-            dS_out_ptr += dS_out_row_stride
         else:
             dX_row += (rstd_row) * (-(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row)
 
@@ -210,12 +209,7 @@ def _fused_add_rms_norm_backward_kernel(
             # here X_row is already in fp32 (see previous if block)
             dW_row += dY_row * (X_row * rstd_row)
 
-        tl.store(dX_ptr + col_offsets, dX_row.to(X_dtype), mask=mask)
-
-        dY_ptr += dY_row_stride
-        dX_ptr += dX_row_stride
-        X_ptr += X_row_stride
-        RSTD_ptr += RSTD_row_stride
+        tl.store(dx_base + col_offsets, dX_row.to(X_dtype), mask=mask)
 
     tl.store(dW_ptr + row_block_id * dW_row_stride + col_offsets, dW_row, mask=mask)
 
@@ -254,7 +248,7 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
     # XPU-specific optimization
     kernel_args = {}
     if X.device.type == "xpu":
-        kernel_args["grf_mode"] = "large"
+        set_large_grf_mode(kernel_args)
 
     # TODO: add _block_fused_add_rms_norm_forward_kernel
     _fused_add_rms_norm_forward_kernel[(n_rows,)](
@@ -296,7 +290,7 @@ def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BL
     elif S.device.type == "xpu":
         sm_count = torch.xpu.get_device_properties(S.device).gpu_eu_count
     elif S.device.type == "npu":
-        sm_count = get_npu_multi_processor_count()
+        sm_count = get_npu_core_count()
 
     # fp32 for numerical stability especially.
     _dW = torch.empty((sm_count, n_cols), dtype=torch.float32, device=W.device)
@@ -314,7 +308,7 @@ def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BL
     # XPU-specific optimization
     kernel_args = {}
     if S.device.type == "xpu":
-        kernel_args["grf_mode"] = "large"
+        set_large_grf_mode(kernel_args)
 
     # TODO: add _block_fused_add_rms_norm_backward_kernel
     _fused_add_rms_norm_backward_kernel[grid](

@@ -1,3 +1,5 @@
+import inspect
+
 from typing import Optional
 from typing import Tuple
 
@@ -71,6 +73,10 @@ def LigerForCausalLMLoss(
     return_token_accuracy: bool = False,
     **kwargs,
 ):
+    # Filter out inapplicable kwargs to liger_fused_linear_cross_entropy
+    applicable_params = inspect.signature(F.liger_fused_linear_cross_entropy).parameters
+    kwargs = {k: v for k, v in kwargs.items() if k in applicable_params}
+
     # Skip upcast since intermediate values for the loss are all fp32 in kernel
     if shift_labels is None:
         # Shift so that token < n predict n

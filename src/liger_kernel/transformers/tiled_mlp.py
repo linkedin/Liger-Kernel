@@ -57,11 +57,7 @@ class LigerTiledGEGLUMLP(nn.Module):
         Returns:
             Output tensor of the same shape as input
         """
-        compute_params = [
-            self.gate_proj.weight,
-            self.up_proj.weight,
-            self.down_proj.weight,
-        ]
+        compute_params = [p for p in self.parameters() if p.requires_grad]
 
         return apply_tiled_mlp(
             fn=self._mlp_forward,
@@ -118,11 +114,7 @@ class LigerTiledSwiGLUMLP(nn.Module):
         Returns:
             Output tensor of the same shape as input
         """
-        compute_params = [
-            self.gate_proj.weight,
-            self.up_proj.weight,
-            self.down_proj.weight,
-        ]
+        compute_params = [p for p in self.parameters() if p.requires_grad]
 
         return apply_tiled_mlp(
             fn=self._mlp_forward,

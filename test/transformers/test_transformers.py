@@ -5,6 +5,7 @@ def test_import_from_root():
     try:
         from liger_kernel.transformers import LigerBlockSparseTop2MLP  # noqa: F401
         from liger_kernel.transformers import LigerCrossEntropyLoss  # noqa: F401
+        from liger_kernel.transformers import LigerExperts  # noqa: F401
         from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss  # noqa: F401
         from liger_kernel.transformers import LigerGEGLUMLP  # noqa: F401
         from liger_kernel.transformers import LigerLayerNorm  # noqa: F401

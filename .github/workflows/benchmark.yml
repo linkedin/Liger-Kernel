@@ -35,22 +35,26 @@ jobs:
       OUTPUT_DIR: benchmarks
       OUTPUT_FILENAME: benchmark.csv
       GENERATED_CSV: benchmark/data/all_benchmark_data.csv
+      # Sanitize user-controlled inputs by declaring them as environment variables
+      # This prevents command injection attacks by filtering dangerous characters
+      INPUT_COMMIT_HASH: ${{ github.event.inputs.commit_hash }}
+      INPUT_OVERWRITE: ${{ github.event.inputs.overwrite }}
 
 
     steps:
       # Step: Decide the commit hash to use
       # Step: Checkout full history so we can check out any commit
       - name: Checkout full repo history
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0  # Important: so we can checkout arbitrary commit
           
       - name: Determine commit hash to checkout
         id: choose_commit
         run: |
-          if [ "${{ github.event_name}}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.commit_hash }}" != "main" ]; then
-            echo "Using manual input commit: ${{ github.event.inputs.commit_hash }}"
-            echo "hash=${{ github.event.inputs.commit_hash }}" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name}}" == "workflow_dispatch" ] && [ "$INPUT_COMMIT_HASH" != "main" ]; then
+            echo "Using manual input commit: $INPUT_COMMIT_HASH"
+            echo "hash=$INPUT_COMMIT_HASH" >> $GITHUB_OUTPUT
           else
             echo "Using latest commit from main"
             echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
@@ -60,10 +64,10 @@ jobs:
       - name: Replace benchmark folder from main (manual only, commit ≠ main)
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.commit_hash != 'main' }}
         run: |
-          echo "Detected manual trigger with commit_hash = ${{ github.event.inputs.commit_hash }}"
+          echo "Detected manual trigger with commit_hash = $INPUT_COMMIT_HASH"
           
           # Save current branch (detached HEAD at old commit)
-          ORIG_COMMIT=${{ github.event.inputs.commit_hash }}
+          ORIG_COMMIT="$INPUT_COMMIT_HASH"
 
           # Fetch and checkout main
           git fetch origin main
@@ -72,7 +76,7 @@ jobs:
           # Save benchmark folder from main
           cp -r benchmark /tmp/benchmark_main
           # Checkout back to target commit
-          git checkout $ORIG_COMMIT
+          git checkout "$ORIG_COMMIT"
           # Replace old benchmark with one from main
           rm -rf benchmark
           cp -r /tmp/benchmark_main benchmark
@@ -85,7 +89,7 @@ jobs:
           
           if curl --output /dev/null --silent --head --fail "$BENCHMARK_URL"; then
             echo "Benchmark already exists for commit $COMMIT_HASH"
-            if [ "${{ github.event.inputs.overwrite }}" != "true" ]; then
+            if [ "$INPUT_OVERWRITE" != "true" ]; then
               echo "Overwrite is false - exiting"
               exit 1
             else
@@ -96,7 +100,7 @@ jobs:
           fi
 
       - name: Set up Python
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v6
         with:
           python-version: '3.10'
 
@@ -117,7 +121,7 @@ jobs:
         
        # Step 5: Checkout gh-pages branch in a subfolderAdd commentMore actions
       - name: Checkout gh-pages
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           ref: gh-pages
           path: gh-pages

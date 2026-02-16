@@ -20,6 +20,8 @@ def triton_grpo_loss(
     max_completion_length=None,
     importance_sampling_level="token",
     reduce=False,
+    sapo_temperature_pos=1.0,
+    sapo_temperature_neg=1.05,
     vllm_is_ratio=None,
 ):
     """
@@ -72,6 +74,8 @@ def triton_grpo_loss(
         max_completion_length,
         reduce,
         importance_sampling_level,
+        sapo_temperature_pos,
+        sapo_temperature_neg,
         vllm_is_ratio,
     )
 
@@ -94,7 +98,8 @@ def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion
         mask = torch.ones_like(per_token_loss, dtype=per_token_loss.dtype, device=per_token_loss.device)
     mask = mask.to(per_token_loss.dtype)
 
-    if loss_type == "grpo":
+    if loss_type == "grpo" or loss_type == "sapo":
+        # SAPO uses the same normalization as GRPO (per-sequence average)
         per_seq = (per_token_loss * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)
         return per_seq.mean()
     if loss_type == "bnpo":
@@ -103,7 +108,8 @@ def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion
         batch = per_token_loss.shape[0]
         max_len = max_completion_length if max_completion_length is not None else per_token_loss.shape[1]
         return (per_token_loss * mask).sum() / (batch * max_len)
-    if loss_type == "dapo":
+    if loss_type == "dapo" or loss_type == "cispo":
+        # CISPO uses the same normalization as DAPO
         normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask)
         return (per_token_loss * mask).sum() / normalizer
     raise ValueError(f"Unsupported loss_type '{loss_type}' for Triton GRPO loss.")
