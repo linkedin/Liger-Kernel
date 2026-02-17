@@ -77,6 +77,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         sapo_temperature_neg=1.05,  # Temperature for negative advantages in SAPO
         vllm_is_ratio=None,  # vLLM importance sampling ratio (chunk_size, seq_len) or (chunk_size, 1) or None
         delta=None,  # Upper clamp for two-sided clipping (INTELLECT-2)
+        use_bias_correction_kl=False,  # Importance-sampling-corrected KL (DeepSeek-V3.2)
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -157,6 +158,10 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         if beta != 0.0:
             # Compute KL penalty (approximates KL[per_token_logps, ref_per_token_logps])
             kl_div = k3_loss_fn(ref_per_token_logps, per_token_logps)
+            if use_bias_correction_kl:
+                # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= token-level coef_1
+                token_coef_1 = torch.exp(per_token_logps - old_per_token_logps)
+                kl_div = kl_div * token_coef_1
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
 
@@ -245,6 +250,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         chunk_size=1,
         vllm_is_ratio=None,
         delta=None,
+        use_bias_correction_kl=False,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -310,6 +316,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             sapo_temperature_neg=sapo_temperature_neg,
             vllm_is_ratio=vllm_is_ratio,
             delta=delta,
+            use_bias_correction_kl=use_bias_correction_kl,
         )
 
     @staticmethod
@@ -344,6 +351,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_chunk_size
             None,  # grad_vllm_is_ratio
             None,  # grad_delta
+            None,  # grad_use_bias_correction_kl
         )
 
 
@@ -365,6 +373,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         sapo_temperature_neg: float = 1.05,
         temperature: float = 1.0,
         delta: Optional[float] = None,
+        use_bias_correction_kl: bool = False,
     ):
         """
         Args:
@@ -383,6 +392,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             sapo_temperature_neg (float): Temperature for negative advantages in SAPO. Defaults to 1.05.
             temperature (float): Temperature for the logits.
             delta (float, optional): Upper clamp for two-sided clipping (INTELLECT-2). None means disabled.
+            use_bias_correction_kl (bool): If True, multiply KL by importance sampling ratio (DeepSeek-V3.2).
         """
         super().__init__()
         # Validate SAPO temperatures to prevent division by zero or numerical instability
@@ -405,6 +415,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         self.sapo_temperature_neg = sapo_temperature_neg
         self.temperature = temperature
         self.delta = delta
+        self.use_bias_correction_kl = use_bias_correction_kl
 
     def forward(
         self,
@@ -447,4 +458,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.chunk_size,
             vllm_is_ratio,
             self.delta,
+            self.use_bias_correction_kl,
         )

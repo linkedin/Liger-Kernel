@@ -56,6 +56,7 @@ def torch_grpo_loss(
     eps_low,
     eps_high,
     delta=None,
+    use_bias_correction_kl=False,
 ):
     assert logits.is_contiguous() and completion_ids.is_contiguous()
     assert old_logp is None or old_logp.is_contiguous()
@@ -79,6 +80,8 @@ def torch_grpo_loss(
     per_token_kl = None
     if beta != 0.0:
         per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+        if use_bias_correction_kl:
+            per_token_kl = per_token_kl * torch.exp(per_token_logps - old_logp)
         if completion_mask is not None:
             per_token_kl *= completion_mask
         per_token_loss = per_token_loss + beta * per_token_kl
@@ -87,7 +90,16 @@ def torch_grpo_loss(
 
 
 def torch_cispo_loss(
-    logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, temperature, beta, eps_high
+    logits,
+    old_logp,
+    ref_logp,
+    completion_ids,
+    advantages,
+    completion_mask,
+    temperature,
+    beta,
+    eps_high,
+    use_bias_correction_kl=False,
 ):
     """Reference implementation for CISPO loss.
 
@@ -118,6 +130,8 @@ def torch_cispo_loss(
     per_token_kl = None
     if beta != 0.0:
         per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+        if use_bias_correction_kl:
+            per_token_kl = per_token_kl * torch.exp(per_token_logps - old_logp)
         if completion_mask is not None:
             per_token_kl *= completion_mask
         per_token_loss = per_token_loss + beta * per_token_kl
@@ -136,6 +150,7 @@ def torch_sapo_loss(
     beta,
     sapo_temperature_pos,
     sapo_temperature_neg,
+    use_bias_correction_kl=False,
 ):
     """Reference implementation for SAPO loss.
 
@@ -168,6 +183,8 @@ def torch_sapo_loss(
     per_token_kl = None
     if beta != 0.0:
         per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+        if use_bias_correction_kl:
+            per_token_kl = per_token_kl * torch.exp(per_token_logps - old_logp)
         if completion_mask is not None:
             per_token_kl *= completion_mask
         per_token_loss = per_token_loss + beta * per_token_kl
@@ -373,6 +390,97 @@ def test_grpo_loss_with_delta(B, T, V, temperature, num_iteration, beta, eps_low
     assert_verbose_allclose(logits2.grad, logits3.grad, atol=atol, rtol=rtol)
 
 
+@pytest.mark.parametrize(
+    "temperature, num_iteration, eps_low, eps_high",
+    [(0.7, 5, 0.2, 0.4)],
+)
+@pytest.mark.parametrize(
+    "B, T, V",
+    [
+        (2, 128, 1000),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.bfloat16, 5e-2, 5e-1),
+    ],
+)
+def test_grpo_loss_with_bias_correction_kl(B, T, V, temperature, num_iteration, eps_low, eps_high, dtype, atol, rtol):
+    """Test use_bias_correction_kl (importance-sampling-corrected KL from DeepSeek-V3.2)."""
+    beta = 0.04  # Must be non-zero for KL to matter
+    _input = torch.randn(B, T + 1, V, device=device, dtype=dtype)
+
+    logits1 = _input.clone().requires_grad_(True)
+    logits2 = _input.clone().requires_grad_(True)
+    logits3 = _input.clone().float().requires_grad_(True)
+
+    completion_ids = torch.randint(0, V - 1, (B, T), dtype=torch.int64, device=device)
+    completion_mask = torch.ones_like(completion_ids, dtype=torch.int32)
+    completion_mask[:, -20:] = 0
+
+    ref_logp = torch.randn(B, T, device=device, dtype=torch.float32)
+    old_logp = torch.randn(B, T, device=device, dtype=torch.float32)
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+
+    loss1, kl1, is_clipped1 = torch_grpo_loss(
+        logits1,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        use_bias_correction_kl=True,
+    )
+
+    loss2, kl2, is_clipped2 = triton_grpo_loss(
+        logits2,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        inplace=True,
+        use_bias_correction_kl=True,
+    )
+
+    loss3, kl3, is_clipped3 = torch_grpo_loss(
+        logits3,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        use_bias_correction_kl=True,
+    )
+
+    dy = torch.randn_like(loss3)
+    loss1.backward(dy)
+    loss2.backward(dy)
+    loss3.backward(dy)
+
+    assert_verbose_allclose(loss1, loss3, atol=atol, rtol=rtol)
+    if kl1 is not None and kl3 is not None:
+        assert_verbose_allclose(kl1, kl3, atol=atol, rtol=rtol)
+    assert_verbose_allclose(logits1.grad, logits3.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(loss2, loss3, atol=atol, rtol=rtol)
+    if kl2 is not None and kl3 is not None:
+        assert_verbose_allclose(kl2, kl3, atol=atol, rtol=rtol)
+    assert_verbose_allclose(logits2.grad, logits3.grad, atol=atol, rtol=rtol)
+
+
 def trl_reference_grpo_loss(
     logits,
     old_logp,
@@ -387,6 +495,7 @@ def trl_reference_grpo_loss(
     loss_type,
     importance_sampling_level,
     delta=None,
+    use_bias_correction_kl=False,
 ):
     """TRL reference implementation from grpo_trainer.py"""
     B, L_ADD_1, V = logits.shape
@@ -421,6 +530,8 @@ def trl_reference_grpo_loss(
 
     if beta != 0.0:
         kl = torch.exp(ref_logp - per_token_logps) - (ref_logp - per_token_logps) - 1.0
+        if use_bias_correction_kl:
+            kl = kl * torch.exp(per_token_logps - old_logp)
         per_token_loss = per_token_loss + beta * kl
 
     # Loss reduction
@@ -528,6 +639,7 @@ def trl_reference_grpo_loss_with_vllm_is(
     importance_sampling_level,
     vllm_is_ratio,
     delta=None,
+    use_bias_correction_kl=False,
 ):
     """TRL reference implementation with vLLM IS ratio correction."""
     B, L_ADD_1, V = logits.shape
@@ -566,6 +678,8 @@ def trl_reference_grpo_loss_with_vllm_is(
 
     if beta != 0.0:
         kl = torch.exp(ref_logp - per_token_logps) - (ref_logp - per_token_logps) - 1.0
+        if use_bias_correction_kl:
+            kl = kl * torch.exp(per_token_logps - old_logp)
         per_token_loss = per_token_loss + beta * kl
 
     # Loss reduction
@@ -599,6 +713,7 @@ def torch_grpo_loss_with_vllm_is(
     sapo_temperature_pos=1.0,
     sapo_temperature_neg=1.05,
     delta=None,
+    use_bias_correction_kl=False,
 ):
     """Reference implementation with vLLM IS ratio correction for all loss types."""
     assert logits.is_contiguous() and completion_ids.is_contiguous()
@@ -635,6 +750,8 @@ def torch_grpo_loss_with_vllm_is(
     per_token_kl = None
     if beta != 0.0:
         per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+        if use_bias_correction_kl:
+            per_token_kl = per_token_kl * torch.exp(per_token_logps - old_logp)
         if completion_mask is not None:
             per_token_kl *= completion_mask
         per_token_loss = per_token_loss + beta * per_token_kl

@@ -24,6 +24,7 @@ def triton_grpo_loss(
     sapo_temperature_neg=1.05,
     vllm_is_ratio=None,
     delta=None,
+    use_bias_correction_kl=False,
 ):
     """
     Triton-optimized GRPO loss function.
@@ -50,6 +51,8 @@ def triton_grpo_loss(
         delta: Upper clamp for two-sided clipping (INTELLECT-2). When set, coef_1 is clamped
             to max=delta before computing the PPO loss. Only supported for standard PPO loss
             types (grpo, bnpo, dr_grpo, dapo, luspo). None means disabled.
+        use_bias_correction_kl: If True, multiply KL divergence by coef_1 (importance sampling
+            ratio) for bias-corrected KL estimation (DeepSeek-V3.2). Default False.
 
     Returns:
         If reduce=True: (loss, metrics) where metrics = [kl_mean, clip_ratio] or [clip_ratio]
@@ -82,6 +85,7 @@ def triton_grpo_loss(
         sapo_temperature_neg,
         vllm_is_ratio,
         delta,
+        use_bias_correction_kl,
     )
 
     if not reduce:

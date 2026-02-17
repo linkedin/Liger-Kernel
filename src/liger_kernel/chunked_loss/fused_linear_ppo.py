@@ -43,6 +43,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         sapo_temperature_neg=1.05,
         vllm_is_ratio=None,
         delta=None,
+        use_bias_correction_kl=False,
     ):
         # TODO: check torch compile matmul
         """Chunked forward pass for PPO loss computation.
@@ -123,6 +124,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             sapo_temperature_pos=sapo_temperature_pos,
             sapo_temperature_neg=sapo_temperature_neg,
             delta=delta,
+            use_bias_correction_kl=use_bias_correction_kl,
         )
 
         def fused_fwd_bwd(
@@ -324,6 +326,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         sapo_temperature_pos=1.0,
         sapo_temperature_neg=1.05,
         delta=None,
+        use_bias_correction_kl=False,
     ):
         """Compute loss for a single chunk."""
         # Get policy log probabilities using chunk_forward
@@ -357,6 +360,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             sapo_temperature_neg=sapo_temperature_neg,
             vllm_is_ratio=vllm_is_ratio_chunk,
             delta=delta,
+            use_bias_correction_kl=use_bias_correction_kl,
         )
 
         return chunk_loss, chunk_metrics
@@ -413,4 +417,5 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             None,  # grad_sapo_temperature_neg
             None,  # grad_vllm_is_ratio
             None,  # grad_delta
+            None,  # grad_use_bias_correction_kl
         )

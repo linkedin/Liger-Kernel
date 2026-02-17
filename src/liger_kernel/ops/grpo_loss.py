@@ -105,6 +105,7 @@ def _grpo_loss_fwd_kernel(
     SAPO_TEMP_POS,
     SAPO_TEMP_NEG,
     DELTA,
+    USE_BIAS_CORRECTION_KL: tl.constexpr,
     L: tl.constexpr,
     N: tl.constexpr,
     BLOCK_N: tl.constexpr = 4096,
@@ -189,6 +190,9 @@ def _grpo_loss_fwd_kernel(
         KL += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
         kl = tl.exp(ref_logp - logp) - (ref_logp - logp) - 1
+        if USE_BIAS_CORRECTION_KL:
+            # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= coef_1
+            kl = kl * tl.exp(logp - old_logp)
         per_token_loss += BETA * kl
         tl.store(KL, kl)
 
@@ -201,6 +205,7 @@ def _grpo_loss_fwd_kernel(
 @triton.jit
 def _grpo_loss_fwd_kernel_seq(
     LOGITS,
+    OLD_LOGP,
     REF_LOGP,
     INPUT_IDS,
     COMPLETION_MASK,
@@ -216,6 +221,7 @@ def _grpo_loss_fwd_kernel_seq(
     IS_CLIPPED,
     TEMPERATURE,
     BETA: tl.constexpr,
+    USE_BIAS_CORRECTION_KL: tl.constexpr,
     L: tl.constexpr,
     N: tl.constexpr,
     BLOCK_N: tl.constexpr = 4096,
@@ -277,6 +283,13 @@ def _grpo_loss_fwd_kernel_seq(
         KL += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
         kl = tl.exp(ref_logp - logp) - (ref_logp - logp) - 1
+        if USE_BIAS_CORRECTION_KL:
+            # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= token-level coef_1
+            if OLD_LOGP is None:
+                old_logp = logp
+            else:
+                old_logp = tl.load(OLD_LOGP + off_b * L + off_l).to(tl.float32)
+            kl = kl * tl.exp(logp - old_logp)
         per_token_loss += BETA * kl
         tl.store(KL, kl)
 
@@ -292,6 +305,7 @@ def _grpo_loss_bwd_kernel_seq(
     DLOSS_SUM,
     DLOGITS,
     LOGITS,
+    OLD_LOGP,
     REF_LOGP,
     INPUT_IDS,
     ADVANTAGES,
@@ -301,6 +315,7 @@ def _grpo_loss_bwd_kernel_seq(
     SEQ_LEN,  # Number of valid tokens per sequence (B,)
     TEMPERATURE,
     BETA: tl.constexpr,
+    USE_BIAS_CORRECTION_KL: tl.constexpr,
     EPS_LOW,
     EPS_HIGH,
     DELTA,
@@ -361,7 +376,16 @@ def _grpo_loss_bwd_kernel_seq(
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
-        dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
+        if USE_BIAS_CORRECTION_KL:
+            # d(kl * coef_1)/d(logp) = coef_1 * (logp - ref_logp), where coef_1 = exp(logp - old_logp)
+            if OLD_LOGP is None:
+                old_logp = logp
+            else:
+                old_logp = tl.load(OLD_LOGP + off_b * L + off_l).to(tl.float32)
+            token_coef_1 = tl.exp(logp - old_logp)
+            dlogp += BETA * token_coef_1 * (logp - ref_logp) * dloss
+        else:
+            dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
 
     dlogp = dlogp / TEMPERATURE
     tl.debug_barrier()
@@ -394,6 +418,7 @@ def _grpo_loss_bwd_kernel(
     SAPO_TEMP_POS,
     SAPO_TEMP_NEG,
     DELTA,
+    USE_BIAS_CORRECTION_KL: tl.constexpr,
     loss_stride0,
     loss_stride1,
     L: tl.constexpr,
@@ -478,7 +503,11 @@ def _grpo_loss_bwd_kernel(
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
-        dlogp += BETA * (1 - tl.exp(ref_logp - logp))
+        if USE_BIAS_CORRECTION_KL:
+            # d(kl * coef_1)/d(logp) = coef_1 * (logp - ref_logp), where coef_1 = exp(logp - old_logp)
+            dlogp += BETA * coef_1 * (logp - ref_logp)
+        else:
+            dlogp += BETA * (1 - tl.exp(ref_logp - logp))
 
     dlogp = dlogp * dloss / TEMPERATURE
     tl.debug_barrier()
@@ -541,6 +570,7 @@ class GrpoLossFunction(torch.autograd.Function):
         sapo_temperature_neg=1.05,
         vllm_is_ratio=None,
         delta=None,
+        use_bias_correction_kl=False,
     ):
         assert logits.is_contiguous() and completion_ids.is_contiguous()
         assert old_logp is None or old_logp.is_contiguous()
@@ -640,6 +670,7 @@ class GrpoLossFunction(torch.autograd.Function):
             kwargs = {"BLOCK_N": 2048, "num_stages": 2, "num_warps": 1}
             _grpo_loss_fwd_kernel_seq[(B, L)](
                 logits,
+                old_logp,
                 ref_logp,
                 completion_ids,
                 completion_mask,
@@ -655,6 +686,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 is_clipped,
                 temperature,
                 beta,
+                use_bias_correction_kl,
                 L,
                 N,
                 **kwargs,
@@ -698,6 +730,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 sapo_temperature_pos,
                 sapo_temperature_neg,
                 delta_val,
+                use_bias_correction_kl,
                 L,
                 N,
                 **kwargs,
@@ -723,6 +756,7 @@ class GrpoLossFunction(torch.autograd.Function):
             vllm_is_ratio_stride,
             reduce,
             delta_val,
+            use_bias_correction_kl,
         )
 
         # Compute metrics before reduction
@@ -760,6 +794,7 @@ class GrpoLossFunction(torch.autograd.Function):
             vllm_is_ratio_stride,
             reduce,
             delta_val,
+            use_bias_correction_kl,
         ) = ctx.infos
 
         if importance_sampling_level == "sequence":
@@ -821,6 +856,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 dloss_sum,
                 dlogits,
                 logits,
+                old_logp,
                 ref_logp,
                 completion_ids,
                 advantages,
@@ -830,6 +866,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 seq_lens,
                 temperature,
                 beta,
+                use_bias_correction_kl,
                 eps_low,
                 eps_high,
                 delta_val,
@@ -860,6 +897,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 sapo_temperature_pos,
                 sapo_temperature_neg,
                 delta_val,
+                use_bias_correction_kl,
                 *dloss.stride(),
                 L,
                 N,
@@ -867,9 +905,10 @@ class GrpoLossFunction(torch.autograd.Function):
             )
 
         dlogits[:, -1, :] = 0
-        # Return gradients for all forward inputs: dlogits + 18 None for non-differentiable params
+        # Return gradients for all forward inputs: dlogits + 19 None for non-differentiable params
         return (
             dlogits,
+            None,
             None,
             None,
             None,
