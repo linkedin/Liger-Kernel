@@ -13,6 +13,7 @@ _str_to_loss_type = {
     "dapo": _LOSS_TYPE_GRPO.value,
     "bnpo": _LOSS_TYPE_GRPO.value,
     "dr_grpo": _LOSS_TYPE_GRPO.value,
+    "luspo": _LOSS_TYPE_GRPO.value,
     "cispo": _LOSS_TYPE_CISPO.value,
     "sapo": _LOSS_TYPE_SAPO.value,
 }
@@ -493,7 +494,9 @@ def _reduce_loss(per_token_loss, mask, loss_type, max_completion_length, B, L):
         return (per_token_loss * mask).sum() / (B * max_len)
     elif loss_type == "dapo" or loss_type == "cispo":
         return (per_token_loss * mask).sum() / _compute_dapo_normalizer(mask)
-    raise ValueError(f"Unknown loss_type: {loss_type}. Expected one of: grpo, bnpo, dr_grpo, dapo, cispo, sapo")
+    elif loss_type == "luspo":
+        return (per_token_loss * mask.sum(-1, keepdim=True)).mean()
+    raise ValueError(f"Unknown loss_type: {loss_type}. Expected one of: grpo, bnpo, dr_grpo, dapo, cispo, sapo, luspo")
 
 
 class GrpoLossFunction(torch.autograd.Function):
@@ -529,6 +532,13 @@ class GrpoLossFunction(torch.autograd.Function):
         # Validate loss_type
         if loss_type not in _str_to_loss_type:
             raise ValueError(f"Unknown loss_type '{loss_type}'. Supported types: {list(_str_to_loss_type.keys())}")
+
+        # Validate sequence-level + loss_type combinations
+        if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo"):
+            raise ValueError(
+                f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'. "
+                f"Use importance_sampling_level='token' instead."
+            )
 
         # Validate SAPO temperatures to prevent division by zero or numerical instability
         if loss_type == "sapo":
@@ -590,9 +600,7 @@ class GrpoLossFunction(torch.autograd.Function):
             coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)  # (B,)
 
             # Compute is_clipped at sequence level
-            is_clipped_seq = ((coef_1 < 1 - eps_low) & (advantages < 0)) | (
-                (coef_1 > 1 + eps_high) & (advantages > 0)
-            )
+            is_clipped_seq = ((coef_1 < 1 - eps_low) & (advantages < 0)) | ((coef_1 > 1 + eps_high) & (advantages > 0))
             is_clipped_seq = is_clipped_seq.float()  # (B,)
 
             # Step 3: Run Triton kernel with pre-computed coefficients
@@ -752,6 +760,10 @@ class GrpoLossFunction(torch.autograd.Function):
             dloss = dloss_input * mask / (B * max_len)
         elif loss_type == "dapo" or loss_type == "cispo":
             dloss = dloss_input * mask / _compute_dapo_normalizer(mask)
+        elif loss_type == "luspo":
+            # loss = mean(per_token_loss * seq_lens), mean divides by B*L
+            seq_lens_bwd = mask.sum(-1, keepdim=True).clamp(min=1.0)
+            dloss = dloss_input * seq_lens_bwd / (B * L)
         else:
             raise ValueError(f"Unknown loss_type: {loss_type}")
 
@@ -819,6 +831,22 @@ class GrpoLossFunction(torch.autograd.Function):
         dlogits[:, -1, :] = 0
         # Return gradients for all forward inputs: dlogits + 17 None for non-differentiable params
         return (
-            dlogits, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            dlogits,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             None,
         )

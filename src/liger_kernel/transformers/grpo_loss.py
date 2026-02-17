@@ -39,7 +39,7 @@ def triton_grpo_loss(
         eps_low: Lower clipping bound for importance ratio
         eps_high: Upper clipping bound for importance ratio
         inplace: Whether to modify logits in-place during backward
-        loss_type: Loss reduction type ("grpo", "bnpo", "dr_grpo", "dapo")
+        loss_type: Loss reduction type ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo")
         max_completion_length: Max completion length for dr_grpo loss type; defaults to sequence length if None
         importance_sampling_level: "token" or "sequence" importance sampling
         reduce: If True, return reduced loss; if False, return per-token loss
@@ -112,6 +112,9 @@ def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion
         # CISPO uses the same normalization as DAPO
         normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask)
         return (per_token_loss * mask).sum() / normalizer
+    if loss_type == "luspo":
+        # LUSPO: scale each sequence's loss by its valid token count, then average across sequences
+        return (per_token_loss * mask.sum(-1, keepdim=True)).mean()
     raise ValueError(f"Unsupported loss_type '{loss_type}' for Triton GRPO loss.")
 
 

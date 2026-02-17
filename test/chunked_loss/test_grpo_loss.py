@@ -226,6 +226,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
         elif self.loss_type == "cispo":
             normalizer = attention_mask.sum().clamp(min=1.0)
             loss = (per_token_loss * attention_mask).sum() / normalizer
+        elif self.loss_type == "luspo":
+            loss = (per_token_loss * attention_mask.sum(-1, keepdim=True)).mean()
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
 
@@ -330,7 +332,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         (False, False, True),
     ],
 )
-@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo", "dapo", "cispo", "sapo"])
+@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo"])
 @pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
 def test_correctness(
     B,
@@ -352,6 +354,19 @@ def test_correctness(
     loss_type,
     importance_sampling_level,
 ):
+    if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo"):
+        pytest.skip(f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'")
+
+    # LUSPO's formula multiplies per_token_loss by seq_lens, amplifying torch.compile
+    # numerical differences by O(T). Relax tolerances to account for this amplification.
+    if loss_type == "luspo":
+        if dtype == torch.bfloat16:
+            atol = max(atol, 1.0)
+            rtol = max(rtol, 5.0)
+        else:
+            atol = max(atol, 1e-4)
+            rtol = max(rtol, 5e-3)
+
     # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
     max_completion_length = T if loss_type == "dr_grpo" else None
@@ -495,7 +510,7 @@ def test_correctness(
         )
 
 
-@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dapo", "cispo", "sapo"])
+@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dapo", "cispo", "sapo", "luspo"])
 @pytest.mark.parametrize("beta", [0.0, 0.1])
 def test_correctness_with_vllm_is_ratio(loss_type, beta):
     """Test vllm_is_ratio correctness against torch reference, and 1D/2D shape equivalence."""
@@ -690,7 +705,7 @@ def test_functional_correctness(
         assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
 
 
-@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo"])
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"])
 def test_reduce_grpo_loss_matches_reference(loss_type):
     torch.manual_seed(0)
     per_token_loss = torch.randn(3, 5)
@@ -707,6 +722,8 @@ def test_reduce_grpo_loss_matches_reference(loss_type):
         expected = (per_token_loss * mask_f).sum() / mask_f.sum().clamp(min=1.0)
     elif loss_type == "dr_grpo":
         expected = (per_token_loss * mask_f).sum() / (per_token_loss.size(0) * max_completion_length)
+    elif loss_type == "luspo":
+        expected = (per_token_loss * mask_f.sum(-1, keepdim=True)).mean()
     else:  # dapo/cispo
         expected = (per_token_loss * mask_f).sum() / mask_f.sum().clamp(min=1.0)
 
@@ -719,6 +736,31 @@ def test_reduce_grpo_loss_requires_max_completion_length():
     reduced = _reduce_grpo_loss(per_token_loss, mask, "dr_grpo", max_completion_length=None)
     expected = (per_token_loss * mask).sum() / (per_token_loss.size(0) * per_token_loss.size(1))
     assert_verbose_allclose(reduced, expected)
+
+
+@pytest.mark.parametrize("loss_type", ["cispo", "sapo"])
+def test_sequence_level_rejects_unsupported_loss_types(loss_type):
+    """Sequence-level importance sampling should raise ValueError for cispo and sapo."""
+    B, T, H, V = 2, 8, 16, 32
+    dtype = torch.float32
+
+    liger_lm = LigerLMHeadGRPO(
+        H=H,
+        V=V,
+        dtype=dtype,
+        beta=0.0,
+        loss_type=loss_type,
+        use_ref_model=False,
+        importance_sampling_level="sequence",
+    )
+
+    _input = torch.randn(B, T, H, device=device, dtype=dtype).requires_grad_(True)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    advantages = torch.randn(B, device=device)
+
+    with pytest.raises(ValueError, match="Sequence-level importance sampling is not supported"):
+        liger_lm(_input, selected_token_ids, attention_mask, advantages)
 
 
 @pytest.mark.parametrize("loss_type,beta", [("bnpo", 0.0), ("dapo", 0.04)])

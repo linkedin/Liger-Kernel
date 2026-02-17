@@ -326,12 +326,14 @@ def trl_reference_grpo_loss(
         loss = (per_token_loss * completion_mask).sum() / (B * L)
     elif loss_type == "dapo":
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
+    elif loss_type == "luspo":
+        loss = (per_token_loss * completion_mask.sum(-1, keepdim=True)).mean()
 
     return loss
 
 
 @pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
-@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo"])
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"])
 @pytest.mark.parametrize("beta", [0.0, 0.04])
 @pytest.mark.parametrize(
     "B, T, V",
@@ -463,6 +465,8 @@ def trl_reference_grpo_loss_with_vllm_is(
         loss = (per_token_loss * completion_mask).sum() / (B * L)
     elif loss_type == "dapo":
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
+    elif loss_type == "luspo":
+        loss = (per_token_loss * completion_mask.sum(-1, keepdim=True)).mean()
 
     return loss
 
@@ -523,7 +527,7 @@ def torch_grpo_loss_with_vllm_is(
 
 
 @pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
-@pytest.mark.parametrize("loss_type", ["grpo", "dapo"])
+@pytest.mark.parametrize("loss_type", ["grpo", "dapo", "luspo"])
 @pytest.mark.parametrize("beta", [0.0, 0.04])
 @pytest.mark.parametrize(
     "B, T, V",
@@ -1065,3 +1069,31 @@ def test_sapo_loss(B, T, V, temperature, num_iteration, beta, sapo_temp_pos, sap
     if kl2 is not None and kl3 is not None:
         assert_verbose_allclose(kl2, kl3, atol=atol, rtol=rtol)
     assert_verbose_allclose(logits2.grad, logits3.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("loss_type", ["cispo", "sapo"])
+def test_triton_sequence_level_rejects_unsupported_loss_types(loss_type):
+    """Sequence-level importance sampling should raise ValueError for cispo and sapo."""
+    B, T, V = 2, 8, 32
+    logits = torch.randn(B, T + 1, V, device=device, dtype=torch.float32).contiguous()
+    completion_ids = torch.randint(0, V, (B, T), device=device)
+    completion_mask = torch.ones(B, T, device=device, dtype=torch.float32)
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+    old_logp = torch.randn(B, T, device=device, dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="Sequence-level importance sampling is not supported"):
+        triton_grpo_loss(
+            logits,
+            old_logp,
+            None,
+            completion_ids,
+            advantages,
+            completion_mask,
+            temperature=0.9,
+            beta=0.0,
+            eps_low=0.2,
+            eps_high=0.4,
+            importance_sampling_level="sequence",
+            loss_type=loss_type,
+            reduce=True,
+        )

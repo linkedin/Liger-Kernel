@@ -70,7 +70,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         epsilon_low=0.2,
         epsilon_high=0.2,
         beta=0.04,
-        loss_type="dapo",  # ["grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo"]
+        loss_type="dapo",  # ["grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo"]
         max_completion_length=None,  # Required for dr_grpo
         importance_sampling_level="token",  # ["token", "sequence"] - new parameter for GSPO
         sapo_temperature_pos=1.0,  # Temperature for positive advantages in SAPO
@@ -79,6 +79,13 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
+        # Validate sequence-level + loss_type combinations
+        if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo"):
+            raise ValueError(
+                f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'. "
+                f"Use importance_sampling_level='token' instead."
+            )
+
         per_token_logps = log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(
             -1
         )  # (batch_size, seq_len)
@@ -169,6 +176,19 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         elif loss_type == "dapo" or loss_type == "cispo":
             loss_normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(full_attention_mask)
             loss = (per_token_loss * attention_mask).sum() / loss_normalizer
+        elif loss_type == "luspo":
+            # LUSPO: loss = (per_token_loss * mask.sum(1, keepdim=True)).mean()
+            # Reformulated as: sum_i(sum_j(per_token_loss_ij) * seq_len_i) / numel
+            # to avoid (B,T) * (B,1) broadcast which amplifies torch.compile differences.
+            seq_lens = attention_mask.sum(-1)  # (chunk_B,)
+            per_seq_sum = per_token_loss.sum(-1)  # (chunk_B,)
+            weighted = per_seq_sum * seq_lens  # (chunk_B,)
+            if importance_sampling_level == "sequence" and beta == 0.0:
+                # per_token_loss stays (B, 1), so .mean() divides by B
+                loss = weighted.sum() / full_attention_mask.shape[0]
+            else:
+                # per_token_loss is (B, T), .mean() divides by B*T
+                loss = weighted.sum() / (full_attention_mask.shape[0] * full_attention_mask.shape[1])
         else:
             raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -235,7 +255,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             ref_weight (torch.Tensor, optional): Reference model weight tensor. Shape: (vocab_size, hidden_size)
             ref_bias (torch.Tensor, optional): Reference model bias tensor. Shape: (vocab_size,)
             beta (float): Weight for the KL penalty
-            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo").
+            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo").
                 Defaults to "dapo".
             max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
             importance_sampling_level (str): Level of importance sampling ("token" or "sequence"). Defaults to "token".
@@ -250,6 +270,13 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         Returns:
             torch.Tensor: Computed loss
         """
+        # Validate before entering torch.compile boundary
+        if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo"):
+            raise ValueError(
+                f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'. "
+                f"Use importance_sampling_level='token' instead."
+            )
+
         return super().forward(
             cls=cls,
             ctx=ctx,
@@ -339,7 +366,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             chunk_size (int): Size of chunks for processing.
             epsilon_low (float): Lower bound for the importance sampling ratio.
             epsilon_high (float): Upper bound for the importance sampling ratio.
-            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo").
+            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo").
                 Defaults to "dapo". For "cispo", epsilon_high is typically larger (e.g. 5.0) and
                 epsilon_low is unused. For "sapo", uses soft gating instead of hard clipping.
             max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
