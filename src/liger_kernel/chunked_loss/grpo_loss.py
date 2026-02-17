@@ -76,6 +76,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         sapo_temperature_pos=1.0,  # Temperature for positive advantages in SAPO
         sapo_temperature_neg=1.05,  # Temperature for negative advantages in SAPO
         vllm_is_ratio=None,  # vLLM importance sampling ratio (chunk_size, seq_len) or (chunk_size, 1) or None
+        delta=None,  # Upper clamp for two-sided clipping (INTELLECT-2)
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -142,6 +143,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             )
             per_token_loss = -per_token_loss * advantages_expanded
         else:
+            # Apply delta (two-sided clipping from INTELLECT-2) to coef_1
+            if delta is not None:
+                coef_1 = torch.clamp(coef_1, max=delta)
             per_token_loss1 = coef_1 * advantages.unsqueeze(1)
             per_token_loss2 = coef_2 * advantages.unsqueeze(1)
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
@@ -240,6 +244,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         use_ref_model=True,
         chunk_size=1,
         vllm_is_ratio=None,
+        delta=None,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -304,6 +309,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             sapo_temperature_pos=sapo_temperature_pos,
             sapo_temperature_neg=sapo_temperature_neg,
             vllm_is_ratio=vllm_is_ratio,
+            delta=delta,
         )
 
     @staticmethod
@@ -337,6 +343,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_use_ref_model
             None,  # grad_chunk_size
             None,  # grad_vllm_is_ratio
+            None,  # grad_delta
         )
 
 
@@ -357,6 +364,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         sapo_temperature_pos: float = 1.0,
         sapo_temperature_neg: float = 1.05,
         temperature: float = 1.0,
+        delta: Optional[float] = None,
     ):
         """
         Args:
@@ -374,6 +382,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             sapo_temperature_pos (float): Temperature for positive advantages in SAPO. Defaults to 1.0.
             sapo_temperature_neg (float): Temperature for negative advantages in SAPO. Defaults to 1.05.
             temperature (float): Temperature for the logits.
+            delta (float, optional): Upper clamp for two-sided clipping (INTELLECT-2). None means disabled.
         """
         super().__init__()
         # Validate SAPO temperatures to prevent division by zero or numerical instability
@@ -381,6 +390,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             raise ValueError(f"sapo_temperature_pos must be positive, got {sapo_temperature_pos}")
         if sapo_temperature_neg <= 0:
             raise ValueError(f"sapo_temperature_neg must be positive, got {sapo_temperature_neg}")
+        if delta is not None and delta <= 0:
+            raise ValueError(f"delta must be positive, got {delta}")
         self.beta = beta
         self.compiled = compiled
         self.use_ref_model = use_ref_model
@@ -393,6 +404,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         self.sapo_temperature_pos = sapo_temperature_pos
         self.sapo_temperature_neg = sapo_temperature_neg
         self.temperature = temperature
+        self.delta = delta
 
     def forward(
         self,
@@ -434,4 +446,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.use_ref_model,
             self.chunk_size,
             vllm_is_ratio,
+            self.delta,
         )

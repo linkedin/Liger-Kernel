@@ -45,7 +45,17 @@ def _get_log_probs(logits, input_ids):
 
 
 def torch_grpo_loss(
-    logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, temperature, beta, eps_low, eps_high
+    logits,
+    old_logp,
+    ref_logp,
+    completion_ids,
+    advantages,
+    completion_mask,
+    temperature,
+    beta,
+    eps_low,
+    eps_high,
+    delta=None,
 ):
     assert logits.is_contiguous() and completion_ids.is_contiguous()
     assert old_logp is None or old_logp.is_contiguous()
@@ -59,6 +69,8 @@ def torch_grpo_loss(
         old_logp = per_token_logps.detach()
     coef_1 = torch.exp(per_token_logps - old_logp)
     coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+    if delta is not None:
+        coef_1 = torch.clamp(coef_1, max=delta)
     per_token_loss1 = coef_1 * advantages.unsqueeze(1)
     per_token_loss2 = coef_2 * advantages.unsqueeze(1)
     per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
@@ -270,6 +282,97 @@ def test_grpo_loss(B, T, V, temperature, num_iteration, beta, eps_low, eps_high,
     assert_verbose_allclose(logits2.grad, logits3.grad, atol=atol, rtol=rtol)
 
 
+@pytest.mark.parametrize("delta", [1.5, 2.0])
+@pytest.mark.parametrize(
+    "temperature, num_iteration, beta, eps_low, eps_high",
+    [(0.7, 5, beta, 0.2, 0.4) for beta in [0.0, 0.04]],
+)
+@pytest.mark.parametrize(
+    "B, T, V",
+    [
+        (2, 128, 1000),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.bfloat16, 5e-2, 5e-1),
+    ],
+)
+def test_grpo_loss_with_delta(B, T, V, temperature, num_iteration, beta, eps_low, eps_high, dtype, atol, rtol, delta):
+    """Test delta (two-sided clipping) support for standard PPO loss types."""
+    _input = torch.randn(B, T + 1, V, device=device, dtype=dtype)
+
+    logits1 = _input.clone().requires_grad_(True)
+    logits2 = _input.clone().requires_grad_(True)
+    logits3 = _input.clone().float().requires_grad_(True)
+
+    completion_ids = torch.randint(0, V - 1, (B, T), dtype=torch.int64, device=device)
+    completion_mask = torch.ones_like(completion_ids, dtype=torch.int32)
+    completion_mask[:, -20:] = 0
+
+    ref_logp = torch.randn(B, T, device=device, dtype=torch.float32) if beta != 0.0 else None
+    old_logp = torch.randn(B, T, device=device, dtype=torch.float32) if num_iteration > 1 else None
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+
+    loss1, kl1, is_clipped1 = torch_grpo_loss(
+        logits1,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        delta=delta,
+    )
+
+    loss2, kl2, is_clipped2 = triton_grpo_loss(
+        logits2,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        inplace=True,
+        delta=delta,
+    )
+
+    loss3, kl3, is_clipped3 = torch_grpo_loss(
+        logits3,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        delta=delta,
+    )
+
+    dy = torch.randn_like(loss3)
+    loss1.backward(dy)
+    loss2.backward(dy)
+    loss3.backward(dy)
+
+    assert_verbose_allclose(loss1, loss3, atol=atol, rtol=rtol)
+    if kl1 is not None and kl3 is not None:
+        assert_verbose_allclose(kl1, kl3, atol=atol, rtol=rtol)
+    assert_verbose_allclose(logits1.grad, logits3.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(loss2, loss3, atol=atol, rtol=rtol)
+    if kl2 is not None and kl3 is not None:
+        assert_verbose_allclose(kl2, kl3, atol=atol, rtol=rtol)
+    assert_verbose_allclose(logits2.grad, logits3.grad, atol=atol, rtol=rtol)
+
+
 def trl_reference_grpo_loss(
     logits,
     old_logp,
@@ -283,6 +386,7 @@ def trl_reference_grpo_loss(
     eps_high,
     loss_type,
     importance_sampling_level,
+    delta=None,
 ):
     """TRL reference implementation from grpo_trainer.py"""
     B, L_ADD_1, V = logits.shape
@@ -305,6 +409,8 @@ def trl_reference_grpo_loss(
 
     coef_1 = torch.exp(log_importance_weights)
     coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+    if delta is not None:
+        coef_1 = torch.clamp(coef_1, max=delta)
 
     per_token_loss1 = coef_1 * advantages.unsqueeze(-1)
     per_token_loss2 = coef_2 * advantages.unsqueeze(-1)
@@ -332,6 +438,7 @@ def trl_reference_grpo_loss(
     return loss
 
 
+@pytest.mark.parametrize("delta", [None, 1.5])
 @pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
 @pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"])
 @pytest.mark.parametrize("beta", [0.0, 0.04])
@@ -341,7 +448,7 @@ def trl_reference_grpo_loss(
         (2, 128, 1000),
     ],
 )
-def test_grpo_loss_vs_trl(B, T, V, beta, loss_type, importance_sampling_level):
+def test_grpo_loss_vs_trl(B, T, V, beta, loss_type, importance_sampling_level, delta):
     """Test that triton_grpo_loss matches TRL's exact implementation."""
     torch.manual_seed(42)
 
@@ -374,6 +481,7 @@ def test_grpo_loss_vs_trl(B, T, V, beta, loss_type, importance_sampling_level):
         eps_high,
         loss_type,
         importance_sampling_level,
+        delta=delta,
     )
 
     # Triton implementation
@@ -393,6 +501,7 @@ def test_grpo_loss_vs_trl(B, T, V, beta, loss_type, importance_sampling_level):
         loss_type=loss_type,
         max_completion_length=T,
         reduce=True,
+        delta=delta,
     )
 
     # Verify forward match
@@ -418,6 +527,7 @@ def trl_reference_grpo_loss_with_vllm_is(
     loss_type,
     importance_sampling_level,
     vllm_is_ratio,
+    delta=None,
 ):
     """TRL reference implementation with vLLM IS ratio correction."""
     B, L_ADD_1, V = logits.shape
@@ -440,6 +550,8 @@ def trl_reference_grpo_loss_with_vllm_is(
 
     coef_1 = torch.exp(log_importance_weights)
     coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+    if delta is not None:
+        coef_1 = torch.clamp(coef_1, max=delta)
 
     per_token_loss1 = coef_1 * advantages.unsqueeze(-1)
     per_token_loss2 = coef_2 * advantages.unsqueeze(-1)
@@ -486,6 +598,7 @@ def torch_grpo_loss_with_vllm_is(
     loss_type="grpo",
     sapo_temperature_pos=1.0,
     sapo_temperature_neg=1.05,
+    delta=None,
 ):
     """Reference implementation with vLLM IS ratio correction for all loss types."""
     assert logits.is_contiguous() and completion_ids.is_contiguous()
@@ -508,6 +621,8 @@ def torch_grpo_loss_with_vllm_is(
         is_clipped = torch.zeros_like(per_token_loss)
     else:
         coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+        if delta is not None:
+            coef_1 = torch.clamp(coef_1, max=delta)
         per_token_loss1 = coef_1 * advantages.unsqueeze(1)
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)

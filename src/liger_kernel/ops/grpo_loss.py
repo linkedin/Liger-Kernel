@@ -104,6 +104,7 @@ def _grpo_loss_fwd_kernel(
     LOSS_TYPE: tl.constexpr,
     SAPO_TEMP_POS,
     SAPO_TEMP_NEG,
+    DELTA,
     L: tl.constexpr,
     N: tl.constexpr,
     BLOCK_N: tl.constexpr = 4096,
@@ -149,12 +150,15 @@ def _grpo_loss_fwd_kernel(
     # Branch based on loss type
     if LOSS_TYPE == 0:  # GRPO/DAPO/BNPO/DR_GRPO: standard PPO clipping
         coef_2 = tl.clamp(coef_1, 1 - EPS_LOW, 1 + EPS_HIGH)
-        per_token_loss1 = coef_1 * advantage
-        per_token_loss2 = coef_2 * advantage
-        per_token_loss = -tl.minimum(per_token_loss1, per_token_loss2)
         is_low_clipped = (coef_1 < 1 - EPS_LOW) & (advantage < 0)
         is_high_clipped = (coef_1 > 1 + EPS_HIGH) & (advantage > 0)
         is_clipped = is_low_clipped | is_high_clipped
+        # Apply delta (two-sided clipping from INTELLECT-2) to coef_1
+        if DELTA != 0.0:
+            coef_1 = tl.minimum(coef_1, DELTA)
+        per_token_loss1 = coef_1 * advantage
+        per_token_loss2 = coef_2 * advantage
+        per_token_loss = -tl.minimum(per_token_loss1, per_token_loss2)
 
     elif LOSS_TYPE == 1:  # CISPO: upper-bound only clipping, detached, multiply by logp
         # Reference: MiniMax-M1 technical report
@@ -299,6 +303,7 @@ def _grpo_loss_bwd_kernel_seq(
     BETA: tl.constexpr,
     EPS_LOW,
     EPS_HIGH,
+    DELTA,
     loss_stride0,
     loss_stride1,
     L: tl.constexpr,
@@ -339,13 +344,19 @@ def _grpo_loss_bwd_kernel_seq(
 
     advantage = tl.load(ADVANTAGES).to(tl.float32)
     coef_2 = tl.clamp(coef_1, 1 - EPS_LOW, 1 + EPS_HIGH)
-    per_token_loss1 = coef_1 * advantage
+    if DELTA != 0.0:
+        coef_1_for_loss = tl.minimum(coef_1, DELTA)
+    else:
+        coef_1_for_loss = coef_1
+    per_token_loss1 = coef_1_for_loss * advantage
     per_token_loss2 = coef_2 * advantage
     is_unclipped = per_token_loss2 >= per_token_loss1
 
     # For sequence-level: gradient flows through mean, so scale by coef_1/seq_len
-    # d(loss)/d(logp) = -advantage * coef_1 / seq_len (when unclipped)
-    dlogp = -per_token_loss1 / seq_len * is_unclipped * dloss_sum
+    # d(loss)/d(logp) = -advantage * coef_1 / seq_len (when unclipped and not delta-clamped)
+    dlogp = -coef_1 * advantage / seq_len * is_unclipped * dloss_sum
+    if DELTA != 0.0:
+        dlogp = dlogp * (coef_1 <= DELTA)
 
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
@@ -382,6 +393,7 @@ def _grpo_loss_bwd_kernel(
     LOSS_TYPE: tl.constexpr,
     SAPO_TEMP_POS,
     SAPO_TEMP_NEG,
+    DELTA,
     loss_stride0,
     loss_stride1,
     L: tl.constexpr,
@@ -424,10 +436,17 @@ def _grpo_loss_bwd_kernel(
     # Branch based on loss type for gradient computation
     if LOSS_TYPE == 0:  # GRPO/DAPO/BNPO/DR_GRPO: standard PPO clipping
         coef_2 = tl.clamp(coef_1, 1 - EPS_LOW, 1 + EPS_HIGH)
-        per_token_loss1 = coef_1 * advantage
+        if DELTA != 0.0:
+            coef_1_for_loss = tl.minimum(coef_1, DELTA)
+        else:
+            coef_1_for_loss = coef_1
+        per_token_loss1 = coef_1_for_loss * advantage
         per_token_loss2 = coef_2 * advantage
         mask = per_token_loss2 >= per_token_loss1
-        dlogp = -per_token_loss1 * mask
+        # Gradient uses original coef_1; zero when delta-clamped (constant → no gradient)
+        dlogp = -coef_1 * advantage * mask
+        if DELTA != 0.0:
+            dlogp = dlogp * (coef_1 <= DELTA)
 
     elif LOSS_TYPE == 1:  # CISPO: coef_2 is DETACHED, so gradient only flows through logp
         # loss = -coef_2 * advantage * logp, where coef_2 = clamp(coef_1, max=eps_high).detach()
@@ -521,6 +540,7 @@ class GrpoLossFunction(torch.autograd.Function):
         sapo_temperature_pos=1.0,
         sapo_temperature_neg=1.05,
         vllm_is_ratio=None,
+        delta=None,
     ):
         assert logits.is_contiguous() and completion_ids.is_contiguous()
         assert old_logp is None or old_logp.is_contiguous()
@@ -532,6 +552,13 @@ class GrpoLossFunction(torch.autograd.Function):
         # Validate loss_type
         if loss_type not in _str_to_loss_type:
             raise ValueError(f"Unknown loss_type '{loss_type}'. Supported types: {list(_str_to_loss_type.keys())}")
+
+        # Validate delta + loss_type combinations
+        if delta is not None and loss_type in ("cispo", "sapo"):
+            raise ValueError(f"delta (two-sided clipping) is not supported for loss_type='{loss_type}'.")
+
+        # Map delta to float for Triton (Triton can't handle None)
+        delta_val = 0.0 if delta is None else float(delta)
 
         # Validate sequence-level + loss_type combinations
         if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo"):
@@ -599,9 +626,15 @@ class GrpoLossFunction(torch.autograd.Function):
             coef_1 = torch.exp(seq_log_importance)  # (B,)
             coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)  # (B,)
 
-            # Compute is_clipped at sequence level
+            # Compute is_clipped at sequence level (using original coef_1)
             is_clipped_seq = ((coef_1 < 1 - eps_low) & (advantages < 0)) | ((coef_1 > 1 + eps_high) & (advantages > 0))
             is_clipped_seq = is_clipped_seq.float()  # (B,)
+
+            # Apply delta clamp for loss computation (keep original coef_1 for backward)
+            if delta is not None:
+                coef_1_for_loss = torch.clamp(coef_1, max=delta)
+            else:
+                coef_1_for_loss = coef_1
 
             # Step 3: Run Triton kernel with pre-computed coefficients
             kwargs = {"BLOCK_N": 2048, "num_stages": 2, "num_warps": 1}
@@ -611,7 +644,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 completion_ids,
                 completion_mask,
                 advantages,
-                coef_1.contiguous(),
+                coef_1_for_loss.contiguous(),
                 coef_2.contiguous(),
                 is_clipped_seq.contiguous(),
                 vllm_is_ratio_ptr,
@@ -664,6 +697,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 loss_type_int,
                 sapo_temperature_pos,
                 sapo_temperature_neg,
+                delta_val,
                 L,
                 N,
                 **kwargs,
@@ -688,6 +722,7 @@ class GrpoLossFunction(torch.autograd.Function):
             importance_sampling_level,
             vllm_is_ratio_stride,
             reduce,
+            delta_val,
         )
 
         # Compute metrics before reduction
@@ -724,6 +759,7 @@ class GrpoLossFunction(torch.autograd.Function):
             importance_sampling_level,
             vllm_is_ratio_stride,
             reduce,
+            delta_val,
         ) = ctx.infos
 
         if importance_sampling_level == "sequence":
@@ -796,6 +832,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 beta,
                 eps_low,
                 eps_high,
+                delta_val,
                 *dloss.stride(),
                 L,
                 N,
@@ -822,6 +859,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 loss_type_int,
                 sapo_temperature_pos,
                 sapo_temperature_neg,
+                delta_val,
                 *dloss.stride(),
                 L,
                 N,
@@ -829,9 +867,10 @@ class GrpoLossFunction(torch.autograd.Function):
             )
 
         dlogits[:, -1, :] = 0
-        # Return gradients for all forward inputs: dlogits + 17 None for non-differentiable params
+        # Return gradients for all forward inputs: dlogits + 18 None for non-differentiable params
         return (
             dlogits,
+            None,
             None,
             None,
             None,

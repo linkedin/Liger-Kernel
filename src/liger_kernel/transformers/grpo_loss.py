@@ -23,6 +23,7 @@ def triton_grpo_loss(
     sapo_temperature_pos=1.0,
     sapo_temperature_neg=1.05,
     vllm_is_ratio=None,
+    delta=None,
 ):
     """
     Triton-optimized GRPO loss function.
@@ -46,6 +47,9 @@ def triton_grpo_loss(
         vllm_is_ratio: vLLM importance sampling ratio (B, L) or (B, 1) or None.
             Used to correct for distribution mismatch when using vLLM for generation.
             Applied to PPO loss BEFORE adding KL penalty.
+        delta: Upper clamp for two-sided clipping (INTELLECT-2). When set, coef_1 is clamped
+            to max=delta before computing the PPO loss. Only supported for standard PPO loss
+            types (grpo, bnpo, dr_grpo, dapo, luspo). None means disabled.
 
     Returns:
         If reduce=True: (loss, metrics) where metrics = [kl_mean, clip_ratio] or [clip_ratio]
@@ -77,6 +81,7 @@ def triton_grpo_loss(
         sapo_temperature_pos,
         sapo_temperature_neg,
         vllm_is_ratio,
+        delta,
     )
 
     if not reduce:
