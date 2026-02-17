@@ -547,15 +547,25 @@ def test_correctness_with_bias_correction_kl(loss_type, dtype, atol, rtol):
     torch.compiler.reset()
 
     torch_lm_head_grpo = TorchLMHeadGRPO(
-        H=H, V=V, dtype=dtype, beta=beta, loss_type=loss_type,
+        H=H,
+        V=V,
+        dtype=dtype,
+        beta=beta,
+        loss_type=loss_type,
         use_bias_correction_kl=True,
     )
     liger_lm_head_grpo = LigerLMHeadGRPO(
-        H=H, V=V, dtype=dtype, beta=beta, loss_type=loss_type,
+        H=H,
+        V=V,
+        dtype=dtype,
+        beta=beta,
+        loss_type=loss_type,
         use_bias_correction_kl=True,
     )
 
-    torch_lm_head_grpo.lin.weight.data = liger_lm_head_grpo.lin.weight.data = torch.randn(V, H, device=device, dtype=dtype)
+    torch_lm_head_grpo.lin.weight.data = liger_lm_head_grpo.lin.weight.data = torch.randn(
+        V, H, device=device, dtype=dtype
+    )
     torch_lm_head_grpo.ref_lin.weight.data = liger_lm_head_grpo.ref_lin.weight.data = (
         torch_lm_head_grpo.lin.weight.data + torch.randn(V, H, device=device, dtype=dtype) * 0.01
     )
@@ -570,10 +580,22 @@ def test_correctness_with_bias_correction_kl(loss_type, dtype, atol, rtol):
     advantages = torch.randn(B, device=device, dtype=torch.float32)
     old_per_token_logps = torch.randn(B, T, device=device, dtype=torch.float32)
 
-    loss1, metrics1 = torch_lm_head_grpo(input1, selected_token_ids, attention_mask, advantages,
-                                          old_per_token_logps=old_per_token_logps, ref_input=input1.detach())
-    loss2, metrics2 = liger_lm_head_grpo(input2, selected_token_ids, attention_mask, advantages,
-                                          old_per_token_logps=old_per_token_logps, ref_input=input2.detach())
+    loss1, metrics1 = torch_lm_head_grpo(
+        input1,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        old_per_token_logps=old_per_token_logps,
+        ref_input=input1.detach(),
+    )
+    loss2, metrics2 = liger_lm_head_grpo(
+        input2,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        old_per_token_logps=old_per_token_logps,
+        ref_input=input2.detach(),
+    )
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
     loss1.backward()
@@ -582,7 +604,8 @@ def test_correctness_with_bias_correction_kl(loss_type, dtype, atol, rtol):
     assert_verbose_allclose(
         torch_lm_head_grpo.lin.weight.grad,
         liger_lm_head_grpo.lin.weight.grad,
-        atol=atol, rtol=rtol,
+        atol=atol,
+        rtol=rtol,
     )
 
 
