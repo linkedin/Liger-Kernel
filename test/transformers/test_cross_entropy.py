@@ -512,7 +512,7 @@ def _test_correctness_functional(
     )
     y1 = result.loss
     y1_z = result.z_loss
-    y2, y2_z, _ = LigerCrossEntropyFunction.apply(x2, target, None, 0, 1e-4, 0.1, "mean", 30.0, True, False)
+    y2, y2_z, _, _ = LigerCrossEntropyFunction.apply(x2, target, None, 0, 1e-4, 0.1, "mean", 30.0, True, False, False)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
     assert torch.allclose(y1_z, y2_z, atol=atol, rtol=rtol)
@@ -1024,6 +1024,7 @@ def test_float32_internal():
     X_bf16 = X_init.clone()
     loss_bf16 = torch.zeros(batch_size, dtype=torch.float32, device=device)
     token_accuracy_bf16 = torch.zeros(batch_size, dtype=torch.float32, device=device)
+    predicted_tokens_bf16 = torch.full((batch_size,), -1, dtype=torch.int64, device=device)
     liger_cross_entropy_kernel[(batch_size,)](
         X_ptr=X_bf16,
         X_stride=X_bf16.stride(-2),
@@ -1035,6 +1036,8 @@ def test_float32_internal():
         loss_stride=loss_bf16.stride(-1),
         token_accuracy_ptr=token_accuracy_bf16,
         token_accuracy_stride=token_accuracy_bf16.stride(-1),
+        predicted_tokens_ptr=predicted_tokens_bf16,
+        predicted_tokens_stride=predicted_tokens_bf16.stride(-1),
         n_cols=n_cols,
         n_non_ignore=n_non_ignore,
         sum_non_ignore_weight=n_non_ignore,  # not used
@@ -1046,6 +1049,7 @@ def test_float32_internal():
         softcap=softcap,
         RETURN_Z_LOSS=0,  # False
         RETURN_TOKEN_ACCURACY=0,
+        RETURN_PREDICTED_TOKENS=0,
         HAS_WEIGHT=False,
         HAS_SOFTCAPPING=False,
         HAS_GRADIENTS=True,
@@ -1057,6 +1061,7 @@ def test_float32_internal():
     X_fp32 = X_init.float()
     loss_fp32 = torch.zeros(batch_size, dtype=torch.float32, device=device)
     token_accuracy_fp32 = torch.zeros(batch_size, dtype=torch.float32, device=device)
+    predicted_tokens_fp32 = torch.full((batch_size,), -1, dtype=torch.int64, device=device)
     liger_cross_entropy_kernel[(batch_size,)](
         X_ptr=X_fp32,
         X_stride=X_fp32.stride(-2),
@@ -1068,6 +1073,8 @@ def test_float32_internal():
         loss_stride=loss_fp32.stride(-1),
         token_accuracy_ptr=token_accuracy_fp32,
         token_accuracy_stride=token_accuracy_fp32.stride(-1),
+        predicted_tokens_ptr=predicted_tokens_fp32,
+        predicted_tokens_stride=predicted_tokens_fp32.stride(-1),
         n_cols=n_cols,
         n_non_ignore=n_non_ignore,
         sum_non_ignore_weight=n_non_ignore,  # not used
@@ -1079,6 +1086,7 @@ def test_float32_internal():
         softcap=softcap,
         RETURN_Z_LOSS=0,  # False
         RETURN_TOKEN_ACCURACY=0,
+        RETURN_PREDICTED_TOKENS=0,
         HAS_WEIGHT=False,
         HAS_SOFTCAPPING=False,
         HAS_GRADIENTS=True,
@@ -1125,15 +1133,19 @@ def test_correctness_with_forward_only(B, T, V, ignore_index, reduction, dtype, 
 
 
 @pytest.mark.parametrize(
-    "return_z_loss, return_token_accuracy",
+    "return_z_loss, return_token_accuracy, return_predicted_tokens",
     [
-        (False, False),
-        (True, False),
-        (False, True),
-        (True, True),
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+        (True, True, False),
+        (True, False, True),
+        (False, True, True),
+        (True, True, True),
     ],
 )
-def test_liger_cross_entropy_structured_output(return_z_loss, return_token_accuracy):
+def test_liger_cross_entropy_structured_output(return_z_loss, return_token_accuracy, return_predicted_tokens):
     logits = torch.tensor(
         [[2.0, 0.5, -1.0], [0.1, 1.5, 0.3], [0.7, -0.2, 0.9]],
         device=device,
@@ -1149,9 +1161,10 @@ def test_liger_cross_entropy_structured_output(return_z_loss, return_token_accur
         reduction="mean",
         return_z_loss=return_z_loss,
         return_token_accuracy=return_token_accuracy,
+        return_predicted_tokens=return_predicted_tokens,
     )
 
-    if not return_z_loss and not return_token_accuracy:
+    if not return_z_loss and not return_token_accuracy and not return_predicted_tokens:
         assert isinstance(result, torch.Tensor)
         assert result.shape == ()
         result.backward()
@@ -1178,6 +1191,77 @@ def test_liger_cross_entropy_structured_output(return_z_loss, return_token_accur
     else:
         assert result.token_accuracy is None
 
+    if return_predicted_tokens:
+        assert result.predicted_tokens is not None
+        assert result.predicted_tokens.dtype == torch.int64
+        assert result.predicted_tokens.shape == (3,)
+        with torch.no_grad():
+            expected_predictions = original_logits.argmax(dim=-1)
+        assert torch.equal(result.predicted_tokens, expected_predictions)
+        # When both are enabled, predicted_tokens and token_accuracy should be consistent
+        if return_token_accuracy:
+            correct_from_predictions = (result.predicted_tokens == targets).float().mean()
+            assert torch.allclose(result.token_accuracy, correct_from_predictions, atol=1e-6)
+    else:
+        assert result.predicted_tokens is None
+
     result.loss.backward()
     assert logits.grad is not None
     logits.grad.zero_()
+
+
+@pytest.mark.parametrize(
+    "B, T, V",
+    [
+        (2, 128, 512),
+        (3, 47, 31),  # weird shapes
+    ],
+)
+@pytest.mark.parametrize("ignore_index", [-100, 2])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.float32,
+        pytest.param(
+            torch.bfloat16,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_correctness_with_predicted_tokens(B, T, V, ignore_index, dtype):
+    torch.manual_seed(42)
+
+    _tensor = torch.randn(B * T, V, device=device, dtype=dtype)
+    _input = _tensor.detach().clone().requires_grad_(True)
+
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+    # Assign some elements as ignore_index
+    num_ignore = B * T // 4
+    indices_to_ignore = torch.randperm(B * T)[:num_ignore]
+    target[indices_to_ignore] = ignore_index
+
+    # Compute expected argmax BEFORE the kernel modifies _input in-place
+    with torch.no_grad():
+        expected_predictions = _tensor.float().argmax(dim=-1)
+
+    liger_ce = LigerCrossEntropyLoss(
+        ignore_index=ignore_index,
+        return_predicted_tokens=True,
+    )
+    result = liger_ce(_input, target)
+
+    assert isinstance(result, CrossEntropyOutput)
+    assert result.predicted_tokens is not None
+    assert result.predicted_tokens.shape == (B * T,)
+    assert result.predicted_tokens.dtype == torch.int64
+
+    # For non-ignored tokens, predicted_tokens should match argmax
+    non_ignore_mask = target != ignore_index
+    assert torch.equal(result.predicted_tokens[non_ignore_mask], expected_predictions[non_ignore_mask])
+
+    # For ignored tokens, predicted_tokens should be -1
+    assert torch.all(result.predicted_tokens[~non_ignore_mask] == -1)
+
+    # Verify backward still works
+    result.loss.backward()
+    assert _input.grad is not None
