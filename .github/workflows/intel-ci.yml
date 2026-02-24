@@ -26,7 +26,6 @@ concurrency:
 jobs:
   tests:
     runs-on: linux-max1550-pvc-8
-    needs: [checkstyle]
     if: success()
     container:
       image: intel/oneapi-basekit:2025.0.1-0-devel-ubuntu24.04

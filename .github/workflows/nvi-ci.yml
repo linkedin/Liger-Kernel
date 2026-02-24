@@ -4,21 +4,13 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "src/**"
-      - "test/**"
   pull_request:
     branches:
       - main
-    paths:
-      - "src/**"
-      - "test/**"
   merge_group:
+    types: [checks_requested]
     branches:
       - main
-    paths:
-      - "src/**"
-      - "test/**"
   workflow_dispatch:  # Enables manual trigger
 
 concurrency:
@@ -26,9 +18,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  correctness-tests:
+  nvi-correctness-tests:
+    if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
-    needs: [checkstyle]
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -51,9 +43,9 @@ jobs:
       run: |
         modal run dev.modal.tests::liger_correctness_tests
 
-  convergence-tests:
+  nvi-convergence-tests:
+    if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
-    needs: [checkstyle]
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -76,10 +68,9 @@ jobs:
       run: |
         modal run dev.modal.tests::liger_convergence_tests
 
-
-  correctness-tests-with-transformers-4-52-0:
+  nvi-correctness-tests-with-transformers-4-52-0:
+    if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
-    needs: [checkstyle]
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -103,10 +94,9 @@ jobs:
         modal run dev.modal.tests::liger_oldest_v4_correctness_tests
 
 
-
-  convergence-tests-with-transformers-4-52-0:
+  nvi-convergence-tests-with-transformers-4-52-0:
+    if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
-    needs: [checkstyle]
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
