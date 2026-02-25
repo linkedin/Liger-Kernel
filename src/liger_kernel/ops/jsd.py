@@ -25,6 +25,7 @@ def _jsd_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
     HAS_LABEL: tl.constexpr,
+    USE_PIPELINING: tl.constexpr,
 ):
     # JSD(P || Q) = (KL(P || M) + KL(Q || M)) / 2, M = (1/2) * (P + Q) = (1/2) * (e ^ Y + e ^ X)
     #             = sum(P * log P + Q * log Q - 2 * M * log M) / 2
@@ -45,61 +46,95 @@ def _jsd_kernel(
                 tl.store(dX_ptr + offsets, 0.0, mask=offsets < n_cols)
             return
 
-    for i in range(0, n_cols, BLOCK_SIZE):
-        offsets = i + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < n_cols
-        X = tl.load(X_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
-        Y = tl.load(Y_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
+    scale = 1.0 / n_non_ignore
 
-        if beta == 0.0:  # forward KL
-            Y_max = tl.max(Y, axis=0)
-            Y_shifted = Y - Y_max
-            Y_prob = tl.exp(Y_shifted) * tl.exp(Y_max)  # Compensate for the shift
-            loss = Y_prob * (Y - X)
-            dX = -Y_prob
-        elif beta == 1.0:  # reverse KL
-            X_max = tl.max(X, axis=0)
-            X_shifted = X - X_max
-            X_prob = tl.exp(X_shifted) * tl.exp(X_max)  # Compensate for the shift
-            loss = X_prob * (X - Y)
-            dX = loss + X_prob
-        else:
-            max_val = tl.maximum(tl.max(X, axis=0), tl.max(Y, axis=0))
-            X_shifted = X - max_val
-            Y_shifted = Y - max_val
+    if USE_PIPELINING:
+        for i in tl.range(0, n_cols, BLOCK_SIZE, num_stages=3):
+            _jsd_compute(X_ptr, Y_ptr, loss_ptr, dX_ptr, i, n_cols, scale, beta, BLOCK_SIZE)
+    else:
+        for i in range(0, n_cols, BLOCK_SIZE):
+            _jsd_compute(X_ptr, Y_ptr, loss_ptr, dX_ptr, i, n_cols, scale, beta, BLOCK_SIZE)
 
-            # Pre-compute exp(max_val) since it's used twice
-            exp_max = tl.exp(max_val)
 
-            # Compute exp terms with compensation
-            Q = tl.exp(X_shifted) * exp_max  # = exp(X)
-            P = tl.exp(Y_shifted) * exp_max  # = exp(Y)
+@triton.jit
+def _jsd_compute(X_ptr, Y_ptr, loss_ptr, dX_ptr, i, n_cols, scale, beta: tl.constexpr, BLOCK_SIZE: tl.constexpr):
+    col_offsets = tl.max_contiguous(tl.arange(0, BLOCK_SIZE), BLOCK_SIZE)
+    col_offsets = tl.multiple_of(col_offsets, BLOCK_SIZE)
+    offsets = i + col_offsets
+    mask = offsets < n_cols
+    X = tl.load(X_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
+    Y = tl.load(Y_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
 
-            # Pre-compute common terms
-            beta_P = beta * P
-            one_minus_beta_Q = (1 - beta) * Q
-            M = beta_P + one_minus_beta_Q
-            log_M = tl.log(M)  # No need to compensate as M is already in original scale
+    if beta == 0.0:  # forward KL
+        Y_max = tl.max(Y, axis=0)
+        Y_shifted = Y - Y_max
+        Y_prob = tl.exp(Y_shifted) * tl.exp(Y_max)  # Compensate for the shift
+        loss = Y_prob * (Y - X)
+        dX = -Y_prob
+    elif beta == 1.0:  # reverse KL
+        X_max = tl.max(X, axis=0)
+        X_shifted = X - X_max
+        X_prob = tl.exp(X_shifted) * tl.exp(X_max)  # Compensate for the shift
+        loss = X_prob * (X - Y)
+        dX = loss + X_prob
+    else:
+        max_val = tl.maximum(tl.max(X, axis=0), tl.max(Y, axis=0))
+        X_shifted = X - max_val
+        Y_shifted = Y - max_val
 
-            loss = beta_P * Y + one_minus_beta_Q * X - M * log_M
-            dX = one_minus_beta_Q * (X - log_M)
+        # Pre-compute exp(max_val) since it's used twice
+        exp_max = tl.exp(max_val)
 
-        # Pre-compute scaling factor
-        scale = 1.0 / n_non_ignore
-        loss = loss * scale
-        dX = dX * scale
+        # Compute exp terms with compensation
+        Q = tl.exp(X_shifted) * exp_max  # = exp(X)
+        P = tl.exp(Y_shifted) * exp_max  # = exp(Y)
 
-        tl.store(loss_ptr + offsets, loss, mask=mask)
-        tl.store(dX_ptr + offsets, dX, mask=mask)
+        # Pre-compute common terms
+        beta_P = beta * P
+        one_minus_beta_Q = (1 - beta) * Q
+        M = beta_P + one_minus_beta_Q
+        log_M = tl.log(M)  # No need to compensate as M is already in original scale
+
+        loss = beta_P * Y + one_minus_beta_Q * X - M * log_M
+        dX = one_minus_beta_Q * (X - log_M)
+
+    loss = loss * scale
+    dX = dX * scale
+
+    tl.store(loss_ptr + offsets, loss, mask=mask)
+    tl.store(dX_ptr + offsets, dX, mask=mask)
 
 
 MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536
+
+# For large vocab sizes, use a smaller fixed block with software pipelining
+# to reduce register pressure and enable load/store overlap across iterations.
+_LOOP_THRESHOLD = 8192
+_LOOP_BLOCK_SIZE = 4096
+_LOOP_NUM_WARPS = 8
 
 
 def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
     BT, V = _input.shape
     n_rows = BT
-    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+
+    if V <= _LOOP_THRESHOLD:
+        # Small V: single-pass with larger block size and tuned num_warps
+        BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
+        _num_warps = 4
+        if BLOCK_SIZE >= 32768:
+            _num_warps = 32
+        elif BLOCK_SIZE >= 8192:
+            _num_warps = 16
+        elif BLOCK_SIZE >= 2048:
+            _num_warps = 8
+        use_pipelining = False
+    else:
+        # Large V: small blocks with pipelining for reduced register pressure
+        BLOCK_SIZE = _LOOP_BLOCK_SIZE
+        _num_warps = _LOOP_NUM_WARPS
+        use_pipelining = True
+
     # non reduction loss
     loss = torch.zeros(_input.shape, dtype=torch.float32, device=_input.device)
     dX = torch.empty_like(_input)
@@ -125,6 +160,8 @@ def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
         n_cols=V,
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_LABEL=has_label,
+        USE_PIPELINING=use_pipelining,
+        num_warps=_num_warps,
     )
 
     loss = torch.sum(loss)
