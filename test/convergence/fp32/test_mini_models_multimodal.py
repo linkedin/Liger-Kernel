@@ -5,11 +5,12 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Ensure deterministic behavi
 
 import pytest
 import torch
+import transformers
 
 from datasets import load_dataset
+from packaging import version
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
-from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast
 from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3
@@ -18,11 +19,13 @@ from liger_kernel.transformers import apply_liger_kernel_to_llama4
 from liger_kernel.transformers import apply_liger_kernel_to_llava
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
 from liger_kernel.transformers import apply_liger_kernel_to_paligemma
+from liger_kernel.transformers import apply_liger_kernel_to_pixtral
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_smolvlm
+from liger_kernel.utils import infer_device
 from test.utils import FAKE_CONFIGS_PATH
 from test.utils import UNTOKENIZED_DATASET_PATH
 from test.utils import MiniModelConfig
@@ -41,6 +44,7 @@ from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
 from test.utils import revert_liger_kernel_to_mllama
 from test.utils import revert_liger_kernel_to_Paligemma
+from test.utils import revert_liger_kernel_to_pixtral
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3_vl
@@ -49,12 +53,23 @@ from test.utils import revert_liger_kernel_to_smolvlm2
 from test.utils import set_seed
 from test.utils import train_bpe_tokenizer
 
+IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
+
+if IS_TRANSFORMERS_V5_OR_LATER:
+    from transformers.models.gemma.tokenization_gemma import GemmaTokenizer
+else:
+    from transformers.models.gemma.tokenization_gemma_fast import GemmaTokenizerFast as GemmaTokenizer
+
 try:
     # Qwen2-VL is only available in transformers>=4.52.4
     import transformers
 
     from packaging import version
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+
+    if IS_TRANSFORMERS_V5_OR_LATER:
+        from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+    else:
+        from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast as Qwen2Tokenizer
     from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
@@ -70,7 +85,11 @@ try:
     import transformers
 
     from packaging import version
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+
+    if IS_TRANSFORMERS_V5_OR_LATER:
+        from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+    else:
+        from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast as Qwen2Tokenizer
     from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
     from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
     from transformers.models.qwen2_5_vl.processing_qwen2_5_vl import Qwen2_5_VLProcessor
@@ -83,7 +102,10 @@ except ImportError:
 
 
 try:
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    if IS_TRANSFORMERS_V5_OR_LATER:
+        from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+    else:
+        from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast as Qwen2Tokenizer
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
@@ -108,7 +130,10 @@ except ImportError:
     QWEN3_VL_MOE_AVAILABLE = False
 
 try:
-    from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    if IS_TRANSFORMERS_V5_OR_LATER:
+        from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+    else:
+        from transformers.models.qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast as Qwen2Tokenizer
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
     from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
@@ -183,7 +208,7 @@ try:
     from transformers.models.paligemma.processing_paligemma import PaliGemmaProcessor
     from transformers.models.siglip.image_processing_siglip import SiglipImageProcessor
 
-    PALIGEMMA_AVAILABLE = version.parse(transformers.__version__) >= version.parse("4.46.0")
+    PALIGEMMA_AVAILABLE = True
 except ImportError:
     PALIGEMMA_AVAILABLE = False
 
@@ -214,7 +239,7 @@ except ImportError:
 
 try:
     # SmolVLM2 is only available in transformers>=4.50.0
-    from transformers.models.gpt2.tokenization_gpt2_fast import GPT2TokenizerFast
+    from transformers.models.gpt2.tokenization_gpt2 import GPT2Tokenizer
     from transformers.models.smolvlm.configuration_smolvlm import SmolVLMConfig
     from transformers.models.smolvlm.image_processing_smolvlm import SmolVLMImageProcessor
     from transformers.models.smolvlm.modeling_smolvlm import SmolVLMForConditionalGeneration
@@ -226,13 +251,20 @@ except ImportError:
     SMOLVLM2_AVAILABLE = False
 
 try:
+    from transformers.models.pixtral.configuration_pixtral import PixtralVisionConfig
+    from transformers.models.pixtral.modeling_pixtral import PixtralVisionModel
+
+    PIXTRAL_AVAILABLE = True
+except ImportError:
+    PIXTRAL_AVAILABLE = False
+
+try:
     from num2words import num2words  # noqa: F401
 
     NUM2WORDS_AVAILABLE = True
 except ImportError:
     NUM2WORDS_AVAILABLE = False
 
-from liger_kernel.utils import infer_device
 
 device = infer_device()
 
@@ -291,7 +323,6 @@ if LLAMA4_AVAILABLE:
                 num_hidden_layers=4,  # 40
                 num_key_value_heads=2,  # 8
                 rms_norm_eps=1e-5,
-                rope_theta=500_000,
                 tie_word_embeddings=False,
                 use_cache=True,
                 vocab_size=32000,  # 128256,
@@ -345,8 +376,9 @@ if MLLAMA_AVAILABLE:
                     low_freq_factor=1.0,
                     original_max_position_embeddings=8192,
                     rope_type="llama3",
-                ),
-                rope_theta=500_000,
+                )
+                if not IS_TRANSFORMERS_V5_OR_LATER
+                else None,
                 tie_word_embeddings=False,
                 use_cache=True,
                 vocab_size=32000,  # 128256,
@@ -396,7 +428,6 @@ if PALIGEMMA_AVAILABLE:
                 bos_token_id=1,  # 128000
                 eos_token_id=2,  # 128001
                 tie_word_embeddings=True,
-                rope_theta=10000.0,
                 attention_bias=False,
                 attention_dropout=0.0,
             ),
@@ -446,7 +477,6 @@ if PALIGEMMA_AVAILABLE:
                 bos_token_id=1,  # 128000
                 eos_token_id=2,  # 128001
                 tie_word_embeddings=True,
-                rope_theta=10000.0,
                 attention_bias=False,
                 attention_dropout=0.0,
             ),
@@ -492,7 +522,6 @@ if GEMMA3_AVAILABLE:
                 rms_norm_eps=1e-06,
                 use_cache=True,
                 tie_word_embeddings=True,
-                rope_theta=10000.0,
                 attention_bias=False,
                 attention_dropout=0.0,
             ),
@@ -528,10 +557,10 @@ if QWEN2_VL_AVAILABLE:
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-6,  # 1e-5
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            **(
+                dict(rope_parameters=dict(mrope_section=[16, 24, 24]))  # (temporal, height, width)
+                if IS_TRANSFORMERS_V5_OR_LATER
+                else dict(rope_scaling=dict(type="mrope", mrope_section=[16, 24, 24]))
             ),
             sliding_window=4096,
             tie_word_embeddings=True,
@@ -570,8 +599,6 @@ if LLAVA_AVAILABLE:
                 num_hidden_layers=4,
                 num_key_value_heads=2,
                 pretraining_tp=1,
-                rope_scaling=None,
-                rope_theta=500000.0,
                 tie_word_embeddings=False,
                 use_cache=True,
                 max_position_embeddings=4096,  # llava-1.5-7b-hf
@@ -662,7 +689,6 @@ if SMOLVLM2_AVAILABLE:
                 num_hidden_layers=4,  # 30 -> reduced to 4 for testing
                 num_key_value_heads=3,  # 3 for 256M model
                 rms_norm_eps=1e-5,
-                rope_theta=100000,
                 tie_word_embeddings=False,
                 vocab_size=49280,
             ),
@@ -705,10 +731,10 @@ if QWEN2_5_VL_AVAILABLE:
             num_hidden_layers=4,  # 80
             num_key_value_heads=2,  # 8
             rms_norm_eps=1e-6,  # 1e-5
-            rope_theta=1000000.0,
-            rope_scaling=dict(
-                type="mrope",
-                mrope_section=[16, 24, 24],  # (temporal, height, width)
+            **(
+                dict(rope_parameters=dict(mrope_section=[16, 24, 24]))  # (temporal, height, width)
+                if IS_TRANSFORMERS_V5_OR_LATER
+                else dict(rope_scaling=dict(type="mrope", mrope_section=[16, 24, 24]))
             ),
             sliding_window=4096,
             tie_word_embeddings=True,
@@ -767,11 +793,6 @@ if QWEN3_VL_AVAILABLE:
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
             ).to_dict(),
@@ -819,11 +840,6 @@ if QWEN3_VL_MOE_AVAILABLE:
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
                 decoder_sparse_step=1,
@@ -879,11 +895,6 @@ if QWEN3_VL_AVAILABLE:
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
             ).to_dict(),
@@ -931,11 +942,6 @@ if QWEN3_VL_MOE_AVAILABLE:
                 rms_norm_eps=1e-6,
                 use_cache=False,
                 tie_word_embeddings=True,
-                rope_theta=1000000.0,
-                rope_scaling=dict(
-                    type="mrope",
-                    mrope_section=[16, 24, 24],
-                ),
                 attention_dropout=0.0,
                 attention_bias=False,
                 decoder_sparse_step=1,
@@ -944,6 +950,26 @@ if QWEN3_VL_MOE_AVAILABLE:
                 num_experts=4,
                 mlp_only_layers=[],
             ).to_dict(),
+        ),
+    )
+
+if PIXTRAL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_pixtral"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_pixtral,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_pixtral,
+        model_class=PixtralVisionModel,
+        mini_model_config=PixtralVisionConfig(
+            hidden_size=1024,
+            intermediate_size=2048,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_channels=3,
+            image_size=256,
+            patch_size=16,
+            hidden_act="silu",
+            attention_dropout=0.0,
+            rope_theta=10000.0,
+            initializer_range=0.02,
         ),
     )
 
@@ -962,7 +988,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        qwen_tokenizer = Qwen2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor()
         video_processor = Qwen2VLVideoProcessor()
         return Qwen2VLProcessor(
@@ -984,7 +1010,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        qwen_tokenizer = Qwen2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor()
         video_processor = Qwen2VLVideoProcessor()
         return Qwen2_5_VLProcessor(
@@ -1006,7 +1032,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        qwen_tokenizer = Qwen2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Qwen2VLImageProcessor(patch_size=16, temporal_patch_size=2, merge_size=2)
         video_processor = Qwen3VLVideoProcessor()
         return Qwen3VLProcessor(
@@ -1063,7 +1089,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        qwen_tokenizer = Qwen2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        qwen_tokenizer = Qwen2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = GotOcr2ImageProcessorFast(
             crop_to_patches=False, min_patches=1, max_patches=12, size={"height": 448, "width": 448}
         )
@@ -1087,7 +1113,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        gpt2_tokenizer = GPT2TokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        gpt2_tokenizer = GPT2Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = SmolVLMImageProcessor(size={"longest_edge": 512})
         video_processor = SmolVLMVideoProcessor()
 
@@ -1157,7 +1183,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        fast_tokenizer = GemmaTokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = SiglipImageProcessor(size={"height": 224, "width": 224}, image_seq_length=256)
         return PaliGemmaProcessor(image_processor=image_processor, tokenizer=fast_tokenizer)
 
@@ -1177,7 +1203,7 @@ def create_processor(model_name: str):
                 )
             ]
         )
-        fast_tokenizer = GemmaTokenizerFast(tokenizer_object=tokenizer_base, **tokenizer_config)
+        fast_tokenizer = GemmaTokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Gemma3ImageProcessor()
         return Gemma3Processor(image_processor=image_processor, tokenizer=fast_tokenizer)
 
@@ -1366,24 +1392,30 @@ def run_mini_model_multimodal(
         ),
         # Disable since Llama4 image processor resacle and normalize images to torch.bfloat16, the dtype of model parameters have to be bfloat16
         # Refer to: https://github.com/huggingface/transformers/blob/67ddc82fbc7e52c6f42a395b4a6d278c55b77a39/src/transformers/models/llama4/image_processing_llama4_fast.py#L371
-        # pytest.param(
-        #     "mini_llama4",
-        #     32,
-        #     1e-4,
-        #     torch.float32,
-        #     1e-8,
-        #     1e-5,
-        #     5e-3,
-        #     1e-5,
-        #     1e-2,
-        #     1e-2,
-        #     marks=[
-        #         pytest.mark.skipif(
-        #             not LLAMA4_AVAILABLE,
-        #             reason="Llama4 not available in this version of transformers",
-        #         ),
-        #     ],
-        # ),
+        pytest.param(
+            "mini_llama4",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(
+                    not LLAMA4_AVAILABLE,
+                    reason="Llama4 not available in this version of transformers",
+                ),
+                pytest.mark.xfail(
+                    reason=(
+                        "RuntimeError: Expected query, key, and value to have the same dtype, but got query.dtype:"
+                        " float key.dtype: c10::BFloat16 and value.dtype: c10::BFloat16 instead."
+                    )
+                ),
+            ],
+        ),
         pytest.param(
             "mini_llava",
             32,
@@ -1628,6 +1660,163 @@ def test_mini_model_multimodal(
 
     # Compare the params from the last step
     # Iterate over the model's parameters and compare them
+    for expected_param, actual_param in zip(
+        expected_output["model"].named_parameters(),
+        actual_output["model"].named_parameters(),
+    ):
+        assert_verbose_allclose(
+            expected_param[1],
+            actual_param[1],
+            atol=param_atol,
+            rtol=param_rtol,
+            extra_info="[Model parameters]",
+        )
+
+
+#
+# Vision-only model tests (e.g. Pixtral vision encoder)
+#
+
+
+def generate_procedural_pixel_values(batch_size, num_channels, image_size, index, dtype, device):
+    """Generate deterministic pixel values for vision-only model testing.
+
+    Each image has a single row of white pixels at a deterministic position,
+    providing a reproducible signal for convergence testing.
+    """
+    pixel_values = torch.zeros(batch_size, num_channels, image_size, image_size, dtype=dtype, device=device)
+    for b in range(batch_size):
+        row = (index + b) % image_size
+        pixel_values[b, :, row, :] = 1.0
+    return pixel_values
+
+
+@require_deterministic
+def run_mini_model_vision(
+    model_name="mini_pixtral",
+    num_steps=100,
+    dtype=torch.float32,
+    lr=1e-5,
+    with_liger=False,
+):
+    set_seed(42)
+
+    revert_kwargs = {"model_config": MINI_MODEL_SETUPS[model_name]}
+
+    if with_liger is True:
+        kwargs = {
+            "rope": True,
+            "rms_norm": True,
+            "swiglu": True,
+        }
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_func(**kwargs)
+    else:
+        MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
+
+    model = create_model(model_name).to(dtype).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+
+    loss_list = []
+
+    for i in range(num_steps):
+        optimizer.zero_grad()
+        pixel_values = generate_procedural_pixel_values(
+            batch_size=2,
+            num_channels=model.config.num_channels,
+            image_size=model.config.image_size,
+            index=i,
+            dtype=dtype,
+            device=device,
+        )
+        output = model(pixel_values=pixel_values)
+        loss = output.last_hidden_state.sum()
+        loss.backward()
+        optimizer.step()
+        print(f"Step {i}, Loss: {loss.item()}")
+        loss_list.append(loss.item())
+
+    # Eval step with deterministic input
+    model.eval()
+    with torch.no_grad():
+        eval_pixel_values = generate_procedural_pixel_values(
+            batch_size=2,
+            num_channels=model.config.num_channels,
+            image_size=model.config.image_size,
+            index=num_steps,
+            dtype=dtype,
+            device=device,
+        )
+        eval_output = model(pixel_values=eval_pixel_values)
+
+    topk_logprobs = get_topk(get_logprobs(eval_output.last_hidden_state))
+    MINI_MODEL_SETUPS[model_name].liger_kernel_patch_revert_func(**revert_kwargs)
+    return {
+        "loss": loss_list,
+        "topk_logprobs": topk_logprobs.values,
+        "model": model,
+    }
+
+
+@pytest.mark.parametrize(
+    "model_name, num_steps, lr, dtype, loss_atol, loss_rtol, logprobs_atol, logprobs_rtol, param_atol, param_rtol",
+    [
+        pytest.param(
+            "mini_pixtral",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not PIXTRAL_AVAILABLE, reason="Pixtral not available in this version of transformers"
+                ),
+            ],
+        ),
+    ],
+)
+def test_mini_model_vision(
+    model_name,
+    num_steps,
+    lr,
+    dtype,
+    loss_atol,
+    loss_rtol,
+    logprobs_atol,
+    logprobs_rtol,
+    param_atol,
+    param_rtol,
+):
+    # Non-liger models should be initialized and tested first to avoid the module being overridden
+    expected_output = run_mini_model_vision(model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr)
+
+    actual_output = run_mini_model_vision(
+        model_name=model_name, num_steps=num_steps, dtype=dtype, lr=lr, with_liger=True
+    )
+
+    # Compare the loss of every step
+    assert_verbose_allclose(
+        torch.tensor([expected_output["loss"]]),
+        torch.tensor([actual_output["loss"]]),
+        atol=loss_atol,
+        rtol=loss_rtol,
+        extra_info="[Loss]",
+    )
+
+    # Compare the topk logprobs from evaluation step
+    assert_verbose_allclose(
+        expected_output["topk_logprobs"],
+        actual_output["topk_logprobs"],
+        atol=logprobs_atol,
+        rtol=logprobs_rtol,
+        extra_info="[Top k logprobs]",
+    )
+
+    # Compare the params from the last step
     for expected_param, actual_param in zip(
         expected_output["model"].named_parameters(),
         actual_output["model"].named_parameters(),

@@ -4,45 +4,23 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "src/**"
-      - "test/**"
   pull_request:
     branches:
       - main
-    paths:
-      - "src/**"
-      - "test/**"
+  merge_group:
+    types: [checks_requested]
+    branches:
+      - main
   workflow_dispatch:  # Enables manual trigger
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  checkstyle:
+  nvi-correctness-tests:
+    if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-
-    - name: Set up Python
-      uses: actions/setup-python@v6
-      with:
-        python-version: '3.10'
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r dev/fmt-requirements.txt
-
-    - name: Run checkstyle
-      run: make checkstyle
-
-  tests:
-    runs-on: ubuntu-latest
-    needs: [checkstyle]
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -63,15 +41,14 @@ jobs:
 
     - name: Run tests
       run: |
-        modal run dev.modal.tests
+        modal run dev.modal.tests::liger_correctness_tests
 
-  tests-bwd:
+  nvi-convergence-tests:
+    if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
-    needs: [checkstyle]
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      REBUILD_IMAGE: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
     steps:
     - name: Checkout code
@@ -89,4 +66,55 @@ jobs:
 
     - name: Run tests
       run: |
-        modal run dev.modal.tests_bwd
+        modal run dev.modal.tests::liger_convergence_tests
+
+  nvi-correctness-tests-with-transformers-4-52-0:
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install modal
+
+    - name: Run tests
+      run: |
+        modal run dev.modal.tests::liger_oldest_v4_correctness_tests
+
+
+  nvi-convergence-tests-with-transformers-4-52-0:
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install modal
+
+    - name: Run tests
+      run: |
+        modal run dev.modal.tests::liger_oldest_v4_convergence_tests

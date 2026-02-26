@@ -71,6 +71,7 @@ def lce_forward(
     loss = None
     logits = None
     token_accuracy = None
+    predicted_tokens = None
 
     if skip_logits and labels is None and shift_labels is None:
         raise ValueError("skip_logits is True, but labels and shift_labels are None")
@@ -87,7 +88,7 @@ def lce_forward(
             hidden_size=self.config.text_config.hidden_size,
             **kwargs,
         )
-        loss, _, token_accuracy = unpack_cross_entropy_result(result)
+        loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
     else:
         logits = self.lm_head(hidden_states)
 
@@ -112,6 +113,7 @@ def lce_forward(
         output = (loss,) + output if loss is not None else output
         output = output + (aux_loss,) if aux_loss is not None else output
         output = output + (token_accuracy,) if token_accuracy is not None else output
+        output = output + (predicted_tokens,) if predicted_tokens is not None else output
         return output
 
     return LigerQwen3VLMoeCausalLMOutputWithPast(
@@ -123,4 +125,5 @@ def lce_forward(
         rope_deltas=outputs.rope_deltas,
         aux_loss=aux_loss,
         token_accuracy=token_accuracy,
+        predicted_tokens=predicted_tokens,
     )

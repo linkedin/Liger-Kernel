@@ -2,6 +2,21 @@ import torch
 import triton
 import triton.language as tl
 
+# Loss type constants for Triton constexpr branching
+# GRPO/DAPO/BNPO/DR_GRPO all use the same per-token loss computation (standard PPO clipping)
+_LOSS_TYPE_GRPO: tl.constexpr = tl.constexpr(0)
+_LOSS_TYPE_CISPO: tl.constexpr = tl.constexpr(1)
+_LOSS_TYPE_SAPO: tl.constexpr = tl.constexpr(2)
+
+_str_to_loss_type = {
+    "grpo": _LOSS_TYPE_GRPO.value,
+    "dapo": _LOSS_TYPE_GRPO.value,
+    "bnpo": _LOSS_TYPE_GRPO.value,
+    "dr_grpo": _LOSS_TYPE_GRPO.value,
+    "cispo": _LOSS_TYPE_CISPO.value,
+    "sapo": _LOSS_TYPE_SAPO.value,
+}
+
 
 @triton.jit
 def _selective_log_softmax_kernel(
@@ -75,6 +90,8 @@ def _grpo_loss_fwd_kernel(
     INPUT_IDS,
     COMPLETION_MASK,
     ADVANTAGES,
+    VLLM_IS_RATIO,
+    VLLM_IS_RATIO_STRIDE,
     LOSS,
     LSE,
     KL,
@@ -83,6 +100,9 @@ def _grpo_loss_fwd_kernel(
     BETA: tl.constexpr,
     EPS_LOW,
     EPS_HIGH,
+    LOSS_TYPE: tl.constexpr,
+    SAPO_TEMP_POS,
+    SAPO_TEMP_NEG,
     L: tl.constexpr,
     N: tl.constexpr,
     BLOCK_N: tl.constexpr = 4096,
@@ -123,14 +143,41 @@ def _grpo_loss_fwd_kernel(
         OLD_LOGP += off_b * L + off_l
         old_logp = tl.load(OLD_LOGP).to(tl.float32)
     coef_1 = tl.exp(logp - old_logp)
-    coef_2 = tl.clamp(coef_1, 1 - EPS_LOW, 1 + EPS_HIGH)
     advantage = tl.load(ADVANTAGES).to(tl.float32)
-    per_token_loss1 = coef_1 * advantage
-    per_token_loss2 = coef_2 * advantage
-    per_token_loss = -tl.minimum(per_token_loss1, per_token_loss2)
-    is_low_clipped = (coef_1 < 1 - EPS_LOW) & (advantage < 0)
-    is_high_clipped = (coef_1 > 1 + EPS_HIGH) & (advantage > 0)
-    is_clipped = is_low_clipped | is_high_clipped
+
+    # Branch based on loss type
+    if LOSS_TYPE == 0:  # GRPO/DAPO/BNPO/DR_GRPO: standard PPO clipping
+        coef_2 = tl.clamp(coef_1, 1 - EPS_LOW, 1 + EPS_HIGH)
+        per_token_loss1 = coef_1 * advantage
+        per_token_loss2 = coef_2 * advantage
+        per_token_loss = -tl.minimum(per_token_loss1, per_token_loss2)
+        is_low_clipped = (coef_1 < 1 - EPS_LOW) & (advantage < 0)
+        is_high_clipped = (coef_1 > 1 + EPS_HIGH) & (advantage > 0)
+        is_clipped = is_low_clipped | is_high_clipped
+
+    elif LOSS_TYPE == 1:  # CISPO: upper-bound only clipping, detached, multiply by logp
+        # Reference: MiniMax-M1 technical report
+        # https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2030
+        coef_2 = tl.minimum(coef_1, EPS_HIGH)  # upper-bound only (EPS_HIGH is the raw bound for CISPO)
+        per_token_loss = -coef_2 * advantage * logp  # includes logp term
+        is_clipped = (coef_1 > EPS_HIGH) & (advantage > 0)
+
+    elif LOSS_TYPE == 2:  # SAPO: soft adaptive policy optimization with sigmoid gating
+        # Reference: https://huggingface.co/papers/2511.20347
+        # Formula: sigmoid(τ * (ρ - 1)) * 4 / τ
+        temperature = tl.where(advantage > 0, SAPO_TEMP_POS, SAPO_TEMP_NEG)
+        sigmoid_input = temperature * (coef_1 - 1.0)
+        sapo_coef = tl.sigmoid(sigmoid_input) * 4.0 / temperature
+        per_token_loss = -sapo_coef * advantage
+        is_clipped = 0.0  # SAPO has no clipping concept
+
+    # Apply vLLM importance sampling correction BEFORE adding KL penalty
+    if VLLM_IS_RATIO is not None:
+        # Use modulo to support both (B, L) per-token and (B, 1) per-sequence shapes
+        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
+            tl.float32
+        )
+        per_token_loss = per_token_loss * vllm_is_ratio
 
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
@@ -161,10 +208,15 @@ def _grpo_loss_bwd_kernel(
     ADVANTAGES,
     COMPLETION_MASK,
     LSE,
+    VLLM_IS_RATIO,
+    VLLM_IS_RATIO_STRIDE,
     TEMPERATURE,
     BETA: tl.constexpr,
     EPS_LOW,
     EPS_HIGH,
+    LOSS_TYPE: tl.constexpr,
+    SAPO_TEMP_POS,
+    SAPO_TEMP_NEG,
     loss_stride0,
     loss_stride1,
     L: tl.constexpr,
@@ -202,13 +254,43 @@ def _grpo_loss_bwd_kernel(
         OLD_LOGP += off_b * L + off_l
         old_logp = tl.load(OLD_LOGP).to(tl.float32)
     coef_1 = tl.exp(logp - old_logp)
-    coef_2 = tl.clamp(coef_1, 1 - EPS_LOW, 1 + EPS_HIGH)
     advantage = tl.load(ADVANTAGES).to(tl.float32)
-    per_token_loss1 = coef_1 * advantage
-    per_token_loss2 = coef_2 * advantage
-    mask = per_token_loss2 >= per_token_loss1
 
-    dlogp = -per_token_loss1 * mask
+    # Branch based on loss type for gradient computation
+    if LOSS_TYPE == 0:  # GRPO/DAPO/BNPO/DR_GRPO: standard PPO clipping
+        coef_2 = tl.clamp(coef_1, 1 - EPS_LOW, 1 + EPS_HIGH)
+        per_token_loss1 = coef_1 * advantage
+        per_token_loss2 = coef_2 * advantage
+        mask = per_token_loss2 >= per_token_loss1
+        dlogp = -per_token_loss1 * mask
+
+    elif LOSS_TYPE == 1:  # CISPO: coef_2 is DETACHED, so gradient only flows through logp
+        # loss = -coef_2 * advantage * logp, where coef_2 = clamp(coef_1, max=eps_high).detach()
+        # d(loss)/d(logp) = -coef_2 * advantage (coef_2 treated as constant due to detach)
+        coef_2 = tl.minimum(coef_1, EPS_HIGH)
+        dlogp = -coef_2 * advantage
+
+    elif LOSS_TYPE == 2:  # SAPO: gradient through sigmoid gating
+        # loss = -sapo_coef * advantage, where sapo_coef = sigmoid(τ*(ρ-1)) * 4/τ
+        # d(loss)/d(logp) = -advantage * d(sapo_coef)/d(coef_1) * d(coef_1)/d(logp)
+        # d(coef_1)/d(logp) = coef_1 (since coef_1 = exp(logp - old_logp))
+        # d(sapo_coef)/d(coef_1) = d/d(coef_1)[sigmoid(τ*(coef_1-1)) * 4/τ]
+        #                       = τ * sigmoid' * 4/τ = 4 * sigmoid * (1 - sigmoid)
+        # (the τ factors cancel out in the derivative)
+        temperature = tl.where(advantage > 0, SAPO_TEMP_POS, SAPO_TEMP_NEG)
+        sigmoid_input = temperature * (coef_1 - 1.0)
+        sigmoid_val = tl.sigmoid(sigmoid_input)
+        d_sapo_d_coef1 = 4.0 * sigmoid_val * (1.0 - sigmoid_val)
+        dlogp = -advantage * d_sapo_d_coef1 * coef_1
+
+    # Apply vLLM IS ratio to PPO gradient (before KL gradient)
+    if VLLM_IS_RATIO is not None:
+        # Use modulo to support both (B, L) per-token and (B, 1) per-sequence shapes
+        vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
+            tl.float32
+        )
+        dlogp = dlogp * vllm_is_ratio
+
     if BETA != 0.0:
         REF_LOGP += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
@@ -239,16 +321,53 @@ class GrpoLossFunction(torch.autograd.Function):
         eps_low,
         eps_high,
         inplace,
+        loss_type="grpo",
+        sapo_temperature_pos=1.0,
+        sapo_temperature_neg=1.05,
+        vllm_is_ratio=None,
     ):
         assert logits.is_contiguous() and completion_ids.is_contiguous()
         assert old_logp is None or old_logp.is_contiguous()
         assert (ref_logp is not None and ref_logp.is_contiguous()) if beta != 0.0 else True
+
+        # Validate loss_type
+        if loss_type not in _str_to_loss_type:
+            raise ValueError(f"Unknown loss_type '{loss_type}'. Supported types: {list(_str_to_loss_type.keys())}")
+
+        # Validate SAPO temperatures to prevent division by zero or numerical instability
+        if loss_type == "sapo":
+            if sapo_temperature_pos <= 0:
+                raise ValueError(f"sapo_temperature_pos must be positive, got {sapo_temperature_pos}")
+            if sapo_temperature_neg <= 0:
+                raise ValueError(f"sapo_temperature_neg must be positive, got {sapo_temperature_neg}")
+
+        # Convert loss_type string to integer for Triton constexpr
+        loss_type_int = _str_to_loss_type[loss_type]
 
         B, L_ADD_1, N = logits.shape
         L = L_ADD_1 - 1
 
         if completion_mask is not None:
             assert completion_mask.is_contiguous()
+
+        # Handle vLLM IS ratio
+        vllm_is_ratio_ptr = None
+        vllm_is_ratio_stride = L  # default to per-token (unused when ptr is None)
+        if vllm_is_ratio is not None:
+            assert vllm_is_ratio.dim() in (1, 2), (
+                f"vllm_is_ratio must be 1D (B,) or 2D (B, L) / (B, 1), got {vllm_is_ratio.dim()}D"
+            )
+            if vllm_is_ratio.dim() == 2:
+                assert vllm_is_ratio.shape[0] == B and vllm_is_ratio.shape[1] in (1, L), (
+                    f"vllm_is_ratio shape must be ({B}, 1) or ({B}, {L}), got {tuple(vllm_is_ratio.shape)}"
+                )
+            else:
+                assert vllm_is_ratio.shape[0] == B, (
+                    f"vllm_is_ratio shape must be ({B},), got {tuple(vllm_is_ratio.shape)}"
+                )
+            vllm_is_ratio = vllm_is_ratio.contiguous()
+            vllm_is_ratio_ptr = vllm_is_ratio
+            vllm_is_ratio_stride = vllm_is_ratio.shape[1] if vllm_is_ratio.dim() > 1 else 1
 
         loss = torch.zeros(B, L, device=logits.device, dtype=torch.float32)
         lse = torch.zeros_like(loss)
@@ -262,6 +381,8 @@ class GrpoLossFunction(torch.autograd.Function):
             completion_ids,
             completion_mask,
             advantages,
+            vllm_is_ratio_ptr,
+            vllm_is_ratio_stride,
             loss,
             lse,
             kl,
@@ -270,21 +391,37 @@ class GrpoLossFunction(torch.autograd.Function):
             beta,
             eps_low,
             eps_high,
+            loss_type_int,
+            sapo_temperature_pos,
+            sapo_temperature_neg,
             L,
             N,
             **kwargs,
         )
         ctx.save_for_backward(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse)
-        ctx.infos = (temperature, beta, eps_low, eps_high, inplace)
-        # return loss
+        ctx.vllm_is_ratio = vllm_is_ratio_ptr
+        ctx.vllm_is_ratio_stride = vllm_is_ratio_stride
+        ctx.infos = (
+            temperature,
+            beta,
+            eps_low,
+            eps_high,
+            inplace,
+            loss_type_int,
+            sapo_temperature_pos,
+            sapo_temperature_neg,
+        )
         return loss, kl, is_clipped
 
     @staticmethod
     def backward(ctx, *args):
         dloss = args[0]
-        # print(dloss.shape)
         logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse = ctx.saved_tensors
-        temperature, beta, eps_low, eps_high, inplace = ctx.infos
+        temperature, beta, eps_low, eps_high, inplace, loss_type_int, sapo_temperature_pos, sapo_temperature_neg = (
+            ctx.infos
+        )
+        vllm_is_ratio = ctx.vllm_is_ratio
+        vllm_is_ratio_stride = ctx.vllm_is_ratio_stride
         B, L_ADD_1, N = logits.shape
         L = L_ADD_1 - 1
         dlogits = logits.data if inplace else torch.empty_like(logits)
@@ -299,14 +436,22 @@ class GrpoLossFunction(torch.autograd.Function):
             advantages,
             completion_mask,
             lse,
+            vllm_is_ratio,
+            vllm_is_ratio_stride,
             temperature,
             beta,
             eps_low,
             eps_high,
+            loss_type_int,
+            sapo_temperature_pos,
+            sapo_temperature_neg,
             *dloss.stride(),
             L,
             N,
             **kwargs,
         )
         dlogits[:, -1, :] = 0
-        return dlogits, None, None, None, None, None, None, None, None, None, None
+        # Return None for: old_logp, ref_logp, completion_ids, advantages, completion_mask,
+        # temperature, beta, eps_low, eps_high, inplace, loss_type, sapo_temperature_pos, sapo_temperature_neg,
+        # vllm_is_ratio
+        return dlogits, None, None, None, None, None, None, None, None, None, None, None, None, None, None
