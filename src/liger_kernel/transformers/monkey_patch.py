@@ -2652,13 +2652,17 @@ def apply_liger_kernel_to_qwen3_next(
                 f"Unsupported qwen3_next model type. `model` must be `Qwen3NextForCausalLM`, `Qwen3NextModel`. Got: {type(model)}"
             )
 
+        _patch_rms_norm_module_for_qwen3_next = partial(
+            _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+        )
+
         if rms_norm:
-            _patch_rms_norm_module(base_model.norm)
+            _patch_rms_norm_module_for_qwen3_next(base_model.norm)
 
         for decoder_layer in base_model.layers:
             if rms_norm:
-                _patch_rms_norm_module(decoder_layer.input_layernorm)
-                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module_for_qwen3_next(decoder_layer.input_layernorm)
+                _patch_rms_norm_module_for_qwen3_next(decoder_layer.post_attention_layernorm)
 
             # Qwen3MoeMLP and Qwen3NextMLP are identical, hence we reuse LigerQwen3MoeSwiGLUMLP
             if swiglu:
@@ -2741,13 +2745,17 @@ def apply_liger_kernel_to_qwen3_5_moe(
                 f"Unsupported qwen3_5_moe model type. `model` must be `Qwen3_5MoeForCausalLM`, `Qwen3_5MoeTextModel`. Got: {type(model)}"
             )
 
+        _patch_rms_norm_module_for_qwen3_5_moe = partial(
+            _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+        )
+
         if rms_norm:
-            _patch_rms_norm_module(base_model.norm)
+            _patch_rms_norm_module_for_qwen3_5_moe(base_model.norm)
 
         for decoder_layer in base_model.layers:
             if rms_norm:
-                _patch_rms_norm_module(decoder_layer.input_layernorm)
-                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module_for_qwen3_5_moe(decoder_layer.input_layernorm)
+                _patch_rms_norm_module_for_qwen3_5_moe(decoder_layer.post_attention_layernorm)
 
             if swiglu:
                 _patch_swiglu_module(decoder_layer.mlp.shared_expert, LigerQwen3MoeSwiGLUMLP)
