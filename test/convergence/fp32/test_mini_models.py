@@ -295,7 +295,7 @@ except ImportError:
     QWEN3NEXT_AVAILABLE = False
 
 try:
-    from transformers.models.qwen3_5_moe.modular_qwen3_5_moe import Qwen3_5MoeTextConfig
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeTextConfig
     from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForCausalLM
 
     QWEN3_5_MOE_AVAILABLE = True
@@ -1998,10 +1998,6 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not QWEN3_5_MOE_AVAILABLE,
                     reason="Qwen3_5Moe not available in this version of transformers",
-                ),
-                pytest.mark.skip(
-                    reason="flash-linear-attention's ChunkGatedDeltaRuleFunction does not support float32.\n"
-                    + " Torch's implementation takes too long"
                 ),
             ],
         ),

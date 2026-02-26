@@ -2915,7 +2915,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_5_moe():
         from liger_kernel.transformers.model.qwen3_5_moe import lce_forward as qwen3_5_moe_lce_forward
 
         # Instantiate a dummy model
-        config = transformers.models.qwen3_5_moe.modular_qwen3_5_moe.Qwen3_5MoeTextConfig(
+        config = transformers.models.qwen3_5_moe.configuration_qwen3_5_moe.Qwen3_5MoeTextConfig(
             dtype=torch.bfloat16,
             rms_norm_eps=1e-5,
             hidden_size=32,
