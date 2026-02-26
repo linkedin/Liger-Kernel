@@ -1542,7 +1542,7 @@ def run_mini_model(
             "rms_norm": True,
         }
 
-        if "glm4" in model_name or "qwen3_next" in model_name:
+        if "glm4" in model_name or "qwen3_next" in model_name or "qwen3_5_moe" in model_name:
             kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -1976,6 +1976,28 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not QWEN3NEXT_AVAILABLE,
                     reason="Qwen3Next not available in this version of transformers",
+                ),
+                pytest.mark.skip(
+                    reason="flash-linear-attention's ChunkGatedDeltaRuleFunction does not support float32.\n"
+                    + " Torch's implementation takes too long"
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_5_moe",
+            32,
+            1e-5,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not QWEN3_5_MOE_AVAILABLE,
+                    reason="Qwen3_5Moe not available in this version of transformers",
                 ),
                 pytest.mark.skip(
                     reason="flash-linear-attention's ChunkGatedDeltaRuleFunction does not support float32.\n"
