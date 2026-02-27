@@ -13,8 +13,8 @@ def get_default_dependencies():
 
     if platform in ["cuda", "cpu"]:
         return [
-            "torch>=2.1.2",
-            "triton>=2.3.1",
+            "torch==2.9.1.7+cu130",
+            "triton==3.4.0",
         ]
     elif platform == "rocm":
         return [
@@ -44,7 +44,8 @@ def get_optional_dependencies():
             "datasets>=2.19.2",
             "seaborn",
             "mkdocs-material",
-            "torchvision>=0.20",
+            "torchvision==0.24.1.6+cu130",
+            "numpy==1.26.4",
             "prek>=0.2.28",
         ]
     }
