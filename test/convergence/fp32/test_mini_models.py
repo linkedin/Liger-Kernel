@@ -1999,6 +1999,10 @@ def run_mini_model(
                     not QWEN3_5_MOE_AVAILABLE,
                     reason="Qwen3_5Moe not available in this version of transformers",
                 ),
+                pytest.mark.skip(
+                    reason="flash-linear-attention's ChunkGatedDeltaRuleFunction does not support float32.\n"
+                    + " Torch's implementation takes too long"
+                ),
             ],
         ),
         pytest.param(

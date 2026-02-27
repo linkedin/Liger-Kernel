@@ -51,6 +51,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
@@ -89,6 +90,7 @@ from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
 from test.utils import revert_liger_kernel_to_qwen3_moe
+from test.utils import revert_liger_kernel_to_qwen3_5_moe
 from test.utils import revert_liger_kernel_to_qwen3_next
 from test.utils import revert_liger_kernel_to_qwen3_vl
 from test.utils import revert_liger_kernel_to_qwen3_vl_moe
@@ -293,6 +295,14 @@ try:
     QWEN3NEXT_AVAILABLE = True
 except ImportError:
     QWEN3NEXT_AVAILABLE = False
+
+try:
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeTextConfig
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForCausalLM
+
+    QWEN3_5_MOE_AVAILABLE = True
+except ImportError:
+    QWEN3_5_MOE_AVAILABLE = False
 
 try:
     from transformers.models.hunyuan_v1_dense.configuration_hunyuan_v1_dense import HunYuanDenseV1Config
@@ -1387,6 +1397,41 @@ if QWEN3NEXT_AVAILABLE:
         ),
     )
 
+if QWEN3_5_MOE_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_5_moe"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_5_moe,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_5_moe,
+        model_class=Qwen3_5MoeForCausalLM,
+        mini_model_config=Qwen3_5MoeTextConfig(
+            vocab_size=32000,
+            hidden_size=896,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=True,
+            tie_word_embeddings=False,
+            attention_bias=False,
+            attention_dropout=0.0,
+            head_dim=128,
+            linear_conv_kernel_dim=4,
+            linear_key_head_dim=64,
+            linear_value_head_dim=64,
+            linear_num_key_heads=8,
+            linear_num_value_heads=8,
+            moe_intermediate_size=768,
+            shared_expert_intermediate_size=768,
+            num_experts_per_tok=2,
+            num_experts=8,
+            output_router_logits=False,
+            router_aux_loss_coef=0.001,
+            # config.dtype must be set if fla installed since there's a bug in the original code (No torch.get_current_dtype())
+            dtype=torch.bfloat16,
+        ),
+    )
 
 if HUNYUAN_V1_AVAILABLE:
     MINI_MODEL_SETUPS["mini_hunyuan_v1"] = MiniModelConfig(
@@ -1509,7 +1554,7 @@ def run_mini_model(
             "rms_norm": True,
         }
 
-        if "glm4" in model_name or "qwen3_next" in model_name:
+        if "glm4" in model_name or "qwen3_next" in model_name or "qwen3_5_moe" in model_name:
             kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -2090,6 +2135,25 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not QWEN3NEXT_AVAILABLE,
                     reason="Qwen3Next not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_5_moe",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,
+            2e-1,
+            1e-1,
+            1e-1,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN3_5_MOE_AVAILABLE,
+                    reason="Qwen3_5Moe not available in this version of transformers",
                 ),
             ],
         ),
