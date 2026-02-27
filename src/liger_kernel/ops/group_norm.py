@@ -143,15 +143,12 @@ def _group_norm_backward_kernel(
     c1 = 0.0
     c2 = 0.0
     block_range = tl.arange(0, BLOCK_SIZE)
-    hidden_size_per_channel = hidden_size
-    # Total elements per group = channels_per_group * hidden_size
-    total_group_size = channels_per_group * hidden_size
 
-    # Pass 1: Compute c1, c2 in a flat loop over all channels in the group.
-    # Also accumulate per-channel dW, dB using a per-channel sub-loop.
+    # We need to compute the sum terms of the backprop equations across all channels in the group
     for channel_idx in range(group_idx * channels_per_group, (group_idx + 1) * channels_per_group):
         dW = 0.0
         dB = 0.0
+        # Move the pointers to the correct channel
         W = tl.load(W_ptr + channel_idx)
         for i in tl.range(0, hidden_size, BLOCK_SIZE):
             hidden_size_offsets = i + block_range
@@ -175,6 +172,7 @@ def _group_norm_backward_kernel(
             c1 += tl.sum(x_hat * wdy)
             c2 += tl.sum(wdy)
 
+        # Need to ensure additions to the same channel are atomic
         tl.atomic_add(DW_ptr + channel_idx, dW.to(dtype))
         tl.atomic_add(DB_ptr + channel_idx, dB.to(dtype))
 
@@ -182,8 +180,8 @@ def _group_norm_backward_kernel(
     c1 = c1 / N
     c2 = c2 / N
 
-    # Pass 2: Compute dx — flat loop over all channels
     for channel_idx in tl.range(group_idx * channels_per_group, (group_idx + 1) * channels_per_group):
+        # Move the pointers to the correct channel
         W = tl.load(W_ptr + channel_idx)
         for i in range(0, hidden_size, BLOCK_SIZE):
             hidden_size_offsets = i + block_range
