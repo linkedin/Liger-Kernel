@@ -24,9 +24,11 @@ def _triton_qwen2vl_mrope_npu(
     mrope_section_h: tl.constexpr,
     BLOCK_Q: tl.constexpr,
     BLOCK_K: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
     BACKWARD_PASS: tl.constexpr = False,
 ):
+    """
+    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
+    """
     program_id = tl.program_id(0)
     num_programs = tl.num_programs(0)
 
@@ -34,7 +36,7 @@ def _triton_qwen2vl_mrope_npu(
     start_row = program_id * rows_per_program
     actual_rows = tl.minimum(rows_per_program, total_rows - start_row)
 
-    for row_offset in tl.range(0, actual_rows, num_stages=NUM_STAGES):
+    for row_offset in tl.range(0, actual_rows):
         pid = start_row + row_offset
 
         t_end = mrope_section_t
@@ -196,7 +198,6 @@ def qwen2vl_mrope_forward(q, k, cos, sin, mrope_section):
         mrope_section[1],
         BLOCK_Q,
         BLOCK_K,
-        NUM_STAGES=3,
         BACKWARD_PASS=False,
     )
     return q.transpose(1, 2), k.transpose(1, 2), cos, sin
@@ -241,7 +242,6 @@ def qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section):
         mrope_section[1],
         BLOCK_Q,
         BLOCK_K,
-        NUM_STAGES=3,
         BACKWARD_PASS=True,
     )
     return dq.transpose(1, 2), dk.transpose(1, 2)

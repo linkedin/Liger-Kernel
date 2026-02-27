@@ -30,13 +30,15 @@ def _tv_distance_kernel(
     total_rows: tl.constexpr,  # BT
     BLOCK_SIZE: tl.constexpr,
     HAS_LABEL: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
     reduction: tl.constexpr = "batchmean",
 ):
+    """
+    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
+    """
     thread_id = tl.program_id(0)
     num_threads = tl.num_programs(0)
 
-    for pid in tl.range(thread_id, total_rows, num_threads, num_stages=NUM_STAGES):
+    for pid in tl.range(thread_id, total_rows, num_threads):
         p_row_ptr = p_ptr + pid * p_stride
         q_row_ptr = q_ptr + pid * q_stride
         loss_row_ptr = loss_ptr + pid * loss_stride
@@ -143,7 +145,6 @@ def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_
         BT,
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_LABEL=has_label,
-        NUM_STAGES=3 if BT < 4096 else 4,
         reduction=reduction,
     )
 

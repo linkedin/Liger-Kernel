@@ -11,9 +11,10 @@ from liger_kernel.ops.utils import get_npu_core_count
 
 
 @triton.jit
-def _swiglu_forward_kernel_flat(
-    a_ptr, b_ptr, c_ptr, total_elements, BLOCK_SIZE: tl.constexpr, NUM_STAGES: tl.constexpr
-):
+def _swiglu_forward_kernel_flat(a_ptr, b_ptr, c_ptr, total_elements, BLOCK_SIZE: tl.constexpr):
+    """
+    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
+    """
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
 
@@ -21,7 +22,7 @@ def _swiglu_forward_kernel_flat(
     start_idx = pid * BLOCK_SIZE
     stride = num_progs * BLOCK_SIZE
 
-    for idx in tl.range(start_idx, total_elements, stride, num_stages=NUM_STAGES):
+    for idx in tl.range(start_idx, total_elements, stride):
         offsets = idx + tl.arange(0, BLOCK_SIZE)
         mask = offsets < total_elements
 
@@ -32,15 +33,16 @@ def _swiglu_forward_kernel_flat(
 
 
 @triton.jit
-def _swiglu_backward_kernel_flat(
-    dc_ptr, a_ptr, b_ptr, da_ptr, db_ptr, total_elements, BLOCK_SIZE: tl.constexpr, NUM_STAGES: tl.constexpr
-):
+def _swiglu_backward_kernel_flat(dc_ptr, a_ptr, b_ptr, da_ptr, db_ptr, total_elements, BLOCK_SIZE: tl.constexpr):
+    """
+    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
+    """
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
     start_idx = pid * BLOCK_SIZE
     stride = num_progs * BLOCK_SIZE
 
-    for idx in tl.range(start_idx, total_elements, stride, num_stages=NUM_STAGES):
+    for idx in tl.range(start_idx, total_elements, stride):
         offsets = idx + tl.arange(0, BLOCK_SIZE)
         mask = offsets < total_elements
 
@@ -101,7 +103,7 @@ def swiglu_forward(a, b):
     num_cores = get_npu_core_count()
     grid_size = min(num_cores, (total_elements + block_size - 1) // block_size)
 
-    _swiglu_forward_kernel_flat[(grid_size,)](a, b, c, total_elements, BLOCK_SIZE=block_size, NUM_STAGES=3, num_warps=4)
+    _swiglu_forward_kernel_flat[(grid_size,)](a, b, c, total_elements, BLOCK_SIZE=block_size)
     return c
 
 
@@ -122,9 +124,7 @@ def swiglu_backward(a, b, dc):
     num_cores = get_npu_core_count()
     grid_size = min(num_cores, (total_elements + block_size - 1) // block_size)
 
-    _swiglu_backward_kernel_flat[(grid_size,)](
-        dc, a, b, grad_a, grad_b, total_elements, BLOCK_SIZE=block_size, NUM_STAGES=3, num_warps=4
-    )
+    _swiglu_backward_kernel_flat[(grid_size,)](dc, a, b, grad_a, grad_b, total_elements, BLOCK_SIZE=block_size)
     return grad_a, grad_b
 
 

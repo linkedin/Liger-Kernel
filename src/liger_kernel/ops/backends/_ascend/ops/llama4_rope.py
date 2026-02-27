@@ -41,6 +41,7 @@ def _triton_llama4_rope_npu(
     Llama4 RoPE on Ascend NPU for interleaved complex layout:
     - q/k shape: (bs, sl, n_heads, hd)
     - freqs_complex_ptr: (sl, hd//2, 2)
+    Triton-Ascend does not support num_warps/num_stages; this kernel does not use them.
     """
     pid = tl.program_id(0).to(tl.int64)
     batch_idx = pid // sl

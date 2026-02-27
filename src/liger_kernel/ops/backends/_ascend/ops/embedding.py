@@ -16,8 +16,10 @@ def embedding_forward_kernel(
     embedding_dim: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
 ):
+    """
+    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
+    """
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
 
@@ -25,7 +27,7 @@ def embedding_forward_kernel(
     grid_n = tl.cdiv(embedding_dim, BLOCK_SIZE_N)
     total_2d_blocks = grid_m * grid_n
 
-    for block_idx in tl.range(pid, total_2d_blocks, num_progs, num_stages=NUM_STAGES):
+    for block_idx in tl.range(pid, total_2d_blocks, num_progs):
         block_m = block_idx // grid_n
         block_n = block_idx % grid_n
 
@@ -66,8 +68,10 @@ def embedding_backward_kernel(
     embedding_dim: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
 ):
+    """
+    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
+    """
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
 
@@ -75,7 +79,7 @@ def embedding_backward_kernel(
     grid_n = tl.cdiv(embedding_dim, BLOCK_SIZE_N)
     total_2d_blocks = grid_m * grid_n
 
-    for block_idx in tl.range(pid, total_2d_blocks, num_progs, num_stages=NUM_STAGES):
+    for block_idx in tl.range(pid, total_2d_blocks, num_progs):
         block_m = block_idx // grid_n
         block_n = block_idx % grid_n
 
@@ -164,7 +168,6 @@ def embedding_forward(embeddings, indices):
         embedding_dim=embedding_dim,
         BLOCK_SIZE_M=BLOCK_SIZE_M,
         BLOCK_SIZE_N=BLOCK_SIZE_N,
-        NUM_STAGES=3,
     )
 
     return output.view(*ori_shape, -1)
@@ -191,7 +194,6 @@ def embedding_backward(embeddings, indices, grad_output):
         embedding_dim=embedding_dim,
         BLOCK_SIZE_M=BLOCK_SIZE_M,
         BLOCK_SIZE_N=BLOCK_SIZE_N,
-        NUM_STAGES=3,
     )
 
     return grad_weight
