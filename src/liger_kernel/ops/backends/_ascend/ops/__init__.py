@@ -26,6 +26,9 @@ from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
 from liger_kernel.ops.backends._ascend.ops.kl_div import LigerKLDivLossFunction
 from liger_kernel.ops.backends._ascend.ops.kl_div import kldiv_backward_triton
 from liger_kernel.ops.backends._ascend.ops.kl_div import kldiv_forward_triton
+from liger_kernel.ops.backends._ascend.ops.layer_norm import LigerLayerNormFunction
+from liger_kernel.ops.backends._ascend.ops.layer_norm import layer_norm_backward
+from liger_kernel.ops.backends._ascend.ops.layer_norm import layer_norm_forward
 from liger_kernel.ops.backends._ascend.ops.llama4_rope import LigerLlama4RopeFunction
 from liger_kernel.ops.backends._ascend.ops.llama4_rope import llama4_rope_backward
 from liger_kernel.ops.backends._ascend.ops.llama4_rope import llama4_rope_forward
@@ -76,4 +79,7 @@ __all__ = [
     "LigerKLDivLossFunction",
     "kldiv_forward_triton",
     "kldiv_backward_triton",
+    "LigerLayerNormFunction",
+    "layer_norm_backward",
+    "layer_norm_forward",
 ]
