@@ -172,8 +172,6 @@ except ImportError:
 try:
     from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
     from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
-    from transformers.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
-    from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeForCausalLM
 
     QWEN3_AVAILABLE = True
 except ImportError:
