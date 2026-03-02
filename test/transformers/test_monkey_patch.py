@@ -2917,6 +2917,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_5_moe():
         # Instantiate a dummy model
         config = transformers.models.qwen3_5_moe.configuration_qwen3_5_moe.Qwen3_5MoeConfig(
             dtype=torch.bfloat16,
+            vocab_size=1000,
             rms_norm_eps=1e-5,
             hidden_size=32,
             intermediate_size=64,
