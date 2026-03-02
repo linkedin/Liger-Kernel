@@ -50,7 +50,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
-from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
@@ -88,7 +88,7 @@ from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
-from test.utils import revert_liger_kernel_to_qwen3_moe
+from test.utils import revert_liger_kernel_to_qwen3_5_moe
 from test.utils import revert_liger_kernel_to_qwen3_next
 from test.utils import revert_liger_kernel_to_qwen3_vl
 from test.utils import revert_liger_kernel_to_qwen3_vl_moe
@@ -178,6 +178,14 @@ try:
     QWEN3_AVAILABLE = True
 except ImportError:
     QWEN3_AVAILABLE = False
+
+try:
+    from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeConfig
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForCausalLM
+
+    QWEN3_5_MOE_AVAILABLE = True
+except ImportError:
+    QWEN3_5_MOE_AVAILABLE = False
 
 try:
     from transformers.models.granite import GraniteConfig
@@ -591,11 +599,11 @@ if QWEN3_AVAILABLE:
         ),
     )
 
-    MINI_MODEL_SETUPS["mini_qwen3_moe"] = MiniModelConfig(
-        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_moe,
-        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_moe,
-        model_class=Qwen3MoeForCausalLM,
-        mini_model_config=Qwen3MoeConfig(
+    MINI_MODEL_SETUPS["mini_qwen3_5_moe"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_5_moe,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_5_moe,
+        model_class=Qwen3_5MoeForCausalLM,
+        mini_model_config=Qwen3_5MoeConfig(
             vocab_size=32000,  # 151936
             hidden_size=896,
             intermediate_size=4864,
@@ -2090,6 +2098,25 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not QWEN3NEXT_AVAILABLE,
                     reason="Qwen3Next not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_5_moe",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            1e-2,
+            1e-1,
+            1e-1,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN3_5_MOE_AVAILABLE,
+                    reason="Qwen3_5_MoE not available in this version of transformers",
                 ),
             ],
         ),
