@@ -8,7 +8,7 @@ import torch
 from transformers.modeling_outputs import MoeModelOutputWithPast
 
 if TYPE_CHECKING:
-    from transformers.models.qwen3_next.modeling_qwen3_next import load_balancing_loss_func
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import load_balancing_loss_func
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
@@ -53,8 +53,8 @@ def lce_forward(
     ```python
     >>> from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    >>> model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-Next-80B-A3B-Instruct")
-    >>> tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-Next-80B-A3B-Instruct")
+    >>> model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3.5-35B-A3B-Instruct")
+    >>> tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-35B-A3B-Instruct")
 
     >>> prompt = "Give me a short introduction to large language model."
     >>> inputs = tokenizer(prompt, return_tensors="pt")
