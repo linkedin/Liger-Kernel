@@ -44,7 +44,6 @@ def _rms_norm_forward_kernel_no_tiling(
     elementwise_affine: tl.constexpr,
     X_DTYPE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
 ):
     """
     NPU-optimized rms_norm forward kernel for small n_cols (< 2048).
@@ -68,7 +67,7 @@ def _rms_norm_forward_kernel_no_tiling(
     mask = col_offsets < n_cols
 
     # Grid-stride loop over rows
-    for row_idx in tl.range(pid, n_rows, num_progs, num_stages=NUM_STAGES):
+    for row_idx in tl.range(pid, n_rows, num_progs):
         Y_row_ptr = Y_ptr + row_idx * Y_row_stride
         X_row_ptr = X_ptr + row_idx * X_row_stride
         RSTD_row_ptr = RSTD_ptr + row_idx * RSTD_row_stride
@@ -146,7 +145,6 @@ def _rms_norm_forward_kernel_tiled(
     elementwise_affine: tl.constexpr,
     X_DTYPE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
 ):
     """
     NPU-optimized rms_norm forward kernel for large n_cols (>= 2048).
@@ -170,7 +168,7 @@ def _rms_norm_forward_kernel_tiled(
 
     offsets = tl.arange(0, BLOCK_SIZE)
     # Grid-stride loop over rows
-    for row_idx in tl.range(pid, n_rows, num_progs, num_stages=NUM_STAGES):
+    for row_idx in tl.range(pid, n_rows, num_progs):
         Y_row_ptr = Y_ptr + row_idx * Y_row_stride
         X_row_ptr = X_ptr + row_idx * X_row_stride
         RSTD_row_ptr = RSTD_ptr + row_idx * RSTD_row_stride
@@ -266,7 +264,6 @@ def _rms_norm_backward_kernel_no_tiling(
     casting_mode: tl.constexpr,
     elementwise_affine: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
 ):
     """
     NPU-optimized rms_norm backward kernel for small n_cols (< 2048).
@@ -282,7 +279,7 @@ def _rms_norm_backward_kernel_no_tiling(
     mask = col_offsets < n_cols
 
     # Grid-stride loop over rows
-    for row_idx in tl.range(pid, n_rows, num_progs, num_stages=NUM_STAGES):
+    for row_idx in tl.range(pid, n_rows, num_progs):
         # Base pointers for this row
         dY_row_ptr = dY_ptr + row_idx * dY_row_stride
         dX_row_ptr = dX_ptr + row_idx * dX_row_stride
@@ -373,7 +370,6 @@ def _rms_norm_backward_kernel_tiled(
     casting_mode: tl.constexpr,
     elementwise_affine: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
 ):
     """
     NPU-optimized rms_norm backward kernel for large n_cols (>= 2048).
@@ -389,7 +385,7 @@ def _rms_norm_backward_kernel_tiled(
     offsets = tl.arange(0, BLOCK_SIZE)
 
     # Grid-stride loop over rows
-    for row_idx in tl.range(pid, n_rows, num_progs, num_stages=NUM_STAGES):
+    for row_idx in tl.range(pid, n_rows, num_progs):
         # Base pointers for this row
         dY_row_ptr = dY_ptr + row_idx * dY_row_stride
         dX_row_ptr = dX_ptr + row_idx * dX_row_stride
@@ -604,7 +600,6 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
             elementwise_affine,
             X_DTYPE,
             BLOCK_SIZE=BLOCK_SIZE,
-            NUM_STAGES=2,
         )
     else:
         # Use tiled kernel for large n_cols
@@ -624,7 +619,6 @@ def rms_norm_forward(X, W, eps, offset, casting_mode):
             elementwise_affine,
             X_DTYPE,
             BLOCK_SIZE=BLOCK_SIZE,
-            NUM_STAGES=2,
         )
 
     return Y.view(*shape), X, RSTD, casting_mode
@@ -678,7 +672,6 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, in_place):
             casting_mode,
             elementwise_affine,
             BLOCK_SIZE=BLOCK_SIZE,
-            NUM_STAGES=2,
         )
     else:
         # Use tiled kernel for large n_cols
@@ -701,7 +694,6 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, in_place):
             casting_mode,
             elementwise_affine,
             BLOCK_SIZE=BLOCK_SIZE,
-            NUM_STAGES=2,
         )
 
     dX = dX.view(*shape)
