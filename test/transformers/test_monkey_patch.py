@@ -2917,19 +2917,21 @@ def test_apply_liger_kernel_to_instance_for_qwen3_5_moe():
         # Instantiate a dummy model
         config = transformers.models.qwen3_5_moe.configuration_qwen3_5_moe.Qwen3_5MoeConfig(
             dtype=torch.bfloat16,
-            vocab_size=1000,
-            rms_norm_eps=1e-5,
-            hidden_size=32,
-            intermediate_size=64,
-            moe_intermediate_size=16,
-            shared_expert_intermediate_size=16,
-            hidden_act="silu",
-            num_hidden_layers=2,
-            num_experts=2,
-            num_experts_per_tok=1,
-            mlp_only_layers=[],
-            pad_token_id=None,
-            layer_types=["moe"] * 2,
+            text_config={
+                "vocab_size": 1000,
+                "rms_norm_eps": 1e-5,
+                "hidden_size": 32,
+                "intermediate_size": 64,
+                "moe_intermediate_size": 16,
+                "shared_expert_intermediate_size": 16,
+                "hidden_act": "silu",
+                "num_hidden_layers": 2,
+                "num_experts": 2,
+                "num_experts_per_tok": 1,
+                "mlp_only_layers": [],
+                "pad_token_id": None,
+                "layer_types": ["moe"] * 2,
+            },
         )
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
