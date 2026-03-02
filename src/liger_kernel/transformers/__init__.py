@@ -63,8 +63,8 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2_5_vl  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2_vl  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3  # noqa: F401
-    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_5_moe  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_next  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_vl  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_vl_moe  # noqa: F401

@@ -50,8 +50,8 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
-from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5_moe
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
@@ -89,8 +89,8 @@ from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
-from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import revert_liger_kernel_to_qwen3_5_moe
+from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import revert_liger_kernel_to_qwen3_next
 from test.utils import revert_liger_kernel_to_qwen3_vl
 from test.utils import revert_liger_kernel_to_qwen3_vl_moe
@@ -297,8 +297,8 @@ except ImportError:
     QWEN3NEXT_AVAILABLE = False
 
 try:
-    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeTextConfig
     from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForCausalLM
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeTextConfig
 
     QWEN3_5_MOE_AVAILABLE = True
 except ImportError:
