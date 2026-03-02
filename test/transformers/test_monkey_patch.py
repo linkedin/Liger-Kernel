@@ -2929,6 +2929,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_5_moe():
             num_experts_per_tok=1,
             mlp_only_layers=[],
             pad_token_id=None,
+            layer_types=["moe"] * 2,
         )
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
 
