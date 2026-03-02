@@ -26,9 +26,6 @@ def _triton_rope_npu(
     BLOCK_K: tl.constexpr,
     BACKWARD_PASS: tl.constexpr = False,
 ):
-    """
-    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
-    """
     program_id = tl.program_id(0)
     num_programs = tl.num_programs(0)
 

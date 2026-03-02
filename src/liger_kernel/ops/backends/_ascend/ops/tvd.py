@@ -32,9 +32,6 @@ def _tv_distance_kernel(
     HAS_LABEL: tl.constexpr,
     reduction: tl.constexpr = "batchmean",
 ):
-    """
-    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
-    """
     thread_id = tl.program_id(0)
     num_threads = tl.num_programs(0)
 

@@ -17,9 +17,6 @@ def embedding_forward_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
 ):
-    """
-    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
-    """
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
 
@@ -69,9 +66,6 @@ def embedding_backward_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
 ):
-    """
-    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
-    """
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
 

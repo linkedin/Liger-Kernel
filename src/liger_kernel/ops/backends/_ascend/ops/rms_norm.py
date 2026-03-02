@@ -47,7 +47,6 @@ def _rms_norm_forward_kernel_no_tiling(
 ):
     """
     NPU-optimized rms_norm forward kernel for small n_cols (< 2048).
-    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
 
     This kernel loads entire rows without column tiling:
     1. Each program handles multiple rows using grid-stride loop
@@ -149,7 +148,6 @@ def _rms_norm_forward_kernel_tiled(
 ):
     """
     NPU-optimized rms_norm forward kernel for large n_cols (>= 2048).
-    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
 
     This kernel processes rows using a grid-stride loop pattern:
     1. Each program handles multiple rows
@@ -269,7 +267,6 @@ def _rms_norm_backward_kernel_no_tiling(
 ):
     """
     NPU-optimized rms_norm backward kernel for small n_cols (< 2048).
-    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
 
     Each program processes multiple rows using grid-stride loop.
     For each row, load the entire row at once without column tiling.
@@ -376,7 +373,6 @@ def _rms_norm_backward_kernel_tiled(
 ):
     """
     NPU-optimized rms_norm backward kernel for large n_cols (>= 2048).
-    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
 
     Each program processes multiple rows using grid-stride loop.
     For each row, we process columns in blocks to avoid UB overflow.

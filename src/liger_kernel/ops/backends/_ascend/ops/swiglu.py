@@ -12,9 +12,6 @@ from liger_kernel.ops.utils import get_npu_core_count
 
 @triton.jit
 def _swiglu_forward_kernel_flat(a_ptr, b_ptr, c_ptr, total_elements, BLOCK_SIZE: tl.constexpr):
-    """
-    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
-    """
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
 
@@ -34,9 +31,6 @@ def _swiglu_forward_kernel_flat(a_ptr, b_ptr, c_ptr, total_elements, BLOCK_SIZE:
 
 @triton.jit
 def _swiglu_backward_kernel_flat(dc_ptr, a_ptr, b_ptr, da_ptr, db_ptr, total_elements, BLOCK_SIZE: tl.constexpr):
-    """
-    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
-    """
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
     start_idx = pid * BLOCK_SIZE

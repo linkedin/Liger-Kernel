@@ -15,7 +15,6 @@ def _geglu_forward_kernel_flat(a_ptr, b_ptr, c_ptr, total_elements, BLOCK_SIZE: 
     High-performance GEGLU forward kernel using flatten 1D approach.
 
     Uses grid-stride loop pattern for optimal performance on NPU.
-    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
     """
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
@@ -51,7 +50,6 @@ def _geglu_backward_kernel_flat(dc_ptr, a_ptr, b_ptr, da_ptr, db_ptr, total_elem
     High-performance GEGLU backward kernel using flatten 1D approach.
 
     Uses grid-stride loop pattern for optimal performance on NPU.
-    Triton-Ascend does not support num_warps/num_stages due to hardware differences.
     """
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
