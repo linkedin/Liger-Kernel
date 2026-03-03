@@ -24,7 +24,6 @@ def _triton_rope_npu(
     hd: tl.constexpr,
     BLOCK_Q: tl.constexpr,
     BLOCK_K: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
     BACKWARD_PASS: tl.constexpr = False,
 ):
     program_id = tl.program_id(0)
@@ -34,7 +33,7 @@ def _triton_rope_npu(
     start_row = program_id * rows_per_program
     actual_rows = tl.minimum(rows_per_program, total_rows - start_row)
 
-    for row_offset in tl.range(0, actual_rows, num_stages=NUM_STAGES):
+    for row_offset in tl.range(0, actual_rows):
         pid = start_row + row_offset
 
         row_idx = pid % sl
@@ -186,7 +185,6 @@ def rope_forward(q, k, cos, sin):
         head_dim,
         BLOCK_Q,
         BLOCK_K,
-        NUM_STAGES=3,
         BACKWARD_PASS=False,
     )
     return q.transpose(1, 2), k.transpose(1, 2), cos, sin
@@ -232,7 +230,6 @@ def rope_backward(dq, dk, cos, sin):
         head_dim,
         BLOCK_Q,
         BLOCK_K,
-        NUM_STAGES=3,
         BACKWARD_PASS=True,
     )
     return dq.transpose(1, 2), dk.transpose(1, 2)
