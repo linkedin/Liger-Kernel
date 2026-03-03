@@ -35,6 +35,8 @@ def liger_cross_entropy_kernel(
     loss_stride,
     token_accuracy_ptr,
     token_accuracy_stride,
+    predicted_tokens_ptr,
+    predicted_tokens_stride,
     n_cols,
     n_non_ignore,
     sum_non_ignore_weight,
@@ -46,6 +48,7 @@ def liger_cross_entropy_kernel(
     softcap,
     RETURN_Z_LOSS: tl.constexpr,
     RETURN_TOKEN_ACCURACY: tl.constexpr,
+    RETURN_PREDICTED_TOKENS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     HAS_WEIGHT: tl.constexpr,
     HAS_SOFTCAPPING: tl.constexpr,
@@ -103,6 +106,9 @@ def liger_cross_entropy_kernel(
         if RETURN_TOKEN_ACCURACY:
             token_accuracy_ptr += program_id * token_accuracy_stride
             tl.store(token_accuracy_ptr, 0.0)
+        if RETURN_PREDICTED_TOKENS:
+            predicted_tokens_ptr += program_id * predicted_tokens_stride
+            tl.store(predicted_tokens_ptr, -1)
         return
 
     loss_ptr += program_id * loss_stride
@@ -110,6 +116,8 @@ def liger_cross_entropy_kernel(
         z_loss_ptr += program_id * loss_stride
     if RETURN_TOKEN_ACCURACY:
         token_accuracy_ptr += program_id * token_accuracy_stride
+    if RETURN_PREDICTED_TOKENS:
+        predicted_tokens_ptr += program_id * predicted_tokens_stride
 
     if HAS_WEIGHT:
         weight_y = tl.load(weight_ptr + y).cast(tl.float32)
@@ -120,7 +128,7 @@ def liger_cross_entropy_kernel(
     # 3. [Online softmax] first pass: find max + sum
     m = float("-inf")  # m is the max value. use the notation from the paper
     d = 0.0  # d is the sum. use the notation from the paper
-    argmax_idx = 0  # Track the index of the maximum value for token accuracy computation
+    argmax_idx = 0  # Track the index of the maximum value for token accuracy / predicted tokens computation
     ori_X_y = tl.load(X_ptr + y).cast(tl.float32)  # we need to store the original value of X_y for the loss calculation
     if HAS_SOFTCAPPING:
         ori_X_y = softcap * tanh(ori_X_y / softcap)
@@ -142,8 +150,8 @@ def liger_cross_entropy_kernel(
             X_block = softcap * tanh(X_block / softcap)
         block_max = tl.max(X_block)
 
-        # Track argmax for accuracy computation
-        if RETURN_TOKEN_ACCURACY:
+        # Track argmax for accuracy / predicted tokens computation
+        if RETURN_TOKEN_ACCURACY or RETURN_PREDICTED_TOKENS:
             # Find the index of the maximum value in this block
             is_max_mask = X_block == block_max
             # Mask out invalid indices with a value larger than n_cols
@@ -287,6 +295,8 @@ def liger_cross_entropy_kernel(
         # Store 1.0 if prediction is correct, 0.0 otherwise
         is_correct = 1.0 if argmax_idx == y else 0.0
         tl.store(token_accuracy_ptr, is_correct)
+    if RETURN_PREDICTED_TOKENS:
+        tl.store(predicted_tokens_ptr, argmax_idx)
 
 
 # The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
@@ -312,10 +322,14 @@ def cross_entropy_forward(
     softcap,
     return_z_loss,
     return_token_accuracy=False,
+    return_predicted_tokens=False,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     assert isinstance(return_token_accuracy, bool), (
         f"return_token_accuracy must be True or False. Got: {return_token_accuracy}"
+    )
+    assert isinstance(return_predicted_tokens, bool), (
+        f"return_predicted_tokens must be True or False. Got: {return_predicted_tokens}"
     )
 
     BT, V = _input.shape
@@ -328,6 +342,9 @@ def cross_entropy_forward(
     z_loss_1d = torch.zeros(n_rows, dtype=_input.dtype, device=_input.device) if return_z_loss else None
     token_accuracy_1d = (
         torch.zeros(n_rows, dtype=torch.float32, device=_input.device) if return_token_accuracy else None
+    )
+    predicted_tokens_1d = (
+        torch.full((n_rows,), -1, dtype=torch.int64, device=_input.device) if return_predicted_tokens else None
     )
 
     target_mask = target != ignore_index
@@ -369,6 +386,10 @@ def cross_entropy_forward(
         token_accuracy_stride=token_accuracy_1d.stride(-1)
         if return_token_accuracy
         else 0,  # always 1 if accuracy is enabled
+        predicted_tokens_ptr=predicted_tokens_1d,
+        predicted_tokens_stride=predicted_tokens_1d.stride(-1)
+        if return_predicted_tokens
+        else 0,  # always 1 if predicted tokens is enabled
         n_cols=V,
         n_non_ignore=n_non_ignore,
         sum_non_ignore_weight=sum_non_ignore_weight,
@@ -380,6 +401,7 @@ def cross_entropy_forward(
         softcap=softcap,
         RETURN_Z_LOSS=return_z_loss,
         RETURN_TOKEN_ACCURACY=return_token_accuracy,
+        RETURN_PREDICTED_TOKENS=return_predicted_tokens,
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_WEIGHT=True if weight is not None else False,
         HAS_SOFTCAPPING=True if softcap is not None else False,
@@ -399,7 +421,9 @@ def cross_entropy_forward(
         # For accuracy, we compute the mean across all non-ignored tokens
         token_accuracy = torch.sum(token_accuracy_1d) / n_non_ignore if return_token_accuracy else None
 
-    return loss, z_loss, token_accuracy, _input
+    predicted_tokens = predicted_tokens_1d if return_predicted_tokens else None
+
+    return loss, z_loss, token_accuracy, predicted_tokens, _input
 
 
 def cross_entropy_backward(_input, grad_output):
@@ -448,6 +472,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         softcap: Optional[float] = None,
         return_z_loss: bool = False,
         return_token_accuracy: bool = False,
+        return_predicted_tokens: bool = False,
     ):
         """
         The forward pass of the Liger Cross Entropy loss.
@@ -462,15 +487,16 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
         reduction (str): The reduction to apply to the output: "none" | "mean | "sum".
         softcap (Optional[float]): The upper threshold for scaling logits to the range (-softcap, +softcap).
-        return_z_loss (bool): When `return_z_loss` is `True`, returns (loss, z_loss, token_accuracy) instead of (loss, None, None). Default: `False`
+        return_z_loss (bool): When `return_z_loss` is `True`, returns (loss, z_loss, token_accuracy, predicted_tokens) instead of (loss, None, None, None). Default: `False`
         return_token_accuracy (bool): When `return_token_accuracy` is `True`, computes and returns per-token accuracy without materializing logits. Default: `False`
+        return_predicted_tokens (bool): When `return_predicted_tokens` is `True`, returns per-token predicted class indices (argmax) without materializing logits. Default: `False`
 
         Returns:
-        tuple: A tuple with the computed losses and accuracy: (loss, z_loss, token_accuracy). z_loss and token_accuracy are None if not requested.
+        tuple: A tuple with the computed losses, accuracy, and predicted tokens: (loss, z_loss, token_accuracy, predicted_tokens). z_loss, token_accuracy, and predicted_tokens are None if not requested.
         """
         input_requires_grad = _input.requires_grad
 
-        loss, z_loss, token_accuracy, _input = cross_entropy_forward(
+        loss, z_loss, token_accuracy, predicted_tokens, _input = cross_entropy_forward(
             _input,
             target,
             weight,
@@ -481,6 +507,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             softcap,
             return_z_loss,
             return_token_accuracy,
+            return_predicted_tokens,
         )
         # TODO: investigation
         # If we don't detach the _input tensor, the memory will double
@@ -489,11 +516,12 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             ctx.save_for_backward(_input.detach())
         ctx.return_z_loss = return_z_loss
         ctx.return_token_accuracy = return_token_accuracy
+        ctx.return_predicted_tokens = return_predicted_tokens
 
-        return loss, z_loss, token_accuracy
+        return loss, z_loss, token_accuracy, predicted_tokens
 
     @staticmethod
-    def backward(ctx, grad_output, grad_output2, grad_output3):
+    def backward(ctx, grad_output, grad_output2, grad_output3, grad_output4):
         """
         The backward pass of the Liger Cross Entropy loss.
 
@@ -502,6 +530,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         grad_output (tensor): The tensor containing the gradient of the loss with respect to the output.
         grad_output2 (tensor): No use. Gradient for z_loss (not used as z_loss is only for logging).
         grad_output3 (tensor): No use. Gradient for token_accuracy (not used as token_accuracy is only for metrics).
+        grad_output4 (tensor): No use. Gradient for predicted_tokens (not used as predicted_tokens is only for metrics).
         Returns:
         tuple: A tuple with the gradients with respect to the inputs. The elements are tensors or None.
         """
@@ -509,11 +538,14 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             del grad_output2  # z_loss is only for logging
         if ctx.return_token_accuracy:
             del grad_output3  # token_accuracy is only for metrics
+        if ctx.return_predicted_tokens:
+            del grad_output4  # predicted_tokens is only for metrics
 
         (_input,) = ctx.saved_tensors
         _input = cross_entropy_backward(_input, grad_output)
         return (
             _input,
+            None,
             None,
             None,
             None,
