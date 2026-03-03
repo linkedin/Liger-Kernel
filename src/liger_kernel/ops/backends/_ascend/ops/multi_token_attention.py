@@ -1,10 +1,3 @@
-"""
-Fused causal masking + softmax/sparsemax Triton kernels for NPU.
-
-This implementation fuses causal masking with softmax and sparsemax forward and backward
-operations in single kernels to reduce memory traffic and improve performance.
-"""
-
 import torch
 import torch.nn.functional as F
 import triton
