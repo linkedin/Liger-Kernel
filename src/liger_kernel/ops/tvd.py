@@ -144,12 +144,10 @@ def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_
     )
 
     # Loss and gradients are already scaled inside the kernel — no separate division needed
-    if reduction == _REDUCTION_MODE_BATCHMEAN.value:
+    if reduction in (_REDUCTION_MODE_BATCHMEAN.value, _REDUCTION_MODE_MEAN.value):
         return output_tensor.sum(), grads
     elif reduction == _REDUCTION_MODE_SUM.value:
         return output_tensor.sum(dim=0), grads
-    elif reduction == _REDUCTION_MODE_MEAN.value:
-        return output_tensor.sum(), grads
     else:
         return output_tensor, grads
 
