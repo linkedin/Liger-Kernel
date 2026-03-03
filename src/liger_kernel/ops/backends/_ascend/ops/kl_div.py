@@ -194,8 +194,9 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction, eps):  # [BT, V]
         return output_tensor
 
 
-def kldiv_backward_triton(target, grad_output, new_grads, log_target):
+def kldiv_backward_triton(target, grad_output, new_grads, log_target, reduction):
     BT, V = target.shape
+    reduction = _str_to_reduction_mode[reduction]
 
     BLOCK_SIZE_N = triton.next_power_of_2(min(128, V))
     BLOCK_SIZE_M = get_optimal_block_size(BT, target.element_size(), BLOCK_SIZE_N, is_backward=True)
@@ -213,11 +214,20 @@ def kldiv_backward_triton(target, grad_output, new_grads, log_target):
         log_target=log_target,
     )
 
-    # If cross entropy is the last layer, grad_output is 1.0. Skip the mul then.
-    if grad_output.numel() == 1 and grad_output.item() == 1.0:
-        return new_grads
+    # If kl div is the last layer, grad_output is 1.0. Skip the mul then.
+    if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
+        derivative = new_grads
+    else:
+        derivative = new_grads * grad_output
 
-    return new_grads * grad_output
+    if reduction == _REDUCTION_MODE_BATCHMEAN.value:
+        derivative = derivative / target.shape[0]
+    elif reduction == _REDUCTION_MODE_SUM.value or reduction == _REDUCTION_MODE_NONE.value:
+        pass
+    elif reduction == _REDUCTION_MODE_MEAN.value:
+        derivative = derivative / (target.shape[0] * target.shape[1])
+
+    return derivative
 
 
 class LigerKLDivLossFunction(torch.autograd.Function):
@@ -277,14 +287,7 @@ class LigerKLDivLossFunction(torch.autograd.Function):
 
         new_grads = torch.empty_like(y_true)
 
-        derivative = kldiv_backward_triton(y_true, grad_output, new_grads, ctx.log_target)
-
-        if ctx.reduction == "batchmean":
-            derivative = derivative / y_true.shape[0]
-        elif ctx.reduction == "sum" or ctx.reduction == "none":
-            pass
-        elif ctx.reduction == "mean":
-            derivative = derivative / (y_true.shape[0] * y_true.shape[1])
+        derivative = kldiv_backward_triton(y_true, grad_output, new_grads, ctx.log_target, ctx.reduction)
 
         return (
             derivative,
