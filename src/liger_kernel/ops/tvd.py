@@ -96,7 +96,8 @@ def _tv_distance_kernel(
             loss_sum += tl.sum(tv_loss, axis=0)
 
     if reduction != _REDUCTION_MODE_NONE:
-        tl.store(loss_ptr, loss_sum)
+        # Fuse reduction scaling into loss (same scale as gradients; avoids Python division)
+        tl.store(loss_ptr, loss_sum * scale)
 
 
 def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_label):
@@ -142,13 +143,13 @@ def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_
         reduction=reduction,
     )
 
-    # Gradients are already scaled inside the kernel — no separate division needed
+    # Loss and gradients are already scaled inside the kernel — no separate division needed
     if reduction == _REDUCTION_MODE_BATCHMEAN.value:
-        return output_tensor.sum() / n_non_ignore, grads
+        return output_tensor.sum(), grads
     elif reduction == _REDUCTION_MODE_SUM.value:
         return output_tensor.sum(dim=0), grads
     elif reduction == _REDUCTION_MODE_MEAN.value:
-        return output_tensor.sum() / (n_non_ignore * V), grads
+        return output_tensor.sum(), grads
     else:
         return output_tensor, grads
 
