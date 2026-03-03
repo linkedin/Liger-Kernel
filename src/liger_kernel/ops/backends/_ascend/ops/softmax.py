@@ -5,6 +5,7 @@ import triton.language as tl
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
 
+
 @triton.jit
 def _softmax_multi_block_forward_kernel(
     Y_ptr,
