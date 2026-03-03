@@ -2652,13 +2652,17 @@ def apply_liger_kernel_to_qwen3_next(
                 f"Unsupported qwen3_next model type. `model` must be `Qwen3NextForCausalLM`, `Qwen3NextModel`. Got: {type(model)}"
             )
 
+        _patch_rms_norm_module_for_qwen3_next = partial(
+            _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+        )
+
         if rms_norm:
-            _patch_rms_norm_module(base_model.norm)
+            _patch_rms_norm_module_for_qwen3_next(base_model.norm)
 
         for decoder_layer in base_model.layers:
             if rms_norm:
-                _patch_rms_norm_module(decoder_layer.input_layernorm)
-                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module_for_qwen3_next(decoder_layer.input_layernorm)
+                _patch_rms_norm_module_for_qwen3_next(decoder_layer.post_attention_layernorm)
 
             # Qwen3MoeMLP and Qwen3NextMLP are identical, hence we reuse LigerQwen3MoeSwiGLUMLP
             if swiglu:
@@ -2673,6 +2677,91 @@ def apply_liger_kernel_to_qwen3_next(
                         else:
                             for expert in experts:
                                 _patch_swiglu_module(expert, LigerQwen3MoeSwiGLUMLP)
+
+
+def apply_liger_kernel_to_qwen3_5_moe(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Qwen3.5 MoE models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLUMLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForCausalLM
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeTextModel
+
+    from liger_kernel.transformers.model.qwen3_5_moe import lce_forward as qwen3_5_moe_lce_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForQwen3Next
+    from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
+
+    if rope:
+        raise NotImplementedError("liger_rotary_pos_emb is not available for Qwen3_5Moe models.")
+    if rms_norm:
+        modeling_qwen3_5_moe.Qwen3_5MoeRMSNorm = LigerRMSNormForQwen3Next
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+    if fused_linear_cross_entropy:
+        if model is not None:
+            if isinstance(model, Qwen3_5MoeForCausalLM):
+                model.forward = MethodType(qwen3_5_moe_lce_forward, model)
+            else:
+                raise TypeError(
+                    f" fused_linear_cross_entropy is only applicable on Qwen3_5MoeForCausalLM. Got: {type(model)}"
+                )
+        else:
+            modeling_qwen3_5_moe.Qwen3_5MoeForCausalLM.forward = qwen3_5_moe_lce_forward
+    if swiglu:
+        modeling_qwen3_5_moe.Qwen3_5MoeExperts = LigerExperts
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        if isinstance(model, (Qwen3_5MoeForCausalLM, Qwen3_5MoeTextModel)):
+            base_model: Qwen3_5MoeTextModel = getattr(model, model.base_model_prefix, model)
+        else:
+            raise TypeError(
+                f"Unsupported qwen3_5_moe model type. `model` must be `Qwen3_5MoeForCausalLM`, `Qwen3_5MoeTextModel`. Got: {type(model)}"
+            )
+
+        _patch_rms_norm_module_for_qwen3_5_moe = partial(
+            _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+        )
+
+        if rms_norm:
+            _patch_rms_norm_module_for_qwen3_5_moe(base_model.norm)
+
+        for decoder_layer in base_model.layers:
+            if rms_norm:
+                _patch_rms_norm_module_for_qwen3_5_moe(decoder_layer.input_layernorm)
+                _patch_rms_norm_module_for_qwen3_5_moe(decoder_layer.post_attention_layernorm)
+
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp.shared_expert, LigerQwen3MoeSwiGLUMLP)
+                experts = getattr(decoder_layer.mlp, "experts", None)
+                if experts is not None:
+                    _patch_swiglu_module(experts, LigerExperts)
 
 
 def apply_liger_kernel_to_hunyuan_v1_dense(
@@ -2906,6 +2995,8 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "qwen2_5_vl_text": apply_liger_kernel_to_qwen2_5_vl,
     "qwen3_next": apply_liger_kernel_to_qwen3_next,
+    "qwen3_5_moe": apply_liger_kernel_to_qwen3_5_moe,
+    "qwen3_5_moe_text": apply_liger_kernel_to_qwen3_5_moe,
     "qwen3_vl": apply_liger_kernel_to_qwen3_vl,
     "qwen3_vl_text": apply_liger_kernel_to_qwen3_vl,
     "qwen3_vl_moe": apply_liger_kernel_to_qwen3_vl_moe,
