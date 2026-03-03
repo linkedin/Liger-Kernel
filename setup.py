@@ -24,15 +24,16 @@ def get_default_dependencies():
         return [
             "torch>=2.6.0",
         ]
+    # TODO: Currently, triton-ascend is not compatible with torch 2.7.1. We will upgrade it later.
     elif platform == "npu":
-        return ["torch_npu==2.7.1", "triton-ascend"]
+        return ["torch==2.6.0", "torch_npu==2.6.0", "triton-ascend"]
 
 
 def get_optional_dependencies():
     """Get optional dependency groups."""
     return {
         "dev": [
-            "transformers>=4.49.0, <5.0.0",
+            "transformers>=4.52.0",
             "matplotlib>=3.7.2",
             "ruff>=0.12.0",
             "pytest>=7.1.2",

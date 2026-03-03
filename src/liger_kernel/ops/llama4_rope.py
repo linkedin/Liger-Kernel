@@ -3,72 +3,24 @@ import triton
 import triton.language as tl
 
 
-def _prepare_freqs(freqs_cis: torch.Tensor, seq_len: int, head_dim_half: int):
-    # Split or unpack complex frequencies into real and imag parts
-    if freqs_cis.is_complex():
-        freqs_real = freqs_cis.real
-        freqs_imag = freqs_cis.imag
-    else:
-        # Already split: last dim should be 2*head_dim_half
-        if freqs_cis.shape[-1] == 2 * head_dim_half:
-            freqs_real = freqs_cis[..., :head_dim_half]
-            freqs_imag = freqs_cis[..., head_dim_half:]
-        else:
-            raise ValueError(
-                f"Unexpected freqs_cis shape for non-complex input: {freqs_cis.shape}, expected last dim = {2 * head_dim_half}"
-            )
-
-    # Canonicalize to shape (seq_len, head_dim_half):
-    # 1) Ensure the last dimension is head_dim_half
-    if freqs_real.shape[-1] != head_dim_half:
-        raise ValueError(f"Unexpected last dim for freqs: {freqs_real.shape[-1]} (expected {head_dim_half})")
-    # 2) Flatten all leading dims to a single row dimension
-    freqs_real = freqs_real.reshape(-1, head_dim_half)
-    freqs_imag = freqs_imag.reshape(-1, head_dim_half)
-    # 3) If we have fewer rows than seq_len, allow broadcasting when single row
-    if freqs_real.shape[0] < seq_len:
-        if freqs_real.shape[0] == 1:
-            freqs_real = freqs_real.expand(seq_len, -1)
-            freqs_imag = freqs_imag.expand(seq_len, -1)
-        else:
-            raise ValueError(f"Insufficient rows in freqs: {freqs_real.shape[0]} < seq_len={seq_len}")
-    # 4) If we have more rows than seq_len (e.g., batch present), take the first seq_len rows
-    elif freqs_real.shape[0] > seq_len:
-        freqs_real = freqs_real[:seq_len]
-        freqs_imag = freqs_imag[:seq_len]
-
-    return freqs_real, freqs_imag
-
-
-def _maybe_to_dtype(t: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
-    return t if t.dtype == dtype else t.to(dtype)
-
-
-def _maybe_contiguous(t: torch.Tensor) -> torch.Tensor:
-    return t if t.is_contiguous() else t.contiguous()
-
-
-def _cast_and_contiguous(q, k, freqs_real, freqs_imag):
-    # Choose compute dtype: use fp32 only when inputs are fp32; otherwise keep input dtype for performance
+def _cast_and_contiguous(q, k, freqs_complex):
+    # Align dtype: fp32 only when q is fp32; otherwise keep q dtype for perf
     compute_dtype = torch.float32 if q.dtype == torch.float32 else q.dtype
 
-    # Make sure q/k share the same dtype before casting to compute dtype
     if k.dtype != q.dtype:
         k = k.to(q.dtype)
 
-    q = _maybe_contiguous(_maybe_to_dtype(q, compute_dtype))
-    k = _maybe_contiguous(_maybe_to_dtype(k, compute_dtype))
-    freqs_real = _maybe_contiguous(_maybe_to_dtype(freqs_real, compute_dtype))
-    freqs_imag = _maybe_contiguous(_maybe_to_dtype(freqs_imag, compute_dtype))
-    return q, k, freqs_real, freqs_imag
+    q = q.to(compute_dtype).contiguous()
+    k = k.to(compute_dtype).contiguous()
+    freqs_complex = freqs_complex.contiguous()
+    return q, k, freqs_complex
 
 
 @triton.jit
 def _llama4_rope_kernel(
     q_ptr,
     k_ptr,
-    freqs_real_ptr,
-    freqs_imag_ptr,
+    freqs_complex_ptr,
     q_row_stride,
     k_row_stride,
     q_head_stride,
@@ -101,16 +53,18 @@ def _llama4_rope_kernel(
     base_offset = batch_idx * seq_len + seq_idx
     q_base = q_ptr + base_offset * q_row_stride
     k_base = k_ptr + base_offset * k_row_stride
+    freq_base = seq_idx * freqs_row_stride
 
     # Tiling over dim/2
     for d_start in tl.static_range(0, head_dim_half, BLOCK_SIZE):
         d_indices = d_start + tl.arange(0, BLOCK_SIZE)
         mask_d = d_indices < head_dim_half
 
-        # Load frequencies once per tile (freqs layout: [seq_len, head_dim_half])
-        freq_idx = d_indices
-        freqs_real = tl.load(freqs_real_ptr + seq_idx * freqs_row_stride + freq_idx, mask=mask_d, other=0.0)
-        freqs_imag = tl.load(freqs_imag_ptr + seq_idx * freqs_row_stride + freq_idx, mask=mask_d, other=0.0)
+        # Compute offsets for the block
+        freq_offsets = d_indices[:, None] * 2 + tl.arange(0, 2)[None, :]
+        # Load the block
+        freqs_complex = tl.load(freqs_complex_ptr + freq_base + freq_offsets, mask=mask_d[:, None], other=0.0)
+        freqs_real, freqs_imag = tl.split(freqs_complex)
         freqs_imag = freqs_imag * imag_sign
 
         # Process one query head per program in pid_h
@@ -159,12 +113,14 @@ def llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE: int = None, imag_sign: floa
     batch_size, seq_len, n_q_heads, head_dim = q.shape
     _, _, n_k_heads, _ = k.shape
     head_dim_half = head_dim // 2
-
-    # Prepare frequencies
-    freqs_real, freqs_imag = _prepare_freqs(freqs_cis, seq_len, head_dim_half)
+    if freqs_cis.is_complex():
+        freqs_cis = freqs_cis.reshape(-1, freqs_cis.shape[-1])
+        if freqs_cis.shape[0] > seq_len:
+            freqs_cis = freqs_cis[:seq_len]
+        freqs_cis = torch.view_as_real(freqs_cis)
 
     # Cast to appropriate dtype and make contiguous only when needed
-    q, k, freqs_real, freqs_imag = _cast_and_contiguous(q, k, freqs_real, freqs_imag)
+    q, k, freqs_cis = _cast_and_contiguous(q, k, freqs_cis)
 
     # H100-optimized meta-params
     if BLOCK_SIZE is None:
@@ -181,13 +137,12 @@ def llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE: int = None, imag_sign: floa
     _llama4_rope_kernel[grid](
         q,
         k,
-        freqs_real,
-        freqs_imag,
+        freqs_cis,
         q.stride(1),
         k.stride(1),
         q.stride(2),
         k.stride(2),
-        freqs_real.stride(0),
+        freqs_cis.stride(0),
         seq_len,
         batch_size,
         imag_sign,

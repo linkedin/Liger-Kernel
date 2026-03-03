@@ -97,6 +97,7 @@ def lce_forward(
     logits = None
     loss = None
     token_accuracy = None
+    predicted_tokens = None
 
     if skip_logits is None:
         skip_logits = self.training and (labels is not None or shift_labels is not None)
@@ -110,11 +111,17 @@ def lce_forward(
             hidden_size=self.config.hidden_size,
             **kwargs,
         )
-        loss, _, token_accuracy = unpack_cross_entropy_result(result)
+        loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
     else:  # if in inference model materialize logits
         logits = self.lm_head(kept_hidden_states)
         if labels is not None or shift_labels is not None:
-            loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
+            loss = self.loss_function(
+                logits=logits,
+                labels=labels,
+                shift_labels=shift_labels,
+                vocab_size=self.vocab_size,
+                **kwargs,
+            )
 
     aux_loss = None
     if output_router_logits:
@@ -132,6 +139,7 @@ def lce_forward(
         output = ((aux_loss,) + output) if aux_loss is not None else output
         output = ((loss,) + output) if loss is not None else output
         output = output + (token_accuracy,) if token_accuracy is not None else output
+        output = output + (predicted_tokens,) if predicted_tokens is not None else output
         return output
 
     return LigerMoeCausalLMOutputWithPast(
@@ -143,4 +151,5 @@ def lce_forward(
         attentions=outputs.attentions,
         router_logits=outputs.router_logits,
         token_accuracy=token_accuracy,
+        predicted_tokens=predicted_tokens,
     )

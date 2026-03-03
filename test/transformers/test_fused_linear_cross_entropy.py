@@ -399,8 +399,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, bias, ce_weight, atol
     else:
         y1, z1 = result
 
-    y2, z2, _ = LigerFusedLinearCrossEntropyFunction.apply(
-        x2, weight, target, bias, ce_weight, -100, 1e-4, 0.1, "mean", 30.0, True, torch.float32, False, False
+    y2, z2, _, _ = LigerFusedLinearCrossEntropyFunction.apply(
+        x2, weight, target, bias, ce_weight, -100, 1e-4, 0.1, "mean", 30.0, True, torch.float32, False, False, False
     )
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
@@ -953,3 +953,72 @@ def test_token_scaling_with_ignore_index():
     loss_scaled.backward()
     assert _input.grad is not None
     assert not torch.isnan(_input.grad).any()  # Gradients should not be NaN
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (8, 128, 1024, 4096),
+        (4, 47, 31, 123),  # random shape
+    ],
+)
+@pytest.mark.parametrize(
+    "reduction, dtype, atol, rtol",
+    [
+        ("mean", torch.bfloat16, 5e-3, 5e-2),
+        ("mean", torch.float32, 1e-5, 5e-4),
+    ],
+)
+@pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize("ignore_index", [-100, 2])
+def test_correctness_with_predicted_tokens(B, T, H, V, reduction, dtype, bias, ignore_index, atol, rtol):
+    """Test that return_predicted_tokens flag works correctly with fused linear CE."""
+    torch.manual_seed(42)
+
+    weight = torch.randn(V, H, device=device, dtype=dtype)
+    bias_tensor = torch.randn(V, device=device, dtype=dtype) if bias else None
+
+    _input = torch.randn(B * T, H, device=device, dtype=dtype, requires_grad=True)
+    target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
+
+    # Assign some elements as ignore_index
+    num_ignore = B * T // 4
+    indices_to_ignore = torch.randperm(B * T)[:num_ignore]
+    target[indices_to_ignore] = ignore_index
+
+    result = liger_fused_linear_cross_entropy(
+        input=_input,
+        weight=weight,
+        target=target,
+        bias=bias_tensor,
+        ignore_index=ignore_index,
+        reduction=reduction,
+        return_predicted_tokens=True,
+    )
+
+    assert isinstance(result, CrossEntropyOutput)
+    assert result.predicted_tokens is not None
+    assert result.predicted_tokens.shape == (B * T,)
+    assert result.predicted_tokens.dtype == torch.int64
+
+    # Verify predicted tokens are correct by checking the logit at the predicted position
+    # is close to the max logit. Chunked matmul in bfloat16 can break ties differently
+    # from full matmul, so we compare logit values rather than exact argmax indices.
+    non_ignore_mask = target != ignore_index
+    with torch.no_grad():
+        logits = _input.float() @ weight.float().t()
+        if bias_tensor is not None:
+            logits = logits + bias_tensor.float()
+        max_logits = logits[non_ignore_mask].max(dim=-1).values
+        predicted_logits = (
+            logits[non_ignore_mask].gather(1, result.predicted_tokens[non_ignore_mask].unsqueeze(1)).squeeze(1)
+        )
+
+    assert torch.allclose(predicted_logits, max_logits, atol=atol, rtol=rtol)
+
+    # For ignored tokens, predicted_tokens should be -1
+    assert torch.all(result.predicted_tokens[~non_ignore_mask] == -1)
+
+    # Verify backward still works
+    result.loss.backward()
+    assert _input.grad is not None
