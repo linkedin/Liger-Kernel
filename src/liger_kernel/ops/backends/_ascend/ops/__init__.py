@@ -29,6 +29,7 @@ from liger_kernel.ops.backends._ascend.ops.kl_div import kldiv_forward_triton
 from liger_kernel.ops.backends._ascend.ops.llama4_rope import LigerLlama4RopeFunction
 from liger_kernel.ops.backends._ascend.ops.llama4_rope import llama4_rope_backward
 from liger_kernel.ops.backends._ascend.ops.llama4_rope import llama4_rope_forward
+from liger_kernel.ops.backends._ascend.ops.multi_token_attention import LigerMultiTokenAttentionFunction
 from liger_kernel.ops.backends._ascend.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.backends._ascend.ops.qwen2vl_mrope import qwen2vl_mrope_backward
 from liger_kernel.ops.backends._ascend.ops.qwen2vl_mrope import qwen2vl_mrope_forward
@@ -76,4 +77,5 @@ __all__ = [
     "LigerKLDivLossFunction",
     "kldiv_forward_triton",
     "kldiv_backward_triton",
+    "LigerMultiTokenAttentionFunction",
 ]
