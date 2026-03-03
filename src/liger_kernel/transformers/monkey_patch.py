@@ -2679,6 +2679,87 @@ def apply_liger_kernel_to_qwen3_next(
                                 _patch_swiglu_module(expert, LigerQwen3MoeSwiGLUMLP)
 
 
+def apply_liger_kernel_to_qwen3_5(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Qwen3.5 dense models.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+            Not yet supported for Qwen3.5 due to hybrid attention (Gated DeltaNet + Gated Attention).
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLUMLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.qwen3_5 import modeling_qwen3_5
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5TextModel
+
+    from liger_kernel.transformers.model.qwen3_5 import lce_forward as qwen3_5_lce_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForQwen3Next
+    from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
+
+    if rope:
+        raise NotImplementedError("liger_rotary_pos_emb is not available for Qwen3_5 models.")
+    if rms_norm:
+        modeling_qwen3_5.Qwen3_5RMSNorm = LigerRMSNormForQwen3Next
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+    if fused_linear_cross_entropy:
+        if model is not None:
+            if isinstance(model, Qwen3_5ForCausalLM):
+                model.forward = MethodType(qwen3_5_lce_forward, model)
+            else:
+                raise TypeError(
+                    f"fused_linear_cross_entropy is only applicable on Qwen3_5ForCausalLM. Got: {type(model)}"
+                )
+        else:
+            modeling_qwen3_5.Qwen3_5ForCausalLM.forward = qwen3_5_lce_forward
+    if swiglu:
+        modeling_qwen3_5.Qwen3_5MLP = LigerQwen3MoeSwiGLUMLP
+
+    if model is not None:
+        if isinstance(model, (Qwen3_5ForCausalLM, Qwen3_5TextModel)):
+            base_model: Qwen3_5TextModel = getattr(model, model.base_model_prefix, model)
+        else:
+            raise TypeError(
+                f"Unsupported qwen3_5 model type. `model` must be `Qwen3_5ForCausalLM` or `Qwen3_5TextModel`. Got: {type(model)}"
+            )
+
+        _patch_rms_norm_module_for_qwen3_5 = partial(
+            _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+        )
+
+        if rms_norm:
+            _patch_rms_norm_module_for_qwen3_5(base_model.norm)
+
+        for decoder_layer in base_model.layers:
+            if rms_norm:
+                _patch_rms_norm_module_for_qwen3_5(decoder_layer.input_layernorm)
+                _patch_rms_norm_module_for_qwen3_5(decoder_layer.post_attention_layernorm)
+
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp, LigerQwen3MoeSwiGLUMLP)
+
+
 def apply_liger_kernel_to_qwen3_5_moe(
     rope: bool = False,
     cross_entropy: bool = False,
@@ -2995,6 +3076,8 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "qwen2_5_vl_text": apply_liger_kernel_to_qwen2_5_vl,
     "qwen3_next": apply_liger_kernel_to_qwen3_next,
+    "qwen3_5": apply_liger_kernel_to_qwen3_5,
+    "qwen3_5_text": apply_liger_kernel_to_qwen3_5,
     "qwen3_5_moe": apply_liger_kernel_to_qwen3_5_moe,
     "qwen3_5_moe_text": apply_liger_kernel_to_qwen3_5_moe,
     "qwen3_vl": apply_liger_kernel_to_qwen3_vl,
