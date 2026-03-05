@@ -293,6 +293,7 @@ loss.backward()
 | Multi Token Attention           | `liger_kernel.transformers.LigerMultiTokenAttention`        |
 | Softmax                         | `liger_kernel.transformers.LigerSoftmax`                    |
 | Sparsemax                       | `liger_kernel.transformers.LigerSparsemax`                  |
+| mHC (Hyper-Connections)         | `liger_kernel.transformers.LigerMHC`                        |
 
 
 ### Alignment Kernels
