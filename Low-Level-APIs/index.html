@@ -25,7 +25,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.4">
     
     
       
@@ -538,6 +538,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#mhc-manifold-constrained-hyper-connections" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mHC (Manifold-Constrained Hyper-Connections)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -800,6 +811,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#mhc-manifold-constrained-hyper-connections" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mHC (Manifold-Constrained Hyper-Connections)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -909,6 +931,10 @@
 <td>Sparsemax</td>
 <td><code>liger_kernel.transformers.LigerSparsemax</code></td>
 </tr>
+<tr>
+<td>mHC (Hyper-Connections)</td>
+<td><code>liger_kernel.transformers.LigerMHC</code></td>
+</tr>
 </tbody>
 </table>
 <h3 id="rms-norm">RMS Norm<a class="headerlink" href="#rms-norm" title="Permanent link">&para;</a></h3>
@@ -950,6 +976,36 @@ implementations in PyTorch.</p>
 <h3 id="sparsemax">Sparsemax<a class="headerlink" href="#sparsemax" title="Permanent link">&para;</a></h3>
 <p>Sparsemax is a sparse alternative to softmax that produces sparse probability distributions. This kernel implements an efficient version of the sparsemax operation that can be used as a drop-in replacement for softmax in attention mechanisms or classification tasks.</p>
 <p>The implementation achieves significant speed improvements and memory savings compared to standard PyTorch implementations, particularly for large input tensors.</p>
+<h3 id="mhc-manifold-constrained-hyper-connections">mHC (Manifold-Constrained Hyper-Connections)<a class="headerlink" href="#mhc-manifold-constrained-hyper-connections" title="Permanent link">&para;</a></h3>
+<p>mHC implements fused Triton kernels for Manifold-Constrained Hyper-Connections (<a href="https://arxiv.org/abs/2512.24880">arXiv:2512.24880</a>). It wraps an arbitrary layer <code>F: [..., C] -&gt; [..., C]</code> with multiple residual streams, constraining the residual routing matrix <code>H_res</code> onto the Birkhoff polytope (doubly-stochastic matrices) via Sinkhorn-Knopp iterations to stabilize training.</p>
+<p>The <code>LigerMHC</code> module takes input of shape <code>[..., HC, C]</code> where <code>HC</code> is the number of residual streams, and performs:</p>
+<ol>
+<li><strong>Coefficients</strong> -- Compute data-dependent routing coefficients (<code>h_pre</code>, <code>h_post</code>, <code>h_res</code>) via fused matmul + RMS normalization + Sinkhorn-Knopp iterations.</li>
+<li><strong>Pre-aggregate</strong> -- <code>x_in = sum_i h_pre[i] * x[i]</code>  (shape: <code>[..., C]</code>)</li>
+<li><strong>Layer</strong> -- <code>f_out = layer(x_in)</code>  (shape: <code>[..., C]</code>)</li>
+<li><strong>Post + residual</strong> -- <code>x_out[o] = sum_i h_res[o,i] * x[i] + h_post[o] * f_out</code>  (shape: <code>[..., HC, C]</code>)</li>
+</ol>
+<p>Usage:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">liger_kernel.transformers</span><span class="w"> </span><span class="kn">import</span> <span class="n">LigerMHC</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># Wrap a linear layer with 4 residual streams of dimension 256</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">layer</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">256</span><span class="p">,</span> <span class="mi">256</span><span class="p">,</span> <span class="n">bias</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">&quot;cuda&quot;</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">bfloat16</span><span class="p">)</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">mhc</span> <span class="o">=</span> <span class="n">LigerMHC</span><span class="p">(</span><span class="n">layer</span><span class="p">,</span> <span class="n">hc</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">c</span><span class="o">=</span><span class="mi">256</span><span class="p">,</span> <span class="n">phi_dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">bfloat16</span><span class="p">)</span><span class="o">.</span><span class="n">cuda</span><span class="p">()</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="c1"># Input: [batch, seq_len, num_streams, channels] in BF16/FP16</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">x</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">128</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">256</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">&quot;cuda&quot;</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">bfloat16</span><span class="p">)</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="n">out</span> <span class="o">=</span> <span class="n">mhc</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>  <span class="c1"># shape: [2, 128, 4, 256]</span>
+</span></code></pre></div>
+<p>Functional APIs are also available:</p>
+<ul>
+<li><code>liger_kernel.transformers.functional.liger_mhc_coeffs</code> -- Compute routing coefficients</li>
+<li><code>liger_kernel.transformers.functional.liger_mhc_pre</code> -- Pre-aggregation</li>
+<li><code>liger_kernel.transformers.functional.liger_mhc_post_res</code> -- Post-aggregation + residual</li>
+<li><code>liger_kernel.transformers.functional.liger_mhc_apply</code> -- Combined pre + post_res</li>
+<li><code>liger_kernel.transformers.functional.liger_mhc_forward</code> -- Full forward pass (coeffs + pre + layer + post_res)</li>
+</ul>
 <h2 id="alignment-kernels">Alignment Kernels<a class="headerlink" href="#alignment-kernels" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
