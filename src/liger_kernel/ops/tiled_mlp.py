@@ -88,9 +88,18 @@ class LigerTiledMLPFunction(torch.autograd.Function):
             x_shard.grad = x_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
             incoming_grad_shard = incoming_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
 
+            all_outputs = []
+            all_incoming_grads = []
             with torch.enable_grad():
-                output = fn(mlp_module, x_shard)
-            torch.autograd.backward(output, incoming_grad_shard)
+                all_outputs.append(fn(mlp_module, x_shard))
+                all_incoming_grads.append(
+                incoming_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
+          )
+
+        # AccumulateGrad fires once here, after all shards are computed
+        torch.autograd.backward(all_outputs, all_incoming_grads)
+
+
 
         # unflatten
         x_grad = x_grad.view(x_shape_orig)
