@@ -16,6 +16,21 @@ def _softmax_multi_block_forward_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
 ):
+    """
+    Multi-block softmax forward kernel using two-pass algorithm.
+
+    First pass computes max and sum for numerical stability.
+    Second pass normalizes and writes output.
+
+    Args:
+        Y_ptr: Output tensor pointer
+        Y_row_stride: Stride for output rows
+        X_ptr: Input tensor pointer
+        X_row_stride: Stride for input rows
+        n_rows: Number of rows to process
+        n_cols: Number of columns per row
+        BLOCK_SIZE: Block size for column processing
+    """
     row_start = tl.program_id(0)
     row_step = tl.num_programs(0)
 
@@ -23,12 +38,14 @@ def _softmax_multi_block_forward_kernel(
         row_start_ptr = X_ptr + row_idx * X_row_stride
         col_offsets = tl.arange(0, BLOCK_SIZE)
         m = float("-inf")
-        d = float(0.0)
+        d = 0.0
 
         for start in tl.range(0, n_cols, BLOCK_SIZE):
             idx = start + col_offsets
             mask = idx < n_cols
-            xblk = tl.load(row_start_ptr + idx, mask=mask, other=-float("inf"), eviction_policy="evict_first")
+            xblk = tl.load(
+                row_start_ptr + idx, mask=mask, other=float("-inf"), eviction_policy="evict_first", cache_modifier=".ca"
+            )
             blk_max = tl.max(xblk, axis=0)
             new_m = tl.maximum(m, blk_max)
             d = d * tl.exp(m - new_m) + tl.sum(tl.exp(xblk - new_m), axis=0)
@@ -37,9 +54,11 @@ def _softmax_multi_block_forward_kernel(
         for start in tl.range(0, n_cols, BLOCK_SIZE):
             idx = start + col_offsets
             mask = idx < n_cols
-            xblk = tl.load(row_start_ptr + idx, mask=mask, other=-float("inf"))
+            xblk = tl.load(
+                row_start_ptr + idx, mask=mask, other=float("-inf"), eviction_policy="evict_first", cache_modifier=".ca"
+            )
             yblk = tl.exp(xblk - m) / d
-            tl.store(Y_ptr + row_idx * Y_row_stride + idx, yblk, mask=mask)
+            tl.store(Y_ptr + row_idx * Y_row_stride + idx, yblk, mask=mask, cache_modifier=".cs")
 
 
 @triton.jit
@@ -54,9 +73,25 @@ def _softmax_multi_block_backward_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
 ):
+    """
+    Multi-block softmax backward kernel using two-pass algorithm.
+
+    Computes gradient: dx = y * (dy - sum(dy * y))
+
+    Args:
+        dy_ptr: Gradient output pointer
+        dy_stride: Stride for gradient output rows
+        y_ptr: Forward output pointer
+        y_stride: Stride for forward output rows
+        dx_ptr: Gradient input pointer
+        dx_stride: Stride for gradient input rows
+        n_rows: Number of rows to process
+        n_cols: Number of columns per row
+        BLOCK_SIZE: Block size for column processing
+    """
     row_start = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
-    acc = float(0.0)
+    acc = 0.0
     row_step = tl.num_programs(0)
 
     for row_idx in tl.range(row_start, n_rows, row_step):
@@ -67,16 +102,18 @@ def _softmax_multi_block_backward_kernel(
             idx = start + col_offsets
             mask = idx < n_cols
             dy_blk = tl.load(dy_start_ptr + idx, mask=mask, other=0.0, eviction_policy="evict_first")
-            y_blk = tl.load(y_start_ptr + idx, mask=mask, other=0.0, eviction_policy="evict_first")
+            y_blk = tl.load(
+                y_start_ptr + idx, mask=mask, other=0.0, eviction_policy="evict_first", cache_modifier=".ca"
+            )
             acc += tl.sum(dy_blk * y_blk, axis=0)
 
         for start in tl.range(0, n_cols, BLOCK_SIZE):
             idx = start + col_offsets
             mask = idx < n_cols
             dy_blk = tl.load(dy_start_ptr + idx, mask=mask, other=0.0)
-            y_blk = tl.load(y_start_ptr + idx, mask=mask, other=0.0)
+            y_blk = tl.load(y_start_ptr + idx, mask=mask, other=0.0, cache_modifier=".ca")
             dx_blk = y_blk * (dy_blk - acc)
-            tl.store(dx_ptr + row_idx * dx_stride + idx, dx_blk, mask=mask)
+            tl.store(dx_ptr + row_idx * dx_stride + idx, dx_blk, mask=mask, cache_modifier=".wb")
 
 
 def softmax_forward(x):
