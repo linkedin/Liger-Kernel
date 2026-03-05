@@ -84,11 +84,14 @@ def _kldiv_kernel_forward(
 def _kldiv_kernel_backward(
     target_ptr,
     new_grads_ptr,
+    grad_output_ptr,
     n_rows,
     n_cols,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     log_target: tl.constexpr = False,
+    reduction: tl.constexpr = _REDUCTION_MODE_BATCHMEAN,
+    has_grad_output: tl.constexpr = False,
 ):
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
@@ -96,6 +99,10 @@ def _kldiv_kernel_backward(
     grid_m = tl.cdiv(n_rows, BLOCK_SIZE_M)
     grid_n = tl.cdiv(n_cols, BLOCK_SIZE_N)
     total_2d_blocks = grid_m * grid_n
+
+    # For reduced losses, grad_output is a scalar. Load it once per program.
+    if not has_grad_output:
+        grad_output_scalar = tl.load(grad_output_ptr)
 
     # Persistent-program loop over logical 2D blocks.
     for block_idx in tl.range(pid, total_2d_blocks, num_progs):
@@ -118,6 +125,17 @@ def _kldiv_kernel_backward(
         else:
             res = y_true * -1
 
+        if not has_grad_output:
+            res = res * grad_output_scalar
+        else:
+            grad_output = tl.load(grad_output_ptr + offset, mask=mask, other=0.0)
+            res = res * grad_output
+
+        if reduction == _REDUCTION_MODE_BATCHMEAN:
+            res = res / n_rows
+        elif reduction == _REDUCTION_MODE_MEAN:
+            res = res / (n_rows * n_cols)
+
         tl.store(new_grads_ptr + offset, res, mask=mask)
 
 
@@ -126,13 +144,24 @@ def _kldiv_kernel_backward(
 # -----------------------------------------------------------------------------
 
 
-def get_optimal_block_size(n_rows, dtype_size, BLOCK_SIZE_N: tl.constexpr, is_backward: bool = False):
+def get_optimal_block_size(
+    n_rows,
+    dtype_size,
+    BLOCK_SIZE_N: tl.constexpr,
+    is_backward: bool = False,
+    needs_grad_output_tile: bool = False,
+):
     """
     Calculate optimal BLOCK_SIZE_M using compute_default_tiling_strategy.
     """
     # 1) Set memory multiplier
-    # Backward is lighter than forward in this op, so use a smaller multiplier.
-    multiplier = 2.5 if is_backward else 3.0
+    # Backward is lighter than forward in this op, so we typically use a smaller multiplier.
+    # If backward also needs to stream a full grad_output tile (i.e., grad_output is not a scalar),
+    # its memory footprint becomes closer to forward, so we bump the multiplier.
+    if is_backward:
+        multiplier = 3.0 if needs_grad_output_tile else 2.5
+    else:
+        multiplier = 3.0
 
     # For bf16/fp16 (dtype_size < 4), compile-time UB overflow was observed on some shapes.
     # Clamp to fp32 size for a conservative tiling estimate; this can be refined later.
@@ -199,7 +228,17 @@ def kldiv_backward_triton(target, grad_output, new_grads, log_target, reduction)
     reduction = _str_to_reduction_mode[reduction]
 
     BLOCK_SIZE_N = triton.next_power_of_2(min(128, V))
-    BLOCK_SIZE_M = get_optimal_block_size(BT, target.element_size(), BLOCK_SIZE_N, is_backward=True)
+    # grad_output handling:
+    # - numel() == 1: use scalar grad_output path in kernel.
+    # - numel() != 1: stream per-element grad_output tile in kernel.
+    has_grad_output_tile = grad_output.numel() != 1
+    BLOCK_SIZE_M = get_optimal_block_size(
+        BT,
+        target.element_size(),
+        BLOCK_SIZE_N,
+        is_backward=True,
+        needs_grad_output_tile=has_grad_output_tile,
+    )
     num_cores = get_npu_core_count()
     total_blocks = triton.cdiv(BT, BLOCK_SIZE_M) * triton.cdiv(V, BLOCK_SIZE_N)
     grid = min(num_cores, total_blocks)
@@ -207,27 +246,17 @@ def kldiv_backward_triton(target, grad_output, new_grads, log_target, reduction)
     _kldiv_kernel_backward[(grid,)](
         target,
         new_grads,
+        grad_output,
         BT,
         V,
         BLOCK_SIZE_M=BLOCK_SIZE_M,
         BLOCK_SIZE_N=BLOCK_SIZE_N,
         log_target=log_target,
+        reduction=reduction,
+        has_grad_output=has_grad_output_tile,
     )
 
-    # If kl div is the last layer, grad_output is 1.0. Skip the mul then.
-    if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        derivative = new_grads
-    else:
-        derivative = new_grads * grad_output
-
-    if reduction == _REDUCTION_MODE_BATCHMEAN.value:
-        derivative = derivative / target.shape[0]
-    elif reduction == _REDUCTION_MODE_SUM.value or reduction == _REDUCTION_MODE_NONE.value:
-        pass
-    elif reduction == _REDUCTION_MODE_MEAN.value:
-        derivative = derivative / (target.shape[0] * target.shape[1])
-
-    return derivative
+    return new_grads
 
 
 class LigerKLDivLossFunction(torch.autograd.Function):
