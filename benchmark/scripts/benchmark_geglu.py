@@ -1,7 +1,10 @@
+import math
+
 import torch
 
 from benchmark_model_configs import DEFAULT_MODEL_CONFIG
 from benchmark_model_configs import MODEL_REGISTRY
+from benchmark_model_configs import compute_benchmark_shape
 from benchmark_model_configs import get_device_benchmark_config
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaMLP
@@ -59,15 +62,22 @@ if __name__ == "__main__":
     model = MODEL_REGISTRY[args.model] if args.model else DEFAULT_MODEL_CONFIG
     device_cfg = get_device_benchmark_config(args.device)
 
+    dtype_bytes = 2 if model.dtype in (torch.bfloat16, torch.float16) else 4
+    shape = compute_benchmark_shape(
+        device_cfg,
+        model,
+        kernel_bytes_per_token=model.intermediate_size * dtype_bytes * 20,
+    )
+
     common_configs = {
         "kernel_name": "geglu",
         "x_name": "T",
         "x_label": "sequence length",
-        "x_values": [2**i for i in range(10, 14) if 2**i <= device_cfg.seq_len],
+        "x_values": [2**i for i in range(10, int(math.log2(shape.seq_len)) + 1)],
         "kernel_providers": ["liger", "huggingface"],
         "extra_benchmark_configs": [
             {
-                "bsz": device_cfg.batch_size,
+                "bsz": shape.batch_size,
                 "hidden_size": model.hidden_size,
                 "intermediate_size": model.intermediate_size,
                 "hidden_act": "gelu_pytorch_tanh",
