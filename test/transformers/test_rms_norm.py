@@ -309,3 +309,103 @@ def test_dtensor_rms_norm(world_size, bs, sl, hd, dtype, atol, rtol, offset, cas
             nprocs=world_size,
             join=True,
         )
+
+
+def _test_dtensor_rms_norm_context_parallel(
+    rank, world_size, bs, sl, hd, dtype, atol, rtol, offset, casting_mode, file_name
+):
+    """
+    Test RMSNorm with Context Parallel (CP) - sequence dimension sharding.
+
+    Unlike Tensor Parallel (TP) which shards on hidden dimension, CP shards on
+    sequence dimension. RMSNorm can compute locally for CP since each position
+    is independent, avoiding the need for full_tensor() gathering.
+    """
+    torch.distributed.init_process_group(
+        backend=infer_comm_backend(),
+        init_method=f"file://{file_name}",
+        rank=rank,
+        world_size=world_size,
+    )
+    device = f"{infer_device()}:{rank}" if infer_device() != "cpu" else "cpu"
+    device_mesh = torch.distributed.device_mesh.init_device_mesh(
+        infer_device(), mesh_shape=(world_size,), mesh_dim_names=("cp",)
+    )
+
+    # Create a tensor and shard on sequence dimension (dim=1) for CP
+    # sl must be divisible by world_size for even sharding
+    t = torch.randn(bs, sl, hd, device=device, dtype=dtype, requires_grad=True)
+    dt = torch.distributed.tensor.distribute_tensor(
+        t,
+        device_mesh=device_mesh,
+        placements=[torch.distributed.tensor.Shard(1)],  # Shard on sequence dim for CP
+    )
+
+    # Weight is replicated across all devices
+    w = torch.randn(hd, device=device, dtype=dtype, requires_grad=True)
+    w1 = w.detach().clone().requires_grad_(True)
+    w2 = w.detach().clone().requires_grad_(True)
+
+    # Forward pass: compare DTensor (CP) result with regular tensor result
+    y1 = liger_rms_norm(X=dt, W=w1, eps=1e-6, offset=offset, casting_mode=casting_mode)
+    y2 = liger_rms_norm(X=t, W=w2, eps=1e-6, offset=offset, casting_mode=casting_mode)
+
+    # y1 is a DTensor sharded on sequence dim, y2 is a regular tensor
+    # Compare the full tensors
+    torch.testing.assert_close(y1.full_tensor(), y2, atol=atol, rtol=rtol)
+
+    # Backward pass
+    grad = torch.randn_like(y2)
+    dgrad = torch.distributed.tensor.distribute_tensor(
+        grad,
+        device_mesh=device_mesh,
+        placements=[torch.distributed.tensor.Shard(1)],  # Same sharding as output
+    )
+
+    y1.backward(dgrad)
+    y2.backward(grad)
+
+    # Check weight gradients: should match after all-reduce in backward
+    torch.testing.assert_close(w1.grad, w2.grad, atol=atol, rtol=rtol)
+
+    # Check input gradients: dt.grad is a DTensor, t.grad is a regular tensor
+    torch.testing.assert_close(dt.grad.full_tensor(), t.grad, atol=atol, rtol=rtol)
+
+    torch.distributed.destroy_process_group()
+
+
+@pytest.mark.xfail(
+    torch.cuda.device_count() < 4,
+    reason="Pending multi-GPU host support. This test requires at least 4 GPUs.",
+)
+@pytest.mark.parametrize(
+    "world_size, bs, sl, hd",
+    [
+        (2, 2, 8, 16),  # sl=8 divisible by world_size=2
+        (4, 2, 16, 32),  # sl=16 divisible by world_size=4
+        (2, 3, 6, 17),  # weird shapes: non-power-of-2 batch, seq, hidden dims
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-6),
+        (torch.bfloat16, 2e-1, 2e-2),
+    ],
+)
+@pytest.mark.parametrize(
+    "offset, casting_mode",
+    [
+        (0.0, "llama"),
+        (1.0, "gemma"),
+    ],
+)
+def test_dtensor_rms_norm_context_parallel(world_size, bs, sl, hd, dtype, atol, rtol, offset, casting_mode):
+    """Test RMSNorm with Context Parallel (sequence dimension sharding)."""
+    with tempfile.NamedTemporaryFile() as f:
+        mp.spawn(
+            _test_dtensor_rms_norm_context_parallel,
+            args=(world_size, bs, sl, hd, dtype, atol, rtol, offset, casting_mode, f.name),
+            nprocs=world_size,
+            join=True,
+        )
