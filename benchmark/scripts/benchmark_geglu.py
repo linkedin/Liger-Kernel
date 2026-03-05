@@ -5,6 +5,7 @@ import torch
 from benchmark_model_configs import DEFAULT_MODEL_CONFIG
 from benchmark_model_configs import MODEL_REGISTRY
 from benchmark_model_configs import compute_benchmark_shape
+from benchmark_model_configs import estimate_kernel_bytes_per_token
 from benchmark_model_configs import get_device_benchmark_config
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaMLP
@@ -62,11 +63,29 @@ if __name__ == "__main__":
     model = MODEL_REGISTRY[args.model] if args.model else DEFAULT_MODEL_CONFIG
     device_cfg = get_device_benchmark_config(args.device)
 
-    dtype_bytes = 2 if model.dtype in (torch.bfloat16, torch.float16) else 4
+    probe_seq_len = 1024
+    probe_input = SingleBenchmarkRunInput(
+        x=probe_seq_len,
+        kernel_provider="huggingface",
+        extra_benchmark_config={
+            "bsz": 1,
+            "hidden_size": model.hidden_size,
+            "intermediate_size": model.intermediate_size,
+            "hidden_act": "gelu_pytorch_tanh",
+            "dtype": model.dtype,
+        },
+    )
+    probe_x, probe_layer = _setup_geglu(probe_input)
+    kernel_bpt = estimate_kernel_bytes_per_token(
+        kernel_fn=lambda: probe_layer(probe_x),
+        num_tokens=probe_seq_len,
+    )
+    del probe_x, probe_layer
+
     shape = compute_benchmark_shape(
         device_cfg,
         model,
-        kernel_bytes_per_token=model.intermediate_size * dtype_bytes * 20,
+        kernel_bytes_per_token=kernel_bpt,
     )
 
     common_configs = {

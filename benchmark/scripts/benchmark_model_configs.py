@@ -10,18 +10,22 @@ Usage::
     from benchmark_model_configs import (
         MODEL_REGISTRY, DEFAULT_MODEL_CONFIG,
         get_device_benchmark_config, compute_benchmark_shape,
+        estimate_kernel_bytes_per_token,
     )
 
     args = parse_benchmark_script_args()
     model = MODEL_REGISTRY[args.model] if args.model else DEFAULT_MODEL_CONFIG
     device_cfg = get_device_benchmark_config(args.device)
-    shape = compute_benchmark_shape(device_cfg, model)
-    # shape.batch_size, shape.seq_len are now tuned for the device + model
+
+    # Measure actual memory via a small probe, then compute safe shapes
+    bpt = estimate_kernel_bytes_per_token(kernel_fn=..., num_tokens=1024)
+    shape = compute_benchmark_shape(device_cfg, model, kernel_bytes_per_token=bpt)
 """
 
 import math
 
 from dataclasses import dataclass
+from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -197,6 +201,63 @@ def get_device_benchmark_config(
     )
 
 
+def estimate_kernel_bytes_per_token(
+    kernel_fn: Callable[[], torch.Tensor],
+    num_tokens: int,
+) -> int:
+    """Run a forward + backward probe to measure peak memory per token.
+
+    Call this with the *pure PyTorch* (e.g. huggingface) implementation --
+    that typically has the highest memory footprint and therefore gives a
+    safe upper-bound estimate.  The returned value is suitable as the
+    ``kernel_bytes_per_token`` argument to :func:`compute_benchmark_shape`.
+
+    Example usage with an existing benchmark setup function::
+
+        probe_input = SingleBenchmarkRunInput(
+            x=1024, kernel_provider="huggingface",
+            extra_benchmark_config={"bsz": 1, ...},
+        )
+        probe_x, probe_layer = _setup_my_kernel(probe_input)
+        bpt = estimate_kernel_bytes_per_token(
+            kernel_fn=lambda: probe_layer(probe_x), num_tokens=1024,
+        )
+
+    Args:
+        kernel_fn: Callable that runs a forward pass and returns an output
+            tensor suitable for ``.backward()``.
+        num_tokens: Total number of tokens in the probe input
+            (``batch_size * seq_len``).
+    """
+    import gc
+
+    if torch.cuda.is_available():
+        device_str = "cuda"
+    elif hasattr(torch, "npu") and torch.npu.is_available():
+        device_str = "npu"
+    else:
+        raise RuntimeError(
+            "No CUDA or NPU device available for memory measurement"
+        )
+
+    torch_device_mod = getattr(torch, device_str)
+
+    gc.collect()
+    torch_device_mod.empty_cache()
+    torch_device_mod.memory.reset_peak_memory_stats()
+
+    y = kernel_fn()
+    y.backward(torch.randn_like(y))
+
+    peak_bytes = torch_device_mod.max_memory_allocated()
+
+    del y
+    gc.collect()
+    torch_device_mod.empty_cache()
+
+    return max(1, peak_bytes // num_tokens)
+
+
 def compute_benchmark_shape(
     device_cfg: DeviceBenchmarkConfig,
     model_cfg: ModelConfig,
@@ -211,19 +272,18 @@ def compute_benchmark_shape(
     ``batch_size * seq_len * kernel_bytes_per_token`` and is capped at
     ``device_cfg.total_memory_gb * memory_utilization``.
 
-    Different kernels have very different memory footprints, so callers should
-    provide *kernel_bytes_per_token* tailored to their workload.  When omitted a
-    conservative default based on ``model_cfg.hidden_size`` is used.
+    Prefer obtaining *kernel_bytes_per_token* via
+    :func:`estimate_kernel_bytes_per_token` (a small runtime probe) rather
+    than hardcoding an analytical estimate.
 
     Args:
         device_cfg: Device config with memory capacity.
         model_cfg: Model architecture config.
-        kernel_bytes_per_token: Estimated peak memory **per token**
-            (token = one element along the ``batch * seq_len`` axes).
-            This should account for all tensors alive at peak — inputs,
-            outputs, intermediates, and gradients.  If *None*, defaults to
-            ``hidden_size * dtype_bytes * 16``.
-        memory_utilization: Fraction of total device memory to target (0–1).
+        kernel_bytes_per_token: Peak memory **per token** (``batch * seq_len``
+            axis).  Best obtained from :func:`estimate_kernel_bytes_per_token`.
+            Falls back to a conservative heuristic
+            (``hidden_size * dtype_bytes * 16``) when *None*.
+        memory_utilization: Fraction of total device memory to target (0\u20131).
             Lower values are safer.  Default ``0.4`` leaves headroom for
             framework overhead and CUDA/NPU context.
         max_seq_len: Hard upper bound for sequence length.  Defaults to
