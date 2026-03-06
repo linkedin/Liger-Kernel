@@ -6,7 +6,7 @@ from test.utils import infer_device
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
-from liger_kernel.ops.dyt import LigerDyTFunction
+from liger_kernel.ops import LigerDyTFunction
 from liger_kernel.transformers.dyt import LigerDyT
 from liger_kernel.transformers.functional import liger_dyt
 
