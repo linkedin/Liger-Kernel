@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
 from liger_kernel.chunked_loss.functional import liger_fused_linear_grpo
+from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
 from liger_kernel.chunked_loss.grpo_loss import LigerFusedLinearGRPOFunction
 from liger_kernel.transformers.grpo_loss import _reduce_grpo_loss
 from liger_kernel.transformers.grpo_loss import triton_grpo_loss
@@ -47,6 +48,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
         importance_sampling_level: str = "token",
         sapo_temperature_pos: float = 1.0,
         sapo_temperature_neg: float = 1.05,
+        delta: float | None = None,
+        use_bias_correction_kl: bool = False,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
@@ -61,6 +64,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
         self.importance_sampling_level = importance_sampling_level
         self.sapo_temperature_pos = sapo_temperature_pos
         self.sapo_temperature_neg = sapo_temperature_neg
+        self.delta = delta
+        self.use_bias_correction_kl = use_bias_correction_kl
         if self.loss_type == "dr_grpo":
             assert self.max_completion_length is not None, "max_completion_length must be provided for dr_grpo"
 
@@ -79,6 +84,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
         sapo_temperature_pos: float = 1.0,
         sapo_temperature_neg: float = 1.05,
         vllm_is_ratio=None,
+        delta=None,
+        use_bias_correction_kl=False,
     ):
         attention_mask = attention_mask.to(per_token_logps.dtype)
         old_per_token_logps = (
@@ -134,6 +141,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
             coef_2 = torch.clamp(coef_1, lower_bound, upper_bound)
             is_lower_clipped = coef_1 < lower_bound
             is_upper_clipped = coef_1 > upper_bound
+            if delta is not None:
+                coef_1 = torch.clamp(coef_1, max=delta)
             per_token_loss1 = coef_1 * expanded_advantages
             per_token_loss2 = coef_2 * expanded_advantages
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
@@ -146,6 +155,9 @@ class TorchLMHeadGRPO(torch.nn.Module):
         if beta != 0.0:
             ref_per_token_logps = ref_per_token_logps.float()
             kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
+            if use_bias_correction_kl:
+                token_coef_1 = torch.exp(per_token_logps - old_per_token_logps)
+                kl_div = kl_div * token_coef_1
             per_token_loss = per_token_loss + beta * kl_div
 
         # Adjust clipping metric calculation based on importance sampling level
@@ -209,6 +221,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
             self.sapo_temperature_pos,
             self.sapo_temperature_neg,
             vllm_is_ratio=vllm_is_ratio,
+            delta=self.delta,
+            use_bias_correction_kl=self.use_bias_correction_kl,
         )
 
         # Apply masking and calculate loss based on loss_type
@@ -220,11 +234,13 @@ class TorchLMHeadGRPO(torch.nn.Module):
         elif self.loss_type == "dr_grpo":
             loss = (per_token_loss * attention_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
         elif self.loss_type == "dapo":
-            normalizer = attention_mask.sum().clamp(min=1.0)
+            normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(attention_mask)
             loss = (per_token_loss * attention_mask).sum() / normalizer
         elif self.loss_type == "cispo":
             normalizer = attention_mask.sum().clamp(min=1.0)
             loss = (per_token_loss * attention_mask).sum() / normalizer
+        elif self.loss_type == "luspo":
+            loss = (per_token_loss * attention_mask.sum(-1, keepdim=True)).mean()
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
 
@@ -253,6 +269,8 @@ class LigerLMHeadGRPO(torch.nn.Module):
         importance_sampling_level: str = "token",
         sapo_temperature_pos: float = 1.0,
         sapo_temperature_neg: float = 1.05,
+        delta: float | None = None,
+        use_bias_correction_kl: bool = False,
     ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=bias, dtype=dtype)
@@ -269,6 +287,8 @@ class LigerLMHeadGRPO(torch.nn.Module):
             importance_sampling_level=importance_sampling_level,
             sapo_temperature_pos=sapo_temperature_pos,
             sapo_temperature_neg=sapo_temperature_neg,
+            delta=delta,
+            use_bias_correction_kl=use_bias_correction_kl,
         )
 
     def forward(
@@ -329,8 +349,9 @@ class LigerLMHeadGRPO(torch.nn.Module):
         (False, False, True),
     ],
 )
-@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo", "dapo", "cispo", "sapo"])
+@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo"])
 @pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
+@pytest.mark.parametrize("delta", [None, 2.0])
 def test_correctness(
     B,
     T,
@@ -350,7 +371,23 @@ def test_correctness(
     old_per_token_logps,
     loss_type,
     importance_sampling_level,
+    delta,
 ):
+    if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo"):
+        pytest.skip(f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'")
+    if delta is not None and loss_type in ("cispo", "sapo"):
+        pytest.skip(f"delta is not supported for loss_type='{loss_type}'")
+
+    # LUSPO's formula multiplies per_token_loss by seq_lens, amplifying torch.compile
+    # numerical differences by O(T). Relax tolerances to account for this amplification.
+    if loss_type == "luspo":
+        if dtype == torch.bfloat16:
+            atol = max(atol, 1.0)
+            rtol = max(rtol, 5.0)
+        else:
+            atol = max(atol, 1e-4)
+            rtol = max(rtol, 5e-3)
+
     # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
     max_completion_length = T if loss_type == "dr_grpo" else None
@@ -368,6 +405,7 @@ def test_correctness(
         loss_type=loss_type,
         max_completion_length=max_completion_length,
         importance_sampling_level=importance_sampling_level,
+        delta=delta,
     )
     liger_lm_head_grpo = LigerLMHeadGRPO(
         H=H,
@@ -382,6 +420,7 @@ def test_correctness(
         loss_type=loss_type,
         max_completion_length=max_completion_length,
         importance_sampling_level=importance_sampling_level,
+        delta=delta,
     )
 
     # Initialize weights
@@ -494,7 +533,83 @@ def test_correctness(
         )
 
 
-@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dapo", "cispo", "sapo"])
+@pytest.mark.parametrize("loss_type", ["grpo", "dapo"])
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 5e-4),
+    ],
+)
+def test_correctness_with_bias_correction_kl(loss_type, dtype, atol, rtol):
+    """Test use_bias_correction_kl (importance-sampling-corrected KL from DeepSeek-V3.2)."""
+    B, T, H, V = 3, 47, 31, 123
+    beta = 0.1  # Must be non-zero for KL to matter
+    torch.compiler.reset()
+
+    torch_lm_head_grpo = TorchLMHeadGRPO(
+        H=H,
+        V=V,
+        dtype=dtype,
+        beta=beta,
+        loss_type=loss_type,
+        use_bias_correction_kl=True,
+    )
+    liger_lm_head_grpo = LigerLMHeadGRPO(
+        H=H,
+        V=V,
+        dtype=dtype,
+        beta=beta,
+        loss_type=loss_type,
+        use_bias_correction_kl=True,
+    )
+
+    torch_lm_head_grpo.lin.weight.data = liger_lm_head_grpo.lin.weight.data = torch.randn(
+        V, H, device=device, dtype=dtype
+    )
+    torch_lm_head_grpo.ref_lin.weight.data = liger_lm_head_grpo.ref_lin.weight.data = (
+        torch_lm_head_grpo.lin.weight.data + torch.randn(V, H, device=device, dtype=dtype) * 0.01
+    )
+
+    _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    input1 = _input.detach().clone().requires_grad_(True)
+    input2 = _input.detach().clone().requires_grad_(True)
+
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device, dtype=dtype)
+    attention_mask[:, -10:] = 0
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+    old_per_token_logps = torch.randn(B, T, device=device, dtype=torch.float32)
+
+    loss1, metrics1 = torch_lm_head_grpo(
+        input1,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        old_per_token_logps=old_per_token_logps,
+        ref_input=input1.detach(),
+    )
+    loss2, metrics2 = liger_lm_head_grpo(
+        input2,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        old_per_token_logps=old_per_token_logps,
+        ref_input=input2.detach(),
+    )
+
+    assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
+    loss1.backward()
+    loss2.backward()
+    assert_verbose_allclose(input1.grad, input2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(
+        torch_lm_head_grpo.lin.weight.grad,
+        liger_lm_head_grpo.lin.weight.grad,
+        atol=atol,
+        rtol=rtol,
+    )
+
+
+@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dapo", "cispo", "sapo", "luspo"])
 @pytest.mark.parametrize("beta", [0.0, 0.1])
 def test_correctness_with_vllm_is_ratio(loss_type, beta):
     """Test vllm_is_ratio correctness against torch reference, and 1D/2D shape equivalence."""
@@ -689,7 +804,7 @@ def test_functional_correctness(
         assert_verbose_allclose(metric1, metric2, atol=atol, rtol=rtol)
 
 
-@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo"])
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"])
 def test_reduce_grpo_loss_matches_reference(loss_type):
     torch.manual_seed(0)
     per_token_loss = torch.randn(3, 5)
@@ -706,6 +821,8 @@ def test_reduce_grpo_loss_matches_reference(loss_type):
         expected = (per_token_loss * mask_f).sum() / mask_f.sum().clamp(min=1.0)
     elif loss_type == "dr_grpo":
         expected = (per_token_loss * mask_f).sum() / (per_token_loss.size(0) * max_completion_length)
+    elif loss_type == "luspo":
+        expected = (per_token_loss * mask_f.sum(-1, keepdim=True)).mean()
     else:  # dapo/cispo
         expected = (per_token_loss * mask_f).sum() / mask_f.sum().clamp(min=1.0)
 
@@ -715,8 +832,34 @@ def test_reduce_grpo_loss_matches_reference(loss_type):
 def test_reduce_grpo_loss_requires_max_completion_length():
     per_token_loss = torch.randn(2, 3)
     mask = torch.ones_like(per_token_loss, dtype=torch.long)
-    with pytest.raises(ValueError):
-        _reduce_grpo_loss(per_token_loss, mask, "dr_grpo", max_completion_length=None)
+    reduced = _reduce_grpo_loss(per_token_loss, mask, "dr_grpo", max_completion_length=None)
+    expected = (per_token_loss * mask).sum() / (per_token_loss.size(0) * per_token_loss.size(1))
+    assert_verbose_allclose(reduced, expected)
+
+
+@pytest.mark.parametrize("loss_type", ["cispo", "sapo"])
+def test_sequence_level_rejects_unsupported_loss_types(loss_type):
+    """Sequence-level importance sampling should raise ValueError for cispo and sapo."""
+    B, T, H, V = 2, 8, 16, 32
+    dtype = torch.float32
+
+    liger_lm = LigerLMHeadGRPO(
+        H=H,
+        V=V,
+        dtype=dtype,
+        beta=0.0,
+        loss_type=loss_type,
+        use_ref_model=False,
+        importance_sampling_level="sequence",
+    )
+
+    _input = torch.randn(B, T, H, device=device, dtype=dtype).requires_grad_(True)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    advantages = torch.randn(B, device=device)
+
+    with pytest.raises(ValueError, match="Sequence-level importance sampling is not supported"):
+        liger_lm(_input, selected_token_ids, attention_mask, advantages)
 
 
 @pytest.mark.parametrize("loss_type,beta", [("bnpo", 0.0), ("dapo", 0.04)])
@@ -812,6 +955,8 @@ def _reference_per_token_loss(
     eps_low,
     eps_high,
     temperature=1.0,
+    delta=None,
+    use_bias_correction_kl=False,
 ):
     logits = logits[:, :-1, :] / temperature
     log_probs = torch.log_softmax(logits, dim=-1)
@@ -819,6 +964,8 @@ def _reference_per_token_loss(
     old = old_logp if old_logp is not None else per_token_logps.detach()
     coef_1 = torch.exp(per_token_logps - old)
     coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+    if delta is not None:
+        coef_1 = torch.clamp(coef_1, max=delta)
     per_token_loss1 = coef_1 * advantages.unsqueeze(1)
     per_token_loss2 = coef_2 * advantages.unsqueeze(1)
     per_token_loss = -torch.minimum(per_token_loss1, per_token_loss2)
@@ -828,6 +975,8 @@ def _reference_per_token_loss(
     is_clipped = is_clipped & mask
     if beta != 0.0:
         kl = torch.exp(ref_logp - per_token_logps) - (ref_logp - per_token_logps) - 1.0
+        if use_bias_correction_kl:
+            kl = kl * torch.exp(per_token_logps - old)
         kl = kl.masked_fill(~mask, 0.0)
         per_token_loss = per_token_loss + beta * kl
     else:
