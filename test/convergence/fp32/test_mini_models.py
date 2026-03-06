@@ -637,12 +637,15 @@ if QWEN3_AVAILABLE:
         model_class=Qwen3_5MoeForCausalLM,
         mini_model_config=Qwen3_5MoeConfig(
             vocab_size=32000,  # 151936
+            pad_token_id=0,
             hidden_size=896,
             intermediate_size=4864,
             num_hidden_layers=4,
             num_attention_heads=8,
             num_key_value_heads=2,
             hidden_act="silu",
+            layer_types="linear_attention",
+            rope_parameters={"rope_type": "default", "rope_theta": 10000.0},
             max_position_embeddings=32768,
             initializer_range=0.02,
             rms_norm_eps=1e-6,
@@ -655,12 +658,13 @@ if QWEN3_AVAILABLE:
             attention_dropout=0.0,
             decoder_sparse_step=1,
             moe_intermediate_size=768,
+            shared_expert_intermediate_size=512,
             num_experts_per_tok=2,
             num_experts=8,
             norm_topk_prob=False,
             output_router_logits=False,
             router_aux_loss_coef=0.001,
-            mlp_only_layers=None,
+            mlp_only_layers=[1],
         ),
     )
 
