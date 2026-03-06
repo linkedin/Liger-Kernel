@@ -26,6 +26,12 @@ from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_r
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
+from liger_kernel.ops.backends._ascend.ops.kl_div import LigerKLDivLossFunction
+from liger_kernel.ops.backends._ascend.ops.kl_div import kldiv_backward_triton
+from liger_kernel.ops.backends._ascend.ops.kl_div import kldiv_forward_triton
+from liger_kernel.ops.backends._ascend.ops.layer_norm import LigerLayerNormFunction
+from liger_kernel.ops.backends._ascend.ops.layer_norm import layer_norm_backward
+from liger_kernel.ops.backends._ascend.ops.layer_norm import layer_norm_forward
 from liger_kernel.ops.backends._ascend.ops.llama4_rope import LigerLlama4RopeFunction
 from liger_kernel.ops.backends._ascend.ops.llama4_rope import llama4_rope_backward
 from liger_kernel.ops.backends._ascend.ops.llama4_rope import llama4_rope_forward
@@ -38,6 +44,9 @@ from liger_kernel.ops.backends._ascend.ops.rms_norm import rms_norm_forward
 from liger_kernel.ops.backends._ascend.ops.rope import LigerRopeFunction
 from liger_kernel.ops.backends._ascend.ops.rope import rope_backward
 from liger_kernel.ops.backends._ascend.ops.rope import rope_forward
+from liger_kernel.ops.backends._ascend.ops.softmax import LigerSoftmaxFunction
+from liger_kernel.ops.backends._ascend.ops.softmax import softmax_backward
+from liger_kernel.ops.backends._ascend.ops.softmax import softmax_forward
 from liger_kernel.ops.backends._ascend.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_backward
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_forward
@@ -76,4 +85,13 @@ __all__ = [
     "LigerDyTFunction",
     "liger_dyt_fwd",
     "liger_dyt_bwd",
+    "LigerKLDivLossFunction",
+    "kldiv_forward_triton",
+    "kldiv_backward_triton",
+    "LigerLayerNormFunction",
+    "layer_norm_backward",
+    "layer_norm_forward",
+    "LigerSoftmaxFunction",
+    "softmax_forward",
+    "softmax_backward",
 ]

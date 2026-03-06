@@ -49,6 +49,7 @@ def _tv_distance_kernel(
     label_ptr,
     ignore_index: tl.constexpr,
     n_cols,
+    scale,  # pre-computed reduction scale for gradients (fused into kernel)
     BLOCK_SIZE: tl.constexpr,
     HAS_LABEL: tl.constexpr,
     reduction: tl.constexpr = _REDUCTION_MODE_BATCHMEAN,
@@ -84,7 +85,8 @@ def _tv_distance_kernel(
         # TVD(P || Q) = 0.5 * |P - Q|
         tv_loss = 0.5 * tl.abs(p - q)
 
-        grad_res = tl.where(p > q, 0.5, -0.5)
+        # Fuse reduction scaling into gradient computation (eliminates separate Python division)
+        grad_res = tl.where(p > q, 0.5 * scale, -0.5 * scale)
 
         tl.store(grads_ptr + offsets, grad_res, mask=mask)
 
@@ -94,7 +96,8 @@ def _tv_distance_kernel(
             loss_sum += tl.sum(tv_loss, axis=0)
 
     if reduction != _REDUCTION_MODE_NONE:
-        tl.store(loss_ptr, loss_sum)
+        # Fuse reduction scaling into loss (same scale as gradients; avoids Python division)
+        tl.store(loss_ptr, loss_sum * scale)
 
 
 def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_label):
@@ -113,6 +116,14 @@ def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_
 
     n_non_ignore = (shift_labels != ignore_index).sum().item() if has_label else BT
 
+    # Pre-compute gradient scale factor (fused into kernel to avoid separate division)
+    if reduction == _REDUCTION_MODE_BATCHMEAN.value:
+        scale = 1.0 / n_non_ignore
+    elif reduction == _REDUCTION_MODE_MEAN.value:
+        scale = 1.0 / (n_non_ignore * V)
+    else:
+        scale = 1.0
+
     _tv_distance_kernel[grid](
         p,
         p.stride(0),
@@ -125,18 +136,18 @@ def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_
         shift_labels if has_label else torch.empty(1, device=p.device),
         ignore_index,
         V,
+        scale,
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_LABEL=has_label,
         num_warps=num_warps,
         reduction=reduction,
     )
 
-    if reduction == _REDUCTION_MODE_BATCHMEAN.value:
-        return output_tensor.sum() / n_non_ignore, grads / n_non_ignore
+    # Loss and gradients are already scaled inside the kernel — no separate division needed
+    if reduction in (_REDUCTION_MODE_BATCHMEAN.value, _REDUCTION_MODE_MEAN.value):
+        return output_tensor.sum(), grads
     elif reduction == _REDUCTION_MODE_SUM.value:
         return output_tensor.sum(dim=0), grads
-    elif reduction == _REDUCTION_MODE_MEAN.value:
-        return output_tensor.sum() / (n_non_ignore * V), grads / (n_non_ignore * V)
     else:
         return output_tensor, grads
 
