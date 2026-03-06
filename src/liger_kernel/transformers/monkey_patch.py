@@ -2652,13 +2652,17 @@ def apply_liger_kernel_to_qwen3_next(
                 f"Unsupported qwen3_next model type. `model` must be `Qwen3NextForCausalLM`, `Qwen3NextModel`. Got: {type(model)}"
             )
 
+        _patch_rms_norm_module_for_qwen3_next = partial(
+            _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False
+        )
+
         if rms_norm:
-            _patch_rms_norm_module(base_model.norm)
+            _patch_rms_norm_module_for_qwen3_next(base_model.norm)
 
         for decoder_layer in base_model.layers:
             if rms_norm:
-                _patch_rms_norm_module(decoder_layer.input_layernorm)
-                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                _patch_rms_norm_module_for_qwen3_next(decoder_layer.input_layernorm)
+                _patch_rms_norm_module_for_qwen3_next(decoder_layer.post_attention_layernorm)
 
             # Qwen3MoeMLP and Qwen3NextMLP are identical, hence we reuse LigerQwen3MoeSwiGLUMLP
             if swiglu:
@@ -2684,7 +2688,7 @@ def apply_liger_kernel_to_qwen3_5_moe(
     model: PreTrainedModel = None,
 ) -> None:
     """
-    Apply Liger kernels to replace original implementation in HuggingFace Qwen_3_5_MoE models.
+    Apply Liger kernels to replace original implementation in HuggingFace Qwen3.5 MoE models.
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
@@ -2704,9 +2708,7 @@ def apply_liger_kernel_to_qwen3_5_moe(
 
     from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
     from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForCausalLM
-    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeMLP
-    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeModel
-    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeSparseMoeBlock
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeTextModel
 
     from liger_kernel.transformers.model.qwen3_5_moe import lce_forward as qwen3_5_moe_lce_forward
     from liger_kernel.transformers.rms_norm import LigerRMSNormForQwen3Next
@@ -3001,6 +3003,8 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "qwen2_5_vl_text": apply_liger_kernel_to_qwen2_5_vl,
     "qwen3_next": apply_liger_kernel_to_qwen3_next,
+    "qwen3_5_moe": apply_liger_kernel_to_qwen3_5_moe,
+    "qwen3_5_moe_text": apply_liger_kernel_to_qwen3_5_moe,
     "qwen3_vl": apply_liger_kernel_to_qwen3_vl,
     "qwen3_vl_text": apply_liger_kernel_to_qwen3_vl,
     "qwen3_vl_moe": apply_liger_kernel_to_qwen3_vl_moe,

@@ -1,3 +1,4 @@
+from typing import TYPE_CHECKING
 from typing import List
 from typing import Optional
 from typing import Union
@@ -5,7 +6,9 @@ from typing import Union
 import torch
 
 from transformers.modeling_outputs import MoeModelOutputWithPast
-from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import load_balancing_loss_func
+
+if TYPE_CHECKING:
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import load_balancing_loss_func
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
