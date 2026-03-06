@@ -50,6 +50,9 @@ from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_forward
 from liger_kernel.ops.backends._ascend.ops.tvd import LigerTVDLossFunction
 from liger_kernel.ops.backends._ascend.ops.tvd import tv_distance_forward_triton
 from liger_kernel.ops.backends._ascend.ops.tvd import tvd_backward_triton
+from liger_kernel.ops.backends._ascend.ops.grpo_loss import GrpoLossFunction
+from liger_kernel.ops.backends._ascend.ops.grpo_loss import grpo_loss_forward_triton
+from liger_kernel.ops.backends._ascend.ops.grpo_loss import grpo_loss_backward_triton
 
 __all__ = [
     "LigerEmbeddingFunction",
@@ -79,6 +82,9 @@ __all__ = [
     "LigerLlama4RopeFunction",
     "llama4_rope_forward",
     "llama4_rope_backward",
+    "GrpoLossFunction",
+    "grpo_loss_forward_triton",
+    "grpo_loss_backward_triton",
     "LigerKLDivLossFunction",
     "kldiv_forward_triton",
     "kldiv_backward_triton",
