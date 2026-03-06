@@ -1,15 +1,15 @@
 import math
-import os
-
 import torch
 import triton
 import triton.language as tl
 import triton.runtime.driver as driver
 
-from liger_kernel.ops.softmax import _softmax_backward
-from liger_kernel.ops.softmax import _softmax_forward
+from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_backward
+from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_forward
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import get_npu_core_count
+from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
 
 
 @triton.jit
@@ -103,6 +103,7 @@ def _fused_neighborhood_attention_qk_kernel(
     total_tiles = num_batch_heads * num_m_tiles
     
     num_programs: tl.constexpr = 48
+    # num_programs = tl.num_programs(0)
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
     
     for tile_idx in range(tiles_per_program):
@@ -203,6 +204,7 @@ def _fused_neighborhood_attention_av_kernel(
     total_tiles = num_batch_heads * num_m_tiles
     
     num_programs: tl.constexpr = 48
+    # num_programs = tl.num_programs(0)
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
     
     for tile_idx in range(tiles_per_program):
@@ -300,6 +302,7 @@ def _fused_neighborhood_attention_grad_attn_kernel(
     total_tiles = num_batch_heads * num_m_tiles
     
     num_programs: tl.constexpr = 48
+    # num_programs = tl.num_programs(0)
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
     
     for tile_idx in range(tiles_per_program):
@@ -396,6 +399,7 @@ def _fused_neighborhood_attention_grad_qk_kernel(
     total_tiles = num_batch_heads * num_m_tiles
     
     num_programs: tl.constexpr = 48
+    # num_programs = tl.num_programs(0)
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
     
     for tile_idx in range(tiles_per_program):
@@ -495,6 +499,7 @@ def _fused_neighborhood_attention_grad_k_kernel(
     total_tiles = num_batch_heads * num_m_tiles
     
     num_programs: tl.constexpr = 48
+    # num_programs = tl.num_programs(0)
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
     
     for tile_idx in range(tiles_per_program):
@@ -676,7 +681,7 @@ def fused_neighborhood_attention_forward(
 
     mask = torch.zeros(seq_len, seq_len, device=query.device, dtype=torch.float32)
 
-    BLOCK_SIZE, num_warps = calculate_settings(seq_len)
+    BLOCK_SIZE, _ = calculate_settings(seq_len)
     BLOCK_SIZE_M = min(32, triton.next_power_of_2(seq_len))
     BLOCK_SIZE_N = min(32, triton.next_power_of_2(seq_len))
     BLOCK_SIZE_K = max(16, triton.next_power_of_2(head_dim))
@@ -691,8 +696,9 @@ def fused_neighborhood_attention_forward(
     )
 
     # 固定 grid 为 (48, 1, 1)
-    grid_qk = (48, 1, 1)
-    _fused_neighborhood_attention_qk_kernel[grid_qk](
+    # num_cores = get_npu_core_count()
+    num_cores=48
+    _fused_neighborhood_attention_qk_kernel[(num_cores,)](
         query,
         key,
         qk_scores,
@@ -722,12 +728,10 @@ def fused_neighborhood_attention_forward(
     )
 
     qk_reshaped = qk_scores.view(batch_size * num_heads * seq_len, seq_len)
-    attn_reshaped, BLOCK_SIZE_softmax, num_warps_softmax, multi_block_launch = _softmax_forward(qk_reshaped)
+    attn_reshaped, BLOCK_SIZE_softmax, multi_block_launch = _softmax_forward(qk_reshaped)
     attn_weights = attn_reshaped.view(batch_size, num_heads, seq_len, seq_len)
 
-    # 固定 grid 为 (48, 1, 1)
-    grid_av = (48, 1, 1)
-    _fused_neighborhood_attention_av_kernel[grid_av](
+    _fused_neighborhood_attention_av_kernel[(num_cores,)](
         attn_weights,
         value,
         output,
@@ -755,7 +759,7 @@ def fused_neighborhood_attention_forward(
     if return_lse:
         raise NotImplementedError("return_lse=True is not supported yet.")
 
-    softmax_params = (BLOCK_SIZE_softmax, num_warps_softmax, multi_block_launch)
+    softmax_params = (BLOCK_SIZE_softmax, multi_block_launch)
     return output, attn_weights, softmax_params
 
 
@@ -773,12 +777,11 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
         ctx.softmax_params = softmax_params
         return output
 
-    
     @staticmethod
     @ensure_contiguous
     def backward(ctx, grad_output):
         query, key, value, attn_weights = ctx.saved_tensors
-        BLOCK_SIZE_softmax, num_warps_softmax, multi_block_launch = ctx.softmax_params
+        BLOCK_SIZE_softmax, multi_block_launch = ctx.softmax_params
 
         batch_size, num_heads, seq_len, head_dim = query.shape
         scale = ctx.scale if ctx.scale is not None else 1.0 / math.sqrt(head_dim)
@@ -792,10 +795,10 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
         BLOCK_SIZE_N = min(32, triton.next_power_of_2(seq_len))
         BLOCK_SIZE_K = min(32, triton.next_power_of_2(head_dim))
 
-        # 所有 grid 改为 (48, 1, 1)
-        grid = (48, 1, 1)
+        # num_cores = get_npu_core_count()
+        num_cores = 48
         
-        _fused_neighborhood_attention_grad_attn_kernel[grid](
+        _fused_neighborhood_attention_grad_attn_kernel[(num_cores,)](
             grad_output,
             value,
             grad_attn_weights,
@@ -824,11 +827,11 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
         attn_reshaped = attn_weights.view(batch_size * num_heads * seq_len, seq_len)
 
         grad_qk_reshaped = _softmax_backward(
-            grad_attn_reshaped, attn_reshaped, BLOCK_SIZE_softmax, num_warps_softmax, multi_block_launch
+            grad_attn_reshaped, attn_reshaped, BLOCK_SIZE_softmax, multi_block_launch
         )
         grad_qk_scores = grad_qk_reshaped.view(batch_size, num_heads, seq_len, seq_len)
 
-        _fused_neighborhood_attention_grad_qk_kernel[grid](
+        _fused_neighborhood_attention_grad_qk_kernel[(num_cores,)](
             grad_qk_scores,
             key,
             grad_query,
@@ -854,7 +857,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_K,
         )
 
-        _fused_neighborhood_attention_grad_k_kernel[grid](
+        _fused_neighborhood_attention_grad_k_kernel[(num_cores,)](
             grad_qk_scores,
             query,
             grad_key,
@@ -880,7 +883,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_K,
         )
 
-        _fused_neighborhood_attention_grad_v_kernel[grid](
+        _fused_neighborhood_attention_grad_v_kernel[(num_cores,)](
             attn_weights,
             grad_output,
             grad_value,

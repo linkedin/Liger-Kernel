@@ -59,6 +59,11 @@ from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_forward
 from liger_kernel.ops.backends._ascend.ops.tvd import LigerTVDLossFunction
 from liger_kernel.ops.backends._ascend.ops.tvd import tv_distance_forward_triton
 from liger_kernel.ops.backends._ascend.ops.tvd import tvd_backward_triton
+from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
+from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import fused_neighborhood_attention_forward
+from liger_kernel.ops.backends._ascend.ops.softmax import LigerSoftmaxFunction
+from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_forward
+from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_backward
 
 __all__ = [
     "LigerEmbeddingFunction",
@@ -101,8 +106,8 @@ __all__ = [
     "layer_norm_backward",
     "layer_norm_forward",
     "LigerSoftmaxFunction",
-    "softmax_forward",
-    "softmax_backward",
+    "_softmax_forward",
+    "_softmax_backward",
     "LigerJSDFunction",
     "jsd_forward",
     "jsd_backward",

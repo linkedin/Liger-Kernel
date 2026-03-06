@@ -4,7 +4,10 @@ import torch
 import triton
 import triton.language as tl
 
+from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import get_npu_core_count
+from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
 
 
 @triton.jit
@@ -26,6 +29,7 @@ def _softmax_single_block_forward_kernel(
     d = tl.sum(e, axis=0)
     y = e / d
     tl.store(Y_ptr + row_id * Y_row_stride + offs, y, mask=mask, cache_modifier=".cs")
+
 
 @triton.jit
 def _softmax_multi_block_forward_kernel(
@@ -85,7 +89,8 @@ def _softmax_multi_block_forward_kernel(
                 yblk, 
                 mask=mask, 
                 cache_modifier=".cs"
-            )
+            )   
+
 
 @triton.jit
 def _softmax_single_block_backward_kernel(
@@ -108,6 +113,7 @@ def _softmax_single_block_backward_kernel(
     dot = tl.sum(dy * y, axis=0)
     dx = y * (dy - dot)
     tl.store(dx_ptr + row_id * dx_stride + offs, dx, mask=mask, cache_modifier=".wb")
+    
 
 @triton.jit
 def _softmax_multi_block_backward_kernel(
@@ -161,11 +167,13 @@ def _softmax_forward(x: torch.Tensor) -> Tuple[torch.Tensor, int, int, bool]:
 
     BLOCK_SIZE = 1024
     num_cores = 48
+    # num_cores = get_npu_core_count()
+    
     y2d = torch.empty_like(x2d)
 
     if n_cols <= BLOCK_SIZE:
         _softmax_single_block_forward_kernel[(n_rows,)](
-            y2d, y2d.stride(0), x2d, x2d.stride(0), n_cols, BLOCK_SIZE=BLOCK_SIZE, 
+            y2d, y2d.stride(0), x2d, x2d.stride(0), n_cols, BLOCK_SIZE=BLOCK_SIZE,
         )
         multi_block_launch = False
     else:
@@ -189,6 +197,7 @@ def _softmax_backward(
     n_rows = dy2d.shape[0]
     dx2d = torch.empty_like(dy2d)
     num_cores = 48
+    # num_cores = get_npu_core_count()
 
     if not multi_block_launch and n_cols <= BLOCK_SIZE:
         _softmax_single_block_backward_kernel[(n_rows,)](
