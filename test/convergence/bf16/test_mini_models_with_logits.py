@@ -49,6 +49,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
@@ -86,6 +87,7 @@ from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
+from test.utils import revert_liger_kernel_to_qwen3_5
 from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import revert_liger_kernel_to_qwen3_next
 from test.utils import revert_liger_kernel_to_qwen3_vl
@@ -274,6 +276,14 @@ try:
     QWEN3NEXT_AVAILABLE = True
 except ImportError:
     QWEN3NEXT_AVAILABLE = False
+
+try:
+    from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
+
+    QWEN3_5_AVAILABLE = True
+except ImportError:
+    QWEN3_5_AVAILABLE = False
 
 try:
     from transformers.models.hunyuan_v1_dense.configuration_hunyuan_v1_dense import HunYuanDenseV1Config
@@ -1330,6 +1340,37 @@ if QWEN3NEXT_AVAILABLE:
         ),
     )
 
+if QWEN3_5_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_5"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_5,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_5,
+        model_class=Qwen3_5ForCausalLM,
+        mini_model_config=Qwen3_5TextConfig(
+            vocab_size=32000,
+            hidden_size=896,
+            intermediate_size=4864,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=True,
+            tie_word_embeddings=False,
+            attention_bias=False,
+            attention_dropout=0.0,
+            head_dim=128,
+            linear_conv_kernel_dim=4,
+            linear_key_head_dim=64,
+            linear_value_head_dim=64,
+            linear_num_key_heads=8,
+            linear_num_value_heads=8,
+            layer_types=["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+            dtype=torch.bfloat16,
+        ),
+    )
+
 
 if HUNYUAN_V1_AVAILABLE:
     MINI_MODEL_SETUPS["mini_hunyuan_v1"] = MiniModelConfig(
@@ -1452,7 +1493,7 @@ def run_mini_model(
             "rms_norm": True,
         }
 
-        if "glm4" in model_name or "llama4" in model_name or "qwen3_next" in model_name:
+        if "glm4" in model_name or "llama4" in model_name or "qwen3_next" in model_name or "qwen3_5" in model_name:
             kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -1994,6 +2035,25 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not QWEN3NEXT_AVAILABLE,
                     reason="Qwen3Next not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_5",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,
+            2e-1,
+            1e-1,
+            1e-1,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN3_5_AVAILABLE,
+                    reason="Qwen3_5 not available in this version of transformers",
                 ),
             ],
         ),
