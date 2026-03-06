@@ -1,5 +1,8 @@
+import tempfile
+
 import pytest
 import torch
+import torch.multiprocessing as mp
 import transformers
 
 from packaging import version
@@ -16,6 +19,7 @@ from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerExperts
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
+from liger_kernel.utils import infer_comm_backend
 from liger_kernel.utils import infer_device
 
 IS_TRANSFORMERS_V5_OR_LATER = version.parse(transformers.__version__) >= version.parse("5.0.0")
@@ -405,3 +409,84 @@ def test_correctness_functional(bsz, seq_len, size, dtype, atol, rtol):
     # Check if gradients are close for x
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
     assert torch.allclose(b1.grad, b2.grad, atol=atol, rtol=rtol)
+
+
+def _test_dtensor_liger_silumul(rank, world_size, bsz, seq_len, hidden_size, dtype, atol, rtol, file_name):
+    torch.distributed.init_process_group(
+        backend=infer_comm_backend(),
+        init_method=f"file://{file_name}",
+        rank=rank,
+        world_size=world_size,
+    )
+    device = f"{infer_device()}:{rank}" if infer_device() != "cpu" else "cpu"
+    device_mesh = torch.distributed.device_mesh.init_device_mesh(
+        infer_device(), mesh_shape=(world_size,), mesh_dim_names=("tp",)
+    )
+
+    _a = torch.randn(bsz, seq_len, hidden_size, device=device, dtype=dtype)
+    _b = torch.randn(bsz, seq_len, hidden_size, device=device, dtype=dtype)
+
+    # Broadcast from rank 0 so all ranks operate on identical tensors
+    torch.distributed.broadcast(_a, src=0)
+    torch.distributed.broadcast(_b, src=0)
+
+    assert hidden_size % world_size == 0, f"hidden_size ({hidden_size}) must be divisible by world_size ({world_size})"
+
+    # DTensor path: shard inputs along the hidden dim
+    a1 = _a.clone().detach().requires_grad_(True)
+    b1 = _b.clone().detach().requires_grad_(True)
+    da = torch.distributed.tensor.distribute_tensor(
+        a1, device_mesh=device_mesh, placements=[torch.distributed.tensor.Shard(2)]
+    )
+    db = torch.distributed.tensor.distribute_tensor(
+        b1, device_mesh=device_mesh, placements=[torch.distributed.tensor.Shard(2)]
+    )
+
+    # Regular tensor path
+    a2 = _a.clone().detach().requires_grad_(True)
+    b2 = _b.clone().detach().requires_grad_(True)
+
+    c1 = LigerSiLUMulFunction.apply(da, db)
+    c2 = LigerSiLUMulFunction.apply(a2, b2)
+
+    torch.testing.assert_close(c1.full_tensor(), c2, atol=atol, rtol=rtol)
+
+    grad = torch.randn_like(c2)
+    torch.distributed.broadcast(grad, src=0)
+    dgrad = torch.distributed.tensor.distribute_tensor(
+        grad, device_mesh=device_mesh, placements=[torch.distributed.tensor.Shard(2)]
+    )
+
+    c1.backward(dgrad)
+    c2.backward(grad)
+
+    torch.testing.assert_close(da.grad.full_tensor(), a2.grad, atol=atol, rtol=rtol)
+    torch.testing.assert_close(db.grad.full_tensor(), b2.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.xfail(
+    torch.cuda.device_count() < 8,
+    reason="Pending multi-GPU host support. This test is expected to pass when run with multi-GPU host.",
+)
+@pytest.mark.parametrize(
+    "world_size, bsz, seq_len, hidden_size",
+    [
+        (4, 2, 2, 8),
+        (8, 9, 7, 64),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-6),
+        (torch.bfloat16, 2e-1, 2e-2),
+    ],
+)
+def test_dtensor_liger_silumul(world_size, bsz, seq_len, hidden_size, dtype, atol, rtol):
+    with tempfile.NamedTemporaryFile() as f:
+        mp.spawn(
+            _test_dtensor_liger_silumul,
+            args=(world_size, bsz, seq_len, hidden_size, dtype, atol, rtol, f.name),
+            nprocs=world_size,
+            join=True,
+        )

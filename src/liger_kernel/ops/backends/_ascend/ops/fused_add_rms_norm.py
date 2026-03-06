@@ -48,7 +48,6 @@ def _fused_add_rms_norm_forward_kernel_no_tiling(
     X_DTYPE: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
 ):
     """
     NPU-optimized fused_add_rms_norm forward kernel for small n_cols (< 2048).
@@ -80,7 +79,7 @@ def _fused_add_rms_norm_forward_kernel_no_tiling(
     W_row = tl.load(W_ptr + col_offsets, mask=col_mask, other=0.0)
 
     # Grid-stride loop over row blocks
-    for i in tl.range(num_iterations, num_stages=NUM_STAGES):
+    for i in tl.range(num_iterations):
         row_idx = i * grid_stride + pid * BLOCK_SIZE_M + row_offsets
         row_mask = row_idx < n_rows
         block_mask = row_mask[:, None] & col_mask[None, :]
@@ -157,7 +156,6 @@ def _fused_add_rms_norm_forward_kernel_npu(
     casting_mode: tl.constexpr,
     X_DTYPE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
 ):
     """
     NPU-optimized fused_add_rms_norm forward kernel.
@@ -181,7 +179,7 @@ def _fused_add_rms_norm_forward_kernel_npu(
 
     offsets = tl.arange(0, BLOCK_SIZE)
     # Grid-stride loop over rows
-    for row_idx in tl.range(pid, n_rows, num_progs, num_stages=NUM_STAGES):
+    for row_idx in tl.range(pid, n_rows, num_progs):
         Y_row_ptr = Y_ptr + row_idx * Y_row_stride
         S_row_ptr = S_ptr + row_idx * S_row_stride
         X_row_ptr = X_ptr + row_idx * X_row_stride
@@ -279,7 +277,6 @@ def _fused_add_rms_norm_backward_kernel_no_tiling(
     casting_mode: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
     has_dS_out: tl.constexpr,
 ):
     """
@@ -308,7 +305,7 @@ def _fused_add_rms_norm_backward_kernel_no_tiling(
     W_offset = W_row + offset
 
     # Grid-stride loop over row blocks
-    for i in tl.range(num_iterations, num_stages=NUM_STAGES):
+    for i in tl.range(num_iterations):
         row_idx = i * grid_stride + pid * BLOCK_SIZE_M + row_offsets
         row_mask = row_idx < n_rows
         block_mask = row_mask[:, None] & col_mask[None, :]
@@ -402,7 +399,6 @@ def _fused_add_rms_norm_backward_kernel_npu(
     offset,
     casting_mode: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
     has_dS_out: tl.constexpr,
 ):
     """
@@ -419,7 +415,7 @@ def _fused_add_rms_norm_backward_kernel_npu(
     offsets = tl.arange(0, BLOCK_SIZE)
 
     # Grid-stride loop over rows
-    for row_idx in tl.range(pid, n_rows, num_progs, num_stages=NUM_STAGES):
+    for row_idx in tl.range(pid, n_rows, num_progs):
         # Base pointers for this row
         dY_row_ptr = dY_ptr + row_idx * dY_row_stride
         dX_row_ptr = dX_ptr + row_idx * dX_row_stride
@@ -625,7 +621,6 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
             X_DTYPE,
             BLOCK_SIZE_M=BLOCK_SIZE_M,
             BLOCK_SIZE_N=BLOCK_SIZE,
-            NUM_STAGES=2,
         )
     else:
         # Use tiled kernel for large n_cols
@@ -648,7 +643,6 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
             casting_mode,
             X_DTYPE,
             BLOCK_SIZE=BLOCK_SIZE,
-            NUM_STAGES=2,
         )
 
     return Y.view(*shape), S.view(*shape), RSTD, casting_mode
@@ -703,7 +697,6 @@ def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, in
             casting_mode,
             BLOCK_SIZE_M=BLOCK_SIZE_M,
             BLOCK_SIZE_N=BLOCK_SIZE,
-            NUM_STAGES=2,
             has_dS_out=dS_out is not None,
         )
     else:
@@ -728,7 +721,6 @@ def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, in
             offset,
             casting_mode,
             BLOCK_SIZE=BLOCK_SIZE,
-            NUM_STAGES=2,
             has_dS_out=dS_out is not None,
         )
 

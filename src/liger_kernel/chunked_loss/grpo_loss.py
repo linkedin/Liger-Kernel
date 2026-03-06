@@ -70,15 +70,24 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         epsilon_low=0.2,
         epsilon_high=0.2,
         beta=0.04,
-        loss_type="dapo",  # ["grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo"]
+        loss_type="dapo",  # ["grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo"]
         max_completion_length=None,  # Required for dr_grpo
         importance_sampling_level="token",  # ["token", "sequence"] - new parameter for GSPO
         sapo_temperature_pos=1.0,  # Temperature for positive advantages in SAPO
         sapo_temperature_neg=1.05,  # Temperature for negative advantages in SAPO
         vllm_is_ratio=None,  # vLLM importance sampling ratio (chunk_size, seq_len) or (chunk_size, 1) or None
+        delta=None,  # Upper clamp for two-sided clipping (INTELLECT-2)
+        use_bias_correction_kl=False,  # Importance-sampling-corrected KL (DeepSeek-V3.2)
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
+        # Validate sequence-level + loss_type combinations
+        if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo"):
+            raise ValueError(
+                f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'. "
+                f"Use importance_sampling_level='token' instead."
+            )
+
         per_token_logps = log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(
             -1
         )  # (batch_size, seq_len)
@@ -135,6 +144,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             )
             per_token_loss = -per_token_loss * advantages_expanded
         else:
+            # Apply delta (two-sided clipping from INTELLECT-2) to coef_1
+            if delta is not None:
+                coef_1 = torch.clamp(coef_1, max=delta)
             per_token_loss1 = coef_1 * advantages.unsqueeze(1)
             per_token_loss2 = coef_2 * advantages.unsqueeze(1)
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
@@ -146,6 +158,10 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         if beta != 0.0:
             # Compute KL penalty (approximates KL[per_token_logps, ref_per_token_logps])
             kl_div = k3_loss_fn(ref_per_token_logps, per_token_logps)
+            if use_bias_correction_kl:
+                # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= token-level coef_1
+                token_coef_1 = torch.exp(per_token_logps - old_per_token_logps)
+                kl_div = kl_div * token_coef_1
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
 
@@ -169,6 +185,19 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         elif loss_type == "dapo" or loss_type == "cispo":
             loss_normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(full_attention_mask)
             loss = (per_token_loss * attention_mask).sum() / loss_normalizer
+        elif loss_type == "luspo":
+            # LUSPO: loss = (per_token_loss * mask.sum(1, keepdim=True)).mean()
+            # Reformulated as: sum_i(sum_j(per_token_loss_ij) * seq_len_i) / numel
+            # to avoid (B,T) * (B,1) broadcast which amplifies torch.compile differences.
+            seq_lens = attention_mask.sum(-1)  # (chunk_B,)
+            per_seq_sum = per_token_loss.sum(-1)  # (chunk_B,)
+            weighted = per_seq_sum * seq_lens  # (chunk_B,)
+            if importance_sampling_level == "sequence" and beta == 0.0:
+                # per_token_loss stays (B, 1), so .mean() divides by B
+                loss = weighted.sum() / full_attention_mask.shape[0]
+            else:
+                # per_token_loss is (B, T), .mean() divides by B*T
+                loss = weighted.sum() / (full_attention_mask.shape[0] * full_attention_mask.shape[1])
         else:
             raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -220,6 +249,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         use_ref_model=True,
         chunk_size=1,
         vllm_is_ratio=None,
+        delta=None,
+        use_bias_correction_kl=False,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -235,7 +266,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             ref_weight (torch.Tensor, optional): Reference model weight tensor. Shape: (vocab_size, hidden_size)
             ref_bias (torch.Tensor, optional): Reference model bias tensor. Shape: (vocab_size,)
             beta (float): Weight for the KL penalty
-            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo").
+            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo").
                 Defaults to "dapo".
             max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
             importance_sampling_level (str): Level of importance sampling ("token" or "sequence"). Defaults to "token".
@@ -250,6 +281,13 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         Returns:
             torch.Tensor: Computed loss
         """
+        # Validate before entering torch.compile boundary
+        if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo"):
+            raise ValueError(
+                f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'. "
+                f"Use importance_sampling_level='token' instead."
+            )
+
         return super().forward(
             cls=cls,
             ctx=ctx,
@@ -277,6 +315,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             sapo_temperature_pos=sapo_temperature_pos,
             sapo_temperature_neg=sapo_temperature_neg,
             vllm_is_ratio=vllm_is_ratio,
+            delta=delta,
+            use_bias_correction_kl=use_bias_correction_kl,
         )
 
     @staticmethod
@@ -310,6 +350,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_use_ref_model
             None,  # grad_chunk_size
             None,  # grad_vllm_is_ratio
+            None,  # grad_delta
+            None,  # grad_use_bias_correction_kl
         )
 
 
@@ -330,6 +372,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         sapo_temperature_pos: float = 1.0,
         sapo_temperature_neg: float = 1.05,
         temperature: float = 1.0,
+        delta: Optional[float] = None,
+        use_bias_correction_kl: bool = False,
     ):
         """
         Args:
@@ -339,7 +383,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             chunk_size (int): Size of chunks for processing.
             epsilon_low (float): Lower bound for the importance sampling ratio.
             epsilon_high (float): Upper bound for the importance sampling ratio.
-            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo").
+            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo").
                 Defaults to "dapo". For "cispo", epsilon_high is typically larger (e.g. 5.0) and
                 epsilon_low is unused. For "sapo", uses soft gating instead of hard clipping.
             max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
@@ -347,6 +391,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             sapo_temperature_pos (float): Temperature for positive advantages in SAPO. Defaults to 1.0.
             sapo_temperature_neg (float): Temperature for negative advantages in SAPO. Defaults to 1.05.
             temperature (float): Temperature for the logits.
+            delta (float, optional): Upper clamp for two-sided clipping (INTELLECT-2). None means disabled.
+            use_bias_correction_kl (bool): If True, multiply KL by importance sampling ratio (DeepSeek-V3.2).
         """
         super().__init__()
         # Validate SAPO temperatures to prevent division by zero or numerical instability
@@ -354,6 +400,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             raise ValueError(f"sapo_temperature_pos must be positive, got {sapo_temperature_pos}")
         if sapo_temperature_neg <= 0:
             raise ValueError(f"sapo_temperature_neg must be positive, got {sapo_temperature_neg}")
+        if delta is not None and delta <= 0:
+            raise ValueError(f"delta must be positive, got {delta}")
         self.beta = beta
         self.compiled = compiled
         self.use_ref_model = use_ref_model
@@ -366,6 +414,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         self.sapo_temperature_pos = sapo_temperature_pos
         self.sapo_temperature_neg = sapo_temperature_neg
         self.temperature = temperature
+        self.delta = delta
+        self.use_bias_correction_kl = use_bias_correction_kl
 
     def forward(
         self,
@@ -407,4 +457,6 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.use_ref_model,
             self.chunk_size,
             vllm_is_ratio,
+            self.delta,
+            self.use_bias_correction_kl,
         )
