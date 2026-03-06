@@ -22,6 +22,7 @@ def lce_forward(
     image_grid_thw: Optional[torch.LongTensor] = None,
     video_grid_thw: Optional[torch.LongTensor] = None,
     rope_deltas: Optional[torch.LongTensor] = None,
+    mm_token_type_ids: Optional[torch.IntTensor] = None,
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
@@ -102,6 +103,7 @@ def lce_forward(
         attention_mask=attention_mask,
         past_key_values=past_key_values,
         inputs_embeds=inputs_embeds,
+        mm_token_type_ids=mm_token_type_ids,
         cache_position=cache_position,
         **kwargs,
     )
