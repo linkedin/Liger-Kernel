@@ -2713,8 +2713,7 @@ def apply_liger_kernel_to_qwen3_5_moe(
     from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
 
     if rope:
-        # TODO: check the implmentation
-        # modeling_qwen3_5_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
+        # As qwen3next
         raise NotImplementedError("liger_rotary_pos_emb is not available for Qwen3.5_MoE models.")
     if rms_norm:
         modeling_qwen3_5_moe.Qwen3_5MoeRMSNorm = LigerRMSNormForQwen3Next
@@ -2996,6 +2995,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2": apply_liger_kernel_to_qwen2,
     "qwen3": apply_liger_kernel_to_qwen3,
     "qwen3_moe": apply_liger_kernel_to_qwen3_moe,
+    "qwen3_5_moe": apply_liger_kernel_to_qwen3_5_moe,
     "qwen2_vl": apply_liger_kernel_to_qwen2_vl,
     "qwen2_vl_text": apply_liger_kernel_to_qwen2_vl,
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
