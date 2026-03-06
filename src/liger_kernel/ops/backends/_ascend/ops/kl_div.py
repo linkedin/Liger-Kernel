@@ -148,7 +148,7 @@ def get_optimal_block_size(
     dtype_size,
     BLOCK_SIZE_N: tl.constexpr,
     is_backward: bool = False,
-    needs_grad_output_tile: bool = False,
+    is_scalar_grad_output: bool = True,
 ):
     """
     Calculate optimal BLOCK_SIZE_M using compute_default_tiling_strategy.
@@ -158,7 +158,7 @@ def get_optimal_block_size(
     # If backward also needs to stream a full grad_output tile (i.e., grad_output is not a scalar),
     # its memory footprint becomes closer to forward, so we bump the multiplier.
     if is_backward:
-        multiplier = 3.0 if needs_grad_output_tile else 2.5
+        multiplier = 2.5 if is_scalar_grad_output else 3.0
     else:
         multiplier = 3.0
 
@@ -236,7 +236,7 @@ def kldiv_backward_triton(target, grad_output, new_grads, log_target, reduction)
         target.element_size(),
         BLOCK_SIZE_N,
         is_backward=True,
-        needs_grad_output_tile=not is_scalar_grad_output,
+        is_scalar_grad_output=is_scalar_grad_output,
     )
     num_cores = get_npu_core_count()
     total_blocks = triton.cdiv(BT, BLOCK_SIZE_M) * triton.cdiv(V, BLOCK_SIZE_N)
