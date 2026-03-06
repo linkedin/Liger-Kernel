@@ -5,7 +5,7 @@ from test.transformers.test_jsd import JSD as TorchJSD
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 
-from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
+from liger_kernel.ops import LigerFusedLinearJSDFunction
 from liger_kernel.transformers.functional import liger_fused_linear_jsd
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
 from liger_kernel.utils import infer_device
