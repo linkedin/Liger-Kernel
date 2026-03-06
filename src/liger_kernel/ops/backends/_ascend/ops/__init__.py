@@ -26,6 +26,9 @@ from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_r
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
+from liger_kernel.ops.backends._ascend.ops.jsd import LigerJSDFunction
+from liger_kernel.ops.backends._ascend.ops.jsd import jsd_backward
+from liger_kernel.ops.backends._ascend.ops.jsd import jsd_forward
 from liger_kernel.ops.backends._ascend.ops.kl_div import LigerKLDivLossFunction
 from liger_kernel.ops.backends._ascend.ops.kl_div import kldiv_backward_triton
 from liger_kernel.ops.backends._ascend.ops.kl_div import kldiv_forward_triton
@@ -94,4 +97,7 @@ __all__ = [
     "LigerSoftmaxFunction",
     "softmax_forward",
     "softmax_backward",
+    "LigerJSDFunction",
+    "jsd_forward",
+    "jsd_backward",
 ]
