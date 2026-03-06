@@ -2708,7 +2708,9 @@ def apply_liger_kernel_to_qwen3_5_moe(
 
     from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
     from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForCausalLM
-    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeTextModel
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeMLP
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeModel
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeSparseMoeBlock
 
     from liger_kernel.transformers.model.qwen3_5_moe import lce_forward as qwen3_5_moe_lce_forward
     from liger_kernel.transformers.rms_norm import LigerRMSNormForQwen3Next
@@ -3003,7 +3005,6 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "qwen2_5_vl": apply_liger_kernel_to_qwen2_5_vl,
     "qwen2_5_vl_text": apply_liger_kernel_to_qwen2_5_vl,
     "qwen3_next": apply_liger_kernel_to_qwen3_next,
-    "qwen3_5_moe": apply_liger_kernel_to_qwen3_5_moe,
     "qwen3_5_moe_text": apply_liger_kernel_to_qwen3_5_moe,
     "qwen3_vl": apply_liger_kernel_to_qwen3_vl,
     "qwen3_vl_text": apply_liger_kernel_to_qwen3_vl,

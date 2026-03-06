@@ -772,18 +772,6 @@ def revert_liger_kernel_to_qwen3_next(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_qwen3_5_moe(model_config: MiniModelConfig):
-    """
-    Revert all Liger kernel patches applied to Qwen3.5 MoE.
-    """
-
-    from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
-
-    importlib.reload(modeling_qwen3_5_moe)
-    model_config.model_class = modeling_qwen3_5_moe.Qwen3_5MoeForCausalLM
-    print("Liger kernel patches have been reverted.")
-
-
 def revert_liger_kernel_to_hunyuan_v1(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Hunyuanv1.
