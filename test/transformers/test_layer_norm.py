@@ -68,6 +68,87 @@ def test_liger_layer_norm(
     [
         (2, 8, 64),
         (4, 16, 128),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        (torch.bfloat16, 2e-2, 2e-2),  # Relaxed tolerance for bfloat16 due to lower precision
+    ],
+)
+@pytest.mark.parametrize(
+    "freeze_weight, freeze_bias",
+    [
+        (True, False),
+        (False, True),
+        (True, True),
+    ],
+)
+def test_liger_layer_norm_frozen_params(
+    batch_size: int,
+    seq_len: int,
+    hidden_size: int,
+    dtype: torch.dtype,
+    atol: float,
+    rtol: float,
+    freeze_weight: bool,
+    freeze_bias: bool,
+) -> None:
+    """Test that frozen weight/bias (requires_grad=False) works correctly and produces no gradient."""
+    torch.manual_seed(0)
+
+    x = torch.randn(batch_size, seq_len, hidden_size, dtype=dtype, device=device)
+
+    liger_x = x.clone().requires_grad_(True)
+    torch_x = x.clone().requires_grad_(True)
+
+    liger_ln = LigerLayerNorm(hidden_size, eps=1e-6).to(dtype).to(device)
+    torch_ln = torch.nn.LayerNorm(hidden_size, eps=1e-6).to(dtype).to(device)
+
+    with torch.no_grad():
+        torch_ln.weight.copy_(liger_ln.weight)
+        torch_ln.bias.copy_(liger_ln.bias)
+
+    # Freeze weight and/or bias
+    if freeze_weight:
+        liger_ln.weight.requires_grad_(False)
+        torch_ln.weight.requires_grad_(False)
+    if freeze_bias:
+        liger_ln.bias.requires_grad_(False)
+        torch_ln.bias.requires_grad_(False)
+
+    liger_output = liger_ln(liger_x)
+    torch_output = torch_ln(torch_x)
+
+    assert torch.allclose(liger_output, torch_output, atol=atol, rtol=rtol)
+
+    grad_output = torch.randn_like(x)
+    liger_output.backward(grad_output, retain_graph=True)
+    torch_output.backward(grad_output, retain_graph=True)
+
+    # Check input gradients match
+    assert torch.allclose(liger_x.grad, torch_x.grad, atol=atol, rtol=rtol)
+
+    # Check frozen params have no gradient
+    if freeze_weight:
+        assert liger_ln.weight.grad is None, "Liger weight.grad should be None when frozen"
+        assert torch_ln.weight.grad is None, "Torch weight.grad should be None when frozen"
+    else:
+        assert torch.allclose(liger_ln.weight.grad, torch_ln.weight.grad, atol=atol, rtol=rtol)
+
+    if freeze_bias:
+        assert liger_ln.bias.grad is None, "Liger bias.grad should be None when frozen"
+        assert torch_ln.bias.grad is None, "Torch bias.grad should be None when frozen"
+    else:
+        assert torch.allclose(liger_ln.bias.grad, torch_ln.bias.grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "batch_size, seq_len, hidden_size",
+    [
+        (2, 8, 64),
+        (4, 16, 128),
         (3, 512, 128),
     ],
 )
