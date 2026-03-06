@@ -91,7 +91,6 @@ def _kldiv_kernel_backward(
     BLOCK_SIZE_N: tl.constexpr,
     log_target: tl.constexpr = False,
     reduction: tl.constexpr = _REDUCTION_MODE_BATCHMEAN,
-    has_grad_output: tl.constexpr = False,
 ):
     pid = tl.program_id(0)
     num_progs = tl.num_programs(0)
@@ -101,7 +100,7 @@ def _kldiv_kernel_backward(
     total_2d_blocks = grid_m * grid_n
 
     # For reduced losses, grad_output is a scalar. Load it once per program.
-    if not has_grad_output:
+    if reduction != _REDUCTION_MODE_NONE:
         grad_output_scalar = tl.load(grad_output_ptr)
 
     # Persistent-program loop over logical 2D blocks.
@@ -125,7 +124,7 @@ def _kldiv_kernel_backward(
         else:
             res = y_true * -1
 
-        if not has_grad_output:
+        if reduction != _REDUCTION_MODE_NONE:
             res = res * grad_output_scalar
         else:
             grad_output = tl.load(grad_output_ptr + offset, mask=mask, other=0.0)
@@ -231,13 +230,13 @@ def kldiv_backward_triton(target, grad_output, new_grads, log_target, reduction)
     # grad_output handling:
     # - numel() == 1: use scalar grad_output path in kernel.
     # - numel() != 1: stream per-element grad_output tile in kernel.
-    has_grad_output_tile = grad_output.numel() != 1
+    is_scalar_grad_output = grad_output.numel() == 1
     BLOCK_SIZE_M = get_optimal_block_size(
         BT,
         target.element_size(),
         BLOCK_SIZE_N,
         is_backward=True,
-        needs_grad_output_tile=has_grad_output_tile,
+        needs_grad_output_tile=not is_scalar_grad_output,
     )
     num_cores = get_npu_core_count()
     total_blocks = triton.cdiv(BT, BLOCK_SIZE_M) * triton.cdiv(V, BLOCK_SIZE_N)
@@ -253,7 +252,6 @@ def kldiv_backward_triton(target, grad_output, new_grads, log_target, reduction)
         BLOCK_SIZE_N=BLOCK_SIZE_N,
         log_target=log_target,
         reduction=reduction,
-        has_grad_output=has_grad_output_tile,
     )
 
     return new_grads
