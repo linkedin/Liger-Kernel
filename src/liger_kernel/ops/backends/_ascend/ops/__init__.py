@@ -51,8 +51,8 @@ from liger_kernel.ops.backends._ascend.ops.rope import LigerRopeFunction
 from liger_kernel.ops.backends._ascend.ops.rope import rope_backward
 from liger_kernel.ops.backends._ascend.ops.rope import rope_forward
 from liger_kernel.ops.backends._ascend.ops.softmax import LigerSoftmaxFunction
-from liger_kernel.ops.backends._ascend.ops.softmax import softmax_backward
-from liger_kernel.ops.backends._ascend.ops.softmax import softmax_forward
+from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_backward
+from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_forward
 from liger_kernel.ops.backends._ascend.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_backward
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_forward
@@ -101,8 +101,8 @@ __all__ = [
     "layer_norm_backward",
     "layer_norm_forward",
     "LigerSoftmaxFunction",
-    "softmax_forward",
-    "softmax_backward",
+    "_softmax_forward",
+    "_softmax_backward",
     "LigerJSDFunction",
     "jsd_forward",
     "jsd_backward",
