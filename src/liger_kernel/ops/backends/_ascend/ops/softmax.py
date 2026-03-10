@@ -326,7 +326,7 @@ class LigerSoftmaxFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(ctx, input_: torch.Tensor):
-        y, BLOCK_SIZE, ROWS_PER_BLOCK, multi_block_launch = _softmax_forward(input_)
+        y, BLOCK_SIZE = _softmax_forward(input_)
         ctx.save_for_backward(y)
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.ROWS_PER_BLOCK = ROWS_PER_BLOCK
