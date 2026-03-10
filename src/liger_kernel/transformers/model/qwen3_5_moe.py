@@ -27,6 +27,7 @@ def lce_forward(
     output_attentions: Optional[bool] = None,
     output_hidden_states: Optional[bool] = None,
     output_router_logits: Optional[bool] = None,
+    mm_token_type_ids: Optional[torch.IntTensor] = None,
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
@@ -84,6 +85,7 @@ def lce_forward(
         output_attentions=output_attentions,
         output_hidden_states=output_hidden_states,
         output_router_logits=output_router_logits,
+        mm_token_type_ids=mm_token_type_ids,
         cache_position=cache_position,
         **kwargs,
     )
