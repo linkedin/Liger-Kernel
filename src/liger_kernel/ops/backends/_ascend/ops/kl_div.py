@@ -147,6 +147,7 @@ def get_optimal_block_size(
     n_rows,
     dtype_size,
     BLOCK_SIZE_N: tl.constexpr,
+    log_target: bool = False,
     is_backward: bool = False,
     is_scalar_grad_output: bool = True,
 ):
@@ -160,7 +161,7 @@ def get_optimal_block_size(
     if is_backward:
         multiplier = 2.5 if is_scalar_grad_output else 3.0
     else:
-        multiplier = 3.0
+        multiplier = 3.0 if log_target else 6.0
 
     # For bf16/fp16 (dtype_size < 4), compile-time UB overflow was observed on some shapes.
     # Clamp to fp32 size for a conservative tiling estimate; this can be refined later.
@@ -191,7 +192,7 @@ def kldiv_forward_triton(y_pred, y_true, log_target, reduction, eps):  # [BT, V]
     output_tensor = torch.zeros(out_size, device=y_pred.device, dtype=torch.float32)
 
     BLOCK_SIZE_N = triton.next_power_of_2(min(128, V))
-    BLOCK_SIZE_M = get_optimal_block_size(BT, y_pred.element_size(), BLOCK_SIZE_N)
+    BLOCK_SIZE_M = get_optimal_block_size(BT, y_pred.element_size(), BLOCK_SIZE_N, log_target=log_target)
     num_cores = get_npu_core_count()
     total_blocks = triton.cdiv(BT, BLOCK_SIZE_M) * triton.cdiv(V, BLOCK_SIZE_N)
     grid = min(num_cores, total_blocks)
@@ -235,6 +236,7 @@ def kldiv_backward_triton(target, grad_output, new_grads, log_target, reduction)
         BT,
         target.element_size(),
         BLOCK_SIZE_N,
+        log_target=log_target,
         is_backward=True,
         is_scalar_grad_output=is_scalar_grad_output,
     )
