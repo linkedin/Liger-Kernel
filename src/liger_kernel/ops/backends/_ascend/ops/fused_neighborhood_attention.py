@@ -94,6 +94,7 @@ def _fused_neighborhood_attention_qk_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    num_programs: tl.constexpr,
 ):
     pid = tl.program_id(0)
 
@@ -101,7 +102,6 @@ def _fused_neighborhood_attention_qk_kernel(
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
 
-    num_programs = tl.num_programs(0)
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
 
     for tile_idx in range(tiles_per_program):
@@ -193,6 +193,7 @@ def _fused_neighborhood_attention_av_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    num_programs: tl.constexpr,
 ):
     pid = tl.program_id(0)
 
@@ -200,7 +201,6 @@ def _fused_neighborhood_attention_av_kernel(
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
 
-    num_programs = tl.num_programs(0)
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
 
     for tile_idx in range(tiles_per_program):
@@ -285,6 +285,7 @@ def _fused_neighborhood_attention_grad_attn_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    num_programs: tl.constexpr,
 ):
     """
     Compute gradient with respect to attention weights: grad_attn = grad_output @ V^T.
@@ -295,7 +296,6 @@ def _fused_neighborhood_attention_grad_attn_kernel(
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
 
-    num_programs = tl.num_programs(0)
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
 
     for tile_idx in range(tiles_per_program):
@@ -380,6 +380,7 @@ def _fused_neighborhood_attention_grad_qk_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    num_programs: tl.constexpr,
 ):
     """
     Compute gradient with respect to queries: grad_Q = grad_attn @ K * scale.
@@ -390,7 +391,6 @@ def _fused_neighborhood_attention_grad_qk_kernel(
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
 
-    num_programs = tl.num_programs(0)
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
 
     for tile_idx in range(tiles_per_program):
@@ -478,6 +478,7 @@ def _fused_neighborhood_attention_grad_k_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    num_programs: tl.constexpr,
 ):
     """
     Compute gradient with respect to keys: grad_K = grad_attn^T @ Q * scale.
@@ -488,7 +489,6 @@ def _fused_neighborhood_attention_grad_k_kernel(
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
 
-    num_programs = tl.num_programs(0)
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
 
     for tile_idx in range(tiles_per_program):
@@ -575,6 +575,7 @@ def _fused_neighborhood_attention_grad_v_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    num_programs: tl.constexpr,
 ):
     """
     Compute gradient with respect to values: grad_V = Attn^T @ grad_output.
@@ -585,7 +586,6 @@ def _fused_neighborhood_attention_grad_v_kernel(
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
 
-    num_programs = tl.num_programs(0)
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
 
     for tile_idx in range(tiles_per_program):
@@ -734,6 +734,7 @@ def fused_neighborhood_attention_forward(
         BLOCK_SIZE_M,
         BLOCK_SIZE_N,
         BLOCK_SIZE_K,
+        num_cores,
     )
 
     qk_reshaped = qk_scores.view(batch_size * num_heads * seq_len, seq_len)
@@ -765,6 +766,7 @@ def fused_neighborhood_attention_forward(
         BLOCK_SIZE_M,
         BLOCK_SIZE_N,
         BLOCK_SIZE_K,
+        num_cores,
     )
 
     if return_lse:
@@ -835,6 +837,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_M,
             BLOCK_SIZE_N,
             BLOCK_SIZE_K,
+            num_cores,
         )
 
         grad_attn_reshaped = grad_attn_weights.view(batch_size * num_heads * seq_len, seq_len)
@@ -869,6 +872,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_M,
             BLOCK_SIZE_N,
             BLOCK_SIZE_K,
+            num_cores,
         )
 
         _fused_neighborhood_attention_grad_k_kernel[(num_cores,)](
@@ -895,6 +899,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_M,
             BLOCK_SIZE_N,
             BLOCK_SIZE_K,
+            num_cores,
         )
 
         _fused_neighborhood_attention_grad_v_kernel[(num_cores,)](
@@ -920,6 +925,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_M,
             BLOCK_SIZE_N,
             BLOCK_SIZE_K,
+            num_cores,
         )
 
         return grad_query, grad_key, grad_value, None, None, None
