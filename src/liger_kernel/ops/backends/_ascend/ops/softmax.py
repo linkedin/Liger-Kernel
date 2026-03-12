@@ -88,7 +88,8 @@ def _softmax_multi_block_forward_kernel(
         BLOCK_SIZE: Block size for column processing
     """
     row_start = tl.program_id(0)
-    row_step = tl.num_programs(0)
+    num_prog = tl.num_programs(0)
+    row_step = tl.cdiv(n_rows, num_prog)
     col_offsets = tl.arange(0, BLOCK_SIZE)
 
     for row_idx in tl.range(row_start, n_rows, row_step):
@@ -207,13 +208,15 @@ def _softmax_multi_block_backward_kernel(
         BLOCK_SIZE: Block size for column processing
     """
     row_start = tl.program_id(0)
+    num_prog = tl.num_programs(0)
+    row_step = tl.cdiv(n_rows, num_prog)
+
     col_offsets = tl.arange(0, BLOCK_SIZE)
-    acc = 0.0
-    row_step = tl.num_programs(0)
 
     for row_idx in tl.range(row_start, n_rows, row_step):
         dy_start_ptr = dy_ptr + row_idx * dy_stride
         y_start_ptr = y_ptr + row_idx * y_stride
+        acc = 0.0
 
         for start in tl.range(0, n_cols, BLOCK_SIZE):
             idx = start + col_offsets
@@ -233,7 +236,7 @@ def _softmax_multi_block_backward_kernel(
             tl.store(dx_ptr + row_idx * dx_stride + idx, dx_blk, mask=mask, cache_modifier=".wb")
 
 
-def softmax_forward(x):
+def _softmax_forward(x):
     *batch, n_cols = x.shape
     x2d = x.contiguous().view(-1, n_cols)
     n_rows = x2d.shape[0]
@@ -271,7 +274,7 @@ def softmax_forward(x):
     return y2d.view(*batch, n_cols), BLOCK_SIZE, ROWS_PER_BLOCK, multi_block_launch
 
 
-def softmax_backward(
+def _softmax_backward(
     dy: torch.Tensor,
     y: torch.Tensor,
     BLOCK_SIZE: int,
@@ -323,7 +326,7 @@ class LigerSoftmaxFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(ctx, input_: torch.Tensor):
-        y, BLOCK_SIZE, ROWS_PER_BLOCK, multi_block_launch = softmax_forward(input_)
+        y, BLOCK_SIZE, ROWS_PER_BLOCK, multi_block_launch = _softmax_forward(input_)
         ctx.save_for_backward(y)
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.ROWS_PER_BLOCK = ROWS_PER_BLOCK
@@ -334,7 +337,7 @@ class LigerSoftmaxFunction(torch.autograd.Function):
     @ensure_contiguous
     def backward(ctx, grad_output):
         (y,) = ctx.saved_tensors
-        dx = softmax_backward(
+        dx = _softmax_backward(
             grad_output,
             y,
             ctx.BLOCK_SIZE,
