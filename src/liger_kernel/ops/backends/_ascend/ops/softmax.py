@@ -210,6 +210,7 @@ def _softmax_multi_block_backward_kernel(
     row_start = tl.program_id(0)
     num_prog = tl.num_programs(0)
     row_step = tl.cdiv(n_rows, num_prog)
+
     col_offsets = tl.arange(0, BLOCK_SIZE)
 
     for row_idx in tl.range(row_start, n_rows, row_step):
