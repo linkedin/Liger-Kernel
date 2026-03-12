@@ -26,6 +26,7 @@ from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_r
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
+from liger_kernel.ops.backends._ascend.ops.grpo_loss import GrpoLossFunction
 from liger_kernel.ops.backends._ascend.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.backends._ascend.ops.jsd import jsd_backward
 from liger_kernel.ops.backends._ascend.ops.jsd import jsd_forward
@@ -106,4 +107,5 @@ __all__ = [
     "LigerJSDFunction",
     "jsd_forward",
     "jsd_backward",
+    "GrpoLossFunction",
 ]
