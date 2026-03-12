@@ -17,13 +17,6 @@ import triton
 
 from liger_kernel.utils import is_npu_available
 
-# Default UB capacities for different NPU models (in bits)
-_DEFAULT_UB_CAPACITIES = {
-    "Ascend910B1": 2097152,  # ~256 KB
-    "Ascend910B4": 1572864,  # ~192 KB
-    "default": 2097152,  # ~256 KB
-}
-
 
 def _normalize_tiling_dims(tiling_dim: Union[int, Tuple[int, ...]]) -> set:
     """
@@ -183,31 +176,56 @@ class UBManager:
 
     def _detect_ub_capacity(self) -> int:
         """
-        Detect UB capacity from environment variable or device properties.
+        Detect UB capacity from environment variable or get_soc_spec.
 
         Returns:
             UB capacity in bits.
+
+        Raises:
+            RuntimeError: If UB capacity cannot be detected and no environment variable is set.
         """
-        # Check environment variable first
+        # Check environment variable first (in bits)
         env_capacity = os.getenv("ASCEND_UB_CAPACITY_BITS")
         if env_capacity is not None:
             try:
-                return int(env_capacity)
+                capacity_bits = int(env_capacity)
+                if capacity_bits > 0:
+                    return capacity_bits
             except ValueError:
                 pass
 
-        # Try to get from device properties
+        # Try to get from get_soc_spec (returns bytes, convert to bits)
         if is_npu_available():
             try:
-                dev_props = torch.npu.get_device_properties(0)
-                if hasattr(dev_props, "ub_capacity_bits"):
-                    return dev_props.ub_capacity_bits
-            except Exception:
-                pass
+                from tbe.common.platform import get_soc_spec
 
-        # Fall back to model-based defaults
-        model = self._npu_model
-        return _DEFAULT_UB_CAPACITIES.get(model, _DEFAULT_UB_CAPACITIES["default"])
+                # Query UB size (get_soc_spec returns size in bytes)
+                ub_size_bytes = get_soc_spec("UB_SIZE")
+
+                if ub_size_bytes is None or ub_size_bytes <= 0:
+                    raise ValueError(f"Invalid UB_SIZE from get_soc_spec: {ub_size_bytes}")
+
+                # Convert bytes to bits
+                ub_capacity_bits = ub_size_bytes * 8
+                return ub_capacity_bits
+
+            except ImportError:
+                raise RuntimeError(
+                    "Cannot import tbe.common.platform.get_soc_spec. "
+                    "Please ensure CANN environment variables are sourced "
+                    "(e.g., source /usr/local/Ascend/ascend-toolkit/set_env.sh)"
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to detect UB capacity from get_soc_spec: {e}. "
+                    "Please set ASCEND_UB_CAPACITY_BITS environment variable as fallback."
+                )
+
+        # If NPU is not available, raise error
+        raise RuntimeError(
+            "NPU is not available and UB capacity cannot be detected. "
+            "Please set ASCEND_UB_CAPACITY_BITS environment variable."
+        )
 
 
 # Global singleton instance

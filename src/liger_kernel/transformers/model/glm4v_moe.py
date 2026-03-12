@@ -4,14 +4,11 @@ from typing import Union
 
 import torch
 
-from transformers.utils.deprecation import deprecate_kwarg
-
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
 from liger_kernel.transformers.model.output_classes import LigerGlm4vMoeCausalLMOutputWithPast
 
 
-@deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
 def lce_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -25,6 +22,7 @@ def lce_forward(
     image_grid_thw: Optional[torch.LongTensor] = None,
     video_grid_thw: Optional[torch.LongTensor] = None,
     rope_deltas: Optional[torch.LongTensor] = None,
+    mm_token_type_ids: Optional[torch.IntTensor] = None,
     cache_position: Optional[torch.LongTensor] = None,
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
@@ -105,6 +103,7 @@ def lce_forward(
         attention_mask=attention_mask,
         past_key_values=past_key_values,
         inputs_embeds=inputs_embeds,
+        mm_token_type_ids=mm_token_type_ids,
         cache_position=cache_position,
         **kwargs,
     )
@@ -118,6 +117,7 @@ def lce_forward(
     logits = None
     loss = None
     token_accuracy = None
+    predicted_tokens = None
 
     if skip_logits and labels is None and shift_labels is None:
         raise ValueError("skip_logits is True, but labels and shift_labels are None")
@@ -136,7 +136,7 @@ def lce_forward(
             hidden_size=self.config.hidden_size,
             **kwargs,
         )
-        loss, _, token_accuracy = unpack_cross_entropy_result(result)
+        loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
 
     else:
         logits = self.lm_head(kept_hidden_states)
@@ -153,6 +153,7 @@ def lce_forward(
         output = (logits,) + outputs[1:]
         output = ((loss,) + output) if loss is not None else output
         output = output + (token_accuracy,) if token_accuracy is not None else output
+        output = output + (predicted_tokens,) if predicted_tokens is not None else output
         return output
 
     # Build output kwargs and include aux_loss only if present (depends on transformers version)
@@ -164,6 +165,7 @@ def lce_forward(
         attentions=outputs.attentions,
         rope_deltas=outputs.rope_deltas,
         token_accuracy=token_accuracy,
+        predicted_tokens=predicted_tokens,
     )
     if hasattr(outputs, "aux_loss"):
         output_kwargs["aux_loss"] = outputs.aux_loss

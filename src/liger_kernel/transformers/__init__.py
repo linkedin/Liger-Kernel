@@ -14,6 +14,7 @@ from liger_kernel.transformers.kl_div import LigerKLDIVLoss  # noqa: F401
 from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
 from liger_kernel.transformers.llama4_rope import liger_llama4_text_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.llama4_rope import liger_llama4_vision_rotary_pos_emb  # noqa: F401
+from liger_kernel.transformers.mhc import LigerMHC  # noqa: F401
 from liger_kernel.transformers.multi_token_attention import LigerMultiTokenAttention  # noqa: F401
 from liger_kernel.transformers.poly_norm import LigerPolyNorm  # noqa: F401
 from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401
@@ -21,6 +22,7 @@ from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.softmax import LigerSoftmax  # noqa: F401
 from liger_kernel.transformers.sparsemax import LigerSparsemax  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP  # noqa: F401
+from liger_kernel.transformers.swiglu import LigerExperts  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP  # noqa: F401
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP  # noqa: F401
@@ -57,10 +59,12 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_paligemma  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_phi3  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_pixtral  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2_5_vl  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen2_vl  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_5_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_next  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_vl  # noqa: F401
@@ -125,11 +129,13 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_olmo3",
         "apply_liger_kernel_to_paligemma",
         "apply_liger_kernel_to_phi3",
+        "apply_liger_kernel_to_pixtral",
         "apply_liger_kernel_to_qwen2",
         "apply_liger_kernel_to_qwen2_5_vl",
         "apply_liger_kernel_to_qwen2_vl",
         "apply_liger_kernel_to_qwen3",
         "apply_liger_kernel_to_qwen3_moe",
+        "apply_liger_kernel_to_qwen3_5_moe",
         "apply_liger_kernel_to_qwen3_next",
         "apply_liger_kernel_to_qwen3_vl",
         "apply_liger_kernel_to_qwen3_vl_moe",
@@ -171,6 +177,7 @@ __all__ = [
     "LigerTiledSwiGLUMLP",
     "LigerTVDLoss",
     "LigerKLDIVLoss",
+    "LigerMHC",
     "LigerMultiTokenAttention",
     "LigerSoftmax",
     "LigerSparsemax",
@@ -204,11 +211,13 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_olmo3",
             "apply_liger_kernel_to_paligemma",
             "apply_liger_kernel_to_phi3",
+            "apply_liger_kernel_to_pixtral",
             "apply_liger_kernel_to_qwen2",
             "apply_liger_kernel_to_qwen2_5_vl",
             "apply_liger_kernel_to_qwen2_vl",
             "apply_liger_kernel_to_qwen3",
             "apply_liger_kernel_to_qwen3_moe",
+            "apply_liger_kernel_to_qwen3_5_moe",
             "apply_liger_kernel_to_qwen3_next",
             "apply_liger_kernel_to_qwen3_vl",
             "apply_liger_kernel_to_qwen3_vl_moe",

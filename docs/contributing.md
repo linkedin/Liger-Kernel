@@ -2,9 +2,8 @@
 
 Thank you for your interest in contributing to Liger-Kernel! This guide will help you set up your development environment, add a new kernel, run tests, and submit a pull request (PR).
 
-!!! Note
-    ### Maintainers
-    @ByronHsu(admin) @qingquansong @yundai424 @kvignesh1420 @lancerts @JasonZhu1313 @shimizust
+### Maintainers
+@ByronHsu(admin) @qingquansong @yundai424 @kvignesh1420 @lancerts @JasonZhu1313 @shimizust @vaibhavjindal @tcc0403 @momochen
 
 ## Interested in the ticket?
 
@@ -12,65 +11,56 @@ Leave `#take` in the comment and tag the maintainer.
 
 ## Setting Up Your Development Environment
 
-!!! Note
-     1. **Clone the Repository**
-     ```sh
-    git clone https://github.com/linkedin/Liger-Kernel.git
-    cd Liger-Kernel
-      ```
-     2. **Install Dependencies and Editable Package**
-     ```
-     pip install . -e[dev]
-     ```
-     If encounter error `no matches found: .[dev]`, please use
-     ```
-     pip install -e .'[dev]'
-     ```
-
-    3. **Install pre-commit hooks using [`prek`](https://prek.j178.dev/), a `pre-commit` alternative built in rust**
-    ```
-    prek install 
-    ```
-    Run pre-commit check without committing (`-a` is equivalent to `--all-files`)
-    ```
-    prek run -a
-    ```
+1. **Clone the Repository**
+```sh
+git clone https://github.com/linkedin/Liger-Kernel.git
+cd Liger-Kernel
+```
+2. **Install Dependencies and Editable Package**
+```
+pip install . -e[dev]
+```
+If encounter error `no matches found: .[dev]`, please use
+```
+pip install -e .'[dev]'
+```
+3. **Install pre-commit hooks using [`prek`](https://prek.j178.dev/), a `pre-commit` alternative built in rust**
+```
+prek install 
+```
+Run pre-commit check without committing (`-a` is equivalent to `--all-files`)
+```
+prek run -a
+```
 
 ## Structure
 
-!!! Info
-    ### Source Code
+### Source Code
+- `ops/`: Core Triton operations.
+- `transformers/`: PyTorch `nn.Module` implementations built on Triton operations, compliant with the `transformers` API.
 
-    - `ops/`: Core Triton operations.
-    - `transformers/`: PyTorch `nn.Module` implementations built on Triton operations, compliant with the `transformers` API.
+### Tests
 
-    ### Tests
+- `transformers/`: Correctness tests for the Triton-based layers.
+- `convergence/`: Patches Hugging Face models with all kernels, runs multiple iterations, and compares weights, logits, and loss layer-by-layer.
 
-    - `transformers/`: Correctness tests for the Triton-based layers.
-    - `convergence/`: Patches Hugging Face models with all kernels, runs multiple iterations, and compares weights, logits, and loss layer-by-layer.
+### Benchmark
 
-    ### Benchmark
-
-    - `benchmark/`: Execution time and memory benchmarks compared to Hugging Face layers.
+- `benchmark/`: Execution time and memory benchmarks compared to Hugging Face layers.
 
 ## Adding support for a new model
 To get familiar with the folder structure, please refer [here](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.).
 
-#### 1 Figure out the kernels that can be monkey-patched
+1. **Figure out the kernels that can be monkey-patched**
+    - Check the `src/liger_kernel/ops` directory to find the kernels that can be monkey-patched.
+    - Kernels like Fused Linear Cross Entropy require a custom lce_forward function to allow monkey-patching. For adding kernels requiring a similar approach, ensure that you create the corresponding forward function in the `src/liger_kernel/transformers/model` directory.
 
-a) Check the `src/liger_kernel/ops` directory to find the kernels that can be monkey-patched.
+2. **Monkey-patch the HuggingFace model**
+    - Add the monkey-patching code in the `src/liger_kernel/transformers/monkey_patch.py` file.
+    - Ensure that the monkey-patching function is added to the `__init__.py` file in the `src/liger_kernel/transformers/` directory.
 
-b) Kernels like Fused Linear Cross Entropy require a custom lce_forward function to allow monkey-patching. For adding kernels requiring a similar approach, ensure that you create the corresponding forward function in the `src/liger_kernel/transformers/model` directory.
-
-#### 2 Monkey-patch the HuggingFace model
-
-a) Add the monkey-patching code in the `src/liger_kernel/transformers/monkey_patch.py` file.
-
-b) Ensure that the monkey-patching function is added to the `__init__.py` file in the `src/liger_kernel/transformers/` directory.
-
-#### 3 Add Unit Tests
-
-a) Create unit tests and convergence tests for the monkey-patched model in the tests directory. Ensure that your tests cover all functionalities of the monkey-patched model.
+3. **Add Unit Tests**
+    - Create unit tests and convergence tests for the monkey-patched model in the tests directory. Ensure that your tests cover all functionalities of the monkey-patched model.
 
 ## Adding a New Kernel
 To get familiar with the folder structure, please refer [here](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#structure.).
@@ -106,9 +96,7 @@ The `/benchmark` directory contains benchmarking scripts for the individual kern
 ## Submit PR
 Fork the repo, copy and paste the successful test logs in the PR and submit the PR followed by the PR template (**[example PR](https://github.com/linkedin/Liger-Kernel/pull/21)**).
 
-!!! Warning "Notice"
-    As a contributor, you represent that the code you submit is your original work or that of your employer (in which case you represent you have the right to bind your employer).  
-    By submitting code, you (and, if applicable, your employer) are licensing the submitted code to LinkedIn and the open source community subject to the BSD 2-Clause license.
+> As a contributor, you represent that the code you submit is your original work or that of your employer (in which case you represent you have the right to bind your employer). By submitting code, you (and, if applicable, your employer) are licensing the submitted code to LinkedIn and the open source community subject to the BSD 2-Clause license.
 
 #### Release (Maintainer only)
 
@@ -118,9 +106,9 @@ Fork the repo, copy and paste the successful test logs in the PR and submit the 
 4. Adding release note: Minimum requirement is to click the `Generate Release Notes` button that will automatically generates 1) changes included, 2) new contributors. It's good to add sections on top to highlight the important changes.
 5. New pip uploading will be triggered upon a new release. NOTE: Both pre-release and official release will trigger the workflow to build wheel and publish to pypi, so please be sure that step 1-3 are followed correctly!
 
-!!! Note "Notes on version"
-      Here we follow the [sematic versioning](https://semver.org/). Denote the version as `major.minor.patch`, we increment:
+### Notes on version
+Here we follow the [sematic versioning](https://semver.org/). Denote the version as `major.minor.patch`, we increment:
 
-      - Major version when there is backward incompatible change.
-      - Minor version when there is new backward-compatible functionality.
-      - Patch version for bug fixes.
+- Major version when there is backward incompatible change.
+- Minor version when there is new backward-compatible functionality.
+- Patch version for bug fixes.

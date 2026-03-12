@@ -1,15 +1,14 @@
 import math
+
 import torch
 import triton
 import triton.language as tl
-import triton.runtime.driver as driver
 
 from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_backward
 from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_forward
-from liger_kernel.ops.utils import calculate_settings
+from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
-from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
 
 
 @triton.jit
@@ -95,33 +94,31 @@ def _fused_neighborhood_attention_qk_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    num_programs: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    
+
     num_batch_heads = batch_size * num_heads
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
-    
-    num_programs: tl.constexpr = 48
-    # num_programs = tl.num_programs(0)
+
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
-    
+
     for tile_idx in range(tiles_per_program):
         global_tile_id = pid + tile_idx * num_programs
-        
-        # 用 if 包裹全部计算，替代 continue
+
         if global_tile_id < total_tiles:
             batch_head_id = global_tile_id // num_m_tiles
             tile_m = global_tile_id % num_m_tiles
-            
+
             batch_id = batch_head_id // num_heads
             head_id = batch_head_id % num_heads
 
             row_start = tile_m * BLOCK_SIZE_M
             row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
-            
+
             num_n_tiles = tl.cdiv(seq_len, BLOCK_SIZE_N)
-            
+
             for tile_n in range(num_n_tiles):
                 col_start = tile_n * BLOCK_SIZE_N
                 col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
@@ -196,33 +193,31 @@ def _fused_neighborhood_attention_av_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    num_programs: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    
+
     num_batch_heads = batch_size * num_heads
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
-    
-    num_programs: tl.constexpr = 48
-    # num_programs = tl.num_programs(0)
+
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
-    
+
     for tile_idx in range(tiles_per_program):
         global_tile_id = pid + tile_idx * num_programs
-        
-        # 用 if 包裹全部计算，替代 continue
+
         if global_tile_id < total_tiles:
             batch_head_id = global_tile_id // num_m_tiles
             tile_m = global_tile_id % num_m_tiles
-            
+
             batch_id = batch_head_id // num_heads
             head_id = batch_head_id % num_heads
 
             row_start = tile_m * BLOCK_SIZE_M
             row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
-            
+
             num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
-            
+
             for tile_n in range(num_n_tiles):
                 col_start = tile_n * BLOCK_SIZE_N
                 col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
@@ -289,36 +284,34 @@ def _fused_neighborhood_attention_grad_attn_kernel(
     head_dim: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr, 
+    BLOCK_SIZE_K: tl.constexpr,
+    num_programs: tl.constexpr,
 ):
     """
     Compute gradient with respect to attention weights: grad_attn = grad_output @ V^T.
-    Grid: (48, 1, 1)
     """
     pid = tl.program_id(0)
-    
+
     num_batch_heads = batch_size * num_heads
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
-    
-    num_programs: tl.constexpr = 48
-    # num_programs = tl.num_programs(0)
+
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
-    
+
     for tile_idx in range(tiles_per_program):
         global_tile_id = pid + tile_idx * num_programs
-        
+
         if global_tile_id < total_tiles:
             batch_head_id = global_tile_id // num_m_tiles
             tile_m = global_tile_id % num_m_tiles
-            
+
             batch_id = batch_head_id // num_heads
             head_id = batch_head_id % num_heads
 
             row_start = tile_m * BLOCK_SIZE_M
             row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
-            num_n_tiles = tl.cdiv(seq_len, BLOCK_SIZE_N)    
-            
+            num_n_tiles = tl.cdiv(seq_len, BLOCK_SIZE_N)
+
             for tile_n in range(num_n_tiles):
                 col_start = tile_n * BLOCK_SIZE_N
                 col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
@@ -387,36 +380,34 @@ def _fused_neighborhood_attention_grad_qk_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    num_programs: tl.constexpr,
 ):
     """
     Compute gradient with respect to queries: grad_Q = grad_attn @ K * scale.
-    Grid: (48, 1, 1)
     """
     pid = tl.program_id(0)
-    
+
     num_batch_heads = batch_size * num_heads
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
-    
-    num_programs: tl.constexpr = 48
-    # num_programs = tl.num_programs(0)
+
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
-    
+
     for tile_idx in range(tiles_per_program):
         global_tile_id = pid + tile_idx * num_programs
-        
+
         if global_tile_id < total_tiles:
             batch_head_id = global_tile_id // num_m_tiles
             tile_m = global_tile_id % num_m_tiles
-            
+
             batch_id = batch_head_id // num_heads
             head_id = batch_head_id % num_heads
 
             row_start = tile_m * BLOCK_SIZE_M
             row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
-            
+
             num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
-            
+
             for tile_n in range(num_n_tiles):
                 col_start = tile_n * BLOCK_SIZE_N
                 col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
@@ -487,36 +478,34 @@ def _fused_neighborhood_attention_grad_k_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    num_programs: tl.constexpr,
 ):
     """
     Compute gradient with respect to keys: grad_K = grad_attn^T @ Q * scale.
-    Grid: (48, 1, 1)
     """
     pid = tl.program_id(0)
-    
+
     num_batch_heads = batch_size * num_heads
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
-    
-    num_programs: tl.constexpr = 48
-    # num_programs = tl.num_programs(0)
+
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
-    
+
     for tile_idx in range(tiles_per_program):
         global_tile_id = pid + tile_idx * num_programs
-        
+
         if global_tile_id < total_tiles:
             batch_head_id = global_tile_id // num_m_tiles
             tile_m = global_tile_id % num_m_tiles
-            
+
             batch_id = batch_head_id // num_heads
             head_id = batch_head_id % num_heads
 
             row_start = tile_m * BLOCK_SIZE_M
             row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
-            
+
             num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
-            
+
             for tile_n in range(num_n_tiles):
                 col_start = tile_n * BLOCK_SIZE_N
                 col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
@@ -586,35 +575,34 @@ def _fused_neighborhood_attention_grad_v_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    num_programs: tl.constexpr,
 ):
     """
     Compute gradient with respect to values: grad_V = Attn^T @ grad_output.
-    Grid: (48, 1, 1)
     """
     pid = tl.program_id(0)
-    
+
     num_batch_heads = batch_size * num_heads
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
-    
-    num_programs: tl.constexpr = 48
+
     tiles_per_program = tl.cdiv(total_tiles, num_programs)
-    
+
     for tile_idx in range(tiles_per_program):
         global_tile_id = pid + tile_idx * num_programs
-        
+
         if global_tile_id < total_tiles:
             batch_head_id = global_tile_id // num_m_tiles
             tile_m = global_tile_id % num_m_tiles
-            
+
             batch_id = batch_head_id // num_heads
             head_id = batch_head_id % num_heads
 
             row_start = tile_m * BLOCK_SIZE_M
             row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
-            
+
             num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
-            
+
             for tile_n in range(num_n_tiles):
                 col_start = tile_n * BLOCK_SIZE_N
                 col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
@@ -658,6 +646,27 @@ def _fused_neighborhood_attention_grad_v_kernel(
                 tl.store(grad_v_ptrs, acc, mask=valid_mask)
 
 
+def get_optimal_block_size(n_cols):
+    if n_cols <= 4096:
+        return triton.next_power_of_2(n_cols)
+
+    memory_multiplier = 3.0
+
+    tile_shapes = compute_default_tiling_strategy(
+        safety_margin=0.9,
+        dtype_size=4,
+        memory_multiplier=memory_multiplier,
+        shapes=((n_cols,),),
+        tiling_dims=(0,),
+    )
+
+    if tile_shapes and len(tile_shapes) > 0:
+        block_size = tile_shapes[0][0]
+        return max(4096, block_size)
+    else:
+        return 4096
+
+
 def fused_neighborhood_attention_forward(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -672,16 +681,18 @@ def fused_neighborhood_attention_forward(
     if scale is None:
         scale = 1.0 / math.sqrt(head_dim)
 
-    query = query.contiguous()
-    key = key.contiguous()
-    value = value.contiguous()
+    input_dtype = query.dtype
+    # compute in fp32
+    query = query.contiguous().to(torch.float32)
+    key = key.contiguous().to(torch.float32)
+    value = value.contiguous().to(torch.float32)
 
     output = torch.empty_like(query)
-    qk_scores = torch.empty(batch_size, num_heads, seq_len, seq_len, device=query.device, dtype=query.dtype)
+    qk_scores = torch.empty(batch_size, num_heads, seq_len, seq_len, device=query.device, dtype=torch.float32)
 
     mask = torch.zeros(seq_len, seq_len, device=query.device, dtype=torch.float32)
 
-    BLOCK_SIZE, _ = calculate_settings(seq_len)
+    BLOCK_SIZE = get_optimal_block_size(seq_len)
     BLOCK_SIZE_M = min(32, triton.next_power_of_2(seq_len))
     BLOCK_SIZE_N = min(32, triton.next_power_of_2(seq_len))
     BLOCK_SIZE_K = max(16, triton.next_power_of_2(head_dim))
@@ -695,9 +706,7 @@ def fused_neighborhood_attention_forward(
         BLOCK_SIZE,
     )
 
-    # 固定 grid 为 (48, 1, 1)
-    # num_cores = get_npu_core_count()
-    num_cores=48
+    num_cores = get_npu_core_count()
     _fused_neighborhood_attention_qk_kernel[(num_cores,)](
         query,
         key,
@@ -725,10 +734,13 @@ def fused_neighborhood_attention_forward(
         BLOCK_SIZE_M,
         BLOCK_SIZE_N,
         BLOCK_SIZE_K,
+        num_cores,
     )
 
     qk_reshaped = qk_scores.view(batch_size * num_heads * seq_len, seq_len)
-    attn_reshaped, BLOCK_SIZE_softmax, multi_block_launch = _softmax_forward(qk_reshaped)
+    qk_reshaped_fp32 = qk_reshaped.to(torch.float32)
+    attn_reshaped_fp32, BLOCK_SIZE_softmax, ROWS_PER_BLOCK, multi_block_launch = _softmax_forward(qk_reshaped_fp32)
+    attn_reshaped = attn_reshaped_fp32.to(qk_scores.dtype)
     attn_weights = attn_reshaped.view(batch_size, num_heads, seq_len, seq_len)
 
     _fused_neighborhood_attention_av_kernel[(num_cores,)](
@@ -754,12 +766,17 @@ def fused_neighborhood_attention_forward(
         BLOCK_SIZE_M,
         BLOCK_SIZE_N,
         BLOCK_SIZE_K,
+        num_cores,
     )
 
     if return_lse:
         raise NotImplementedError("return_lse=True is not supported yet.")
 
-    softmax_params = (BLOCK_SIZE_softmax, multi_block_launch)
+    softmax_params = (BLOCK_SIZE_softmax, ROWS_PER_BLOCK, multi_block_launch)
+    # cast results back to original dtype
+    output = output.to(input_dtype)
+    attn_weights = attn_weights.to(input_dtype)
+
     return output, attn_weights, softmax_params
 
 
@@ -781,11 +798,11 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
     @ensure_contiguous
     def backward(ctx, grad_output):
         query, key, value, attn_weights = ctx.saved_tensors
-        BLOCK_SIZE_softmax, multi_block_launch = ctx.softmax_params
+        BLOCK_SIZE_softmax, ROWS_PER_BLOCK, multi_block_launch = ctx.softmax_params
 
         batch_size, num_heads, seq_len, head_dim = query.shape
         scale = ctx.scale if ctx.scale is not None else 1.0 / math.sqrt(head_dim)
-        
+
         grad_query = torch.zeros_like(query)
         grad_key = torch.zeros_like(key)
         grad_value = torch.zeros_like(value)
@@ -795,9 +812,8 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
         BLOCK_SIZE_N = min(32, triton.next_power_of_2(seq_len))
         BLOCK_SIZE_K = min(32, triton.next_power_of_2(head_dim))
 
-        # num_cores = get_npu_core_count()
-        num_cores = 48
-        
+        num_cores = get_npu_core_count()
+
         _fused_neighborhood_attention_grad_attn_kernel[(num_cores,)](
             grad_output,
             value,
@@ -821,13 +837,14 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_M,
             BLOCK_SIZE_N,
             BLOCK_SIZE_K,
+            num_cores,
         )
 
         grad_attn_reshaped = grad_attn_weights.view(batch_size * num_heads * seq_len, seq_len)
         attn_reshaped = attn_weights.view(batch_size * num_heads * seq_len, seq_len)
 
         grad_qk_reshaped = _softmax_backward(
-            grad_attn_reshaped, attn_reshaped, BLOCK_SIZE_softmax, multi_block_launch
+            grad_attn_reshaped, attn_reshaped, BLOCK_SIZE_softmax, ROWS_PER_BLOCK, multi_block_launch
         )
         grad_qk_scores = grad_qk_reshaped.view(batch_size, num_heads, seq_len, seq_len)
 
@@ -855,6 +872,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_M,
             BLOCK_SIZE_N,
             BLOCK_SIZE_K,
+            num_cores,
         )
 
         _fused_neighborhood_attention_grad_k_kernel[(num_cores,)](
@@ -881,6 +899,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_M,
             BLOCK_SIZE_N,
             BLOCK_SIZE_K,
+            num_cores,
         )
 
         _fused_neighborhood_attention_grad_v_kernel[(num_cores,)](
@@ -906,6 +925,7 @@ class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
             BLOCK_SIZE_M,
             BLOCK_SIZE_N,
             BLOCK_SIZE_K,
+            num_cores,
         )
 
         return grad_query, grad_key, grad_value, None, None, None

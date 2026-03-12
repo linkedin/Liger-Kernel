@@ -1,0 +1,3824 @@
+**************************************
+     BENCHMARKING SPEED for FUSED_NEIGHBORHOOD_ATTENTION
+**************************************
+Starting Warmup for input size: (2, 64, 512)
+[WARNING] Please DO NOT tune args ['num_warps']!
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+[WARNING] Please DO NOT tune args ['num_warps']!
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (4, 64, 768)
+Done Warmup
+Starting Warmup for input size: (4, 128, 768)
+Done Warmup
+Starting Warmup for input size: (4, 256, 768)
+Done Warmup
+Starting Warmup for input size: (4, 512, 768)
+Done Warmup
+Starting Warmup for input size: (4, 1024, 768)
+Done Warmup
+Starting Warmup for input size: (4, 2048, 768)
+Done Warmup
+Starting Warmup for input size: (4, 4096, 768)
+Done Warmup
+Starting Warmup for input size: (4, 64, 768)
+Done Warmup
+Starting Warmup for input size: (4, 128, 768)
+Done Warmup
+Starting Warmup for input size: (4, 256, 768)
+Done Warmup
+Starting Warmup for input size: (4, 512, 768)
+Done Warmup
+Starting Warmup for input size: (4, 1024, 768)
+Done Warmup
+Starting Warmup for input size: (4, 2048, 768)
+Done Warmup
+Starting Warmup for input size: (4, 4096, 768)
+Done Warmup
+Starting Warmup for input size: (4, 64, 768)
+Done Warmup
+Starting Warmup for input size: (4, 128, 768)
+Done Warmup
+Starting Warmup for input size: (4, 256, 768)
+Done Warmup
+Starting Warmup for input size: (4, 512, 768)
+Done Warmup
+Starting Warmup for input size: (4, 1024, 768)
+Done Warmup
+Starting Warmup for input size: (4, 2048, 768)
+Done Warmup
+Starting Warmup for input size: (4, 4096, 768)
+Done Warmup
+Starting Warmup for input size: (4, 64, 768)
+Done Warmup
+Starting Warmup for input size: (4, 128, 768)
+Done Warmup
+Starting Warmup for input size: (4, 256, 768)
+Done Warmup
+Starting Warmup for input size: (4, 512, 768)
+Done Warmup
+Starting Warmup for input size: (4, 1024, 768)
+Done Warmup
+Starting Warmup for input size: (4, 2048, 768)
+Done Warmup
+Starting Warmup for input size: (4, 4096, 768)
+Done Warmup
+Starting Warmup for input size: (4, 64, 768)
+Done Warmup
+Starting Warmup for input size: (4, 128, 768)
+Done Warmup
+Starting Warmup for input size: (4, 256, 768)
+Done Warmup
+Starting Warmup for input size: (4, 512, 768)
+Done Warmup
+Starting Warmup for input size: (4, 1024, 768)
+Done Warmup
+Starting Warmup for input size: (4, 2048, 768)
+Done Warmup
+Starting Warmup for input size: (4, 4096, 768)
+Done Warmup
+Starting Warmup for input size: (4, 64, 768)
+Done Warmup
+Starting Warmup for input size: (4, 128, 768)
+Done Warmup
+Starting Warmup for input size: (4, 256, 768)
+Done Warmup
+Starting Warmup for input size: (4, 512, 768)
+Done Warmup
+Starting Warmup for input size: (4, 1024, 768)
+Done Warmup
+Starting Warmup for input size: (4, 2048, 768)
+Done Warmup
+Starting Warmup for input size: (4, 4096, 768)
+Done Warmup
+Starting Warmup for input size: (2, 64, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 128, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 256, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 512, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 64, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 128, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 256, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 512, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 64, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 128, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 256, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 512, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 64, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 128, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 256, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 512, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 64, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 128, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 256, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 512, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 64, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 128, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 256, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 512, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+[WARNING] Please DO NOT tune args ['num_warps']!
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+[WARNING] Please DO NOT tune args ['num_warps']!
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (4, 64, 768)
+Done Warmup
+Starting Warmup for input size: (4, 128, 768)
+Done Warmup
+Starting Warmup for input size: (4, 256, 768)
+Done Warmup
+Starting Warmup for input size: (4, 512, 768)
+Done Warmup
+Starting Warmup for input size: (4, 1024, 768)
+Done Warmup
+Starting Warmup for input size: (4, 2048, 768)
+Done Warmup
+Starting Warmup for input size: (4, 4096, 768)
+Done Warmup
+Starting Warmup for input size: (4, 64, 768)
+Done Warmup
+Starting Warmup for input size: (4, 128, 768)
+Done Warmup
+Starting Warmup for input size: (4, 256, 768)
+Done Warmup
+Starting Warmup for input size: (4, 512, 768)
+Done Warmup
+Starting Warmup for input size: (4, 1024, 768)
+Done Warmup
+Starting Warmup for input size: (4, 2048, 768)
+Done Warmup
+Starting Warmup for input size: (4, 4096, 768)
+Done Warmup
+Starting Warmup for input size: (4, 64, 768)
+Done Warmup
+Starting Warmup for input size: (4, 128, 768)
+Done Warmup
+Starting Warmup for input size: (4, 256, 768)
+Done Warmup
+Starting Warmup for input size: (4, 512, 768)
+Done Warmup
+Starting Warmup for input size: (4, 1024, 768)
+Done Warmup
+Starting Warmup for input size: (4, 2048, 768)
+Done Warmup
+Starting Warmup for input size: (4, 4096, 768)
+Done Warmup
+Starting Warmup for input size: (4, 64, 768)
+Done Warmup
+Starting Warmup for input size: (4, 128, 768)
+Done Warmup
+Starting Warmup for input size: (4, 256, 768)
+Done Warmup
+Starting Warmup for input size: (4, 512, 768)
+Done Warmup
+Starting Warmup for input size: (4, 1024, 768)
+Done Warmup
+Starting Warmup for input size: (4, 2048, 768)
+Done Warmup
+Starting Warmup for input size: (4, 4096, 768)
+Done Warmup
+Starting Warmup for input size: (4, 64, 768)
+Done Warmup
+Starting Warmup for input size: (4, 128, 768)
+Done Warmup
+Starting Warmup for input size: (4, 256, 768)
+Done Warmup
+Starting Warmup for input size: (4, 512, 768)
+Done Warmup
+Starting Warmup for input size: (4, 1024, 768)
+Done Warmup
+Starting Warmup for input size: (4, 2048, 768)
+Done Warmup
+Starting Warmup for input size: (4, 4096, 768)
+Done Warmup
+Starting Warmup for input size: (4, 64, 768)
+Done Warmup
+Starting Warmup for input size: (4, 128, 768)
+Done Warmup
+Starting Warmup for input size: (4, 256, 768)
+Done Warmup
+Starting Warmup for input size: (4, 512, 768)
+Done Warmup
+Starting Warmup for input size: (4, 1024, 768)
+Done Warmup
+Starting Warmup for input size: (4, 2048, 768)
+Done Warmup
+Starting Warmup for input size: (4, 4096, 768)
+Done Warmup
+Starting Warmup for input size: (2, 64, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 128, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 256, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 512, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 64, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 128, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 256, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 512, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 64, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 128, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 256, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 512, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 64, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 128, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 256, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 512, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 64, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 128, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 256, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 512, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 64, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 128, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 256, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 512, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 1024)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+Starting Warmup for input size: (2, 64, 512)
+Done Warmup
+Starting Warmup for input size: (2, 128, 512)
+Done Warmup
+Starting Warmup for input size: (2, 256, 512)
+Done Warmup
+Starting Warmup for input size: (2, 512, 512)
+Done Warmup
+Starting Warmup for input size: (2, 1024, 512)
+Done Warmup
+Starting Warmup for input size: (2, 2048, 512)
+Done Warmup
+Starting Warmup for input size: (2, 4096, 512)
+Done Warmup
+********** Benchmark Data **********
+[
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.146899938583374,
+      1.1359601020812988,
+      1.1567800045013428,
+      1.3704299926757812,
+      3.909299850463867,
+      13.312459945678711,
+      52.240299224853516
+    ],
+    "y_values_20": [
+      1.1323599815368652,
+      1.1281160116195679,
+      1.149440050125122,
+      1.313923954963684,
+      3.8055479526519775,
+      13.283708572387695,
+      52.240299224853516
+    ],
+    "y_values_80": [
+      1.155795931816101,
+      1.1458760499954224,
+      1.1681400537490845,
+      1.404568076133728,
+      3.9775760173797607,
+      13.313844680786133,
+      52.240299224853516
+    ],
+    "timestamp": "2026-02-05 20:42:57",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      24.194019317626953,
+      50.525020599365234,
+      99.57627868652344,
+      174.01095581054688,
+      344.8110656738281,
+      690.1678466796875,
+      1350.830322265625
+    ],
+    "y_values_20": [
+      24.112648010253906,
+      50.525020599365234,
+      99.57627868652344,
+      174.01095581054688,
+      344.8110656738281,
+      690.1678466796875,
+      1350.830322265625
+    ],
+    "y_values_80": [
+      24.222196578979492,
+      50.525020599365234,
+      99.57627868652344,
+      174.01095581054688,
+      344.8110656738281,
+      690.1678466796875,
+      1350.830322265625
+    ],
+    "timestamp": "2026-02-05 20:43:23",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      3.089829921722412,
+      3.5167200565338135,
+      11.379449844360352,
+      44.64012908935547,
+      172.98048400878906,
+      714.5521850585938,
+      2839.781494140625
+    ],
+    "y_values_20": [
+      3.0366039276123047,
+      3.4967119693756104,
+      11.323068618774414,
+      44.60948944091797,
+      172.98048400878906,
+      714.5521850585938,
+      2839.781494140625
+    ],
+    "y_values_80": [
+      3.3650360107421875,
+      3.5485000610351562,
+      11.407332420349121,
+      44.670772552490234,
+      172.98048400878906,
+      714.5521850585938,
+      2839.781494140625
+    ],
+    "timestamp": "2026-02-05 20:43:57",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      22.067399978637695,
+      42.71887969970703,
+      87.34940338134766,
+      168.2525634765625,
+      336.7735290527344,
+      670.8602294921875,
+      1306.48095703125
+    ],
+    "y_values_20": [
+      22.012680053710938,
+      42.58932876586914,
+      87.34940338134766,
+      168.2525634765625,
+      336.7735290527344,
+      670.8602294921875,
+      1306.48095703125
+    ],
+    "y_values_80": [
+      22.158815383911133,
+      42.84843063354492,
+      87.34940338134766,
+      168.2525634765625,
+      336.7735290527344,
+      670.8602294921875,
+      1306.48095703125
+    ],
+    "timestamp": "2026-02-05 20:44:22",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.8067799806594849,
+      3.222759962081909,
+      10.861579895019531,
+      42.988250732421875,
+      169.14068603515625,
+      704.081787109375,
+      2785.024169921875
+    ],
+    "y_values_20": [
+      1.7812600135803223,
+      3.1900360584259033,
+      10.782323837280273,
+      42.98508834838867,
+      169.14068603515625,
+      704.081787109375,
+      2785.024169921875
+    ],
+    "y_values_80": [
+      1.8183640241622925,
+      3.2544798851013184,
+      10.916463851928711,
+      42.99140930175781,
+      169.14068603515625,
+      704.081787109375,
+      2785.024169921875
+    ],
+    "timestamp": "2026-02-05 20:44:56",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.0909900665283203,
+      1.032979965209961,
+      1.0079400539398193,
+      1.0141600370407104,
+      1.2272599935531616,
+      4.3727498054504395,
+      15.918449401855469
+    ],
+    "y_values_20": [
+      1.0726640224456787,
+      1.023319959640503,
+      0.9970999956130981,
+      1.0006400346755981,
+      1.2221360206604004,
+      4.369204044342041,
+      15.901320457458496
+    ],
+    "y_values_80": [
+      1.11217200756073,
+      1.048699975013733,
+      1.0200599431991577,
+      1.0285799503326416,
+      1.23225998878479,
+      4.380007743835449,
+      15.93451976776123
+    ],
+    "timestamp": "2026-02-05 20:45:02",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.1800799369812012,
+      1.1910899877548218,
+      1.4916499853134155,
+      3.549649953842163,
+      9.809280395507812,
+      30.998859405517578,
+      119.34049987792969
+    ],
+    "y_values_20": [
+      1.1573560237884521,
+      1.103551983833313,
+      1.4429360628128052,
+      3.4621479511260986,
+      9.753984451293945,
+      30.965667724609375,
+      119.34049987792969
+    ],
+    "y_values_80": [
+      1.3550080060958862,
+      1.230172038078308,
+      1.5850199460983276,
+      3.7276320457458496,
+      10.092395782470703,
+      31.022764205932617,
+      119.34049987792969
+    ],
+    "timestamp": "2026-02-05 20:45:05",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      21.552650451660156,
+      43.182098388671875,
+      88.96336364746094,
+      173.9586944580078,
+      342.52178955078125,
+      683.5958251953125,
+      1359.245849609375
+    ],
+    "y_values_20": [
+      21.430688858032227,
+      42.66740798950195,
+      88.96336364746094,
+      173.9586944580078,
+      342.52178955078125,
+      683.5958251953125,
+      1359.245849609375
+    ],
+    "y_values_80": [
+      21.656299591064453,
+      43.69679260253906,
+      88.96336364746094,
+      173.9586944580078,
+      342.52178955078125,
+      683.5958251953125,
+      1359.245849609375
+    ],
+    "timestamp": "2026-02-05 20:45:30",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      3.1319000720977783,
+      9.91923999786377,
+      34.908260345458984,
+      132.63824462890625,
+      519.6492919921875,
+      2130.942138671875,
+      8412.3994140625
+    ],
+    "y_values_20": [
+      3.0953121185302734,
+      9.834683418273926,
+      34.859310150146484,
+      132.63824462890625,
+      519.6492919921875,
+      2130.942138671875,
+      8412.3994140625
+    ],
+    "y_values_80": [
+      3.1570799350738525,
+      9.985812187194824,
+      34.957210540771484,
+      132.63824462890625,
+      519.6492919921875,
+      2130.942138671875,
+      8412.3994140625
+    ],
+    "timestamp": "2026-02-05 20:47:11",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      22.047060012817383,
+      43.61771011352539,
+      85.23845672607422,
+      168.6144256591797,
+      339.8890075683594,
+      721.6868896484375,
+      1344.2611083984375
+    ],
+    "y_values_20": [
+      21.707056045532227,
+      43.36210250854492,
+      85.23845672607422,
+      168.6144256591797,
+      339.8890075683594,
+      721.6868896484375,
+      1344.2611083984375
+    ],
+    "y_values_80": [
+      22.411457061767578,
+      43.87331771850586,
+      85.23845672607422,
+      168.6144256591797,
+      339.8890075683594,
+      721.6868896484375,
+      1344.2611083984375
+    ],
+    "timestamp": "2026-02-05 20:47:37",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      2.7562599182128906,
+      9.199180603027344,
+      33.842750549316406,
+      127.6688003540039,
+      516.964111328125,
+      2092.246826171875,
+      8129.322265625
+    ],
+    "y_values_20": [
+      2.720288038253784,
+      9.121711730957031,
+      33.725730895996094,
+      127.6688003540039,
+      516.964111328125,
+      2092.246826171875,
+      8129.322265625
+    ],
+    "y_values_80": [
+      2.78902006149292,
+      9.242499351501465,
+      33.95977020263672,
+      127.6688003540039,
+      516.964111328125,
+      2092.246826171875,
+      8129.322265625
+    ],
+    "timestamp": "2026-02-05 20:49:17",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.0734100341796875,
+      1.0475499629974365,
+      1.0605599880218506,
+      1.1821999549865723,
+      3.694309949874878,
+      11.917070388793945,
+      43.446929931640625
+    ],
+    "y_values_20": [
+      1.051360011100769,
+      1.0346800088882446,
+      1.0468720197677612,
+      1.1790560483932495,
+      3.6878199577331543,
+      11.911908149719238,
+      43.443851470947266
+    ],
+    "y_values_80": [
+      1.0941200256347656,
+      1.0623120069503784,
+      1.0736520290374756,
+      1.187119960784912,
+      3.7026801109313965,
+      11.924091339111328,
+      43.450008392333984
+    ],
+    "timestamp": "2026-02-05 20:49:24",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.1677600145339966,
+      1.164620041847229,
+      1.1698200702667236,
+      2.363719940185547,
+      7.058579921722412,
+      22.47222137451172,
+      86.4823989868164
+    ],
+    "y_values_20": [
+      1.1611440181732178,
+      1.152999997138977,
+      1.1127159595489502,
+      2.320348024368286,
+      6.93471622467041,
+      22.45764923095703,
+      86.4823989868164
+    ],
+    "y_values_80": [
+      1.1774119138717651,
+      1.17603600025177,
+      1.253708004951477,
+      2.4957001209259033,
+      7.2357001304626465,
+      22.47867202758789,
+      86.4823989868164
+    ],
+    "timestamp": "2026-02-05 20:49:26",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      26.919519424438477,
+      53.39081954956055,
+      111.28569793701172,
+      219.68011474609375,
+      445.71478271484375,
+      862.3340454101562,
+      1750.3988037109375
+    ],
+    "y_values_20": [
+      26.898075103759766,
+      53.39081954956055,
+      111.28569793701172,
+      219.68011474609375,
+      445.71478271484375,
+      862.3340454101562,
+      1750.3988037109375
+    ],
+    "y_values_80": [
+      27.11433982849121,
+      53.39081954956055,
+      111.28569793701172,
+      219.68011474609375,
+      445.71478271484375,
+      862.3340454101562,
+      1750.3988037109375
+    ],
+    "timestamp": "2026-02-05 20:49:58",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      3.079740047454834,
+      6.419079780578613,
+      23.628131866455078,
+      86.54232025146484,
+      347.286376953125,
+      1428.8868408203125,
+      5466.21728515625
+    ],
+    "y_values_20": [
+      3.0568599700927734,
+      6.390627861022949,
+      23.60043716430664,
+      86.54232025146484,
+      347.286376953125,
+      1428.8868408203125,
+      5466.21728515625
+    ],
+    "y_values_80": [
+      3.1119399070739746,
+      6.4690399169921875,
+      23.6820011138916,
+      86.54232025146484,
+      347.286376953125,
+      1428.8868408203125,
+      5466.21728515625
+    ],
+    "timestamp": "2026-02-05 20:51:05",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      28.712600708007812,
+      54.128841400146484,
+      114.59586334228516,
+      214.76898193359375,
+      432.2823181152344,
+      862.025146484375,
+      1742.946044921875
+    ],
+    "y_values_20": [
+      28.523216247558594,
+      54.128841400146484,
+      114.59586334228516,
+      214.76898193359375,
+      432.2823181152344,
+      862.025146484375,
+      1742.946044921875
+    ],
+    "y_values_80": [
+      28.893787384033203,
+      54.128841400146484,
+      114.59586334228516,
+      214.76898193359375,
+      432.2823181152344,
+      862.025146484375,
+      1742.946044921875
+    ],
+    "timestamp": "2026-02-05 20:51:37",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.9695600271224976,
+      5.9344801902771,
+      22.6453800201416,
+      86.46843719482422,
+      336.8731689453125,
+      1391.4755859375,
+      5489.45751953125
+    ],
+    "y_values_20": [
+      1.9492840766906738,
+      5.911019802093506,
+      22.56231117248535,
+      86.46843719482422,
+      336.8731689453125,
+      1391.4755859375,
+      5489.45751953125
+    ],
+    "y_values_80": [
+      1.9888440370559692,
+      5.972219944000244,
+      22.73307991027832,
+      86.46843719482422,
+      336.8731689453125,
+      1391.4755859375,
+      5489.45751953125
+    ],
+    "timestamp": "2026-02-05 20:52:44",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.0455600023269653,
+      1.0396699905395508,
+      1.0506799221038818,
+      1.0773199796676636,
+      2.488719940185547,
+      8.54520034790039,
+      30.215240478515625
+    ],
+    "y_values_20": [
+      1.0279120206832886,
+      1.0251599550247192,
+      1.0201359987258911,
+      1.0515999794006348,
+      2.4825918674468994,
+      8.537799835205078,
+      30.21364402770996
+    ],
+    "y_values_80": [
+      1.0785959959030151,
+      1.0594120025634766,
+      1.072011947631836,
+      1.0961999893188477,
+      2.49455189704895,
+      8.555919647216797,
+      30.23687744140625
+    ],
+    "timestamp": "2026-02-05 20:52:53",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.180340051651001,
+      1.1892199516296387,
+      1.0995399951934814,
+      1.3427200317382812,
+      4.098800182342529,
+      13.324580192565918,
+      52.25809860229492
+    ],
+    "y_values_20": [
+      1.1684679985046387,
+      1.1814000606536865,
+      1.0948479175567627,
+      1.3220559358596802,
+      4.006468296051025,
+      13.317427635192871,
+      52.25809860229492
+    ],
+    "y_values_80": [
+      1.1899199485778809,
+      1.198580026626587,
+      1.1099799871444702,
+      1.4105679988861084,
+      4.164747714996338,
+      13.38123607635498,
+      52.25809860229492
+    ],
+    "timestamp": "2026-02-05 20:52:55",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      21.44068145751953,
+      43.06848907470703,
+      88.06871795654297,
+      175.1795196533203,
+      348.3409118652344,
+      692.1799926757812,
+      1366.2113037109375
+    ],
+    "y_values_20": [
+      21.355663299560547,
+      43.03694534301758,
+      88.06871795654297,
+      175.1795196533203,
+      348.3409118652344,
+      692.1799926757812,
+      1366.2113037109375
+    ],
+    "y_values_80": [
+      21.557720184326172,
+      43.100032806396484,
+      88.06871795654297,
+      175.1795196533203,
+      348.3409118652344,
+      692.1799926757812,
+      1366.2113037109375
+    ],
+    "timestamp": "2026-02-05 20:53:20",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      3.022830009460449,
+      3.528559923171997,
+      11.348380088806152,
+      44.78091049194336,
+      173.5211639404297,
+      715.298828125,
+      2853.99169921875
+    ],
+    "y_values_20": [
+      3.00216007232666,
+      3.507564067840576,
+      11.319503784179688,
+      44.780494689941406,
+      173.5211639404297,
+      715.298828125,
+      2853.99169921875
+    ],
+    "y_values_80": [
+      3.0482959747314453,
+      3.5434279441833496,
+      11.437140464782715,
+      44.78132629394531,
+      173.5211639404297,
+      715.298828125,
+      2853.99169921875
+    ],
+    "timestamp": "2026-02-05 20:53:54",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      22.347850799560547,
+      44.08506774902344,
+      87.74568176269531,
+      173.4701385498047,
+      374.1443786621094,
+      698.8706665039062,
+      1375.24853515625
+    ],
+    "y_values_20": [
+      22.309555053710938,
+      43.943607330322266,
+      87.74568176269531,
+      173.4701385498047,
+      374.1443786621094,
+      698.8706665039062,
+      1375.24853515625
+    ],
+    "y_values_80": [
+      22.380735397338867,
+      44.226531982421875,
+      87.74568176269531,
+      173.4701385498047,
+      374.1443786621094,
+      698.8706665039062,
+      1375.24853515625
+    ],
+    "timestamp": "2026-02-05 20:54:19",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.7892699241638184,
+      3.2306299209594727,
+      10.795760154724121,
+      43.46910095214844,
+      170.4253387451172,
+      702.48876953125,
+      2707.218505859375
+    ],
+    "y_values_20": [
+      1.7795159816741943,
+      3.2023401260375977,
+      10.7647123336792,
+      43.29715347290039,
+      170.4253387451172,
+      702.48876953125,
+      2707.218505859375
+    ],
+    "y_values_80": [
+      1.8082160949707031,
+      3.258211851119995,
+      10.862127304077148,
+      43.641048431396484,
+      170.4253387451172,
+      702.48876953125,
+      2707.218505859375
+    ],
+    "timestamp": "2026-02-05 20:54:53",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.122059941291809,
+      1.064079999923706,
+      1.0251799821853638,
+      1.0540399551391602,
+      1.2290899753570557,
+      4.377349853515625,
+      15.911330223083496
+    ],
+    "y_values_20": [
+      1.0962960720062256,
+      1.043995976448059,
+      1.014367938041687,
+      1.039023995399475,
+      1.2233120203018188,
+      4.37064790725708,
+      15.879240036010742
+    ],
+    "y_values_80": [
+      1.1537519693374634,
+      1.0751320123672485,
+      1.0368560552597046,
+      1.0745320320129395,
+      1.2344920635223389,
+      4.382212162017822,
+      15.944259643554688
+    ],
+    "timestamp": "2026-02-05 20:55:00",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.1779799461364746,
+      1.1965099573135376,
+      1.2204699516296387,
+      1.3477599620819092,
+      4.0919599533081055,
+      13.356719970703125,
+      54.06024169921875
+    ],
+    "y_values_20": [
+      1.1658200025558472,
+      1.187283992767334,
+      1.2123680114746094,
+      1.3307000398635864,
+      4.059904098510742,
+      13.326340675354004,
+      54.06024169921875
+    ],
+    "y_values_80": [
+      1.2302600145339966,
+      1.2076400518417358,
+      1.2300119400024414,
+      1.4194200038909912,
+      4.194319725036621,
+      13.379276275634766,
+      54.06024169921875
+    ],
+    "timestamp": "2026-02-05 20:55:01",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      20.8214111328125,
+      42.292701721191406,
+      85.09857940673828,
+      176.0573272705078,
+      345.0037536621094,
+      671.1753540039062,
+      1302.83447265625
+    ],
+    "y_values_20": [
+      20.690704345703125,
+      42.21930694580078,
+      85.09857940673828,
+      176.0573272705078,
+      345.0037536621094,
+      671.1753540039062,
+      1302.83447265625
+    ],
+    "y_values_80": [
+      20.95122718811035,
+      42.366092681884766,
+      85.09857940673828,
+      176.0573272705078,
+      345.0037536621094,
+      671.1753540039062,
+      1302.83447265625
+    ],
+    "timestamp": "2026-02-05 20:55:26",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      3.0647799968719482,
+      4.042439937591553,
+      14.480640411376953,
+      55.22193908691406,
+      208.371826171875,
+      836.5480346679688,
+      3454.932861328125
+    ],
+    "y_values_20": [
+      3.0497241020202637,
+      3.994152069091797,
+      14.38677978515625,
+      55.22193908691406,
+      208.371826171875,
+      836.5480346679688,
+      3454.932861328125
+    ],
+    "y_values_80": [
+      3.116436243057251,
+      4.064340114593506,
+      14.498140335083008,
+      55.22193908691406,
+      208.371826171875,
+      836.5480346679688,
+      3454.932861328125
+    ],
+    "timestamp": "2026-02-05 20:56:07",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      21.995309829711914,
+      41.658111572265625,
+      82.28787994384766,
+      164.92323303222656,
+      342.9444885253906,
+      668.0153198242188,
+      1316.677734375
+    ],
+    "y_values_20": [
+      21.919084548950195,
+      41.64978790283203,
+      82.28787994384766,
+      164.92323303222656,
+      342.9444885253906,
+      668.0153198242188,
+      1316.677734375
+    ],
+    "y_values_80": [
+      22.010000228881836,
+      41.66643524169922,
+      82.28787994384766,
+      164.92323303222656,
+      342.9444885253906,
+      668.0153198242188,
+      1316.677734375
+    ],
+    "timestamp": "2026-02-05 20:56:31",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.8351600170135498,
+      3.7028799057006836,
+      13.752300262451172,
+      53.8073616027832,
+      203.80747985839844,
+      814.5912475585938,
+      3342.09130859375
+    ],
+    "y_values_20": [
+      1.8195960521697998,
+      3.682080030441284,
+      13.65085220336914,
+      53.8073616027832,
+      203.80747985839844,
+      814.5912475585938,
+      3342.09130859375
+    ],
+    "y_values_80": [
+      1.8486440181732178,
+      3.728559970855713,
+      13.796380043029785,
+      53.8073616027832,
+      203.80747985839844,
+      814.5912475585938,
+      3342.09130859375
+    ],
+    "timestamp": "2026-02-05 20:57:12",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.148859977722168,
+      1.0736600160598755,
+      1.0607000589370728,
+      1.0483800172805786,
+      1.0589799880981445,
+      2.1196000576019287,
+      8.340080261230469
+    ],
+    "y_values_20": [
+      1.12663996219635,
+      1.0556119680404663,
+      1.0464359521865845,
+      1.0328360795974731,
+      1.0490119457244873,
+      2.112652063369751,
+      8.324819564819336
+    ],
+    "y_values_80": [
+      1.1666799783706665,
+      1.0914160013198853,
+      1.0740480422973633,
+      1.0614240169525146,
+      1.0774279832839966,
+      2.123500108718872,
+      8.344499588012695
+    ],
+    "timestamp": "2026-02-05 20:57:19",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.209529995918274,
+      1.2187999486923218,
+      1.3212800025939941,
+      3.562419891357422,
+      9.31682014465332,
+      31.877059936523438,
+      124.15022277832031
+    ],
+    "y_values_20": [
+      1.1882920265197754,
+      1.1808600425720215,
+      1.2626760005950928,
+      3.4142279624938965,
+      9.250920295715332,
+      31.81792449951172,
+      124.15022277832031
+    ],
+    "y_values_80": [
+      1.2295039892196655,
+      1.2762999534606934,
+      1.4056200981140137,
+      3.666288137435913,
+      9.638823509216309,
+      31.878175735473633,
+      124.15022277832031
+    ],
+    "timestamp": "2026-02-05 20:57:21",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      21.026060104370117,
+      42.584312438964844,
+      85.74089813232422,
+      170.91270446777344,
+      347.1171875,
+      681.7632446289062,
+      1354.7967529296875
+    ],
+    "y_values_20": [
+      20.95747184753418,
+      42.54501724243164,
+      85.74089813232422,
+      170.91270446777344,
+      347.1171875,
+      681.7632446289062,
+      1354.7967529296875
+    ],
+    "y_values_80": [
+      21.083328247070312,
+      42.62360382080078,
+      85.74089813232422,
+      170.91270446777344,
+      347.1171875,
+      681.7632446289062,
+      1354.7967529296875
+    ],
+    "timestamp": "2026-02-05 20:57:46",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      3.4683399200439453,
+      11.60038948059082,
+      42.85685729980469,
+      162.3750457763672,
+      629.9451904296875,
+      2521.96533203125,
+      10259.8935546875
+    ],
+    "y_values_20": [
+      3.4330999851226807,
+      11.522000312805176,
+      42.79570770263672,
+      162.3750457763672,
+      629.9451904296875,
+      2521.96533203125,
+      10259.8935546875
+    ],
+    "y_values_80": [
+      3.5130600929260254,
+      11.677063941955566,
+      42.91801071166992,
+      162.3750457763672,
+      629.9451904296875,
+      2521.96533203125,
+      10259.8935546875
+    ],
+    "timestamp": "2026-02-05 20:59:50",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      21.28609848022461,
+      42.8648796081543,
+      86.37779998779297,
+      168.51931762695312,
+      339.955810546875,
+      666.920654296875,
+      1337.384521484375
+    ],
+    "y_values_20": [
+      21.103708267211914,
+      42.72526931762695,
+      86.37779998779297,
+      168.51931762695312,
+      339.955810546875,
+      666.920654296875,
+      1337.384521484375
+    ],
+    "y_values_80": [
+      22.873804092407227,
+      43.00448989868164,
+      86.37779998779297,
+      168.51931762695312,
+      339.955810546875,
+      666.920654296875,
+      1337.384521484375
+    ],
+    "timestamp": "2026-02-05 21:00:14",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      3.093549966812134,
+      10.880249977111816,
+      41.97385025024414,
+      158.98069763183594,
+      620.114990234375,
+      2497.343017578125,
+      9995.5576171875
+    ],
+    "y_values_20": [
+      3.0579400062561035,
+      10.83378791809082,
+      41.907291412353516,
+      158.98069763183594,
+      620.114990234375,
+      2497.343017578125,
+      9995.5576171875
+    ],
+    "y_values_80": [
+      3.1324400901794434,
+      11.016340255737305,
+      42.040409088134766,
+      158.98069763183594,
+      620.114990234375,
+      2497.343017578125,
+      9995.5576171875
+    ],
+    "timestamp": "2026-02-05 21:02:17",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.1234099864959717,
+      1.0516400337219238,
+      1.0399500131607056,
+      1.056920051574707,
+      1.7374600172042847,
+      6.437160015106201,
+      22.93733024597168
+    ],
+    "y_values_20": [
+      1.108728051185608,
+      1.0368880033493042,
+      1.0288200378417969,
+      1.04613196849823,
+      1.7330279350280762,
+      6.429440021514893,
+      22.920928955078125
+    ],
+    "y_values_80": [
+      1.1483039855957031,
+      1.0666959285736084,
+      1.0540399551391602,
+      1.0666359663009644,
+      1.7421119213104248,
+      6.4437761306762695,
+      22.95661163330078
+    ],
+    "timestamp": "2026-02-05 21:02:23",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.2331199645996094,
+      1.210960030555725,
+      1.1830400228500366,
+      2.5042200088500977,
+      6.519220352172852,
+      22.602378845214844,
+      89.33043670654297
+    ],
+    "y_values_20": [
+      1.1943999528884888,
+      1.1995999813079834,
+      1.1132160425186157,
+      2.4538040161132812,
+      6.464612007141113,
+      22.563674926757812,
+      89.33043670654297
+    ],
+    "y_values_80": [
+      1.2705320119857788,
+      1.2230000495910645,
+      1.2522599697113037,
+      2.6294960975646973,
+      6.714288234710693,
+      22.643444061279297,
+      89.33043670654297
+    ],
+    "timestamp": "2026-02-05 21:02:26",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      26.94301986694336,
+      54.463279724121094,
+      109.00711822509766,
+      217.13523864746094,
+      433.4293212890625,
+      849.2008056640625,
+      1707.8883056640625
+    ],
+    "y_values_20": [
+      26.800640106201172,
+      54.463279724121094,
+      109.00711822509766,
+      217.13523864746094,
+      433.4293212890625,
+      849.2008056640625,
+      1707.8883056640625
+    ],
+    "y_values_80": [
+      26.960840225219727,
+      54.463279724121094,
+      109.00711822509766,
+      217.13523864746094,
+      433.4293212890625,
+      849.2008056640625,
+      1707.8883056640625
+    ],
+    "timestamp": "2026-02-05 21:02:57",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      3.123460054397583,
+      7.464249610900879,
+      29.346660614013672,
+      111.54042053222656,
+      427.8363342285156,
+      1702.956298828125,
+      7026.97314453125
+    ],
+    "y_values_20": [
+      3.095844030380249,
+      7.435324192047119,
+      29.134511947631836,
+      111.54042053222656,
+      427.8363342285156,
+      1702.956298828125,
+      7026.97314453125
+    ],
+    "y_values_80": [
+      3.152980089187622,
+      7.533756256103516,
+      29.694900512695312,
+      111.54042053222656,
+      427.8363342285156,
+      1702.956298828125,
+      7026.97314453125
+    ],
+    "timestamp": "2026-02-05 21:04:21",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      27.601919174194336,
+      55.33848190307617,
+      106.41085815429688,
+      215.6339569091797,
+      427.6521911621094,
+      850.8914184570312,
+      1703.1927490234375
+    ],
+    "y_values_20": [
+      27.448631286621094,
+      55.33848190307617,
+      106.41085815429688,
+      215.6339569091797,
+      427.6521911621094,
+      850.8914184570312,
+      1703.1927490234375
+    ],
+    "y_values_80": [
+      27.644052505493164,
+      55.33848190307617,
+      106.41085815429688,
+      215.6339569091797,
+      427.6521911621094,
+      850.8914184570312,
+      1703.1927490234375
+    ],
+    "timestamp": "2026-02-05 21:04:53",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      2.18064022064209,
+      6.970900058746338,
+      28.958560943603516,
+      111.34951782226562,
+      418.3486328125,
+      1674.3482666015625,
+      6865.97802734375
+    ],
+    "y_values_20": [
+      2.1618480682373047,
+      6.926480293273926,
+      28.797388076782227,
+      111.34951782226562,
+      418.3486328125,
+      1674.3482666015625,
+      6865.97802734375
+    ],
+    "y_values_80": [
+      2.1961681842803955,
+      7.005712032318115,
+      29.173492431640625,
+      111.34951782226562,
+      418.3486328125,
+      1674.3482666015625,
+      6865.97802734375
+    ],
+    "timestamp": "2026-02-05 21:06:16",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.1208000183105469,
+      1.0624699592590332,
+      1.074199914932251,
+      1.0535999536514282,
+      1.266279935836792,
+      4.524620056152344,
+      15.829959869384766
+    ],
+    "y_values_20": [
+      1.1030399799346924,
+      1.0495959520339966,
+      1.062999963760376,
+      1.0425000190734863,
+      1.262063980102539,
+      4.518599987030029,
+      15.824199676513672
+    ],
+    "y_values_80": [
+      1.1513999700546265,
+      1.0774199962615967,
+      1.0867799520492554,
+      1.068268060684204,
+      1.270367980003357,
+      4.531740188598633,
+      15.837639808654785
+    ],
+    "timestamp": "2026-02-05 21:06:25",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.2195299863815308,
+      1.2389400005340576,
+      1.2825100421905518,
+      1.4512200355529785,
+      4.113279819488525,
+      13.373820304870605,
+      53.982261657714844
+    ],
+    "y_values_20": [
+      1.2080479860305786,
+      1.2304999828338623,
+      1.2599319219589233,
+      1.4308559894561768,
+      4.0694122314453125,
+      13.34986400604248,
+      53.982261657714844
+    ],
+    "y_values_80": [
+      1.2436679601669312,
+      1.2487599849700928,
+      1.3179880380630493,
+      1.5249639749526978,
+      4.215851783752441,
+      13.418292045593262,
+      53.982261657714844
+    ],
+    "timestamp": "2026-02-05 21:06:26",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      21.070310592651367,
+      42.87793731689453,
+      86.21737670898438,
+      174.6250762939453,
+      348.906494140625,
+      696.90966796875,
+      1409.4327392578125
+    ],
+    "y_values_20": [
+      20.990856170654297,
+      42.797935485839844,
+      86.21737670898438,
+      174.6250762939453,
+      348.906494140625,
+      696.90966796875,
+      1409.4327392578125
+    ],
+    "y_values_80": [
+      21.14264488220215,
+      42.957942962646484,
+      86.21737670898438,
+      174.6250762939453,
+      348.906494140625,
+      696.90966796875,
+      1409.4327392578125
+    ],
+    "timestamp": "2026-02-05 21:06:51",
+    "kernel_operation_mode": "forward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      3.1260199546813965,
+      4.028940200805664,
+      14.311279296875,
+      58.33034133911133,
+      208.13368225097656,
+      831.95361328125,
+      3422.178955078125
+    ],
+    "y_values_20": [
+      3.109920024871826,
+      3.986855983734131,
+      14.078499794006348,
+      58.33034133911133,
+      208.13368225097656,
+      831.95361328125,
+      3422.178955078125
+    ],
+    "y_values_80": [
+      3.1452200412750244,
+      4.093088150024414,
+      14.570240020751953,
+      58.33034133911133,
+      208.13368225097656,
+      831.95361328125,
+      3422.178955078125
+    ],
+    "timestamp": "2026-02-05 21:07:33",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      21.62664031982422,
+      41.705909729003906,
+      84.46188354492188,
+      165.0044403076172,
+      333.12896728515625,
+      656.6921997070312,
+      1338.256103515625
+    ],
+    "y_values_20": [
+      21.59507179260254,
+      41.55235290527344,
+      84.46188354492188,
+      165.0044403076172,
+      333.12896728515625,
+      656.6921997070312,
+      1338.256103515625
+    ],
+    "y_values_80": [
+      21.705055236816406,
+      41.85947036743164,
+      84.46188354492188,
+      165.0044403076172,
+      333.12896728515625,
+      656.6921997070312,
+      1338.256103515625
+    ],
+    "timestamp": "2026-02-05 21:07:57",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.8553999662399292,
+      3.6900999546051025,
+      13.68418025970459,
+      56.01913833618164,
+      204.33352661132812,
+      825.8048706054688,
+      3388.24658203125
+    ],
+    "y_values_20": [
+      1.840000033378601,
+      3.666231870651245,
+      13.614563941955566,
+      56.01913833618164,
+      204.33352661132812,
+      825.8048706054688,
+      3388.24658203125
+    ],
+    "y_values_80": [
+      1.868939995765686,
+      3.704512119293213,
+      13.833412170410156,
+      56.01913833618164,
+      204.33352661132812,
+      825.8048706054688,
+      3388.24658203125
+    ],
+    "timestamp": "2026-02-05 21:08:38",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "speed",
+    "metric_unit": "ms",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      1.1693699359893799,
+      1.1016000509262085,
+      1.0555000305175781,
+      1.012850046157837,
+      1.0403200387954712,
+      2.121920108795166,
+      8.342619895935059
+    ],
+    "y_values_20": [
+      1.1463199853897095,
+      1.0874199867248535,
+      1.0389400720596313,
+      1.0030720233917236,
+      1.0248839855194092,
+      2.116215944290161,
+      8.332659721374512
+    ],
+    "y_values_80": [
+      1.2050479650497437,
+      1.1130479574203491,
+      1.0669000148773193,
+      1.0250200033187866,
+      1.0560719966888428,
+      2.1262481212615967,
+      8.350339889526367
+    ],
+    "timestamp": "2026-02-05 21:08:44",
+    "kernel_operation_mode": "backward",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  }
+]
+**************************************
+     BENCHMARKING MEMORY for FUSED_NEIGHBORHOOD_ATTENTION
+**************************************
+********** Benchmark Data **********
+[
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      16.41845703125,
+      21.91845703125,
+      40.4072265625,
+      86.41845703125,
+      257.412109375,
+      886.4130859375,
+      3294.4150390625
+    ],
+    "y_values_20": [
+      16.41845703125,
+      21.91845703125,
+      40.4072265625,
+      86.41845703125,
+      257.412109375,
+      886.4130859375,
+      3294.4150390625
+    ],
+    "y_values_80": [
+      16.41845703125,
+      21.91845703125,
+      40.4072265625,
+      86.41845703125,
+      257.412109375,
+      886.4130859375,
+      3294.4150390625
+    ],
+    "timestamp": "2026-02-05 21:08:54",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      16.30029296875,
+      20.06201171875,
+      35.09521484375,
+      80.28466796875,
+      242.03515625,
+      858.03564453125,
+      3246.0380859375
+    ],
+    "y_values_20": [
+      16.30029296875,
+      20.06201171875,
+      35.09521484375,
+      80.28466796875,
+      242.03515625,
+      858.03564453125,
+      3246.0380859375
+    ],
+    "y_values_80": [
+      16.30029296875,
+      20.06201171875,
+      35.09521484375,
+      80.28466796875,
+      242.03515625,
+      858.03564453125,
+      3246.0380859375
+    ],
+    "timestamp": "2026-02-05 21:09:48",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      39.43017578125,
+      57.17626953125,
+      103.92236328125,
+      249.43017578125,
+      759.43017578125,
+      2643.43017578125,
+      9867.4296875
+    ],
+    "y_values_20": [
+      39.43017578125,
+      57.17626953125,
+      103.92236328125,
+      249.43017578125,
+      759.43017578125,
+      2643.43017578125,
+      9867.4296875
+    ],
+    "y_values_80": [
+      39.43017578125,
+      57.17626953125,
+      103.92236328125,
+      249.43017578125,
+      759.43017578125,
+      2643.43017578125,
+      9867.4296875
+    ],
+    "timestamp": "2026-02-05 21:10:17",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      39.06298828125,
+      51.5673828125,
+      90.11572265625,
+      225.30322265625,
+      712.54931640625,
+      2551.05322265625,
+      9691.052734375
+    ],
+    "y_values_20": [
+      39.06298828125,
+      51.5673828125,
+      90.11572265625,
+      225.30322265625,
+      712.54931640625,
+      2551.05322265625,
+      9691.052734375
+    ],
+    "y_values_80": [
+      39.06298828125,
+      51.5673828125,
+      90.11572265625,
+      225.30322265625,
+      712.54931640625,
+      2551.05322265625,
+      9691.052734375
+    ],
+    "timestamp": "2026-02-05 21:12:07",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      58.5712890625,
+      69.4384765625,
+      98.4423828125,
+      196.44189453125,
+      536.44189453125,
+      1792.44189453125,
+      6608.44189453125
+    ],
+    "y_values_20": [
+      58.5712890625,
+      69.4384765625,
+      98.4423828125,
+      196.44189453125,
+      536.44189453125,
+      1792.44189453125,
+      6608.44189453125
+    ],
+    "y_values_80": [
+      58.5712890625,
+      69.4384765625,
+      98.4423828125,
+      196.44189453125,
+      536.44189453125,
+      1792.44189453125,
+      6608.44189453125
+    ],
+    "timestamp": "2026-02-05 21:12:27",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      58.57568359375,
+      68.083984375,
+      90.1279296875,
+      180.31494140625,
+      505.06494140625,
+      1732.06494140625,
+      6496.06494140625
+    ],
+    "y_values_20": [
+      58.57568359375,
+      68.083984375,
+      90.1279296875,
+      180.31494140625,
+      505.06494140625,
+      1732.06494140625,
+      6496.06494140625
+    ],
+    "y_values_80": [
+      58.57568359375,
+      68.083984375,
+      90.1279296875,
+      180.31494140625,
+      505.06494140625,
+      1732.06494140625,
+      6496.06494140625
+    ],
+    "timestamp": "2026-02-05 21:13:57",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      16.41845703125,
+      21.91845703125,
+      40.4072265625,
+      86.41845703125,
+      257.412109375,
+      886.4130859375,
+      3294.4150390625
+    ],
+    "y_values_20": [
+      16.41845703125,
+      21.91845703125,
+      40.4072265625,
+      86.41845703125,
+      257.412109375,
+      886.4130859375,
+      3294.4150390625
+    ],
+    "y_values_80": [
+      16.41845703125,
+      21.91845703125,
+      40.4072265625,
+      86.41845703125,
+      257.412109375,
+      886.4130859375,
+      3294.4150390625
+    ],
+    "timestamp": "2026-02-05 21:14:07",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      16.30029296875,
+      20.06201171875,
+      35.09521484375,
+      80.28466796875,
+      242.03515625,
+      858.03564453125,
+      3246.0380859375
+    ],
+    "y_values_20": [
+      16.30029296875,
+      20.06201171875,
+      35.09521484375,
+      80.28466796875,
+      242.03515625,
+      858.03564453125,
+      3246.0380859375
+    ],
+    "y_values_80": [
+      16.30029296875,
+      20.06201171875,
+      35.09521484375,
+      80.28466796875,
+      242.03515625,
+      858.03564453125,
+      3246.0380859375
+    ],
+    "timestamp": "2026-02-05 21:15:02",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.float32\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      8.31298828125,
+      11.06298828125,
+      18.81298828125,
+      43.31298828125,
+      128.31298828125,
+      442.31298828125,
+      1646.31298828125
+    ],
+    "y_values_20": [
+      8.31298828125,
+      11.06298828125,
+      18.81298828125,
+      43.31298828125,
+      128.31298828125,
+      442.31298828125,
+      1646.31298828125
+    ],
+    "y_values_80": [
+      8.31298828125,
+      11.06298828125,
+      18.81298828125,
+      43.31298828125,
+      128.31298828125,
+      442.31298828125,
+      1646.31298828125
+    ],
+    "timestamp": "2026-02-05 21:15:13",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      8.16259765625,
+      10.04931640625,
+      16.59228515625,
+      40.27392578125,
+      121.02978515625,
+      430.02978515625,
+      1630.02978515625
+    ],
+    "y_values_20": [
+      8.16259765625,
+      10.04931640625,
+      16.59228515625,
+      40.27392578125,
+      121.02978515625,
+      430.02978515625,
+      1630.02978515625
+    ],
+    "y_values_80": [
+      8.16259765625,
+      10.04931640625,
+      16.59228515625,
+      40.27392578125,
+      121.02978515625,
+      430.02978515625,
+      1630.02978515625
+    ],
+    "timestamp": "2026-02-05 21:16:15",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      20.6884765625,
+      28.93701171875,
+      53.31005859375,
+      125.68798828125,
+      381.56201171875,
+      1322.6884765625,
+      4936.4326171875
+    ],
+    "y_values_20": [
+      20.6884765625,
+      28.93701171875,
+      53.31005859375,
+      125.68798828125,
+      381.56201171875,
+      1322.6884765625,
+      4936.4326171875
+    ],
+    "y_values_80": [
+      20.6884765625,
+      28.93701171875,
+      53.31005859375,
+      125.68798828125,
+      381.56201171875,
+      1322.6884765625,
+      4936.4326171875
+    ],
+    "timestamp": "2026-02-05 21:16:48",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      20.41357421875,
+      26.419921875,
+      46.71435546875,
+      114.400390625,
+      358.52783203125,
+      1279.7763671875,
+      4855.27880859375
+    ],
+    "y_values_20": [
+      20.41357421875,
+      26.419921875,
+      46.71435546875,
+      114.400390625,
+      358.52783203125,
+      1279.7763671875,
+      4855.27880859375
+    ],
+    "y_values_80": [
+      20.41357421875,
+      26.419921875,
+      46.71435546875,
+      114.400390625,
+      358.52783203125,
+      1279.7763671875,
+      4855.27880859375
+    ],
+    "timestamp": "2026-02-05 21:18:58",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 4, \"hidden_size\": 768, \"num_heads\": 12, \"kernel_size\": 7, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      29.2958984375,
+      36.81884765625,
+      52.3173828125,
+      98.32470703125,
+      268.32470703125,
+      896.32470703125,
+      3304.32470703125
+    ],
+    "y_values_20": [
+      29.2958984375,
+      36.81884765625,
+      52.3173828125,
+      98.32470703125,
+      268.32470703125,
+      896.32470703125,
+      3304.32470703125
+    ],
+    "y_values_80": [
+      29.2958984375,
+      36.81884765625,
+      52.3173828125,
+      98.32470703125,
+      268.32470703125,
+      896.32470703125,
+      3304.32470703125
+    ],
+    "timestamp": "2026-02-05 21:19:21",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      29.30029296875,
+      35.05712890625,
+      48.10009765625,
+      90.29150390625,
+      254.0400390625,
+      868.04150390625,
+      3256.04150390625
+    ],
+    "y_values_20": [
+      29.30029296875,
+      35.05712890625,
+      48.10009765625,
+      90.29150390625,
+      254.0400390625,
+      868.04150390625,
+      3256.04150390625
+    ],
+    "y_values_80": [
+      29.30029296875,
+      35.05712890625,
+      48.10009765625,
+      90.29150390625,
+      254.0400390625,
+      868.04150390625,
+      3256.04150390625
+    ],
+    "timestamp": "2026-02-05 21:21:06",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 1024, \"num_heads\": 16, \"kernel_size\": 9, \"dilation\": 1, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "liger",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      8.31298828125,
+      11.06298828125,
+      18.81298828125,
+      43.31298828125,
+      128.31298828125,
+      442.31298828125,
+      1646.31298828125
+    ],
+    "y_values_20": [
+      8.31298828125,
+      11.06298828125,
+      18.81298828125,
+      43.31298828125,
+      128.31298828125,
+      442.31298828125,
+      1646.31298828125
+    ],
+    "y_values_80": [
+      8.31298828125,
+      11.06298828125,
+      18.81298828125,
+      43.31298828125,
+      128.31298828125,
+      442.31298828125,
+      1646.31298828125
+    ],
+    "timestamp": "2026-02-05 21:21:17",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  },
+  {
+    "kernel_name": "fused_neighborhood_attention",
+    "kernel_provider": "torch",
+    "metric_name": "memory",
+    "metric_unit": "MB",
+    "gpu_name": "Ascend910B3",
+    "x_name": "seq_len",
+    "x_label": "sequence length",
+    "x_values": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      4096
+    ],
+    "y_values_50": [
+      8.16259765625,
+      10.04931640625,
+      16.59228515625,
+      40.27392578125,
+      121.02978515625,
+      430.02978515625,
+      1630.02978515625
+    ],
+    "y_values_20": [
+      8.16259765625,
+      10.04931640625,
+      16.59228515625,
+      40.27392578125,
+      121.02978515625,
+      430.02978515625,
+      1630.02978515625
+    ],
+    "y_values_80": [
+      8.16259765625,
+      10.04931640625,
+      16.59228515625,
+      40.27392578125,
+      121.02978515625,
+      430.02978515625,
+      1630.02978515625
+    ],
+    "timestamp": "2026-02-05 21:22:18",
+    "kernel_operation_mode": "full",
+    "extra_benchmark_config_str": "{\"batch_size\": 2, \"hidden_size\": 512, \"num_heads\": 8, \"kernel_size\": 7, \"dilation\": 2, \"bias\": true, \"dtype\": \"torch.bfloat16\"}",
+    "liger_version": "0.6.4"
+  }
+]

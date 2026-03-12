@@ -3,7 +3,7 @@ import torch
 
 from test.utils import supports_bfloat16
 
-from liger_kernel.ops.llama4_rope import LigerLlama4RopeFunction
+from liger_kernel.ops import LigerLlama4RopeFunction
 from liger_kernel.transformers.llama4_rope import liger_llama4_text_rotary_pos_emb
 from liger_kernel.utils import infer_device
 

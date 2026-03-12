@@ -7,6 +7,7 @@ import triton.language as tl
 
 from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import get_npu_core_count
 
 MAX_FUSED_SIZE = 65536 // 4
 
@@ -34,7 +35,7 @@ def _tv_distance_kernel(
     thread_id = tl.program_id(0)
     num_threads = tl.num_programs(0)
 
-    for pid in range(thread_id, total_rows, num_threads):
+    for pid in tl.range(thread_id, total_rows, num_threads):
         p_row_ptr = p_ptr + pid * p_stride
         q_row_ptr = q_ptr + pid * q_stride
         loss_row_ptr = loss_ptr + pid * loss_stride
@@ -115,15 +116,14 @@ def tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_
         # Fallback to desired block size if no best practice found (no tiling needed)
         BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
-    MAX_BATCH_PER_KERNEL = 65535  # The maximum processing capacity of each kernel in npu
-    if BT <= MAX_BATCH_PER_KERNEL:
-        grid = (BT,)
-    else:
-        grid = (MAX_BATCH_PER_KERNEL,)
+    num_cores = get_npu_core_count()
+    grid = (min(num_cores, BT),)
 
     out_size = (BT, V) if reduction == "none" else (BT,)
+
+    # The loss and grid accumulation on BF16 platform of NPU will have precision errors.
     output_tensor = torch.zeros(out_size, device=p.device, dtype=torch.float32)
-    grads = torch.empty_like(p)
+    grads = torch.empty_like(p, dtype=torch.float32)
 
     n_non_ignore = (shift_labels != ignore_index).sum().item() if has_label else BT
 

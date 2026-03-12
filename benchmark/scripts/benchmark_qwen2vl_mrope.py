@@ -1,6 +1,7 @@
 import torch
 import triton
 
+from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLTextConfig
 from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLRotaryEmbedding
 from transformers.models.qwen2_vl.modeling_qwen2_vl import apply_multimodal_rotary_pos_emb
 from utils import QUANTILES
@@ -32,7 +33,20 @@ def bench_speed_qwen2vl_mrope(
     seq_len = extra_benchmark_config["seq_len"] if "seq_len" in extra_benchmark_config else input.x
 
     head_dim = hidden_size // num_q_heads
-    rotary_emb = Qwen2VLRotaryEmbedding(head_dim, device=device)
+    mrope_section_hw = head_dim * 3 // 16
+    mrope_section = [
+        head_dim // 2 - 2 * mrope_section_hw,
+        mrope_section_hw,
+        mrope_section_hw,
+    ]
+    config = Qwen2VLTextConfig(
+        hidden_size=hidden_size,
+        num_attention_heads=num_q_heads,
+        num_key_value_heads=num_kv_heads,
+        rope_theta=1000000.0,
+        mrope_section=mrope_section,
+    )
+    rotary_emb = Qwen2VLRotaryEmbedding(config, device=device)
     q = torch.randn(
         (1, seq_len, num_q_heads, head_dim),
         device=device,
@@ -47,17 +61,10 @@ def bench_speed_qwen2vl_mrope(
     ).transpose(1, 2)
     dq, dk = (
         torch.randn_like(q, device=device, dtype=dtype),
-        torch.randn_like(k, device=device),
+        torch.randn_like(k, device=device, dtype=dtype),
     )
     pos_ids = torch.arange(seq_len * 3, device=device, dtype=torch.long).view(3, 1, -1)
     cos, sin = rotary_emb(k, pos_ids)
-
-    mrope_section_hw = head_dim * 3 // 16
-    mrope_section = [
-        head_dim // 2 - 2 * mrope_section_hw,
-        mrope_section_hw,
-        mrope_section_hw,
-    ]
 
     def fwd():
         if provider == "liger":
@@ -116,7 +123,21 @@ def bench_memory_qwen2vl_mrope(
     seq_len = extra_benchmark_config["seq_len"] if "seq_len" in extra_benchmark_config else input.x
 
     head_dim = hidden_size // num_q_heads
-    rotary_emb = Qwen2VLRotaryEmbedding(head_dim, device=device)
+
+    mrope_section_hw = head_dim * 3 // 16
+    mrope_section = [
+        head_dim // 2 - 2 * mrope_section_hw,
+        mrope_section_hw,
+        mrope_section_hw,
+    ]
+    config = Qwen2VLTextConfig(
+        hidden_size=hidden_size,
+        num_attention_heads=num_q_heads,
+        num_key_value_heads=num_kv_heads,
+        rope_theta=1000000.0,
+        mrope_section=mrope_section,
+    )
+    rotary_emb = Qwen2VLRotaryEmbedding(config, device=device)
     q = torch.randn(
         (1, seq_len, num_q_heads, head_dim),
         device=device,
@@ -131,17 +152,10 @@ def bench_memory_qwen2vl_mrope(
     ).transpose(1, 2)
     dq, dk = (
         torch.randn_like(q, device=device, dtype=dtype),
-        torch.randn_like(k, device=device),
+        torch.randn_like(k, device=device, dtype=dtype),
     )
     pos_ids = torch.arange(seq_len * 3, device=device, dtype=torch.long).view(3, 1, -1)
     cos, sin = rotary_emb(k, pos_ids)
-
-    mrope_section_hw = head_dim * 3 // 16
-    mrope_section = [
-        head_dim // 2 - 2 * mrope_section_hw,
-        mrope_section_hw,
-        mrope_section_hw,
-    ]
 
     def full():
         if provider == "liger":

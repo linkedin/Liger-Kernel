@@ -14,15 +14,47 @@ To add a new operator:
 If __all__ is not defined, all public symbols will be auto-discovered.
 """
 
+from liger_kernel.ops.backends._ascend.ops.dyt import LigerDyTFunction
+from liger_kernel.ops.backends._ascend.ops.dyt import liger_dyt_bwd
+from liger_kernel.ops.backends._ascend.ops.dyt import liger_dyt_fwd
+from liger_kernel.ops.backends._ascend.ops.embedding import LigerEmbeddingFunction
+from liger_kernel.ops.backends._ascend.ops.embedding import embedding_backward
+from liger_kernel.ops.backends._ascend.ops.embedding import embedding_forward
+from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction
+from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_rms_norm_backward
+from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_rms_norm_forward
+from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
+from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import fused_neighborhood_attention_forward
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
+from liger_kernel.ops.backends._ascend.ops.jsd import LigerJSDFunction
+from liger_kernel.ops.backends._ascend.ops.jsd import jsd_backward
+from liger_kernel.ops.backends._ascend.ops.jsd import jsd_forward
+from liger_kernel.ops.backends._ascend.ops.kl_div import LigerKLDivLossFunction
+from liger_kernel.ops.backends._ascend.ops.kl_div import kldiv_backward_triton
+from liger_kernel.ops.backends._ascend.ops.kl_div import kldiv_forward_triton
+from liger_kernel.ops.backends._ascend.ops.layer_norm import LigerLayerNormFunction
+from liger_kernel.ops.backends._ascend.ops.layer_norm import layer_norm_backward
+from liger_kernel.ops.backends._ascend.ops.layer_norm import layer_norm_forward
+from liger_kernel.ops.backends._ascend.ops.llama4_rope import LigerLlama4RopeFunction
+from liger_kernel.ops.backends._ascend.ops.llama4_rope import llama4_rope_backward
+from liger_kernel.ops.backends._ascend.ops.llama4_rope import llama4_rope_forward
+from liger_kernel.ops.backends._ascend.ops.poly_norm import LigerPolyNormFunction
+from liger_kernel.ops.backends._ascend.ops.poly_norm import poly_norm_backward
+from liger_kernel.ops.backends._ascend.ops.poly_norm import poly_norm_forward
 from liger_kernel.ops.backends._ascend.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
 from liger_kernel.ops.backends._ascend.ops.qwen2vl_mrope import qwen2vl_mrope_backward
 from liger_kernel.ops.backends._ascend.ops.qwen2vl_mrope import qwen2vl_mrope_forward
+from liger_kernel.ops.backends._ascend.ops.rms_norm import LigerRMSNormFunction
+from liger_kernel.ops.backends._ascend.ops.rms_norm import rms_norm_backward
+from liger_kernel.ops.backends._ascend.ops.rms_norm import rms_norm_forward
 from liger_kernel.ops.backends._ascend.ops.rope import LigerRopeFunction
 from liger_kernel.ops.backends._ascend.ops.rope import rope_backward
 from liger_kernel.ops.backends._ascend.ops.rope import rope_forward
+from liger_kernel.ops.backends._ascend.ops.softmax import LigerSoftmaxFunction
+from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_backward
+from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_forward
 from liger_kernel.ops.backends._ascend.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_backward
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_forward
@@ -36,12 +68,21 @@ from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_forward
 from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_backward
 
 __all__ = [
+    "LigerEmbeddingFunction",
+    "embedding_forward",
+    "embedding_backward",
+    "LigerFusedAddRMSNormFunction",
+    "fused_add_rms_norm_forward",
+    "fused_add_rms_norm_backward",
     "LigerGELUMulFunction",
     "geglu_forward",
     "geglu_backward",
     "LigerQwen2VLMRopeFunction",
     "qwen2vl_mrope_forward",
     "qwen2vl_mrope_backward",
+    "LigerRMSNormFunction",
+    "rms_norm_forward",
+    "rms_norm_backward",
     "LigerRopeFunction",
     "rope_forward",
     "rope_backward",
@@ -51,9 +92,27 @@ __all__ = [
     "LigerTVDLossFunction",
     "tv_distance_forward_triton",
     "tvd_backward_triton",
-    "LigerFusedNeighborhoodAttentionFunction",
-    "fused_neighborhood_attention_forward",
+    "LigerLlama4RopeFunction",
+    "llama4_rope_forward",
+    "llama4_rope_backward",
+    "LigerPolyNormFunction",
+    "poly_norm_forward",
+    "poly_norm_backward",
+    "LigerDyTFunction",
+    "liger_dyt_fwd",
+    "liger_dyt_bwd",
+    "LigerKLDivLossFunction",
+    "kldiv_forward_triton",
+    "kldiv_backward_triton",
+    "LigerLayerNormFunction",
+    "layer_norm_backward",
+    "layer_norm_forward",
     "LigerSoftmaxFunction",
     "_softmax_forward",
     "_softmax_backward",
+    "LigerJSDFunction",
+    "jsd_forward",
+    "jsd_backward",
+    "LigerFusedNeighborhoodAttentionFunction",
+    "fused_neighborhood_attention_forward",
 ]
