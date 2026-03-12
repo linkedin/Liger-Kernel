@@ -12,7 +12,7 @@ try:
 except Exception:
     IS_QWEN_AVAILABLE = False
 
-from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
+from liger_kernel.ops import LigerQwen2VLMRopeFunction
 from liger_kernel.transformers.functional import liger_qwen2vl_mrope
 from liger_kernel.transformers.qwen2vl_mrope import liger_multimodal_rotary_pos_emb
 from liger_kernel.utils import infer_device

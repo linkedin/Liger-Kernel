@@ -7,7 +7,7 @@ from test.utils import supports_bfloat16
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaMLP
 
-from liger_kernel.ops.geglu import LigerGELUMulFunction
+from liger_kernel.ops import LigerGELUMulFunction
 from liger_kernel.transformers.functional import liger_geglu
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.utils import infer_device

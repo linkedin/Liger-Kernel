@@ -8,7 +8,7 @@ from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
-from liger_kernel.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction
+from liger_kernel.ops import LigerFusedAddRMSNormFunction
 from liger_kernel.transformers.functional import liger_fused_add_rms_norm
 from liger_kernel.transformers.fused_add_rms_norm import LigerFusedAddRMSNorm
 from liger_kernel.utils import infer_device
