@@ -83,9 +83,29 @@ def _triton_llama4_rope_npu(
 
         new_real = tl.math.fma(q_real, freqs_real, -(q_imag * freqs_imag))
         new_imag = tl.math.fma(q_real, freqs_imag, q_imag * freqs_real)
-        new_q_pair = tl.interleave(new_real, new_imag)
 
-        tl.store(head_ptr + hd_idx[None, :], new_q_pair, mask=block_mask)
+        pair_idx = tl.arange(0, hd // 2)
+        real_idx = pair_idx * 2
+        imag_idx = pair_idx * 2 + 1
+
+        pair_mask = pair_idx < (hd // 2)
+
+        real_mask = qh_mask[:, None] & pair_mask[None, :]
+        imag_mask = qh_mask[:, None] & pair_mask[None, :]
+
+        # store real
+        tl.store(
+            head_ptr + real_idx[None, :],
+            new_real,
+            mask=real_mask,
+        )
+
+        # store imag
+        tl.store(
+            head_ptr + imag_idx[None, :],
+            new_imag,
+            mask=imag_mask,
+        )
 
     # K heads (chunked for UB)
     for kh_block in range(0, n_kh, BLOCK_K):
@@ -106,9 +126,29 @@ def _triton_llama4_rope_npu(
 
         new_real = tl.math.fma(k_real, freqs_real, -(k_imag * freqs_imag))
         new_imag = tl.math.fma(k_real, freqs_imag, k_imag * freqs_real)
-        new_k_pair = tl.interleave(new_real, new_imag)
 
-        tl.store(head_ptr + hd_idx[None, :], new_k_pair, mask=block_mask)
+        pair_idx = tl.arange(0, hd // 2)
+        real_idx = pair_idx * 2
+        imag_idx = pair_idx * 2 + 1
+
+        pair_mask = pair_idx < (hd // 2)
+
+        real_mask = kh_mask[:, None] & pair_mask[None, :]
+        imag_mask = kh_mask[:, None] & pair_mask[None, :]
+
+        # store real
+        tl.store(
+            head_ptr + real_idx[None, :],
+            new_real,
+            mask=real_mask,
+        )
+
+        # store imag
+        tl.store(
+            head_ptr + imag_idx[None, :],
+            new_imag,
+            mask=imag_mask,
+        )
 
 
 def llama4_rope_forward(q, k, freqs_cis):
@@ -139,7 +179,7 @@ def llama4_rope_forward(q, k, freqs_cis):
     tile_shapes = compute_default_tiling_strategy(
         safety_margin=0.90,
         dtype_size=dtype_size,
-        memory_multiplier=12.0,
+        memory_multiplier=20.0,
         shapes=shapes,
         tiling_dims=(0, 0),
     )
@@ -148,6 +188,8 @@ def llama4_rope_forward(q, k, freqs_cis):
         q_tile_shape, k_tile_shape = tile_shapes
         BLOCK_Q, _ = q_tile_shape
         BLOCK_K, _ = k_tile_shape
+        BLOCK_Q = max(BLOCK_Q, 2)
+        BLOCK_K = max(BLOCK_K, 2)
     else:
         BLOCK_Q = triton.next_power_of_2(n_qh)
         BLOCK_K = triton.next_power_of_2(n_kh)
@@ -207,7 +249,7 @@ def llama4_rope_backward(dq, dk, freqs_cis):
     tile_shapes = compute_default_tiling_strategy(
         safety_margin=0.90,
         dtype_size=dtype_size,
-        memory_multiplier=12.0,
+        memory_multiplier=20.0,
         shapes=shapes,
         tiling_dims=(0, 0),
     )
@@ -216,6 +258,8 @@ def llama4_rope_backward(dq, dk, freqs_cis):
         q_tile_shape, k_tile_shape = tile_shapes
         BLOCK_Q, _ = q_tile_shape
         BLOCK_K, _ = k_tile_shape
+        BLOCK_Q = max(BLOCK_Q, 2)
+        BLOCK_K = max(BLOCK_K, 2)
     else:
         BLOCK_Q = triton.next_power_of_2(n_qh)
         BLOCK_K = triton.next_power_of_2(n_kh)

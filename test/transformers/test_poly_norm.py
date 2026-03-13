@@ -8,7 +8,7 @@ from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
-from liger_kernel.ops.poly_norm import LigerPolyNormFunction
+from liger_kernel.ops import LigerPolyNormFunction
 from liger_kernel.transformers.functional import liger_poly_norm
 from liger_kernel.transformers.poly_norm import LigerPolyNorm
 from liger_kernel.utils import infer_device
