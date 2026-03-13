@@ -14,6 +14,9 @@ To add a new operator:
 If __all__ is not defined, all public symbols will be auto-discovered.
 """
 
+from liger_kernel.ops.backends._ascend.ops.cross_entropy import LigerCrossEntropyFunction
+from liger_kernel.ops.backends._ascend.ops.cross_entropy import cross_entropy_backward
+from liger_kernel.ops.backends._ascend.ops.cross_entropy import cross_entropy_forward
 from liger_kernel.ops.backends._ascend.ops.dyt import LigerDyTFunction
 from liger_kernel.ops.backends._ascend.ops.dyt import liger_dyt_bwd
 from liger_kernel.ops.backends._ascend.ops.dyt import liger_dyt_fwd
@@ -106,4 +109,7 @@ __all__ = [
     "LigerJSDFunction",
     "jsd_forward",
     "jsd_backward",
+    "LigerCrossEntropyFunction",
+    "cross_entropy_backward",
+    "cross_entropy_forward",
 ]
