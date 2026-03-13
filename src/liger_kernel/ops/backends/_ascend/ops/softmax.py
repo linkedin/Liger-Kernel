@@ -89,10 +89,9 @@ def _softmax_multi_block_forward_kernel(
     """
     row_start = tl.program_id(0)
     num_prog = tl.num_programs(0)
-    row_step = tl.cdiv(n_rows, num_prog)
     col_offsets = tl.arange(0, BLOCK_SIZE)
 
-    for row_idx in tl.range(row_start, n_rows, row_step):
+    for row_idx in tl.range(row_start, n_rows, num_prog):
         row_start_ptr = X_ptr + row_idx * X_row_stride
         m = tl.float32(float("-inf"))
         d = tl.float32(0.0)
@@ -209,14 +208,12 @@ def _softmax_multi_block_backward_kernel(
     """
     row_start = tl.program_id(0)
     num_prog = tl.num_programs(0)
-    row_step = tl.cdiv(n_rows, num_prog)
-
     col_offsets = tl.arange(0, BLOCK_SIZE)
 
-    for row_idx in tl.range(row_start, n_rows, row_step):
+    for row_idx in tl.range(row_start, n_rows, num_prog):
         dy_start_ptr = dy_ptr + row_idx * dy_stride
         y_start_ptr = y_ptr + row_idx * y_stride
-        acc = 0.0
+        acc = tl.float32(0.0)
 
         for start in tl.range(0, n_cols, BLOCK_SIZE):
             idx = start + col_offsets

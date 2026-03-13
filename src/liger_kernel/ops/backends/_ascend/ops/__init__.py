@@ -23,6 +23,8 @@ from liger_kernel.ops.backends._ascend.ops.embedding import embedding_forward
 from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction
 from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_rms_norm_backward
 from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_rms_norm_forward
+from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
+from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import fused_neighborhood_attention_forward
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
@@ -59,6 +61,11 @@ from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_forward
 from liger_kernel.ops.backends._ascend.ops.tvd import LigerTVDLossFunction
 from liger_kernel.ops.backends._ascend.ops.tvd import tv_distance_forward_triton
 from liger_kernel.ops.backends._ascend.ops.tvd import tvd_backward_triton
+from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
+from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import fused_neighborhood_attention_forward
+from liger_kernel.ops.backends._ascend.ops.softmax import LigerSoftmaxFunction
+from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_forward
+from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_backward
 
 __all__ = [
     "LigerEmbeddingFunction",
@@ -106,4 +113,6 @@ __all__ = [
     "LigerJSDFunction",
     "jsd_forward",
     "jsd_backward",
+    "LigerFusedNeighborhoodAttentionFunction",
+    "fused_neighborhood_attention_forward",
 ]
