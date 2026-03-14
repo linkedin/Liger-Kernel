@@ -114,6 +114,83 @@ def _test_memory(
     return getattr(torch, return_mode)(total_mem).item()
 
 
+def run_speed_benchmark(
+    fwd_fn: Callable,
+    mode: str,
+    input_tensors: List[torch.Tensor],
+    rep: int = 10,
+) -> "SingleBenchmarkRunOutput":
+    """Measure execution speed for forward, backward, or full (fwd+bwd).
+
+    Covers the common case where the forward function returns a single tensor
+    and backward uses a random gradient of the same shape.  For kernels with
+    scalar output (losses) or multiple outputs (e.g. RoPE), write custom
+    measurement logic instead.
+    """
+    import triton
+
+    if mode == "forward":
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            fwd_fn,
+            grad_to_none=input_tensors,
+            rep=rep,
+            quantiles=QUANTILES,
+        )
+    elif mode == "backward":
+        y = fwd_fn()
+        do = torch.randn_like(y)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            lambda: y.backward(do, retain_graph=True),
+            grad_to_none=input_tensors,
+            rep=rep,
+            quantiles=QUANTILES,
+        )
+    elif mode == "full":
+
+        def full():
+            y = fwd_fn()
+            y.backward(torch.randn_like(y), retain_graph=True)
+
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            full,
+            grad_to_none=input_tensors,
+            rep=rep,
+            quantiles=QUANTILES,
+        )
+    else:
+        raise ValueError(f"Unsupported mode: {mode}. Use 'forward', 'backward', or 'full'.")
+    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+
+
+def run_memory_benchmark(
+    fwd_fn: Callable,
+    mode: str,
+) -> "SingleBenchmarkRunOutput":
+    """Measure peak memory for forward, backward, or full (fwd+bwd).
+
+    Same caveats as :func:`run_speed_benchmark` regarding output shape.
+    """
+    if mode == "forward":
+        mem_50, mem_20, mem_80 = _test_memory(fwd_fn, quantiles=QUANTILES)
+    elif mode == "backward":
+        y = fwd_fn()
+        do = torch.randn_like(y)
+        mem_50, mem_20, mem_80 = _test_memory(
+            lambda: y.backward(do, retain_graph=True),
+            quantiles=QUANTILES,
+        )
+    elif mode == "full":
+
+        def full():
+            y = fwd_fn()
+            y.backward(torch.randn_like(y), retain_graph=True)
+
+        mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
+    else:
+        raise ValueError(f"Unsupported mode: {mode}. Use 'forward', 'backward', or 'full'.")
+    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+
+
 def get_current_file_directory() -> str:
     """
     Returns the directory path of the current Python file.
@@ -343,12 +420,20 @@ def run_benchmarks(
 def parse_benchmark_script_args():
     parser = argparse.ArgumentParser(description="Benchmarking script for Liger-Kernel")
 
-    # Add an optional --overwrite flag
     parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Flag to overwrite existing benchmark data with current run.",
     )
-
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help=(
+            "Model config name from MODEL_REGISTRY "
+            "(e.g. llama_2_7b, llama_3_8b). "
+            "Defaults to llama_3_8b when not specified."
+        ),
+    )
     args = parser.parse_args()
     return args
