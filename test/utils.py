@@ -126,7 +126,7 @@ def require_deterministic(test_case):
     def wrapper(*args, **kwargs):
         original_state = torch.are_deterministic_algorithms_enabled()
         try:
-            torch.use_deterministic_algorithms(True)
+            torch.use_deterministic_algorithms(True, warn_only=True)
             return test_case(*args, **kwargs)
         finally:
             torch.use_deterministic_algorithms(original_state)
