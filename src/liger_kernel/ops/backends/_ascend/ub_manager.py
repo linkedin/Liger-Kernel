@@ -198,6 +198,12 @@ class UBManager:
         if is_npu_available():
             try:
                 from tbe.common.platform import get_soc_spec
+                from tbe.common.platform import set_current_compile_soc_info
+
+                # Set current SOC info for get_soc_spec to work correctly
+                device = getattr(torch, "npu")
+                soc_info = device.get_device_name(device.current_device())
+                set_current_compile_soc_info(soc_info)
 
                 # Query UB size (get_soc_spec returns size in bytes)
                 ub_size_bytes = get_soc_spec("UB_SIZE")
