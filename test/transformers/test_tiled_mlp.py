@@ -10,6 +10,9 @@ from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP
 from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP
 from liger_kernel.utils import infer_device
 
+import tempfile
+import torch.multiprocessing as mp
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 device = infer_device()
 
 
@@ -195,3 +198,90 @@ def test_tiled_swiglu_correctness(
         )
 
     torch.testing.assert_close(x1.grad, x2.grad, atol=atol, rtol=rtol, msg="Input gradients don't match")
+
+
+def _test_fsdp_tiled_mlp(rank, world_size, bs, hidden_size, intermediate_size, num_shards, dtype, atol, rtol, file_name):
+    # Init process group
+    torch.distributed.init_process_group(
+        backend="nccl",
+        init_method=f"file://{file_name}",
+        rank=rank,
+        world_size=world_size,
+    )
+    torch.cuda.set_device(rank)
+    device = f"cuda:{rank}"
+
+
+    config = LlamaConfig(
+        hidden_size=hidden_size,
+        intermediate_size=intermediate_size,
+        hidden_act="silu",
+    )
+
+    # Seed for replication
+    torch.manual_seed(42)
+    G = torch.randn(intermediate_size, hidden_size, device=device, dtype=dtype)
+    U = torch.randn(intermediate_size, hidden_size, device=device, dtype=dtype)
+    D = torch.randn(hidden_size, intermediate_size, device=device, dtype=dtype)
+
+    model = LigerTiledSwiGLUMLP(config=config, num_shards=num_shards).to(device).to(dtype)
+    model.gate_proj.weight.data = G.clone()
+    model.up_proj.weight.data = U.clone()
+    model.down_proj.weight.data = D.clone()
+
+    # Wrap with FSDP
+    model = FSDP(model, use_orig_params=True)
+
+    # Reference: same weights, no FSDP
+    ref_model = LigerTiledSwiGLUMLP(config=config, num_shards=num_shards).to(device).to(dtype)
+    # Copy weights from FSDP model (need to gather first or init identically)
+    ref_model.gate_proj.weight.data = G.clone()
+    ref_model.up_proj.weight.data = U.clone()
+    ref_model.down_proj.weight.data = D.clone()
+
+    # Forward + backward
+    x = torch.randn(bs, hidden_size, device=device, dtype=dtype).requires_grad_(True)
+
+    out = model(x)
+    out.sum().backward()
+
+    ref_out = ref_model(x)
+    ref_out.sum().backward()
+
+    # Assert
+    torch.testing.assert_close(out, ref_out, atol=atol, rtol=rtol)
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires at least 2 GPUs")
+
+@pytest.mark.parametrize("world_size", [2])  # extend to [2, 4, 8] on multi-GPU hosts
+
+@pytest.mark.parametrize("num_shards", [1, 2, 4])
+@pytest.mark.parametrize(
+    "bs, hidden_size, intermediate_size",
+    [
+        (2, 256, 512),
+        (2, 512, 1024),
+        (1, 128, 256)
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-1,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported"),
+        ),
+    ],
+)
+def test_fsdp_tiled_swiglu(world_size, num_shards, bs, hidden_size, intermediate_size, dtype, atol, rtol):
+    with tempfile.NamedTemporaryFile() as f:
+        mp.spawn(
+            _test_fsdp_tiled_mlp,
+            args=(world_size, bs, hidden_size, intermediate_size, num_shards, dtype, atol, rtol, f.name),
+            nprocs=world_size,
+            join=True,
+        )
