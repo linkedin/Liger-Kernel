@@ -76,6 +76,9 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         incoming_grad = grads[0].view(-1, hidden_size)
         x_grad = torch.zeros_like(x)
 
+        # initialize param grad accumulators
+        param_grads = {p: None for p in mlp_module.parameters()}
+
         x_shards = list(torch.chunk(x, chunks=shards, dim=0))
 
         for i, x_shard in enumerate(x_shards):
@@ -84,13 +87,29 @@ class LigerTiledMLPFunction(torch.autograd.Function):
             # if seqlen is not exactly divisible by shards the last step will be shorter than shard_step
             shard_step = x_shards[i].shape[0]
             shard_offset = i * x_shards[0].shape[0]
-
-            x_shard.grad = x_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
             incoming_grad_shard = incoming_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
 
             with torch.enable_grad():
                 output = fn(mlp_module, x_shard)
-            torch.autograd.backward(output, incoming_grad_shard)
+                local_grads = torch.autograd.grad(
+                    outputs=output,
+                    inputs=[x_shard] + list(mlp_module.parameters()),
+                    grad_outputs=incoming_grad_shard,
+                )
+
+            x_grad.narrow(0, shard_offset, shard_step).copy_(local_grads[0])
+
+            for p, g in zip(mlp_module.parameters(), local_grads[1:]):
+                if param_grads[p] is None:
+                    param_grads[p] = g
+                else:
+                    param_grads[p] += g
+
+        for p, g in param_grads.items():
+            if p.grad is None:
+                p.grad = g
+            else:
+                p.grad += g
 
         # unflatten
         x_grad = x_grad.view(x_shape_orig)
