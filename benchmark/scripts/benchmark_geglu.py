@@ -2,10 +2,9 @@ import math
 
 import torch
 
-from benchmark_model_configs import DEFAULT_MODEL_CONFIG
-from benchmark_model_configs import MODEL_REGISTRY
-from benchmark_model_configs import compute_benchmark_shape
-from benchmark_model_configs import estimate_kernel_bytes_per_token
+from benchmark_model_configs import compute_seq_len_sweep_config
+from benchmark_model_configs import estimate_kernel_peak_memory
+from benchmark_model_configs import get_benchmark_model_config
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaMLP
 from utils import SingleBenchmarkRunInput
@@ -17,7 +16,6 @@ from utils import run_speed_benchmark
 
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.utils import infer_device
-from liger_kernel.utils import get_total_gpu_memory
 
 device = infer_device()
 
@@ -60,43 +58,38 @@ def bench_memory_geglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    model = MODEL_REGISTRY[args.model] if args.model else DEFAULT_MODEL_CONFIG
-    total_memory_gb = get_total_gpu_memory()
-
+    model = get_benchmark_model_config(args.model)
     probe_seq_len = 1024
-    probe_input = SingleBenchmarkRunInput(
-        x=probe_seq_len,
-        kernel_provider="huggingface",
-        extra_benchmark_config={
-            "bsz": 1,
-            "hidden_size": model.hidden_size,
-            "intermediate_size": model.intermediate_size,
-            "hidden_act": "gelu_pytorch_tanh",
-            "dtype": model.dtype,
-        },
-    )
-    probe_x, probe_layer = _setup_geglu(probe_input)
-    kernel_bpt = estimate_kernel_bytes_per_token(
-        kernel_fn=lambda: probe_layer(probe_x),
-        num_tokens=probe_seq_len,
-    )
-    del probe_x, probe_layer
 
-    shape = compute_benchmark_shape(
-        total_memory_gb,
-        model,
-        kernel_bytes_per_token=kernel_bpt,
-    )
+    def _probe():
+        probe_input = SingleBenchmarkRunInput(
+            x=probe_seq_len,
+            kernel_provider="huggingface",
+            extra_benchmark_config={
+                "bsz": 1,
+                "hidden_size": model.hidden_size,
+                "intermediate_size": model.intermediate_size,
+                "hidden_act": "gelu_pytorch_tanh",
+                "dtype": model.dtype,
+            },
+        )
+        x, layer = _setup_geglu(probe_input)
+        return layer(x)
+
+    peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
+    kernel_bpt = peak_bytes // probe_seq_len
+
+    config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
 
     common_configs = {
         "kernel_name": "geglu",
         "x_name": "T",
         "x_label": "sequence length",
-        "x_values": [2**i for i in range(10, int(math.log2(shape.seq_len)) + 1)],
+        "x_values": [2**i for i in range(10, int(math.log2(config.seq_len)) + 1)],
         "kernel_providers": ["liger", "huggingface"],
         "extra_benchmark_configs": [
             {
-                "bsz": shape.batch_size,
+                "bsz": config.batch_size,
                 "hidden_size": model.hidden_size,
                 "intermediate_size": model.intermediate_size,
                 "hidden_act": "gelu_pytorch_tanh",

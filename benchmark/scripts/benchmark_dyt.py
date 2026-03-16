@@ -3,6 +3,9 @@ import sys
 
 import torch
 
+from benchmark_model_configs import compute_hidden_size_sweep_config
+from benchmark_model_configs import estimate_kernel_peak_memory
+from benchmark_model_configs import get_benchmark_model_config
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
 from utils import parse_benchmark_script_args
@@ -46,17 +49,34 @@ def bench_memory_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
     return run_memory_benchmark(lambda: layer(x), input.kernel_operation_mode)
 
 
+BT = 4096
+
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
+    model = get_benchmark_model_config(args.model)
 
     for beta in [False, True]:
+
+        def _probe():
+            probe_input = SingleBenchmarkRunInput(
+                x=model.hidden_size,
+                kernel_provider="torch",
+                extra_benchmark_config={"BT": BT, "dtype": model.dtype, "beta": beta},
+            )
+            x, layer = _setup_dyt(probe_input)
+            return layer(x)
+
+        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
+        sweep_config = compute_hidden_size_sweep_config(model, peak_bytes, bt=BT)
+        x_values = [1024 * i for i in range(1, 17) if 1024 * i <= sweep_config.max_hidden_size] or [model.hidden_size]
+
         common_configs = {
             "kernel_name": f"dyt_beta={beta}",
             "x_name": "hidden_size",
             "x_label": "hidden_size",
-            "x_values": [1024 * i for i in range(1, 17)],
+            "x_values": x_values,
             "kernel_providers": ["liger", "torch", "torch_compile"],
-            "extra_benchmark_configs": [{"BT": 4096, "dtype": torch.bfloat16, "beta": beta}],
+            "extra_benchmark_configs": [{"BT": sweep_config.bt, "dtype": model.dtype, "beta": beta}],
             "overwrite": args.overwrite,
         }
 
