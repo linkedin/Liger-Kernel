@@ -760,16 +760,28 @@ def revert_liger_kernel_to_qwen3_next(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
-def revert_liger_kernel_to_qwen3_5(model_config: MiniModelConfig):
+def revert_liger_kernel_to_qwen3_5(model_config: MiniModelConfig, model_type: str = "causal_lm"):
     """
     Revert all Liger kernel patches applied to Qwen3.5 dense.
     """
 
+    assert model_type in [
+        "causal_lm",
+        "conditional_generation",
+    ], f'model_type must be "causal_lm" or "conditional_generation", Got: {model_type}'
+
+    import torch.nn as nn
     from transformers.models.qwen3_5 import modeling_qwen3_5
 
+    importlib.reload(nn)
     importlib.reload(modeling_qwen3_5)
-    model_config.model_class = modeling_qwen3_5.Qwen3_5ForCausalLM
+    if model_type == "causal_lm":
+        model_config.model_class = modeling_qwen3_5.Qwen3_5ForCausalLM
+    else:
+        model_config.model_class = modeling_qwen3_5.Qwen3_5ForConditionalGeneration
+
     print("Liger kernel patches have been reverted.")
+
 
 
 def revert_liger_kernel_to_qwen3_5_moe(model_config: MiniModelConfig):
