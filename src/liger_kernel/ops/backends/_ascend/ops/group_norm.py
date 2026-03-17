@@ -143,8 +143,10 @@ def _group_norm_backward_kernel(
     N_inv = 1.0 / hidden_size
     row_offsets = tl.arange(0, BLOCK_SIZE_M)
     col_offsets_base = tl.arange(0, BLOCK_SIZE_N)
-    DW_scratch_base = DW_scratch_ptr + pid * DW_scratch_stride
-    DB_scratch_base = DB_scratch_ptr + pid * DB_scratch_stride
+
+    if COMPUTE_PARAM_GRAD:
+        DW_scratch_base = DW_scratch_ptr + pid * DW_scratch_stride
+        DB_scratch_base = DB_scratch_ptr + pid * DB_scratch_stride
 
     # Persistent-program loop over row tiles.
     for block_m in tl.range(pid, grid_m, num_progs):
@@ -240,11 +242,6 @@ def _group_norm_backward_kernel(
                     dB_partial = tl.sum(tl.where(mask, DY_block, 0.0), axis=1)
                     tl.atomic_add(DW_scratch_base + global_channel, dW_partial, mask=row_mask)
                     tl.atomic_add(DB_scratch_base + global_channel, dB_partial, mask=row_mask)
-                else:
-                    dW_block = tl.where(mask, DY_block * x_hat, 0.0)
-                    dB_block = tl.where(mask, DY_block, 0.0)
-                    tl.atomic_add(DW_scratch_base + global_channel, dW_block, mask=mask)
-                    tl.atomic_add(DB_scratch_base + global_channel, dB_block, mask=mask)
 
 
 # -----------------------------------------------------------------------------
@@ -374,9 +371,10 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
         DW_scratch = torch.zeros((grid, num_channels), dtype=torch.float32, device=W.device)
         DB_scratch = torch.zeros((grid, num_channels), dtype=torch.float32, device=W.device)
     else:
-        # Placeholder buffers (unused in kernel when COMPUTE_PARAM_GRAD=False)
-        DW_scratch = torch.empty((1, 1), dtype=torch.float32, device=W.device)
-        DB_scratch = torch.empty((1, 1), dtype=torch.float32, device=W.device)
+        # Not used when COMPUTE_PARAM_GRAD=False.
+        # Intentionally set to None to enforce fail-fast behavior if accidentally accessed.
+        DW_scratch = None
+        DB_scratch = None
 
     _group_norm_backward_kernel[(grid,)](
         X_grouped,
@@ -389,9 +387,9 @@ def group_norm_backward(dY, X, W, B, Mean, RSTD, num_channels, num_groups):
         RSTD,
         DX,
         DW_scratch,
-        DW_scratch.stride(0),
+        0 if not compute_param_grad else DW_scratch.stride(0),
         DB_scratch,
-        DB_scratch.stride(0),
+        0 if not compute_param_grad else DB_scratch.stride(0),
         dY_grouped,
         dY_grouped.stride(0),
         dY_grouped.stride(1),
