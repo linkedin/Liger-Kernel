@@ -23,6 +23,9 @@ from liger_kernel.ops.backends._ascend.ops.embedding import embedding_forward
 from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction
 from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_rms_norm_backward
 from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_rms_norm_forward
+from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
+from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import fused_linear_jsd_backward
+from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import fused_linear_jsd_forward
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
@@ -106,4 +109,7 @@ __all__ = [
     "LigerJSDFunction",
     "jsd_forward",
     "jsd_backward",
+    "LigerFusedLinearJSDFunction",
+    "fused_linear_jsd_forward",
+    "fused_linear_jsd_backward",
 ]
