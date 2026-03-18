@@ -7,7 +7,7 @@ from test.utils import set_seed
 from test.utils import supports_bfloat16
 from torch.nn import CrossEntropyLoss
 
-from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction
+from liger_kernel.ops import LigerCrossEntropyFunction
 from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss

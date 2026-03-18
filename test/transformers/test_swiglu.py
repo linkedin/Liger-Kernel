@@ -13,7 +13,7 @@ from transformers.models.mixtral.configuration_mixtral import MixtralConfig
 from transformers.models.phi3.configuration_phi3 import Phi3Config
 from transformers.models.phi3.modeling_phi3 import Phi3MLP
 
-from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+from liger_kernel.ops import LigerSiLUMulFunction
 from liger_kernel.transformers.functional import liger_swiglu
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerExperts

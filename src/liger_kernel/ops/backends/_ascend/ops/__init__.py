@@ -26,6 +26,9 @@ from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_r
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
+from liger_kernel.ops.backends._ascend.ops.group_norm import LigerGroupNormFunction
+from liger_kernel.ops.backends._ascend.ops.group_norm import group_norm_backward
+from liger_kernel.ops.backends._ascend.ops.group_norm import group_norm_forward
 from liger_kernel.ops.backends._ascend.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.backends._ascend.ops.jsd import jsd_backward
 from liger_kernel.ops.backends._ascend.ops.jsd import jsd_forward
@@ -51,8 +54,8 @@ from liger_kernel.ops.backends._ascend.ops.rope import LigerRopeFunction
 from liger_kernel.ops.backends._ascend.ops.rope import rope_backward
 from liger_kernel.ops.backends._ascend.ops.rope import rope_forward
 from liger_kernel.ops.backends._ascend.ops.softmax import LigerSoftmaxFunction
-from liger_kernel.ops.backends._ascend.ops.softmax import softmax_backward
-from liger_kernel.ops.backends._ascend.ops.softmax import softmax_forward
+from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_backward
+from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_forward
 from liger_kernel.ops.backends._ascend.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_backward
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_forward
@@ -104,12 +107,15 @@ __all__ = [
     "layer_norm_backward",
     "layer_norm_forward",
     "LigerSoftmaxFunction",
-    "softmax_forward",
-    "softmax_backward",
+    "_softmax_forward",
+    "_softmax_backward",
     "LigerJSDFunction",
     "jsd_forward",
     "jsd_backward",
     "GrpoLossFunction",
     "grpo_loss_forward_triton",
     "grpo_loss_backward_triton",
+    "LigerGroupNormFunction",
+    "group_norm_forward",
+    "group_norm_backward",
 ]

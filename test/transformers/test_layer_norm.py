@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from liger_kernel.ops.layer_norm import LigerLayerNormFunction
+from liger_kernel.ops import LigerLayerNormFunction
 from liger_kernel.transformers.functional import liger_layer_norm
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.utils import infer_device
