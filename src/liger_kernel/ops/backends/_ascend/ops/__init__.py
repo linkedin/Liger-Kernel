@@ -29,6 +29,9 @@ from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import fused_linear_
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
+from liger_kernel.ops.backends._ascend.ops.group_norm import LigerGroupNormFunction
+from liger_kernel.ops.backends._ascend.ops.group_norm import group_norm_backward
+from liger_kernel.ops.backends._ascend.ops.group_norm import group_norm_forward
 from liger_kernel.ops.backends._ascend.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.backends._ascend.ops.jsd import jsd_backward
 from liger_kernel.ops.backends._ascend.ops.jsd import jsd_forward
@@ -112,4 +115,7 @@ __all__ = [
     "LigerFusedLinearJSDFunction",
     "fused_linear_jsd_forward",
     "fused_linear_jsd_backward",
+    "LigerGroupNormFunction",
+    "group_norm_forward",
+    "group_norm_backward",
 ]
