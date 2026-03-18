@@ -3,7 +3,8 @@ import triton
 import triton.language as tl
 
 from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
-from liger_kernel.ops.utils import get_npu_core_count, ensure_contiguous
+from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import get_npu_core_count
 
 # Loss type mapping for Triton constexpr branching
 # GRPO/DAPO/BNPO/DR_GRPO share identical per-token loss computation (standard PPO clipping)
