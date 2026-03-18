@@ -700,9 +700,7 @@ def grpo_loss_forward_triton(
                 f"vllm_is_ratio shape must be ({B}, 1) or ({B}, {L}), got {tuple(vllm_is_ratio.shape)}"
             )
         else:
-            assert vllm_is_ratio.shape[0] == B, (
-                f"vllm_is_ratio shape must be ({B},), got {tuple(vllm_is_ratio.shape)}"
-            )
+            assert vllm_is_ratio.shape[0] == B, f"vllm_is_ratio shape must be ({B},), got {tuple(vllm_is_ratio.shape)}"
         vllm_is_ratio = vllm_is_ratio.contiguous()
         vllm_is_ratio_ptr = vllm_is_ratio
         vllm_is_ratio_stride = vllm_is_ratio.shape[1] if vllm_is_ratio.dim() > 1 else 1
