@@ -199,7 +199,7 @@ def _rms_norm_forward_kernel_tiled(
                 X_block = X_block.to(tl.float32)
 
             # Accumulate sum of squares (only for valid elements)
-            sum_square += tl.sum(tl.where(mask, X_block * X_block, 0.0))
+            sum_square += tl.sum(X_block * X_block)
 
         # Compute rstd for this row
         mean_square = sum_square / n_cols
@@ -456,7 +456,7 @@ def _rms_norm_backward_kernel_tiled(
                     m = dY_block
 
             # Accumulate sum(m * X)
-            sum_m_X += tl.sum(tl.where(mask, m * X_block, 0.0))
+            sum_m_X += tl.sum(m * X_block)
 
         # Compute the correction factor
         correction_factor = -(1.0 / n_cols) * rstd * rstd * sum_m_X
