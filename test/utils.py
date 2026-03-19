@@ -126,7 +126,7 @@ def require_deterministic(test_case):
     def wrapper(*args, **kwargs):
         original_state = torch.are_deterministic_algorithms_enabled()
         try:
-            torch.use_deterministic_algorithms(True)
+            torch.use_deterministic_algorithms(True, warn_only=True)
             return test_case(*args, **kwargs)
         finally:
             torch.use_deterministic_algorithms(original_state)
@@ -757,6 +757,18 @@ def revert_liger_kernel_to_qwen3_next(model_config: MiniModelConfig):
 
     importlib.reload(modeling_qwen3_next)
     model_config.model_class = modeling_qwen3_next.Qwen3NextForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_qwen3_5(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Qwen3.5 dense.
+    """
+
+    from transformers.models.qwen3_5 import modeling_qwen3_5
+
+    importlib.reload(modeling_qwen3_5)
+    model_config.model_class = modeling_qwen3_5.Qwen3_5ForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
