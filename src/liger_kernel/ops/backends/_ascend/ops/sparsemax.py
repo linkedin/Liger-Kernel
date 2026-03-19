@@ -132,18 +132,16 @@ def _sparsemax_forward_tiled_kernel(
             idx = tile * BLOCK_SIZE + offs
             mask = idx < n_cols
 
-            z = tl.load(sorted_row_ptr + idx, mask=mask, other=-float("inf"), cache_modifier=".ca").to(tl.float32)
-            z_valid = tl.where(mask, z, 0.0)
+            z = tl.load(sorted_row_ptr + idx, mask=mask, other=0.0, cache_modifier=".ca").to(tl.float32)
 
-            cssv = tl.cumsum(z_valid, axis=0) + running_sum
-
+            cssv = tl.cumsum(z, axis=0) + running_sum
             r = (idx + 1).to(tl.float32)
             t = (cssv - 1.0) / tl.where(mask, r, 1.0)
             support = (z > t) & mask
 
             k += tl.sum(support.to(tl.int32), axis=0)
-            sum_support += tl.sum(tl.where(support, z_valid, 0.0), axis=0)
-            running_sum += tl.sum(z_valid, axis=0)
+            sum_support += tl.sum(tl.where(support, z, 0.0), axis=0)
+            running_sum += tl.sum(z, axis=0)
 
         tau = (sum_support - 1.0) / tl.maximum(k, 1).to(tl.float32)
 
