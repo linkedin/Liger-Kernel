@@ -20,7 +20,7 @@ def fused_linear_cross_entropy_forward(
     target,
     ce_weight=None,
     bias=None,
-    ignore_index=-10
+    ignore_index=-100,
     lse_square_scale=0.0,
     label_smoothing=0.0,
     reduction="mean",
@@ -198,6 +198,7 @@ def fused_linear_cross_entropy_forward(
         if return_predicted_tokens:
             predicted_tokens_1d[start_idx:end_idx] = predicted_tokens_1d_slice
         grad_logits_chunk = logits_chunk  # chunk_size x V
+
         # Apply token scaling to gradients if requested
         if use_token_scaling:
             # Expand scaling factors to match gradient dimensions
