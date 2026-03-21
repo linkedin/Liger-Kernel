@@ -20,7 +20,7 @@ def fused_linear_cross_entropy_forward(
     target,
     ce_weight=None,
     bias=None,
-    ignore_index=-100,
+    ignore_index=-10
     lse_square_scale=0.0,
     label_smoothing=0.0,
     reduction="mean",
@@ -198,7 +198,6 @@ def fused_linear_cross_entropy_forward(
         if return_predicted_tokens:
             predicted_tokens_1d[start_idx:end_idx] = predicted_tokens_1d_slice
         grad_logits_chunk = logits_chunk  # chunk_size x V
-
         # Apply token scaling to gradients if requested
         if use_token_scaling:
             # Expand scaling factors to match gradient dimensions
@@ -361,7 +360,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         ctx.save_for_backward(
             grad_input.detach(),
             grad_weight.detach() if grad_weight is not None else None,
-            grad_bias.detach() if bias is not None else None,
+            grad_bias.detach() if grad_bias is not None else None,
         )
         ctx.return_z_loss = return_z_loss
         ctx.return_token_accuracy = return_token_accuracy
