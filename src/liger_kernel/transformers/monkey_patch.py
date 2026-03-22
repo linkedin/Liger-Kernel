@@ -2710,29 +2710,32 @@ def apply_liger_kernel_to_qwen3_5(
     from transformers.models.qwen3_5 import modeling_qwen3_5
     from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
     from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5TextModel
-    
+
     try:
         from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
-    except ImportError as err:
+    except ImportError:
         Qwen3_5ForConditionalGeneration = None
 
     from liger_kernel.transformers.model.qwen3_5 import lce_forward as qwen3_5_lce_forward
     from liger_kernel.transformers.model.qwen3_5 import lce_forward_for_multimodal as qwen3_5_lce_forward_for_multimodal
+    from liger_kernel.transformers.monkey_patch import _patch_rms_norm_module
+    from liger_kernel.transformers.monkey_patch import _patch_swiglu_module
     from liger_kernel.transformers.rms_norm import LigerRMSNormForQwen3Next
     from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
-    from liger_kernel.transformers.monkey_patch import _patch_rms_norm_module, _patch_swiglu_module
 
     if rope:
         raise NotImplementedError("liger_rotary_pos_emb is not available for Qwen3_5 models.")
-        
+
     if rms_norm:
         modeling_qwen3_5.Qwen3_5RMSNorm = LigerRMSNormForQwen3Next
-        
+
     if cross_entropy:
         from transformers.loss.loss_utils import nn
+
         from liger_kernel.transformers.cross_entropy import liger_cross_entropy
+
         nn.functional.cross_entropy = liger_cross_entropy
-        
+
     if fused_linear_cross_entropy:
         if model is not None:
             if isinstance(model, Qwen3_5ForCausalLM):
@@ -2747,7 +2750,7 @@ def apply_liger_kernel_to_qwen3_5(
             modeling_qwen3_5.Qwen3_5ForCausalLM.forward = qwen3_5_lce_forward
             if Qwen3_5ForConditionalGeneration is not None:
                 modeling_qwen3_5.Qwen3_5ForConditionalGeneration.forward = qwen3_5_lce_forward_for_multimodal
-                
+
     if swiglu:
         modeling_qwen3_5.Qwen3_5MLP = LigerQwen3MoeSwiGLUMLP
 
@@ -2757,9 +2760,7 @@ def apply_liger_kernel_to_qwen3_5(
         elif Qwen3_5ForConditionalGeneration is not None and isinstance(model, Qwen3_5ForConditionalGeneration):
             text_model = model.model.language_model
         else:
-            raise TypeError(
-                f"Unsupported qwen3_5 model type. Got: {type(model)}"
-            )
+            raise TypeError(f"Unsupported qwen3_5 model type. Got: {type(model)}")
 
         _patch_rms_norm_module_for_qwen3_5 = partial(
             _patch_rms_norm_module, offset=1.0, casting_mode="gemma", in_place=False

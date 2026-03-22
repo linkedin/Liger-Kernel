@@ -3035,6 +3035,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_5():
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
+
 @pytest.mark.skipif(not is_qwen3_5_available(), reason="qwen3_5 module not available")
 def test_apply_liger_kernel_to_instance_for_qwen3_5_for_conditional_generation():
     # Ensure any monkey patching is cleaned up for subsequent tests
@@ -3078,7 +3079,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_5_for_conditional_generation()
                 linear_num_value_heads=2,
                 layer_types=["linear_attention", "linear_attention", "linear_attention", "full_attention"],
             ).to_dict(),
-         )
+        )
         from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
 
         dummy_model_instance = Qwen3_5ForConditionalGeneration._from_config(config)

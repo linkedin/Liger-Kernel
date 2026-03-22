@@ -80,6 +80,7 @@ try:
 except Exception:
     _Qwen3_5CausalLMOutputWithPast = None
 
+
 @dataclass
 class LigerCausalLMOutputWithPast(CausalLMOutputWithPast):
     token_accuracy: Optional[torch.FloatTensor] = None
@@ -162,6 +163,7 @@ if _Qwen3VLMoeCausalLMOutputWithPast is not None:
     class LigerQwen3VLMoeCausalLMOutputWithPast(_Qwen3VLMoeCausalLMOutputWithPast):
         token_accuracy: Optional[torch.FloatTensor] = None
         predicted_tokens: Optional[torch.LongTensor] = None
+
 
 if _Qwen3_5CausalLMOutputWithPast is not None:
 

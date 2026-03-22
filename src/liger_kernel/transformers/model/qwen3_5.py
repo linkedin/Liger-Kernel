@@ -121,6 +121,7 @@ def lce_forward(
         predicted_tokens=predicted_tokens,
     )
 
+
 def lce_forward_for_multimodal(
     self,
     input_ids: Optional[torch.LongTensor] = None,
