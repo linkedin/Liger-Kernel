@@ -999,30 +999,6 @@ def create_processor(model_name: str):
             tokenizer=qwen_tokenizer,
         )
 
-    elif model_name == "mini_qwen3_5":
-        tokenizer_config = load_tokenizer_config(
-            os.path.join(FAKE_CONFIGS_PATH, "Qwen/Qwen3.5-4B/tokenizer_config.json")
-        )
-        tokenizer_base = train_bpe_tokenizer(
-            [
-                token.content
-                for key, token in sorted(
-                    tokenizer_config["added_tokens_decoder"].items(),
-                    key=lambda x: int(x[0]),
-                )
-            ]
-        )
-        qwen_tokenizer = Qwen3_5Tokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
-        image_processor = Qwen2VLImageProcessor(patch_size=16, temporal_patch_size=2, merge_size=2)
-        video_processor = Qwen3VLVideoProcessor()
-        processor = Qwen3VLProcessor(
-            image_processor=image_processor,
-            video_processor=video_processor,
-            tokenizer=qwen_tokenizer,
-        )
-        return processor
-
-
     elif model_name == "mini_llava":
         tokenizer_config = load_tokenizer_config(
             os.path.join(
