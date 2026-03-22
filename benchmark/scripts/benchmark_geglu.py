@@ -1,14 +1,18 @@
-import torch
-import triton
+import math
 
+import torch
+
+from benchmark_model_configs import compute_seq_len_sweep_config
+from benchmark_model_configs import estimate_kernel_peak_memory
+from benchmark_model_configs import get_benchmark_model_config
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaMLP
-from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
-from utils import _test_memory
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
+from utils import run_memory_benchmark
+from utils import run_speed_benchmark
 
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.utils import infer_device
@@ -16,148 +20,80 @@ from liger_kernel.utils import infer_device
 device = infer_device()
 
 
-def bench_speed_geglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    seq_len = input.x
-    bsz = input.extra_benchmark_config["bsz"]
-    hidden_size = input.extra_benchmark_config["hidden_size"]
-    intermediate_size = input.extra_benchmark_config["intermediate_size"]
-    hidden_act = input.extra_benchmark_config["hidden_act"]
-    dtype = input.extra_benchmark_config["dtype"]
-    provider = input.kernel_provider
-    mode = input.kernel_operation_mode
-
+def _setup_geglu(input: SingleBenchmarkRunInput):
+    """Create input tensor and GEGLU layer from benchmark config."""
+    cfg = input.extra_benchmark_config
     llama_config = LlamaConfig(
-        hidden_size=hidden_size,
-        intermediate_size=intermediate_size,
-        hidden_act=hidden_act,
+        hidden_size=cfg["hidden_size"],
+        intermediate_size=cfg["intermediate_size"],
+        hidden_act=cfg["hidden_act"],
     )
-
-    x_shape = (bsz, seq_len, hidden_size)
-
-    # initialize input
-    x = torch.randn(*x_shape, device=device, dtype=dtype, requires_grad=True)
-
-    if provider == "liger":
-        layer = LigerGEGLUMLP(config=llama_config).to(device).to(dtype)
-    elif provider == "huggingface":
-        layer = LlamaMLP(config=llama_config).to(device).to(dtype)
-    else:
-        raise ValueError(f"Invalid provider: {provider} for GEGLU")
-
-    def fwd():
-        return layer(x)
-
-    if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            fwd,
-            grad_to_none=[x],
-            rep=10,
-            quantiles=QUANTILES,
-        )
-    elif mode == "backward":
-        do = torch.randn_like(x)
-        y = fwd()
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(do, retain_graph=True),
-            grad_to_none=[x],
-            rep=10,
-            quantiles=QUANTILES,
-        )
-    else:
-
-        def full():
-            y = fwd()
-            y.backward(torch.randn_like(y), retain_graph=True)
-
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full,
-            grad_to_none=[x],
-            rep=10,
-            quantiles=QUANTILES,
-        )
-
-    return SingleBenchmarkRunOutput(
-        y_20=ms_20,
-        y_50=ms_50,
-        y_80=ms_80,
+    x = torch.randn(
+        cfg["bsz"],
+        input.x,
+        cfg["hidden_size"],
+        device=device,
+        dtype=cfg["dtype"],
+        requires_grad=True,
     )
+    if input.kernel_provider == "liger":
+        layer = LigerGEGLUMLP(config=llama_config).to(device).to(cfg["dtype"])
+    elif input.kernel_provider == "huggingface":
+        layer = LlamaMLP(config=llama_config).to(device).to(cfg["dtype"])
+    else:
+        raise ValueError(f"Invalid provider: {input.kernel_provider} for GEGLU")
+    return x, layer
+
+
+def bench_speed_geglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    x, layer = _setup_geglu(input)
+    return run_speed_benchmark(lambda: layer(x), input.kernel_operation_mode, [x])
 
 
 def bench_memory_geglu(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    seq_len = input.x
-    bsz = input.extra_benchmark_config["bsz"]
-    hidden_size = input.extra_benchmark_config["hidden_size"]
-    intermediate_size = input.extra_benchmark_config["intermediate_size"]
-    hidden_act = input.extra_benchmark_config["hidden_act"]
-    dtype = input.extra_benchmark_config["dtype"]
-    provider = input.kernel_provider
-    mode = input.kernel_operation_mode
-
-    llama_config = LlamaConfig(
-        hidden_size=hidden_size,
-        intermediate_size=intermediate_size,
-        hidden_act=hidden_act,
-    )
-
-    x_shape = (bsz, seq_len, hidden_size)
-    # initialize input
-    x = torch.randn(*x_shape, device=device, dtype=dtype, requires_grad=True)
-
-    if provider == "liger":
-        layer = LigerGEGLUMLP(config=llama_config).to(device).to(dtype)
-    elif provider == "huggingface":
-        layer = LlamaMLP(config=llama_config).to(device).to(dtype)
-    else:
-        raise ValueError(f"Invalid provider: {provider} for GEGLU")
-
-    def fwd():
-        return layer(x)
-
-    def full():
-        y = fwd()
-        y.backward(torch.randn_like(y), retain_graph=True)
-
-    if mode == "forward":
-        mem_50, mem_20, mem_80 = _test_memory(
-            fwd,
-            quantiles=QUANTILES,
-        )
-    elif mode == "backward":
-        do = torch.randn_like(x)
-        y = fwd()
-        mem_50, mem_20, mem_80 = _test_memory(
-            lambda: y.backward(do, retain_graph=True),
-            quantiles=QUANTILES,
-        )
-    else:
-        mem_50, mem_20, mem_80 = _test_memory(
-            full,
-            quantiles=QUANTILES,
-        )
-
-    return SingleBenchmarkRunOutput(
-        y_20=mem_20,
-        y_50=mem_50,
-        y_80=mem_80,
-    )
+    x, layer = _setup_geglu(input)
+    return run_memory_benchmark(lambda: layer(x), input.kernel_operation_mode)
 
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
+    model = get_benchmark_model_config(args.model)
+    probe_seq_len = 1024
+
+    def _probe():
+        probe_input = SingleBenchmarkRunInput(
+            x=probe_seq_len,
+            kernel_provider="huggingface",
+            extra_benchmark_config={
+                "bsz": 1,
+                "hidden_size": model.hidden_size,
+                "intermediate_size": model.intermediate_size,
+                "hidden_act": "gelu_pytorch_tanh",
+                "dtype": model.dtype,
+            },
+        )
+        x, layer = _setup_geglu(probe_input)
+        return layer(x)
+
+    peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
+    kernel_bpt = peak_bytes // probe_seq_len
+
+    config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+
     common_configs = {
         "kernel_name": "geglu",
         "x_name": "T",
         "x_label": "sequence length",
-        "x_values": [2**i for i in range(10, 14)],
+        "x_values": [2**i for i in range(10, int(math.log2(config.seq_len)) + 1)],
         "kernel_providers": ["liger", "huggingface"],
         "extra_benchmark_configs": [
             {
-                "bsz": 8,
-                "hidden_size": 4096,
-                "intermediate_size": 11008,
+                "bsz": config.batch_size,
+                "hidden_size": model.hidden_size,
+                "intermediate_size": model.intermediate_size,
                 "hidden_act": "gelu_pytorch_tanh",
-                "dtype": torch.bfloat16,
+                "dtype": model.dtype,
             }
         ],
         "overwrite": args.overwrite,
