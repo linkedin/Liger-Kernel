@@ -397,15 +397,6 @@ def test_correctness(
     if delta is not None and loss_type in ("cispo", "sapo"):
         pytest.skip(f"delta is not supported for loss_type='{loss_type}'")
 
-    # LUSPO's formula multiplies per_token_loss by seq_lens, amplifying torch.compile
-    # numerical differences by O(T). Relax tolerances to account for this amplification.
-    if loss_type == "luspo":
-        if dtype == torch.bfloat16:
-            atol = max(atol, 2.0)
-            rtol = max(rtol, 8.0)
-        else:
-            atol = max(atol, 1e-4)
-            rtol = max(rtol, 5e-3)
     # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
     max_completion_length = T if loss_type == "dr_grpo" else None
