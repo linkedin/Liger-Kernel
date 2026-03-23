@@ -36,6 +36,7 @@ from liger_kernel.transformers.model.paligemma import lce_forward as paligemma_l
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.qwen3_5 import lce_forward as qwen3_5_lce_forward
+from liger_kernel.transformers.model.qwen3_5 import lce_forward_for_multimodal as qwen3_5_lce_forward_for_multimodal
 from liger_kernel.transformers.model.qwen3_next import lce_forward as qwen3_next_lce_forward
 from liger_kernel.transformers.model.smollm3 import lce_forward as smolllm3_lce_forward
 from liger_kernel.transformers.monkey_patch import MODEL_TYPE_TO_APPLY_LIGER_FN
@@ -3025,6 +3026,85 @@ def test_apply_liger_kernel_to_instance_for_qwen3_5():
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_5_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_5_available(), reason="qwen3_5 module not available")
+def test_apply_liger_kernel_to_instance_for_qwen3_5_for_conditional_generation():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3_5.modeling_qwen3_5"):
+        # Instantiate a dummy model
+        config = transformers.models.qwen3_5.configuration_qwen3_5.Qwen3_5Config(
+            attn_implementation="sdpa",
+            image_token_id=4,
+            video_token_id=5,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            tie_word_embeddings=True,
+            vision_config=transformers.models.qwen3_5.configuration_qwen3_5.Qwen3_5VisionConfig(
+                depth=4,
+                hidden_size=256,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=512,
+                num_heads=4,
+                in_channels=3,
+                patch_size=16,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=512,
+                num_position_embeddings=256,
+                initializer_range=0.02,
+            ).to_dict(),
+            text_config=transformers.models.qwen3_5.configuration_qwen3_5.Qwen3_5TextConfig(
+                dtype=torch.bfloat16,
+                rms_norm_eps=1e-5,
+                hidden_size=32,
+                intermediate_size=64,
+                hidden_act="silu",
+                num_hidden_layers=4,
+                num_attention_heads=2,
+                num_key_value_heads=2,
+                head_dim=16,
+                linear_conv_kernel_dim=4,
+                linear_key_head_dim=16,
+                linear_value_head_dim=16,
+                linear_num_key_heads=2,
+                linear_num_value_heads=2,
+                layer_types=["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+            ).to_dict(),
+        )
+        from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
+
+        dummy_model_instance = Qwen3_5ForConditionalGeneration._from_config(config)
+
+        assert isinstance(dummy_model_instance, Qwen3_5ForConditionalGeneration)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(qwen3_5_lce_forward_for_multimodal)
+        assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.model.language_model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(qwen3_5_lce_forward_for_multimodal)
+        assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.model.language_model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
