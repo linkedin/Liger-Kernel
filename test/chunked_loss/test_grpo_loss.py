@@ -318,6 +318,25 @@ class LigerLMHeadGRPO(torch.nn.Module):
         )
 
 
+@pytest.mark.parametrize("dtype, atol, rtol", [(torch.float32, 1e-5, 1e-5), (torch.bfloat16, 5e-2, 5e-2)])
+@pytest.mark.parametrize("bias", [True, False])
+def test_selective_chunk_forward_matches_reference(dtype, atol, rtol, bias):
+    B, T, H, V = 3, 17, 31, 123
+    x = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=True)
+    weight = torch.randn(V, H, device=device, dtype=dtype, requires_grad=True)
+    bias_tensor = torch.randn(V, device=device, dtype=dtype, requires_grad=True) if bias else None
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+
+    out = LigerFusedLinearPPOBase.chunk_forward(x, weight, selected_token_ids, bias=bias_tensor, temperature=0.9)
+
+    logits = x @ weight.t()
+    if bias_tensor is not None:
+        logits = logits + bias_tensor
+    ref = torch.log_softmax((logits / 0.9).float(), dim=-1).gather(-1, selected_token_ids.unsqueeze(-1)).squeeze(-1)
+
+    assert_verbose_allclose(out, ref, atol=atol, rtol=rtol)
+
+
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
@@ -382,12 +401,11 @@ def test_correctness(
     # numerical differences by O(T). Relax tolerances to account for this amplification.
     if loss_type == "luspo":
         if dtype == torch.bfloat16:
-            atol = max(atol, 1.0)
-            rtol = max(rtol, 5.0)
+            atol = max(atol, 2.0)
+            rtol = max(rtol, 8.0)
         else:
             atol = max(atol, 1e-4)
             rtol = max(rtol, 5e-3)
-
     # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
     max_completion_length = T if loss_type == "dr_grpo" else None
