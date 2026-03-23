@@ -561,6 +561,8 @@ def trl_reference_grpo_loss(
 )
 def test_grpo_loss_vs_trl(B, T, V, beta, loss_type, importance_sampling_level, delta):
     """Test that triton_grpo_loss matches TRL's exact implementation."""
+    if importance_sampling_level == "token" and loss_type == "luspo":
+        pytest.skip("Token-level importance sampling is not supported for loss_type='luspo'")
     torch.manual_seed(42)
 
     logits = torch.randn(B, T + 1, V, device=device, dtype=torch.float32)
@@ -769,6 +771,8 @@ def torch_grpo_loss_with_vllm_is(
 )
 def test_grpo_loss_with_vllm_is_ratio_reduced(B, T, V, beta, loss_type, importance_sampling_level):
     """Test that triton_grpo_loss with vllm_is_ratio matches TRL's behavior with reduce=True."""
+    if importance_sampling_level == "token" and loss_type == "luspo":
+        pytest.skip("Token-level importance sampling is not supported for loss_type='luspo'")
     torch.manual_seed(42)
 
     logits = torch.randn(B, T + 1, V, device=device, dtype=torch.float32)
