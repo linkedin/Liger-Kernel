@@ -152,6 +152,7 @@ class LigerTiledMLPFunction(torch.autograd.Function):
             else:
                 final_param_grads.append(torch.zeros_like(p))
 
+        #  (fn, mlp_module, x, shards, *params)
         return (None, None, x_grad, None, *final_param_grads)
 
 
