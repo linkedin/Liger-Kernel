@@ -87,7 +87,7 @@ def quick_test():
         w_norm  = torch.ones(D, device=device, dtype=dtype)
 
         ref  = pytorch_attn_res(V, w_query, w_norm)
-        ours = hilda_attn_res(V, w_query, w_norm)
+        ours = LigerAttnResFunction.apply(V, w_query, w_norm, 1e-6)
 
         diff = (ours.float() - ref.float()).abs().max().item()
         tol = 1e-2 if dtype != torch.float32 else 1e-5
@@ -123,7 +123,7 @@ def backward_test():
         V_ours = V.clone().requires_grad_(True)
         wq_ours = w_query.clone().requires_grad_(True)
         wn_ours = w_norm.clone().requires_grad_(True)
-        h_ours = hilda_attn_res(V_ours, wq_ours, wn_ours)
+        h_ours = LigerAttnResFunction.apply(V_ours, wq_ours, wn_ours, 1e-6)
         h_ours.sum().backward()
 
         dv_diff = (V_ours.grad.float() - V_ref.grad.float()).abs().max().item()
@@ -163,7 +163,7 @@ def bench_forward(N, B, T, D, dtype, device='cuda'):
     results['torch.compile'] = benchmark_fn(compiled)
 
     def ours_fn():
-        return hilda_attn_res(V, w_query, w_norm)
+        return LigerAttnResFunction.apply(V, w_query, w_norm, 1e-6)
     results['ours'] = benchmark_fn(ours_fn)
 
     return results
@@ -182,7 +182,7 @@ def bench_fwd_bwd(N, B, T, D, dtype, device='cuda'):
 
     def ours_fn():
         V = torch.randn(N, B, T, D, device=device, dtype=dtype, requires_grad=True)
-        h = hilda_attn_res(V, w_query, w_norm)
+        h = LigerAttnResFunction.apply(V, w_query, w_norm, 1e-6)
         h.sum().backward()
     results['ours'] = benchmark_fn(ours_fn, warmup=5, rep=50)
 
