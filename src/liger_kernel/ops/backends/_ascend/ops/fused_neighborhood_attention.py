@@ -37,8 +37,6 @@ def _neighborhood_mask_kernel(
         kernel_size: Size of the neighborhood window (must be odd)
         dilation: Dilation factor for the neighborhood pattern
         BLOCK_SIZE: Block size for processing (compile-time constant)
-        num_stages: Number of pipeline stages (compile-time constant)
-        num_warps: Number of warps (compile-time constant)
 
     Grid: (seq_len,)
     Each program processes one row of the mask matrix.
@@ -89,67 +87,63 @@ def _fused_neighborhood_attention_qk_kernel(
     seq_len: tl.constexpr,
     head_dim: tl.constexpr,
     scale: tl.constexpr,
-    kernel_size: tl.constexpr,
-    dilation: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
 ):
+    """
+    Compute Q @ K^T with neighborhood masking and scaling.
+    """
     pid = tl.program_id(0)
+    num_programs = tl.num_programs(0)
 
     num_batch_heads = batch_size * num_heads
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
 
-    num_programs = tl.num_programs(0)
-    tiles_per_program = tl.cdiv(total_tiles, num_programs)
+    for global_tile_id in tl.range(pid, total_tiles, num_programs):
+        batch_head_id = global_tile_id // num_m_tiles
+        tile_m = global_tile_id % num_m_tiles
 
-    for tile_idx in range(tiles_per_program):
-        global_tile_id = pid + tile_idx * num_programs
+        batch_id = batch_head_id // num_heads
+        head_id = batch_head_id % num_heads
 
-        if global_tile_id < total_tiles:
-            batch_head_id = global_tile_id // num_m_tiles
-            tile_m = global_tile_id % num_m_tiles
+        row_start = tile_m * BLOCK_SIZE_M
+        row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
 
-            batch_id = batch_head_id // num_heads
-            head_id = batch_head_id % num_heads
+        num_n_tiles = tl.cdiv(seq_len, BLOCK_SIZE_N)
 
-            row_start = tile_m * BLOCK_SIZE_M
-            row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+        for tile_n in range(num_n_tiles):
+            col_start = tile_n * BLOCK_SIZE_N
+            col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
 
-            num_n_tiles = tl.cdiv(seq_len, BLOCK_SIZE_N)
+            acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-            for tile_n in range(num_n_tiles):
-                col_start = tile_n * BLOCK_SIZE_N
-                col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
+            for k_start in range(0, head_dim, BLOCK_SIZE_K):
+                k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+                k_mask = k_offsets < head_dim
 
-                acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+                q_ptrs = (
+                    Q_ptr
+                    + batch_id * q_batch_stride
+                    + head_id * q_head_stride
+                    + row_offsets[:, None] * q_seq_stride
+                    + k_offsets[None, :] * q_dim_stride
+                )
+                q_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
+                q_chunk = tl.load(q_ptrs, mask=q_mask, other=0.0)
 
-                for k_start in range(0, head_dim, BLOCK_SIZE_K):
-                    k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
-                    k_mask = k_offsets < head_dim
+                k_ptrs = (
+                    K_ptr
+                    + batch_id * k_batch_stride
+                    + head_id * k_head_stride
+                    + col_offsets[:, None] * k_seq_stride
+                    + k_offsets[None, :] * k_dim_stride
+                )
+                k_mask_n = (col_offsets[:, None] < seq_len) & k_mask[None, :]
+                k_chunk = tl.load(k_ptrs, mask=k_mask_n, other=0.0)
 
-                    q_ptrs = (
-                        Q_ptr
-                        + batch_id * q_batch_stride
-                        + head_id * q_head_stride
-                        + row_offsets[:, None] * q_seq_stride
-                        + k_offsets[None, :] * q_dim_stride
-                    )
-                    q_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
-                    q_chunk = tl.load(q_ptrs, mask=q_mask, other=0.0)
-
-                    k_ptrs = (
-                        K_ptr
-                        + batch_id * k_batch_stride
-                        + head_id * k_head_stride
-                        + col_offsets[:, None] * k_seq_stride
-                        + k_offsets[None, :] * k_dim_stride
-                    )
-                    k_mask_n = (col_offsets[:, None] < seq_len) & k_mask[None, :]
-                    k_chunk = tl.load(k_ptrs, mask=k_mask_n, other=0.0)
-
-                    acc += tl.dot(q_chunk, tl.trans(k_chunk))
+                acc += tl.dot(q_chunk, tl.trans(k_chunk))
 
                 acc = acc * scale
 
@@ -194,165 +188,69 @@ def _fused_neighborhood_attention_av_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
 ):
+    """
+    Compute Attention @ V to produce the final output.
+    """
     pid = tl.program_id(0)
+    num_programs = tl.num_programs(0)
 
     num_batch_heads = batch_size * num_heads
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
 
-    num_programs = tl.num_programs(0)
-    tiles_per_program = tl.cdiv(total_tiles, num_programs)
+    for global_tile_id in tl.range(pid, total_tiles, num_programs):
+        batch_head_id = global_tile_id // num_m_tiles
+        tile_m = global_tile_id % num_m_tiles
 
-    for tile_idx in range(tiles_per_program):
-        global_tile_id = pid + tile_idx * num_programs
+        batch_id = batch_head_id // num_heads
+        head_id = batch_head_id % num_heads
 
-        if global_tile_id < total_tiles:
-            batch_head_id = global_tile_id // num_m_tiles
-            tile_m = global_tile_id % num_m_tiles
+        row_start = tile_m * BLOCK_SIZE_M
+        row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
 
-            batch_id = batch_head_id // num_heads
-            head_id = batch_head_id % num_heads
+        num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
 
-            row_start = tile_m * BLOCK_SIZE_M
-            row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+        for tile_n in range(num_n_tiles):
+            col_start = tile_n * BLOCK_SIZE_N
+            col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
 
-            num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
+            acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-            for tile_n in range(num_n_tiles):
-                col_start = tile_n * BLOCK_SIZE_N
-                col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
+            for k_start in range(0, seq_len, BLOCK_SIZE_K):
+                k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+                k_mask = k_offsets < seq_len
 
-                acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-
-                for k_start in range(0, seq_len, BLOCK_SIZE_K):
-                    k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
-                    k_mask = k_offsets < seq_len
-
-                    attn_ptrs = (
-                        Attn_ptr
-                        + batch_id * attn_batch_stride
-                        + head_id * attn_head_stride
-                        + row_offsets[:, None] * attn_seq_stride
-                        + k_offsets[None, :] * attn_seq2_stride
-                    )
-                    attn_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
-                    attn_chunk = tl.load(attn_ptrs, mask=attn_mask, other=0.0)
-
-                    v_ptrs = (
-                        V_ptr
-                        + batch_id * v_batch_stride
-                        + head_id * v_head_stride
-                        + k_offsets[:, None] * v_seq_stride
-                        + col_offsets[None, :] * v_dim_stride
-                    )
-                    v_mask = k_mask[:, None] & (col_offsets[None, :] < head_dim)
-                    v_chunk = tl.load(v_ptrs, mask=v_mask, other=0.0)
-
-                    acc += tl.dot(attn_chunk, v_chunk)
-
-                out_ptrs = (
-                    Out_ptr
-                    + batch_id * out_batch_stride
-                    + head_id * out_head_stride
-                    + row_offsets[:, None] * out_seq_stride
-                    + col_offsets[None, :] * out_dim_stride
+                attn_ptrs = (
+                    Attn_ptr
+                    + batch_id * attn_batch_stride
+                    + head_id * attn_head_stride
+                    + row_offsets[:, None] * attn_seq_stride
+                    + k_offsets[None, :] * attn_seq2_stride
                 )
-                valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
-                tl.store(out_ptrs, acc, mask=valid_mask)
+                attn_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
+                attn_chunk = tl.load(attn_ptrs, mask=attn_mask, other=0.0)
 
-
-@triton.jit
-def _fused_neighborhood_attention_grad_attn_kernel(
-    grad_output_ptr,
-    V_ptr,
-    grad_attn_ptr,
-    grad_out_batch_stride,
-    grad_out_head_stride,
-    grad_out_seq_stride,
-    grad_out_dim_stride,
-    v_batch_stride,
-    v_head_stride,
-    v_seq_stride,
-    v_dim_stride,
-    grad_attn_batch_stride,
-    grad_attn_head_stride,
-    grad_attn_seq_stride,
-    grad_attn_seq2_stride,
-    batch_size: tl.constexpr,
-    num_heads: tl.constexpr,
-    seq_len: tl.constexpr,
-    head_dim: tl.constexpr,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
-):
-    """
-    Compute gradient with respect to attention weights: grad_attn = grad_output @ V^T.
-    """
-    pid = tl.program_id(0)
-
-    num_batch_heads = batch_size * num_heads
-    num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
-    total_tiles = num_batch_heads * num_m_tiles
-
-    num_programs = tl.num_programs(0)
-    tiles_per_program = tl.cdiv(total_tiles, num_programs)
-
-    for tile_idx in range(tiles_per_program):
-        global_tile_id = pid + tile_idx * num_programs
-
-        if global_tile_id < total_tiles:
-            batch_head_id = global_tile_id // num_m_tiles
-            tile_m = global_tile_id % num_m_tiles
-
-            batch_id = batch_head_id // num_heads
-            head_id = batch_head_id % num_heads
-
-            row_start = tile_m * BLOCK_SIZE_M
-            row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
-            num_n_tiles = tl.cdiv(seq_len, BLOCK_SIZE_N)
-
-            for tile_n in range(num_n_tiles):
-                col_start = tile_n * BLOCK_SIZE_N
-                col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
-
-                acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-
-                for k_start in range(0, head_dim, BLOCK_SIZE_K):
-                    k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
-                    k_mask = k_offsets < head_dim
-
-                    grad_out_ptrs = (
-                        grad_output_ptr
-                        + batch_id * grad_out_batch_stride
-                        + head_id * grad_out_head_stride
-                        + row_offsets[:, None] * grad_out_seq_stride
-                        + k_offsets[None, :] * grad_out_dim_stride
-                    )
-                    grad_out_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
-                    grad_out_chunk = tl.load(grad_out_ptrs, mask=grad_out_mask, other=0.0)
-
-                    v_ptrs = (
-                        V_ptr
-                        + batch_id * v_batch_stride
-                        + head_id * v_head_stride
-                        + col_offsets[None, :] * v_seq_stride
-                        + k_offsets[:, None] * v_dim_stride
-                    )
-                    v_mask = (col_offsets[None, :] < seq_len) & k_mask[:, None]
-                    v_chunk = tl.load(v_ptrs, mask=v_mask, other=0.0)
-
-                    acc += tl.dot(grad_out_chunk, v_chunk)
-
-                grad_attn_ptrs = (
-                    grad_attn_ptr
-                    + batch_id * grad_attn_batch_stride
-                    + head_id * grad_attn_head_stride
-                    + row_offsets[:, None] * grad_attn_seq_stride
-                    + col_offsets[None, :] * grad_attn_seq2_stride
+                v_ptrs = (
+                    V_ptr
+                    + batch_id * v_batch_stride
+                    + head_id * v_head_stride
+                    + k_offsets[:, None] * v_seq_stride
+                    + col_offsets[None, :] * v_dim_stride
                 )
-                valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < seq_len)
-                tl.store(grad_attn_ptrs, acc, mask=valid_mask)
+                v_mask = k_mask[:, None] & (col_offsets[None, :] < head_dim)
+                v_chunk = tl.load(v_ptrs, mask=v_mask, other=0.0)
+
+                acc += tl.dot(attn_chunk, v_chunk)
+
+            out_ptrs = (
+                Out_ptr
+                + batch_id * out_batch_stride
+                + head_id * out_head_stride
+                + row_offsets[:, None] * out_seq_stride
+                + col_offsets[None, :] * out_dim_stride
+            )
+            valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
+            tl.store(out_ptrs, acc, mask=valid_mask)
 
 
 @triton.jit
@@ -385,72 +283,67 @@ def _fused_neighborhood_attention_grad_qk_kernel(
     Compute gradient with respect to queries: grad_Q = grad_attn @ K * scale.
     """
     pid = tl.program_id(0)
+    num_programs = tl.num_programs(0)
 
     num_batch_heads = batch_size * num_heads
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
 
-    num_programs = tl.num_programs(0)
-    tiles_per_program = tl.cdiv(total_tiles, num_programs)
+    for global_tile_id in tl.range(pid, total_tiles, num_programs):
+        batch_head_id = global_tile_id // num_m_tiles
+        tile_m = global_tile_id % num_m_tiles
 
-    for tile_idx in range(tiles_per_program):
-        global_tile_id = pid + tile_idx * num_programs
+        batch_id = batch_head_id // num_heads
+        head_id = batch_head_id % num_heads
 
-        if global_tile_id < total_tiles:
-            batch_head_id = global_tile_id // num_m_tiles
-            tile_m = global_tile_id % num_m_tiles
+        row_start = tile_m * BLOCK_SIZE_M
+        row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
 
-            batch_id = batch_head_id // num_heads
-            head_id = batch_head_id % num_heads
+        num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
 
-            row_start = tile_m * BLOCK_SIZE_M
-            row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+        for tile_n in range(num_n_tiles):
+            col_start = tile_n * BLOCK_SIZE_N
+            col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
 
-            num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
+            acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-            for tile_n in range(num_n_tiles):
-                col_start = tile_n * BLOCK_SIZE_N
-                col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
+            for k_start in range(0, seq_len, BLOCK_SIZE_K):
+                k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+                k_mask = k_offsets < seq_len
 
-                acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-
-                for k_start in range(0, seq_len, BLOCK_SIZE_K):
-                    k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
-                    k_mask = k_offsets < seq_len
-
-                    grad_attn_ptrs = (
-                        grad_attn_ptr
-                        + batch_id * grad_attn_batch_stride
-                        + head_id * grad_attn_head_stride
-                        + row_offsets[:, None] * grad_attn_seq_stride
-                        + k_offsets[None, :] * grad_attn_seq2_stride
-                    )
-                    grad_attn_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
-                    grad_attn_chunk = tl.load(grad_attn_ptrs, mask=grad_attn_mask, other=0.0)
-
-                    k_ptrs = (
-                        K_ptr
-                        + batch_id * k_batch_stride
-                        + head_id * k_head_stride
-                        + k_offsets[:, None] * k_seq_stride
-                        + col_offsets[None, :] * k_dim_stride
-                    )
-                    k_mask_2d = k_mask[:, None] & (col_offsets[None, :] < head_dim)
-                    k_chunk = tl.load(k_ptrs, mask=k_mask_2d, other=0.0)
-
-                    acc += tl.dot(grad_attn_chunk, k_chunk)
-
-                acc = acc * scale
-
-                grad_q_ptrs = (
-                    grad_Q_ptr
-                    + batch_id * grad_q_batch_stride
-                    + head_id * grad_q_head_stride
-                    + row_offsets[:, None] * grad_q_seq_stride
-                    + col_offsets[None, :] * grad_q_dim_stride
+                grad_attn_ptrs = (
+                    grad_attn_ptr
+                    + batch_id * grad_attn_batch_stride
+                    + head_id * grad_attn_head_stride
+                    + row_offsets[:, None] * grad_attn_seq_stride
+                    + k_offsets[None, :] * grad_attn_seq2_stride
                 )
-                valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
-                tl.store(grad_q_ptrs, acc, mask=valid_mask)
+                grad_attn_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
+                grad_attn_chunk = tl.load(grad_attn_ptrs, mask=grad_attn_mask, other=0.0)
+
+                k_ptrs = (
+                    K_ptr
+                    + batch_id * k_batch_stride
+                    + head_id * k_head_stride
+                    + k_offsets[:, None] * k_seq_stride
+                    + col_offsets[None, :] * k_dim_stride
+                )
+                k_mask_2d = k_mask[:, None] & (col_offsets[None, :] < head_dim)
+                k_chunk = tl.load(k_ptrs, mask=k_mask_2d, other=0.0)
+
+                acc += tl.dot(grad_attn_chunk, k_chunk)
+
+            acc = acc * scale
+
+            grad_q_ptrs = (
+                grad_Q_ptr
+                + batch_id * grad_q_batch_stride
+                + head_id * grad_q_head_stride
+                + row_offsets[:, None] * grad_q_seq_stride
+                + col_offsets[None, :] * grad_q_dim_stride
+            )
+            valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
+            tl.store(grad_q_ptrs, acc, mask=valid_mask)
 
 
 @triton.jit
@@ -483,72 +376,67 @@ def _fused_neighborhood_attention_grad_k_kernel(
     Compute gradient with respect to keys: grad_K = grad_attn^T @ Q * scale.
     """
     pid = tl.program_id(0)
+    num_programs = tl.num_programs(0)
 
     num_batch_heads = batch_size * num_heads
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
 
-    num_programs = tl.num_programs(0)
-    tiles_per_program = tl.cdiv(total_tiles, num_programs)
+    for global_tile_id in tl.range(pid, total_tiles, num_programs):
+        batch_head_id = global_tile_id // num_m_tiles
+        tile_m = global_tile_id % num_m_tiles
 
-    for tile_idx in range(tiles_per_program):
-        global_tile_id = pid + tile_idx * num_programs
+        batch_id = batch_head_id // num_heads
+        head_id = batch_head_id % num_heads
 
-        if global_tile_id < total_tiles:
-            batch_head_id = global_tile_id // num_m_tiles
-            tile_m = global_tile_id % num_m_tiles
+        row_start = tile_m * BLOCK_SIZE_M
+        row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
 
-            batch_id = batch_head_id // num_heads
-            head_id = batch_head_id % num_heads
+        num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
 
-            row_start = tile_m * BLOCK_SIZE_M
-            row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+        for tile_n in range(num_n_tiles):
+            col_start = tile_n * BLOCK_SIZE_N
+            col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
 
-            num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
+            acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-            for tile_n in range(num_n_tiles):
-                col_start = tile_n * BLOCK_SIZE_N
-                col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
+            for k_start in range(0, seq_len, BLOCK_SIZE_K):
+                k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+                k_mask = k_offsets < seq_len
 
-                acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-
-                for k_start in range(0, seq_len, BLOCK_SIZE_K):
-                    k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
-                    k_mask = k_offsets < seq_len
-
-                    q_ptrs = (
-                        Q_ptr
-                        + batch_id * q_batch_stride
-                        + head_id * q_head_stride
-                        + k_offsets[:, None] * q_seq_stride
-                        + col_offsets[None, :] * q_dim_stride
-                    )
-                    q_mask = k_mask[:, None] & (col_offsets[None, :] < head_dim)
-                    q_chunk = tl.load(q_ptrs, mask=q_mask, other=0.0)
-
-                    grad_attn_T_ptrs = (
-                        grad_attn_ptr
-                        + batch_id * grad_attn_batch_stride
-                        + head_id * grad_attn_head_stride
-                        + row_offsets[:, None] * grad_attn_seq2_stride
-                        + k_offsets[None, :] * grad_attn_seq_stride
-                    )
-                    grad_attn_T_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
-                    grad_attn_T_chunk = tl.load(grad_attn_T_ptrs, mask=grad_attn_T_mask, other=0.0)
-
-                    acc += tl.dot(grad_attn_T_chunk, q_chunk)
-
-                acc = acc * scale
-
-                grad_k_ptrs = (
-                    grad_K_ptr
-                    + batch_id * grad_k_batch_stride
-                    + head_id * grad_k_head_stride
-                    + row_offsets[:, None] * grad_k_seq_stride
-                    + col_offsets[None, :] * grad_k_dim_stride
+                grad_attn_ptrs = (
+                    grad_attn_ptr
+                    + batch_id * grad_attn_batch_stride
+                    + head_id * grad_attn_head_stride
+                    + k_offsets[:, None] * grad_attn_seq_stride
+                    + row_offsets[None, :] * grad_attn_seq2_stride
                 )
-                valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
-                tl.store(grad_k_ptrs, acc, mask=valid_mask)
+                grad_attn_mask = k_mask[:, None] & (row_offsets[None, :] < seq_len)
+                grad_attn_chunk = tl.load(grad_attn_ptrs, mask=grad_attn_mask, other=0.0)
+
+                q_ptrs = (
+                    Q_ptr
+                    + batch_id * q_batch_stride
+                    + head_id * q_head_stride
+                    + k_offsets[:, None] * q_seq_stride
+                    + col_offsets[None, :] * q_dim_stride
+                )
+                q_mask = k_mask[:, None] & (col_offsets[None, :] < head_dim)
+                q_chunk = tl.load(q_ptrs, mask=q_mask, other=0.0)  # (K, N)
+
+                acc += tl.dot(tl.trans(grad_attn_chunk), q_chunk)
+
+            acc = acc * scale
+
+            grad_k_ptrs = (
+                grad_K_ptr
+                + batch_id * grad_k_batch_stride
+                + head_id * grad_k_head_stride
+                + row_offsets[:, None] * grad_k_seq_stride
+                + col_offsets[None, :] * grad_k_dim_stride
+            )
+            valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
+            tl.store(grad_k_ptrs, acc, mask=valid_mask)
 
 
 @triton.jit
@@ -584,66 +472,150 @@ def _fused_neighborhood_attention_grad_v_kernel(
     num_batch_heads = batch_size * num_heads
     num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
     total_tiles = num_batch_heads * num_m_tiles
-
     num_programs = tl.num_programs(0)
-    tiles_per_program = tl.cdiv(total_tiles, num_programs)
 
-    for tile_idx in range(tiles_per_program):
-        global_tile_id = pid + tile_idx * num_programs
+    for global_tile_id in tl.range(pid, total_tiles, num_programs):
+        batch_head_id = global_tile_id // num_m_tiles
+        tile_m = global_tile_id % num_m_tiles
 
-        if global_tile_id < total_tiles:
-            batch_head_id = global_tile_id // num_m_tiles
-            tile_m = global_tile_id % num_m_tiles
+        batch_id = batch_head_id // num_heads
+        head_id = batch_head_id % num_heads
 
-            batch_id = batch_head_id // num_heads
-            head_id = batch_head_id % num_heads
+        row_start = tile_m * BLOCK_SIZE_M
+        row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
 
-            row_start = tile_m * BLOCK_SIZE_M
-            row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+        num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
 
-            num_n_tiles = tl.cdiv(head_dim, BLOCK_SIZE_N)
+        for tile_n in range(num_n_tiles):
+            col_start = tile_n * BLOCK_SIZE_N
+            col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
 
-            for tile_n in range(num_n_tiles):
-                col_start = tile_n * BLOCK_SIZE_N
-                col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
+            acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-                acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+            for k_start in range(0, seq_len, BLOCK_SIZE_K):
+                k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+                k_mask = k_offsets < seq_len
 
-                for k_start in range(0, seq_len, BLOCK_SIZE_K):
-                    k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
-                    k_mask = k_offsets < seq_len
-
-                    attn_ptrs = (
-                        Attn_ptr
-                        + batch_id * attn_batch_stride
-                        + head_id * attn_head_stride
-                        + k_offsets[:, None] * attn_seq_stride
-                        + row_offsets[None, :] * attn_seq2_stride
-                    )
-                    attn_mask = k_mask[:, None] & (row_offsets[None, :] < seq_len)
-                    attn_chunk = tl.load(attn_ptrs, mask=attn_mask, other=0.0)
-
-                    grad_out_ptrs = (
-                        grad_output_ptr
-                        + batch_id * grad_out_batch_stride
-                        + head_id * grad_out_head_stride
-                        + k_offsets[:, None] * grad_out_seq_stride
-                        + col_offsets[None, :] * grad_out_dim_stride
-                    )
-                    grad_out_mask = k_mask[:, None] & (col_offsets[None, :] < head_dim)
-                    grad_out_chunk = tl.load(grad_out_ptrs, mask=grad_out_mask, other=0.0)
-
-                    acc += tl.dot(tl.trans(attn_chunk), grad_out_chunk)
-
-                grad_v_ptrs = (
-                    grad_V_ptr
-                    + batch_id * grad_v_batch_stride
-                    + head_id * grad_v_head_stride
-                    + row_offsets[:, None] * grad_v_seq_stride
-                    + col_offsets[None, :] * grad_v_dim_stride
+                attn_ptrs = (
+                    Attn_ptr
+                    + batch_id * attn_batch_stride
+                    + head_id * attn_head_stride
+                    + k_offsets[:, None] * attn_seq_stride
+                    + row_offsets[None, :] * attn_seq2_stride
                 )
-                valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
-                tl.store(grad_v_ptrs, acc, mask=valid_mask)
+                attn_mask = k_mask[:, None] & (row_offsets[None, :] < seq_len)
+                attn_chunk = tl.load(attn_ptrs, mask=attn_mask, other=0.0)
+
+                grad_out_ptrs = (
+                    grad_output_ptr
+                    + batch_id * grad_out_batch_stride
+                    + head_id * grad_out_head_stride
+                    + k_offsets[:, None] * grad_out_seq_stride
+                    + col_offsets[None, :] * grad_out_dim_stride
+                )
+                grad_out_mask = k_mask[:, None] & (col_offsets[None, :] < head_dim)
+                grad_out_chunk = tl.load(grad_out_ptrs, mask=grad_out_mask, other=0.0)
+
+                acc += tl.dot(tl.trans(attn_chunk), grad_out_chunk)
+
+            grad_v_ptrs = (
+                grad_V_ptr
+                + batch_id * grad_v_batch_stride
+                + head_id * grad_v_head_stride
+                + row_offsets[:, None] * grad_v_seq_stride
+                + col_offsets[None, :] * grad_v_dim_stride
+            )
+            valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < head_dim)
+            tl.store(grad_v_ptrs, acc, mask=valid_mask)
+
+
+@triton.jit
+def _fused_neighborhood_attention_grad_attn_kernel(
+    grad_output_ptr,
+    V_ptr,
+    grad_attn_ptr,
+    grad_out_batch_stride,
+    grad_out_head_stride,
+    grad_out_seq_stride,
+    grad_out_dim_stride,
+    v_batch_stride,
+    v_head_stride,
+    v_seq_stride,
+    v_dim_stride,
+    grad_attn_batch_stride,
+    grad_attn_head_stride,
+    grad_attn_seq_stride,
+    grad_attn_seq2_stride,
+    batch_size: tl.constexpr,
+    num_heads: tl.constexpr,
+    seq_len: tl.constexpr,
+    head_dim: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+):
+    """
+    Compute gradient with respect to attention weights: grad_attn = grad_output @ V^T.
+    """
+    pid = tl.program_id(0)
+    num_programs = tl.num_programs(0)
+
+    num_batch_heads = batch_size * num_heads
+    num_m_tiles = tl.cdiv(seq_len, BLOCK_SIZE_M)
+    total_tiles = num_batch_heads * num_m_tiles
+
+    for global_tile_id in tl.range(pid, total_tiles, num_programs):
+        batch_head_id = global_tile_id // num_m_tiles
+        tile_m = global_tile_id % num_m_tiles
+
+        batch_id = batch_head_id // num_heads
+        head_id = batch_head_id % num_heads
+
+        row_start = tile_m * BLOCK_SIZE_M
+        row_offsets = row_start + tl.arange(0, BLOCK_SIZE_M)
+
+        num_n_tiles = tl.cdiv(seq_len, BLOCK_SIZE_N)
+
+        for tile_n in range(num_n_tiles):
+            col_start = tile_n * BLOCK_SIZE_N
+            col_offsets = col_start + tl.arange(0, BLOCK_SIZE_N)
+
+            acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+
+            for k_start in range(0, head_dim, BLOCK_SIZE_K):
+                k_offsets = k_start + tl.arange(0, BLOCK_SIZE_K)
+                k_mask = k_offsets < head_dim
+
+                grad_out_ptrs = (
+                    grad_output_ptr
+                    + batch_id * grad_out_batch_stride
+                    + head_id * grad_out_head_stride
+                    + row_offsets[:, None] * grad_out_seq_stride
+                    + k_offsets[None, :] * grad_out_dim_stride
+                )
+                grad_out_mask = (row_offsets[:, None] < seq_len) & k_mask[None, :]
+                grad_out_chunk = tl.load(grad_out_ptrs, mask=grad_out_mask, other=0.0)
+
+                v_ptrs = (
+                    V_ptr
+                    + batch_id * v_batch_stride
+                    + head_id * v_head_stride
+                    + col_offsets[:, None] * v_seq_stride
+                    + k_offsets[None, :] * v_dim_stride
+                )
+                v_mask = (col_offsets[:, None] < seq_len) & k_mask[None, :]
+                v_chunk = tl.load(v_ptrs, mask=v_mask, other=0.0)
+                acc += tl.dot(grad_out_chunk, tl.trans(v_chunk))
+
+            grad_attn_ptrs = (
+                grad_attn_ptr
+                + batch_id * grad_attn_batch_stride
+                + head_id * grad_attn_head_stride
+                + row_offsets[:, None] * grad_attn_seq_stride
+                + col_offsets[None, :] * grad_attn_seq2_stride
+            )
+            valid_mask = (row_offsets[:, None] < seq_len) & (col_offsets[None, :] < seq_len)
+            tl.store(grad_attn_ptrs, acc, mask=valid_mask)
 
 
 def get_optimal_block_size(n_cols):
@@ -729,17 +701,13 @@ def fused_neighborhood_attention_forward(
         seq_len,
         head_dim,
         scale,
-        kernel_size,
-        dilation,
         BLOCK_SIZE_M,
         BLOCK_SIZE_N,
         BLOCK_SIZE_K,
     )
 
     qk_reshaped = qk_scores.view(batch_size * num_heads * seq_len, seq_len)
-    qk_reshaped_fp32 = qk_reshaped.to(torch.float32)
-    attn_reshaped_fp32, BLOCK_SIZE_softmax, ROWS_PER_BLOCK, multi_block_launch = _softmax_forward(qk_reshaped_fp32)
-    attn_reshaped = attn_reshaped_fp32.to(qk_scores.dtype)
+    attn_reshaped, BLOCK_SIZE_softmax, ROWS_PER_BLOCK, multi_block_launch = _softmax_forward(qk_reshaped)
     attn_weights = attn_reshaped.view(batch_size, num_heads, seq_len, seq_len)
 
     _fused_neighborhood_attention_av_kernel[(num_cores,)](

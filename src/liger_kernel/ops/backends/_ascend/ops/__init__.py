@@ -14,6 +14,9 @@ To add a new operator:
 If __all__ is not defined, all public symbols will be auto-discovered.
 """
 
+from liger_kernel.ops.backends._ascend.ops.cross_entropy import LigerCrossEntropyFunction
+from liger_kernel.ops.backends._ascend.ops.cross_entropy import cross_entropy_backward
+from liger_kernel.ops.backends._ascend.ops.cross_entropy import cross_entropy_forward
 from liger_kernel.ops.backends._ascend.ops.dyt import LigerDyTFunction
 from liger_kernel.ops.backends._ascend.ops.dyt import liger_dyt_bwd
 from liger_kernel.ops.backends._ascend.ops.dyt import liger_dyt_fwd
@@ -23,11 +26,20 @@ from liger_kernel.ops.backends._ascend.ops.embedding import embedding_forward
 from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction
 from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_rms_norm_backward
 from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_rms_norm_forward
+from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
+from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import fused_linear_jsd_backward
+from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import fused_linear_jsd_forward
 from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
 from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import fused_neighborhood_attention_forward
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
+from liger_kernel.ops.backends._ascend.ops.group_norm import LigerGroupNormFunction
+from liger_kernel.ops.backends._ascend.ops.group_norm import group_norm_backward
+from liger_kernel.ops.backends._ascend.ops.group_norm import group_norm_forward
+from liger_kernel.ops.backends._ascend.ops.grpo_loss import GrpoLossFunction
+from liger_kernel.ops.backends._ascend.ops.grpo_loss import grpo_loss_backward_triton
+from liger_kernel.ops.backends._ascend.ops.grpo_loss import grpo_loss_forward_triton
 from liger_kernel.ops.backends._ascend.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.backends._ascend.ops.jsd import jsd_backward
 from liger_kernel.ops.backends._ascend.ops.jsd import jsd_forward
