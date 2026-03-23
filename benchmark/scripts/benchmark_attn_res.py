@@ -4,6 +4,7 @@ AttnRes Benchmark: Liger (Triton) vs PyTorch vs torch.compile
 Kimi Attention Residuals: softmax attention over depth blocks.
 """
 
+import time
 import torch
 import triton
 
