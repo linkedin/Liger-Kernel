@@ -394,6 +394,8 @@ def test_correctness(
 ):
     if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo"):
         pytest.skip(f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'")
+    if importance_sampling_level == "token" and loss_type == "luspo":
+        pytest.skip("Token-level importance sampling is not supported for loss_type='luspo'")
     if delta is not None and loss_type in ("cispo", "sapo"):
         pytest.skip(f"delta is not supported for loss_type='{loss_type}'")
 
@@ -622,6 +624,8 @@ def test_correctness_with_bias_correction_kl(loss_type, dtype, atol, rtol):
 @pytest.mark.parametrize("beta", [0.0, 0.1])
 def test_correctness_with_vllm_is_ratio(loss_type, beta):
     """Test vllm_is_ratio correctness against torch reference, and 1D/2D shape equivalence."""
+    if loss_type == "luspo":
+        pytest.skip("Token-level importance sampling is not supported for loss_type='luspo'")
     torch.compiler.reset()
     B, T, H, V = 4, 32, 64, 128
     dtype = torch.float32
