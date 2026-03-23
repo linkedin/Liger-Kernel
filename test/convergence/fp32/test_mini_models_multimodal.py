@@ -1388,7 +1388,7 @@ def run_mini_model_multimodal(
         }
         if "llama4" in model_name:
             kwargs["rope"] = False
-        if "qwen2_5_vl" not in model_name and "llava" not in model_name and "qwen3_vl" not in model_name:
+        if "qwen2_5_vl" not in model_name and "llava" not in model_name and "qwen3_vl" not in model_name and "qwen3_5" not in model_name:
             kwargs["layer_norm"] = True
 
         if "qwen3_5" in model_name:
@@ -1715,10 +1715,6 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not is_torchvision_available(),
                     reason="Qwen3VLVideoProcessor requires torchvision",
-                ),
-                pytest.mark.skipif(
-                    True,
-                    reason="Flaky test",
                 ),
             ],
         ),
