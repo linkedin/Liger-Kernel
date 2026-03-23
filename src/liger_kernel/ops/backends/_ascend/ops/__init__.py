@@ -65,6 +65,9 @@ from liger_kernel.ops.backends._ascend.ops.rope import rope_forward
 from liger_kernel.ops.backends._ascend.ops.softmax import LigerSoftmaxFunction
 from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_backward
 from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_forward
+from liger_kernel.ops.backends._ascend.ops.sparsemax import LigerSparsemaxFunction
+from liger_kernel.ops.backends._ascend.ops.sparsemax import sparsemax_backward
+from liger_kernel.ops.backends._ascend.ops.sparsemax import sparsemax_forward
 from liger_kernel.ops.backends._ascend.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_backward
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_forward
@@ -130,4 +133,7 @@ __all__ = [
     "LigerGroupNormFunction",
     "group_norm_forward",
     "group_norm_backward",
+    "LigerSparsemaxFunction",
+    "sparsemax_forward",
+    "sparsemax_backward",
 ]
