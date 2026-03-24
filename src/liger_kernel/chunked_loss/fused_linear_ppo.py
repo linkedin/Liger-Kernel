@@ -13,7 +13,7 @@ def _maybe_mark_dynamic_dim1(tensor):
         torch._dynamo.maybe_mark_dynamic(tensor, 1)
 
 
-def _selective_logprob_forward_torch(hidden, weight, targets, bias=None, temperature=1.0, vocab_chunk_size=2048):
+def _selective_logprob_forward(hidden, weight, targets, bias=None, temperature=1.0, vocab_chunk_size=2048):
     """Compute selective log-probabilities by streaming over vocab chunks (cuBLAS per chunk).
 
     Uses in-place ops and pre-allocated buffers for memory efficiency.
@@ -56,11 +56,6 @@ def _selective_logprob_forward_torch(hidden, weight, targets, bias=None, tempera
 
     log_z = max_old + torch.log(sum_exp)
     return target_logit - log_z, log_z
-
-
-def _selective_logprob_forward(hidden, weight, targets, bias=None, temperature=1.0, vocab_chunk_size=2048):
-    """Detached (no-grad) selective logprob forward used by ops/grpo_loss.py."""
-    return _selective_logprob_forward_torch(hidden, weight, targets, bias, temperature, vocab_chunk_size)
 
 
 def _selective_logprob_backward(hidden, weight, targets, bias, log_z, grad_logprobs, temperature, vocab_chunk_size):
