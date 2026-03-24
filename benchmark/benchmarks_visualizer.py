@@ -288,6 +288,7 @@ def main():
             kernel_name=args.kernel_name,
             metric_name=args.metric_name,
             kernel_operation_mode=mode,
+            extra_config_filter=args.extra_config_filter,
             display=args.display,
             overwrite=args.overwrite,
         )
