@@ -186,7 +186,7 @@ def _grpo_loss_fwd_kernel(
                 m_i = new_m_i
             lse = m_i + tl.log(l_i)
 
-            idx = tl.load(INPUT_IDS_local)
+            idx = tl.load(INPUT_IDS_local).to(tl.int32)
             x = tl.load(LOGITS_local + idx).to(tl.float32) / TEMPERATURE
             logp = x - lse
             if OLD_LOGP is None:
@@ -306,7 +306,7 @@ def _grpo_loss_fwd_kernel_seq(
                 m_i = new_m_i
             lse = m_i + tl.log(l_i)
 
-            idx = tl.load(INPUT_IDS_local)
+            idx = tl.load(INPUT_IDS_local).to(tl.int32)
             x = tl.load(LOGITS_local + idx).to(tl.float32) / TEMPERATURE
             logp = x - lse
 
@@ -411,7 +411,7 @@ def _grpo_loss_bwd_kernel_seq(
             coef_1 = tl.load(COEF_1_local).to(tl.float32)
             seq_len = tl.load(SEQ_LEN_local).to(tl.float32)
 
-            idx = tl.load(INPUT_IDS_local)
+            idx = tl.load(INPUT_IDS_local).to(tl.int32)
             x = tl.load(LOGITS_local + idx).to(tl.float32) / TEMPERATURE
             logp = x - lse
 
@@ -447,7 +447,8 @@ def _grpo_loss_bwd_kernel_seq(
                 cols = start_n + tl.arange(0, BLOCK_N)
                 logits = tl.load(LOGITS_local + cols, mask=cols < N, other=-float("inf")).to(tl.float32) / TEMPERATURE
                 probs = tl.exp(logits - lse)
-                dlogits = tl.where(cols == idx, 1 - probs, -probs) * dlogp
+                cols_idx = cols == idx
+                dlogits = (cols_idx - probs) * dlogp
                 tl.store(DLOGITS_local + cols, dlogits, mask=cols < N)
 
 
@@ -514,7 +515,7 @@ def _grpo_loss_bwd_kernel(
             dloss = tl.load(DLOSS_local).to(tl.float32)
             lse = tl.load(LSE_local).to(tl.float32)
 
-            idx = tl.load(INPUT_IDS_local)
+            idx = tl.load(INPUT_IDS_local).to(tl.int32)
             x = tl.load(LOGITS_local + idx).to(tl.float32) / TEMPERATURE
             logp = x - lse
             if OLD_LOGP is None:
@@ -564,12 +565,12 @@ def _grpo_loss_bwd_kernel(
                     dlogp += BETA * (1 - tl.exp(ref_logp - logp))
 
             dlogp = dlogp * dloss / TEMPERATURE
-            tl.debug_barrier()
             for start_n in tl.range(0, N, BLOCK_N):
                 cols = start_n + tl.arange(0, BLOCK_N)
                 logits = tl.load(LOGITS_local + cols, mask=cols < N, other=-float("inf")).to(tl.float32) / TEMPERATURE
                 probs = tl.exp(logits - lse)
-                dlogits = tl.where(cols == idx, 1 - probs, -probs) * dlogp
+                cols_idx = cols == idx
+                dlogits = (cols_idx - probs) * dlogp
                 tl.store(DLOGITS_local + cols, dlogits, mask=cols < N)
 
 
