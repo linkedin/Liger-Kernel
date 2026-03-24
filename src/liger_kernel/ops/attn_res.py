@@ -36,8 +36,8 @@ def _attn_res_fwd_kernel(
     W_query_ptr,    # [D] learned pseudo-query
     W_norm_ptr,     # [D] RMSNorm weight for keys
     Out_ptr,        # [B*T, D] output
-    Alpha_ptr,      # [N, B*T] attention weights (saved for bwd)
-    RSTD_ptr,       # [N, B*T] rstd per (block, token)
+    Alpha_ptr,      # [B*T, N] attention weights (saved for bwd)
+    RSTD_ptr,       # [B*T, N] rstd per (token, block)
     n_blocks,       # N
     n_tokens,       # B*T
     D,              # hidden dim
@@ -55,9 +55,12 @@ def _attn_res_fwd_kernel(
     w_norm  = tl.load(W_norm_ptr  + cols, mask=d_mask, other=0.0)
 
     # Pass 1: compute scores = dot(w_query, RMSNorm(v_i)) for each block
-    # Store scores in register array
-    scores = tl.zeros((MAX_BLOCKS,), dtype=tl.float32) - 1e9  # -inf for unused
-    score_max = tl.full((), -1e9, dtype=tl.float32)
+    # scores[i] is stored at register position i via tl.where (workaround for
+    # Triton lacking true scalar indexing into a register-held vector; the
+    # tl.where pattern compiles to a predicated move and keeps everything in
+    # registers without spilling to global memory).
+    scores = tl.zeros((MAX_BLOCKS,), dtype=tl.float32) + float("-inf")
+    score_max = tl.full((), float("-inf"), dtype=tl.float32)
 
     for i in tl.static_range(0, MAX_BLOCKS):
         if i < n_blocks:
@@ -67,7 +70,8 @@ def _attn_res_fwd_kernel(
             # RMSNorm: k = v * rstd * w_norm
             ms = tl.sum(v * v, axis=0) / D
             rstd = tl.rsqrt(ms + eps)
-            tl.store(RSTD_ptr + i * n_tokens + tok, rstd)
+            # Alpha/RSTD layout: [B*T, N] — contiguous along N for each token
+            tl.store(RSTD_ptr + tok * n_blocks + i, rstd)
 
             k = (v * rstd).to(w_norm.dtype) * w_norm
 
@@ -85,11 +89,11 @@ def _attn_res_fwd_kernel(
     sum_exp = tl.sum(exp_scores, axis=0)
     alpha = exp_scores / sum_exp  # [MAX_BLOCKS]
 
-    # Store alpha for backward
+    # Store alpha for backward — layout [B*T, N], contiguous along N
     for i in tl.static_range(0, MAX_BLOCKS):
         if i < n_blocks:
             a_i = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, alpha, 0.0))
-            tl.store(Alpha_ptr + i * n_tokens + tok, a_i)
+            tl.store(Alpha_ptr + tok * n_blocks + i, a_i)
 
     # Pass 2: weighted sum h = sum(alpha_i * v_i)
     h = tl.zeros((BLOCK_D,), dtype=tl.float32)
@@ -100,7 +104,8 @@ def _attn_res_fwd_kernel(
             a_i = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, alpha, 0.0))
             h += a_i * v
 
-    tl.store(Out_ptr + tok * D + cols, h.to(tl.load(V_ptr).dtype), mask=d_mask)
+    # tl.store handles implicit dtype conversion
+    tl.store(Out_ptr + tok * D + cols, h, mask=d_mask)
 
 
 # ============================================================================
@@ -113,8 +118,8 @@ def _attn_res_bwd_kernel(
     V_ptr,          # [N, B*T, D]
     W_query_ptr,    # [D]
     W_norm_ptr,     # [D]
-    Alpha_ptr,      # [N, B*T] saved from forward
-    RSTD_ptr,       # [N, B*T] saved from forward
+    Alpha_ptr,      # [B*T, N] saved from forward
+    RSTD_ptr,       # [B*T, N] saved from forward
     dV_ptr,         # [N, B*T, D] output gradients
     dW_query_ptr,   # [D] atomic accumulate
     dW_norm_ptr,    # [D] atomic accumulate
@@ -131,8 +136,7 @@ def _attn_res_bwd_kernel(
     w_query = tl.load(W_query_ptr + cols, mask=d_mask, other=0.0).to(tl.float32)
     w_norm  = tl.load(W_norm_ptr  + cols, mask=d_mask, other=0.0).to(tl.float32)
 
-    # Load alpha and v for all blocks
-    # d(h)/d(alpha_i) = v_i  →  d_alpha_i = dot(dh, v_i)
+    # Load alpha for all blocks — layout [B*T, N], contiguous load
     d_alpha = tl.zeros((MAX_BLOCKS,), dtype=tl.float32)
     alpha   = tl.zeros((MAX_BLOCKS,), dtype=tl.float32)
 
@@ -140,7 +144,7 @@ def _attn_res_bwd_kernel(
         if i < n_blocks:
             v_off = i * n_tokens * D + tok * D
             v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
-            a_i = tl.load(Alpha_ptr + i * n_tokens + tok)
+            a_i = tl.load(Alpha_ptr + tok * n_blocks + i)
 
             da_i = tl.sum(dh * v, axis=0)
             d_alpha = tl.where(tl.arange(0, MAX_BLOCKS) == i, da_i, d_alpha)
@@ -160,7 +164,7 @@ def _attn_res_bwd_kernel(
             v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
             a_i  = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, alpha, 0.0))
             ds_i = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, d_scores, 0.0))
-            rstd = tl.load(RSTD_ptr + i * n_tokens + tok)
+            rstd = tl.load(RSTD_ptr + tok * n_blocks + i)
 
             # dV_i from weighted sum: alpha_i * dh
             dv_from_sum = a_i * dh
@@ -179,7 +183,8 @@ def _attn_res_bwd_kernel(
             dv_from_score = rstd * dk - rstd * rstd * rstd * (sum_dk_v / D) * v
 
             dv_total = dv_from_sum + dv_from_score
-            tl.store(dV_ptr + v_off + cols, dv_total.to(tl.load(V_ptr).dtype), mask=d_mask)
+            # tl.store handles implicit dtype conversion
+            tl.store(dV_ptr + v_off + cols, dv_total, mask=d_mask)
 
             # dW_query += d_score_i * k_i
             k_i = v_norm * w_norm
@@ -217,8 +222,8 @@ def attn_res_forward(blocks, w_query, w_norm, eps=1e-6):
     Returns:
         h: [B, T, D] weighted output
         V: [N, B*T, D] stacked (saved for bwd)
-        alpha: [N, B*T] attention weights
-        rstd: [N, B*T] per-block rstd
+        alpha: [B*T, N] attention weights
+        rstd: [B*T, N] per-token rstd
     """
     if isinstance(blocks, (list, tuple)):
         V = torch.stack(blocks)  # [N, B, T, D]
@@ -236,8 +241,9 @@ def attn_res_forward(blocks, w_query, w_norm, eps=1e-6):
     w_norm  = w_norm.contiguous()
 
     Out   = torch.empty(n_tokens, D, device=V.device, dtype=V.dtype)
-    Alpha = torch.empty(N, n_tokens, device=V.device, dtype=torch.float32)
-    RSTD  = torch.empty(N, n_tokens, device=V.device, dtype=torch.float32)
+    # Layout [B*T, N] for coalesced access per token
+    Alpha = torch.empty(n_tokens, N, device=V.device, dtype=torch.float32)
+    RSTD  = torch.empty(n_tokens, N, device=V.device, dtype=torch.float32)
 
     BLOCK_D = _next_pow2(D)
     MAX_BLOCKS = _get_max_blocks(N)
@@ -314,5 +320,3 @@ class LigerAttnResFunction(torch.autograd.Function):
         # Reshape dV back to original input shape
         dV = dV.view(ctx.orig_shape)
         return dV, dW_query, dW_norm, None
-
-
