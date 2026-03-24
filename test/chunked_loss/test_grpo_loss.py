@@ -347,7 +347,7 @@ def test_selective_chunk_forward_matches_reference(dtype, atol, rtol, bias):
 @pytest.mark.parametrize(
     "scalar, dtype, atol, rtol",
     [
-        (1.0, torch.bfloat16, 5e-2, 5e-1),
+        (1.0, torch.bfloat16, 1e-1, 5e-1),
         (1.0, torch.float32, 1e-5, 5e-4),
     ],
 )

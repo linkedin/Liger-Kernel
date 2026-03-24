@@ -197,6 +197,156 @@ set_seed(42)
 device = infer_device()
 
 
+def _materialize_logits(hidden_states, lm_head_weight, lm_head_bias=None):
+    logits = hidden_states @ lm_head_weight.t()
+    if lm_head_bias is not None:
+        logits = logits + lm_head_bias
+    return logits
+
+
+def _assert_hidden_state_grpo_matches_reference(
+    *,
+    B=2,
+    T=8,
+    H=32,
+    V=128,
+    temperature=0.7,
+    beta=0.04,
+    eps_low=0.2,
+    eps_high=0.4,
+    importance_sampling_level="token",
+    loss_type="grpo",
+    delta=None,
+    use_bias_correction_kl=False,
+    vllm_is_ratio=None,
+):
+    grad_rtol = 5e-3 if use_bias_correction_kl else 2e-3
+    grad_atol = 1e-4
+    weight_grad_rtol = 5e-3 if (use_bias_correction_kl or vllm_is_ratio is not None) else 2e-3
+
+    hidden2 = torch.randn(B, T + 1, H, device=device, dtype=torch.float32, requires_grad=True)
+    hidden3 = hidden2.detach().clone().requires_grad_(True)
+    weight2 = torch.randn(V, H, device=device, dtype=torch.float32, requires_grad=True)
+    weight3 = weight2.detach().clone().requires_grad_(True)
+    bias2 = torch.randn(V, device=device, dtype=torch.float32, requires_grad=True)
+    bias3 = bias2.detach().clone().requires_grad_(True)
+
+    completion_ids = torch.randint(0, V, (B, T), dtype=torch.int64, device=device)
+    completion_mask = torch.ones_like(completion_ids, dtype=torch.float32)
+    completion_mask[:, -2:] = 0
+
+    logits3 = _materialize_logits(hidden3, weight3, bias3)
+    with torch.no_grad():
+        log_probs = torch.log_softmax((logits3[:, :-1, :] / temperature).float(), dim=-1)
+        current_logp = log_probs.gather(-1, completion_ids.unsqueeze(-1)).squeeze(-1)
+        old_logp = current_logp + torch.randn_like(current_logp) * 0.2
+        ref_logp = current_logp + torch.randn_like(current_logp) * 0.2 if beta != 0.0 else None
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+
+    if importance_sampling_level == "sequence":
+        reduced_out, _ = triton_grpo_loss(
+            hidden_states=hidden2,
+            lm_head_weight=weight2,
+            old_logp=old_logp,
+            ref_logp=ref_logp,
+            completion_ids=completion_ids,
+            advantages=advantages,
+            completion_mask=completion_mask,
+            lm_head_bias=bias2,
+            temperature=temperature,
+            beta=beta,
+            eps_low=eps_low,
+            eps_high=eps_high,
+            loss_type=loss_type,
+            importance_sampling_level=importance_sampling_level,
+            max_completion_length=T,
+            reduce=True,
+            delta=delta,
+            use_bias_correction_kl=use_bias_correction_kl,
+            vllm_is_ratio=vllm_is_ratio,
+        )
+        reduced_ref, _ = triton_grpo_loss(
+            logits=logits3,
+            old_logp=old_logp,
+            ref_logp=ref_logp,
+            completion_ids=completion_ids,
+            advantages=advantages,
+            completion_mask=completion_mask,
+            temperature=temperature,
+            beta=beta,
+            eps_low=eps_low,
+            eps_high=eps_high,
+            loss_type=loss_type,
+            importance_sampling_level=importance_sampling_level,
+            max_completion_length=T,
+            reduce=True,
+            delta=delta,
+            use_bias_correction_kl=use_bias_correction_kl,
+            vllm_is_ratio=vllm_is_ratio,
+        )
+        torch.testing.assert_close(reduced_out, reduced_ref, rtol=1e-4, atol=1e-4)
+        reduced_out.backward()
+        reduced_ref.backward()
+        assert_verbose_allclose(hidden2.grad, hidden3.grad, atol=grad_atol, rtol=max(grad_rtol, 3e-3))
+        assert_verbose_allclose(weight2.grad, weight3.grad, atol=grad_atol, rtol=max(weight_grad_rtol, 4e-3))
+        assert_verbose_allclose(bias2.grad, bias3.grad, atol=grad_atol, rtol=max(grad_rtol, 3e-3))
+        return
+
+    loss2, kl2, is_clipped2 = triton_grpo_loss(
+        hidden_states=hidden2,
+        lm_head_weight=weight2,
+        old_logp=old_logp,
+        ref_logp=ref_logp,
+        completion_ids=completion_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        lm_head_bias=bias2,
+        temperature=temperature,
+        beta=beta,
+        eps_low=eps_low,
+        eps_high=eps_high,
+        loss_type=loss_type,
+        importance_sampling_level=importance_sampling_level,
+        max_completion_length=T,
+        reduce=False,
+        delta=delta,
+        use_bias_correction_kl=use_bias_correction_kl,
+        vllm_is_ratio=vllm_is_ratio,
+    )
+
+    loss3, kl3, is_clipped3 = triton_grpo_loss(
+        logits=logits3,
+        old_logp=old_logp,
+        ref_logp=ref_logp,
+        completion_ids=completion_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        temperature=temperature,
+        beta=beta,
+        eps_low=eps_low,
+        eps_high=eps_high,
+        loss_type=loss_type,
+        importance_sampling_level=importance_sampling_level,
+        max_completion_length=T,
+        reduce=False,
+        delta=delta,
+        use_bias_correction_kl=use_bias_correction_kl,
+        vllm_is_ratio=vllm_is_ratio,
+    )
+
+    dy = torch.randn_like(loss3)
+    loss2.backward(dy)
+    loss3.backward(dy)
+
+    assert_verbose_allclose(loss2, loss3, atol=1e-4, rtol=2e-3)
+    if kl2 is not None and kl3 is not None:
+        assert_verbose_allclose(kl2, kl3, atol=1e-4, rtol=2e-3)
+    assert_verbose_allclose(is_clipped2, is_clipped3, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(hidden2.grad, hidden3.grad, atol=grad_atol, rtol=grad_rtol)
+    assert_verbose_allclose(weight2.grad, weight3.grad, atol=grad_atol, rtol=weight_grad_rtol)
+    assert_verbose_allclose(bias2.grad, bias3.grad, atol=grad_atol, rtol=grad_rtol)
+
+
 @pytest.mark.parametrize(
     "temperature, B, T, V",
     [
@@ -227,6 +377,93 @@ def test_selective_log_softmax(B, T, V, temperature, dtype, atol, rtol):
 
     assert_verbose_allclose(torch_bf16_logp, torch_fp32_logp.to(dtype), rtol=rtol, atol=atol)
     assert_verbose_allclose(triton_bf16_logp, torch_fp32_logp.to(dtype), rtol=rtol, atol=atol)
+
+
+def test_fused_linear_grpo_loss_matches_reference():
+    B, T, H, V = 2, 8, 32, 128
+    temperature = 0.7
+    beta = 0.04
+    eps_low = 0.2
+    eps_high = 0.4
+
+    hidden1 = torch.randn(B, T + 1, H, device=device, dtype=torch.float32, requires_grad=True)
+    hidden2 = hidden1.detach().clone().requires_grad_(True)
+    hidden3 = hidden1.detach().clone().requires_grad_(True)
+
+    weight1 = torch.randn(V, H, device=device, dtype=torch.float32, requires_grad=True)
+    weight2 = weight1.detach().clone().requires_grad_(True)
+    weight3 = weight1.detach().clone().requires_grad_(True)
+
+    bias1 = torch.randn(V, device=device, dtype=torch.float32, requires_grad=True)
+    bias2 = bias1.detach().clone().requires_grad_(True)
+    bias3 = bias1.detach().clone().requires_grad_(True)
+
+    completion_ids = torch.randint(0, V, (B, T), dtype=torch.int64, device=device)
+    completion_mask = torch.ones_like(completion_ids, dtype=torch.int32)
+    completion_mask[:, -2:] = 0
+    advantages = torch.randn(B, device=device, dtype=torch.float32)
+
+    logits1 = _materialize_logits(hidden1, weight1, bias1)
+    logits3 = _materialize_logits(hidden3, weight3, bias3)
+    log_probs = torch.log_softmax((logits3[:, :-1, :] / temperature).float(), dim=-1)
+    per_token_logps = log_probs.gather(-1, completion_ids.unsqueeze(-1)).squeeze(-1)
+    old_logp = per_token_logps.detach() + torch.randn_like(per_token_logps) * 0.2
+    ref_logp = per_token_logps.detach() + torch.randn_like(per_token_logps) * 0.2
+    coef_1 = torch.exp(per_token_logps - old_logp)
+    ref_is_clipped = ((coef_1 < 1 - eps_low) & (advantages.unsqueeze(1) < 0)) | (
+        (coef_1 > 1 + eps_high) & (advantages.unsqueeze(1) > 0)
+    )
+
+    loss1, kl1, is_clipped1 = torch_grpo_loss(
+        logits1, old_logp, ref_logp, completion_ids, advantages, completion_mask, temperature, beta, eps_low, eps_high
+    )
+    loss2, kl2, is_clipped2 = triton_grpo_loss(
+        hidden_states=hidden2,
+        lm_head_weight=weight2,
+        old_logp=old_logp,
+        ref_logp=ref_logp,
+        completion_ids=completion_ids,
+        advantages=advantages,
+        completion_mask=completion_mask,
+        lm_head_bias=bias2,
+        temperature=temperature,
+        beta=beta,
+        eps_low=eps_low,
+        eps_high=eps_high,
+        inplace=False,
+    )
+    loss3, kl3, is_clipped3 = torch_grpo_loss(
+        logits3, old_logp, ref_logp, completion_ids, advantages, completion_mask, temperature, beta, eps_low, eps_high
+    )
+
+    dy = torch.randn_like(loss3)
+    loss1.backward(dy)
+    loss2.backward(dy)
+    loss3.backward(dy)
+
+    assert_verbose_allclose(loss2, loss3, atol=1e-5, rtol=5e-4)
+    assert_verbose_allclose(kl2, kl3, atol=1e-5, rtol=5e-4)
+    assert_verbose_allclose(is_clipped2, ref_is_clipped.float() * completion_mask.float(), atol=1e-5, rtol=5e-4)
+    assert_verbose_allclose(hidden2.grad, hidden3.grad, atol=1e-4, rtol=2e-3)
+    assert_verbose_allclose(weight2.grad, weight3.grad, atol=1e-4, rtol=2e-3)
+    assert_verbose_allclose(bias2.grad, bias3.grad, atol=1e-4, rtol=2e-3)
+
+
+def test_fused_linear_grpo_loss_sequence_matches_reference():
+    _assert_hidden_state_grpo_matches_reference(importance_sampling_level="sequence")
+
+
+def test_fused_linear_grpo_loss_with_delta_matches_reference():
+    _assert_hidden_state_grpo_matches_reference(delta=1.5)
+
+
+def test_fused_linear_grpo_loss_with_bias_correction_kl_matches_reference():
+    _assert_hidden_state_grpo_matches_reference(use_bias_correction_kl=True)
+
+
+def test_fused_linear_grpo_loss_with_vllm_is_ratio_matches_reference():
+    vllm_is_ratio = torch.rand(2, 8, device=device, dtype=torch.float32) * 0.999 + 0.001
+    _assert_hidden_state_grpo_matches_reference(vllm_is_ratio=vllm_is_ratio)
 
 
 @pytest.mark.parametrize(

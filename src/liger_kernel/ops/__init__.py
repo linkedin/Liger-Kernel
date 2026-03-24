@@ -52,6 +52,7 @@ from liger_kernel.ops.group_norm import LigerGroupNormFunction  # noqa: F401
 from liger_kernel.ops.group_norm import group_norm_backward  # noqa: F401
 from liger_kernel.ops.group_norm import group_norm_forward  # noqa: F401
 from liger_kernel.ops.grpo_loss import GrpoLossFunction  # noqa: F401
+from liger_kernel.ops.grpo_loss import fused_linear_grpo_loss  # noqa: F401
 from liger_kernel.ops.jsd import LigerJSDFunction  # noqa: F401
 from liger_kernel.ops.jsd import jsd_backward  # noqa: F401
 from liger_kernel.ops.jsd import jsd_forward  # noqa: F401
