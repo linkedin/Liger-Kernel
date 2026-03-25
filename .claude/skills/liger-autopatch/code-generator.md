@@ -1,154 +1,72 @@
 # Code Generator Agent
 
-You are a code generation agent for the Liger Kernel auto-patch system. You receive a confirmed model profile and generate all required files to add Liger Kernel support.
-
-## Input
-
-A model profile markdown document (produced by the Model Analyzer).
+Takes a confirmed model profile and generates all files to add Liger Kernel support.
 
 ## Pre-Requisites
 
-Before generating code:
-1. Read the model profile carefully — every field matters.
-2. Read the reference implementation that most closely matches this model:
-   - Dense model → read `src/liger_kernel/transformers/model/llama.py`
-   - MoE model → read `src/liger_kernel/transformers/model/mixtral.py`
-   - Vision-Language → read `src/liger_kernel/transformers/model/qwen2_vl.py`
-   - Gemma-family (GeGLU, offset) → read `src/liger_kernel/transformers/model/gemma.py`
-3. Read the corresponding patching function in `monkey_patch.py` for that reference.
-4. Read the templates in `.claude/skills/liger-autopatch/templates/`.
+Before generating, read the reference implementation closest to this model:
+- Dense → `src/liger_kernel/transformers/model/llama.py`
+- MoE → `src/liger_kernel/transformers/model/mixtral.py`
+- Vision-Language → `src/liger_kernel/transformers/model/qwen2_vl.py`
+- Gemma-family → `src/liger_kernel/transformers/model/gemma.py`
+
+Also read the corresponding patching function in `monkey_patch.py` and the templates in [templates/](templates/).
 
 ## Files to Generate
 
-### File 1: `src/liger_kernel/transformers/model/{model_type}.py` (NEW)
+### 1. `src/liger_kernel/transformers/model/{model_type}.py` (NEW)
 
-This contains the `lce_forward` function. Follow the template in `templates/lce-forward-dense.md` or `templates/lce-forward-moe.md`.
+The `lce_forward` function. See [templates/lce-forward-dense.md](templates/lce-forward-dense.md) or [templates/lce-forward-moe.md](templates/lce-forward-moe.md).
 
 Key rules:
-- Match the exact forward signature from the HF model's `ForCausalLM.forward`
-- Use `LigerForCausalLMLoss` from `liger_kernel.transformers.model.loss_utils`
-- Use `unpack_cross_entropy_result` for unpacking loss results
-- Use the correct output class from `output_classes.py`
-- Import `lce_maybe_trainable_lm_head` from `liger_kernel.transformers.model.llama` (shared utility)
-- Handle `logits_to_keep` slicing correctly
-- Handle `skip_logits` logic correctly
-- Pass `final_logit_softcapping` if the model uses softcapping
+- Match the exact forward signature from HF's `ForCausalLM.forward`
+- Use `lce_maybe_trainable_lm_head` from `llama.py` (shared PEFT/FSDP utility)
+- If model needs custom loss args (e.g., softcapping), write a local helper instead
 
-### File 2: `src/liger_kernel/transformers/monkey_patch.py` (MODIFY)
+### 2. `src/liger_kernel/transformers/monkey_patch.py` (MODIFY)
 
-Three changes needed:
+Three changes — see [templates/monkey-patch-fn.md](templates/monkey-patch-fn.md):
 
-**A. Add import at top of file** (near other lce_forward imports, ~line 18-28):
+**A.** Add lce_forward import (~line 18-28):
 ```python
 from liger_kernel.transformers.model.{model_type} import lce_forward as {model_type}_lce_forward
 ```
 
-**B. Add the `apply_liger_kernel_to_{model_type}` function.**
+**B.** Add `apply_liger_kernel_to_{model_type}` function with both class-level and instance-level patching paths.
 
-Follow the template in `templates/monkey-patch-fn.md`. The function must handle:
-- Class-level patching (when `model=None`)
-- Instance-level patching (when `model` is provided)
-- All boolean flags (rope, cross_entropy, fused_linear_cross_entropy, rms_norm, swiglu/geglu, layer_norm)
-- The `assert not (cross_entropy and fused_linear_cross_entropy)` guard
-- Correct RMSNorm parameters (offset, casting_mode, in_place)
-- Correct MLP class replacement
-- Version-aware MoE handling if applicable
+**C.** Add entry to `MODEL_TYPE_TO_APPLY_LIGER_FN` dict (~line 3067).
 
-**C. Add entry to `MODEL_TYPE_TO_APPLY_LIGER_FN` dict** (~line 3067):
-```python
-"model_type": apply_liger_kernel_to_model_type,
-```
-If the model has a `_text` variant (for multimodal), add both:
-```python
-"model_type": apply_liger_kernel_to_model_type,
-"model_type_text": apply_liger_kernel_to_model_type,
-```
+### 3. `src/liger_kernel/transformers/__init__.py` (MODIFY)
 
-### File 3: `src/liger_kernel/transformers/__init__.py` (MODIFY)
+Add the function in three locations (maintain alphabetical order):
+- `TYPE_CHECKING` block
+- `__getattr__` monkey_patch_symbols set
+- `__all__` list extension
 
-Add the new function in three places:
+### 4. `src/liger_kernel/transformers/model/output_classes.py` (MODIFY if needed)
 
-**A. TYPE_CHECKING block** (~line 34-74):
-```python
-from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_{model_type}
-```
+Only for models needing custom output (MoE with `aux_loss`, VL with `rope_deltas`). Follow the existing guarded-import pattern in the file.
 
-**B. `__getattr__` monkey_patch_symbols set** (~line 109-149):
-```python
-"apply_liger_kernel_to_{model_type}",
-```
+### 5. `test/transformers/test_monkey_patch.py` (MODIFY)
 
-**C. `__all__` list extension** (~line 189-232):
-```python
-"apply_liger_kernel_to_{model_type}",
-```
+See [templates/test-instance-patch.md](templates/test-instance-patch.md). Add availability checker + skipif-decorated test function using `inspect.getsource()` assertions.
 
-Maintain alphabetical order in all three locations.
+### 6. `test/convergence/bf16/test_mini_models.py` (MODIFY)
 
-### File 4: `src/liger_kernel/transformers/model/output_classes.py` (MODIFY — if needed)
+See [templates/test-convergence.md](templates/test-convergence.md). Add imports, availability guard, and `MiniModelConfig` entry.
 
-Only modify if the model needs a custom output class (MoE with aux_loss, or VL with extra fields like rope_deltas).
+### 7. `test/utils.py` (MODIFY)
 
-Pattern:
-```python
-try:
-    from transformers.models.{model_type}.modeling_{model_type} import (
-        {ModelOutputClass} as _{ModelOutputClass},
-    )
-except Exception:
-    _{ModelOutputClass} = None
+Add `revert_liger_kernel_to_{model_type}` function that reloads the modeling module.
 
-if _{ModelOutputClass} is not None:
-    @dataclass
-    class Liger{ModelOutputClass}(_{ModelOutputClass}):
-        token_accuracy: Optional[torch.FloatTensor] = None
-        predicted_tokens: Optional[torch.LongTensor] = None
-```
+### 8. `README.md` (MODIFY)
 
-### File 5: `test/transformers/test_monkey_patch.py` (MODIFY)
-
-Follow the template in `templates/test-instance-patch.md`.
-
-Add:
-- An availability checker function at module level
-- A `@pytest.mark.skipif` decorated test function
-- Create a mini config, instantiate with `from_config`
-- Verify unpatched state, apply patch, verify patched state
-- Use `inspect.getsource()` for all assertions
-
-### File 6: `test/convergence/bf16/test_mini_models.py` (MODIFY)
-
-Follow the template in `templates/test-convergence.md`.
-
-Add:
-- Import for the model's Config and ForCausalLM classes (with try/except)
-- Import for `apply_liger_kernel_to_{model_type}` and `revert_liger_kernel_to_{model_type}`
-- A `MiniModelConfig` entry in the `MINI_MODEL_CONFIGS` list
-- The mini config must use small values (2 layers, 32 hidden, 64 intermediate)
-
-### File 7: `test/utils.py` (MODIFY)
-
-Add a `revert_liger_kernel_to_{model_type}` function:
-```python
-def revert_liger_kernel_to_{model_type}(model_config: MiniModelConfig):
-    from transformers.models.{model_type} import modeling_{model_type}
-    importlib.reload(modeling_{model_type})
-    model_config.model_class = modeling_{model_type}.{CausalLMClass}
-    print("Liger kernel patches have been reverted.")
-```
-
-### File 8: `README.md` (MODIFY)
-
-Add a row to the Patching table under "## High-level APIs > ### Patching":
+Add row to the Patching table under "### Patching":
 ```
 | {ModelName} | `liger_kernel.transformers.apply_liger_kernel_to_{model_type}` | {Supported Operations} |
 ```
 
-## Code Style Rules
+## Code Style
 
-- Line length: 120 characters max
-- Double quotes for strings
-- Single imports (one per line), sorted with isort
-- Follow the exact patterns from existing code — do not innovate on style
-- Use `from __future__ import annotations` only if the reference file uses it
-- Ensure the project is installed (`pip install -e ".[dev]"`) before running any Python
+- Line length 120, double quotes, single imports sorted with isort
+- Follow exact patterns from existing code — do not innovate on style
