@@ -13,6 +13,12 @@ DATA_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "data/all_be
 VISUALIZATIONS_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "visualizations/"))
 
 
+# Map --sweep-mode values to the x_name used in benchmark CSV data.
+# "model_config" sweeps always write x_name="model_config"; token-length
+# sweeps use kernel-specific names (e.g. "T"), so we match them by exclusion.
+SWEEP_MODE_X_NAME = "model_config"
+
+
 @dataclass
 class VisualizationsConfig:
     """
@@ -22,6 +28,9 @@ class VisualizationsConfig:
         kernel_name (str): Kernel name to benchmark. (Will run `scripts/benchmark_{kernel_name}.py`)
         metric_name (str): Metric name to visualize (speed/memory)
         kernel_operation_mode (str): Kernel operation mode to visualize (forward/backward/full). Defaults to "full"
+        sweep_mode (str, optional): Sweep mode to filter data. "token_length" selects
+            token/sequence-length sweep data; "model_config" selects model-configuration
+            sweep data. When None, all data is considered (legacy behaviour).
         extra_config_filter (str, optional): A string to filter extra_benchmark_config.
                                             Can be a substring to match or a 'key=value' pair (e.g., "'H': 4096").
                                             Defaults to None, which means the first available config will be used if multiple exist.
@@ -33,6 +42,7 @@ class VisualizationsConfig:
     kernel_name: str
     metric_name: str
     kernel_operation_mode: str = "full"
+    sweep_mode: str = "token_length"
     extra_config_filter: str | None = None
     display: bool = False
     overwrite: bool = False
@@ -58,6 +68,15 @@ def parse_args() -> VisualizationsConfig:
         nargs="*",
         default=None,
         help="Kernel operation modes to visualize (forward/backward/full). If not provided, generate for all available modes.",
+    )
+    parser.add_argument(
+        "--sweep-mode",
+        type=str,
+        choices=["token_length", "model_config"],
+        default="token_length",
+        help="Sweep mode used when running the benchmark. "
+        "'token_length' selects token/sequence-length sweep data (default); "
+        "'model_config' selects model-configuration sweep data.",
     )
     parser.add_argument(
         "--extra-config-filter",
@@ -93,11 +112,19 @@ def load_data(config: VisualizationsConfig) -> pd.DataFrame:
     df = pd.read_csv(DATA_PATH)
     df["extra_benchmark_config"] = df["extra_benchmark_config_str"].apply(json.loads)
 
-    base_filtered_df = df[
+    mask = (
         (df["kernel_name"] == config.kernel_name)
         & (df["metric_name"] == config.metric_name)
         & (df["kernel_operation_mode"] == config.kernel_operation_mode)
-    ]
+    )
+
+    # Filter by sweep mode early, before extra_benchmark_config resolution.
+    if config.sweep_mode == "model_config":
+        mask = mask & (df["x_name"] == SWEEP_MODE_X_NAME)
+    elif config.sweep_mode == "token_length":
+        mask = mask & (df["x_name"] != SWEEP_MODE_X_NAME)
+
+    base_filtered_df = df[mask]
 
     if base_filtered_df.empty:
         raise ValueError(
@@ -201,6 +228,14 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    # Convert x_value to numeric where possible so matplotlib uses a real
+    # numeric axis (proper proportional spacing).  String x_values (e.g.
+    # model names) stay as-is and will be treated as categorical (evenly spaced).
+    x_numeric = pd.to_numeric(df["x_value"], errors="coerce")
+    is_numeric_x = x_numeric.notna().all()
+    if is_numeric_x:
+        df["x_value"] = x_numeric
+
     xlabel = df["x_label"].iloc[0]
     ylabel = f"{config.metric_name} ({df['metric_unit'].iloc[0]})"
     # Sort by "kernel_provider" to ensure consistent color assignment
@@ -229,12 +264,17 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
             errorbar=None,
         )
 
+    # For numeric x axes, show tick labels only at actual data points
+    if is_numeric_x:
+        tick_values = sorted(df["x_value"].unique())
+        ax.set_xticks(tick_values)
+        ax.set_xticklabels([str(int(v)) if v == int(v) else str(v) for v in tick_values])
+
     # Seaborn can't plot pre-computed error bars, so we need to do it manually
     lines = ax.get_lines()
     colors = [line.get_color() for line in lines]
 
     for (_, group_data), color in zip(df.groupby("kernel_provider"), colors):
-        # for i, row in group_data.iterrows():
         y_error_lower = group_data["y_value_50"] - group_data["y_value_20"]
         y_error_upper = group_data["y_value_80"] - group_data["y_value_50"]
         y_error = [y_error_lower, y_error_upper]
@@ -252,9 +292,10 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
     plt.ylabel(ylabel)
     plt.tight_layout()
 
+    sweep_suffix = f"_{config.sweep_mode}" if config.sweep_mode else ""
     out_path = os.path.join(
         VISUALIZATIONS_PATH,
-        f"{config.kernel_name}_{config.metric_name}_{config.kernel_operation_mode}.png",
+        f"{config.kernel_name}_{config.metric_name}_{config.kernel_operation_mode}{sweep_suffix}.png",
     )
 
     if config.display:
@@ -288,6 +329,7 @@ def main():
             kernel_name=args.kernel_name,
             metric_name=args.metric_name,
             kernel_operation_mode=mode,
+            sweep_mode=args.sweep_mode,
             extra_config_filter=args.extra_config_filter,
             display=args.display,
             overwrite=args.overwrite,
