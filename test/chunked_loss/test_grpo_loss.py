@@ -320,8 +320,14 @@ class LigerLMHeadGRPO(torch.nn.Module):
 
 @pytest.mark.parametrize("dtype, atol, rtol", [(torch.float32, 1e-5, 1e-5), (torch.bfloat16, 5e-2, 5e-2)])
 @pytest.mark.parametrize("bias", [True, False])
-def test_selective_chunk_forward_matches_reference(dtype, atol, rtol, bias):
-    B, T, H, V = 3, 17, 31, 123
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (3, 17, 31, 123),  # small: no chunking exercised
+        (1, 4096, 256, 5000),  # large: exercises both sequence and vocab chunking
+    ],
+)
+def test_selective_chunk_forward_matches_reference(B, T, H, V, dtype, atol, rtol, bias):
     x = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=True)
     weight = torch.randn(V, H, device=device, dtype=dtype, requires_grad=True)
     bias_tensor = torch.randn(V, device=device, dtype=dtype, requires_grad=True) if bias else None
@@ -337,6 +343,38 @@ def test_selective_chunk_forward_matches_reference(dtype, atol, rtol, bias):
     assert_verbose_allclose(out, ref, atol=atol, rtol=rtol)
 
 
+@pytest.mark.parametrize("loss_type", ["dapo", "grpo"])
+@pytest.mark.parametrize("compiled", [True, False])
+def test_correctness_large_seq_exercises_chunking(loss_type, compiled):
+    """Test with N > seq_chunk_size and V > vocab_chunk_size to exercise both chunking loops."""
+    torch.compiler.reset()
+    B, T, H, V = 1, 4096, 256, 5000
+    dtype = torch.float32
+
+    torch_lm = TorchLMHeadGRPO(H=H, V=V, dtype=dtype, beta=0.04, loss_type=loss_type, use_ref_model=False)
+    liger_lm = LigerLMHeadGRPO(H=H, V=V, dtype=dtype, beta=0.04, loss_type=loss_type, use_ref_model=False)
+
+    torch_lm.lin.weight.data = liger_lm.lin.weight.data = torch.randn(V, H, device=device, dtype=dtype)
+
+    _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    input1 = _input.detach().clone().requires_grad_(True)
+    input2 = _input.detach().clone().requires_grad_(True)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    attention_mask[:, -64:] = 0
+    advantages = torch.randn(B, device=device, dtype=dtype)
+
+    loss1, _ = torch_lm(input1, selected_token_ids, attention_mask, advantages)
+    loss2, _ = liger_lm(input2, selected_token_ids, attention_mask, advantages)
+
+    assert_verbose_allclose(loss1, loss2, atol=2e-5, rtol=1e-3)
+
+    loss1.backward()
+    loss2.backward()
+    assert_verbose_allclose(input1.grad, input2.grad, atol=2e-5, rtol=1e-3)
+    assert_verbose_allclose(torch_lm.lin.weight.grad, liger_lm.lin.weight.grad, atol=2e-5, rtol=1e-3)
+
+
 @pytest.mark.parametrize(
     "B, T, H, V",
     [
@@ -348,7 +386,7 @@ def test_selective_chunk_forward_matches_reference(dtype, atol, rtol, bias):
     "scalar, dtype, atol, rtol",
     [
         (1.0, torch.bfloat16, 1e-1, 5e-1),
-        (1.0, torch.float32, 1e-5, 5e-4),
+        (1.0, torch.float32, 2e-5, 1e-3),
     ],
 )
 @pytest.mark.parametrize("bias", [True, False])

@@ -5,7 +5,8 @@ import torch
 import torch._dynamo.config
 
 
-_SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE = 2048
+_SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE = 4096
+_SELECTIVE_LOGPROB_SEQ_CHUNK_SIZE = 2048
 
 
 def _maybe_mark_dynamic_dim1(tensor):
@@ -13,92 +14,104 @@ def _maybe_mark_dynamic_dim1(tensor):
         torch._dynamo.maybe_mark_dynamic(tensor, 1)
 
 
-def _selective_logprob_forward(hidden, weight, targets, bias=None, temperature=1.0, vocab_chunk_size=2048):
-    """Compute selective log-probabilities by streaming over vocab chunks (cuBLAS per chunk).
+def _selective_logprob_forward(hidden, weight, targets, bias=None, temperature=1.0, vocab_chunk_size=8192):
+    """Compute selective log-probabilities by streaming over sequence and vocab chunks.
 
-    Uses in-place ops and pre-allocated buffers for memory efficiency.
+    Dual chunking (sequence × vocab) bounds peak temporary memory to
+    ``seq_chunk_size × vocab_chunk_size`` regardless of total N or V.
     """
     device = hidden.device
     n_rows, _ = hidden.shape
     vocab_size, _ = weight.shape
     inv_t = 1.0 / temperature
+    seq_chunk_size = _SELECTIVE_LOGPROB_SEQ_CHUNK_SIZE
 
-    max_old = torch.full((n_rows,), float("-inf"), device=device, dtype=torch.float32)
-    sum_exp = torch.zeros((n_rows,), device=device, dtype=torch.float32)
-    target_logit = torch.zeros((n_rows,), device=device, dtype=torch.float32)
+    logprobs = torch.empty((n_rows,), device=device, dtype=torch.float32)
+    log_z = torch.empty((n_rows,), device=device, dtype=torch.float32)
 
-    mm_buf = torch.empty((n_rows, vocab_chunk_size), device=device, dtype=hidden.dtype)
-    logits_buf = torch.empty((n_rows, vocab_chunk_size), device=device, dtype=torch.float32)
-    row_idx = torch.arange(n_rows, device=device)
+    for seq_start in range(0, n_rows, seq_chunk_size):
+        seq_end = min(seq_start + seq_chunk_size, n_rows)
+        n_chunk = seq_end - seq_start
+        hidden_chunk = hidden[seq_start:seq_end]
+        targets_chunk = targets[seq_start:seq_end]
 
-    for start in range(0, vocab_size, vocab_chunk_size):
-        end = min(start + vocab_chunk_size, vocab_size)
-        chunk_width = end - start
-        weight_chunk = weight[start:end].to(hidden.dtype)
-        torch.mm(hidden, weight_chunk.t(), out=mm_buf[:, :chunk_width])
-        logits_chunk = logits_buf[:, :chunk_width]
-        logits_chunk.copy_(mm_buf[:, :chunk_width])
-        if bias is not None:
-            logits_chunk.add_(bias[start:end].to(torch.float32))
-        logits_chunk.mul_(inv_t)
+        max_old = torch.full((n_chunk,), float("-inf"), device=device, dtype=torch.float32)
+        sum_exp = torch.zeros((n_chunk,), device=device, dtype=torch.float32)
+        target_logit = torch.zeros((n_chunk,), device=device, dtype=torch.float32)
+        row_idx = torch.arange(n_chunk, device=device)
 
-        chunk_max = logits_chunk.amax(dim=-1)
-        max_new = torch.maximum(max_old, chunk_max)
-        rescale = torch.exp(max_old - max_new)
-        chunk_exp = torch.exp(logits_chunk - max_new.unsqueeze(-1))
+        for vocab_start in range(0, vocab_size, vocab_chunk_size):
+            vocab_end = min(vocab_start + vocab_chunk_size, vocab_size)
+            weight_chunk = weight[vocab_start:vocab_end]
+            logits_chunk = (hidden_chunk @ weight_chunk.to(hidden.dtype).t()).float()
+            if bias is not None:
+                logits_chunk.add_(bias[vocab_start:vocab_end].to(torch.float32))
+            logits_chunk.mul_(inv_t)
 
-        sum_exp = sum_exp * rescale + chunk_exp.sum(dim=-1)
-        max_old = max_new
+            chunk_max = logits_chunk.amax(dim=-1)
+            max_new = torch.maximum(max_old, chunk_max)
+            rescale = torch.exp(max_old - max_new)
+            chunk_exp = torch.exp(logits_chunk - max_new.unsqueeze(-1))
 
-        in_chunk = (targets >= start) & (targets < end)
-        local_idx = torch.clamp(targets - start, 0, end - start - 1)
-        target_logit += logits_chunk[row_idx, local_idx] * in_chunk
+            sum_exp = sum_exp * rescale + chunk_exp.sum(dim=-1)
+            max_old = max_new
 
-    log_z = max_old + torch.log(sum_exp)
-    return target_logit - log_z, log_z
+            in_chunk = (targets_chunk >= vocab_start) & (targets_chunk < vocab_end)
+            local_idx = torch.clamp(targets_chunk - vocab_start, 0, vocab_end - vocab_start - 1)
+            target_logit += logits_chunk[row_idx, local_idx] * in_chunk
+
+        log_z_chunk = max_old + torch.log(sum_exp)
+        log_z[seq_start:seq_end] = log_z_chunk
+        logprobs[seq_start:seq_end] = target_logit - log_z_chunk
+
+    return logprobs, log_z
 
 
 def _selective_logprob_backward(hidden, weight, targets, bias, log_z, grad_logprobs, temperature, vocab_chunk_size):
-    """Vocab-chunked backward for selective logprob (recomputes logits per chunk for memory efficiency)."""
+    """Dual-chunked (sequence × vocab) backward for selective logprob.
+
+    Recomputes logits per chunk for memory efficiency.
+    """
     inv_t = 1.0 / temperature
     n_rows, _ = hidden.shape
     vocab_size = weight.shape[0]
     has_bias = bias is not None
+    seq_chunk_size = _SELECTIVE_LOGPROB_SEQ_CHUNK_SIZE
 
     grad_hidden = torch.zeros(hidden.shape, device=hidden.device, dtype=torch.float32)
     grad_weight = torch.zeros(weight.shape, device=weight.device, dtype=torch.float32)
     grad_bias = torch.zeros((vocab_size,), device=weight.device, dtype=torch.float32) if has_bias else None
 
-    mm_buf = torch.empty((n_rows, vocab_chunk_size), device=hidden.device, dtype=hidden.dtype)
-    logits_buf = torch.empty((n_rows, vocab_chunk_size), device=hidden.device, dtype=torch.float32)
-
     grad_logprobs = grad_logprobs.to(torch.float32)
-    row_idx = torch.arange(n_rows, device=hidden.device)
 
-    for start in range(0, vocab_size, vocab_chunk_size):
-        end = min(start + vocab_chunk_size, vocab_size)
-        chunk_width = end - start
-        weight_chunk = weight[start:end]
+    for seq_start in range(0, n_rows, seq_chunk_size):
+        seq_end = min(seq_start + seq_chunk_size, n_rows)
+        hidden_chunk = hidden[seq_start:seq_end]
+        targets_chunk = targets[seq_start:seq_end]
+        grad_chunk = grad_logprobs[seq_start:seq_end]
+        logz_chunk = log_z[seq_start:seq_end]
+        row_idx = torch.arange(seq_end - seq_start, device=hidden.device)
 
-        torch.mm(hidden, weight_chunk.t(), out=mm_buf[:, :chunk_width])
-        logits_chunk = logits_buf[:, :chunk_width]
-        logits_chunk.copy_(mm_buf[:, :chunk_width])
-        if has_bias:
-            logits_chunk.add_(bias[start:end].to(torch.float32))
-        logits_chunk.mul_(inv_t)
+        for vocab_start in range(0, vocab_size, vocab_chunk_size):
+            vocab_end = min(vocab_start + vocab_chunk_size, vocab_size)
+            weight_chunk = weight[vocab_start:vocab_end]
+            logits_chunk = (hidden_chunk @ weight_chunk.to(hidden.dtype).t()).float()
+            if has_bias:
+                logits_chunk.add_(bias[vocab_start:vocab_end].to(torch.float32))
+            logits_chunk.mul_(inv_t)
 
-        probs = torch.exp(logits_chunk - log_z.unsqueeze(-1))
-        grad_logits = (-grad_logprobs).unsqueeze(-1) * probs
+            probs = torch.exp(logits_chunk - logz_chunk.unsqueeze(-1))
+            grad_logits = (-grad_chunk).unsqueeze(-1) * probs
 
-        in_chunk = (targets >= start) & (targets < end)
-        local_idx = torch.clamp(targets - start, 0, end - start - 1)
-        grad_logits[row_idx, local_idx] += grad_logprobs * in_chunk
-        grad_logits.mul_(inv_t)
+            in_chunk = (targets_chunk >= vocab_start) & (targets_chunk < vocab_end)
+            local_idx = torch.clamp(targets_chunk - vocab_start, 0, vocab_end - vocab_start - 1)
+            grad_logits[row_idx, local_idx] += grad_chunk * in_chunk
+            grad_logits.mul_(inv_t)
 
-        grad_hidden.add_(grad_logits @ weight_chunk.float())
-        grad_weight[start:end].add_(grad_logits.t() @ hidden.float())
-        if has_bias:
-            grad_bias[start:end].add_(grad_logits.sum(dim=0))
+            grad_hidden[seq_start:seq_end].add_(grad_logits @ weight_chunk.float())
+            grad_weight[vocab_start:vocab_end].add_(grad_logits.t() @ hidden_chunk.float())
+            if has_bias:
+                grad_bias[vocab_start:vocab_end].add_(grad_logits.sum(dim=0))
 
     return grad_hidden, grad_weight, grad_bias
 
