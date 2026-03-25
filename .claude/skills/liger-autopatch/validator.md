@@ -29,10 +29,26 @@ Common failures:
 | `AssertionError: getsource mismatch` | Check class being replaced in monkey_patch |
 | `ModuleNotFoundError` | Add `@pytest.mark.skipif` with availability check |
 
-### Step 3: Convergence Test (requires GPU)
+### Step 3: Convergence Tests (requires GPU)
 
+Run **all applicable** convergence tests. For text models, there are 4 files. For VL models, 6.
+
+**FLCE path (fused linear cross entropy):**
 ```bash
 pytest test/convergence/bf16/test_mini_models.py -k "{model_type}" -xvs 2>&1 | tail -80
+pytest test/convergence/fp32/test_mini_models.py -k "{model_type}" -xvs 2>&1 | tail -80
+```
+
+**Non-FLCE path (logits verification — tests RMSNorm/SwiGLU/RoPE without loss fusion):**
+```bash
+pytest test/convergence/bf16/test_mini_models_with_logits.py -k "{model_type}" -xvs 2>&1 | tail -80
+pytest test/convergence/fp32/test_mini_models_with_logits.py -k "{model_type}" -xvs 2>&1 | tail -80
+```
+
+**Multimodal (only for VL models):**
+```bash
+pytest test/convergence/bf16/test_mini_models_multimodal.py -k "{model_type}" -xvs 2>&1 | tail -80
+pytest test/convergence/fp32/test_mini_models_multimodal.py -k "{model_type}" -xvs 2>&1 | tail -80
 ```
 
 Common failures:
@@ -58,10 +74,14 @@ On failure: read traceback, identify root cause, fix, re-run. Max 3 retries per 
 ## Success Report
 
 ```
-| Check              | Status |
-|--------------------|--------|
-| Import             | PASS   |
-| Instance Patching  | PASS   |
-| Convergence (bf16) | PASS   |
-| Lint               | PASS   |
+| Check                        | Status |
+|------------------------------|--------|
+| Import                       | PASS   |
+| Instance Patching            | PASS   |
+| Convergence bf16 FLCE        | PASS   |
+| Convergence bf16 with_logits | PASS   |
+| Convergence fp32 FLCE        | PASS   |
+| Convergence fp32 with_logits | PASS   |
+| Convergence multimodal       | SKIP (text-only model) |
+| Lint                         | PASS   |
 ```

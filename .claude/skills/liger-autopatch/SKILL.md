@@ -21,16 +21,20 @@ The agent reads the HF `modeling_*.py` source and produces a **model profile** a
 
 Spawn a **Code Generator** agent (read [code-generator.md](code-generator.md)).
 
-Generates/modifies up to 8 files:
+Generates/modifies up to 12 files:
 
 1. `src/liger_kernel/transformers/model/{model}.py` — NEW lce_forward
 2. `src/liger_kernel/transformers/monkey_patch.py` — MODIFY
 3. `src/liger_kernel/transformers/__init__.py` — MODIFY
 4. `src/liger_kernel/transformers/model/output_classes.py` — MODIFY if needed
 5. `test/transformers/test_monkey_patch.py` — MODIFY
-6. `test/convergence/bf16/test_mini_models.py` — MODIFY
-7. `test/utils.py` — MODIFY
-8. `README.md` — MODIFY
+6. `test/convergence/bf16/test_mini_models.py` — MODIFY (FLCE path)
+7. `test/convergence/bf16/test_mini_models_with_logits.py` — MODIFY (non-FLCE path)
+8. `test/convergence/fp32/test_mini_models.py` — MODIFY (FLCE path)
+9. `test/convergence/fp32/test_mini_models_with_logits.py` — MODIFY (non-FLCE path)
+10. `test/convergence/{bf16,fp32}/test_mini_models_multimodal.py` — MODIFY if VL model
+11. `test/utils.py` — MODIFY
+12. `README.md` — MODIFY
 
 **Human checkpoint:** Present changes for review.
 

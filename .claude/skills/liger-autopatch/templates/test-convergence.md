@@ -1,15 +1,34 @@
-# Template: Convergence Test Entry
+# Template: Convergence Tests
 
-Reference: existing entries in `test/convergence/bf16/test_mini_models.py`.
+Reference: existing entries across `test/convergence/` files. Read the Llama entries as baseline.
 
-## Add Imports
+## Which Files to Modify
+
+Every model needs entries in **at least 4 files**:
+
+| File | What it tests | dtype |
+|------|-------------|-------|
+| `test/convergence/bf16/test_mini_models.py` | FLCE path (fused linear cross entropy) | bfloat16 |
+| `test/convergence/bf16/test_mini_models_with_logits.py` | Non-FLCE path (tests RMSNorm/SwiGLU/RoPE only, verifies logits) | bfloat16 |
+| `test/convergence/fp32/test_mini_models.py` | FLCE path | float32 |
+| `test/convergence/fp32/test_mini_models_with_logits.py` | Non-FLCE path | float32 |
+
+**Vision-language models** also need:
+- `test/convergence/bf16/test_mini_models_multimodal.py`
+- `test/convergence/fp32/test_mini_models_multimodal.py`
+
+## What to Add in Each File
+
+Each file has a `MINI_MODEL_SETUPS` dict and a `pytest.param` block. Add to both.
+
+### 1. Imports (same across all files)
 
 ```python
 from liger_kernel.transformers import apply_liger_kernel_to_{model_type}
 from test.utils import revert_liger_kernel_to_{model_type}
 ```
 
-## Add Availability Guard
+### 2. Availability Guard (same across all files)
 
 ```python
 try:
@@ -20,11 +39,11 @@ except ImportError:
     {MODEL_UPPER}_AVAILABLE = False
 ```
 
-## Add MiniModelConfig Entry
+### 3. MINI_MODEL_SETUPS Entry (identical across all files)
 
 ```python
-pytest.param(
-    MiniModelConfig(
+if {MODEL_UPPER}_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_{model_type}"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_{model_type},
         liger_kernel_patch_revert_func=revert_liger_kernel_to_{model_type},
         model_class={ModelForCausalLM},
@@ -32,13 +51,26 @@ pytest.param(
             hidden_size=32, intermediate_size=64, num_hidden_layers=2,
             num_attention_heads=2, num_key_value_heads=2, vocab_size=1024,
         ),
-    ),
-    marks=[pytest.mark.skipif(not {MODEL_UPPER}_AVAILABLE, reason="{model_type} not available")],
-    id="mini_{model_type}",
+    )
+```
+
+### 4. pytest.param Entry (tolerances differ by dtype)
+
+**bf16 files** — looser tolerances (copy from similar existing model):
+```python
+pytest.param(
+    "mini_{model_type}", 32, 1e-5, torch.bfloat16,
+    1e-2, 5e-2, 1e-1, 1e-2, 1e-2, 1e-2,
+    marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported"),
 ),
 ```
 
-## Add Revert Function in test/utils.py
+**fp32 files** — tighter tolerances:
+```python
+("mini_{model_type}", 32, 1e-4, torch.float32, 1e-8, 2e-5, 5e-3, 1e-5, 5e-3, 1e-5),
+```
+
+### 5. Revert Function in test/utils.py (shared by all files)
 
 ```python
 def revert_liger_kernel_to_{model_type}(model_config):
@@ -47,6 +79,12 @@ def revert_liger_kernel_to_{model_type}(model_config):
     model_config.model_class = modeling_{model_type}.{ModelForCausalLM}
 ```
 
+## Key Differences Between Test Variants
+
+**`with_logits`**: Sets `fused_linear_cross_entropy=False, cross_entropy=False` and checks `output.logits` match. Tests that non-loss kernels are numerically correct on their own. Same `MINI_MODEL_SETUPS` entry, just add a `pytest.param`.
+
+**`multimodal`**: Uses `multimodal_collate_fn`, image datasets, and model configs with vision sub-config. Only for models with `has_vision: true`.
+
 ## Mini Config Guidelines
 
-Use minimal values: hidden_size=32, intermediate_size=64, num_hidden_layers=2, num_attention_heads=2, vocab_size=1024. Add model-specific required fields (e.g., `num_local_experts` for MoE).
+Use minimal values: hidden_size=32, intermediate_size=64, num_hidden_layers=2, num_attention_heads=2, vocab_size=1024. Add model-specific required fields (e.g., `num_local_experts` for MoE). Copy config structure from the most similar existing model.

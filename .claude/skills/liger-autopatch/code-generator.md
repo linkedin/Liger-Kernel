@@ -51,9 +51,21 @@ Only for models needing custom output (MoE with `aux_loss`, VL with `rope_deltas
 
 See [templates/test-instance-patch.md](templates/test-instance-patch.md). Add availability checker + skipif-decorated test function using `inspect.getsource()` assertions.
 
-### 6. `test/convergence/bf16/test_mini_models.py` (MODIFY)
+### 6. Convergence tests (MODIFY multiple files)
 
-See [templates/test-convergence.md](templates/test-convergence.md). Add imports, availability guard, and `MiniModelConfig` entry.
+See [templates/test-convergence.md](templates/test-convergence.md). Every model needs entries in multiple convergence test files:
+
+**All text models (dense + MoE)** — add to these 4 files:
+- `test/convergence/bf16/test_mini_models.py` — FLCE path, bf16
+- `test/convergence/bf16/test_mini_models_with_logits.py` — non-FLCE path (tests RMSNorm/SwiGLU/RoPE only), bf16
+- `test/convergence/fp32/test_mini_models.py` — FLCE path, fp32
+- `test/convergence/fp32/test_mini_models_with_logits.py` — non-FLCE path, fp32
+
+**Vision-language models** — also add to these 2:
+- `test/convergence/bf16/test_mini_models_multimodal.py`
+- `test/convergence/fp32/test_mini_models_multimodal.py`
+
+Each file needs: imports, availability guard, `MiniModelConfig` entry in `MINI_MODEL_SETUPS` dict, and a `pytest.param` entry in the parametrize block. The `MiniModelConfig` entry is identical across all files for the same model. The `pytest.param` tolerances differ — use bf16 tolerances (looser) for bf16 files and fp32 tolerances (tighter) for fp32 files. Copy tolerance values from a similar existing model (e.g., Llama for dense, Mixtral for MoE).
 
 ### 7. `test/utils.py` (MODIFY)
 
