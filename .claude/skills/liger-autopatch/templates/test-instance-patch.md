@@ -2,7 +2,7 @@
 
 Reference: `test_apply_liger_kernel_to_instance_for_llama` in `test/transformers/test_monkey_patch.py`.
 
-## Add at Module Level
+## Add Availability Checker (at top of file, near other `is_*_available` functions ~lines 59-240, in alphabetical order)
 
 ```python
 def is_{model_type}_available():
@@ -13,7 +13,7 @@ def is_{model_type}_available():
         return False
 ```
 
-## Test Function
+## Add Test Function (after existing `test_apply_liger_kernel_to_instance_for_*` functions, in alphabetical order)
 
 ```python
 @pytest.mark.skipif(not is_{model_type}_available(), reason="{model_type} not available")

@@ -17,11 +17,19 @@ Every model needs entries in **at least 4 files**:
 - `test/convergence/bf16/test_mini_models_multimodal.py`
 - `test/convergence/fp32/test_mini_models_multimodal.py`
 
+## Placement Rule
+
+When adding entries to existing files, always insert in **alphabetical order** alongside similar existing entries. Never append to the end of a section. Specifically:
+- Imports: alphabetical among other `apply_liger_kernel_to_*` / `revert_liger_kernel_to_*` imports
+- Availability guards: alphabetical among other try/except model import blocks
+- `MINI_MODEL_SETUPS` entries: alphabetical among other model setup blocks
+- `pytest.param` entries: alphabetical among other model param entries
+
 ## What to Add in Each File
 
 Each file has a `MINI_MODEL_SETUPS` dict and a `pytest.param` block. Add to both.
 
-### 1. Imports (same across all files)
+### 1. Imports (same across all files, insert in alphabetical order)
 
 ```python
 from liger_kernel.transformers import apply_liger_kernel_to_{model_type}

@@ -60,12 +60,15 @@ Common failures:
 | `AssertionError: allclose` | Check casting_mode, offset, in_place settings |
 | `KeyError in config` | Add missing field to mini model config |
 
-### Step 4: Lint Check
+### Step 4: Checkstyle
+
+Run the project's full lint and format check:
 
 ```bash
-ruff check src/liger_kernel/transformers/model/{model_type}.py
-ruff check src/liger_kernel/transformers/monkey_patch.py
+make checkstyle
 ```
+
+If it fails, auto-fix with `ruff check . --fix && ruff format .`, then re-run `make checkstyle`.
 
 ## Retry Logic
 
@@ -83,5 +86,5 @@ On failure: read traceback, identify root cause, fix, re-run. Max 3 retries per 
 | Convergence fp32 FLCE        | PASS   |
 | Convergence fp32 with_logits | PASS   |
 | Convergence multimodal       | SKIP (text-only model) |
-| Lint                         | PASS   |
+| Checkstyle                   | PASS   |
 ```
