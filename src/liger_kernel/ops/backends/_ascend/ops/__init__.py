@@ -52,6 +52,9 @@ from liger_kernel.ops.backends._ascend.ops.layer_norm import layer_norm_forward
 from liger_kernel.ops.backends._ascend.ops.llama4_rope import LigerLlama4RopeFunction
 from liger_kernel.ops.backends._ascend.ops.llama4_rope import llama4_rope_backward
 from liger_kernel.ops.backends._ascend.ops.llama4_rope import llama4_rope_forward
+from liger_kernel.ops.backends._ascend.ops.mhc import LigerMHCCoeffsFunction
+from liger_kernel.ops.backends._ascend.ops.mhc import LigerMHCPostResFunction
+from liger_kernel.ops.backends._ascend.ops.mhc import LigerMHCPreFunction
 from liger_kernel.ops.backends._ascend.ops.poly_norm import LigerPolyNormFunction
 from liger_kernel.ops.backends._ascend.ops.poly_norm import poly_norm_backward
 from liger_kernel.ops.backends._ascend.ops.poly_norm import poly_norm_forward
@@ -140,4 +143,7 @@ __all__ = [
     "sparsemax_backward",
     "LigerFusedNeighborhoodAttentionFunction",
     "fused_neighborhood_attention_forward",
+    "LigerMHCCoeffsFunction",
+    "LigerMHCPreFunction",
+    "LigerMHCPostResFunction",
 ]
