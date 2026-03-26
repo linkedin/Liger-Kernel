@@ -5,16 +5,12 @@ Kimi Attention Residuals: softmax attention over depth blocks.
 """
 
 import math
+import os
 import sys
-from pathlib import Path
 
 import torch
 
-# Add test directory to path to import reference implementation
-test_dir = Path(__file__).parent.parent.parent / "test"
-sys.path.insert(0, str(test_dir))
-
-from test.transformers.test_attn_res import pytorch_attn_res
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from benchmark_model_configs import compute_seq_len_sweep_config
 from benchmark_model_configs import estimate_kernel_peak_memory
@@ -54,6 +50,8 @@ def _setup_attn_res(input: SingleBenchmarkRunInput):
     if input.kernel_provider == "liger":
         fn = lambda: LigerAttnResFunction.apply(V, w_query, w_norm, eps)
     elif input.kernel_provider == "pytorch":
+        from test.transformers.test_attn_res import pytorch_attn_res
+
         fn = lambda: pytorch_attn_res(V, w_query, w_norm, eps)
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider}")
