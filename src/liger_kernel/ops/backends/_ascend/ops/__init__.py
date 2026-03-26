@@ -29,6 +29,8 @@ from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_r
 from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
 from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import fused_linear_jsd_backward
 from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import fused_linear_jsd_forward
+from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
+from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import fused_neighborhood_attention_forward
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
@@ -136,4 +138,6 @@ __all__ = [
     "LigerSparsemaxFunction",
     "sparsemax_forward",
     "sparsemax_backward",
+    "LigerFusedNeighborhoodAttentionFunction",
+    "fused_neighborhood_attention_forward",
 ]
