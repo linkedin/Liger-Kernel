@@ -14,7 +14,7 @@ import torch
 test_dir = Path(__file__).parent.parent.parent / "test"
 sys.path.insert(0, str(test_dir))
 
-from transformers.test_attn_res import pytorch_attn_res
+from test.transformers.test_attn_res import pytorch_attn_res
 
 from benchmark_model_configs import compute_seq_len_sweep_config
 from benchmark_model_configs import estimate_kernel_peak_memory
