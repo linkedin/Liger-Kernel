@@ -8,6 +8,7 @@ from test.utils import set_seed
 from test.utils import supports_bfloat16
 
 from liger_kernel.ops.attn_res import LigerAttnResFunction
+from liger_kernel.transformers.functional import liger_attn_res
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -143,3 +144,48 @@ def test_correctness_list_input(N, B, T, D):
     out_list = LigerAttnResFunction.apply(torch.stack(blocks), w_query, w_norm, 1e-6)
 
     assert_verbose_allclose(out_stacked, out_list, atol=1e-6, rtol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "N, B, T, D",
+    [
+        (4, 2, 64, 512),
+        (8, 2, 32, 256),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-5),
+        (torch.float16, 1e-2, 1e-3),
+    ],
+)
+def test_correctness_functional(N, B, T, D, dtype, atol, rtol):
+    """Test that functional API matches direct function call."""
+    V = torch.randn(N, B, T, D, device=device, dtype=dtype)
+    w_query = torch.randn(D, device=device, dtype=dtype) * 0.02
+    w_norm = torch.ones(D, device=device, dtype=dtype)
+
+    # Direct function call
+    y1 = LigerAttnResFunction.apply(V, w_query, w_norm, 1e-6)
+    # Functional API
+    y2 = liger_attn_res(V, w_query, w_norm, eps=1e-6)
+
+    assert_verbose_allclose(y1, y2, atol=atol, rtol=rtol)
+
+    # Test backward
+    V1 = V.clone().requires_grad_(True)
+    V2 = V.clone().requires_grad_(True)
+    wq1 = w_query.clone().requires_grad_(True)
+    wq2 = w_query.clone().requires_grad_(True)
+    wn1 = w_norm.clone().requires_grad_(True)
+    wn2 = w_norm.clone().requires_grad_(True)
+
+    y1 = LigerAttnResFunction.apply(V1, wq1, wn1, 1e-6)
+    y2 = liger_attn_res(V2, wq2, wn2, eps=1e-6)
+
+    grad = torch.randn_like(y1)
+    y1.backward(grad)
+    y2.backward(grad)
+
+    assert_verbose_allclose(V1.grad, V2.grad, atol=atol, rtol=rtol)

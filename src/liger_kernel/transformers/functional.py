@@ -3,6 +3,7 @@ from typing import Optional
 
 import torch
 
+from liger_kernel.ops import LigerAttnResFunction
 from liger_kernel.ops import LigerCrossEntropyFunction
 from liger_kernel.ops import LigerDyTFunction
 from liger_kernel.ops import LigerFusedAddRMSNormFunction
@@ -360,6 +361,26 @@ def liger_mhc_apply(x, f_out, h_pre, h_post, h_res, *, return_x_in: bool = False
     if return_x_in:
         return x_out, x_in
     return x_out
+
+
+def liger_attn_res(V, w_query, w_norm, eps: float = 1e-6):
+    """
+    Liger Attention Residuals (AttnRes) from Kimi/Moonshot AI.
+
+    Replaces standard residual connections with softmax attention over depth blocks.
+
+    Paper: https://arxiv.org/abs/2603.15031
+
+    Args:
+        V: Input tensor of shape [N, B, T, D] where N is number of blocks
+        w_query: Query weight tensor of shape [D]
+        w_norm: RMSNorm weight tensor of shape [D]
+        eps: Epsilon for numerical stability in RMSNorm (default: 1e-6)
+
+    Returns:
+        Output tensor of shape [B, T, D]
+    """
+    return LigerAttnResFunction.apply(V, w_query, w_norm, eps)
 
 
 def liger_mhc_forward(
