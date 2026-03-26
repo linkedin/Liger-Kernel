@@ -13,7 +13,7 @@ Adds Liger Kernel optimization support for a new HuggingFace model through a 3-s
 
 Spawn a **Model Analyzer** agent (read [model-analyzer.md](model-analyzer.md)).
 
-The agent reads the HF `modeling_*.py` source and produces a **model profile** answering 12 architectural questions from [decision-matrix.md](decision-matrix.md).
+The agent reads the HF `modeling_*.py` source and produces a **model profile** answering 13 architectural questions from [decision-matrix.md](decision-matrix.md).
 
 **Human checkpoint:** Present the profile. Confirm before proceeding.
 
@@ -49,7 +49,7 @@ Runs instance patching test, convergence test, and lint check. Retries up to 3 t
 
 ## Reference Files
 
-- [decision-matrix.md](decision-matrix.md) — 12 architectural decisions to resolve per model
+- [decision-matrix.md](decision-matrix.md) — 13 architectural decisions to resolve per model
 - [examples/llama-profile.md](examples/llama-profile.md) — Reference profile for standard dense model
 - [examples/gemma-profile.md](examples/gemma-profile.md) — Reference profile showing GeGLU + offset variant
 - Templates in [templates/](templates/) — Code generation patterns for each file type

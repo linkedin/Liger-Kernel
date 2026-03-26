@@ -38,6 +38,19 @@ from test.utils import revert_liger_kernel_to_{model_type}
 
 ### 2. Availability Guard (same across all files)
 
+If `min_transformers_version` from the profile is > "4.52.0", include a version check inside the try block. This handles two cases: (a) model doesn't exist at all in older transformers → `ImportError`, and (b) model exists but is buggy/incomplete → version check fails.
+
+```python
+try:
+    from transformers.models.{model_type}.configuration_{model_type} import {ModelConfig}
+    from transformers.models.{model_type}.modeling_{model_type} import {ModelForCausalLM}
+    {MODEL_UPPER}_AVAILABLE = version.parse(transformers.__version__) >= version.parse("{min_transformers_version}")
+except ImportError:
+    {MODEL_UPPER}_AVAILABLE = False
+```
+
+If `min_transformers_version` is "4.52.0" or earlier, omit the version check (the global minimum already covers it):
+
 ```python
 try:
     from transformers.models.{model_type}.configuration_{model_type} import {ModelConfig}

@@ -9,7 +9,7 @@ A model identifier: model_type string (e.g., `"nemotron"`), class name (e.g., `"
 ## Steps
 
 1. Locate `transformers/models/{model_type}/modeling_{model_type}.py` and `configuration_{model_type}.py` on disk
-2. Read [decision-matrix.md](decision-matrix.md) for the 12 decisions to resolve
+2. Read [decision-matrix.md](decision-matrix.md) for the 13 decisions to resolve
 3. Read the modeling file and extract all architectural details
 4. Produce the profile in the format below
 
@@ -66,12 +66,23 @@ From the modeling file, identify:
 - has_vision: true | false
 - vision_norm_type: {if applicable}
 
+## Compatibility
+- min_transformers_version: {e.g., "4.57.0" or "4.52.0"}
+
 ## Forward Signature
 {List model-specific parameters not in standard Llama signature}
 
 ## Mini Model Config
 {Suggest minimal config values for testing — 2 layers, 32 hidden, 64 intermediate}
 ```
+
+## Determining min_transformers_version
+
+To find the minimum transformers version for the model:
+1. Check if the model's HF source file has a version comment (e.g., `# Added in transformers vX.Y.Z`)
+2. Check the transformers changelog/release notes for when this model was introduced
+3. If neither is available, use the currently installed `transformers.__version__` as a conservative lower bound
+4. If the model is a well-established one (llama, mistral, gemma, etc.) that predates transformers 4.52.0, set it to `"4.52.0"`
 
 ## Rules
 
