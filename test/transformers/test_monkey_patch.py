@@ -3211,7 +3211,7 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_dense():
 
 def is_nemotron_available():
     try:
-        import transformers.models.nemotron
+        import transformers.models.nemotron  # noqa: F401
 
         return True
     except ImportError:

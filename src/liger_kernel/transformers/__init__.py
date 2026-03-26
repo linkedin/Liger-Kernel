@@ -53,9 +53,9 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llava  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mistral  # noqa: F401
-    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_nemotron  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mixtral  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mllama  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_nemotron  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo2  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_paligemma  # noqa: F401
