@@ -1,6 +1,6 @@
 # Decision Matrix
 
-When analyzing a HuggingFace model for Liger Kernel support, you must resolve these 13 architectural decisions by reading the model's `modeling_*.py` source code.
+When analyzing a HuggingFace model for Liger Kernel support, you must resolve these 12 architectural decisions by reading the model's `modeling_*.py` source code.
 
 ## 1. Norm Type
 
@@ -127,30 +127,3 @@ When analyzing a HuggingFace model for Liger Kernel support, you must resolve th
 - Some models: `q_norm`, `k_norm` on self_attn
 
 Also check the final norm on the base model (usually `model.norm` or `model.final_layernorm`).
-
-## 13. Minimum Transformers Version
-
-**Question:** What is the minimum `transformers` version required for this model?
-
-**How to determine:** Run this check:
-```python
-import transformers
-from packaging import version
-
-try:
-    import transformers.models.{model_type}
-    # Module exists — now determine the safe minimum version.
-except ImportError:
-    # Module doesn't exist in this transformers version at all.
-```
-
-If the import succeeds, the model exists in the currently installed version. To find the actual minimum:
-1. Check the HF model file for version comments or decorators (some have `# Available since transformers vX.Y.Z`)
-2. Check the transformers release notes / changelog for when the model was added
-3. If neither is available, use the currently installed `transformers.__version__` as a conservative lower bound
-
-**Values:**
-- `"4.52.0"` or earlier → no extra version gate needed (Liger already enforces >= 4.52.0 globally)
-- Any version > `"4.52.0"` → add explicit version checks in tests
-
-**Why this matters:** Users on older transformers versions (e.g., 4.52.0) will get `ImportError` if the model was added later. The `try/except` catches this, but some models exist in older versions with bugs or incomplete implementations — the explicit version check handles that case.

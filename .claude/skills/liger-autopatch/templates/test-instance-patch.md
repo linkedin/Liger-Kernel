@@ -15,17 +15,6 @@ def is_{model_type}_available():
 
 ## Add Test Function (after existing `test_apply_liger_kernel_to_instance_for_*` functions, in alphabetical order)
 
-If `min_transformers_version` from the profile is > "4.52.0", add a version skipif **in addition to** the availability skipif:
-
-```python
-@pytest.mark.skipif(
-    transformer_version < version.parse("{min_transformers_version}"),
-    reason="{model_type} requires transformers >= {min_transformers_version}",
-)
-```
-
-If `min_transformers_version` is "4.52.0" or earlier, only use the availability skipif (the global minimum already enforces >= 4.52.0).
-
 ```python
 @pytest.mark.skipif(not is_{model_type}_available(), reason="{model_type} not available")
 def test_apply_liger_kernel_to_instance_for_{model_type}():
