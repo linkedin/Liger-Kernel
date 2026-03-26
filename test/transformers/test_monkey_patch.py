@@ -245,6 +245,15 @@ def is_hunyuan_v1_available():
         return False
 
 
+def is_nemotron_available():
+    try:
+        import transformers.models.nemotron  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def test_import_from_root():
     try:
         from liger_kernel.transformers import AutoLigerKernelForCausalLM  # noqa: F401
@@ -3207,15 +3216,6 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_dense():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
-
-
-def is_nemotron_available():
-    try:
-        import transformers.models.nemotron  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
 
 
 @pytest.mark.skipif(not is_nemotron_available(), reason="nemotron not available")
