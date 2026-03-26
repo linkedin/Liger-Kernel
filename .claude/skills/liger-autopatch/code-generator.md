@@ -82,3 +82,5 @@ Add row to the Patching table under "### Patching":
 
 - Line length 120, double quotes, single imports sorted with isort
 - Follow exact patterns from existing code — do not innovate on style
+- When modifying existing files, insert new entries in **alphabetical order** alongside similar existing entries. Never append to the end of a section — find the correct alphabetical position.
+- After generating all files, run `make checkstyle` to verify formatting. If it fails, run `ruff check . --fix && ruff format .` to auto-fix, then verify with `make checkstyle` again.
