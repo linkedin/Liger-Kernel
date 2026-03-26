@@ -3207,3 +3207,46 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_dense():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+def is_nemotron_available():
+    try:
+        import transformers.models.nemotron
+
+        return True
+    except ImportError:
+        return False
+
+
+@pytest.mark.skipif(not is_nemotron_available(), reason="nemotron not available")
+def test_apply_liger_kernel_to_instance_for_nemotron():
+    from liger_kernel.transformers.model.nemotron import lce_forward as nemotron_lce_forward
+
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.nemotron.modeling_nemotron"):
+        # Instantiate a dummy model
+        config = transformers.models.nemotron.configuration_nemotron.NemotronConfig(
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="relu2",
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            norm_eps=1e-5,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(nemotron_lce_forward)
+
+        # Test applying kernels to the model instance
+        # Nemotron only supports rope and fused_linear_cross_entropy patching
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's forward was correctly patched
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(nemotron_lce_forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
