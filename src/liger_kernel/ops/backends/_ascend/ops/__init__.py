@@ -29,6 +29,8 @@ from liger_kernel.ops.backends._ascend.ops.fused_add_rms_norm import fused_add_r
 from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
 from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import fused_linear_jsd_backward
 from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import fused_linear_jsd_forward
+from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
+from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import fused_neighborhood_attention_forward
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_backward
 from liger_kernel.ops.backends._ascend.ops.geglu import geglu_forward
@@ -65,6 +67,9 @@ from liger_kernel.ops.backends._ascend.ops.rope import rope_forward
 from liger_kernel.ops.backends._ascend.ops.softmax import LigerSoftmaxFunction
 from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_backward
 from liger_kernel.ops.backends._ascend.ops.softmax import _softmax_forward
+from liger_kernel.ops.backends._ascend.ops.sparsemax import LigerSparsemaxFunction
+from liger_kernel.ops.backends._ascend.ops.sparsemax import sparsemax_backward
+from liger_kernel.ops.backends._ascend.ops.sparsemax import sparsemax_forward
 from liger_kernel.ops.backends._ascend.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_backward
 from liger_kernel.ops.backends._ascend.ops.swiglu import swiglu_forward
@@ -130,4 +135,9 @@ __all__ = [
     "LigerGroupNormFunction",
     "group_norm_forward",
     "group_norm_backward",
+    "LigerSparsemaxFunction",
+    "sparsemax_forward",
+    "sparsemax_backward",
+    "LigerFusedNeighborhoodAttentionFunction",
+    "fused_neighborhood_attention_forward",
 ]
