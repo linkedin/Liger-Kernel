@@ -93,7 +93,7 @@ def revert_liger_kernel_to_{model_type}(model_config):
 
 **`with_logits`**: Sets `fused_linear_cross_entropy=False, cross_entropy=False` and checks `output.logits` match. Tests that non-loss kernels are numerically correct on their own. Same `MINI_MODEL_SETUPS` entry, just add a `pytest.param`.
 
-**`multimodal`**: Uses `multimodal_collate_fn`, image datasets, and model configs with vision sub-config. Only for models with `has_vision: true`.
+**`multimodal`**: Uses `multimodal_collate_fn`, image datasets, and model configs with vision sub-config. Only for models with `has_vision: true`. Multimodal tests may also require fake tokenizer/processor configs in `test/resources/fake_configs/`. Check existing VL model entries (e.g., Qwen2-VL, Llava) for the pattern — if the model needs a tokenizer/processor that can't be created programmatically, add a fake config JSON file.
 
 ## Mini Config Guidelines
 
