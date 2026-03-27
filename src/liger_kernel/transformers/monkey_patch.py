@@ -34,6 +34,7 @@ from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerExperts
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
+from liger_kernel.transformers.relu_squared import LigerReLUSquared
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
 try:
@@ -684,6 +685,7 @@ def apply_liger_kernel_to_mistral(
 
 
 def apply_liger_kernel_to_nemotron(
+    relu_squared: bool = True,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     model: PreTrainedModel = None,
@@ -692,12 +694,12 @@ def apply_liger_kernel_to_nemotron(
     """
     Apply Liger kernels to replace original implementation in HuggingFace Nemotron models.
 
-    Note: Nemotron uses a non-gated MLP (squared ReLU) and NemotronLayerNorm1P (LayerNorm with +1 offset),
-    which are not currently supported by Liger kernels. RoPE is also not patched because Nemotron uses
-    partial rotary embeddings (partial_rotary_factor=0.5) which the Liger RoPE kernel does not support.
-    Only cross entropy optimizations are applied.
+    Note: NemotronLayerNorm1P (LayerNorm with +1 offset) is not currently supported by Liger kernels.
+    RoPE is also not patched because Nemotron uses partial rotary embeddings
+    (partial_rotary_factor=0.5) which the Liger RoPE kernel does not support.
 
     Args:
+        relu_squared (bool): Whether to apply Liger's ReLU squared activation. Default is True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
             Whether to apply Liger's fused linear cross entropy loss. Default is True.
@@ -712,6 +714,9 @@ def apply_liger_kernel_to_nemotron(
 
     from transformers.models.nemotron import modeling_nemotron
 
+    if relu_squared:
+        modeling_nemotron.ACT2FN["relu2"] = LigerReLUSquared
+
     if cross_entropy:
         modeling_nemotron.CrossEntropyLoss = LigerCrossEntropyLoss
     if fused_linear_cross_entropy:
@@ -719,6 +724,11 @@ def apply_liger_kernel_to_nemotron(
             model.forward = MethodType(nemotron_lce_forward, model)
         else:
             modeling_nemotron.NemotronForCausalLM.forward = nemotron_lce_forward
+
+    if model is not None:
+        for decoder_layer in model.model.layers:
+            if relu_squared:
+                decoder_layer.mlp.act_fn = LigerReLUSquared()
 
 
 def apply_liger_kernel_to_mixtral(

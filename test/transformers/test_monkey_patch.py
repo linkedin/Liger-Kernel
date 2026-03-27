@@ -3221,6 +3221,7 @@ def test_apply_liger_kernel_to_instance_for_hunyuan_v1_dense():
 @pytest.mark.skipif(not is_nemotron_available(), reason="nemotron not available")
 def test_apply_liger_kernel_to_instance_for_nemotron():
     from liger_kernel.transformers.model.nemotron import lce_forward as nemotron_lce_forward
+    from liger_kernel.transformers.relu_squared import LigerReLUSquared
 
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.nemotron.modeling_nemotron"):
@@ -3238,13 +3239,18 @@ def test_apply_liger_kernel_to_instance_for_nemotron():
 
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(nemotron_lce_forward)
+        for decoder_layer in dummy_model_instance.model.layers:
+            assert not isinstance(decoder_layer.mlp.act_fn, LigerReLUSquared)
 
         # Test applying kernels to the model instance
-        # Nemotron only supports rope and fused_linear_cross_entropy patching
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
         # Check that the model's forward was correctly patched
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(nemotron_lce_forward)
+
+        # Check that the activation function was correctly patched
+        for decoder_layer in dummy_model_instance.model.layers:
+            assert isinstance(decoder_layer.mlp.act_fn, LigerReLUSquared)
 
         try:
             print(dummy_model_instance)
