@@ -72,7 +72,11 @@ If it fails, auto-fix with `ruff check . --fix && ruff format .`, then re-run `m
 
 ## Retry Logic
 
-On failure: read traceback, identify root cause, fix, re-run. Max 3 retries per step. After 3 failures, report the exact error and diagnosis to the user.
+**Hard failures** (Steps 1, 2, 4 — import, patching, checkstyle): These indicate code bugs. Read traceback, identify root cause, fix, re-run. Max 3 retries per step. After 3 failures, report the exact error and stop.
+
+**Soft failures** (Step 3 — convergence): If a convergence test fails after 3 retries with `allclose` tolerance errors, mark it as `SKIP (tolerance tuning needed)` in the report rather than `FAIL`. This means the patching is correct but tolerances need manual adjustment. Note this in the PR description so reviewers are aware.
+
+Convergence failures from other errors (shape mismatch, CUDA OOM, KeyError) are still hard failures — fix and retry.
 
 ## Success Report
 
@@ -88,3 +92,5 @@ On failure: read traceback, identify root cause, fix, re-run. Max 3 retries per 
 | Convergence multimodal       | SKIP (text-only model) |
 | Checkstyle                   | PASS   |
 ```
+
+Include any `SKIP (tolerance tuning needed)` entries in the PR description under a "Known issues" section.

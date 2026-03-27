@@ -113,6 +113,7 @@ When analyzing a HuggingFace model for Liger Kernel support, you must resolve th
 **How to detect:** Check config for `final_logit_softcapping`:
 - Present → pass `final_logit_softcapping=self.config.final_logit_softcapping` to `LigerForCausalLMLoss`
 - Absent → no softcapping (most models)
+- **VL models:** Config path may be `self.config.text_config.final_logit_softcapping` instead of `self.config.final_logit_softcapping`. Check whether the model uses a composite config with `text_config` sub-config.
 
 **Models with softcapping:** Gemma2, Gemma3
 
