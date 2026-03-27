@@ -21,6 +21,7 @@ from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_for
 from liger_kernel.transformers.model.gpt_oss import lce_forward as gpt_oss_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
 from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forward
+from liger_kernel.transformers.model.ministral import lce_forward as ministral_lce_forward
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.nemotron import lce_forward as nemotron_lce_forward
@@ -618,6 +619,69 @@ def apply_liger_kernel_to_mllama(
                 if layer_norm:
                     _patch_layer_norm_module(layer.input_layernorm)
                     _patch_layer_norm_module(layer.post_attention_layernorm)
+
+
+def apply_liger_kernel_to_ministral(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Ministral models
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.ministral import modeling_ministral
+    from transformers.models.ministral.modeling_ministral import MinistralModel
+
+    if rope:
+        modeling_ministral.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_ministral.MinistralRMSNorm = LigerRMSNorm
+    if cross_entropy:
+        modeling_ministral.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(ministral_lce_forward, model)
+        else:
+            modeling_ministral.MinistralForCausalLM.forward = ministral_lce_forward
+
+    if swiglu:
+        modeling_ministral.MinistralMLP = LigerSwiGLUMLP
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
+        # get the base model from the model instance
+        base_model: MinistralModel = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
 def apply_liger_kernel_to_mistral(
@@ -3130,6 +3194,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "granite": apply_liger_kernel_to_granite,
     "mllama": apply_liger_kernel_to_mllama,
     "mllama_text_model": apply_liger_kernel_to_mllama,
+    "ministral": apply_liger_kernel_to_ministral,
     "mistral": apply_liger_kernel_to_mistral,
     "mixtral": apply_liger_kernel_to_mixtral,
     "nemotron": apply_liger_kernel_to_nemotron,
