@@ -114,3 +114,4 @@ if __name__ == "__main__":
 6. **Run both speed AND memory** for all three modes (forward, backward, full)
 7. **Use `BT = 4096`** as default batch*seq when sweeping hidden_size
 8. **Adapt sweep variable** — some kernels sweep `seq_len` or `vocab_size` instead of `hidden_size`. Use the appropriate `compute_*_sweep_config` utility.
+9. **Use a single dtype** — use `model.dtype` from the benchmark model config (typically `torch.bfloat16`). Do NOT generate separate benchmarks for multiple dtypes. Multi-dtype testing is handled by the unit tests, not benchmarks.
