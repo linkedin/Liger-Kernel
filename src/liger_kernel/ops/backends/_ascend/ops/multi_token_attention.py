@@ -49,30 +49,25 @@ def _fused_mask_softmax_fwd_kernel(
 
         valid_len = row_idx + 1
 
-        # First pass: compute max for numerical stability
+        # First pass: online softmax
         max_val = float("-inf")
+        d_sum = 0.0
         for block_start in range(0, valid_len, BLOCK_SIZE):
             col_idx = block_start + tl.arange(0, BLOCK_SIZE)
             col_mask = col_idx < valid_len
             vals = tl.load(row_ptr + col_idx, mask=col_mask, other=float("-inf"))
-            max_val = tl.maximum(max_val, tl.max(vals))
+            m_block = tl.max(vals)
+            m_new = tl.maximum(max_val, m_block)
+            d_sum = d_sum * tl.exp(max_val - m_new) + tl.sum(tl.exp(vals - m_new))
+            max_val = m_new
 
-        # Second pass: compute exp and sum
-        sum_exp = 0.0
+        # Second pass: normalize and store
         for block_start in range(0, valid_len, BLOCK_SIZE):
             col_idx = block_start + tl.arange(0, BLOCK_SIZE)
             col_mask = col_idx < valid_len
             vals = tl.load(row_ptr + col_idx, mask=col_mask, other=float("-inf"))
             exp_vals = tl.exp(vals - max_val)
-            sum_exp += tl.sum(tl.where(col_mask, exp_vals, 0.0))
-
-        # Third pass: normalize and store
-        for block_start in range(0, valid_len, BLOCK_SIZE):
-            col_idx = block_start + tl.arange(0, BLOCK_SIZE)
-            col_mask = col_idx < valid_len
-            vals = tl.load(row_ptr + col_idx, mask=col_mask, other=float("-inf"))
-            exp_vals = tl.exp(vals - max_val)
-            probs = exp_vals / sum_exp
+            probs = exp_vals / d_sum
             tl.store(out_row_ptr + col_idx, probs, mask=col_mask)
 
         # Store zeros for masked positions
