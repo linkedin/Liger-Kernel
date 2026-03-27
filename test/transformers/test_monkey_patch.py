@@ -29,6 +29,7 @@ from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_l
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
 from liger_kernel.transformers.model.llama import lce_forward as llama_lce_forward
+from liger_kernel.transformers.model.ministral import lce_forward as ministral_lce_forward
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
 from liger_kernel.transformers.model.mllama import lce_forward as mllama_lce_forward
@@ -86,6 +87,15 @@ def is_smolvlm_available():
 def is_llama4_available():
     try:
         import transformers.models.llama4  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def is_ministral_available():
+    try:
+        import transformers.models.ministral  # noqa: F401
 
         return True
     except ImportError:
@@ -266,6 +276,7 @@ def test_import_from_root():
         from liger_kernel.transformers import apply_liger_kernel_to_glm4v_moe  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_internvl  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_llama  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_ministral  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_mistral  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_mixtral  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_mllama  # noqa: F401
@@ -1458,6 +1469,49 @@ def test_apply_liger_kernel_to_instance_for_mistral():
 
         # Check that the model's instance variables were correctly patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(mistral_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_ministral_available(), reason="ministral module not available")
+def test_apply_liger_kernel_to_instance_for_ministral():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.ministral.modeling_ministral"):
+        # Instantiate a dummy model
+        config = transformers.models.ministral.configuration_ministral.MinistralConfig(
+            dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="silu",
+            num_hidden_layers=2,
+            head_dim=16,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(ministral_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(ministral_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)

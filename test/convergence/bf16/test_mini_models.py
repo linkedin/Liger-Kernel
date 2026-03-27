@@ -40,6 +40,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_internvl
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_llama4
 from liger_kernel.transformers import apply_liger_kernel_to_llava
+from liger_kernel.transformers import apply_liger_kernel_to_ministral
 from liger_kernel.transformers import apply_liger_kernel_to_mistral
 from liger_kernel.transformers import apply_liger_kernel_to_mixtral
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
@@ -81,6 +82,7 @@ from test.utils import revert_liger_kernel_to_internvl
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
+from test.utils import revert_liger_kernel_to_ministral
 from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
 from test.utils import revert_liger_kernel_to_mllama
@@ -112,6 +114,14 @@ try:
     LLAMA4_AVAILABLE = True
 except ImportError:
     LLAMA4_AVAILABLE = False
+
+try:
+    from transformers.models.ministral.configuration_ministral import MinistralConfig
+    from transformers.models.ministral.modeling_ministral import MinistralForCausalLM
+
+    MINISTRAL_AVAILABLE = True
+except ImportError:
+    MINISTRAL_AVAILABLE = False
 
 try:
     # Mllama is only available in transformers>=4.45.0
@@ -564,6 +574,33 @@ MINI_MODEL_SETUPS = {
         ),
     ),
 }
+
+if MINISTRAL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_ministral"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_ministral,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_ministral,
+        model_class=MinistralForCausalLM,
+        mini_model_config=MinistralConfig(
+            attention_dropout=0.0,
+            bos_token_id=1,
+            eos_token_id=2,
+            head_dim=128,
+            hidden_act="silu",
+            hidden_size=1024,
+            initializer_range=0.02,
+            intermediate_size=2048,
+            max_position_embeddings=32768,
+            num_attention_heads=8,
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            rms_norm_eps=1e-5,
+            sliding_window=4096,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,
+            attn_implementation="sdpa",
+        ),
+    )
 
 if LLAMA4_AVAILABLE:
     MINI_MODEL_SETUPS["mini_llama4"] = MiniModelConfig(
@@ -1961,6 +1998,24 @@ def run_mini_model(
             1e-2,
             marks=[
                 pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+            ],
+        ),
+        pytest.param(
+            "mini_ministral",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,
+            5e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not MINISTRAL_AVAILABLE, reason="Ministral not available in this version of transformers"
+                ),
             ],
         ),
         pytest.param(

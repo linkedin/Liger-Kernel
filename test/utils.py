@@ -414,6 +414,18 @@ def revert_liger_kernel_to_llama4(model_config: MiniModelConfig, model_type: str
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_ministral(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Ministral.
+    """
+
+    from transformers.models.ministral import modeling_ministral
+
+    importlib.reload(modeling_ministral)
+    model_config.model_class = modeling_ministral.MinistralForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_mistral(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Mistral.
