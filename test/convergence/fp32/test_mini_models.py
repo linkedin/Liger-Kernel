@@ -1980,7 +1980,9 @@ def run_mini_model(
             5e-3,
             1e-5,
             marks=[
-                pytest.mark.skipif(not MINISTRAL_AVAILABLE, reason="Ministral not available in this version of transformers"),
+                pytest.mark.skipif(
+                    not MINISTRAL_AVAILABLE, reason="Ministral not available in this version of transformers"
+                ),
             ],
         ),
         # TODO: mixtral is flaky so disable the test for now

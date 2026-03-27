@@ -1980,7 +1980,9 @@ def run_mini_model(
             1e-2,
             marks=[
                 pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-                pytest.mark.skipif(not MINISTRAL_AVAILABLE, reason="Ministral not available in this version of transformers"),
+                pytest.mark.skipif(
+                    not MINISTRAL_AVAILABLE, reason="Ministral not available in this version of transformers"
+                ),
             ],
         ),
         pytest.param(
