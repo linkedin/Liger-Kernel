@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn.functional as F
 import triton
@@ -6,6 +8,7 @@ import triton.language as tl
 from torch.nn.modules.utils import _pair
 
 from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
+from liger_kernel.ops.backends._ascend.ub_manager import get_ub_manager
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
 
@@ -22,13 +25,6 @@ def _fused_mask_softmax_fwd_kernel(
 ):
     """
     Fused forward kernel: causal masking + softmax with grid-stride loop.
-    Each program processes multiple rows for better resource utilization.
-
-    Optimizations:
-    - Grid-stride loop to reduce kernel launch overhead
-    - Fuses masking and softmax to reduce memory traffic
-    - Online softmax algorithm for numerical stability
-    - Only loads valid elements (causal mask)
 
     Args:
         scores_ptr: Input scores tensor pointer
@@ -58,7 +54,7 @@ def _fused_mask_softmax_fwd_kernel(
         for block_start in range(0, valid_len, BLOCK_SIZE):
             col_idx = block_start + tl.arange(0, BLOCK_SIZE)
             col_mask = col_idx < valid_len
-            vals = tl.load(row_ptr + col_idx, mask=col_mask, other=float("-inf"), eviction_policy="evict_first")
+            vals = tl.load(row_ptr + col_idx, mask=col_mask, other=float("-inf"))
             max_val = tl.maximum(max_val, tl.max(vals))
 
         # Second pass: compute exp and sum
@@ -66,7 +62,7 @@ def _fused_mask_softmax_fwd_kernel(
         for block_start in range(0, valid_len, BLOCK_SIZE):
             col_idx = block_start + tl.arange(0, BLOCK_SIZE)
             col_mask = col_idx < valid_len
-            vals = tl.load(row_ptr + col_idx, mask=col_mask, other=float("-inf"), eviction_policy="evict_first")
+            vals = tl.load(row_ptr + col_idx, mask=col_mask, other=float("-inf"))
             exp_vals = tl.exp(vals - max_val)
             sum_exp += tl.sum(tl.where(col_mask, exp_vals, 0.0))
 
@@ -74,7 +70,7 @@ def _fused_mask_softmax_fwd_kernel(
         for block_start in range(0, valid_len, BLOCK_SIZE):
             col_idx = block_start + tl.arange(0, BLOCK_SIZE)
             col_mask = col_idx < valid_len
-            vals = tl.load(row_ptr + col_idx, mask=col_mask, other=float("-inf"), eviction_policy="evict_first")
+            vals = tl.load(row_ptr + col_idx, mask=col_mask, other=float("-inf"))
             exp_vals = tl.exp(vals - max_val)
             probs = exp_vals / sum_exp
             tl.store(out_row_ptr + col_idx, probs, mask=col_mask)
@@ -133,8 +129,8 @@ def _fused_mask_softmax_bwd_kernel(
         for block_start in range(0, valid_len, BLOCK_SIZE):
             col_idx = block_start + tl.arange(0, BLOCK_SIZE)
             col_mask = col_idx < valid_len
-            grad_vals = tl.load(grad_row_ptr + col_idx, mask=col_mask, other=0.0, eviction_policy="evict_first")
-            prob_vals = tl.load(probs_row_ptr + col_idx, mask=col_mask, other=0.0, eviction_policy="evict_first")
+            grad_vals = tl.load(grad_row_ptr + col_idx, mask=col_mask, other=0.0)
+            prob_vals = tl.load(probs_row_ptr + col_idx, mask=col_mask, other=0.0)
             dot += tl.sum(tl.where(col_mask, grad_vals * prob_vals, 0.0))
 
         # Second pass: compute gradient
@@ -201,12 +197,8 @@ def _fused_mask_sparsemax_bwd_kernel(
         for block_start in range(0, valid_len, BLOCK_SIZE):
             col_idx = block_start + tl.arange(0, BLOCK_SIZE)
             col_mask = col_idx < valid_len
-            prob_vals = tl.load(probs_row_ptr + col_idx, mask=col_mask, other=0.0, eviction_policy="evict_first").to(
-                tl.float32
-            )
-            grad_vals = tl.load(grad_row_ptr + col_idx, mask=col_mask, other=0.0, eviction_policy="evict_first").to(
-                tl.float32
-            )
+            prob_vals = tl.load(probs_row_ptr + col_idx, mask=col_mask, other=0.0).to(tl.float32)
+            grad_vals = tl.load(grad_row_ptr + col_idx, mask=col_mask, other=0.0).to(tl.float32)
             supp = prob_vals > 0.0
             go_sum += tl.sum(tl.where(supp & col_mask, grad_vals, 0.0))
             supp_cnt += tl.sum(tl.where(supp & col_mask, 1.0, 0.0))
@@ -229,110 +221,97 @@ def _fused_mask_sparsemax_bwd_kernel(
             tl.store(out_row_ptr + col_idx, 0.0, mask=col_mask)
 
 
-def mask_zero_rowwise(scores: torch.Tensor) -> torch.Tensor:
-    """
-    Forward pass for causal masking with zero values.
-    Uses 1D row-wise processing.
-
-    Args:
-        scores: Input scores tensor of shape (*batch, L, L)
-
-    Returns:
-        Masked scores tensor with future positions set to 0.0
-    """
-    *batch, L, _ = scores.shape
-    N = int(torch.prod(torch.tensor(batch))) if batch else 1
-    scores_f = scores.view(N, L, L)
-    out = torch.empty_like(scores_f)
-
-    BLOCK_SIZE = get_optimal_block_size(L, is_forward=True)
-    num_cores = get_npu_core_count()
-    grid_size = min(num_cores, N * L)
-
-    _mask_row_kernel[(grid_size,)](
-        scores_f,
-        out,
-        scores_f.stride(0),
-        scores_f.stride(1),
-        N,
-        L,
-        mask_val=0.0,
-        BLOCK_SIZE=BLOCK_SIZE,
-    )
-
-    return out.view(*batch, L, L)
-
-
 @triton.jit
 def _mask_row_kernel(
     scores_ptr,
     out_ptr,
     stride_b,
     stride_row,
-    N,
     L,
     mask_val: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    pid = tl.program_id(0)
-    num_progs = tl.num_programs(0)
-    n_rows = N * L
-
-    for linear_idx in tl.range(pid, n_rows, num_progs):
-        batch_id = linear_idx // L
-        row_idx = linear_idx % L
-
-        row_ptr = scores_ptr + batch_id * stride_b + row_idx * stride_row
-        out_row_ptr = out_ptr + batch_id * stride_b + row_idx * stride_row
-
-        # columns handled in blocks
-        for block_start in range(0, L, BLOCK_SIZE):
-            col_idx = block_start + tl.arange(0, BLOCK_SIZE)
-            col_mask = col_idx < L
-
-            # causal condition
-            keep = col_idx <= row_idx
-
-            vals = tl.load(
-                row_ptr + col_idx,
-                mask=col_mask,
-                other=0.0,
-            )
-
-            masked_vals = tl.where(keep, vals, mask_val)
-
-            tl.store(
-                out_row_ptr + col_idx,
-                masked_vals,
-                mask=col_mask,
-            )
-
-
-def get_optimal_block_size(n_cols: int, is_forward: bool) -> int:
     """
-    Compute optimal block size for mask-zero rowwise kernel.
+    2D-tiled causal masking kernel.
+
+    Grid:
+        axis 0 (pid_m): row-block index
+        axis 1 (pid_n): col-block index
+        axis 2 (pid_b): batch index
+
+    Each program handles a BLOCK_SIZE x BLOCK_SIZE tile.
     """
 
-    # For small sizes, just use next power of 2
-    if n_cols <= 4096:
-        return triton.next_power_of_2(n_cols)
+    pid_m = tl.program_id(0)  # row block
+    pid_n = tl.program_id(1)  # col block
+    pid_b = tl.program_id(2)  # batch
 
-    # Mask kernel is light → small multiplier
-    memory_multiplier = 4.0 if is_forward else 6.0  # slightly conservative
+    # Compute row/col indices
+    row_start = pid_m * BLOCK_SIZE
+    col_start = pid_n * BLOCK_SIZE
 
-    tile_shapes = compute_default_tiling_strategy(
-        safety_margin=0.9,
-        dtype_size=4,
-        memory_multiplier=memory_multiplier,
-        shapes=((n_cols,),),
-        tiling_dims=(0,),
-    )
+    row_idx = row_start + tl.arange(0, BLOCK_SIZE)
+    col_idx = col_start + tl.arange(0, BLOCK_SIZE)
 
-    if tile_shapes and len(tile_shapes) > 0:
-        block_size = tile_shapes[0][0]
-        return max(4096, block_size)
+    row_mask = row_idx < L
+    col_mask = col_idx < L
 
-    return 4096
+    ptrs = scores_ptr + pid_b * stride_b + row_idx[:, None] * stride_row + col_idx[None, :]
+    out_ptrs = out_ptr + pid_b * stride_b + row_idx[:, None] * stride_row + col_idx[None, :]
+
+    vals = tl.load(ptrs, mask=row_mask[:, None] & col_mask[None, :], other=0.0)
+    causal = col_idx[None, :] <= row_idx[:, None]
+    masked_vals = tl.where(causal, vals, mask_val)
+
+    tl.store(out_ptrs, masked_vals, mask=row_mask[:, None] & col_mask[None, :])
+
+
+def get_2d_optimal_block_size(
+    n: int,
+    dtype_size: int,
+    memory_multiplier: float,
+    safety_margin: float = 0.9,
+    min_block: int = 16,
+    max_block: int = 512,
+):
+    """
+    Compute optimal 2D block sizes (BLOCK_SIZE, BLOCK_SIZE) for a square matrix.
+
+    Args:
+        n: matrix size (N x N)
+        ub_capacity_bits: UB capacity in bits
+        dtype_size: bytes per element
+        memory_multiplier: estimated live buffer multiplier
+        safety_margin: UB safety factor
+        min_block: minimum block size
+        max_block: maximum block size
+
+    Returns:
+        BLOCK_SIZE
+    """
+    ub_manager = get_ub_manager()
+
+    dtype_size = max(dtype_size, 4)
+
+    # Safe UB budget
+    safe_ub = int(ub_manager.ub_capacity_bits * safety_margin)
+
+    # Max tile area
+    max_area = safe_ub // (memory_multiplier * dtype_size * 8)
+    max_area = max(1, max_area)
+
+    # Ideal square tile size
+    block = int(math.sqrt(max_area))
+
+    # Clamp to problem size
+    block = min(block, n, max_block)
+    block = max(block, min_block)
+
+    block = triton.next_power_of_2(block)
+    if block > n:
+        block = n
+
+    return block
 
 
 def get_optimal_size_fused_mask_softmax(L: int, is_forward: bool = True, dtype_size: int = 2):
@@ -358,6 +337,38 @@ def get_optimal_size_fused_mask_softmax(L: int, is_forward: bool = True, dtype_s
         return max(2048, block_size)
 
     return 2048
+
+
+def mask_zero_rowwise(scores: torch.Tensor) -> torch.Tensor:
+    """
+    Forward pass for causal masking with zero values.
+    Uses 1D row-wise processing.
+
+    Args:
+        scores: Input scores tensor of shape (*batch, L, L)
+
+    Returns:
+        Masked scores tensor with future positions set to 0.0
+    """
+    *batch, L, _ = scores.shape
+    N = int(torch.prod(torch.tensor(batch))) if batch else 1
+    scores_f = scores.view(N, L, L)
+    out = torch.empty_like(scores_f)
+
+    BLOCK_SIZE = get_2d_optimal_block_size(L, dtype_size=scores_f.element_size(), memory_multiplier=12.0)
+
+    grid = (triton.cdiv(L, BLOCK_SIZE), triton.cdiv(L, BLOCK_SIZE), N)
+    _mask_row_kernel[grid](
+        scores_f,
+        out,
+        scores_f.stride(0),
+        scores_f.stride(1),
+        L,
+        mask_val=0.0,
+        BLOCK_SIZE=BLOCK_SIZE,
+    )
+
+    return out.view(*batch, L, L)
 
 
 def fused_mask_softmax_forward(scores: torch.Tensor) -> torch.Tensor:
@@ -438,7 +449,6 @@ def fused_mask_sparsemax_forward(scores: torch.Tensor) -> tuple[torch.Tensor, to
     """
     Forward pass: causal masking + sparsemax using reference implementation.
     Uses one-axis grid (one program per row).
-    Because of the complexity of sparsemax, we implement it in PyTorch and fuse only the masking.
 
     Args:
         scores: Input scores tensor of shape (*batch, L, L)
@@ -453,16 +463,15 @@ def fused_mask_sparsemax_forward(scores: torch.Tensor) -> tuple[torch.Tensor, to
     scores_f = scores.view(N, L, L)
     scores_masked = torch.empty_like(scores_f)
 
-    BLOCK_SIZE = get_optimal_size_fused_mask_softmax(L, is_forward=True)
-    num_cores = get_npu_core_count()
-    grid_size = min(num_cores, N * L)
+    # BLOCK_SIZE = get_optimal_size_fused_mask_softmax(L, is_forward=True)
+    BLOCK_SIZE = get_2d_optimal_block_size(L, dtype_size=scores_f.element_size(), memory_multiplier=12.0)
 
-    _mask_row_kernel[(grid_size,)](
+    grid = (triton.cdiv(L, BLOCK_SIZE), triton.cdiv(L, BLOCK_SIZE), N)
+    _mask_row_kernel[grid](
         scores_f,
         scores_masked,
         scores_f.stride(0),
         scores_f.stride(1),
-        N,
         L,
         mask_val=-1e9,
         BLOCK_SIZE=BLOCK_SIZE,
@@ -513,11 +522,6 @@ def fused_mask_sparsemax_backward(grad_out: torch.Tensor, probs: torch.Tensor) -
 class LigerMultiTokenAttentionFunction(torch.autograd.Function):
     """
     NPU-optimized Multi-Token Attention using 1D row-wise processing.
-
-    This implementation is optimized for NPU hardware by:
-    1. Using 1D row-wise kernels instead of 2D block-based kernels
-    2. Larger block sizes for better memory throughput
-    3. Reduced kernel launch overhead
     """
 
     @staticmethod
