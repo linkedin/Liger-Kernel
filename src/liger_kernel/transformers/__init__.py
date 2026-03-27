@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mistral  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mixtral  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mllama  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_nemotron  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo2  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_paligemma  # noqa: F401
@@ -126,6 +127,7 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_llama4",
         "apply_liger_kernel_to_mistral",
         "apply_liger_kernel_to_mixtral",
+        "apply_liger_kernel_to_nemotron",
         "apply_liger_kernel_to_mllama",
         "apply_liger_kernel_to_olmo2",
         "apply_liger_kernel_to_olmo3",
@@ -210,6 +212,7 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_llama4",
             "apply_liger_kernel_to_mistral",
             "apply_liger_kernel_to_mixtral",
+            "apply_liger_kernel_to_nemotron",
             "apply_liger_kernel_to_mllama",
             "apply_liger_kernel_to_olmo2",
             "apply_liger_kernel_to_olmo3",
