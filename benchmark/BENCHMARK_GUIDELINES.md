@@ -5,6 +5,11 @@
 - **Location**: `benchmark/scripts/`
 - **Naming**: `benchmark_<kernel_name>.py` (e.g. `benchmark_geglu.py`, `benchmark_dyt.py`)
 
+> **Baseline implementations**: Import reference (non-Liger) kernels from the
+> test suite (e.g. `test/transformers/test_<kernel>.py`) to use as baselines.
+> This keeps benchmark and test implementations in sync and avoids duplicating
+> reference code in benchmark scripts.
+
 ## 2. Shared infrastructure
 
 Do **not** hardcode batch size, sequence length, or model dimensions. All benchmark scripts share the following:
@@ -13,7 +18,7 @@ Do **not** hardcode batch size, sequence length, or model dimensions. All benchm
 |------|-----|
 | Model dimensions (hidden_size, vocab_size, etc.) | `benchmark_model_configs.py`: `ModelConfig`, `MODEL_REGISTRY`, `get_benchmark_model_config()` |
 | Memory probing | `benchmark_model_configs.py`: `estimate_kernel_peak_memory()` |
-| Safe sweep configs | `compute_seq_len_sweep_config()`, `compute_hidden_size_sweep_config()`, `compute_model_config_sweep_config()` |
+| Safe sweep configs | `compute_seq_len_sweep_config()`, `compute_model_config_sweep_config()` |
 | Speed / memory measurement | `utils.py`: `run_speed_benchmark()`, `run_memory_benchmark()` |
 | Running the grid and writing CSV | `utils.py`: `run_benchmarks()` |
 | CLI arguments | `utils.py`: `parse_benchmark_script_args()` — provides `--model`, `--overwrite`, `--sweep-mode`, `--bt` |
@@ -94,25 +99,9 @@ python benchmark_geglu.py --model llama_3_8b --overwrite
 
 ## 4. D2 — Model dimension sweep
 
-Sweep model-related dimensions (e.g. hidden_size, or discrete model configs from `MODEL_REGISTRY`) with a **fixed token count**. Use `--bt` to set the token count.
+Sweep across discrete model configs from `MODEL_REGISTRY` with a **fixed token count**. Use `--bt` to set the token count.
 
-D2 has two variants:
-
-### 4.1 Continuous sweep (e.g. hidden_size)
-
-Sweep a single model parameter (like hidden_size) in a continuous range with fixed BT.
-
-**How to implement:**
-
-1. Probe: measure peak memory at `(BT, model.hidden_size)`.
-2. `config = compute_hidden_size_sweep_config(model, kernel_peak_bytes=peak_bytes, bt=BT)`. Returns `HiddenSizeSweepConfig` with `bt` and `max_hidden_size`.
-3. Build `x_values` from `config.max_hidden_size` (e.g. `[1024 * i for i in range(1, 17) if 1024 * i <= config.max_hidden_size]`).
-4. Build `extra_benchmark_configs` with `BT=config.bt`, `dtype=model.dtype`, etc.
-5. Call `run_benchmarks(...)`.
-
-**Reference**: `benchmark_dyt.py` — hidden_size sweep with `compute_hidden_size_sweep_config()`.
-
-### 4.2 Discrete model-config sweep
+### 4.1 Discrete model-config sweep
 
 Sweep across all `MODEL_REGISTRY` entries as discrete data points. Activated by `--sweep-mode model_config`.
 
@@ -155,7 +144,7 @@ def bench_speed_geglu_model_config(input):
 
 **Reference**: `benchmark_geglu.py`, `benchmark_swiglu.py`, `benchmark_dyt.py` — all support `--sweep-mode model_config`.
 
-### 4.3 How to run
+### 4.2 How to run
 
 ```bash
 # Discrete model-config sweep with default bt=2048
