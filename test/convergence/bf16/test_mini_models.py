@@ -44,6 +44,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_ministral
 from liger_kernel.transformers import apply_liger_kernel_to_mistral
 from liger_kernel.transformers import apply_liger_kernel_to_mixtral
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
+from liger_kernel.transformers import apply_liger_kernel_to_nemotron
 from liger_kernel.transformers import apply_liger_kernel_to_olmo2
 from liger_kernel.transformers import apply_liger_kernel_to_olmo3
 from liger_kernel.transformers import apply_liger_kernel_to_phi3
@@ -85,6 +86,7 @@ from test.utils import revert_liger_kernel_to_ministral
 from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
 from test.utils import revert_liger_kernel_to_mllama
+from test.utils import revert_liger_kernel_to_nemotron
 from test.utils import revert_liger_kernel_to_olmo2
 from test.utils import revert_liger_kernel_to_olmo3
 from test.utils import revert_liger_kernel_to_phi3
@@ -341,6 +343,14 @@ try:
     EXAONE4_AVAILABLE = True
 except ImportError:
     EXAONE4_AVAILABLE = False
+
+try:
+    from transformers.models.nemotron.configuration_nemotron import NemotronConfig
+    from transformers.models.nemotron.modeling_nemotron import NemotronForCausalLM
+
+    NEMOTRON_AVAILABLE = True
+except ImportError:
+    NEMOTRON_AVAILABLE = False
 
 
 device = infer_device()
@@ -1596,6 +1606,29 @@ if EXAONE4_AVAILABLE:
         ),
     )
 
+if NEMOTRON_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_nemotron"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_nemotron,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_nemotron,
+        model_class=NemotronForCausalLM,
+        mini_model_config=NemotronConfig(
+            attention_bias=False,
+            attention_dropout=0.0,
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="relu2",
+            hidden_size=1024,
+            initializer_range=0.02,
+            intermediate_size=2048,
+            max_position_embeddings=8192,
+            num_attention_heads=8,
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            norm_eps=1e-5,
+            vocab_size=32000,
+        ),
+    )
+
 
 def create_model(model_name="mini_llama4"):
     """
@@ -2327,6 +2360,22 @@ def run_mini_model(
                     not EXAONE4_AVAILABLE,
                     reason="EXAONE4 not available in this version of transformers",
                 ),
+            ],
+        ),
+        pytest.param(
+            "mini_nemotron",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(not NEMOTRON_AVAILABLE, reason="Nemotron not available"),
             ],
         ),
     ],

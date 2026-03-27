@@ -24,6 +24,7 @@ from liger_kernel.transformers.model.llava import lce_forward as llava_lce_forwa
 from liger_kernel.transformers.model.ministral import lce_forward as ministral_lce_forward
 from liger_kernel.transformers.model.mistral import lce_forward as mistral_lce_forward
 from liger_kernel.transformers.model.mixtral import lce_forward as mixtral_lce_forward
+from liger_kernel.transformers.model.nemotron import lce_forward as nemotron_lce_forward
 from liger_kernel.transformers.model.phi3 import lce_forward as phi3_lce_forward
 from liger_kernel.transformers.model.qwen2 import lce_forward as qwen2_lce_forward
 from liger_kernel.transformers.model.smollm3 import lce_forward as smollm3_lce_forward
@@ -744,6 +745,44 @@ def apply_liger_kernel_to_mistral(
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
+def apply_liger_kernel_to_nemotron(
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    model: PreTrainedModel = None,
+    **kwargs,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Nemotron models.
+
+    Note: Nemotron uses a non-gated MLP (squared ReLU) and NemotronLayerNorm1P (LayerNorm with +1 offset),
+    which are not currently supported by Liger kernels. RoPE is also not patched because Nemotron uses
+    partial rotary embeddings (partial_rotary_factor=0.5) which the Liger RoPE kernel does not support.
+    Only cross entropy optimizations are applied.
+
+    Args:
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
+        loaded. Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.nemotron import modeling_nemotron
+
+    if cross_entropy:
+        modeling_nemotron.CrossEntropyLoss = LigerCrossEntropyLoss
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(nemotron_lce_forward, model)
+        else:
+            modeling_nemotron.NemotronForCausalLM.forward = nemotron_lce_forward
 
 
 def apply_liger_kernel_to_mixtral(
@@ -3148,6 +3187,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "ministral": apply_liger_kernel_to_ministral,
     "mistral": apply_liger_kernel_to_mistral,
     "mixtral": apply_liger_kernel_to_mixtral,
+    "nemotron": apply_liger_kernel_to_nemotron,
     "olmo2": apply_liger_kernel_to_olmo2,
     "pixtral": apply_liger_kernel_to_pixtral,
     "olmo3": apply_liger_kernel_to_olmo3,
