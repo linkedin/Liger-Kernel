@@ -77,6 +77,7 @@ Key rules:
 - Compare "liger" vs "torch" (and optionally "torch_compile") providers
 - Use `get_benchmark_model_config`, `estimate_kernel_peak_memory`, and sweep config utilities
 - Run both speed and memory benchmarks for forward, backward, and full modes
+- **Use a single dtype** from `model.dtype` (typically bfloat16). Do NOT generate separate benchmarks for multiple dtypes — multi-dtype coverage is handled by unit tests, not benchmarks
 
 ## Modify Mode
 
