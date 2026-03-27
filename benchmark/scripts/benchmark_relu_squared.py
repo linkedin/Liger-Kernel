@@ -123,7 +123,6 @@ if __name__ == "__main__":
         x_values=[128, 256, 512, 1024, 2048, 4096, 8192, 16384],
         kernel_providers=["liger", "torch"],
         extra_benchmark_configs=[
-            {"M": 4096, "dtype": torch.float32},
             {"M": 4096, "dtype": torch.bfloat16},
         ],
     )
