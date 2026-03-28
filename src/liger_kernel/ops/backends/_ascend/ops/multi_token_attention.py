@@ -64,17 +64,11 @@ def _fused_mask_softmax_fwd_kernel(
         # Second pass: normalize and store
         for block_start in range(0, valid_len, BLOCK_SIZE):
             col_idx = block_start + tl.arange(0, BLOCK_SIZE)
-            col_mask = col_idx < valid_len
-            vals = tl.load(row_ptr + col_idx, mask=col_mask, other=float("-inf"))
-            exp_vals = tl.exp(vals - max_val)
-            probs = exp_vals / d_sum
-            tl.store(out_row_ptr + col_idx, probs, mask=col_mask)
-
-        # Store zeros for masked positions
-        for block_start in range(valid_len, L, BLOCK_SIZE):
-            col_idx = block_start + tl.arange(0, BLOCK_SIZE)
-            col_mask = col_idx < L
-            tl.store(out_row_ptr + col_idx, 0.0, mask=col_mask)
+            mask = col_idx < L
+            causal = col_idx <= row_idx
+            vals = tl.load(row_ptr + col_idx, mask=mask & causal, other=float("-inf"))
+            probs = tl.exp(vals - max_val) / d_sum
+            tl.store(out_row_ptr + col_idx, probs, mask=mask)
 
 
 @triton.jit
@@ -136,12 +130,6 @@ def _fused_mask_softmax_bwd_kernel(
             prob_vals = tl.load(probs_row_ptr + col_idx, mask=col_mask, other=0.0)
             grad_scores = prob_vals * (grad_vals - dot)
             tl.store(out_row_ptr + col_idx, grad_scores, mask=col_mask)
-
-        # Zero out masked positions
-        for block_start in range(valid_len, L, BLOCK_SIZE):
-            col_idx = block_start + tl.arange(0, BLOCK_SIZE)
-            col_mask = col_idx < L
-            tl.store(out_row_ptr + col_idx, 0.0, mask=col_mask)
 
 
 @triton.jit
@@ -208,12 +196,6 @@ def _fused_mask_sparsemax_bwd_kernel(
             supp = prob_vals > 0.0
             grad_scores = tl.where(supp, grad_vals - avg_grad, 0.0)
             tl.store(out_row_ptr + col_idx, grad_scores, mask=col_mask)
-
-        # Zero out masked positions
-        for block_start in range(valid_len, L, BLOCK_SIZE):
-            col_idx = block_start + tl.arange(0, BLOCK_SIZE)
-            col_mask = col_idx < L
-            tl.store(out_row_ptr + col_idx, 0.0, mask=col_mask)
 
 
 @triton.jit
@@ -418,7 +400,7 @@ def fused_mask_softmax_backward(grad_out: torch.Tensor, probs: torch.Tensor) -> 
     N = int(torch.prod(torch.tensor(batch))) if batch else 1
     grad_out_f = grad_out.view(N, L, L)
     probs_f = probs.view(N, L, L)
-    grad_scores = torch.empty_like(grad_out_f)
+    grad_scores = torch.zeros_like(grad_out_f)
 
     BLOCK_SIZE = get_optimal_size_fused_mask_softmax(L, is_forward=False)
 
@@ -493,7 +475,7 @@ def fused_mask_sparsemax_backward(grad_out: torch.Tensor, probs: torch.Tensor) -
     N = int(torch.prod(torch.tensor(batch))) if batch else 1
     grad_out_f = grad_out.view(N, L, L)
     probs_f = probs.view(N, L, L)
-    grad_scores = torch.empty_like(grad_out_f)
+    grad_scores = torch.zeros_like(grad_out_f)
 
     BLOCK_SIZE = get_optimal_size_fused_mask_softmax(L, is_forward=False)
 
