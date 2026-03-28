@@ -30,6 +30,9 @@ Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import .
 # All of these can be replaced by vendor-specific implementations.
 # =============================================================================
 
+from liger_kernel.ops.attn_res import LigerAttnResFunction  # noqa: F401
+from liger_kernel.ops.attn_res import attn_res_backward  # noqa: F401
+from liger_kernel.ops.attn_res import attn_res_forward  # noqa: F401
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction  # noqa: F401
 from liger_kernel.ops.cross_entropy import cross_entropy_backward  # noqa: F401
 from liger_kernel.ops.cross_entropy import cross_entropy_forward  # noqa: F401
