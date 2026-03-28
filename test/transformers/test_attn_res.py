@@ -56,9 +56,7 @@ def pytorch_attn_res(V, w_query, w_norm, eps=1e-6):
             torch.bfloat16,
             1e-1,
             1e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
 )
@@ -94,9 +92,7 @@ def test_correctness(N, B, T, D, dtype, atol, rtol):
             torch.bfloat16,
             2e-1,
             2e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
 )

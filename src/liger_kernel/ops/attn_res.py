@@ -25,22 +25,22 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import ensure_contiguous
 
-
 # ============================================================================
 # Forward Kernel
 # ============================================================================
 
+
 @triton.jit
 def _attn_res_fwd_kernel(
-    V_ptr,          # [N, B*T, D] stacked block values
-    W_query_ptr,    # [D] learned pseudo-query
-    W_norm_ptr,     # [D] RMSNorm weight for keys
-    Out_ptr,        # [B*T, D] output
-    Alpha_ptr,      # [B*T, N] attention weights (saved for bwd)
-    RSTD_ptr,       # [B*T, N] rstd per (token, block)
-    n_blocks,       # N
-    n_tokens,       # B*T
-    D,              # hidden dim
+    V_ptr,  # [N, B*T, D] stacked block values
+    W_query_ptr,  # [D] learned pseudo-query
+    W_norm_ptr,  # [D] RMSNorm weight for keys
+    Out_ptr,  # [B*T, D] output
+    Alpha_ptr,  # [B*T, N] attention weights (saved for bwd)
+    RSTD_ptr,  # [B*T, N] rstd per (token, block)
+    n_blocks,  # N
+    n_tokens,  # B*T
+    D,  # hidden dim
     eps,
     BLOCK_D: tl.constexpr,
     MAX_BLOCKS: tl.constexpr,
@@ -52,7 +52,7 @@ def _attn_res_fwd_kernel(
 
     # Load shared vectors
     w_query = tl.load(W_query_ptr + cols, mask=d_mask, other=0.0).to(tl.float32)
-    w_norm  = tl.load(W_norm_ptr  + cols, mask=d_mask, other=0.0)
+    w_norm = tl.load(W_norm_ptr + cols, mask=d_mask, other=0.0)
 
     # Pass 1: compute scores = dot(w_query, RMSNorm(v_i)) for each block
     # scores[i] is stored at register position i via tl.where (workaround for
@@ -112,18 +112,22 @@ def _attn_res_fwd_kernel(
 # Backward Kernel
 # ============================================================================
 
+
 @triton.jit
 def _attn_res_bwd_kernel(
-    dOut_ptr,       # [B*T, D] upstream gradient
-    V_ptr,          # [N, B*T, D]
-    W_query_ptr,    # [D]
-    W_norm_ptr,     # [D]
-    Alpha_ptr,      # [B*T, N] saved from forward
-    RSTD_ptr,       # [B*T, N] saved from forward
-    dV_ptr,         # [N, B*T, D] output gradients
-    dW_query_ptr,   # [D] atomic accumulate
-    dW_norm_ptr,    # [D] atomic accumulate
-    n_blocks, n_tokens, D, eps,
+    dOut_ptr,  # [B*T, D] upstream gradient
+    V_ptr,  # [N, B*T, D]
+    W_query_ptr,  # [D]
+    W_norm_ptr,  # [D]
+    Alpha_ptr,  # [B*T, N] saved from forward
+    RSTD_ptr,  # [B*T, N] saved from forward
+    dV_ptr,  # [N, B*T, D] output gradients
+    dW_query_ptr,  # [D] atomic accumulate
+    dW_norm_ptr,  # [D] atomic accumulate
+    n_blocks,
+    n_tokens,
+    D,
+    eps,
     BLOCK_D: tl.constexpr,
     MAX_BLOCKS: tl.constexpr,
 ):
@@ -134,11 +138,11 @@ def _attn_res_bwd_kernel(
 
     dh = tl.load(dOut_ptr + tok * D + cols, mask=d_mask, other=0.0).to(tl.float32)
     w_query = tl.load(W_query_ptr + cols, mask=d_mask, other=0.0).to(tl.float32)
-    w_norm  = tl.load(W_norm_ptr  + cols, mask=d_mask, other=0.0).to(tl.float32)
+    w_norm = tl.load(W_norm_ptr + cols, mask=d_mask, other=0.0).to(tl.float32)
 
     # Load alpha for all blocks — layout [B*T, N], contiguous load
     d_alpha = tl.zeros((MAX_BLOCKS,), dtype=tl.float32)
-    alpha   = tl.zeros((MAX_BLOCKS,), dtype=tl.float32)
+    alpha = tl.zeros((MAX_BLOCKS,), dtype=tl.float32)
 
     for i in tl.static_range(0, MAX_BLOCKS):
         if i < n_blocks:
@@ -148,7 +152,7 @@ def _attn_res_bwd_kernel(
 
             da_i = tl.sum(dh * v, axis=0)
             d_alpha = tl.where(tl.arange(0, MAX_BLOCKS) == i, da_i, d_alpha)
-            alpha   = tl.where(tl.arange(0, MAX_BLOCKS) == i, a_i, alpha)
+            alpha = tl.where(tl.arange(0, MAX_BLOCKS) == i, a_i, alpha)
 
     # Softmax backward: d_score_i = alpha_i * (d_alpha_i - sum_j(alpha_j * d_alpha_j))
     sum_a_da = tl.sum(alpha * d_alpha, axis=0)
@@ -156,13 +160,13 @@ def _attn_res_bwd_kernel(
 
     # For each block: compute dV_i and accumulate dW_query, dW_norm
     dw_query_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
-    dw_norm_acc  = tl.zeros((BLOCK_D,), dtype=tl.float32)
+    dw_norm_acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
 
     for i in tl.static_range(0, MAX_BLOCKS):
         if i < n_blocks:
             v_off = i * n_tokens * D + tok * D
             v = tl.load(V_ptr + v_off + cols, mask=d_mask, other=0.0).to(tl.float32)
-            a_i  = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, alpha, 0.0))
+            a_i = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, alpha, 0.0))
             ds_i = tl.sum(tl.where(tl.arange(0, MAX_BLOCKS) == i, d_scores, 0.0))
             rstd = tl.load(RSTD_ptr + tok * n_blocks + i)
 
@@ -194,12 +198,13 @@ def _attn_res_bwd_kernel(
             dw_norm_acc += ds_i * w_query * v_norm
 
     tl.atomic_add(dW_query_ptr + cols, dw_query_acc, mask=d_mask)
-    tl.atomic_add(dW_norm_ptr  + cols, dw_norm_acc,  mask=d_mask)
+    tl.atomic_add(dW_norm_ptr + cols, dw_norm_acc, mask=d_mask)
 
 
 # ============================================================================
 # Python wrappers
 # ============================================================================
+
 
 def _next_pow2(n):
     return triton.next_power_of_2(n)
@@ -238,12 +243,12 @@ def attn_res_forward(blocks, w_query, w_norm, eps=1e-6):
     n_tokens = V_3d.shape[1]
 
     w_query = w_query.contiguous()
-    w_norm  = w_norm.contiguous()
+    w_norm = w_norm.contiguous()
 
-    Out   = torch.empty(n_tokens, D, device=V.device, dtype=V.dtype)
+    Out = torch.empty(n_tokens, D, device=V.device, dtype=V.dtype)
     # Layout [B*T, N] for coalesced access per token
     Alpha = torch.empty(n_tokens, N, device=V.device, dtype=torch.float32)
-    RSTD  = torch.empty(n_tokens, N, device=V.device, dtype=torch.float32)
+    RSTD = torch.empty(n_tokens, N, device=V.device, dtype=torch.float32)
 
     BLOCK_D = _next_pow2(D)
     MAX_BLOCKS = _get_max_blocks(N)
@@ -254,9 +259,18 @@ def attn_res_forward(blocks, w_query, w_norm, eps=1e-6):
         nw = 16
 
     _attn_res_fwd_kernel[(n_tokens,)](
-        V_3d, w_query, w_norm, Out, Alpha, RSTD,
-        N, n_tokens, D, eps,
-        BLOCK_D=BLOCK_D, MAX_BLOCKS=MAX_BLOCKS,
+        V_3d,
+        w_query,
+        w_norm,
+        Out,
+        Alpha,
+        RSTD,
+        N,
+        n_tokens,
+        D,
+        eps,
+        BLOCK_D=BLOCK_D,
+        MAX_BLOCKS=MAX_BLOCKS,
         num_warps=nw,
     )
 
@@ -275,7 +289,7 @@ def attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, eps=1e-6):
 
     dV = torch.empty_like(V_3d)
     dW_query = torch.zeros(D, dtype=torch.float32, device=dh.device)
-    dW_norm  = torch.zeros(D, dtype=torch.float32, device=dh.device)
+    dW_norm = torch.zeros(D, dtype=torch.float32, device=dh.device)
 
     BLOCK_D = _next_pow2(D)
     MAX_BLOCKS = _get_max_blocks(N)
@@ -286,10 +300,21 @@ def attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, eps=1e-6):
         nw = 16
 
     _attn_res_bwd_kernel[(n_tokens,)](
-        dh_2d, V_3d, w_query, w_norm, Alpha, RSTD,
-        dV, dW_query, dW_norm,
-        N, n_tokens, D, eps,
-        BLOCK_D=BLOCK_D, MAX_BLOCKS=MAX_BLOCKS,
+        dh_2d,
+        V_3d,
+        w_query,
+        w_norm,
+        Alpha,
+        RSTD,
+        dV,
+        dW_query,
+        dW_norm,
+        N,
+        n_tokens,
+        D,
+        eps,
+        BLOCK_D=BLOCK_D,
+        MAX_BLOCKS=MAX_BLOCKS,
         num_warps=nw,
     )
 
@@ -299,6 +324,7 @@ def attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, eps=1e-6):
 # ============================================================================
 # PyTorch Autograd Function
 # ============================================================================
+
 
 class LigerAttnResFunction(torch.autograd.Function):
     @staticmethod
@@ -314,9 +340,7 @@ class LigerAttnResFunction(torch.autograd.Function):
     @ensure_contiguous
     def backward(ctx, dh):
         V_3d, w_query, w_norm, Alpha, RSTD = ctx.saved_tensors
-        dV, dW_query, dW_norm = attn_res_backward(
-            dh, V_3d, w_query, w_norm, Alpha, RSTD, ctx.eps
-        )
+        dV, dW_query, dW_norm = attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, ctx.eps)
         # Reshape dV back to original input shape
         dV = dV.view(ctx.orig_shape)
         return dV, dW_query, dW_norm, None
