@@ -71,6 +71,9 @@ from liger_kernel.ops.poly_norm import LigerPolyNormFunction  # noqa: F401
 from liger_kernel.ops.poly_norm import poly_norm_backward  # noqa: F401
 from liger_kernel.ops.poly_norm import poly_norm_forward  # noqa: F401
 from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction  # noqa: F401
+from liger_kernel.ops.relu_squared import LigerReLUSquaredFunction  # noqa: F401
+from liger_kernel.ops.relu_squared import relu_squared_backward  # noqa: F401
+from liger_kernel.ops.relu_squared import relu_squared_forward  # noqa: F401
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction  # noqa: F401
 from liger_kernel.ops.rms_norm import rms_norm_backward  # noqa: F401
 from liger_kernel.ops.rms_norm import rms_norm_forward  # noqa: F401
