@@ -62,7 +62,7 @@ def bench_speed_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
         if provider == "liger":
             return liger_rotary_pos_emb(q, k, cos, sin, pos_ids)
         elif provider == "huggingface":
-            return apply_rotary_pos_emb(q, k, cos, sin, pos_ids)
+            return apply_rotary_pos_emb(q, k, cos, sin)
         else:
             raise ValueError(f"Invalid provider: {provider} for RoPE embedding")
 
@@ -143,7 +143,7 @@ def bench_memory_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutpu
         if provider == "liger":
             q_out, k_out = liger_rotary_pos_emb(q, k, cos, sin, pos_ids)
         else:
-            q_out, k_out = apply_rotary_pos_emb(q, k, cos, sin, pos_ids)
+            q_out, k_out = apply_rotary_pos_emb(q, k, cos, sin)
         torch.autograd.grad((q_out, k_out), (q, k), (dq, dk), allow_unused=True, retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(
