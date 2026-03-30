@@ -31,6 +31,7 @@ Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import .
 # =============================================================================
 
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction  # noqa: F401
+from liger_kernel.ops.fused_moe import LigerFusedMoEFunction  # noqa: F401
 from liger_kernel.ops.cross_entropy import cross_entropy_backward  # noqa: F401
 from liger_kernel.ops.cross_entropy import cross_entropy_forward  # noqa: F401
 from liger_kernel.ops.dyt import LigerDyTFunction  # noqa: F401
