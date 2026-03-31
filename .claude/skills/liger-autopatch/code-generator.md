@@ -138,6 +138,11 @@ Before making changes, read the existing implementation:
   pytest test/convergence/fp32/test_mini_models.py -k "{model_type}" -xvs
   pytest test/convergence/fp32/test_mini_models_with_logits.py -k "{model_type}" -xvs
   ```
+  For VL (multimodal) models, also run:
+  ```bash
+  pytest test/convergence/bf16/test_mini_models_multimodal.py -k "{model_type}" -xvs
+  pytest test/convergence/fp32/test_mini_models_multimodal.py -k "{model_type}" -xvs
+  ```
 
 **R7. Update README.md.** If the change adds a visibly new capability to the model's
   row in the patching table (e.g., a new operation), update the supported operations list.
