@@ -398,7 +398,7 @@ def _get_up_proj_autotune_configs():
     for bn in [64, 128]:
         for bk in [32, 64]:
             for nw in [4, 8]:
-                for ns in [2, 3]:
+                for ns in [2, 3, 4, 5]:
                     configs.append(
                         triton.Config(
                             {"BLOCK_N": bn, "BLOCK_K": bk},
@@ -466,11 +466,13 @@ def _fused_up_proj_swiglu_kernel(
         k_mask = k_idx < H_dim
 
         x_ptrs = x_ptr + token_idx[:, None] * stride_x_T + k_idx[None, :] * stride_x_H
+        # Keep bf16 for dot operands → tensor cores. acc stays fp32 for precision.
         x_tile = tl.load(
             x_ptrs,
             mask=row_mask[:, None] & k_mask[None, :],
             other=0.0,
-        ).to(tl.float32)
+            eviction_policy="evict_first",  # token rows not reused; free L2 for weights
+        )
 
         w_mask = n_mask[:, None] & k_mask[None, :]
         w_gate_ptrs = (
@@ -483,7 +485,7 @@ def _fused_up_proj_swiglu_kernel(
             w_gate_ptrs,
             mask=w_mask,
             other=0.0,
-        ).to(tl.float32)
+        )
         acc_gate = tl.dot(x_tile, tl.trans(w_gate), acc=acc_gate)
 
         w_up_ptrs = w_gate_ptrs + I_dim * stride_w_N
@@ -491,7 +493,7 @@ def _fused_up_proj_swiglu_kernel(
             w_up_ptrs,
             mask=w_mask,
             other=0.0,
-        ).to(tl.float32)
+        )
 
         acc_up = tl.dot(x_tile, tl.trans(w_up), acc=acc_up)
 
@@ -529,7 +531,7 @@ def _get_down_proj_autotune_configs():
     for bn in [64, 128]:
         for bk in [32, 64]:
             for nw in [4, 8]:
-                for ns in [2, 3]:
+                for ns in [2, 3, 4, 5]:
                     configs.append(
                         triton.Config(
                             {"BLOCK_N": bn, "BLOCK_K": bk},
@@ -591,7 +593,8 @@ def _fused_down_proj_kernel(
         k_mask = k_idx < I_dim
 
         a_ptrs = A_post_ptr + row_offs[:, None] * stride_A_TK + k_idx[None, :] * stride_A_I
-        a_tile = tl.load(a_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0).to(tl.float32)
+        # Keep bf16 for dot operands → tensor cores. acc stays fp32.
+        a_tile = tl.load(a_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
         w_ptrs = (
             down_proj_ptr
@@ -603,7 +606,7 @@ def _fused_down_proj_kernel(
             w_ptrs,
             mask=n_mask[:, None] & k_mask[None, :],
             other=0.0,
-        ).to(tl.float32)
+        )
 
         acc = tl.dot(a_tile, tl.trans(w_tile), acc=acc)
 

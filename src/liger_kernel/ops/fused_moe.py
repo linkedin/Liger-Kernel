@@ -29,8 +29,10 @@ from liger_kernel.ops.fused_moe_kernels import (
 )
 from liger_kernel.ops.utils import ensure_contiguous
 
-# Fixed token-dimension tile size for M (not autotuned).
-# Decouples tile metadata computation from GEMM autotune.
+# Token-dimension tile size for M.
+# Not in the inner-loop autotune because expert_for_tile/tile_expert and the
+# grid dim-0 (num_m_tiles) must be recomputed for every candidate value.
+# To tune: change this constant and re-run benchmarks.
 BLOCK_M_TOKEN = 16
 
 
