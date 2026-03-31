@@ -1,6 +1,11 @@
 # Code Generator Agent
 
-Takes a confirmed model profile and generates all files to add Liger Kernel support.
+Takes a confirmed model profile (create mode) or a change plan (modify mode) and generates or modifies files for Liger Kernel support.
+
+## Mode
+
+- **Create mode** (default): Generating all files for a new model. Follow the full "Files to Generate" list below.
+- **Modify mode**: Making targeted changes to an existing monkey-patch. Follow the "Modification Checklist" section instead.
 
 ## Pre-Requisites
 
@@ -84,3 +89,65 @@ Add row to the Patching table under "### Patching":
 - Follow exact patterns from existing code — do not innovate on style
 - When modifying existing files, insert new entries in **alphabetical order** alongside similar existing entries. Never append to the end of a section — find the correct alphabetical position.
 - After generating all files, run `make checkstyle` to verify formatting. If it fails, run `ruff check . --fix && ruff format .` to auto-fix, then verify with `make checkstyle` again.
+
+## Modification Checklist (Modify Mode)
+
+Before making changes, read the existing implementation:
+1. Read `apply_liger_kernel_to_{model_type}` in `monkey_patch.py`
+2. Read the existing test in `test_monkey_patch.py` for this model
+3. Read the relevant HF modeling source for context
+
+### Rules for All Modifications
+
+**R1. Both patching levels.** If adding a new kernel, it must appear in BOTH:
+  - Class-level patching (the main body of `apply_liger_kernel_to_{model_type}`)
+  - Instance-level patching (the `if model is not None` block)
+
+  Omitting one is the most common mistake.
+
+**R2. New parameter with default.** Every new kernel gets a bool parameter on the
+  apply function signature (e.g., `relu_squared: bool = True`). Default should be `True`
+  for kernels that are safe to enable by default, `False` otherwise.
+
+**R3. Update docstring.** Update the function's docstring to:
+  - Add an `Args` entry for the new parameter
+  - Remove any stale notes that the new kernel invalidates
+    (e.g., "squared ReLU is not supported" → remove if you're adding it)
+
+**R4. Update tests.** In the existing `test_apply_liger_kernel_to_instance_for_{model_type}`:
+  - Add import for the new Liger kernel class
+  - Add "not yet patched" assertion before `_apply_liger_kernel_to_instance`
+  - Add "correctly patched" assertion after
+  - Follow the exact pattern of existing assertions in the same test
+
+**R5. Run convergence tests.** Don't modify convergence test files unless the change
+  requires it (e.g., new mini model config fields). But DO run existing convergence
+  tests to verify no regression.
+
+**R6. Update README.md.** If the change adds a visibly new capability to the model's
+  row in the patching table (e.g., a new operation), update the supported operations list.
+
+### Common Modification Patterns
+
+**Adding an activation kernel (e.g., relu_squared for nemotron):**
+- Import the Liger kernel class at the top of `monkey_patch.py`
+- Add bool parameter to apply function signature
+- Class-level: replace in `ACT2FN` dict or replace the MLP class
+- Instance-level: patch each `decoder_layer`'s activation/MLP
+- Test: `assert isinstance` checks on the activation/MLP
+
+**Adding a norm variant:**
+- Add bool parameter to apply function
+- Class-level: replace the norm class
+- Instance-level: use `_patch_rms_norm_module` or `_patch_layer_norm_module` on all norm attrs
+- Test: `assert isinstance` checks on norm modules
+
+**Fixing missing instance patching:**
+- Read the class-level patching to see what's patched
+- Add corresponding instance-level patches in the `if model is not None` block
+- Test: add assertions that were missing
+
+**Updating for upstream HF changes:**
+- Compare the current HF modeling file against what the patch assumes
+- Update class names, attribute names, forward signatures as needed
+- May require updating `lce_forward` if the base model's forward changed
