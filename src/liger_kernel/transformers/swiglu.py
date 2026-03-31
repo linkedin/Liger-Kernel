@@ -46,12 +46,12 @@ class LigerExperts(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        if "num_experts" in config:
+        if hasattr(config, "num_experts"):
             # qwen3_moe, qwen3_next uses num_experts
             self.num_experts = config.num_experts
         else:
             self.num_experts = config.num_local_experts
-        if "moe_intermediate_size" in config:
+        if hasattr(config, "moe_intermediate_size"):
             # qwen3_moe, qwen3_next uses moe_intermediate_size
             self.intermediate_dim = config.moe_intermediate_size
         else:

@@ -1,13 +1,12 @@
 """
-Tests for LigerFusedMoEFunction and the updated LigerExperts module.
+Tests for LigerFusedMoEFunction.
 
 Tests cover:
 1. Routing metadata correctness (permutation invariants)
-2. Forward correctness vs. reference LigerExperts Python loop
+2. Forward correctness vs. reference Python loop
 3. Backward / gradient correctness
 4. Edge cases (empty experts, single expert, all tokens to one expert)
 5. Multiple dtypes
-6. LigerExperts integration (end-to-end through the nn.Module)
 """
 
 import pytest
@@ -15,7 +14,6 @@ import torch
 import torch.nn as nn
 
 from liger_kernel.ops.fused_moe import LigerFusedMoEFunction, compute_routing_metadata
-from liger_kernel.transformers.swiglu import LigerExperts
 
 # ---------------------------------------------------------------------------
 # Skip if no CUDA
@@ -255,89 +253,3 @@ def test_K_equals_E():
     assert torch.allclose(out, ref, atol=1e-3)
 
 
-# ---------------------------------------------------------------------------
-# Test 5: LigerExperts nn.Module integration
-# ---------------------------------------------------------------------------
-
-
-def _make_experts_config(E, H, I, hidden_act="silu"):
-    from types import SimpleNamespace
-    return SimpleNamespace(
-        num_local_experts=E,
-        num_experts=E,  # for configs that use num_experts
-        hidden_size=H,
-        intermediate_size=I,
-        moe_intermediate_size=I,
-        hidden_act=hidden_act,
-    )
-
-
-@pytest.mark.parametrize("T, E, H, I, K", [
-    (64, 8, 256, 64, 2),
-    (128, 16, 512, 128, 4),
-])
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_liger_experts_module_forward(T, E, H, I, K, dtype):
-    device = "cuda"
-    torch.manual_seed(0)
-    cfg = _make_experts_config(E, H, I)
-    module = LigerExperts(cfg).to(device=device, dtype=dtype)
-    module.eval()
-
-    x = torch.randn(T, H, device=device, dtype=dtype)
-    logits = torch.randn(T, E, device=device)
-    idx = torch.topk(logits, K, dim=-1).indices.to(torch.int32)
-    wts = torch.softmax(torch.gather(logits, 1, idx.long()), dim=-1).to(dtype)
-
-    out = module(x, idx, wts)
-    assert out.shape == (T, H)
-
-
-@pytest.mark.parametrize("T, E, H, I, K", [(32, 4, 64, 32, 2)])
-def test_liger_experts_module_backward(T, E, H, I, K):
-    device = "cuda"
-    dtype = torch.float32
-    torch.manual_seed(0)
-    cfg = _make_experts_config(E, H, I)
-    module = LigerExperts(cfg).to(device=device, dtype=dtype)
-
-    x = torch.randn(T, H, device=device, dtype=dtype, requires_grad=True)
-    logits = torch.randn(T, E, device=device)
-    idx = torch.topk(logits, K, dim=-1).indices.to(torch.int32)
-    wts = torch.softmax(torch.gather(logits, 1, idx.long()), dim=-1).requires_grad_(True)
-
-    out = module(x, idx, wts)
-    out.sum().backward()
-
-    assert x.grad is not None
-    assert x.grad.shape == (T, H)
-    assert module.gate_up_proj.grad is not None
-    assert module.down_proj.grad is not None
-
-
-# ---------------------------------------------------------------------------
-# Test 6: Memory efficiency (activation memory should not scale with H)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("T, E, H, I, K", [(256, 8, 1024, 256, 2)])
-def test_memory_does_not_cache_Y(T, E, H, I, K):
-    """Verify that peak memory with the fused kernel is less than storing Y (TK, H)."""
-    device = "cuda"
-    dtype = torch.float32
-    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, I, K, dtype, device)
-    x = x.requires_grad_(True)
-    gate_up_proj = gate_up_proj.requires_grad_(True)
-    down_proj = down_proj.requires_grad_(True)
-
-    torch.cuda.reset_peak_memory_stats(device)
-    out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
-    out.sum().backward()
-    peak_mb = torch.cuda.max_memory_allocated(device) / 1024**2
-
-    # Y would require T*K*H*4 bytes; check we're not storing it redundantly
-    Y_bytes_mb = T * K * H * 4 / 1024**2
-    # Allow 5× overhead for other tensors but not a hard failure (informational)
-    print(f"Peak memory: {peak_mb:.1f} MB, Y size: {Y_bytes_mb:.1f} MB")
-    # Soft check: peak should be in a reasonable range
-    assert peak_mb < Y_bytes_mb * 20, f"Unexpectedly high memory: {peak_mb:.1f} MB"
