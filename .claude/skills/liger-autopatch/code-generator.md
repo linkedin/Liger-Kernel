@@ -120,11 +120,26 @@ Before making changes, read the existing implementation:
   - Add "correctly patched" assertion after
   - Follow the exact pattern of existing assertions in the same test
 
-**R5. Run convergence tests.** Don't modify convergence test files unless the change
-  requires it (e.g., new mini model config fields). But DO run existing convergence
-  tests to verify no regression.
+**R5. Check revert function.** Read `revert_liger_kernel_to_{model_type}` in `test/utils.py`.
+  The revert function uses `importlib.reload(modeling_{model_type})` to undo all patches.
+  This handles most cases automatically, but check if the new kernel requires additional
+  revert logic (e.g., if the kernel patches something outside the modeling module, or
+  replaces a global like `ACT2FN` that `importlib.reload` won't fully restore). Update
+  the revert function if needed.
 
-**R6. Update README.md.** If the change adds a visibly new capability to the model's
+**R6. Run convergence tests.** Don't modify convergence test files unless the change
+  requires it (e.g., new mini model config fields). But DO run existing convergence
+  tests in the Validate stage to verify no regression. This is critical — the Validator
+  agent (Stage 3) handles this, but if you are generating code without a separate
+  Validate stage, run these yourself:
+  ```bash
+  pytest test/convergence/bf16/test_mini_models.py -k "{model_type}" -xvs
+  pytest test/convergence/bf16/test_mini_models_with_logits.py -k "{model_type}" -xvs
+  pytest test/convergence/fp32/test_mini_models.py -k "{model_type}" -xvs
+  pytest test/convergence/fp32/test_mini_models_with_logits.py -k "{model_type}" -xvs
+  ```
+
+**R7. Update README.md.** If the change adds a visibly new capability to the model's
   row in the patching table (e.g., a new operation), update the supported operations list.
 
 ### Common Modification Patterns

@@ -75,7 +75,11 @@ Spawn the **Code Generator** agent (read [code-generator.md](code-generator.md))
 
 ### Stage 3: Validate
 
-Same as create mode — spawn the **Validator** agent (read [validator.md](validator.md)).
+Spawn the **Validator** agent (read [validator.md](validator.md)). This stage is **mandatory** — do not skip it. At minimum, run:
+
+1. Instance patching test: `pytest test/transformers/test_monkey_patch.py -k "{model_type}" -xvs`
+2. All convergence tests for the model (bf16 + fp32, FLCE + with_logits)
+3. Checkstyle: `make checkstyle`
 
 **Human checkpoint:** Report final test results.
 
