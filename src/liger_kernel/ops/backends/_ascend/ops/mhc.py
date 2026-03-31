@@ -46,7 +46,7 @@ def _mhc_mm_norm_block_sizes(N, K, M, dtype_size=4):
     num_cores = get_npu_core_count()
     tiles_m = triton.cdiv(M, block_m)
     block_n = 16
-    for bn in [16, 8, 4]:
+    for bn in [128, 64, 32, 16, 8, 4]:
         if triton.cdiv(N, bn) * tiles_m >= num_cores:
             block_n = bn
             break
@@ -76,9 +76,12 @@ def _mhc_pre_post_block_c(C, HC, block_n=4, is_post=False, is_bwd=False):
     simultaneously resident in UB (with 2× multi-buffer factor).
     """
     if is_post:
-        multiplier = float(2 * (HC + 4)) if is_bwd else float(2 * (2 * HC + 2))
+        # fwd: only acc[BN,BC] + xs[BN,BC] + f[BN,BC] live at once (j-loop writes immediately)
+        # bwd: still has the full [HC,BN,BC] accumulator structure
+        multiplier = float(2 * (HC + 4)) if is_bwd else 6.0
+        # multiplier = 14.0
     else:
-        multiplier = 10.0
+        multiplier = 4.0
 
     tile_shapes = compute_default_tiling_strategy(
         safety_margin=0.90,
@@ -833,38 +836,31 @@ def _mhc_pre_fwd_kernel_npu(
     BLOCK_N: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid = tl.program_id(0)
-    num_progs = tl.num_programs(0)
+    pid_n = tl.program_id(0)
+    pid_c = tl.program_id(1)
 
-    total_tiles = tl.cdiv(N, BLOCK_N) * tl.cdiv(C, BLOCK_C)
+    n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    c_offs = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
 
-    for tile_id in tl.range(pid, total_tiles, num_progs):
-        tiles_per_row = tl.cdiv(C, BLOCK_C)
-        pid_n = tile_id // tiles_per_row
-        pid_c = tile_id % tiles_per_row
-
-        n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-        c_offs = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
-
-        acc = tl.zeros((BLOCK_N, BLOCK_C), tl.float32)
-        for s in range(HC):
-            h_s = tl.load(
-                hpre_ptr + n_offs * stride_hn + s * stride_hh,
-                mask=n_offs < N,
-                other=0.0,
-            ).to(tl.float32)
-            xs = tl.load(
-                x_ptr + n_offs[:, None] * stride_xn + s * stride_xh + c_offs[None, :] * stride_xc,
-                mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
-                other=0.0,
-            ).to(tl.float32)
-            acc += xs * h_s[:, None]
-
-        tl.store(
-            out_ptr + n_offs[:, None] * stride_on + c_offs[None, :] * stride_oc,
-            acc,
+    acc = tl.zeros((BLOCK_N, BLOCK_C), tl.float32)
+    for s in tl.static_range(0, HC):
+        h_s = tl.load(
+            hpre_ptr + n_offs * stride_hn + s * stride_hh,
+            mask=(n_offs < N),
+            other=0.0,
+        ).to(tl.float32)
+        xs = tl.load(
+            x_ptr + n_offs[:, None] * stride_xn + s * stride_xh + c_offs[None, :] * stride_xc,
             mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
-        )
+            other=0.0,
+        ).to(tl.float32)
+        acc += xs * h_s[:, None]
+
+    tl.store(
+        out_ptr + n_offs[:, None] * stride_on + c_offs[None, :] * stride_oc,
+        acc,
+        mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
+    )
 
 
 @triton.jit
@@ -892,50 +888,45 @@ def _mhc_pre_bwd_kernel_npu(
     BLOCK_N: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid = tl.program_id(0)
-    num_progs = tl.num_programs(0)
+    pid_n = tl.program_id(0)
+    pid_c = tl.program_id(1)
 
-    total_tiles = tl.cdiv(N, BLOCK_N) * tl.cdiv(C, BLOCK_C)
+    n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    c_offs = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
 
-    for tile_id in tl.range(pid, total_tiles, num_progs):
-        tiles_per_row = tl.cdiv(C, BLOCK_C)
-        pid_n = tile_id // tiles_per_row
-        pid_c = tile_id % tiles_per_row
+    go = tl.load(
+        grad_out_ptr + n_offs[:, None] * stride_gon + c_offs[None, :] * stride_goc,
+        mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
+        other=0.0,
+    ).to(tl.float32)
 
-        n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-        c_offs = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    # grad_x = grad_out * hpre
+    for s in tl.static_range(0, HC):
+        h_s = tl.load(
+            hpre_ptr + n_offs * stride_hn + s * stride_hh,
+            mask=(n_offs < N),
+            other=0.0,
+        ).to(tl.float32)
+        gx = go * h_s[:, None]
+        tl.store(
+            grad_x_ptr + n_offs[:, None] * stride_gxn + s * stride_gxh + c_offs[None, :] * stride_gxc,
+            gx,
+            mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
+        )
 
-        go = tl.load(
-            grad_out_ptr + n_offs[:, None] * stride_gon + c_offs[None, :] * stride_goc,
+        # grad_hpre: dot(go, x_s) over C -> atomic add
+        xs = tl.load(
+            x_ptr + n_offs[:, None] * stride_xn + s * stride_xh + c_offs[None, :] * stride_xc,
             mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
             other=0.0,
         ).to(tl.float32)
-
-        for s in range(HC):
-            h_s = tl.load(
-                hpre_ptr + n_offs * stride_hn + s * stride_hh,
-                mask=n_offs < N,
-                other=0.0,
-            ).to(tl.float32)
-            gx = go * h_s[:, None]
-            tl.store(
-                grad_x_ptr + n_offs[:, None] * stride_gxn + s * stride_gxh + c_offs[None, :] * stride_gxc,
-                gx,
-                mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
-            )
-
-            xs = tl.load(
-                x_ptr + n_offs[:, None] * stride_xn + s * stride_xh + c_offs[None, :] * stride_xc,
-                mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
-                other=0.0,
-            ).to(tl.float32)
-            part = tl.sum(go * xs, axis=1)
-            tl.atomic_add(
-                grad_h_ptr + n_offs * stride_ghn + s * stride_ghh,
-                part,
-                mask=n_offs < N,
-            )
-
+        part = tl.sum(go * xs, axis=1)
+        tl.atomic_add(
+            grad_h_ptr + n_offs * stride_ghn + s * stride_ghh,
+            part,
+            mask=n_offs < N,
+        )
+        
 
 def _select_pre_post_blocks(N, C, HC, is_post, is_bwd):
     """Jointly select (BLOCK_N, BLOCK_C) that fits UB and maximises core usage.
@@ -945,7 +936,7 @@ def _select_pre_post_blocks(N, C, HC, is_post, is_bwd):
     is enough to keep all NPU cores busy.
     """
     num_cores = get_npu_core_count()
-    for bn in [8, 4, 2, 1]:
+    for bn in [16, 8, 4, 2, 1]:
         bc = _mhc_pre_post_block_c(C, HC, block_n=bn, is_post=is_post, is_bwd=is_bwd)
         if triton.cdiv(N, bn) * triton.cdiv(C, bc) >= num_cores:
             return bn, bc
@@ -1068,55 +1059,49 @@ def _mhc_post_res_fwd_kernel_npu(
     BLOCK_N: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid = tl.program_id(0)
-    num_progs = tl.num_programs(0)
+    pid_n = tl.program_id(0)
+    pid_c = tl.program_id(1)
 
-    total_tiles = tl.cdiv(N, BLOCK_N) * tl.cdiv(C, BLOCK_C)
+    n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    c_offs = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
 
-    for tile_id in tl.range(pid, total_tiles, num_progs):
-        tiles_per_row = tl.cdiv(C, BLOCK_C)
-        pid_n = tile_id // tiles_per_row
-        pid_c = tile_id % tiles_per_row
+    f = tl.load(
+        f_ptr + n_offs[:, None] * stride_fn + c_offs[None, :] * stride_fc,
+        mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
+        other=0.0,
+    ).to(tl.float32)
 
-        n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-        c_offs = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    o2 = tl.arange(0, HC)[:, None]  # [HC,1]
+    hpost = tl.load(
+        hpost_ptr + n_offs[None, :] * stride_hpn + o2 * stride_hph,
+        mask=(n_offs[None, :] < N),
+        other=0.0,
+    ).to(tl.float32)  # [HC, BN]
 
-        f = tl.load(
-            f_ptr + n_offs[:, None] * stride_fn + c_offs[None, :] * stride_fc,
+    acc = f[None, :, :] * hpost[:, :, None]  # [HC, BN, BC]
+
+    # residual mixing: sum_i hres[o,i] * x_i
+    for i in tl.static_range(0, HC):
+        xs = tl.load(
+            x_ptr + n_offs[:, None] * stride_xn + i * stride_xh + c_offs[None, :] * stride_xc,
             mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
             other=0.0,
-        ).to(tl.float32)
-
-        o2 = tl.arange(0, HC)[:, None]
-        hpost = tl.load(
-            hpost_ptr + n_offs[None, :] * stride_hpn + o2 * stride_hph,
-            mask=n_offs[None, :] < N,
+        ).to(tl.float32)  # [BN, BC]
+        w = tl.load(
+            hres_ptr + n_offs[None, :] * stride_hrn + o2 * stride_hri + i * stride_hrj,
+            mask=(n_offs[None, :] < N),
             other=0.0,
         ).to(tl.float32)  # [HC, BN]
+        acc += xs[None, :, :] * w[:, :, None]
 
-        acc = f[None, :, :] * hpost[:, :, None]  # [HC, BN, BC]
-
-        for i in range(HC):
-            xs = tl.load(
-                x_ptr + n_offs[:, None] * stride_xn + i * stride_xh + c_offs[None, :] * stride_xc,
-                mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
-                other=0.0,
-            ).to(tl.float32)
-            w = tl.load(
-                hres_ptr + n_offs[None, :] * stride_hrn + o2 * stride_hri + i * stride_hrj,
-                mask=n_offs[None, :] < N,
-                other=0.0,
-            ).to(tl.float32)
-            acc += xs[None, :, :] * w[:, :, None]
-
-        o3 = tl.arange(0, HC)[:, None, None]
-        n3 = n_offs[None, :, None]
-        c3 = c_offs[None, None, :]
-        tl.store(
-            out_ptr + n3 * stride_on + o3 * stride_oh + c3 * stride_oc,
-            acc,
-            mask=(n3 < N) & (c3 < C),
-        )
+    o3 = tl.arange(0, HC)[:, None, None]
+    n3 = n_offs[None, :, None]
+    c3 = c_offs[None, None, :]
+    tl.store(
+        out_ptr + n3 * stride_on + o3 * stride_oh + c3 * stride_oc,
+        acc,
+        mask=(n3 < N) & (c3 < C),
+    )
 
 
 @triton.jit
@@ -1159,84 +1144,77 @@ def _mhc_post_res_bwd_kernel_npu(
     BLOCK_N: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    pid = tl.program_id(0)
-    num_progs = tl.num_programs(0)
+    pid_n = tl.program_id(0)
+    pid_c = tl.program_id(1)
 
-    total_tiles = tl.cdiv(N, BLOCK_N) * tl.cdiv(C, BLOCK_C)
+    n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    c_offs = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
 
-    for tile_id in tl.range(pid, total_tiles, num_progs):
-        tiles_per_row = tl.cdiv(C, BLOCK_C)
-        pid_n = tile_id // tiles_per_row
-        pid_c = tile_id % tiles_per_row
+    f = tl.load(
+        f_ptr + n_offs[:, None] * stride_fn + c_offs[None, :] * stride_fc,
+        mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
+        other=0.0,
+    ).to(tl.float32)
 
-        n_offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-        c_offs = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    o2 = tl.arange(0, HC)[:, None]  # [HC,1]
+    hpost = tl.load(
+        hpost_ptr + n_offs[None, :] * stride_hpn + o2 * stride_hph,
+        mask=(n_offs[None, :] < N),
+        other=0.0,
+    ).to(tl.float32)  # [HC, BN]
 
-        f = tl.load(
-            f_ptr + n_offs[:, None] * stride_fn + c_offs[None, :] * stride_fc,
-            mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
+    o3 = tl.arange(0, HC)[:, None, None]
+    n3 = n_offs[None, :, None]
+    c3 = c_offs[None, None, :]
+    go = tl.load(
+        grad_out_ptr + n3 * stride_gon + o3 * stride_goh + c3 * stride_goc,
+        mask=(n3 < N) & (c3 < C),
+        other=0.0,
+    ).to(tl.float32)  # [HC, BN, BC]
+
+    # grad_f: sum_o go[o] * hpost[o]
+    gf = tl.sum(go * hpost[:, :, None], axis=0)
+    tl.store(
+        grad_f_ptr + n_offs[:, None] * stride_gfn + c_offs[None, :] * stride_gfc,
+        gf,
+        mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
+    )
+
+    # grad_hpost: dot(go[o], f) over C  (atomic over C blocks)
+    part_hpost = tl.sum(go * f[None, :, :], axis=2)  # [HC, BN]
+    tl.atomic_add(
+        grad_hpost_ptr + n_offs[None, :] * stride_ghpn + o2 * stride_ghph,
+        part_hpost,
+        mask=(n_offs[None, :] < N),
+    )
+
+    # grad_x: hres^T @ go  (in-stream i gets sum_o hres[o,i] * go[o])
+    for i in tl.static_range(0, HC):
+        w = tl.load(
+            hres_ptr + n_offs[None, :] * stride_hrn + o2 * stride_hri + i * stride_hrj,
+            mask=(n_offs[None, :] < N),
             other=0.0,
-        ).to(tl.float32)
-
-        o2 = tl.arange(0, HC)[:, None]
-        hpost = tl.load(
-            hpost_ptr + n_offs[None, :] * stride_hpn + o2 * stride_hph,
-            mask=n_offs[None, :] < N,
-            other=0.0,
-        ).to(tl.float32)
-
-        o3 = tl.arange(0, HC)[:, None, None]
-        n3 = n_offs[None, :, None]
-        c3 = c_offs[None, None, :]
-        go = tl.load(
-            grad_out_ptr + n3 * stride_gon + o3 * stride_goh + c3 * stride_goc,
-            mask=(n3 < N) & (c3 < C),
-            other=0.0,
-        ).to(tl.float32)
-
-        # grad_f
-        gf = tl.sum(go * hpost[:, :, None], axis=0)
+        ).to(tl.float32)  # [HC, BN]
+        gx = tl.sum(go * w[:, :, None], axis=0)  # [BN, BC]
         tl.store(
-            grad_f_ptr + n_offs[:, None] * stride_gfn + c_offs[None, :] * stride_gfc,
-            gf,
+            grad_x_ptr + n_offs[:, None] * stride_gxn + i * stride_gxh + c_offs[None, :] * stride_gxc,
+            gx,
             mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
         )
 
-        # grad_hpost
-        part_hpost = tl.sum(go * f[None, :, :], axis=2)
+    # grad_hres[o,i]: dot(go[o], x[i]) over C (atomic)
+    for i in tl.static_range(0, HC):
+        xi = tl.load(
+            x_ptr + n_offs[:, None] * stride_xn + i * stride_xh + c_offs[None, :] * stride_xc,
+            mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
+            other=0.0,
+        ).to(tl.float32)
+        part_hres = tl.sum(go * xi[None, :, :], axis=2)  # [HC, BN]
         tl.atomic_add(
-            grad_hpost_ptr + n_offs[None, :] * stride_ghpn + o2 * stride_ghph,
-            part_hpost,
-            mask=n_offs[None, :] < N,
+            grad_hres_ptr + n_offs[None, :] * stride_ghrn + o2 * stride_ghri + i * stride_ghrj,
+            part_hres,
+            mask=(n_offs[None, :] < N),
         )
-
-        # grad_x
-        for i in range(HC):
-            w = tl.load(
-                hres_ptr + n_offs[None, :] * stride_hrn + o2 * stride_hri + i * stride_hrj,
-                mask=n_offs[None, :] < N,
-                other=0.0,
-            ).to(tl.float32)
-            gx = tl.sum(go * w[:, :, None], axis=0)
-            tl.store(
-                grad_x_ptr + n_offs[:, None] * stride_gxn + i * stride_gxh + c_offs[None, :] * stride_gxc,
-                gx,
-                mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
-            )
-
-        # grad_hres
-        for i in range(HC):
-            xi = tl.load(
-                x_ptr + n_offs[:, None] * stride_xn + i * stride_xh + c_offs[None, :] * stride_xc,
-                mask=(n_offs[:, None] < N) & (c_offs[None, :] < C),
-                other=0.0,
-            ).to(tl.float32)
-            part_hres = tl.sum(go * xi[None, :, :], axis=2)
-            tl.atomic_add(
-                grad_hres_ptr + n_offs[None, :] * stride_ghrn + o2 * stride_ghri + i * stride_ghrj,
-                part_hres,
-                mask=n_offs[None, :] < N,
-            )
 
 
 def mhc_post_res_fwd(
