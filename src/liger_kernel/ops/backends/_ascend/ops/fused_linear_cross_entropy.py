@@ -1,11 +1,12 @@
 import torch
 import triton
 
+from liger_kernel.ops.backends._ascend.ops.cross_entropy import liger_cross_entropy_kernel
 from liger_kernel.ops.backends._ascend.ub_manager import compute_default_tiling_strategy
-from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
 from liger_kernel.ops.utils import element_mul_kernel
+from liger_kernel.ops.utils import get_npu_core_count
 
 
 def get_optimal_block_size(n_cols, has_gradients=True):
@@ -182,10 +183,11 @@ def fused_linear_cross_entropy_forward(
         # ensure _input and target are contiguous
         logits_chunk = logits_chunk.contiguous()
         target_chunk = target_chunk.contiguous()
+        num_cores = get_npu_core_count()
 
         # Here we calculate the gradient of logits_chunk in place so we can save memory.
         # Grid size is capped at NPU core count; the kernel uses a grid-stride loop
-        liger_cross_entropy_kernel[(n_rows,)](
+        liger_cross_entropy_kernel[(min(n_rows, num_cores),)](
             X_ptr=logits_chunk,
             X_stride=logits_chunk.stride(-2),
             Y_ptr=target_chunk,
@@ -203,6 +205,7 @@ def fused_linear_cross_entropy_forward(
             if return_predicted_tokens
             else 0,  # always 1 if predicted tokens is enabled
             n_cols=V,
+            n_rows=n_rows,
             n_non_ignore=total_n_non_ignore,
             sum_non_ignore_weight=total_sum_non_ignore_ce_weight,
             weight_sum=ce_weight_sum,
