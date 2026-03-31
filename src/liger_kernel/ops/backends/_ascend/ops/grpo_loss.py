@@ -445,11 +445,12 @@ def _grpo_loss_bwd_kernel_seq(
             dlogp = dlogp / TEMPERATURE
             for start_n in tl.range(0, N, BLOCK_N):
                 cols = start_n + tl.arange(0, BLOCK_N)
-                logits = tl.load(LOGITS_local + cols, mask=cols < N, other=-float("inf")).to(tl.float32) / TEMPERATURE
+                cols_mask = cols < N
+                logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=-float("inf")).to(tl.float32) / TEMPERATURE
                 probs = tl.exp(logits - lse)
                 cols_idx = cols == idx
                 dlogits = (cols_idx - probs) * dlogp
-                tl.store(DLOGITS_local + cols, dlogits, mask=cols < N)
+                tl.store(DLOGITS_local + cols, dlogits, mask=cols_mask)
 
 
 @triton.jit
@@ -567,11 +568,12 @@ def _grpo_loss_bwd_kernel(
             dlogp = dlogp * dloss / TEMPERATURE
             for start_n in tl.range(0, N, BLOCK_N):
                 cols = start_n + tl.arange(0, BLOCK_N)
-                logits = tl.load(LOGITS_local + cols, mask=cols < N, other=-float("inf")).to(tl.float32) / TEMPERATURE
+                cols_mask = cols < N
+                logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=-float("inf")).to(tl.float32) / TEMPERATURE
                 probs = tl.exp(logits - lse)
                 cols_idx = cols == idx
                 dlogits = (cols_idx - probs) * dlogp
-                tl.store(DLOGITS_local + cols, dlogits, mask=cols < N)
+                tl.store(DLOGITS_local + cols, dlogits, mask=cols_mask)
 
 
 @torch.no_grad
