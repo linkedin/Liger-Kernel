@@ -115,11 +115,13 @@ def test_routing_metadata_invariants(T, E, K):
 
 
 @pytest.mark.parametrize("T, E, H, I, K", [
-    (64, 8, 256, 64, 2),
-    (128, 8, 512, 128, 2),
-    (256, 16, 512, 128, 4),
-    (100, 8, 256, 64, 2),    # non-power-of-2
-    (32, 4, 64, 32, 2),      # small
+    (64, 8, 256, 64, 2),     # baseline
+    (256, 16, 512, 128, 4),  # larger
+    (7, 4, 64, 32, 2),       # T < BLOCK_M_TOKEN=16: tile row-mask is mostly padding
+    (64, 8, 97, 47, 2),      # odd H and I: tail masking fires with every possible autotune BLOCK_N
+    (128, 7, 128, 64, 3),    # prime E: E*ceil(I/BLOCK_M) grid decomposition with non-pow2 E
+    (256, 8, 256, 96, 1),    # K=1: single expert per token, no weighted sum in token aggregation
+    (64, 8, 256, 64, 8),     # K=E: every token hits every expert, maximum routing density
 ])
 @pytest.mark.parametrize("dtype, atol, rtol", [
     (torch.float32, 1e-3, 1e-4),
@@ -144,9 +146,11 @@ def test_forward_correctness(T, E, H, I, K, dtype, atol, rtol):
 
 
 @pytest.mark.parametrize("T, E, H, I, K", [
-    (16, 4, 32, 16, 2),
-    (32, 8, 64, 32, 2),
-    (64, 8, 128, 32, 4),
+    (32, 8, 64, 32, 2),      # baseline
+    (7, 4, 32, 16, 2),       # T < BLOCK_M_TOKEN: dH_pre tile row-mask mostly padding
+    (32, 8, 97, 47, 2),      # odd H and I: tail masking in dW1, dW2, dX_expanded regardless of autotune config
+    (32, 7, 64, 32, 3),      # prime E: dW kernels grid decomposition with non-pow2 E
+    (32, 8, 64, 32, 1),      # K=1: dx reduction is trivial gather (no weighted sum)
 ])
 def test_backward_correctness(T, E, H, I, K):
     """Compare gradients of fused kernel vs. reference implementation."""
@@ -176,17 +180,28 @@ def test_backward_correctness(T, E, H, I, K):
     loss_fused.backward()
 
     atol, rtol = 1e-3, 1e-4
-    assert torch.allclose(x2.grad, x1.grad, atol=atol, rtol=rtol), (
-        f"dx mismatch: max_diff={torch.abs(x2.grad - x1.grad).max():.4e}"
-    )
-    assert torch.allclose(gup2.grad, gup1.grad, atol=atol, rtol=rtol), (
-        f"dgate_up mismatch: max_diff={torch.abs(gup2.grad - gup1.grad).max():.4e}"
+
+    def _mismatch_info(a, b, atol, rtol, name):
+        diff = torch.abs(a - b)
+        bad = ~torch.isclose(a, b, atol=atol, rtol=rtol)
+        bad_count = bad.sum().item()
+        return (
+            f"{name} mismatch: {bad_count}/{bad.numel()} elements, "
+            f"max_diff={diff.max():.4e}"
+            + (f", mean_bad_diff={diff[bad].mean():.4e}" if bad_count > 0 else "")
+        )
+
+    assert torch.allclose(wts2.grad, wts1.grad, atol=atol, rtol=rtol), (
+        _mismatch_info(wts2.grad, wts1.grad, atol, rtol, "dtopk_weights")
     )
     assert torch.allclose(dn2.grad, dn1.grad, atol=atol, rtol=rtol), (
-        f"ddown_proj mismatch: max_diff={torch.abs(dn2.grad - dn1.grad).max():.4e}"
+        _mismatch_info(dn2.grad, dn1.grad, atol, rtol, "ddown_proj")
     )
-    assert torch.allclose(wts2.grad, wts1.grad, atol=atol, rtol=rtol), (
-        f"dtopk_weights mismatch: max_diff={torch.abs(wts2.grad - wts1.grad).max():.4e}"
+    assert torch.allclose(x2.grad, x1.grad, atol=atol, rtol=rtol), (
+        _mismatch_info(x2.grad, x1.grad, atol, rtol, "dx")
+    )
+    assert torch.allclose(gup2.grad, gup1.grad, atol=atol, rtol=rtol), (
+        _mismatch_info(gup2.grad, gup1.grad, atol, rtol, "dgate_up")
     )
 
 

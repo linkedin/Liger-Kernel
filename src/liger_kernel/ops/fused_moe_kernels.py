@@ -460,11 +460,11 @@ def _fused_up_proj_swiglu_kernel(
 
     n_idx = n_start + n_offs
     n_mask = n_idx < I_dim
+    token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0)
     for k in tl.range(0, H_dim, BLOCK_K):
         k_idx = k + k_offs
         k_mask = k_idx < H_dim
 
-        token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0)
         x_ptrs = x_ptr + token_idx[:, None] * stride_x_T + k_idx[None, :] * stride_x_H
         x_tile = tl.load(
             x_ptrs,
@@ -486,7 +486,7 @@ def _fused_up_proj_swiglu_kernel(
         ).to(tl.float32)
         acc_gate = tl.dot(x_tile, tl.trans(w_gate), acc=acc_gate)
 
-        w_up_ptrs = w_gate_ptrs + I_dim[:, None] * stride_w_N
+        w_up_ptrs = w_gate_ptrs + I_dim * stride_w_N
         w_up = tl.load(
             w_up_ptrs,
             mask=w_mask,
@@ -502,7 +502,7 @@ def _fused_up_proj_swiglu_kernel(
         + row_offs[:, None] * stride_Hpre_TK
         + n_idx[None, :] * stride_Hpre_N
     )
-    Hpre_up_ptrs = Hpre_gate_ptrs + I_dim[None, :] * stride_Hpre_N
+    Hpre_up_ptrs = Hpre_gate_ptrs + I_dim * stride_Hpre_N
     tl.store(Hpre_gate_ptrs, acc_gate.to(H_pre_ptr.dtype.element_ty), mask=out_mask)
     tl.store(Hpre_up_ptrs, acc_up.to(H_pre_ptr.dtype.element_ty), mask=out_mask)
 
@@ -709,7 +709,7 @@ def _moe_bwd_down_proj_kernel(
     tile_expert_ptr,     # (num_m_tiles,) int32
     dH_pre_ptr,          # (TK, 2I) — output: ∂L/∂z = [dgate, dup]
     y1s_scaled_ptr,      # (TK, I)  — output: s_k * y1 (for dW2 kernel)
-    dS_ptr,              # (TK,)    — output: ∂L/∂s_k (atomic add)
+    dS_ptr,              # (TK,)    — output: ∂L/∂s_k, indexed by flat (t,k)
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_dO_T,
@@ -775,9 +775,6 @@ def _moe_bwd_down_proj_kernel(
         w_tile = tl.load(w_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0).to(tl.float32)
         acc = tl.dot(dO_tile, w_tile, acc=acc)
 
-    # Scale once: dA' = s_k * (dO @ W2^T)
-    acc = acc * weights[:, None]
-
     # Epilogue: recompute y1 = silu(gate) * up from saved H_pre.
     gate_ptrs = H_pre_ptr + row_offs[:, None] * stride_Hpre_TK + n_idx[None, :] * stride_Hpre_N
     up_ptrs = gate_ptrs + I_dim * stride_Hpre_N
@@ -791,6 +788,14 @@ def _moe_bwd_down_proj_kernel(
     y1s_ptrs = y1s_scaled_ptr + row_offs[:, None] * stride_y1s_TK + n_idx[None, :] * stride_y1s_I
     tl.store(y1s_ptrs, (weights[:, None] * y1).to(y1s_scaled_ptr.dtype.element_ty), mask=out_mask)
 
+    # dS: ∂L/∂s_k = sum_I((dO @ W2^T) * y1) — use unscaled acc, no weight factor.
+    # flat_tk_idx is unique per sorted_pos (bijection), so plain store is safe.
+    dS_partial = tl.sum(acc * y1, axis=1)
+    tl.store(dS_ptr + flat_tk_idx, dS_partial.to(dS_ptr.dtype.element_ty), mask=row_mask)
+
+    # Scale once: dA' = s_k * (dO @ W2^T)
+    acc = acc * weights[:, None]
+
     # SwiGLU backward: dgate = d_silu(gate) * up * dA', dup = silu(gate) * dA'.
     dgate = acc * (silu_gate * (1.0 - sig_gate) + sig_gate) * up
     dup = acc * silu_gate
@@ -798,10 +803,6 @@ def _moe_bwd_down_proj_kernel(
     dup_ptrs = dgate_ptrs + I_dim * stride_dHpre_N
     tl.store(dgate_ptrs, dgate.to(dH_pre_ptr.dtype.element_ty), mask=out_mask)
     tl.store(dup_ptrs, dup.to(dH_pre_ptr.dtype.element_ty), mask=out_mask)
-
-    # dS: ∂L/∂s_k[sorted_pos] = sum_I(dA' * y1).
-    dS_partial = tl.sum(acc * y1, axis=1)
-    tl.atomic_add(dS_ptr + row_offs, dS_partial, mask=row_mask)
 
 
 # ---------------------------------------------------------------------------
@@ -824,6 +825,7 @@ def _moe_bwd_down_proj_kernel(
         for nw in [4, 8]
     ],
     key=["H_dim", "I_dim"],
+    reset_to_zero=["dW2_ptr"],
 )
 @triton.jit
 def _moe_bwd_dW2_kernel(
@@ -1006,6 +1008,7 @@ def _moe_bwd_dX_expanded_kernel(
         for nw in [4, 8]
     ],
     key=["H_dim", "I_dim"],
+    reset_to_zero=["dW1_ptr"],
 )
 @triton.jit
 def _moe_bwd_dW1_kernel(

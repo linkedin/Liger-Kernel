@@ -317,7 +317,8 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         # recomputes y1 = silu(gate)*up from H_pre, writes dH_pre + y1s_scaled + dS.
         dH_pre = torch.empty(TK, 2 * I, dtype=dO.dtype, device=dO.device)
         y1s_scaled = torch.empty(TK, I, dtype=dO.dtype, device=dO.device)
-        dS_sorted = torch.zeros(TK, dtype=torch.float32, device=dO.device)
+        # dS is written directly in flat (t,k) order by the kernel (no post-scatter needed).
+        dS = torch.empty(TK, dtype=dO.dtype, device=dO.device)
 
         if num_m_tiles > 0:
             _moe_bwd_down_proj_kernel[
@@ -334,7 +335,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 tile_expert,
                 dH_pre,
                 y1s_scaled,
-                dS_sorted,
+                dS,
                 H_dim=H,
                 I_dim=I,
                 stride_dO_T=dO.stride(0),
@@ -408,7 +409,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         if TK > 0:
             _token_gather_weighted_sum_kernel[(T,)](
                 dx_expanded,
-                dS_sorted,       # dummy w_ptr — never loaded when w_is_None=True
+                dS,              # dummy w_ptr — never loaded when w_is_None=True
                 s_reverse_scatter_idx,
                 dx,
                 H_dim=H,
@@ -444,7 +445,4 @@ class LigerFusedMoEFunction(torch.autograd.Function):
             stride_dW1_H=dgate_up_proj.stride(2),
         )
 
-        # Step B6: un-permute dS from sorted space to flat (t, k) space.
-        dS = dS_sorted[s_reverse_scatter_idx.long()].to(dO.dtype).view(T, K)
-
-        return dx, dgate_up_proj, ddown_proj, None, dS
+        return dx, dgate_up_proj, ddown_proj, None, dS.view(T, K)
