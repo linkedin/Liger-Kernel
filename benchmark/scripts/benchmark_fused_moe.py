@@ -7,9 +7,10 @@ run_benchmarks, CSV output to all_benchmark_data.csv).
 Two modes:
 
   Standard mode (framework-integrated, CSV output):
-    python benchmark_fused_moe.py                          # T sweep, model's hidden_size
-    python benchmark_fused_moe.py --model llama_3_8b       # explicit model config
-    python benchmark_fused_moe.py --sweep_dim num_experts  # E sweep
+    python benchmark_fused_moe.py                              # T sweep, Qwen3-MoE-30B
+    python benchmark_fused_moe.py --model mixtral-8x7b        # explicit model config
+    python benchmark_fused_moe.py --model deepseek-v3-ep32    # different MoE model
+    python benchmark_fused_moe.py --sweep-dim num_experts      # E sweep
     python benchmark_fused_moe.py --overwrite
 
   Model-preset mode (standalone, stdout only):
@@ -24,11 +25,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-from benchmark_model_configs import (
-    compute_seq_len_sweep_config,
-    estimate_kernel_peak_memory,
-    get_benchmark_model_config,
-)
+from benchmark_model_configs import estimate_kernel_peak_memory
 from utils import (
     SingleBenchmarkRunInput,
     SingleBenchmarkRunOutput,
@@ -38,15 +35,9 @@ from utils import (
 )
 
 from liger_kernel.ops.fused_moe import LigerFusedMoEFunction
-from liger_kernel.utils import infer_device
+from liger_kernel.utils import get_total_gpu_memory, infer_device
 
 device = infer_device()
-
-# MoE-specific fixed params (not in generic ModelConfig)
-# These match Mixtral-8x7B expert routing and are kept constant across sweeps.
-MOE_NUM_EXPERTS = 8
-MOE_TOP_K = 2
-MOE_INTERMEDIATE_SIZE = 14336  # per-expert intermediate dim
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +67,7 @@ def _huggingface_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weig
 
 
 # ---------------------------------------------------------------------------
-# Model presets for --model-preset mode
+# MoE model configurations
 # EP-adjusted values are baked in: T_local = T*K/ep_size, E_local = E/ep_size
 # ---------------------------------------------------------------------------
 
@@ -92,21 +83,27 @@ class MoEBenchConfig:
 
 MOE_MODEL_CONFIGS = {
     # Mixtral 8x7B — EP=1 and EP=4
-    "mixtral-8x7b":        MoEBenchConfig(T=2048, E=8,  H=4096, I=14336, K=2),
-    "mixtral-8x7b-ep4":    MoEBenchConfig(T=512,  E=2,  H=4096, I=14336, K=2),
+    "mixtral-8x7b":        MoEBenchConfig(T=2048, E=8,   H=4096, I=14336, K=2),
+    "mixtral-8x7b-ep4":    MoEBenchConfig(T=512,  E=2,   H=4096, I=14336, K=2),
     # Mixtral 8x22B — EP=1 and EP=4
-    "mixtral-8x22b":       MoEBenchConfig(T=2048, E=8,  H=6144, I=16384, K=2),
-    "mixtral-8x22b-ep4":   MoEBenchConfig(T=512,  E=2,  H=6144, I=16384, K=2),
-    # Qwen3-MoE-30B — EP=8 and EP=16
-    "qwen3-moe-30b-ep8":   MoEBenchConfig(T=1024, E=16, H=2048, I=768,   K=8),
-    "qwen3-moe-30b-ep16":  MoEBenchConfig(T=512,  E=8,  H=2048, I=768,   K=8),
+    "mixtral-8x22b":       MoEBenchConfig(T=2048, E=8,   H=6144, I=16384, K=2),
+    "mixtral-8x22b-ep4":   MoEBenchConfig(T=512,  E=2,   H=6144, I=16384, K=2),
+    # Qwen3-MoE-30B — EP=1 and EP=8 and EP=16
+    "qwen3-moe-30b":       MoEBenchConfig(T=8192, E=128, H=2048, I=768,   K=8),
+    "qwen3-moe-30b-ep8":   MoEBenchConfig(T=1024, E=16,  H=2048, I=768,   K=8),
+    "qwen3-moe-30b-ep16":  MoEBenchConfig(T=512,  E=8,   H=2048, I=768,   K=8),
     # Qwen3-MoE-235B — EP=16 and EP=32
-    "qwen3-moe-235b-ep16": MoEBenchConfig(T=256,  E=8,  H=7168, I=2560,  K=8),
-    "qwen3-moe-235b-ep32": MoEBenchConfig(T=128,  E=4,  H=7168, I=2560,  K=8),
+    "qwen3-moe-235b-ep16": MoEBenchConfig(T=256,  E=8,   H=7168, I=2560,  K=8),
+    "qwen3-moe-235b-ep32": MoEBenchConfig(T=128,  E=4,   H=7168, I=2560,  K=8),
     # DeepSeek-V3/R1 — EP=32 and EP=64
-    "deepseek-v3-ep32":    MoEBenchConfig(T=128,  E=8,  H=7168, I=2048,  K=8),
-    "deepseek-v3-ep64":    MoEBenchConfig(T=64,   E=4,  H=7168, I=2048,  K=8),
+    "deepseek-v3-ep32":    MoEBenchConfig(T=128,  E=8,   H=7168, I=2048,  K=8),
+    "deepseek-v3-ep64":    MoEBenchConfig(T=64,   E=4,   H=7168, I=2048,  K=8),
 }
+
+DEFAULT_MOE_MODEL = "qwen3-moe-30b"
+
+# Expert counts used in the num_experts sweep (independent of model).
+EXPERT_SWEEP_VALUES = [8, 16, 32, 64, 128]
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +140,7 @@ def _setup_fused_moe(input: SingleBenchmarkRunInput):
 
     extra_benchmark_config keys:
         sweep_dim : "T" or "E" — which dim input.x varies
-        T, E      : fixed values for the dimension not being swept
+        T, E      : fixed values for the dimension not being swept (None when swept)
         H, I, K   : model dimensions
         dtype     : torch.dtype
     """
@@ -175,6 +172,39 @@ def bench_speed_fused_moe(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
 def bench_memory_fused_moe(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     fwd_fn, _ = _setup_fused_moe(input)
     return run_memory_benchmark(fwd_fn, input.kernel_operation_mode)
+
+
+# ---------------------------------------------------------------------------
+# Autotune warmup
+# ---------------------------------------------------------------------------
+
+
+def _warmup_liger(T, E, H, I, K, dtype, sweep_dim):
+    """Run one full fwd+bwd to exhaust Triton autotune for (H, I).
+
+    Triton autotune key is (H_dim, I_dim), so a single call is sufficient to
+    cache the best config for all subsequent calls with the same H and I.
+    For the num_experts sweep we also call this once per E value to warm up
+    CUDA caches for each expert count before do_bench starts timing.
+    """
+    warmup_input = SingleBenchmarkRunInput(
+        x=T if sweep_dim == "T" else E,
+        kernel_provider="liger",
+        extra_benchmark_config={
+            "sweep_dim": sweep_dim,
+            "T": T,
+            "E": E,
+            "H": H,
+            "I": I,
+            "K": K,
+            "dtype": dtype,
+        },
+    )
+    warmup_fn, _ = _setup_fused_moe(warmup_input)
+    warmup_out = warmup_fn()
+    warmup_out.sum().backward()
+    del warmup_out
+    torch.cuda.synchronize()
 
 
 # ---------------------------------------------------------------------------
@@ -221,9 +251,6 @@ def _run_model_preset_benchmark(preset_name: str):
 
 
 if __name__ == "__main__":
-    # Mirrors parse_benchmark_script_args() args + MoE-specific extras.
-    # Cannot use parse_benchmark_script_args() directly because it creates its
-    # own argparse instance with no extension point.
     parser = argparse.ArgumentParser(description="Benchmark LigerFusedMoEFunction")
     parser.add_argument(
         "--overwrite",
@@ -233,11 +260,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default=None,
-        help="Model config from MODEL_REGISTRY (e.g. llama_3_8b). Provides H and dtype.",
+        default=DEFAULT_MOE_MODEL,
+        choices=list(MOE_MODEL_CONFIGS.keys()),
+        help=(
+            f"MoE model config for framework-mode sweep (default: {DEFAULT_MOE_MODEL} = Qwen3-MoE-30B). "
+            "Overrides all MoE params: E, H, I, K, and base token count T."
+        ),
     )
     parser.add_argument(
-        "--sweep_dim",
+        "--sweep-dim",
         choices=["num_tokens", "num_experts"],
         default="num_tokens",
         help="Dimension to sweep in standard framework mode",
@@ -255,14 +286,23 @@ if __name__ == "__main__":
         # Standalone model-preset mode: no CSV, prints a table per preset
         _run_model_preset_benchmark(args.model_preset)
     else:
-        # Standard framework-integrated mode
-        model = get_benchmark_model_config(args.model)  # defaults to llama_3_8b
-        H = model.hidden_size
-        dtype = model.dtype
+        # Standard framework-integrated mode.
+        # All MoE parameters are derived from the selected model config so that
+        # --model deepseek-v3-ep32 correctly overrides E, H, I, K, and T.
+        moe_cfg = MOE_MODEL_CONFIGS[args.model]
+        E = moe_cfg.E
+        H = moe_cfg.H
+        I = moe_cfg.I
+        K = moe_cfg.K
+        probe_T = moe_cfg.T       # representative token count for probing and warmup
+        dtype = torch.bfloat16
 
-        # Probe peak memory using the higher-memory baseline (huggingface)
-        # at a representative token count to compute safe sweep bounds.
-        probe_T = 512
+        print(
+            f"Model: {args.model} — E={E}, H={H}, I={I}, K={K}, "
+            f"T_base={probe_T}, dtype={dtype}"
+        )
+
+        # Memory probe using huggingface (no Triton, higher footprint = safe upper bound).
         def _probe():
             probe_input = SingleBenchmarkRunInput(
                 x=probe_T,
@@ -270,10 +310,10 @@ if __name__ == "__main__":
                 extra_benchmark_config={
                     "sweep_dim": "T",
                     "T": None,
-                    "E": MOE_NUM_EXPERTS,
+                    "E": E,
                     "H": H,
-                    "I": MOE_INTERMEDIATE_SIZE,
-                    "K": MOE_TOP_K,
+                    "I": I,
+                    "K": K,
                     "dtype": dtype,
                 },
             )
@@ -284,58 +324,55 @@ if __name__ == "__main__":
         kernel_bpt = peak_bytes // probe_T
 
         # Pre-warm Liger's Triton autotune before benchmarks start.
-        # The probe above uses "huggingface" (no Triton kernels), so Liger's
-        # autotuned kernels (dW1, dW2, forward GEMMs) would otherwise be tuned
-        # inside do_bench's warmup window, skewing the first x_value measurement.
-        # Running a full fwd+bwd here exhausts all autotune configs once so that
-        # all subsequent benchmark calls hit the cached best config.
-        print("Pre-warming Liger autotune (runs once per H/I combination)...")
-        _liger_warmup_input = SingleBenchmarkRunInput(
-            x=probe_T,
-            kernel_provider="liger",
-            extra_benchmark_config={
-                "sweep_dim": "T",
-                "T": None,
-                "E": MOE_NUM_EXPERTS,
-                "H": H,
-                "I": MOE_INTERMEDIATE_SIZE,
-                "K": MOE_TOP_K,
-                "dtype": dtype,
-            },
-        )
-        _liger_warmup_fn, _liger_warmup_grads = _setup_fused_moe(_liger_warmup_input)
-        _liger_warmup_out = _liger_warmup_fn()
-        _liger_warmup_out.sum().backward()
-        del _liger_warmup_out, _liger_warmup_fn, _liger_warmup_grads, _liger_warmup_input
-        torch.cuda.synchronize()
-        print("Autotune complete.")
-
-        sweep_cfg = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+        #
+        # Autotune key is (H_dim, I_dim) — one warmup per (H, I) pair is sufficient
+        # to cache the best config for the entire sweep.
+        #
+        # For num_tokens sweep: one pass with the model's base T is enough.
+        # For num_experts sweep: one pass per E value in EXPERT_SWEEP_VALUES to also
+        #   warm up CUDA caches for each expert count, since weight tensor sizes differ.
+        print(f"Pre-warming Liger autotune (H={H}, I={I})...")
 
         if args.sweep_dim == "num_tokens":
-            x_values = [2**i for i in range(7, int(math.log2(sweep_cfg.seq_len)) + 1)]
+            _warmup_liger(probe_T, E, H, I, K, dtype, sweep_dim="T")
+        else:  # num_experts
+            for e_val in EXPERT_SWEEP_VALUES:
+                print(f"  warmup E={e_val}...")
+                _warmup_liger(probe_T, e_val, H, I, K, dtype, sweep_dim="E")
+
+        torch.cuda.synchronize()
+        print("Autotune warmup complete.\n")
+
+        if args.sweep_dim == "num_tokens":
+            # Derive a memory-safe upper bound for T from the probe measurement.
+            # Target 40% GPU memory utilisation to leave headroom for framework overhead.
+            usable_bytes = get_total_gpu_memory() * (1024**3) * 0.4
+            max_T = min(32768, max(256, int(usable_bytes / kernel_bpt)))
+            # Round down to nearest power-of-two for clean x-axis values.
+            max_T = 2 ** int(math.log2(max_T)) if max_T >= 256 else 256
+            x_values = [2**i for i in range(7, int(math.log2(max_T)) + 1)]
             extra_configs = [
                 {
                     "sweep_dim": "T",
-                    "T": None,  # varied by framework
-                    "E": MOE_NUM_EXPERTS,
+                    "T": None,   # varied by framework
+                    "E": E,
                     "H": H,
-                    "I": MOE_INTERMEDIATE_SIZE,
-                    "K": MOE_TOP_K,
+                    "I": I,
+                    "K": K,
                     "dtype": dtype,
                 }
             ]
             x_name, x_label = "T", "num_tokens"
         else:  # num_experts
-            x_values = [4, 8, 16, 32, 64]
+            x_values = EXPERT_SWEEP_VALUES
             extra_configs = [
                 {
                     "sweep_dim": "E",
-                    "T": probe_T,  # fixed moderate T; sweep_cfg.seq_len would be too large
-                    "E": None,  # varied by framework
+                    "T": probe_T,  # fixed at model's base token count
+                    "E": None,     # varied by framework
                     "H": H,
-                    "I": MOE_INTERMEDIATE_SIZE,
-                    "K": MOE_TOP_K,
+                    "I": I,
+                    "K": K,
                     "dtype": dtype,
                 }
             ]

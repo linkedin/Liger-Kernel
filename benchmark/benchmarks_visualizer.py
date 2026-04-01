@@ -290,6 +290,7 @@ def main():
             kernel_operation_mode=mode,
             display=args.display,
             overwrite=args.overwrite,
+            extra_config_filter=args.extra_config_filter,
         )
         df = load_data(config)
         plot_data(df, config)
