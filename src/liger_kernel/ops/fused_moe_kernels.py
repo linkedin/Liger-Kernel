@@ -15,45 +15,22 @@ import triton.language as tl
 # ---------------------------------------------------------------------------
 # Routing metadata overview
 #
-# Goal: given topk_indices (T, K) mapping each token to K experts, produce
-# the permutation arrays needed to feed a grouped GEMM where each expert
-# processes its assigned tokens contiguously.
+# Three kernels produce permutation arrays for grouped GEMM:
 #
-# Three kernels run in sequence:
+#   K1 — Histogram: count (token,k) assignments per expert per tile.
+#   K2 — Prefix sums: convert tile counts to exclusive prefix sums;
+#         compute expert_start_idx (token offsets) and tile offsets.
+#   K3 — Scatter: sort by expert, assign globally sorted positions,
+#         write x_gather_idx / s_scatter_idx / s_reverse_scatter_idx
+#         and tile metadata (tile_row_start, tile_expert).
 #
-#   K1 — Histogram  (grid: n_tiles)
-#     Partition the T*K assignments into tiles of TOKENS_PER_TILE tokens.
-#     Each CTA atomically counts how many assignments in its tile go to each
-#     expert, writing partial_sum[e, tile_id].
-#
-#   K2 — Prefix sums  (grid: E+2)
-#     PIDs 0..E-1:  convert each expert's column of partial_sum from raw
-#                   tile counts into exclusive tile-prefix sums, so that
-#                   K3 can compute each assignment's sorted output position
-#                   without conflicts.
-#     PID E:        compute expert_freq_offset (exclusive cumsum of
-#                   expert_frequency) and expert_tile_offset (exclusive
-#                   cumsum of ceil(freq / BLOCK_M_TOKEN)) in one pass.
-#     PID E+1:      write the sentinel expert_freq_offset[E] = TK.
-#                   (TK is known ahead of time; no dependency on PID E.)
-#
-#   K3 — Scatter  (grid: n_tiles)
-#     Each CTA processes the same tile it handled in K1.  Entries are
-#     packed as (expert_id << 16 | local_offset) and sorted within the
-#     tile.  An associative scan (_keyed_add) then gives each entry its
-#     rank within its expert for this tile.  Combined with the tile prefix
-#     from K2 this yields the global sorted position s_reverse for every
-#     (token, k) pair, from which x_gather_idx, s_scatter_idx, and
-#     s_reverse_scatter_idx are written.  Tile-start entries additionally
-#     populate expert_for_tile and tile_expert for use by the GEMM grid.
-#
-# Outputs consumed by GEMM kernels:
-#   x_gather_idx          (TK,)  sorted_pos → original token index
-#   s_scatter_idx         (TK,)  sorted_pos → flat (t, k) index
-#   s_reverse_scatter_idx (TK,)  flat (t, k) → sorted_pos
-#   expert_freq_offset    (E+1,) exclusive cumsum of tokens per expert
-#   expert_for_tile       (M,)   absolute row_start in sorted space per M-tile
-#   tile_expert           (M,)   expert index per M-tile
+# GEMM kernels consume:
+#   x_gather_idx          (TK,)   sorted_pos → original token index
+#   s_scatter_idx         (TK,)   sorted_pos → flat (t,k) index
+#   s_reverse_scatter_idx (TK,)   flat (t,k) → sorted_pos
+#   expert_start_idx      (E+1,)  exclusive cumsum of tokens per expert
+#   tile_row_start        (M,)    absolute row_start in sorted space per M-tile
+#   tile_expert           (M,)    expert index per M-tile
 # ---------------------------------------------------------------------------
 
 
@@ -82,7 +59,7 @@ def _keyed_add(x, y):
 
 
 # ---------------------------------------------------------------------------
-# Kernel 1: Tiled histogram of expert token counts
+# Tiled histogram of expert token counts
 # Adapted from sonic-moe _compute_col_partial_sum_kernel
 # ---------------------------------------------------------------------------
 
@@ -144,7 +121,7 @@ def _moe_router_histogram_kernel(
 
 
 # ---------------------------------------------------------------------------
-# Kernel 2: Per-expert tile prefix sums + global token/tile offsets
+# Per-expert tile prefix sums + global token/tile offsets
 # Adapted from sonic-moe _bitmatrix_metadata_compute_stage1
 # ---------------------------------------------------------------------------
 
@@ -176,29 +153,17 @@ def _moe_router_prefix_sum_kernel(
     PID E  — Global token and M-tile offset computation
         Sequentially scans all expert frequencies in blocks of BLOCK_N to
         build two exclusive cumsums in a single pass:
-          expert_freq_offset[e]  = sum of expert_frequency[0..e-1]
-                                   (start row in the sorted token array)
+          expert_start_idx[e]    = sum of expert_frequency[0..e-1]
           expert_tile_offset[e]  = sum of ceil(freq[0..e-1] / BLOCK_M_TOKEN)
-                                   (start M-tile index for expert e's GEMM tiles)
-        Also writes the sentinel expert_tile_offset[E] = total M-tiles,
-        which the host reads (one .item() sync) to allocate expert_for_tile
-        and tile_expert before launching K3.
+        Also writes the sentinel expert_tile_offset[E] = total M-tiles.
 
     PID E+1  — Token sentinel
-        Writes expert_freq_offset[E] = TK.  TK is known at launch time so
-        this CTA needs no result from PID E.
+        Writes expert_start_idx[E] = TK.
     """
     pid = tl.program_id(0)
     if pid < E:
-        # --- Per-expert tile prefix scan -----------------------------------
-        # Transform partial_sum[pid, :] from raw counts to exclusive prefix
-        # sums so K3 can compute conflict-free output positions.
-        #
-        # Example with 3 tiles and expert pid having counts [3, 0, 5]:
-        #   after scan → [0, 3, 3]
-        # K3 for tile 2 loads partial_sum[pid, 2] = 3, meaning 3 of this
-        # expert's tokens appeared in earlier tiles, so local rank 0 maps to
-        # global rank 3 within the expert.
+        # Per-expert tile prefix scan: transform partial_sum[pid, :] from
+        # raw counts to exclusive prefix sums for conflict-free output positions.
         expert_partial_sum_ptr = partial_sum_ptr + pid * n_tiles
         curr_sum = 0
         for start in range(0, n_tiles, BLOCK_M):
@@ -208,18 +173,9 @@ def _moe_router_prefix_sum_kernel(
             curr_sum += tl.sum(tile_counts, 0)
             tl.store(expert_partial_sum_ptr + offs, excl_cumsum, mask=offs < n_tiles)
     elif pid == E:
-        # --- Global token and M-tile offsets (single sequential CTA) -------
-        # expert_freq_offset[e]: first row index in the globally sorted token
-        #   array for expert e.  Used in K3 to place tokens at their absolute
-        #   sorted positions, and in the GEMM kernels to bound tile rows.
-        #
-        # expert_tile_offset[e]: first M-tile index allocated to expert e.
-        #   K3 uses this to find where to write into expert_for_tile[].
-        #   The sentinel expert_tile_offset[E] = total M-tiles is read by
-        #   the host to allocate expert_for_tile and tile_expert.
-        #
-        # Both are exclusive prefix sums; we accumulate them together to
-        # avoid a second pass over expert_frequency.
+        # Global token and M-tile offsets (single sequential CTA).
+        # Both expert_start_idx and expert_tile_offset are exclusive prefix sums
+        # accumulated together to avoid a second pass.
         curr_freq_sum = 0
         curr_tile_sum = 0
         for start in tl.static_range(0, E, BLOCK_N):
@@ -236,19 +192,15 @@ def _moe_router_prefix_sum_kernel(
             curr_tile_sum += tl.sum(expert_m_tiles, 0)
             tl.store(expert_tile_offset_ptr + offs, excl_tile, mask=offs < E)
 
-        # Write total M-tile count as the sentinel.  curr_tile_sum is the
-        # running total accumulated above, so no extra read is needed.
+        # Write total M-tile count as the sentinel.
         tl.store(expert_tile_offset_ptr + E, curr_tile_sum)
     elif pid == E + 1:
-        # --- Token sentinel -------------------------------------------------
-        # expert_freq_offset[E] = TK marks the end of the last expert's
-        # token range.  TK is a compile-time constant so this can run
-        # independently without waiting for PID E to finish.
+        # Token sentinel: expert_start_idx[E] = TK.
         tl.store(expert_freq_offs_ptr + E, TK)
 
 
 # ---------------------------------------------------------------------------
-# Kernel 3: Sort assignments by expert, compute output positions, emit tile metadata
+# Sort assignments by expert, compute output positions, emit tile metadata
 # Adapted from sonic-moe _bitmatrix_metadata_compute_stage2
 # ---------------------------------------------------------------------------
 
@@ -258,13 +210,13 @@ def _moe_router_scatter_kernel(
     s_scatter_idx_ptr,          # (TK,) int32 — output: sorted_pos → flat (t,k) index
     s_reverse_scatter_idx_ptr,  # (TK,) int32 — output: flat (t,k) → sorted_pos
     x_gather_idx_ptr,           # (TK,) int32 — output: sorted_pos → token index t
-    expert_for_tile_ptr,        # (num_m_tiles,) int32 — output: absolute row_start per M-tile
+    tile_row_start_ptr,         # (num_m_tiles,) int32 — output: absolute row_start per M-tile
     tile_expert_ptr,            # (num_m_tiles,) int32 — output: expert index per M-tile
     topk_indices_ptr,           # (T, K) int32
     T,
     partial_sum_ptr,            # (E, n_tiles) int32 — tile prefix sums from K2 (read-only here)
     n_tiles,
-    expert_offs_ptr,            # (E,) int32 — expert_freq_offset[0:E] from K2
+    expert_offs_ptr,            # (E,) int32 — expert_start_idx[0:E] from K2
     expert_tile_offset_ptr,     # (E,) int32 — expert_tile_offset[0:E] from K2
     K_POW2: tl.constexpr,
     K: tl.constexpr,
@@ -273,40 +225,10 @@ def _moe_router_scatter_kernel(
 ):
     """Assign every (token, k) pair its globally-sorted output position.
 
-    Grid: (n_tiles,).  Each CTA processes the same TOKENS_PER_BLOCK-token
-    slice it handled in K1.
-
-    Step 1 — Pack and sort
-        Pack each assignment as a uint32: upper 16 bits = expert_id,
-        lower 16 bits = local offset within this tile's BLOCK_SIZE entries.
-        tl.sort reorders the block so assignments to the same expert are
-        contiguous, with original positions preserved in the lower bits.
-
-    Step 2 — Within-expert rank via segmented scan
-        Apply _keyed_add associative scan on the sorted block to compute
-        each entry's 1-based rank within its expert segment.  Subtract 1
-        for 0-based within_expert_rank.
-
-    Step 3 — Absolute sorted position
-        s_reverse[i] = expert_freq_offset[e]    (global start of expert e)
-                      + partial_sum[e, tile_id]  (tokens from earlier tiles)
-                      + within_expert_rank        (rank within this tile)
-        within_expert = partial_sum[e, tile_id] + within_expert_rank gives
-        the rank of this assignment among all of expert e's tokens globally.
-
-    Step 4 — Tile metadata
-        Any assignment whose within_expert is a multiple of BLOCK_M_TOKEN
-        is the first row of a new GEMM M-tile.  It writes:
-          expert_for_tile[tile_base + t_within] = s_reverse  (absolute row_start)
-          tile_expert    [tile_base + t_within] = expert_id
-        where tile_base = expert_tile_offset[e] and t_within = within_expert // BLOCK_M_TOKEN.
-        No race conditions: sorted positions are unique, so exactly one CTA
-        writes each entry.
-
-    Step 5 — Permutation arrays
-        Using the pre-sort local offset (presort_offs) recovered from the
-        lower bits of kv_pairs, reconstruct the original flat (t, k) index
-        and write the three permutation arrays consumed by GEMM and aggregation.
+    Grid: (n_tiles,). Each CTA packs assignments as (expert_id << 16 | local_offset),
+    sorts within the tile, runs a segmented scan (_keyed_add) for within-expert ranks,
+    then writes x_gather_idx, s_scatter_idx, s_reverse_scatter_idx, tile_row_start,
+    and tile_expert.
     """
     BLOCK_SIZE: tl.constexpr = TOKENS_PER_BLOCK * K_POW2
     IS_POW2_K: tl.constexpr = K == K_POW2
@@ -317,7 +239,7 @@ def _moe_router_scatter_kernel(
     offs_global = pid_m * BLOCK_SIZE + offs_local
     mask = offs_global < T * K_POW2
 
-    # Step 1: load expert ids and pack with local offsets for sorting.
+    # Load expert ids and pack with local offsets for sorting.
     if IS_POW2_K:
         # Flat layout: topk_indices is already (T*K,) in row-major order.
         expert = tl.load(topk_indices_ptr + offs_global, mask=mask, other=-1).to(tl.uint32)
@@ -340,23 +262,17 @@ def _moe_router_scatter_kernel(
     expert = kv_pairs >> 16
     mask = expert != 0xFFFF  # mask out padding entries introduced by K_POW2 rounding
 
-    # Step 2: within-expert rank via segmented inclusive scan.
-    # Set the count field to 1 for each valid entry; _keyed_add resets at
-    # expert boundaries, giving inclusive run-lengths within each segment.
+    # Within-expert rank via segmented inclusive scan.
     scan_input = (kv_pairs & 0xFFFF0000) | 0x00000001
     inclusive_run_lengths = tl.associative_scan(scan_input, 0, _keyed_add)
     within_expert_rank = (inclusive_run_lengths - 1) & 0xFFFF  # convert to 0-based
 
-    # Step 3: absolute sorted position.
-    # partial_sum[e, tile_id] = number of expert-e tokens in tiles < tile_id (from K2).
-    # within_expert = rank of this assignment among all of expert e's TK assignments.
+    # Absolute sorted position.
     within_expert = tl.load(partial_sum_ptr + pid_m + expert * n_tiles, mask=mask, other=0) + within_expert_rank
     expert_start = tl.load(expert_offs_ptr + expert, mask=mask, other=0)
     s_reverse = expert_start + within_expert
 
-    # Step 4: emit tile metadata for GEMM grid.
-    # An entry is a tile-start if it is the first in its BLOCK_M_TOKEN-sized group.
-    # tile_base = expert_tile_offset[e], t_within = tile index within expert e.
+    # Emit tile metadata for GEMM grid.
     is_tile_start = (within_expert % BLOCK_M_TOKEN) == 0
     t_within = within_expert // BLOCK_M_TOKEN
     tile_base = tl.load(
@@ -365,13 +281,10 @@ def _moe_router_scatter_kernel(
         other=0,
     ).to(tl.int32)
     flat_tile_idx = tile_base + t_within
-    # s_reverse is the absolute start row for this tile in the sorted token array.
-    tl.store(expert_for_tile_ptr + flat_tile_idx, s_reverse.to(tl.int32), mask=mask & is_tile_start)
+    tl.store(tile_row_start_ptr + flat_tile_idx, s_reverse.to(tl.int32), mask=mask & is_tile_start)
     tl.store(tile_expert_ptr + flat_tile_idx, expert.to(tl.int32), mask=mask & is_tile_start)
 
-    # Step 5: write permutation arrays.
-    # presort_offs recovers the local offset of each entry before sorting,
-    # which encodes the original (token, k) position within this tile.
+    # Write permutation arrays.
     if IS_POW2_K:
         presort_offs = kv_pairs & 0xFFFF
         entry_idx = pid_m * BLOCK_SIZE + presort_offs  # flat (t, k) index in [0, TK)
@@ -388,12 +301,11 @@ def _moe_router_scatter_kernel(
 
 
 # ---------------------------------------------------------------------------
-# Kernel 4: Forward — fused gather + grouped GEMM + SwiGLU
-# 2D grid: (num_m_tiles, ceil(I/BLOCK_N))
+# Shared autotune config for all GEMM kernels
 # ---------------------------------------------------------------------------
 
 
-def _get_up_proj_autotune_configs():
+def _get_gemm_autotune_configs():
     configs = []
     for bn in [64, 128]:
         for bk in [32, 64]:
@@ -409,8 +321,14 @@ def _get_up_proj_autotune_configs():
     return configs
 
 
+# ---------------------------------------------------------------------------
+# Forward — fused gather + grouped GEMM + SwiGLU
+# 2D grid: (num_m_tiles, ceil(I/BLOCK_N))
+# ---------------------------------------------------------------------------
+
+
 @triton.autotune(
-    configs=_get_up_proj_autotune_configs(),
+    configs=_get_gemm_autotune_configs(),
     key=["H_dim", "I_dim"],
 )
 @triton.jit
@@ -418,11 +336,11 @@ def _fused_up_proj_swiglu_kernel(
     x_ptr,              # (T, H)
     gate_up_proj_ptr,   # (E, 2*I, H)
     x_gather_idx_ptr,   # (TK,) int32
-    expert_freq_off_ptr,# (E+1,) int32
-    expert_for_tile_ptr,# (num_m_tiles,) int32 — row_start per M-tile
+    expert_start_ptr,   # (E+1,) int32
+    tile_row_start_ptr, # (num_m_tiles,) int32 — row_start per M-tile
     tile_expert_ptr,    # (num_m_tiles,) int32 — expert index per M-tile
-    H_pre_ptr,          # (TK, 2*I)  pre-SwiGLU  [saved for backward]
-    A_post_ptr,         # (TK, I)    post-SwiGLU
+    pre_act_ptr,        # (TK, 2*I)  pre-SwiGLU activations [saved for backward]
+    post_act_ptr,       # (TK, I)    post-SwiGLU activations
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_x_T,
@@ -430,23 +348,23 @@ def _fused_up_proj_swiglu_kernel(
     stride_w_E,
     stride_w_N,
     stride_w_K: tl.constexpr,
-    stride_Hpre_TK,
-    stride_Hpre_N: tl.constexpr,
-    stride_A_TK,
-    stride_A_N: tl.constexpr,
+    stride_pre_TK,
+    stride_pre_N: tl.constexpr,
+    stride_post_TK,
+    stride_post_N: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
     """Grid: (num_m_tiles, ceil(I/BLOCK_N)).
-    pid_m selects M-tile via expert_for_tile/tile_expert; pid_n selects N-tile."""
+    pid_m selects M-tile via tile_row_start/tile_expert; pid_n selects N-tile."""
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
-    row_start = tl.load(expert_for_tile_ptr + pid_m)
+    row_start = tl.load(tile_row_start_ptr + pid_m)
     expert_idx = tl.load(tile_expert_ptr + pid_m)
     n_start = pid_n * BLOCK_N
-    expert_end = tl.load(expert_freq_off_ptr + expert_idx + 1)
+    expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
     m_offs = tl.arange(0, BLOCK_M)
     n_offs = tl.arange(0, BLOCK_N)
@@ -499,65 +417,49 @@ def _fused_up_proj_swiglu_kernel(
 
     out_mask = row_mask[:, None] & n_mask[None, :]
 
-    Hpre_gate_ptrs = (
-        H_pre_ptr
-        + row_offs[:, None] * stride_Hpre_TK
-        + n_idx[None, :] * stride_Hpre_N
+    pre_gate_ptrs = (
+        pre_act_ptr
+        + row_offs[:, None] * stride_pre_TK
+        + n_idx[None, :] * stride_pre_N
     )
-    Hpre_up_ptrs = Hpre_gate_ptrs + I_dim * stride_Hpre_N
-    tl.store(Hpre_gate_ptrs, acc_gate.to(H_pre_ptr.dtype.element_ty), mask=out_mask)
-    tl.store(Hpre_up_ptrs, acc_up.to(H_pre_ptr.dtype.element_ty), mask=out_mask)
+    pre_up_ptrs = pre_gate_ptrs + I_dim * stride_pre_N
+    tl.store(pre_gate_ptrs, acc_gate.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
+    tl.store(pre_up_ptrs, acc_up.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
 
     sig_gate = tl.sigmoid(acc_gate)
     silu_gate = acc_gate * sig_gate
     a_out = silu_gate * acc_up
 
-    A_ptrs = (
-        A_post_ptr
-        + row_offs[:, None] * stride_A_TK
-        + n_idx[None, :] * stride_A_N
+    post_ptrs = (
+        post_act_ptr
+        + row_offs[:, None] * stride_post_TK
+        + n_idx[None, :] * stride_post_N
     )
-    tl.store(A_ptrs, a_out.to(A_post_ptr.dtype.element_ty), mask=out_mask)
+    tl.store(post_ptrs, a_out.to(post_act_ptr.dtype.element_ty), mask=out_mask)
 
 
 # ---------------------------------------------------------------------------
-# Kernel 5: Forward — grouped GEMM down-projection
+# Forward — grouped GEMM down-projection
 # 2D grid: (num_m_tiles, ceil(H/BLOCK_N))
 # ---------------------------------------------------------------------------
 
 
-def _get_down_proj_autotune_configs():
-    configs = []
-    for bn in [64, 128]:
-        for bk in [32, 64]:
-            for nw in [4, 8]:
-                for ns in [2, 3, 4, 5]:
-                    configs.append(
-                        triton.Config(
-                            {"BLOCK_N": bn, "BLOCK_K": bk},
-                            num_warps=nw,
-                            num_stages=ns,
-                        )
-                    )
-    return configs
-
-
 @triton.autotune(
-    configs=_get_down_proj_autotune_configs(),
+    configs=_get_gemm_autotune_configs(),
     key=["H_dim", "I_dim"],
 )
 @triton.jit
 def _fused_down_proj_kernel(
-    A_post_ptr,         # (TK, I)
+    post_act_ptr,       # (TK, I)
     down_proj_ptr,      # (E, H, I)
-    expert_freq_off_ptr,# (E+1,) int32
-    expert_for_tile_ptr,# (num_m_tiles,) int32
+    expert_start_ptr,   # (E+1,) int32
+    tile_row_start_ptr, # (num_m_tiles,) int32
     tile_expert_ptr,    # (num_m_tiles,) int32
     Y_ptr,              # (TK, H)
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
-    stride_A_TK,
-    stride_A_I: tl.constexpr,
+    stride_post_TK,
+    stride_post_I: tl.constexpr,
     stride_w_E,
     stride_w_H,
     stride_w_I: tl.constexpr,
@@ -568,14 +470,14 @@ def _fused_down_proj_kernel(
     BLOCK_K: tl.constexpr,
 ):
     """Grid: (num_m_tiles, ceil(H/BLOCK_N)).
-    Each CTA: one (BLOCK_M, BLOCK_N) tile of Y = A_post @ down_proj[e]^T."""
+    Each CTA: one (BLOCK_M, BLOCK_N) tile of Y = post_act @ down_proj[e]^T."""
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
-    row_start = tl.load(expert_for_tile_ptr + pid_m)
+    row_start = tl.load(tile_row_start_ptr + pid_m)
     expert_idx = tl.load(tile_expert_ptr + pid_m)
     n_start = pid_n * BLOCK_N
-    expert_end = tl.load(expert_freq_off_ptr + expert_idx + 1)
+    expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
     m_offs = tl.arange(0, BLOCK_M)
     n_offs = tl.arange(0, BLOCK_N)
@@ -592,7 +494,7 @@ def _fused_down_proj_kernel(
         k_idx = k + k_offs
         k_mask = k_idx < I_dim
 
-        a_ptrs = A_post_ptr + row_offs[:, None] * stride_A_TK + k_idx[None, :] * stride_A_I
+        a_ptrs = post_act_ptr + row_offs[:, None] * stride_post_TK + k_idx[None, :] * stride_post_I
         # Keep bf16 for dot operands → tensor cores. acc stays fp32.
         a_tile = tl.load(a_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
@@ -615,7 +517,7 @@ def _fused_down_proj_kernel(
 
 
 # ---------------------------------------------------------------------------
-# Kernel 6: Forward — token gather + weighted sum
+# Forward — token gather + weighted sum
 # Adapted from sonic-moe token_gather_sum_kernel
 # ---------------------------------------------------------------------------
 
@@ -682,21 +584,13 @@ def _token_gather_weighted_sum_kernel(
 
 
 # ---------------------------------------------------------------------------
-# Kernel 7: Backward — fused down-proj backward + SwiGLU backward
-# Port of SonicMoE _down_projection_backward_act
+# Backward — fused down-proj backward + SwiGLU backward
 # 2D grid: (num_m_tiles, ceil(I/BLOCK_N))
-#
-# Fuses four operations that SonicMoE performs in one kernel:
-#   1. dY scatter:  dY[p] = dO[σ_x[p]] * s_k[p]  (in registers, never stored)
-#   2. dA' GEMM:    acc += dY @ W2^T  (K-loop over H dimension)
-#   3. SwiGLU bwd:  recompute y1=σ(gate)*up from H_pre; write dH_pre
-#   4. y1s_scaled:  write s_k * y1 for dW2 weight-grad kernel
-#   5. dS atomic:   dS[p] += sum_I(dA' * y1)
 # ---------------------------------------------------------------------------
 
 
 @triton.autotune(
-    configs=_get_down_proj_autotune_configs(),
+    configs=_get_gemm_autotune_configs(),
     key=["H_dim", "I_dim"],
 )
 @triton.jit
@@ -706,12 +600,12 @@ def _moe_bwd_down_proj_kernel(
     s_scatter_idx_ptr,   # (TK,)    — σ_s: sorted_pos → flat (t,k) index
     topk_weights_ptr,    # (TK,)    — s_k: routing weights in flat (t,k) order
     down_proj_ptr,       # (E, H, I) — W2
-    H_pre_ptr,           # (TK, 2I) — z = [gate, up] saved from forward
-    expert_freq_off_ptr, # (E+1,)   int32
-    expert_for_tile_ptr, # (num_m_tiles,) int32
+    pre_act_ptr,         # (TK, 2I) — z = [gate, up] saved from forward
+    expert_start_ptr,    # (E+1,)   int32
+    tile_row_start_ptr,  # (num_m_tiles,) int32
     tile_expert_ptr,     # (num_m_tiles,) int32
-    dH_pre_ptr,          # (TK, 2I) — output: ∂L/∂z = [dgate, dup]
-    y1s_scaled_ptr,      # (TK, I)  — output: s_k * y1 (for dW2 kernel)
+    d_pre_act_ptr,       # (TK, 2I) — output: ∂L/∂z = [dgate, dup]
+    weighted_act_ptr,    # (TK, I)  — output: s_k * y1 (for dW2 kernel)
     dS_ptr,              # (TK,)    — output: ∂L/∂s_k, indexed by flat (t,k)
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
@@ -720,28 +614,26 @@ def _moe_bwd_down_proj_kernel(
     stride_w_E,
     stride_w_H,
     stride_w_I: tl.constexpr,
-    stride_Hpre_TK,
-    stride_Hpre_N: tl.constexpr,
-    stride_dHpre_TK,
-    stride_dHpre_N: tl.constexpr,
-    stride_y1s_TK,
-    stride_y1s_I: tl.constexpr,
+    stride_pre_TK,
+    stride_pre_N: tl.constexpr,
+    stride_d_pre_TK,
+    stride_d_pre_N: tl.constexpr,
+    stride_wact_TK,
+    stride_wact_I: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
     """Grid: (num_m_tiles, ceil(I/BLOCK_N)).
-    Each CTA handles one (BLOCK_M rows, BLOCK_N cols of I) tile.
-    K-loop accumulates dA' = dY @ W2^T (dY stays in registers, never stored).
-    Epilogue recomputes y1 from H_pre, applies SwiGLU backward, writes dH_pre,
-    y1s_scaled, and dS."""
+    Accumulates dA' = dO @ W2^T (dO stays in registers), recomputes y1 from
+    pre_act, applies SwiGLU backward, writes d_pre_act, weighted_act, and dS."""
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
-    row_start = tl.load(expert_for_tile_ptr + pid_m)
+    row_start = tl.load(tile_row_start_ptr + pid_m)
     expert_idx = tl.load(tile_expert_ptr + pid_m)
     n_start = pid_n * BLOCK_N
-    expert_end = tl.load(expert_freq_off_ptr + expert_idx + 1)
+    expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
     m_offs = tl.arange(0, BLOCK_M)
     n_offs = tl.arange(0, BLOCK_N)
@@ -758,16 +650,14 @@ def _moe_bwd_down_proj_kernel(
     flat_tk_idx = tl.load(s_scatter_idx_ptr + row_offs, mask=row_mask, other=0)
     weights = tl.load(topk_weights_ptr + flat_tk_idx, mask=row_mask, other=0.0).to(tl.float32)
 
-    # K-loop over H: accumulate (dO @ W2^T) unscaled.
-    # weights is a per-row scalar so it commutes: dA' = s_k * (dO @ W2^T).
-    # Scaling once after the loop avoids BLOCK_M×BLOCK_K multiplies per K-iteration.
+    # K-loop: accumulate dA' = dO @ W2^T (unscaled; scale once after loop).
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     for k in tl.range(0, H_dim, BLOCK_K):
         k_idx = k + k_offs
         k_mask = k_idx < H_dim
 
         dO_ptrs = dO_ptr + token_idx[:, None] * stride_dO_T + k_idx[None, :] * stride_dO_H
-        dO_tile = tl.load(dO_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0).to(tl.float32)
+        dO_tile = tl.load(dO_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
         w_ptrs = (
             down_proj_ptr
@@ -775,24 +665,24 @@ def _moe_bwd_down_proj_kernel(
             + k_idx[:, None] * stride_w_H
             + n_idx[None, :] * stride_w_I
         )
-        w_tile = tl.load(w_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0).to(tl.float32)
+        w_tile = tl.load(w_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
         acc = tl.dot(dO_tile, w_tile, acc=acc)
 
-    # Epilogue: recompute y1 = silu(gate) * up from saved H_pre.
-    gate_ptrs = H_pre_ptr + row_offs[:, None] * stride_Hpre_TK + n_idx[None, :] * stride_Hpre_N
-    up_ptrs = gate_ptrs + I_dim * stride_Hpre_N
+    # Epilogue: recompute y1 = silu(gate) * up from saved pre_act.
+    # These loads need fp32 for the sigmoid/silu computation.
+    gate_ptrs = pre_act_ptr + row_offs[:, None] * stride_pre_TK + n_idx[None, :] * stride_pre_N
+    up_ptrs = gate_ptrs + I_dim * stride_pre_N
     gate = tl.load(gate_ptrs, mask=out_mask, other=0.0).to(tl.float32)
     up = tl.load(up_ptrs, mask=out_mask, other=0.0).to(tl.float32)
     sig_gate = tl.sigmoid(gate)
     silu_gate = gate * sig_gate
     y1 = silu_gate * up  # (BLOCK_M, BLOCK_N)
 
-    # Write y1s_scaled = s_k * y1 for dW2 (avoids storing dY (TK,H)).
-    y1s_ptrs = y1s_scaled_ptr + row_offs[:, None] * stride_y1s_TK + n_idx[None, :] * stride_y1s_I
-    tl.store(y1s_ptrs, (weights[:, None] * y1).to(y1s_scaled_ptr.dtype.element_ty), mask=out_mask)
+    # Write weighted_act = s_k * y1 for dW2.
+    wact_ptrs = weighted_act_ptr + row_offs[:, None] * stride_wact_TK + n_idx[None, :] * stride_wact_I
+    tl.store(wact_ptrs, (weights[:, None] * y1).to(weighted_act_ptr.dtype.element_ty), mask=out_mask)
 
-    # dS: ∂L/∂s_k = sum_I((dO @ W2^T) * y1) — use unscaled acc, no weight factor.
-    # flat_tk_idx is unique per sorted_pos (bijection), so plain store is safe.
+    # dS: ∂L/∂s_k = sum_I((dO @ W2^T) * y1) — use unscaled acc.
     dS_partial = tl.sum(acc * y1, axis=1)
     tl.store(dS_ptr + flat_tk_idx, dS_partial.to(dS_ptr.dtype.element_ty), mask=row_mask)
 
@@ -802,20 +692,15 @@ def _moe_bwd_down_proj_kernel(
     # SwiGLU backward: dgate = d_silu(gate) * up * dA', dup = silu(gate) * dA'.
     dgate = acc * (silu_gate * (1.0 - sig_gate) + sig_gate) * up
     dup = acc * silu_gate
-    dgate_ptrs = dH_pre_ptr + row_offs[:, None] * stride_dHpre_TK + n_idx[None, :] * stride_dHpre_N
-    dup_ptrs = dgate_ptrs + I_dim * stride_dHpre_N
-    tl.store(dgate_ptrs, dgate.to(dH_pre_ptr.dtype.element_ty), mask=out_mask)
-    tl.store(dup_ptrs, dup.to(dH_pre_ptr.dtype.element_ty), mask=out_mask)
+    dgate_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + n_idx[None, :] * stride_d_pre_N
+    dup_ptrs = dgate_ptrs + I_dim * stride_d_pre_N
+    tl.store(dgate_ptrs, dgate.to(d_pre_act_ptr.dtype.element_ty), mask=out_mask)
+    tl.store(dup_ptrs, dup.to(d_pre_act_ptr.dtype.element_ty), mask=out_mask)
 
 
 # ---------------------------------------------------------------------------
-# Kernel 9: Backward — dW2 = y1s_scaled^T @ dout_gathered (per expert, weight grad)
-# Port of SonicMoE _down_projection_backward_weight
-# Lambda grid: (E * ceil(I/BLOCK_M), ceil(H/BLOCK_N)) — no tile map
-#
-# Gathers dout (T, H) by x_gather_idx instead of reading dY (TK, H),
-# matching SonicMoE's approach: dW2 = dout_gathered^T @ y1s_scaled
-# (equivalent to dY^T @ y1 since y1s_scaled = s_k * y1 and dY = s_k * dout).
+# Backward — dW2 = weighted_act^T @ dout_gathered (per expert, weight grad)
+# Lambda grid: (E * ceil(I/BLOCK_M), ceil(H/BLOCK_N))
 # ---------------------------------------------------------------------------
 
 
@@ -832,15 +717,15 @@ def _moe_bwd_down_proj_kernel(
 )
 @triton.jit
 def _moe_bwd_dW2_kernel(
-    y1s_scaled_ptr,      # (TK, I) — s_k * y1 from K7
+    weighted_act_ptr,    # (TK, I) — s_k * y1 from backward down-proj kernel
     dout_ptr,            # (T, H)  — upstream gradient (gathered by x_gather_idx)
     x_gather_idx_ptr,    # (TK,)   — sorted_pos → original token index
-    expert_freq_off_ptr, # (E+1,)  int32
+    expert_start_ptr,    # (E+1,)  int32
     dW2_ptr,             # (E, H, I) — output, atomic add
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
-    stride_y1s_TK,
-    stride_y1s_I: tl.constexpr,
+    stride_wact_TK,
+    stride_wact_I: tl.constexpr,
     stride_dout_T,
     stride_dout_H: tl.constexpr,
     stride_dW2_E,
@@ -850,7 +735,7 @@ def _moe_bwd_dW2_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
-    """dW2[e, h, i] += sum_t y1s_scaled[t, i] * dout[token(t), h] for tokens in e.
+    """dW2[e, h, i] += sum_t weighted_act[t, i] * dout[token(t), h] for tokens in e.
     Grid: (E * ceil(I/BLOCK_M), ceil(H/BLOCK_N)). Early exit for empty experts."""
     pid0 = tl.program_id(0)
     pid1 = tl.program_id(1)
@@ -859,8 +744,8 @@ def _moe_bwd_dW2_kernel(
     expert_idx = pid0 // N_M_TILES
     m_tile = pid0 % N_M_TILES
 
-    expert_start = tl.load(expert_freq_off_ptr + expert_idx)
-    expert_end = tl.load(expert_freq_off_ptr + expert_idx + 1)
+    expert_start = tl.load(expert_start_ptr + expert_idx)
+    expert_end = tl.load(expert_start_ptr + expert_idx + 1)
     M_e = expert_end - expert_start
     if M_e == 0:
         return
@@ -884,16 +769,14 @@ def _moe_bwd_dW2_kernel(
         k_mask = k_idx < M_e
         row_offs = expert_start + k_idx
 
-        # Load y1s_scaled = s_k * y1 (shape: I_tile × BLOCK_K)
-        y1s_ptrs = y1s_scaled_ptr + row_offs[None, :] * stride_y1s_TK + i_idx[:, None] * stride_y1s_I
-        y1s_tile = tl.load(y1s_ptrs, mask=k_mask[None, :] & i_mask[:, None], other=0.0).to(tl.float32)
+        wact_ptrs = weighted_act_ptr + row_offs[None, :] * stride_wact_TK + i_idx[:, None] * stride_wact_I
+        wact_tile = tl.load(wact_ptrs, mask=k_mask[None, :] & i_mask[:, None], other=0.0)
 
-        # Gather dout[x_gather_idx[sorted_pos]] (shape: BLOCK_K × H_tile)
         token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0)
         dout_ptrs = dout_ptr + token_idx[:, None] * stride_dout_T + h_idx[None, :] * stride_dout_H
-        dout_tile = tl.load(dout_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0).to(tl.float32)
+        dout_tile = tl.load(dout_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
 
-        acc = tl.dot(y1s_tile, dout_tile, acc=acc)
+        acc = tl.dot(wact_tile, dout_tile, acc=acc)
 
     dW2_ptrs = (
         dW2_ptr
@@ -905,32 +788,27 @@ def _moe_bwd_dW2_kernel(
 
 
 # ---------------------------------------------------------------------------
-# Kernel 10: Backward — dx_expanded = dH @ W1^T (clean grouped GEMM, no atomics)
-# Port of SonicMoE _up_projection_backward_act
+# Backward — dx_expanded = d_pre_act @ W1^T (grouped GEMM, no atomics)
 # 2D grid: (num_m_tiles, ceil(H/BLOCK_N))
-#
-# Writes to dx_expanded (TK, H) directly indexed by sorted_pos — no scatter.
-# A follow-up call to _token_gather_weighted_sum_kernel(w=None) reduces
-# dx_expanded → dx (T, H) via token_broadcast_backward pattern.
 # ---------------------------------------------------------------------------
 
 
 @triton.autotune(
-    configs=_get_up_proj_autotune_configs(),
+    configs=_get_gemm_autotune_configs(),
     key=["H_dim", "I_dim"],
 )
 @triton.jit
 def _moe_bwd_dX_expanded_kernel(
-    dH_pre_ptr,          # (TK, 2*I)
+    d_pre_act_ptr,       # (TK, 2*I)
     gate_up_proj_ptr,    # (E, 2*I, H) — W1
-    expert_freq_off_ptr, # (E+1,) int32
-    expert_for_tile_ptr, # (num_m_tiles,) int32
+    expert_start_ptr,    # (E+1,) int32
+    tile_row_start_ptr,  # (num_m_tiles,) int32
     tile_expert_ptr,     # (num_m_tiles,) int32
     dx_expanded_ptr,     # (TK, H) — output: clean write, indexed by sorted_pos
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
-    stride_dH_TK,
-    stride_dH_N: tl.constexpr,
+    stride_d_pre_TK,
+    stride_d_pre_N: tl.constexpr,
     stride_w_E,
     stride_w_N,
     stride_w_K: tl.constexpr,
@@ -941,15 +819,15 @@ def _moe_bwd_dX_expanded_kernel(
     BLOCK_K: tl.constexpr,
 ):
     """Grid: (num_m_tiles, ceil(H/BLOCK_N)).
-    dx_expanded[sorted_pos] = dH_gate @ W1_gate^T + dH_up @ W1_up^T.
+    dx_expanded[sorted_pos] = d_gate @ W1_gate^T + d_up @ W1_up^T.
     No atomics — rows are unique per CTA in sorted space."""
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
-    row_start = tl.load(expert_for_tile_ptr + pid_m)
+    row_start = tl.load(tile_row_start_ptr + pid_m)
     expert_idx = tl.load(tile_expert_ptr + pid_m)
     n_start = pid_n * BLOCK_N
-    expert_end = tl.load(expert_freq_off_ptr + expert_idx + 1)
+    expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
     m_offs = tl.arange(0, BLOCK_M)
     n_offs = tl.arange(0, BLOCK_N)
@@ -966,8 +844,8 @@ def _moe_bwd_dX_expanded_kernel(
         k_idx = k + k_offs
         k_mask = k_idx < I_dim
 
-        dH_gate_ptrs = dH_pre_ptr + row_offs[:, None] * stride_dH_TK + k_idx[None, :] * stride_dH_N
-        dH_gate = tl.load(dH_gate_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0).to(tl.float32)
+        d_gate_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + k_idx[None, :] * stride_d_pre_N
+        d_gate = tl.load(d_gate_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
         w_gate_ptrs = (
             gate_up_proj_ptr
@@ -975,11 +853,11 @@ def _moe_bwd_dX_expanded_kernel(
             + k_idx[:, None] * stride_w_N
             + h_idx[None, :] * stride_w_K
         )
-        w_gate = tl.load(w_gate_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0).to(tl.float32)
-        acc = tl.dot(dH_gate, w_gate, acc=acc)
+        w_gate = tl.load(w_gate_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
+        acc = tl.dot(d_gate, w_gate, acc=acc)
 
-        dH_up_ptrs = dH_pre_ptr + row_offs[:, None] * stride_dH_TK + (I_dim + k_idx)[None, :] * stride_dH_N
-        dH_up = tl.load(dH_up_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0).to(tl.float32)
+        d_up_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + (I_dim + k_idx)[None, :] * stride_d_pre_N
+        d_up = tl.load(d_up_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
         w_up_ptrs = (
             gate_up_proj_ptr
@@ -987,18 +865,17 @@ def _moe_bwd_dX_expanded_kernel(
             + (I_dim + k_idx)[:, None] * stride_w_N
             + h_idx[None, :] * stride_w_K
         )
-        w_up = tl.load(w_up_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0).to(tl.float32)
+        w_up = tl.load(w_up_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
 
-        acc = tl.dot(dH_up, w_up, acc=acc)
+        acc = tl.dot(d_up, w_up, acc=acc)
 
-    # Clean write to dx_expanded — no scatter, no atomic.
     dxe_ptrs = dx_expanded_ptr + row_offs[:, None] * stride_dxe_TK + h_idx[None, :] * stride_dxe_H
     tl.store(dxe_ptrs, acc.to(dx_expanded_ptr.dtype.element_ty), mask=row_mask[:, None] & h_mask[None, :])
 
 
 # ---------------------------------------------------------------------------
-# Kernel 11: Backward — dW1 = Gathered_X^T @ dH (per expert, weight grad)
-# Lambda grid: (E * ceil(H/BLOCK_M), ceil(2I/BLOCK_N)) — no tile map
+# Backward — dW1 = Gathered_X^T @ d_pre_act (per expert, weight grad)
+# Lambda grid: (E * ceil(H/BLOCK_M), ceil(2I/BLOCK_N))
 # ---------------------------------------------------------------------------
 
 
@@ -1016,16 +893,16 @@ def _moe_bwd_dX_expanded_kernel(
 @triton.jit
 def _moe_bwd_dW1_kernel(
     x_ptr,               # (T, H)
-    dH_pre_ptr,          # (TK, 2*I)
+    d_pre_act_ptr,       # (TK, 2*I)
     x_gather_idx_ptr,    # (TK,) int32
-    expert_freq_off_ptr, # (E+1,) int32
+    expert_start_ptr,    # (E+1,) int32
     dW1_ptr,             # (E, 2*I, H) — output, atomic add
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_x_T,
     stride_x_H: tl.constexpr,
-    stride_dH_TK,
-    stride_dH_N: tl.constexpr,
+    stride_d_pre_TK,
+    stride_d_pre_N: tl.constexpr,
     stride_dW1_E,
     stride_dW1_N,
     stride_dW1_H: tl.constexpr,
@@ -1033,7 +910,7 @@ def _moe_bwd_dW1_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
-    """dW1[e, n, h] += sum_t X[token(t), h] * dH[t, n], where n in [0, 2I).
+    """dW1[e, n, h] += sum_t X[token(t), h] * d_pre_act[t, n], where n in [0, 2I).
     Grid: (E * ceil(H/BLOCK_M), ceil(2I/BLOCK_N)). Early exit for empty experts."""
     pid0 = tl.program_id(0)
     pid1 = tl.program_id(1)
@@ -1042,8 +919,8 @@ def _moe_bwd_dW1_kernel(
     expert_idx = pid0 // N_M_TILES
     m_tile = pid0 % N_M_TILES
 
-    expert_start = tl.load(expert_freq_off_ptr + expert_idx)
-    expert_end = tl.load(expert_freq_off_ptr + expert_idx + 1)
+    expert_start = tl.load(expert_start_ptr + expert_idx)
+    expert_end = tl.load(expert_start_ptr + expert_idx + 1)
     M_e = expert_end - expert_start
     if M_e == 0:
         return
@@ -1069,12 +946,12 @@ def _moe_bwd_dW1_kernel(
 
         token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0)
         x_ptrs = x_ptr + token_idx[:, None] * stride_x_T + h_idx[None, :] * stride_x_H
-        x_tile = tl.load(x_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0).to(tl.float32)
+        x_tile = tl.load(x_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
 
-        dH_ptrs = dH_pre_ptr + row_offs[:, None] * stride_dH_TK + n_idx[None, :] * stride_dH_N
-        dH_tile = tl.load(dH_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0).to(tl.float32)
+        d_pre_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + n_idx[None, :] * stride_d_pre_N
+        d_pre_tile = tl.load(d_pre_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
 
-        acc = tl.dot(tl.trans(dH_tile), x_tile, acc=acc)
+        acc = tl.dot(tl.trans(d_pre_tile), x_tile, acc=acc)
 
     dW1_ptrs = (
         dW1_ptr

@@ -1,15 +1,8 @@
 """
-Fused MoE expert computation using Triton grouped GEMM.
+Fused MoE expert computation via Triton grouped GEMM.
 
-Implements a memory-efficient forward+backward for Mixture-of-Experts layers,
-inspired by SonicMoE (arXiv:2512.14080).
-
-Key properties:
-- Routing metadata via 3 Triton kernels (port from SonicMoE)
-- GPU tile metadata (expert_for_tile, tile_expert) computed in Kernel 3 — no CPU loop
-- Fused gather + grouped GEMM + SwiGLU in forward
-- Memory-efficient backward: dS = <dA', A> avoids caching Y (TK×H bytes)
-- General GPU support: pure Triton, no Hopper-specific WGMMA/TMA
+Forward: routing metadata (3 kernels) → fused gather+GEMM+SwiGLU → down-proj → token aggregation
+Backward: memory-efficient — recomputes dA' = dO@W2^T to avoid caching Y (TK×H bytes)
 """
 
 import torch
@@ -30,7 +23,7 @@ from liger_kernel.ops.fused_moe_kernels import (
 from liger_kernel.ops.utils import ensure_contiguous
 
 # Token-dimension tile size for M.
-# Not in the inner-loop autotune because expert_for_tile/tile_expert and the
+# Not in the inner-loop autotune because tile_row_start/tile_expert and the
 # grid dim-0 (num_m_tiles) must be recomputed for every candidate value.
 # To tune: change this constant and re-run benchmarks.
 BLOCK_M_TOKEN = 16
@@ -44,7 +37,7 @@ BLOCK_M_TOKEN = 16
 def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: int = BLOCK_M_TOKEN):
     """Compute token→expert routing permutation metadata via 3 Triton kernels.
 
-    Also computes GPU tile metadata (expert_for_tile, tile_expert) inside
+    Also computes GPU tile metadata (tile_row_start, tile_expert) inside
     Kernel 3 — no CPU loop, one .item() sync for num_m_tiles allocation.
 
     Args:
@@ -53,12 +46,12 @@ def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: 
         block_m_token: BLOCK_M for token-dimension tiling (default BLOCK_M_TOKEN)
 
     Returns:
-        expert_frequency:       (E,)            int32
-        expert_freq_offset:     (E+1,)          int32
+        expert_token_count:     (E,)            int32
+        expert_start_idx:       (E+1,)          int32
         x_gather_idx:           (TK,)           int32
         s_scatter_idx:          (TK,)           int32
         s_reverse_scatter_idx:  (TK,)           int32
-        expert_for_tile:        (num_m_tiles,)  int32 — absolute row_start per M-tile
+        tile_row_start:         (num_m_tiles,)  int32 — absolute row_start per M-tile
         tile_expert:            (num_m_tiles,)  int32 — expert index per M-tile
     """
     T, K = topk_indices.shape
@@ -69,11 +62,11 @@ def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: 
     TOKENS_PER_BLOCK = max(1, 1024 // K_POW2)
     n_tiles = triton.cdiv(T, TOKENS_PER_BLOCK)
 
-    # Kernel 1: tiled histogram → partial_sum (E, n_tiles), stored column-per-tile
-    col_partial_sum_trans = torch.empty(E, n_tiles, dtype=torch.int32, device=device)
+    # Kernel 1: tiled histogram → tile_expert_counts (E, n_tiles)
+    tile_expert_counts = torch.empty(E, n_tiles, dtype=torch.int32, device=device)
     _moe_router_histogram_kernel[(n_tiles,)](
         topk_indices,
-        col_partial_sum_trans,
+        tile_expert_counts,
         T,
         E=E,
         n_tiles=n_tiles,
@@ -83,17 +76,17 @@ def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: 
         E_POW2=E_POW2,
     )
 
-    expert_frequency = col_partial_sum_trans.sum(dim=1, dtype=torch.int32)  # (E,)
+    expert_token_count = tile_expert_counts.sum(dim=1, dtype=torch.int32)  # (E,)
 
     # Kernel 2: prefix sums + expert offsets + tile offsets (all in one pass)
-    expert_freq_offset = torch.empty(E + 1, dtype=torch.int32, device=device)
+    expert_start_idx = torch.empty(E + 1, dtype=torch.int32, device=device)
     expert_tile_offset = torch.empty(E + 1, dtype=torch.int32, device=device)
     _moe_router_prefix_sum_kernel[(E + 2,)](
-        expert_frequency,
-        expert_freq_offset,
+        expert_token_count,
+        expert_start_idx,
         expert_tile_offset,
         E=E,
-        partial_sum_ptr=col_partial_sum_trans,
+        partial_sum_ptr=tile_expert_counts,
         n_tiles=n_tiles,
         TK=TK,
         BLOCK_M=128,
@@ -104,7 +97,7 @@ def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: 
     # One sync to get num_m_tiles for buffer allocation and GEMM grid.
     num_m_tiles = int(expert_tile_offset[-1].item())
 
-    expert_for_tile = torch.empty(num_m_tiles, dtype=torch.int32, device=device)
+    tile_row_start = torch.empty(num_m_tiles, dtype=torch.int32, device=device)
     tile_expert = torch.empty(num_m_tiles, dtype=torch.int32, device=device)
 
     # Kernel 3: sort by expert + scatter permutation arrays + tile metadata
@@ -117,14 +110,14 @@ def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: 
             s_scatter_idx,
             s_reverse_scatter_idx,
             x_gather_idx,
-            expert_for_tile,
+            tile_row_start,
             tile_expert,
             topk_indices,
             T,
-            col_partial_sum_trans,  # non-contiguous (E, n_tiles) view
+            tile_expert_counts,  # non-contiguous (E, n_tiles) view
             n_tiles,
-            expert_freq_offset[:E],  # E entries (without TK sentinel)
-            expert_tile_offset[:E],  # E entries of cumulative tile counts
+            expert_start_idx[:E],   # E entries (without TK sentinel)
+            expert_tile_offset[:E], # E entries of cumulative tile counts
             K_POW2=K_POW2,
             K=K,
             TOKENS_PER_BLOCK=TOKENS_PER_BLOCK,
@@ -132,12 +125,12 @@ def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: 
         )
 
     return (
-        expert_frequency,
-        expert_freq_offset,
+        expert_token_count,
+        expert_start_idx,
         x_gather_idx,
         s_scatter_idx,
         s_reverse_scatter_idx,
-        expert_for_tile,
+        tile_row_start,
         tile_expert,
     )
 
@@ -195,18 +188,18 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         with torch.no_grad():
             (
                 _,
-                expert_freq_offset,
+                expert_start_idx,
                 x_gather_idx,
                 s_scatter_idx,
                 s_reverse_scatter_idx,
-                expert_for_tile,
+                tile_row_start,
                 tile_expert,
             ) = compute_routing_metadata(top_k_index, E)
 
-        num_m_tiles = expert_for_tile.shape[0]
+        num_m_tiles = tile_row_start.shape[0]
 
-        H_pre = torch.empty(TK, 2 * I, dtype=x.dtype, device=x.device)
-        A_post = torch.empty(TK, I, dtype=x.dtype, device=x.device)
+        pre_act = torch.empty(TK, 2 * I, dtype=x.dtype, device=x.device)
+        post_act = torch.empty(TK, I, dtype=x.dtype, device=x.device)
 
         if num_m_tiles > 0:
             _fused_up_proj_swiglu_kernel[
@@ -215,11 +208,11 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 x,
                 gate_up_proj,
                 x_gather_idx,
-                expert_freq_offset,
-                expert_for_tile,
+                expert_start_idx,
+                tile_row_start,
                 tile_expert,
-                H_pre,
-                A_post,
+                pre_act,
+                post_act,
                 H_dim=H,
                 I_dim=I,
                 stride_x_T=x.stride(0),
@@ -227,10 +220,10 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 stride_w_E=gate_up_proj.stride(0),
                 stride_w_N=gate_up_proj.stride(1),
                 stride_w_K=gate_up_proj.stride(2),
-                stride_Hpre_TK=H_pre.stride(0),
-                stride_Hpre_N=H_pre.stride(1),
-                stride_A_TK=A_post.stride(0),
-                stride_A_N=A_post.stride(1),
+                stride_pre_TK=pre_act.stride(0),
+                stride_pre_N=pre_act.stride(1),
+                stride_post_TK=post_act.stride(0),
+                stride_post_N=post_act.stride(1),
                 BLOCK_M=BLOCK_M_TOKEN,
             )
 
@@ -240,16 +233,16 @@ class LigerFusedMoEFunction(torch.autograd.Function):
             _fused_down_proj_kernel[
                 lambda meta: (num_m_tiles, triton.cdiv(H, meta["BLOCK_N"]))
             ](
-                A_post,
+                post_act,
                 down_proj,
-                expert_freq_offset,
-                expert_for_tile,
+                expert_start_idx,
+                tile_row_start,
                 tile_expert,
                 Y,
                 H_dim=H,
                 I_dim=I,
-                stride_A_TK=A_post.stride(0),
-                stride_A_I=A_post.stride(1),
+                stride_post_TK=post_act.stride(0),
+                stride_post_I=post_act.stride(1),
                 stride_w_E=down_proj.stride(0),
                 stride_w_H=down_proj.stride(1),
                 stride_w_I=down_proj.stride(2),
@@ -265,13 +258,13 @@ class LigerFusedMoEFunction(torch.autograd.Function):
             x,
             gate_up_proj,
             down_proj,
-            H_pre,
+            pre_act,
             topk_weights_flat,
-            expert_freq_offset,
+            expert_start_idx,
             x_gather_idx,
             s_scatter_idx,
             s_reverse_scatter_idx,
-            expert_for_tile,
+            tile_row_start,
             tile_expert,
         )
         ctx.T = T
@@ -296,13 +289,13 @@ class LigerFusedMoEFunction(torch.autograd.Function):
             x,
             gate_up_proj,
             down_proj,
-            H_pre,
+            pre_act,
             topk_weights_flat,
-            expert_freq_offset,
+            expert_start_idx,
             x_gather_idx,
             s_scatter_idx,
             s_reverse_scatter_idx,
-            expert_for_tile,
+            tile_row_start,
             tile_expert,
         ) = ctx.saved_tensors
 
@@ -314,12 +307,9 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         TK = ctx.TK
         num_m_tiles = ctx.num_m_tiles
 
-        # Step B1: Fused down-proj backward (port of SonicMoE _down_projection_backward_act).
-        # Computes dA' = dY @ W2^T (dY stays in registers, never materialized),
-        # recomputes y1 = silu(gate)*up from H_pre, writes dH_pre + y1s_scaled + dS.
-        dH_pre = torch.empty(TK, 2 * I, dtype=dO.dtype, device=dO.device)
-        y1s_scaled = torch.empty(TK, I, dtype=dO.dtype, device=dO.device)
-        # dS is written directly in flat (t,k) order by the kernel (no post-scatter needed).
+        # dA' = dO @ W2^T, SwiGLU backward, write d_pre_act and dS
+        d_pre_act = torch.empty(TK, 2 * I, dtype=dO.dtype, device=dO.device)
+        weighted_act = torch.empty(TK, I, dtype=dO.dtype, device=dO.device)
         dS = torch.empty(TK, dtype=dO.dtype, device=dO.device)
 
         if num_m_tiles > 0:
@@ -331,12 +321,12 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 s_scatter_idx,
                 topk_weights_flat,
                 down_proj,
-                H_pre,
-                expert_freq_offset,
-                expert_for_tile,
+                pre_act,
+                expert_start_idx,
+                tile_row_start,
                 tile_expert,
-                dH_pre,
-                y1s_scaled,
+                d_pre_act,
+                weighted_act,
                 dS,
                 H_dim=H,
                 I_dim=I,
@@ -345,17 +335,16 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 stride_w_E=down_proj.stride(0),
                 stride_w_H=down_proj.stride(1),
                 stride_w_I=down_proj.stride(2),
-                stride_Hpre_TK=H_pre.stride(0),
-                stride_Hpre_N=H_pre.stride(1),
-                stride_dHpre_TK=dH_pre.stride(0),
-                stride_dHpre_N=dH_pre.stride(1),
-                stride_y1s_TK=y1s_scaled.stride(0),
-                stride_y1s_I=y1s_scaled.stride(1),
+                stride_pre_TK=pre_act.stride(0),
+                stride_pre_N=pre_act.stride(1),
+                stride_d_pre_TK=d_pre_act.stride(0),
+                stride_d_pre_N=d_pre_act.stride(1),
+                stride_wact_TK=weighted_act.stride(0),
+                stride_wact_I=weighted_act.stride(1),
                 BLOCK_M=BLOCK_M_TOKEN,
             )
 
-        # Step B2: dW2 = y1s_scaled^T @ dout_gathered (port of _down_projection_backward_weight).
-        # Gathers dout (T,H) by x_gather_idx — no dY (TK,H) buffer needed.
+        # dW2 = (s_k * y1)^T @ dO_gathered
         ddown_proj = torch.zeros_like(down_proj)
         _moe_bwd_dW2_kernel[
             lambda meta: (
@@ -363,15 +352,15 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 triton.cdiv(H, meta["BLOCK_N"]),
             )
         ](
-            y1s_scaled,
+            weighted_act,
             dO,
             x_gather_idx,
-            expert_freq_offset,
+            expert_start_idx,
             ddown_proj,
             H_dim=H,
             I_dim=I,
-            stride_y1s_TK=y1s_scaled.stride(0),
-            stride_y1s_I=y1s_scaled.stride(1),
+            stride_wact_TK=weighted_act.stride(0),
+            stride_wact_I=weighted_act.stride(1),
             stride_dout_T=dO.stride(0),
             stride_dout_H=dO.stride(1),
             stride_dW2_E=ddown_proj.stride(0),
@@ -379,24 +368,23 @@ class LigerFusedMoEFunction(torch.autograd.Function):
             stride_dW2_I=ddown_proj.stride(2),
         )
 
-        # Step B3: dx_expanded = dH_pre @ W1^T (port of _up_projection_backward_act).
-        # Clean write to (TK, H) — no atomic scatter.
+        # dx_expanded = d_pre_act @ W1^T
         dx_expanded = torch.empty(TK, H, dtype=dO.dtype, device=dO.device)
 
         if num_m_tiles > 0:
             _moe_bwd_dX_expanded_kernel[
                 lambda meta: (num_m_tiles, triton.cdiv(H, meta["BLOCK_N"]))
             ](
-                dH_pre,
+                d_pre_act,
                 gate_up_proj,
-                expert_freq_offset,
-                expert_for_tile,
+                expert_start_idx,
+                tile_row_start,
                 tile_expert,
                 dx_expanded,
                 H_dim=H,
                 I_dim=I,
-                stride_dH_TK=dH_pre.stride(0),
-                stride_dH_N=dH_pre.stride(1),
+                stride_d_pre_TK=d_pre_act.stride(0),
+                stride_d_pre_N=d_pre_act.stride(1),
                 stride_w_E=gate_up_proj.stride(0),
                 stride_w_N=gate_up_proj.stride(1),
                 stride_w_K=gate_up_proj.stride(2),
@@ -405,8 +393,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 BLOCK_M=BLOCK_M_TOKEN,
             )
 
-        # Step B4: dx = reduce(dx_expanded) (port of _token_broadcast_backward).
-        # Unweighted gather-sum: dx[t] = sum_k dx_expanded[s_rev[t*K+k]].
+        # dx = unweighted gather-sum of dx_expanded
         dx = torch.zeros(T, H, dtype=dO.dtype, device=dO.device)
         if TK > 0:
             _token_gather_weighted_sum_kernel[(T,)](
@@ -423,7 +410,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 w_is_None=True,
             )
 
-        # Step B5: dW1 = Gathered_X^T @ dH_pre (per expert, lambda grid).
+        # dW1 = X_gathered^T @ d_pre_act
         dgate_up_proj = torch.zeros_like(gate_up_proj)
         _moe_bwd_dW1_kernel[
             lambda meta: (
@@ -432,16 +419,16 @@ class LigerFusedMoEFunction(torch.autograd.Function):
             )
         ](
             x,
-            dH_pre,
+            d_pre_act,
             x_gather_idx,
-            expert_freq_offset,
+            expert_start_idx,
             dgate_up_proj,
             H_dim=H,
             I_dim=I,
             stride_x_T=x.stride(0),
             stride_x_H=x.stride(1),
-            stride_dH_TK=dH_pre.stride(0),
-            stride_dH_N=dH_pre.stride(1),
+            stride_d_pre_TK=d_pre_act.stride(0),
+            stride_d_pre_N=d_pre_act.stride(1),
             stride_dW1_E=dgate_up_proj.stride(0),
             stride_dW1_N=dgate_up_proj.stride(1),
             stride_dW1_H=dgate_up_proj.stride(2),
