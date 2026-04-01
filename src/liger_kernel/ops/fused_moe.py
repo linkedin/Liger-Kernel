@@ -8,18 +8,16 @@ Backward: memory-efficient — recomputes dA' = dO@W2^T to avoid caching Y (TK×
 import torch
 import triton
 
-from liger_kernel.ops.fused_moe_kernels import (
-    _fused_down_proj_kernel,
-    _fused_up_proj_swiglu_kernel,
-    _moe_bwd_down_proj_kernel,
-    _moe_bwd_dW1_kernel,
-    _moe_bwd_dW2_kernel,
-    _moe_bwd_dX_expanded_kernel,
-    _moe_router_histogram_kernel,
-    _moe_router_prefix_sum_kernel,
-    _moe_router_scatter_kernel,
-    _token_gather_weighted_sum_kernel,
-)
+from liger_kernel.ops.fused_moe_kernels import _fused_down_proj_kernel
+from liger_kernel.ops.fused_moe_kernels import _fused_up_proj_swiglu_kernel
+from liger_kernel.ops.fused_moe_kernels import _moe_bwd_down_proj_kernel
+from liger_kernel.ops.fused_moe_kernels import _moe_bwd_dW1_kernel
+from liger_kernel.ops.fused_moe_kernels import _moe_bwd_dW2_kernel
+from liger_kernel.ops.fused_moe_kernels import _moe_bwd_dX_expanded_kernel
+from liger_kernel.ops.fused_moe_kernels import _moe_router_histogram_kernel
+from liger_kernel.ops.fused_moe_kernels import _moe_router_prefix_sum_kernel
+from liger_kernel.ops.fused_moe_kernels import _moe_router_scatter_kernel
+from liger_kernel.ops.fused_moe_kernels import _token_gather_weighted_sum_kernel
 from liger_kernel.ops.utils import ensure_contiguous
 
 # Token-dimension tile size for M.
@@ -116,8 +114,8 @@ def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: 
             T,
             tile_expert_counts,  # non-contiguous (E, n_tiles) view
             n_tiles,
-            expert_start_idx[:E],   # E entries (without TK sentinel)
-            expert_tile_offset[:E], # E entries of cumulative tile counts
+            expert_start_idx[:E],  # E entries (without TK sentinel)
+            expert_tile_offset[:E],  # E entries of cumulative tile counts
             K_POW2=K_POW2,
             K=K,
             TOKENS_PER_BLOCK=TOKENS_PER_BLOCK,
@@ -136,22 +134,22 @@ def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: 
 
 
 def _token_aggregation(Y, topk_weights_flat, s_reverse_scatter_idx, T, K, H):
-    """Weighted gather-sum: O[t] = sum_k w[t,k] * Y[s_rev[t*K+k]]."""
-    O = torch.empty(T, H, dtype=Y.dtype, device=Y.device)
+    """Weighted gather-sum: out[t] = sum_k w[t,k] * Y[s_rev[t*K+k]]."""
+    out = torch.empty(T, H, dtype=Y.dtype, device=Y.device)
     _token_gather_weighted_sum_kernel[(T,)](
         Y,
         topk_weights_flat,
         s_reverse_scatter_idx,
-        O,
+        out,
         H_dim=H,
         K_dim=K,
         stride_Y_TK=Y.stride(0),
         stride_Y_H=Y.stride(1),
-        stride_out_T=O.stride(0),
-        stride_out_H=O.stride(1),
+        stride_out_T=out.stride(0),
+        stride_out_H=out.stride(1),
         w_is_None=False,
     )
-    return O
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +170,8 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         """
         Args:
             x:             (T, H)      input tokens
-            gate_up_proj:  (E, 2*I, H) gate+up projection weights
-            down_proj:     (E, H, I)   down projection weights
+            gate_up_proj:  (E, 2*intermediate_dim, H) gate+up projection weights
+            down_proj:     (E, H, intermediate_dim)   down projection weights
             top_k_index:   (T, K) int32 — pre-computed routing indices
             top_k_weights: (T, K) float — pre-computed routing scores
         Returns:
@@ -182,7 +180,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         T, K = top_k_index.shape
         E = gate_up_proj.shape[0]
         H = x.shape[1]
-        I = gate_up_proj.shape[1] // 2
+        intermediate_dim = gate_up_proj.shape[1] // 2
         TK = T * K
 
         with torch.no_grad():
@@ -198,13 +196,11 @@ class LigerFusedMoEFunction(torch.autograd.Function):
 
         num_m_tiles = tile_row_start.shape[0]
 
-        pre_act = torch.empty(TK, 2 * I, dtype=x.dtype, device=x.device)
-        post_act = torch.empty(TK, I, dtype=x.dtype, device=x.device)
+        pre_act = torch.empty(TK, 2 * intermediate_dim, dtype=x.dtype, device=x.device)
+        post_act = torch.empty(TK, intermediate_dim, dtype=x.dtype, device=x.device)
 
         if num_m_tiles > 0:
-            _fused_up_proj_swiglu_kernel[
-                lambda meta: (num_m_tiles, triton.cdiv(I, meta["BLOCK_N"]))
-            ](
+            _fused_up_proj_swiglu_kernel[lambda meta: (num_m_tiles, triton.cdiv(intermediate_dim, meta["BLOCK_N"]))](
                 x,
                 gate_up_proj,
                 x_gather_idx,
@@ -214,7 +210,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 pre_act,
                 post_act,
                 H_dim=H,
-                I_dim=I,
+                I_dim=intermediate_dim,
                 stride_x_T=x.stride(0),
                 stride_x_H=x.stride(1),
                 stride_w_E=gate_up_proj.stride(0),
@@ -230,9 +226,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         Y = torch.empty(TK, H, dtype=x.dtype, device=x.device)
 
         if num_m_tiles > 0:
-            _fused_down_proj_kernel[
-                lambda meta: (num_m_tiles, triton.cdiv(H, meta["BLOCK_N"]))
-            ](
+            _fused_down_proj_kernel[lambda meta: (num_m_tiles, triton.cdiv(H, meta["BLOCK_N"]))](
                 post_act,
                 down_proj,
                 expert_start_idx,
@@ -240,7 +234,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 tile_expert,
                 Y,
                 H_dim=H,
-                I_dim=I,
+                I_dim=intermediate_dim,
                 stride_post_TK=post_act.stride(0),
                 stride_post_I=post_act.stride(1),
                 stride_w_E=down_proj.stride(0),
@@ -252,7 +246,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
             )
 
         topk_weights_flat = top_k_weights.flatten().contiguous()
-        O = _token_aggregation(Y, topk_weights_flat, s_reverse_scatter_idx, T, K, H)
+        out = _token_aggregation(Y, topk_weights_flat, s_reverse_scatter_idx, T, K, H)
 
         ctx.save_for_backward(
             x,
@@ -271,13 +265,13 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         ctx.K = K
         ctx.E = E
         ctx.H = H
-        ctx.I = I
+        ctx.intermediate_dim = intermediate_dim
         ctx.TK = TK
         ctx.num_m_tiles = num_m_tiles
         ctx.mark_non_differentiable(top_k_index)
         ctx.set_materialize_grads(False)
 
-        return O
+        return out
 
     @staticmethod
     @ensure_contiguous
@@ -303,19 +297,17 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         K = ctx.K
         E = ctx.E
         H = ctx.H
-        I = ctx.I
+        intermediate_dim = ctx.intermediate_dim
         TK = ctx.TK
         num_m_tiles = ctx.num_m_tiles
 
         # dA' = dO @ W2^T, SwiGLU backward, write d_pre_act and dS
-        d_pre_act = torch.empty(TK, 2 * I, dtype=dO.dtype, device=dO.device)
-        weighted_act = torch.empty(TK, I, dtype=dO.dtype, device=dO.device)
+        d_pre_act = torch.empty(TK, 2 * intermediate_dim, dtype=dO.dtype, device=dO.device)
+        weighted_act = torch.empty(TK, intermediate_dim, dtype=dO.dtype, device=dO.device)
         dS = torch.empty(TK, dtype=dO.dtype, device=dO.device)
 
         if num_m_tiles > 0:
-            _moe_bwd_down_proj_kernel[
-                lambda meta: (num_m_tiles, triton.cdiv(I, meta["BLOCK_N"]))
-            ](
+            _moe_bwd_down_proj_kernel[lambda meta: (num_m_tiles, triton.cdiv(intermediate_dim, meta["BLOCK_N"]))](
                 dO,
                 x_gather_idx,
                 s_scatter_idx,
@@ -329,7 +321,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 weighted_act,
                 dS,
                 H_dim=H,
-                I_dim=I,
+                I_dim=intermediate_dim,
                 stride_dO_T=dO.stride(0),
                 stride_dO_H=dO.stride(1),
                 stride_w_E=down_proj.stride(0),
@@ -348,7 +340,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         ddown_proj = torch.zeros_like(down_proj)
         _moe_bwd_dW2_kernel[
             lambda meta: (
-                E * triton.cdiv(I, meta["BLOCK_M"]),
+                E * triton.cdiv(intermediate_dim, meta["BLOCK_M"]),
                 triton.cdiv(H, meta["BLOCK_N"]),
             )
         ](
@@ -358,7 +350,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
             expert_start_idx,
             ddown_proj,
             H_dim=H,
-            I_dim=I,
+            I_dim=intermediate_dim,
             stride_wact_TK=weighted_act.stride(0),
             stride_wact_I=weighted_act.stride(1),
             stride_dout_T=dO.stride(0),
@@ -372,9 +364,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         dx_expanded = torch.empty(TK, H, dtype=dO.dtype, device=dO.device)
 
         if num_m_tiles > 0:
-            _moe_bwd_dX_expanded_kernel[
-                lambda meta: (num_m_tiles, triton.cdiv(H, meta["BLOCK_N"]))
-            ](
+            _moe_bwd_dX_expanded_kernel[lambda meta: (num_m_tiles, triton.cdiv(H, meta["BLOCK_N"]))](
                 d_pre_act,
                 gate_up_proj,
                 expert_start_idx,
@@ -382,7 +372,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 tile_expert,
                 dx_expanded,
                 H_dim=H,
-                I_dim=I,
+                I_dim=intermediate_dim,
                 stride_d_pre_TK=d_pre_act.stride(0),
                 stride_d_pre_N=d_pre_act.stride(1),
                 stride_w_E=gate_up_proj.stride(0),
@@ -398,7 +388,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         if TK > 0:
             _token_gather_weighted_sum_kernel[(T,)](
                 dx_expanded,
-                dS,              # dummy w_ptr — never loaded when w_is_None=True
+                dS,  # dummy w_ptr — never loaded when w_is_None=True
                 s_reverse_scatter_idx,
                 dx,
                 H_dim=H,
@@ -415,7 +405,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         _moe_bwd_dW1_kernel[
             lambda meta: (
                 E * triton.cdiv(H, meta["BLOCK_M"]),
-                triton.cdiv(2 * I, meta["BLOCK_N"]),
+                triton.cdiv(2 * intermediate_dim, meta["BLOCK_N"]),
             )
         ](
             x,
@@ -424,7 +414,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
             expert_start_idx,
             dgate_up_proj,
             H_dim=H,
-            I_dim=I,
+            I_dim=intermediate_dim,
             stride_x_T=x.stride(0),
             stride_x_H=x.stride(1),
             stride_d_pre_TK=d_pre_act.stride(0),

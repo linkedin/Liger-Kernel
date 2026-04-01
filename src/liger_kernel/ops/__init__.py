@@ -31,7 +31,6 @@ Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import .
 # =============================================================================
 
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction  # noqa: F401
-from liger_kernel.ops.fused_moe import LigerFusedMoEFunction  # noqa: F401
 from liger_kernel.ops.cross_entropy import cross_entropy_backward  # noqa: F401
 from liger_kernel.ops.cross_entropy import cross_entropy_forward  # noqa: F401
 from liger_kernel.ops.dyt import LigerDyTFunction  # noqa: F401
@@ -45,6 +44,7 @@ from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entro
 from liger_kernel.ops.fused_linear_jsd import LigerFusedLinearJSDFunction  # noqa: F401
 from liger_kernel.ops.fused_linear_jsd import fused_linear_jsd_backward  # noqa: F401
 from liger_kernel.ops.fused_linear_jsd import fused_linear_jsd_forward  # noqa: F401
+from liger_kernel.ops.fused_moe import LigerFusedMoEFunction  # noqa: F401
 from liger_kernel.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction  # noqa: F401
 from liger_kernel.ops.geglu import LigerGELUMulFunction  # noqa: F401
 from liger_kernel.ops.geglu import geglu_backward  # noqa: F401

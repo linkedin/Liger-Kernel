@@ -13,7 +13,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.fused_moe import LigerFusedMoEFunction, compute_routing_metadata
+from liger_kernel.ops.fused_moe import LigerFusedMoEFunction
+from liger_kernel.ops.fused_moe import compute_routing_metadata
 
 # ---------------------------------------------------------------------------
 # Skip if no CUDA
@@ -52,11 +53,11 @@ def _reference_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weight
     return final
 
 
-def _make_inputs(T, E, H, I, K, dtype, device, seed=42):
+def _make_inputs(T, E, H, intermediate_dim, K, dtype, device, seed=42):
     torch.manual_seed(seed)
     x = torch.randn(T, H, dtype=dtype, device=device)
-    gate_up_proj = torch.randn(E, 2 * I, H, dtype=dtype, device=device) * 0.02
-    down_proj = torch.randn(E, H, I, dtype=dtype, device=device) * 0.02
+    gate_up_proj = torch.randn(E, 2 * intermediate_dim, H, dtype=dtype, device=device) * 0.02
+    down_proj = torch.randn(E, H, intermediate_dim, dtype=dtype, device=device) * 0.02
     # Random top-k routing (uniform distribution)
     logits = torch.randn(T, E, device=device)
     top_k_index = torch.topk(logits, K, dim=-1).indices.to(torch.int32)
@@ -69,33 +70,36 @@ def _make_inputs(T, E, H, I, K, dtype, device, seed=42):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("T, E, K", [
-    (64, 8, 2),
-    (128, 16, 4),
-    (100, 8, 2),   # non-power-of-2 T
-    (256, 32, 8),
-])
+@pytest.mark.parametrize(
+    "T, E, K",
+    [
+        (64, 8, 2),
+        (128, 16, 4),
+        (100, 8, 2),  # non-power-of-2 T
+        (256, 32, 8),
+    ],
+)
 def test_routing_metadata_invariants(T, E, K):
     device = "cuda"
     torch.manual_seed(0)
     logits = torch.randn(T, E, device=device)
     top_k_index = torch.topk(logits, K, dim=-1).indices.to(torch.int32)
 
-    expert_freq, expert_freq_offset, x_gather_idx, s_scatter_idx, s_rev_scatter_idx, _, _ = (
-        compute_routing_metadata(top_k_index, E)
+    expert_freq, expert_freq_offset, x_gather_idx, s_scatter_idx, s_rev_scatter_idx, _, _ = compute_routing_metadata(
+        top_k_index, E
     )
 
     TK = T * K
 
     # Inverse permutation: s_rev[s_scatter[i]] == i
     reconstructed = s_rev_scatter_idx[s_scatter_idx.long()]
-    assert torch.all(reconstructed == torch.arange(TK, device=device, dtype=torch.int32)), \
+    assert torch.all(reconstructed == torch.arange(TK, device=device, dtype=torch.int32)), (
         "s_reverse_scatter_idx is not the inverse of s_scatter_idx"
+    )
 
     # expert_freq_offset[e+1] - expert_freq_offset[e] == expert_frequency[e]
     freq_from_offset = expert_freq_offset[1:] - expert_freq_offset[:-1]
-    assert torch.all(freq_from_offset == expert_freq), \
-        "expert_freq_offset does not match expert_frequency"
+    assert torch.all(freq_from_offset == expert_freq), "expert_freq_offset does not match expert_frequency"
 
     # Total tokens: offset[E] == TK
     assert int(expert_freq_offset[-1]) == TK
@@ -112,22 +116,28 @@ def test_routing_metadata_invariants(T, E, K):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("T, E, H, I, K", [
-    (64, 8, 256, 64, 2),     # baseline
-    (256, 16, 512, 128, 4),  # larger
-    (7, 4, 64, 32, 2),       # T < BLOCK_M_TOKEN=16: tile row-mask is mostly padding
-    (64, 8, 97, 47, 2),      # odd H and I: tail masking fires with every possible autotune BLOCK_N
-    (128, 7, 128, 64, 3),    # prime E: E*ceil(I/BLOCK_M) grid decomposition with non-pow2 E
-    (256, 8, 256, 96, 1),    # K=1: single expert per token, no weighted sum in token aggregation
-    (64, 8, 256, 64, 8),     # K=E: every token hits every expert, maximum routing density
-])
-@pytest.mark.parametrize("dtype, atol, rtol", [
-    (torch.float32, 1e-3, 1e-4),
-    (torch.bfloat16, 1e-1, 1e-2),
-])
-def test_forward_correctness(T, E, H, I, K, dtype, atol, rtol):
+@pytest.mark.parametrize(
+    "T, E, H, intermediate_dim, K",
+    [
+        (64, 8, 256, 64, 2),  # baseline
+        (256, 16, 512, 128, 4),  # larger
+        (7, 4, 64, 32, 2),  # T < BLOCK_M_TOKEN=16: tile row-mask is mostly padding
+        (64, 8, 97, 47, 2),  # odd H and intermediate_dim: tail masking fires with every possible autotune BLOCK_N
+        (128, 7, 128, 64, 3),  # prime E: E*ceil(intermediate_dim/BLOCK_M) grid decomposition with non-pow2 E
+        (256, 8, 256, 96, 1),  # K=1: single expert per token, no weighted sum in token aggregation
+        (64, 8, 256, 64, 8),  # K=E: every token hits every expert, maximum routing density
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-3, 1e-4),
+        (torch.bfloat16, 1e-1, 1e-2),
+    ],
+)
+def test_forward_correctness(T, E, H, intermediate_dim, K, dtype, atol, rtol):
     device = "cuda"
-    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, I, K, dtype, device)
+    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
 
     ref = _reference_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
@@ -143,18 +153,27 @@ def test_forward_correctness(T, E, H, I, K, dtype, atol, rtol):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("T, E, H, I, K", [
-    (32, 8, 64, 32, 2),      # baseline
-    (7, 4, 32, 16, 2),       # T < BLOCK_M_TOKEN: dH_pre tile row-mask mostly padding
-    (32, 8, 97, 47, 2),      # odd H and I: tail masking in dW1, dW2, dX_expanded regardless of autotune config
-    (32, 7, 64, 32, 3),      # prime E: dW kernels grid decomposition with non-pow2 E
-    (32, 8, 64, 32, 1),      # K=1: dx reduction is trivial gather (no weighted sum)
-])
-def test_backward_correctness(T, E, H, I, K):
+@pytest.mark.parametrize(
+    "T, E, H, intermediate_dim, K",
+    [
+        (32, 8, 64, 32, 2),  # baseline
+        (7, 4, 32, 16, 2),  # T < BLOCK_M_TOKEN: dH_pre tile row-mask mostly padding
+        (
+            32,
+            8,
+            97,
+            47,
+            2,
+        ),  # odd H and intermediate_dim: tail masking in dW1, dW2, dX_expanded regardless of autotune config
+        (32, 7, 64, 32, 3),  # prime E: dW kernels grid decomposition with non-pow2 E
+        (32, 8, 64, 32, 1),  # K=1: dx reduction is trivial gather (no weighted sum)
+    ],
+)
+def test_backward_correctness(T, E, H, intermediate_dim, K):
     """Compare gradients of fused kernel vs. reference implementation."""
     device = "cuda"
     dtype = torch.float32
-    x_ref, gup_ref, dn_ref, idx, wts = _make_inputs(T, E, H, I, K, dtype, device)
+    x_ref, gup_ref, dn_ref, idx, wts = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
 
     # Clone inputs and enable gradients for both
     x1 = x_ref.clone().requires_grad_(True)
@@ -183,23 +202,19 @@ def test_backward_correctness(T, E, H, I, K):
         diff = torch.abs(a - b)
         bad = ~torch.isclose(a, b, atol=atol, rtol=rtol)
         bad_count = bad.sum().item()
-        return (
-            f"{name} mismatch: {bad_count}/{bad.numel()} elements, "
-            f"max_diff={diff.max():.4e}"
-            + (f", mean_bad_diff={diff[bad].mean():.4e}" if bad_count > 0 else "")
+        return f"{name} mismatch: {bad_count}/{bad.numel()} elements, max_diff={diff.max():.4e}" + (
+            f", mean_bad_diff={diff[bad].mean():.4e}" if bad_count > 0 else ""
         )
 
-    assert torch.allclose(wts2.grad, wts1.grad, atol=atol, rtol=rtol), (
-        _mismatch_info(wts2.grad, wts1.grad, atol, rtol, "dtopk_weights")
+    assert torch.allclose(wts2.grad, wts1.grad, atol=atol, rtol=rtol), _mismatch_info(
+        wts2.grad, wts1.grad, atol, rtol, "dtopk_weights"
     )
-    assert torch.allclose(dn2.grad, dn1.grad, atol=atol, rtol=rtol), (
-        _mismatch_info(dn2.grad, dn1.grad, atol, rtol, "ddown_proj")
+    assert torch.allclose(dn2.grad, dn1.grad, atol=atol, rtol=rtol), _mismatch_info(
+        dn2.grad, dn1.grad, atol, rtol, "ddown_proj"
     )
-    assert torch.allclose(x2.grad, x1.grad, atol=atol, rtol=rtol), (
-        _mismatch_info(x2.grad, x1.grad, atol, rtol, "dx")
-    )
-    assert torch.allclose(gup2.grad, gup1.grad, atol=atol, rtol=rtol), (
-        _mismatch_info(gup2.grad, gup1.grad, atol, rtol, "dgate_up")
+    assert torch.allclose(x2.grad, x1.grad, atol=atol, rtol=rtol), _mismatch_info(x2.grad, x1.grad, atol, rtol, "dx")
+    assert torch.allclose(gup2.grad, gup1.grad, atol=atol, rtol=rtol), _mismatch_info(
+        gup2.grad, gup1.grad, atol, rtol, "dgate_up"
     )
 
 
@@ -210,14 +225,14 @@ def test_backward_correctness(T, E, H, I, K):
 
 def test_all_tokens_to_one_expert():
     """All tokens route to expert 0; all others empty."""
-    T, E, H, I, K = 32, 8, 64, 32, 2
+    T, E, H, intermediate_dim, K = 32, 8, 64, 32, 2
     device = "cuda"
     dtype = torch.float32
     torch.manual_seed(0)
 
     x = torch.randn(T, H, dtype=dtype, device=device)
-    gate_up_proj = torch.randn(E, 2 * I, H, dtype=dtype, device=device) * 0.02
-    down_proj = torch.randn(E, H, I, dtype=dtype, device=device) * 0.02
+    gate_up_proj = torch.randn(E, 2 * intermediate_dim, H, dtype=dtype, device=device) * 0.02
+    down_proj = torch.randn(E, H, intermediate_dim, dtype=dtype, device=device) * 0.02
     # Force all tokens to expert 0 and 1
     top_k_index = torch.zeros(T, K, dtype=torch.int32, device=device)
     top_k_weights = torch.ones(T, K, dtype=dtype, device=device) / K
@@ -226,17 +241,15 @@ def test_all_tokens_to_one_expert():
     out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     ref = _reference_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
 
-    assert torch.allclose(out, ref, atol=1e-3), (
-        f"all-to-one-expert mismatch: max_diff={torch.abs(out - ref).max():.4e}"
-    )
+    assert torch.allclose(out, ref, atol=1e-3), f"all-to-one-expert mismatch: max_diff={torch.abs(out - ref).max():.4e}"
 
 
 def test_single_token():
     """T=1 edge case."""
-    T, E, H, I, K = 1, 4, 32, 16, 2
+    T, E, H, intermediate_dim, K = 1, 4, 32, 16, 2
     device = "cuda"
     dtype = torch.float32
-    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, I, K, dtype, device)
+    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
     out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     ref = _reference_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     assert torch.allclose(out, ref, atol=1e-3)
@@ -244,12 +257,10 @@ def test_single_token():
 
 def test_K_equals_E():
     """K == E: every token routes to every expert."""
-    T, E, H, I, K = 16, 4, 32, 16, 4
+    T, E, H, intermediate_dim, K = 16, 4, 32, 16, 4
     device = "cuda"
     dtype = torch.float32
-    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, I, K, dtype, device)
+    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
     out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     ref = _reference_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     assert torch.allclose(out, ref, atol=1e-3)
-
-

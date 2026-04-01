@@ -11,7 +11,6 @@
 import triton
 import triton.language as tl
 
-
 # ---------------------------------------------------------------------------
 # Routing metadata overview
 #
@@ -67,7 +66,7 @@ def _keyed_add(x, y):
 @triton.jit
 def _moe_router_histogram_kernel(
     topk_indices_ptr,  # (T, K) int32
-    partial_sum_ptr,   # (E, n_tiles) int32 — output; partial_sum[e, tile] = count
+    partial_sum_ptr,  # (E, n_tiles) int32 — output; partial_sum[e, tile] = count
     T,
     E: tl.constexpr,
     n_tiles,
@@ -128,13 +127,13 @@ def _moe_router_histogram_kernel(
 
 @triton.jit
 def _moe_router_prefix_sum_kernel(
-    expert_freq_ptr,          # (E,) int32 — total tokens assigned to each expert
-    expert_freq_offs_ptr,     # (E+1,) int32 — output: exclusive cumsum of expert_frequency
-    expert_tile_offset_ptr,   # (E+1,) int32 — output: exclusive cumsum of ceil(freq/BLOCK_M_TOKEN)
+    expert_freq_ptr,  # (E,) int32 — total tokens assigned to each expert
+    expert_freq_offs_ptr,  # (E+1,) int32 — output: exclusive cumsum of expert_frequency
+    expert_tile_offset_ptr,  # (E+1,) int32 — output: exclusive cumsum of ceil(freq/BLOCK_M_TOKEN)
     E: tl.constexpr,
-    partial_sum_ptr,          # (E, n_tiles) int32 — in-place: raw tile counts → tile prefix sums
+    partial_sum_ptr,  # (E, n_tiles) int32 — in-place: raw tile counts → tile prefix sums
     n_tiles,
-    TK,                       # T * K, written as sentinel into expert_freq_offs[E]
+    TK,  # T * K, written as sentinel into expert_freq_offs[E]
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_M_TOKEN: tl.constexpr,
@@ -207,17 +206,17 @@ def _moe_router_prefix_sum_kernel(
 
 @triton.jit
 def _moe_router_scatter_kernel(
-    s_scatter_idx_ptr,          # (TK,) int32 — output: sorted_pos → flat (t,k) index
+    s_scatter_idx_ptr,  # (TK,) int32 — output: sorted_pos → flat (t,k) index
     s_reverse_scatter_idx_ptr,  # (TK,) int32 — output: flat (t,k) → sorted_pos
-    x_gather_idx_ptr,           # (TK,) int32 — output: sorted_pos → token index t
-    tile_row_start_ptr,         # (num_m_tiles,) int32 — output: absolute row_start per M-tile
-    tile_expert_ptr,            # (num_m_tiles,) int32 — output: expert index per M-tile
-    topk_indices_ptr,           # (T, K) int32
+    x_gather_idx_ptr,  # (TK,) int32 — output: sorted_pos → token index t
+    tile_row_start_ptr,  # (num_m_tiles,) int32 — output: absolute row_start per M-tile
+    tile_expert_ptr,  # (num_m_tiles,) int32 — output: expert index per M-tile
+    topk_indices_ptr,  # (T, K) int32
     T,
-    partial_sum_ptr,            # (E, n_tiles) int32 — tile prefix sums from K2 (read-only here)
+    partial_sum_ptr,  # (E, n_tiles) int32 — tile prefix sums from K2 (read-only here)
     n_tiles,
-    expert_offs_ptr,            # (E,) int32 — expert_start_idx[0:E] from K2
-    expert_tile_offset_ptr,     # (E,) int32 — expert_tile_offset[0:E] from K2
+    expert_offs_ptr,  # (E,) int32 — expert_start_idx[0:E] from K2
+    expert_tile_offset_ptr,  # (E,) int32 — expert_tile_offset[0:E] from K2
     K_POW2: tl.constexpr,
     K: tl.constexpr,
     TOKENS_PER_BLOCK: tl.constexpr,
@@ -333,14 +332,14 @@ def _get_gemm_autotune_configs():
 )
 @triton.jit
 def _fused_up_proj_swiglu_kernel(
-    x_ptr,              # (T, H)
-    gate_up_proj_ptr,   # (E, 2*I, H)
-    x_gather_idx_ptr,   # (TK,) int32
-    expert_start_ptr,   # (E+1,) int32
-    tile_row_start_ptr, # (num_m_tiles,) int32 — row_start per M-tile
-    tile_expert_ptr,    # (num_m_tiles,) int32 — expert index per M-tile
-    pre_act_ptr,        # (TK, 2*I)  pre-SwiGLU activations [saved for backward]
-    post_act_ptr,       # (TK, I)    post-SwiGLU activations
+    x_ptr,  # (T, H)
+    gate_up_proj_ptr,  # (E, 2*I, H)
+    x_gather_idx_ptr,  # (TK,) int32
+    expert_start_ptr,  # (E+1,) int32
+    tile_row_start_ptr,  # (num_m_tiles,) int32 — row_start per M-tile
+    tile_expert_ptr,  # (num_m_tiles,) int32 — expert index per M-tile
+    pre_act_ptr,  # (TK, 2*I)  pre-SwiGLU activations [saved for backward]
+    post_act_ptr,  # (TK, I)    post-SwiGLU activations
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_x_T,
@@ -394,10 +393,7 @@ def _fused_up_proj_swiglu_kernel(
 
         w_mask = n_mask[:, None] & k_mask[None, :]
         w_gate_ptrs = (
-            gate_up_proj_ptr
-            + expert_idx * stride_w_E
-            + n_idx[:, None] * stride_w_N
-            + k_idx[None, :] * stride_w_K
+            gate_up_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_N + k_idx[None, :] * stride_w_K
         )
         w_gate = tl.load(
             w_gate_ptrs,
@@ -417,11 +413,7 @@ def _fused_up_proj_swiglu_kernel(
 
     out_mask = row_mask[:, None] & n_mask[None, :]
 
-    pre_gate_ptrs = (
-        pre_act_ptr
-        + row_offs[:, None] * stride_pre_TK
-        + n_idx[None, :] * stride_pre_N
-    )
+    pre_gate_ptrs = pre_act_ptr + row_offs[:, None] * stride_pre_TK + n_idx[None, :] * stride_pre_N
     pre_up_ptrs = pre_gate_ptrs + I_dim * stride_pre_N
     tl.store(pre_gate_ptrs, acc_gate.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
     tl.store(pre_up_ptrs, acc_up.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
@@ -430,11 +422,7 @@ def _fused_up_proj_swiglu_kernel(
     silu_gate = acc_gate * sig_gate
     a_out = silu_gate * acc_up
 
-    post_ptrs = (
-        post_act_ptr
-        + row_offs[:, None] * stride_post_TK
-        + n_idx[None, :] * stride_post_N
-    )
+    post_ptrs = post_act_ptr + row_offs[:, None] * stride_post_TK + n_idx[None, :] * stride_post_N
     tl.store(post_ptrs, a_out.to(post_act_ptr.dtype.element_ty), mask=out_mask)
 
 
@@ -450,12 +438,12 @@ def _fused_up_proj_swiglu_kernel(
 )
 @triton.jit
 def _fused_down_proj_kernel(
-    post_act_ptr,       # (TK, I)
-    down_proj_ptr,      # (E, H, I)
-    expert_start_ptr,   # (E+1,) int32
-    tile_row_start_ptr, # (num_m_tiles,) int32
-    tile_expert_ptr,    # (num_m_tiles,) int32
-    Y_ptr,              # (TK, H)
+    post_act_ptr,  # (TK, I)
+    down_proj_ptr,  # (E, H, I)
+    expert_start_ptr,  # (E+1,) int32
+    tile_row_start_ptr,  # (num_m_tiles,) int32
+    tile_expert_ptr,  # (num_m_tiles,) int32
+    Y_ptr,  # (TK, H)
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_post_TK,
@@ -498,12 +486,7 @@ def _fused_down_proj_kernel(
         # Keep bf16 for dot operands → tensor cores. acc stays fp32.
         a_tile = tl.load(a_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
-        w_ptrs = (
-            down_proj_ptr
-            + expert_idx * stride_w_E
-            + n_idx[:, None] * stride_w_H
-            + k_idx[None, :] * stride_w_I
-        )
+        w_ptrs = down_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_H + k_idx[None, :] * stride_w_I
         w_tile = tl.load(
             w_ptrs,
             mask=n_mask[:, None] & k_mask[None, :],
@@ -528,9 +511,7 @@ def _get_token_gather_autotune_configs():
         for bk in [1, 2, 4, 8, 16]:
             for nw in [4, 8]:
                 if bk * bh <= 32768:
-                    configs.append(
-                        triton.Config({"BLOCK_H": bh, "BLOCK_K": bk}, num_warps=nw, num_stages=4)
-                    )
+                    configs.append(triton.Config({"BLOCK_H": bh, "BLOCK_K": bk}, num_warps=nw, num_stages=4))
     return configs
 
 
@@ -540,10 +521,10 @@ def _get_token_gather_autotune_configs():
 )
 @triton.jit
 def _token_gather_weighted_sum_kernel(
-    Y_ptr,              # (TK, H)
-    w_ptr,              # (TK,) routing weights, or None when w_is_None=True
-    s_rev_ptr,          # (TK,) int32 s_reverse_scatter_idx: flat(t,k) → sorted position
-    out_ptr,            # (T, H)
+    Y_ptr,  # (TK, H)
+    w_ptr,  # (TK,) routing weights, or None when w_is_None=True
+    s_rev_ptr,  # (TK,) int32 s_reverse_scatter_idx: flat(t,k) → sorted position
+    out_ptr,  # (T, H)
     H_dim: tl.constexpr,
     K_dim: tl.constexpr,
     stride_Y_TK,
@@ -552,7 +533,7 @@ def _token_gather_weighted_sum_kernel(
     stride_out_H: tl.constexpr,
     BLOCK_H: tl.constexpr,
     BLOCK_K: tl.constexpr,
-    w_is_None: tl.constexpr,    # True → unweighted gather-sum (used for dx backward)
+    w_is_None: tl.constexpr,  # True → unweighted gather-sum (used for dx backward)
 ):
     """One CTA per token. Gathers K expert outputs, reduces with routing weights
     (forward) or without weights (backward dx via _token_broadcast_backward)."""
@@ -595,18 +576,18 @@ def _token_gather_weighted_sum_kernel(
 )
 @triton.jit
 def _moe_bwd_down_proj_kernel(
-    dO_ptr,              # (T, H)   — ∂L/∂O, upstream gradient
-    x_gather_idx_ptr,    # (TK,)    — σ_x: sorted_pos → original token index
-    s_scatter_idx_ptr,   # (TK,)    — σ_s: sorted_pos → flat (t,k) index
-    topk_weights_ptr,    # (TK,)    — s_k: routing weights in flat (t,k) order
-    down_proj_ptr,       # (E, H, I) — W2
-    pre_act_ptr,         # (TK, 2I) — z = [gate, up] saved from forward
-    expert_start_ptr,    # (E+1,)   int32
+    dO_ptr,  # (T, H)   — ∂L/∂O, upstream gradient
+    x_gather_idx_ptr,  # (TK,)    — σ_x: sorted_pos → original token index
+    s_scatter_idx_ptr,  # (TK,)    — σ_s: sorted_pos → flat (t,k) index
+    topk_weights_ptr,  # (TK,)    — s_k: routing weights in flat (t,k) order
+    down_proj_ptr,  # (E, H, I) — W2
+    pre_act_ptr,  # (TK, 2I) — z = [gate, up] saved from forward
+    expert_start_ptr,  # (E+1,)   int32
     tile_row_start_ptr,  # (num_m_tiles,) int32
-    tile_expert_ptr,     # (num_m_tiles,) int32
-    d_pre_act_ptr,       # (TK, 2I) — output: ∂L/∂z = [dgate, dup]
-    weighted_act_ptr,    # (TK, I)  — output: s_k * y1 (for dW2 kernel)
-    dS_ptr,              # (TK,)    — output: ∂L/∂s_k, indexed by flat (t,k)
+    tile_expert_ptr,  # (num_m_tiles,) int32
+    d_pre_act_ptr,  # (TK, 2I) — output: ∂L/∂z = [dgate, dup]
+    weighted_act_ptr,  # (TK, I)  — output: s_k * y1 (for dW2 kernel)
+    dS_ptr,  # (TK,)    — output: ∂L/∂s_k, indexed by flat (t,k)
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_dO_T,
@@ -659,12 +640,7 @@ def _moe_bwd_down_proj_kernel(
         dO_ptrs = dO_ptr + token_idx[:, None] * stride_dO_T + k_idx[None, :] * stride_dO_H
         dO_tile = tl.load(dO_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
-        w_ptrs = (
-            down_proj_ptr
-            + expert_idx * stride_w_E
-            + k_idx[:, None] * stride_w_H
-            + n_idx[None, :] * stride_w_I
-        )
+        w_ptrs = down_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_H + n_idx[None, :] * stride_w_I
         w_tile = tl.load(w_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
         acc = tl.dot(dO_tile, w_tile, acc=acc)
 
@@ -717,11 +693,11 @@ def _moe_bwd_down_proj_kernel(
 )
 @triton.jit
 def _moe_bwd_dW2_kernel(
-    weighted_act_ptr,    # (TK, I) — s_k * y1 from backward down-proj kernel
-    dout_ptr,            # (T, H)  — upstream gradient (gathered by x_gather_idx)
-    x_gather_idx_ptr,    # (TK,)   — sorted_pos → original token index
-    expert_start_ptr,    # (E+1,)  int32
-    dW2_ptr,             # (E, H, I) — output, atomic add
+    weighted_act_ptr,  # (TK, I) — s_k * y1 from backward down-proj kernel
+    dout_ptr,  # (T, H)  — upstream gradient (gathered by x_gather_idx)
+    x_gather_idx_ptr,  # (TK,)   — sorted_pos → original token index
+    expert_start_ptr,  # (E+1,)  int32
+    dW2_ptr,  # (E, H, I) — output, atomic add
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_wact_TK,
@@ -778,12 +754,7 @@ def _moe_bwd_dW2_kernel(
 
         acc = tl.dot(wact_tile, dout_tile, acc=acc)
 
-    dW2_ptrs = (
-        dW2_ptr
-        + expert_idx * stride_dW2_E
-        + h_idx[None, :] * stride_dW2_H
-        + i_idx[:, None] * stride_dW2_I
-    )
+    dW2_ptrs = dW2_ptr + expert_idx * stride_dW2_E + h_idx[None, :] * stride_dW2_H + i_idx[:, None] * stride_dW2_I
     tl.atomic_add(dW2_ptrs, acc.to(dW2_ptr.dtype.element_ty), mask=i_mask[:, None] & h_mask[None, :])
 
 
@@ -799,12 +770,12 @@ def _moe_bwd_dW2_kernel(
 )
 @triton.jit
 def _moe_bwd_dX_expanded_kernel(
-    d_pre_act_ptr,       # (TK, 2*I)
-    gate_up_proj_ptr,    # (E, 2*I, H) — W1
-    expert_start_ptr,    # (E+1,) int32
+    d_pre_act_ptr,  # (TK, 2*I)
+    gate_up_proj_ptr,  # (E, 2*I, H) — W1
+    expert_start_ptr,  # (E+1,) int32
     tile_row_start_ptr,  # (num_m_tiles,) int32
-    tile_expert_ptr,     # (num_m_tiles,) int32
-    dx_expanded_ptr,     # (TK, H) — output: clean write, indexed by sorted_pos
+    tile_expert_ptr,  # (num_m_tiles,) int32
+    dx_expanded_ptr,  # (TK, H) — output: clean write, indexed by sorted_pos
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_d_pre_TK,
@@ -848,10 +819,7 @@ def _moe_bwd_dX_expanded_kernel(
         d_gate = tl.load(d_gate_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
         w_gate_ptrs = (
-            gate_up_proj_ptr
-            + expert_idx * stride_w_E
-            + k_idx[:, None] * stride_w_N
-            + h_idx[None, :] * stride_w_K
+            gate_up_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_N + h_idx[None, :] * stride_w_K
         )
         w_gate = tl.load(w_gate_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
         acc = tl.dot(d_gate, w_gate, acc=acc)
@@ -892,11 +860,11 @@ def _moe_bwd_dX_expanded_kernel(
 )
 @triton.jit
 def _moe_bwd_dW1_kernel(
-    x_ptr,               # (T, H)
-    d_pre_act_ptr,       # (TK, 2*I)
-    x_gather_idx_ptr,    # (TK,) int32
-    expert_start_ptr,    # (E+1,) int32
-    dW1_ptr,             # (E, 2*I, H) — output, atomic add
+    x_ptr,  # (T, H)
+    d_pre_act_ptr,  # (TK, 2*I)
+    x_gather_idx_ptr,  # (TK,) int32
+    expert_start_ptr,  # (E+1,) int32
+    dW1_ptr,  # (E, 2*I, H) — output, atomic add
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_x_T,
@@ -953,10 +921,5 @@ def _moe_bwd_dW1_kernel(
 
         acc = tl.dot(tl.trans(d_pre_tile), x_tile, acc=acc)
 
-    dW1_ptrs = (
-        dW1_ptr
-        + expert_idx * stride_dW1_E
-        + n_idx[:, None] * stride_dW1_N
-        + h_idx[None, :] * stride_dW1_H
-    )
+    dW1_ptrs = dW1_ptr + expert_idx * stride_dW1_E + n_idx[:, None] * stride_dW1_N + h_idx[None, :] * stride_dW1_H
     tl.atomic_add(dW1_ptrs, acc.to(dW1_ptr.dtype.element_ty), mask=n_mask[:, None] & h_mask[None, :])

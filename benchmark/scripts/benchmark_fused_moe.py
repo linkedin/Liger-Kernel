@@ -20,22 +20,22 @@ Two modes:
 
 import argparse
 import math
+
 from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 
 from benchmark_model_configs import estimate_kernel_peak_memory
-from utils import (
-    SingleBenchmarkRunInput,
-    SingleBenchmarkRunOutput,
-    run_benchmarks,
-    run_memory_benchmark,
-    run_speed_benchmark,
-)
+from utils import SingleBenchmarkRunInput
+from utils import SingleBenchmarkRunOutput
+from utils import run_benchmarks
+from utils import run_memory_benchmark
+from utils import run_speed_benchmark
 
 from liger_kernel.ops.fused_moe import LigerFusedMoEFunction
-from liger_kernel.utils import get_total_gpu_memory, infer_device
+from liger_kernel.utils import get_total_gpu_memory
+from liger_kernel.utils import infer_device
 
 device = infer_device()
 
@@ -74,30 +74,30 @@ def _huggingface_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weig
 
 @dataclass
 class MoEBenchConfig:
-    T: int    # tokens per GPU (EP-adjusted)
-    E: int    # experts per GPU (EP-adjusted)
-    H: int    # hidden size
-    I: int    # expert intermediate size
-    K: int    # top-k
+    T: int  # tokens per GPU (EP-adjusted)
+    E: int  # experts per GPU (EP-adjusted)
+    H: int  # hidden size
+    intermediate_dim: int  # expert intermediate size
+    K: int  # top-k
 
 
 MOE_MODEL_CONFIGS = {
     # Mixtral 8x7B — EP=1 and EP=4
-    "mixtral-8x7b":        MoEBenchConfig(T=2048, E=8,   H=4096, I=14336, K=2),
-    "mixtral-8x7b-ep4":    MoEBenchConfig(T=512,  E=2,   H=4096, I=14336, K=2),
+    "mixtral-8x7b": MoEBenchConfig(T=2048, E=8, H=4096, intermediate_dim=14336, K=2),
+    "mixtral-8x7b-ep4": MoEBenchConfig(T=512, E=2, H=4096, intermediate_dim=14336, K=2),
     # Mixtral 8x22B — EP=1 and EP=4
-    "mixtral-8x22b":       MoEBenchConfig(T=2048, E=8,   H=6144, I=16384, K=2),
-    "mixtral-8x22b-ep4":   MoEBenchConfig(T=512,  E=2,   H=6144, I=16384, K=2),
+    "mixtral-8x22b": MoEBenchConfig(T=2048, E=8, H=6144, intermediate_dim=16384, K=2),
+    "mixtral-8x22b-ep4": MoEBenchConfig(T=512, E=2, H=6144, intermediate_dim=16384, K=2),
     # Qwen3-MoE-30B — EP=1 and EP=8 and EP=16
-    "qwen3-moe-30b":       MoEBenchConfig(T=8192, E=128, H=2048, I=768,   K=8),
-    "qwen3-moe-30b-ep8":   MoEBenchConfig(T=1024, E=16,  H=2048, I=768,   K=8),
-    "qwen3-moe-30b-ep16":  MoEBenchConfig(T=512,  E=8,   H=2048, I=768,   K=8),
+    "qwen3-moe-30b": MoEBenchConfig(T=8192, E=128, H=2048, intermediate_dim=768, K=8),
+    "qwen3-moe-30b-ep8": MoEBenchConfig(T=1024, E=16, H=2048, intermediate_dim=768, K=8),
+    "qwen3-moe-30b-ep16": MoEBenchConfig(T=512, E=8, H=2048, intermediate_dim=768, K=8),
     # Qwen3-MoE-235B — EP=16 and EP=32
-    "qwen3-moe-235b-ep16": MoEBenchConfig(T=256,  E=8,   H=7168, I=2560,  K=8),
-    "qwen3-moe-235b-ep32": MoEBenchConfig(T=128,  E=4,   H=7168, I=2560,  K=8),
+    "qwen3-moe-235b-ep16": MoEBenchConfig(T=256, E=8, H=7168, intermediate_dim=2560, K=8),
+    "qwen3-moe-235b-ep32": MoEBenchConfig(T=128, E=4, H=7168, intermediate_dim=2560, K=8),
     # DeepSeek-V3/R1 — EP=32 and EP=64
-    "deepseek-v3-ep32":    MoEBenchConfig(T=128,  E=8,   H=7168, I=2048,  K=8),
-    "deepseek-v3-ep64":    MoEBenchConfig(T=64,   E=4,   H=7168, I=2048,  K=8),
+    "deepseek-v3-ep32": MoEBenchConfig(T=128, E=8, H=7168, intermediate_dim=2048, K=8),
+    "deepseek-v3-ep64": MoEBenchConfig(T=64, E=4, H=7168, intermediate_dim=2048, K=8),
 }
 
 DEFAULT_MOE_MODEL = "qwen3-moe-30b"
@@ -111,21 +111,17 @@ EXPERT_SWEEP_VALUES = [8, 16, 32, 64, 128]
 # ---------------------------------------------------------------------------
 
 
-def _make_moe_inputs(T, E, H, I, K, dtype, requires_grad=True):
+def _make_moe_inputs(T, E, H, intermediate_dim, K, dtype, requires_grad=True):
     torch.manual_seed(42)
     x = torch.randn(T, H, dtype=dtype, device=device, requires_grad=requires_grad)
     gate_up_proj = (
-        torch.randn(E, 2 * I, H, dtype=dtype, device=device, requires_grad=requires_grad) * 0.02
+        torch.randn(E, 2 * intermediate_dim, H, dtype=dtype, device=device, requires_grad=requires_grad) * 0.02
     )
-    down_proj = (
-        torch.randn(E, H, I, dtype=dtype, device=device, requires_grad=requires_grad) * 0.02
-    )
+    down_proj = torch.randn(E, H, intermediate_dim, dtype=dtype, device=device, requires_grad=requires_grad) * 0.02
     logits = torch.randn(T, E, device=device)
     top_k_index = torch.topk(logits, K, dim=-1).indices.to(torch.int32)
     top_k_weights = (
-        torch.softmax(torch.gather(logits, 1, top_k_index.long()), dim=-1)
-        .to(dtype)
-        .requires_grad_(requires_grad)
+        torch.softmax(torch.gather(logits, 1, top_k_index.long()), dim=-1).to(dtype).requires_grad_(requires_grad)
     )
     return x, gate_up_proj, down_proj, top_k_index, top_k_weights
 
@@ -141,21 +137,23 @@ def _setup_fused_moe(input: SingleBenchmarkRunInput):
     extra_benchmark_config keys:
         sweep_dim : "T" or "E" — which dim input.x varies
         T, E      : fixed values for the dimension not being swept (None when swept)
-        H, I, K   : model dimensions
+        H, intermediate_dim, K   : model dimensions
         dtype     : torch.dtype
     """
     cfg = input.extra_benchmark_config
     T = int(input.x) if cfg["sweep_dim"] == "T" else cfg["T"]
     E = int(input.x) if cfg["sweep_dim"] == "E" else cfg["E"]
-    H, I, K = cfg["H"], cfg["I"], cfg["K"]
+    H, intermediate_dim, K = cfg["H"], cfg["intermediate_dim"], cfg["K"]
     dtype = cfg["dtype"]
 
-    x, gup, dn, idx, wts = _make_moe_inputs(T, E, H, I, K, dtype, requires_grad=True)
+    x, gup, dn, idx, wts = _make_moe_inputs(T, E, H, intermediate_dim, K, dtype, requires_grad=True)
 
     if input.kernel_provider == "liger":
+
         def fwd_fn():
             return LigerFusedMoEFunction.apply(x, gup, dn, idx, wts)
     elif input.kernel_provider == "huggingface":
+
         def fwd_fn():
             return _huggingface_moe_forward(x, gup, dn, idx, wts)
     else:
@@ -179,11 +177,11 @@ def bench_memory_fused_moe(input: SingleBenchmarkRunInput) -> SingleBenchmarkRun
 # ---------------------------------------------------------------------------
 
 
-def _warmup_liger(T, E, H, I, K, dtype, sweep_dim):
-    """Run one full fwd+bwd to exhaust Triton autotune for (H, I).
+def _warmup_liger(T, E, H, intermediate_dim, K, dtype, sweep_dim):
+    """Run one full fwd+bwd to exhaust Triton autotune for (H, intermediate_dim).
 
     Triton autotune key is (H_dim, I_dim), so a single call is sufficient to
-    cache the best config for all subsequent calls with the same H and I.
+    cache the best config for all subsequent calls with the same H and intermediate_dim.
     For the num_experts sweep we also call this once per E value to warm up
     CUDA caches for each expert count before do_bench starts timing.
     """
@@ -195,7 +193,7 @@ def _warmup_liger(T, E, H, I, K, dtype, sweep_dim):
             "T": T,
             "E": E,
             "H": H,
-            "I": I,
+            "intermediate_dim": intermediate_dim,
             "K": K,
             "dtype": dtype,
         },
@@ -217,19 +215,21 @@ def _run_model_preset_benchmark(preset_name: str):
     dtype = torch.bfloat16
 
     print(f"\n=== Model preset: {preset_name} ===")
-    print(f"T={cfg.T}  E={cfg.E}  H={cfg.H}  I={cfg.I}  K={cfg.K}  dtype=bfloat16")
+    print(f"T={cfg.T}  E={cfg.E}  H={cfg.H}  intermediate_dim={cfg.intermediate_dim}  K={cfg.K}  dtype=bfloat16")
     print(f"{'provider':<14} {'mode':<10} {'ms (p50)':>9} {'ms (p20)':>9} {'ms (p80)':>9} {'mem_mb':>8}")
     print("-" * 65)
 
     for provider in ["liger", "huggingface"]:
         for mode in ["forward", "backward", "full"]:
             x, gup, dn, idx, wts = _make_moe_inputs(
-                cfg.T, cfg.E, cfg.H, cfg.I, cfg.K, dtype, requires_grad=True
+                cfg.T, cfg.E, cfg.H, cfg.intermediate_dim, cfg.K, dtype, requires_grad=True
             )
             if provider == "liger":
+
                 def fwd_fn():
                     return LigerFusedMoEFunction.apply(x, gup, dn, idx, wts)
             else:
+
                 def fwd_fn():
                     return _huggingface_moe_forward(x, gup, dn, idx, wts)
 
@@ -238,10 +238,7 @@ def _run_model_preset_benchmark(preset_name: str):
             mem = run_memory_benchmark(fwd_fn, mode)
 
             mem_str = f"{mem.y_50:>8.1f}"
-            print(
-                f"{provider:<14} {mode:<10} "
-                f"{speed.y_50:>9.3f} {speed.y_20:>9.3f} {speed.y_80:>9.3f} {mem_str}"
-            )
+            print(f"{provider:<14} {mode:<10} {speed.y_50:>9.3f} {speed.y_20:>9.3f} {speed.y_80:>9.3f} {mem_str}")
         print()
 
 
@@ -264,7 +261,7 @@ if __name__ == "__main__":
         choices=list(MOE_MODEL_CONFIGS.keys()),
         help=(
             f"MoE model config for framework-mode sweep (default: {DEFAULT_MOE_MODEL} = Qwen3-MoE-30B). "
-            "Overrides all MoE params: E, H, I, K, and base token count T."
+            "Overrides all MoE params: E, H, intermediate_dim, K, and base token count T."
         ),
     )
     parser.add_argument(
@@ -288,17 +285,17 @@ if __name__ == "__main__":
     else:
         # Standard framework-integrated mode.
         # All MoE parameters are derived from the selected model config so that
-        # --model deepseek-v3-ep32 correctly overrides E, H, I, K, and T.
+        # --model deepseek-v3-ep32 correctly overrides E, H, intermediate_dim, K, and T.
         moe_cfg = MOE_MODEL_CONFIGS[args.model]
         E = moe_cfg.E
         H = moe_cfg.H
-        I = moe_cfg.I
+        intermediate_dim = moe_cfg.intermediate_dim
         K = moe_cfg.K
-        probe_T = moe_cfg.T       # representative token count for probing and warmup
+        probe_T = moe_cfg.T  # representative token count for probing and warmup
         dtype = torch.bfloat16
 
         print(
-            f"Model: {args.model} — E={E}, H={H}, I={I}, K={K}, "
+            f"Model: {args.model} — E={E}, H={H}, intermediate_dim={intermediate_dim}, K={K}, "
             f"T_base={probe_T}, dtype={dtype}"
         )
 
@@ -312,7 +309,7 @@ if __name__ == "__main__":
                     "T": None,
                     "E": E,
                     "H": H,
-                    "I": I,
+                    "intermediate_dim": intermediate_dim,
                     "K": K,
                     "dtype": dtype,
                 },
@@ -325,20 +322,20 @@ if __name__ == "__main__":
 
         # Pre-warm Liger's Triton autotune before benchmarks start.
         #
-        # Autotune key is (H_dim, I_dim) — one warmup per (H, I) pair is sufficient
+        # Autotune key is (H_dim, I_dim) — one warmup per (H, intermediate_dim) pair is sufficient
         # to cache the best config for the entire sweep.
         #
         # For num_tokens sweep: one pass with the model's base T is enough.
         # For num_experts sweep: one pass per E value in EXPERT_SWEEP_VALUES to also
         #   warm up CUDA caches for each expert count, since weight tensor sizes differ.
-        print(f"Pre-warming Liger autotune (H={H}, I={I})...")
+        print(f"Pre-warming Liger autotune (H={H}, intermediate_dim={intermediate_dim})...")
 
         if args.sweep_dim == "num_tokens":
-            _warmup_liger(probe_T, E, H, I, K, dtype, sweep_dim="T")
+            _warmup_liger(probe_T, E, H, intermediate_dim, K, dtype, sweep_dim="T")
         else:  # num_experts
             for e_val in EXPERT_SWEEP_VALUES:
                 print(f"  warmup E={e_val}...")
-                _warmup_liger(probe_T, e_val, H, I, K, dtype, sweep_dim="E")
+                _warmup_liger(probe_T, e_val, H, intermediate_dim, K, dtype, sweep_dim="E")
 
         torch.cuda.synchronize()
         print("Autotune warmup complete.\n")
@@ -354,10 +351,10 @@ if __name__ == "__main__":
             extra_configs = [
                 {
                     "sweep_dim": "T",
-                    "T": None,   # varied by framework
+                    "T": None,  # varied by framework
                     "E": E,
                     "H": H,
-                    "I": I,
+                    "intermediate_dim": intermediate_dim,
                     "K": K,
                     "dtype": dtype,
                 }
@@ -369,9 +366,9 @@ if __name__ == "__main__":
                 {
                     "sweep_dim": "E",
                     "T": probe_T,  # fixed at model's base token count
-                    "E": None,     # varied by framework
+                    "E": None,  # varied by framework
                     "H": H,
-                    "I": I,
+                    "intermediate_dim": intermediate_dim,
                     "K": K,
                     "dtype": dtype,
                 }

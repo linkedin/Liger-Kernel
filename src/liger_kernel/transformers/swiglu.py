@@ -73,9 +73,7 @@ class LigerExperts(nn.Module):
         top_k_index_2d = top_k_index.view(-1, top_k_index.shape[-1]).to(torch.int32)
         top_k_weights_2d = top_k_weights.view(-1, top_k_weights.shape[-1])
 
-        out = LigerFusedMoEFunction.apply(
-            x, self.gate_up_proj, self.down_proj, top_k_index_2d, top_k_weights_2d
-        )
+        out = LigerFusedMoEFunction.apply(x, self.gate_up_proj, self.down_proj, top_k_index_2d, top_k_weights_2d)
         return out.view(orig_shape)
 
 
