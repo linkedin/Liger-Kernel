@@ -1,6 +1,13 @@
+import math
+
 import torch
 import triton
 
+from benchmark_model_configs import MODEL_REGISTRY
+from benchmark_model_configs import compute_model_config_sweep_config
+from benchmark_model_configs import compute_seq_len_sweep_config
+from benchmark_model_configs import estimate_kernel_peak_memory
+from benchmark_model_configs import get_benchmark_model_config
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
@@ -9,7 +16,6 @@ from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
 from liger_kernel.transformers.jsd import LigerJSD
-from liger_kernel.utils import get_total_gpu_memory
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -53,105 +59,223 @@ class TorchJSD(torch.nn.Module):
         return loss.to(self.dtype)
 
 
-def bench_speed_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    V = input.x
-    B, T = input.extra_benchmark_config["B"], input.extra_benchmark_config["T"]
-    torch_jsd = TorchJSD()
-    liger_jsd = LigerJSD()
+def _setup_jsd(input: SingleBenchmarkRunInput):
+    """Create input tensors and JSD loss from benchmark config."""
+    cfg = input.extra_benchmark_config
+    V = cfg["vocab_size"]
+    BT = input.x
+    _input = torch.randn(BT, V, requires_grad=True, device=device).log_softmax(dim=-1)
+    target = torch.randn(BT, V, device=device).log_softmax(dim=-1)
 
-    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(dim=-1)
-    target = torch.randn(B * T, V, device=device).log_softmax(dim=-1)
+    if input.kernel_provider == "liger":
+        loss_fn = LigerJSD()
+    elif input.kernel_provider == "torch":
+        loss_fn = TorchJSD()
+    else:
+        raise ValueError(f"Invalid provider: {input.kernel_provider} for JSD")
+    return _input, target, loss_fn
+
+
+def bench_speed_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    _input, target, loss_fn = _setup_jsd(input)
+    mode = input.kernel_operation_mode
 
     def fwd():
-        if input.kernel_provider == "liger":
-            return liger_jsd(_input, target)
-        else:
-            return torch_jsd(_input, target)
+        return loss_fn(_input, target)
 
-    if input.kernel_operation_mode == "forward":
+    if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
-    elif input.kernel_operation_mode == "backward":
+    elif mode == "backward":
         y = fwd()
-
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True),
             quantiles=QUANTILES,
             grad_to_none=[_input],
             rep=100,
         )
-    elif input.kernel_operation_mode == "full":
+    elif mode == "full":
 
         def full():
             y = fwd()
             y.backward(retain_graph=True)
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
-    return SingleBenchmarkRunOutput(
-        y_20=ms_20,
-        y_50=ms_50,
-        y_80=ms_80,
-    )
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
+    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
 
 
 def bench_memory_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    torch_jsd = TorchJSD()
-    liger_jsd = LigerJSD()
-
-    V = input.x
-    B, T = input.extra_benchmark_config["B"], input.extra_benchmark_config["T"]
-
-    _input = torch.randn(B * T, V, requires_grad=True, device=device).log_softmax(dim=-1)
-    target = torch.randn(B * T, V, device=device).log_softmax(dim=-1)
-
-    def fwd():
-        if input.kernel_provider == "liger":
-            return liger_jsd(_input, target)
-        else:
-            return torch_jsd(_input, target)
+    _input, target, loss_fn = _setup_jsd(input)
 
     def full():
-        y = fwd()
+        y = loss_fn(_input, target)
         y.backward(retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
+    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
 
-    return SingleBenchmarkRunOutput(
-        y_20=mem_20,
-        y_50=mem_50,
-        y_80=mem_80,
+
+def _resolve_model_config_jsd(input: SingleBenchmarkRunInput):
+    """Resolve model-config-sweep input into standard setup args."""
+    cfg = input.extra_benchmark_config
+    model_info = cfg["model_configs"][input.x]
+    return _setup_jsd(
+        SingleBenchmarkRunInput(
+            x=cfg["BT"],
+            kernel_provider=input.kernel_provider,
+            extra_benchmark_config={
+                "vocab_size": model_info["vocab_size"],
+            },
+        )
     )
+
+
+def bench_speed_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    _input, target, loss_fn = _resolve_model_config_jsd(input)
+    mode = input.kernel_operation_mode
+
+    def fwd():
+        return loss_fn(_input, target)
+
+    if mode == "forward":
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
+    elif mode == "backward":
+        y = fwd()
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            lambda: y.backward(retain_graph=True),
+            quantiles=QUANTILES,
+            grad_to_none=[_input],
+            rep=100,
+        )
+    elif mode == "full":
+
+        def full():
+            y = fwd()
+            y.backward(retain_graph=True)
+
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
+    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+
+
+def bench_memory_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    _input, target, loss_fn = _resolve_model_config_jsd(input)
+
+    def full():
+        y = loss_fn(_input, target)
+        y.backward(retain_graph=True)
+
+    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
+    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
 
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
-    gpu_memory_gbs = get_total_gpu_memory()
-    # We know that the full test will require 54GBs for vocab size 2^17 on torch
-    if gpu_memory_gbs >= 54:
-        x_max = 17
+
+    if args.sweep_mode == "model_config":
+        all_model_configs = list(MODEL_REGISTRY.values())
+
+        def _probe_factory(model_cfg, probe_bt):
+            def _probe():
+                probe_input = SingleBenchmarkRunInput(
+                    x=probe_bt,
+                    kernel_provider="torch",
+                    extra_benchmark_config={
+                        "vocab_size": model_cfg.vocab_size,
+                    },
+                )
+                _input, target, loss_fn = _setup_jsd(probe_input)
+                return loss_fn(_input, target)
+
+            return _probe
+
+        sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
+
+        model_configs_info = {
+            cfg.name: {
+                "vocab_size": cfg.vocab_size,
+            }
+            for cfg in sweep.model_configs
+        }
+
+        common_configs = {
+            "kernel_name": "jsd",
+            "x_name": "model_config",
+            "x_label": "model configuration",
+            "x_values": [cfg.name for cfg in sweep.model_configs],
+            "kernel_providers": ["liger", "torch"],
+            "extra_benchmark_configs": [
+                {
+                    "model_configs": model_configs_info,
+                    "BT": sweep.bt,
+                }
+            ],
+            "overwrite": args.overwrite,
+        }
+
+        run_benchmarks(
+            bench_test_fn=bench_speed_jsd_model_config,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_jsd_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
     else:
-        x_max = 16
-    common_args = {
-        "kernel_name": "jsd",
-        "x_name": "V",
-        "x_label": "vocab size",
-        "x_values": [2**i for i in range(12, x_max + 1)],
-        "kernel_providers": ["liger", "torch"],
-        "extra_benchmark_configs": [{"B": 4, "T": 2048}],
-        "overwrite": args.overwrite,
-    }
+        model = get_benchmark_model_config(args.model)
+        probe_bt = 1024
 
-    run_benchmarks(
-        bench_test_fn=bench_memory_jsd,
-        kernel_operation_modes=["full"],
-        metric_name="memory",
-        metric_unit="MB",
-        **common_args,
-    )
+        def _probe():
+            probe_input = SingleBenchmarkRunInput(
+                x=probe_bt,
+                kernel_provider="torch",
+                extra_benchmark_config={
+                    "vocab_size": model.vocab_size,
+                },
+            )
+            _input, target, loss_fn = _setup_jsd(probe_input)
+            return loss_fn(_input, target)
 
-    run_benchmarks(
-        bench_test_fn=bench_speed_jsd,
-        kernel_operation_modes=["forward", "backward", "full"],
-        metric_name="speed",
-        metric_unit="ms",
-        **common_args,
-    )
+        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
+        kernel_bpt = peak_bytes // probe_bt
+
+        config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+
+        common_configs = {
+            "kernel_name": "jsd",
+            "x_name": "BT",
+            "x_label": "B * T",
+            "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
+            "kernel_providers": ["liger", "torch"],
+            "extra_benchmark_configs": [
+                {
+                    "vocab_size": model.vocab_size,
+                }
+            ],
+            "overwrite": args.overwrite,
+        }
+
+        run_benchmarks(
+            bench_test_fn=bench_speed_jsd,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_jsd,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
