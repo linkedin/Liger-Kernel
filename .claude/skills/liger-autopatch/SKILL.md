@@ -78,7 +78,14 @@ Spawn the **Code Generator** agent (read [code-generator.md](code-generator.md))
 Spawn the **Validator** agent (read [validator.md](validator.md)). This stage is **mandatory** — do not skip it. At minimum, run:
 
 1. Instance patching test: `pytest test/transformers/test_monkey_patch.py -k "{model_type}" -xvs`
-2. All convergence tests for the model (bf16 + fp32, FLCE + with_logits)
+2. All convergence tests for the model:
+   - `pytest test/convergence/bf16/test_mini_models.py -k "{model_type}" -xvs` (FLCE, bf16)
+   - `pytest test/convergence/bf16/test_mini_models_with_logits.py -k "{model_type}" -xvs` (non-FLCE, bf16)
+   - `pytest test/convergence/fp32/test_mini_models.py -k "{model_type}" -xvs` (FLCE, fp32)
+   - `pytest test/convergence/fp32/test_mini_models_with_logits.py -k "{model_type}" -xvs` (non-FLCE, fp32)
+   - If VL (multimodal) model, also run:
+     - `pytest test/convergence/bf16/test_mini_models_multimodal.py -k "{model_type}" -xvs`
+     - `pytest test/convergence/fp32/test_mini_models_multimodal.py -k "{model_type}" -xvs`
 3. Checkstyle: `make checkstyle`
 
 **Human checkpoint:** Report final test results.
