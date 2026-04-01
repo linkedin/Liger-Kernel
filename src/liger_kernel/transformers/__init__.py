@@ -17,6 +17,7 @@ from liger_kernel.transformers.llama4_rope import liger_llama4_vision_rotary_pos
 from liger_kernel.transformers.mhc import LigerMHC  # noqa: F401
 from liger_kernel.transformers.multi_token_attention import LigerMultiTokenAttention  # noqa: F401
 from liger_kernel.transformers.poly_norm import LigerPolyNorm  # noqa: F401
+from liger_kernel.transformers.relu_squared import LigerReLUSquared  # noqa: F401
 from liger_kernel.transformers.rms_norm import LigerRMSNorm  # noqa: F401
 from liger_kernel.transformers.rope import liger_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.softmax import LigerSoftmax  # noqa: F401
@@ -52,9 +53,11 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llama4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_llava  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_ministral  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mistral  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mixtral  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_mllama  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_nemotron  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo2  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_olmo3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_paligemma  # noqa: F401
@@ -123,8 +126,10 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_llama",
         "apply_liger_kernel_to_llava",
         "apply_liger_kernel_to_llama4",
+        "apply_liger_kernel_to_ministral",
         "apply_liger_kernel_to_mistral",
         "apply_liger_kernel_to_mixtral",
+        "apply_liger_kernel_to_nemotron",
         "apply_liger_kernel_to_mllama",
         "apply_liger_kernel_to_olmo2",
         "apply_liger_kernel_to_olmo3",
@@ -167,6 +172,7 @@ __all__ = [
     "LigerLayerNorm",
     "LigerFusedAddRMSNorm",
     "LigerPolyNorm",
+    "LigerReLUSquared",
     "LigerRMSNorm",
     "liger_rotary_pos_emb",
     "liger_llama4_text_rotary_pos_emb",
@@ -206,8 +212,10 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_llama",
             "apply_liger_kernel_to_llava",
             "apply_liger_kernel_to_llama4",
+            "apply_liger_kernel_to_ministral",
             "apply_liger_kernel_to_mistral",
             "apply_liger_kernel_to_mixtral",
+            "apply_liger_kernel_to_nemotron",
             "apply_liger_kernel_to_mllama",
             "apply_liger_kernel_to_olmo2",
             "apply_liger_kernel_to_olmo3",
