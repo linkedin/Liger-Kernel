@@ -194,6 +194,11 @@ def liger_cross_entropy_kernel(
             # dx_y = softmax(x_y) - 1
             # dx_i = softmax(x_i), for i ≠ y
             if HAS_GRADIENTS:
+                # Hoist loop-invariant scalar computations
+                z_scale = 1.0 + 2.0 * lse_square_scale * lse  # (1 + 2 * lse_square_scale * lse)
+                one_minus_ls = 1.0 - label_smoothing
+                z_deriv = 2.0 * lse_square_scale * lse  # for weighted branch
+
                 for i in range(0, n_cols, BLOCK_SIZE):
                     X_offsets = i + tl.arange(0, BLOCK_SIZE)
                     X_block = tl.load(
@@ -207,14 +212,12 @@ def liger_cross_entropy_kernel(
                         X_block = softcap * intermediate
 
                     if not HAS_WEIGHT:
-                        # softmax(x_i)
-                        X_block = tl.exp(X_block - m) / d
-                        # derivative of z-loss: 2 * lse_square_scale * lse * softmax(x_i)
-                        X_block += 2 * lse_square_scale * lse * X_block
-                        # smoothing term
-                        X_block += -eps
+                        # softmax(x_i) * (1 + 2 * lse_square_scale * lse) - eps
+                        # Fuses: softmax, z-loss derivative, and smoothing term into fewer vector ops
+                        X_block = tl.exp(X_block - m) / d * z_scale - eps
                         # special handle dx_y
-                        X_block = tl.where(X_offsets != y, X_block, X_block - (1 - label_smoothing))
+                        if y >= i and y < i + BLOCK_SIZE:
+                            X_block = tl.where(X_offsets != y, X_block, X_block - one_minus_ls)
                         # reduction scale
                         if reduction == "mean":
                             X_block = X_block / n_non_ignore
@@ -222,14 +225,15 @@ def liger_cross_entropy_kernel(
                         weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
                         softmax_X = tl.exp(X_block - m) / d
                         # derivative of original_loss
-                        dloss_ori = (1 - label_smoothing) * softmax_X
+                        dloss_ori = one_minus_ls * softmax_X
                         # specially handle dx_y
-                        dloss_ori = tl.where(X_offsets != y, dloss_ori, dloss_ori - (1 - label_smoothing))
+                        if y >= i and y < i + BLOCK_SIZE:
+                            dloss_ori = tl.where(X_offsets != y, dloss_ori, dloss_ori - one_minus_ls)
                         dloss_ori = dloss_ori * weight_y
                         # derivative of smooth_loss
                         dloss_smooth = eps * (-weight_block + softmax_X * weight_sum)
                         # derivative of z-loss
-                        dz_loss = 2 * lse_square_scale * lse * softmax_X
+                        dz_loss = z_deriv * softmax_X
                         # reduction scale
                         if reduction == "mean":
                             dloss_ori = dloss_ori / sum_non_ignore_weight
