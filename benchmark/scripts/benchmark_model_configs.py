@@ -145,9 +145,76 @@ LLAMA_3_8B = ModelConfig(
     max_position_embeddings=8192,
 )
 
+QWEN_2_5_7B = ModelConfig(
+    name="qwen2.5_7b",
+    hidden_size=3584,
+    intermediate_size=18944,
+    vocab_size=152064,
+    num_attention_heads=28,
+    num_key_value_heads=4,
+    head_dim=128,
+    hidden_act="silu",
+    max_position_embeddings=131072,
+)
+
+QWEN_2_5_14B = ModelConfig(
+    name="qwen2.5_14b",
+    hidden_size=5120,
+    intermediate_size=13824,
+    vocab_size=152064,
+    num_attention_heads=40,
+    num_key_value_heads=8,
+    head_dim=128,
+    hidden_act="silu",
+    max_position_embeddings=131072,
+)
+
+QWEN_2_5_72B = ModelConfig(
+    name="qwen2.5_72b",
+    hidden_size=8192,
+    intermediate_size=29568,
+    vocab_size=152064,
+    num_attention_heads=64,
+    num_key_value_heads=8,
+    head_dim=128,
+    hidden_act="silu",
+    max_position_embeddings=131072,
+)
+
+DEEPSEEK_V2_LITE = ModelConfig(
+    name="deepseek_v2_lite",
+    hidden_size=2048,
+    intermediate_size=10944,
+    vocab_size=102400,
+    num_attention_heads=16,
+    num_key_value_heads=16,
+    head_dim=128,
+    hidden_act="silu",
+    max_position_embeddings=163840,
+)
+
+DEEPSEEK_V3 = ModelConfig(
+    name="deepseek_v3",
+    hidden_size=7168,
+    intermediate_size=18432,
+    vocab_size=129280,
+    num_attention_heads=128,
+    num_key_value_heads=128,
+    head_dim=128,  # v_head_dim; MLA splits Q/K into nope(128) + rope(64) dims internally
+    # MLA-specific params for reference:
+    # qk_nope_head_dim=128, qk_rope_head_dim=64, v_head_dim=128
+    hidden_act="silu",
+    max_position_embeddings=163840,
+)
+
 MODEL_REGISTRY: Dict[str, ModelConfig] = {
     "llama_2_7b": LLAMA_2_7B,
     "llama_3_8b": LLAMA_3_8B,
+    "qwen2.5_7b": QWEN_2_5_7B,
+    "qwen2.5_14b": QWEN_2_5_14B,
+    "qwen2.5_72b": QWEN_2_5_72B,
+    "deepseek_v2_lite": DEEPSEEK_V2_LITE,
+    "deepseek_v3": DEEPSEEK_V3,
 }
 
 DEFAULT_MODEL_CONFIG = LLAMA_3_8B
