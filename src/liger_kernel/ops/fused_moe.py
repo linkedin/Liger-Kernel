@@ -24,7 +24,7 @@ from liger_kernel.ops.utils import ensure_contiguous
 # Not in the inner-loop autotune because tile_row_start/tile_expert and the
 # grid dim-0 (num_m_tiles) must be recomputed for every candidate value.
 # To tune: change this constant and re-run benchmarks.
-BLOCK_M_TOKEN = 16
+BLOCK_M_TOKEN = 64
 
 
 # ---------------------------------------------------------------------------
