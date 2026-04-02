@@ -395,7 +395,7 @@ def _grpo_loss_bwd_kernel_seq(
     loss_stride1,
     L: tl.constexpr,
     N: tl.constexpr,
-    BLOCK_N: tl.constexpr = 2048,
+    BLOCK_N: tl.constexpr = 4096,
 ):
     pid_b = tl.program_id(0)
     pid_l = tl.program_id(1)
@@ -405,6 +405,9 @@ def _grpo_loss_bwd_kernel_seq(
     batch_end = batch_start + L
     start_token = batch_start + pid_l
     stride = num_progs_l
+
+    # Precompute 1/TEMPERATURE to replace repeated division with multiplication
+    inv_temp = 1.0 / TEMPERATURE
 
     for token_idx in tl.range(start_token, batch_end, stride):
         off_b = token_idx // L
@@ -419,7 +422,7 @@ def _grpo_loss_bwd_kernel_seq(
             should_process = not_skip
 
         if should_process == 0:
-            for start in range(0, N, BLOCK_N):
+            for start in tl.static_range(0, N, BLOCK_N):
                 cols = tl.arange(0, BLOCK_N) + start
                 tl.store(DLOGITS_local + cols, 0.0, mask=cols < N)
         else:
@@ -439,7 +442,7 @@ def _grpo_loss_bwd_kernel_seq(
             seq_len = tl.load(SEQ_LEN_local).to(tl.float32)
 
             idx = tl.load(INPUT_IDS_local).to(tl.int32)
-            x = tl.load(LOGITS_local + idx).to(tl.float32) / TEMPERATURE
+            x = tl.load(LOGITS_local + idx).to(tl.float32) * inv_temp
             logp = x - lse
 
             advantage = tl.load(ADVANTAGES_local).to(tl.float32)
@@ -469,11 +472,12 @@ def _grpo_loss_bwd_kernel_seq(
                 else:
                     dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
 
-            dlogp = dlogp / TEMPERATURE
-            for start_n in tl.range(0, N, BLOCK_N):
+            dlogp = dlogp * inv_temp
+            # Use tl.static_range for inner loop (BLOCK_N is constexpr)
+            for start_n in tl.static_range(0, N, BLOCK_N):
                 cols = start_n + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
-                logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=-float("inf")).to(tl.float32) / TEMPERATURE
+                logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=-float("inf")).to(tl.float32) * inv_temp
                 probs = tl.exp(logits - lse)
                 cols_idx = cols == idx
                 dlogits = (cols_idx - probs) * dlogp
@@ -506,7 +510,7 @@ def _grpo_loss_bwd_kernel(
     loss_stride1,
     L: tl.constexpr,
     N: tl.constexpr,
-    BLOCK_N: tl.constexpr = 2048,
+    BLOCK_N: tl.constexpr = 4096,
 ):
     pid_b = tl.program_id(0)
     pid_l = tl.program_id(1)
@@ -516,6 +520,9 @@ def _grpo_loss_bwd_kernel(
     batch_end = batch_start + L
     start_token = batch_start + pid_l
     stride = num_progs_l
+
+    # Precompute 1/TEMPERATURE to replace repeated division with multiplication
+    inv_temp = 1.0 / TEMPERATURE
 
     for token_idx in tl.range(start_token, batch_end, stride):
         off_b = token_idx // L
@@ -530,7 +537,7 @@ def _grpo_loss_bwd_kernel(
             should_process = not_skip
 
         if should_process == 0:
-            for start in range(0, N, BLOCK_N):
+            for start in tl.static_range(0, N, BLOCK_N):
                 cols = tl.arange(0, BLOCK_N) + start
                 tl.store(DLOGITS_local + cols, 0.0, mask=cols < N)
         else:
@@ -544,7 +551,7 @@ def _grpo_loss_bwd_kernel(
             lse = tl.load(LSE_local).to(tl.float32)
 
             idx = tl.load(INPUT_IDS_local).to(tl.int32)
-            x = tl.load(LOGITS_local + idx).to(tl.float32) / TEMPERATURE
+            x = tl.load(LOGITS_local + idx).to(tl.float32) * inv_temp
             logp = x - lse
             if OLD_LOGP is None:
                 old_logp = logp
@@ -592,11 +599,12 @@ def _grpo_loss_bwd_kernel(
                 else:
                     dlogp += BETA * (1 - tl.exp(ref_logp - logp))
 
-            dlogp = dlogp * dloss / TEMPERATURE
-            for start_n in tl.range(0, N, BLOCK_N):
+            dlogp = dlogp * dloss * inv_temp
+            # Use tl.static_range for inner loop (BLOCK_N is constexpr)
+            for start_n in tl.static_range(0, N, BLOCK_N):
                 cols = start_n + tl.arange(0, BLOCK_N)
                 cols_mask = cols < N
-                logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=-float("inf")).to(tl.float32) / TEMPERATURE
+                logits = tl.load(LOGITS_local + cols, mask=cols_mask, other=-float("inf")).to(tl.float32) * inv_temp
                 probs = tl.exp(logits - lse)
                 cols_idx = cols == idx
                 dlogits = (cols_idx - probs) * dlogp
