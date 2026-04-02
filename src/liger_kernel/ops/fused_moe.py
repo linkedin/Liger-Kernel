@@ -304,7 +304,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         # dA' = dO @ W2^T, SwiGLU backward, write d_pre_act and dS
         d_pre_act = torch.empty(TK, 2 * intermediate_dim, dtype=dO.dtype, device=dO.device)
         weighted_act = torch.empty(TK, intermediate_dim, dtype=dO.dtype, device=dO.device)
-        dS = torch.empty(TK, dtype=dO.dtype, device=dO.device)
+        dS = torch.zeros(TK, dtype=dO.dtype, device=dO.device)  # zeros: atomic_add in kernel accumulates across N-tiles
 
         if num_m_tiles > 0:
             _moe_bwd_down_proj_kernel[lambda meta: (num_m_tiles, triton.cdiv(intermediate_dim, meta["BLOCK_N"]))](

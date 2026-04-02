@@ -573,6 +573,7 @@ def _token_gather_weighted_sum_kernel(
 @triton.autotune(
     configs=_get_gemm_autotune_configs(),
     key=["H_dim", "I_dim"],
+    reset_to_zero=["dS_ptr"],  # autotune runs multiple configs; atomic_add accumulates, so reset between runs
 )
 @triton.jit
 def _moe_bwd_down_proj_kernel(
@@ -658,9 +659,12 @@ def _moe_bwd_down_proj_kernel(
     wact_ptrs = weighted_act_ptr + row_offs[:, None] * stride_wact_TK + n_idx[None, :] * stride_wact_I
     tl.store(wact_ptrs, (weights[:, None] * y1).to(weighted_act_ptr.dtype.element_ty), mask=out_mask)
 
-    # dS: ∂L/∂s_k = sum_I((dO @ W2^T) * y1) — use unscaled acc.
+    # dS: ∂L/∂s_k = sum_I((dO @ W2^T) * y1) — accumulate across all N-tiles.
+    # IMPORTANT: use atomic_add, not store — the grid has ceil(I/BLOCK_N) N-tiles per
+    # M-tile, each contributing a partial sum over its I-chunk.  tl.store would
+    # overwrite previous tiles, leaving only the last chunk's contribution.
     dS_partial = tl.sum(acc * y1, axis=1)
-    tl.store(dS_ptr + flat_tk_idx, dS_partial.to(dS_ptr.dtype.element_ty), mask=row_mask)
+    tl.atomic_add(dS_ptr + flat_tk_idx, dS_partial, mask=row_mask)
 
     # Scale once: dA' = s_k * (dO @ W2^T)
     acc = acc * weights[:, None]

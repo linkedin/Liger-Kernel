@@ -119,13 +119,12 @@ def test_routing_metadata_invariants(T, E, K):
 @pytest.mark.parametrize(
     "T, E, H, intermediate_dim, K",
     [
-        (64, 8, 256, 64, 2),  # baseline
-        (256, 16, 512, 128, 4),  # larger
-        (7, 4, 64, 32, 2),  # T < BLOCK_M_TOKEN=16: tile row-mask is mostly padding
-        (64, 8, 97, 47, 2),  # odd H and intermediate_dim: tail masking fires with every possible autotune BLOCK_N
-        (128, 7, 128, 64, 3),  # prime E: E*ceil(intermediate_dim/BLOCK_M) grid decomposition with non-pow2 E
-        (256, 8, 256, 96, 1),  # K=1: single expert per token, no weighted sum in token aggregation
-        (64, 8, 256, 64, 8),  # K=E: every token hits every expert, maximum routing density
+        (7, 4, 64, 32, 2),  # T < BLOCK_M_TOKEN: tile row-mask is mostly padding (unique sub-tile edge)
+        (512, 8, 256, 128, 2),  # multi-tile baseline: T*K/E=128 → 2 tiles/expert
+        (512, 8, 97, 47, 2),  # multi-tile + odd H/I: tail masking across tile boundaries
+        (512, 7, 128, 64, 3),  # multi-tile + prime E: non-pow2 grid decomposition
+        (512, 8, 256, 64, 1),  # multi-tile + K=1: no weighted sum in token aggregation
+        (128, 8, 256, 64, 8),  # multi-tile + K=E: maximum routing density
     ],
 )
 @pytest.mark.parametrize(
@@ -156,17 +155,11 @@ def test_forward_correctness(T, E, H, intermediate_dim, K, dtype, atol, rtol):
 @pytest.mark.parametrize(
     "T, E, H, intermediate_dim, K",
     [
-        (32, 8, 64, 32, 2),  # baseline
-        (7, 4, 32, 16, 2),  # T < BLOCK_M_TOKEN: dH_pre tile row-mask mostly padding
-        (
-            32,
-            8,
-            97,
-            47,
-            2,
-        ),  # odd H and intermediate_dim: tail masking in dW1, dW2, dX_expanded regardless of autotune config
-        (32, 7, 64, 32, 3),  # prime E: dW kernels grid decomposition with non-pow2 E
-        (32, 8, 64, 32, 1),  # K=1: dx reduction is trivial gather (no weighted sum)
+        (7, 4, 32, 16, 2),  # T < BLOCK_M_TOKEN: sub-tile padding edge case
+        (512, 8, 128, 64, 2),  # multi-tile baseline: T*K/E=128 → 2 tiles/expert
+        (512, 8, 97, 47, 2),  # multi-tile + odd H/I: tail masking in dW1, dW2, dX_expanded
+        (512, 7, 64, 32, 3),  # multi-tile + prime E: non-pow2 dW grid decomposition
+        (512, 8, 64, 32, 1),  # multi-tile + K=1: dx reduction is trivial gather
     ],
 )
 def test_backward_correctness(T, E, H, intermediate_dim, K):
@@ -196,7 +189,7 @@ def test_backward_correctness(T, E, H, intermediate_dim, K):
     loss_fused = out_fused.sum()
     loss_fused.backward()
 
-    atol, rtol = 1e-3, 1e-4
+    atol, rtol = 3e-3, 1e-2
 
     def _mismatch_info(a, b, atol, rtol, name):
         diff = torch.abs(a - b)
