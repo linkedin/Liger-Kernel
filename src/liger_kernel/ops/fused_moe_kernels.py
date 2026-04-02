@@ -697,7 +697,7 @@ def _moe_bwd_dW2_kernel(
     dout_ptr,  # (T, H)  — upstream gradient (gathered by x_gather_idx)
     x_gather_idx_ptr,  # (TK,)   — sorted_pos → original token index
     expert_start_ptr,  # (E+1,)  int32
-    dW2_ptr,  # (E, H, I) — output, atomic add
+    dW2_ptr,  # (E, H, I) — output
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_wact_TK,
@@ -755,7 +755,7 @@ def _moe_bwd_dW2_kernel(
         acc = tl.dot(wact_tile, dout_tile, acc=acc)
 
     dW2_ptrs = dW2_ptr + expert_idx * stride_dW2_E + h_idx[None, :] * stride_dW2_H + i_idx[:, None] * stride_dW2_I
-    tl.atomic_add(dW2_ptrs, acc.to(dW2_ptr.dtype.element_ty), mask=i_mask[:, None] & h_mask[None, :])
+    tl.store(dW2_ptrs, acc.to(dW2_ptr.dtype.element_ty), mask=i_mask[:, None] & h_mask[None, :])
 
 
 # ---------------------------------------------------------------------------
@@ -864,7 +864,7 @@ def _moe_bwd_dW1_kernel(
     d_pre_act_ptr,  # (TK, 2*I)
     x_gather_idx_ptr,  # (TK,) int32
     expert_start_ptr,  # (E+1,) int32
-    dW1_ptr,  # (E, 2*I, H) — output, atomic add
+    dW1_ptr,  # (E, 2*I, H) — output
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_x_T,
@@ -922,4 +922,4 @@ def _moe_bwd_dW1_kernel(
         acc = tl.dot(tl.trans(d_pre_tile), x_tile, acc=acc)
 
     dW1_ptrs = dW1_ptr + expert_idx * stride_dW1_E + n_idx[:, None] * stride_dW1_N + h_idx[None, :] * stride_dW1_H
-    tl.atomic_add(dW1_ptrs, acc.to(dW1_ptr.dtype.element_ty), mask=n_mask[:, None] & h_mask[None, :])
+    tl.store(dW1_ptrs, acc.to(dW1_ptr.dtype.element_ty), mask=n_mask[:, None] & h_mask[None, :])
