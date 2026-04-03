@@ -9,4 +9,4 @@ class LigerSoftmax(nn.Module):
         super().__init__()
 
     def forward(self, x: torch.Tensor):
-        return LigerSoftmaxFunction.apply(x)
+        return LigerSoftmaxFunction.apply(x)[0]

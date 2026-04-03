@@ -179,17 +179,21 @@ def _softmax_backward(
 class LigerSoftmaxFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, input_: torch.Tensor):
+    def forward(input_: torch.Tensor):
         y, BLOCK_SIZE, num_warps, multi_block_launch = _softmax_forward(input_)
+        return y, BLOCK_SIZE, num_warps, multi_block_launch
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        y, BLOCK_SIZE, num_warps, multi_block_launch = output
         ctx.save_for_backward(y)
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
         ctx.multi_block_launch = multi_block_launch
-        return y
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output, _grad_block_size, _grad_num_warps, _grad_multi_block_launch):
         (y,) = ctx.saved_tensors
         dx = _softmax_backward(
             grad_output,
