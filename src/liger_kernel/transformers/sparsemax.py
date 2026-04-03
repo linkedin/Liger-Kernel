@@ -10,7 +10,7 @@ class LigerSparsemax(nn.Module):
         self.dim = dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return LigerSparsemaxFunction.apply(x, self.dim)
+        return LigerSparsemaxFunction.apply(x, self.dim)[0]
 
     def extra_repr(self) -> str:
         return f"dim={self.dim}"

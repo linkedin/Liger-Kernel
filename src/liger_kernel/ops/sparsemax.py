@@ -163,15 +163,20 @@ def _sparsemax_backward(
 class LigerSparsemaxFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, x: torch.Tensor, dim: int):
+    def forward(x: torch.Tensor, dim: int):
         y, out_flat = _sparsemax_forward(x, dim)
+        return y, out_flat
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        x, dim = inputs
+        y, out_flat = output
         ctx.save_for_backward(out_flat)
         ctx.dim = dim
-        return y
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, grad_out: torch.Tensor):
+    def backward(ctx, grad_out: torch.Tensor, _grad_out_flat):
         (out_flat,) = ctx.saved_tensors
         dx = _sparsemax_backward(grad_out, out_flat, ctx.dim)
         return dx, None
