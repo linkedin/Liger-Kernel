@@ -862,20 +862,28 @@ def fused_neighborhood_attention_forward(
 class LigerFusedNeighborhoodAttentionFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, query, key, value, kernel_size=7, dilation=1, scale=None):
+    def forward(query, key, value, kernel_size=7, dilation=1, scale=None):
         output, attn_weights, softmax_params = fused_neighborhood_attention_forward(
             query, key, value, kernel_size, dilation, scale
         )
+        return output, attn_weights, softmax_params
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        query, key, value = inputs[:3]
+        kernel_size = inputs[3] if len(inputs) > 3 else 7
+        dilation = inputs[4] if len(inputs) > 4 else 1
+        scale = inputs[5] if len(inputs) > 5 else None
+        output_val, attn_weights, softmax_params = output
         ctx.save_for_backward(query, key, value, attn_weights)
         ctx.kernel_size = kernel_size
         ctx.dilation = dilation
         ctx.scale = scale
         ctx.softmax_params = softmax_params
-        return output
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output, _grad_attn_weights, _grad_softmax_params):
         query, key, value, attn_weights = ctx.saved_tensors
         BLOCK_SIZE_softmax, num_warps_softmax, multi_block_launch = ctx.softmax_params
 

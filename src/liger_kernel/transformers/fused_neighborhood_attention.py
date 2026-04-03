@@ -102,7 +102,7 @@ class LigerFusedNeighborhoodAttention(nn.Module):
 
         attn_output = LigerFusedNeighborhoodAttentionFunction.apply(
             query, key, value, self.kernel_size, self.dilation, self.scale
-        )
+        )[0]
 
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, hidden_size)
 
