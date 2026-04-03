@@ -130,14 +130,18 @@ def geglu_backward(a, b, dc):
 class LigerGELUMulFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, a, b):
+    def forward(a, b):
         a, b, c = geglu_forward(a, b)
+        return c, a, b
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        c, a, b = output
         ctx.save_for_backward(a, b)
-        return c
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, dc):
+    def backward(ctx, dc, _da, _db):
         a, b = ctx.saved_tensors
         a, b = geglu_backward(a, b, dc)
         return a, b
