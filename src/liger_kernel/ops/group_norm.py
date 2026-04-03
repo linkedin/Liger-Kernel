@@ -282,7 +282,6 @@ class LigerGroupNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(
-        ctx,
         X,
         affine_scaling_weight,
         affine_shifting_bias,
@@ -298,14 +297,19 @@ class LigerGroupNormFunction(torch.autograd.Function):
             affine_shifting_bias,
             eps,
         )
+        return Y, X, Mean, RSTD
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        _X, affine_scaling_weight, affine_shifting_bias, num_channels, num_groups, eps = inputs
+        Y, X_out, Mean, RSTD = output
         ctx.num_channels = num_channels
         ctx.num_groups = num_groups
-        ctx.save_for_backward(X, affine_scaling_weight, affine_shifting_bias, Mean, RSTD)
-        return Y
+        ctx.save_for_backward(X_out, affine_scaling_weight, affine_shifting_bias, Mean, RSTD)
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, dY):
+    def backward(ctx, dY, _dX_out, _dMean, _dRSTD):
         X, W, B, Mean, RSTD = ctx.saved_tensors
         DX, DW, DB = group_norm_backward(dY, X, W, B, Mean, RSTD, ctx.num_channels, ctx.num_groups)
         return DX, DW, DB, None, None, None

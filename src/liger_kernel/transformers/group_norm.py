@@ -44,7 +44,7 @@ class LigerGroupNorm(nn.Module):
             self.num_channels,
             self.num_groups,
             self.variance_epsilon,
-        )
+        )[0]
 
     def extra_repr(self):
         return f"{self.hidden_size}, num_channels={self.num_channels}, num_groups={self.num_groups}, eps={self.eps}"
