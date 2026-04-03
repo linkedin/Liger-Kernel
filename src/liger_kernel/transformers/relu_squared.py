@@ -8,4 +8,4 @@ class LigerReLUSquared(nn.Module):
         super().__init__()
 
     def forward(self, x):
-        return LigerReLUSquaredFunction.apply(x)
+        return LigerReLUSquaredFunction.apply(x)[0]

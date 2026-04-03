@@ -104,7 +104,7 @@ def test_liger_relu_squared_functional(shape, dtype, atol, rtol):
     x2 = _input.clone().requires_grad_(True)
 
     output1 = liger_relu_squared(x1)
-    output2 = LigerReLUSquaredFunction.apply(x2)
+    output2 = LigerReLUSquaredFunction.apply(x2)[0]
 
     assert_verbose_allclose(output1, output2, rtol=rtol, atol=atol)
 

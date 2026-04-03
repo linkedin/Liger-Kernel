@@ -107,14 +107,18 @@ def relu_squared_backward(X, dY):
 class LigerReLUSquaredFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X):
+    def forward(X):
         Y = relu_squared_forward(X)
+        return Y, X.view_as(X)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        Y, X = output
         ctx.save_for_backward(X)
-        return Y
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, dY):
+    def backward(ctx, dY, _dX):
         (X,) = ctx.saved_tensors
         dX = relu_squared_backward(X, dY)
         return dX
