@@ -48,7 +48,7 @@ def _setup_attn_res(input: SingleBenchmarkRunInput):
     eps = cfg.get("eps", 1e-6)
 
     if input.kernel_provider == "liger":
-        fn = lambda: LigerAttnResFunction.apply(V, w_query, w_norm, eps)
+        fn = lambda: LigerAttnResFunction.apply(V, w_query, w_norm, eps)[0]
     elif input.kernel_provider == "pytorch":
         from test.transformers.test_attn_res import pytorch_attn_res
 

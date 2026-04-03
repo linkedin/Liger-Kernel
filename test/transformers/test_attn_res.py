@@ -68,7 +68,7 @@ def test_correctness(N, B, T, D, dtype, atol, rtol):
     # Reference
     ref = pytorch_attn_res(V, w_query, w_norm)
     # Triton
-    out = LigerAttnResFunction.apply(V, w_query, w_norm, 1e-6)
+    out = LigerAttnResFunction.apply(V, w_query, w_norm, 1e-6)[0]
 
     assert_verbose_allclose(ref, out, atol=atol, rtol=rtol)
 
@@ -113,7 +113,7 @@ def test_correctness_backward(N, B, T, D, dtype, atol, rtol):
     V_tri = V.clone().requires_grad_(True)
     wq_tri = w_query.clone().requires_grad_(True)
     wn_tri = w_norm.clone().requires_grad_(True)
-    h_tri = LigerAttnResFunction.apply(V_tri, wq_tri, wn_tri, 1e-6)
+    h_tri = LigerAttnResFunction.apply(V_tri, wq_tri, wn_tri, 1e-6)[0]
     h_tri.backward(do, retain_graph=True)
 
     assert_verbose_allclose(V_ref.grad, V_tri.grad, atol=atol, rtol=rtol)
@@ -136,8 +136,8 @@ def test_correctness_list_input(N, B, T, D):
 
     V_stacked = torch.stack(blocks)
 
-    out_stacked = LigerAttnResFunction.apply(V_stacked, w_query, w_norm, 1e-6)
-    out_list = LigerAttnResFunction.apply(torch.stack(blocks), w_query, w_norm, 1e-6)
+    out_stacked = LigerAttnResFunction.apply(V_stacked, w_query, w_norm, 1e-6)[0]
+    out_list = LigerAttnResFunction.apply(torch.stack(blocks), w_query, w_norm, 1e-6)[0]
 
     assert_verbose_allclose(out_stacked, out_list, atol=1e-6, rtol=1e-6)
 
@@ -163,7 +163,7 @@ def test_correctness_functional(N, B, T, D, dtype, atol, rtol):
     w_norm = torch.ones(D, device=device, dtype=dtype)
 
     # Direct function call
-    y1 = LigerAttnResFunction.apply(V, w_query, w_norm, 1e-6)
+    y1 = LigerAttnResFunction.apply(V, w_query, w_norm, 1e-6)[0]
     # Functional API
     y2 = liger_attn_res(V, w_query, w_norm, eps=1e-6)
 
@@ -177,7 +177,7 @@ def test_correctness_functional(N, B, T, D, dtype, atol, rtol):
     wn1 = w_norm.clone().requires_grad_(True)
     wn2 = w_norm.clone().requires_grad_(True)
 
-    y1 = LigerAttnResFunction.apply(V1, wq1, wn1, 1e-6)
+    y1 = LigerAttnResFunction.apply(V1, wq1, wn1, 1e-6)[0]
     y2 = liger_attn_res(V2, wq2, wn2, eps=1e-6)
 
     grad = torch.randn_like(y1)

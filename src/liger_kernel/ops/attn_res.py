@@ -329,16 +329,21 @@ def attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, eps=1e-6):
 class LigerAttnResFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, V_stacked, w_query, w_norm, eps):
-        ctx.orig_shape = V_stacked.shape  # [N, B, T, D] or [N, B*T, D]
+    def forward(V_stacked, w_query, w_norm, eps):
         h, V_3d, Alpha, RSTD = attn_res_forward(V_stacked, w_query, w_norm, eps)
+        return h, V_3d, Alpha, RSTD
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        V_stacked, w_query, w_norm, eps = inputs
+        h, V_3d, Alpha, RSTD = output
         ctx.save_for_backward(V_3d, w_query, w_norm, Alpha, RSTD)
         ctx.eps = eps
-        return h
+        ctx.orig_shape = V_stacked.shape  # [N, B, T, D] or [N, B*T, D]
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, dh):
+    def backward(ctx, dh, _grad_V_3d, _grad_Alpha, _grad_RSTD):
         V_3d, w_query, w_norm, Alpha, RSTD = ctx.saved_tensors
         dV, dW_query, dW_norm = attn_res_backward(dh, V_3d, w_query, w_norm, Alpha, RSTD, ctx.eps)
         # Reshape dV back to original input shape
