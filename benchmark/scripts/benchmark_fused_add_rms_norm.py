@@ -93,9 +93,7 @@ def bench_speed_fused_add_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenc
         return layer(x, r)
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            y_fwd, grad_to_none=[x, r], rep=100, quantiles=QUANTILES
-        )
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(y_fwd, grad_to_none=[x, r], rep=100, quantiles=QUANTILES)
     elif mode == "backward":
         y, s = y_fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -110,9 +108,7 @@ def bench_speed_fused_add_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenc
             y, s = y_fwd()
             torch.autograd.backward((y, s), (dy, ds))
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full, grad_to_none=[x, r], rep=100, quantiles=QUANTILES
-        )
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=[x, r], rep=100, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
@@ -162,9 +158,7 @@ def bench_speed_fused_add_rms_norm_model_config(input: SingleBenchmarkRunInput) 
         return layer(x, r)
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            y_fwd, grad_to_none=[x, r], rep=100, quantiles=QUANTILES
-        )
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(y_fwd, grad_to_none=[x, r], rep=100, quantiles=QUANTILES)
     elif mode == "backward":
         y, s = y_fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -179,9 +173,7 @@ def bench_speed_fused_add_rms_norm_model_config(input: SingleBenchmarkRunInput) 
             y, s = y_fwd()
             torch.autograd.backward((y, s), (dy, ds))
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full, grad_to_none=[x, r], rep=100, quantiles=QUANTILES
-        )
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=[x, r], rep=100, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 

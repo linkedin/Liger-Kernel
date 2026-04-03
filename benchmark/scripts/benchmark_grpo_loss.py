@@ -44,9 +44,13 @@ def _setup_grpo_loss(input: SingleBenchmarkRunInput):
     ref_input = torch.randn(B, T, H, dtype=dtype, device=device)
 
     if input.kernel_provider == "liger":
-        loss_module = LigerLMHeadGRPO(H=H, V=V, dtype=dtype, importance_sampling_level=importance_sampling_level).to(device)
+        loss_module = LigerLMHeadGRPO(H=H, V=V, dtype=dtype, importance_sampling_level=importance_sampling_level).to(
+            device
+        )
     elif input.kernel_provider == "torch":
-        loss_module = TorchLMHeadGRPO(H=H, V=V, dtype=dtype, importance_sampling_level=importance_sampling_level).to(device)
+        loss_module = TorchLMHeadGRPO(H=H, V=V, dtype=dtype, importance_sampling_level=importance_sampling_level).to(
+            device
+        )
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for GRPOLoss")
 
@@ -66,9 +70,11 @@ def bench_speed_grpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
             lambda: y.backward(retain_graph=True), grad_to_none=[_input], rep=100, quantiles=QUANTILES
         )
     elif mode == "full":
+
         def full():
             y = fwd_fn()
             y.backward()
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -116,9 +122,11 @@ def bench_speed_grpo_loss_model_config(input: SingleBenchmarkRunInput) -> Single
             lambda: y.backward(retain_graph=True), grad_to_none=[_input], rep=100, quantiles=QUANTILES
         )
     elif mode == "full":
+
         def full():
             y = fwd_fn()
             y.backward()
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -148,15 +156,19 @@ def _run_grpo_benchmarks(args, importance_sampling_level, kernel_name_suffix):
             def _probe():
                 B = max(1, probe_bt // T)
                 probe_input = SingleBenchmarkRunInput(
-                    x=B, kernel_provider="torch",
+                    x=B,
+                    kernel_provider="torch",
                     extra_benchmark_config={
-                        "hidden_size": model_cfg.hidden_size, "vocab_size": model_cfg.vocab_size,
-                        "dtype": model_cfg.dtype, "T": T,
+                        "hidden_size": model_cfg.hidden_size,
+                        "vocab_size": model_cfg.vocab_size,
+                        "dtype": model_cfg.dtype,
+                        "T": T,
                         "importance_sampling_level": importance_sampling_level,
                     },
                 )
                 _, fwd_fn = _setup_grpo_loss(probe_input)
                 return fwd_fn()
+
             return _probe
 
         sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
@@ -168,20 +180,35 @@ def _run_grpo_benchmarks(args, importance_sampling_level, kernel_name_suffix):
 
         common_configs = {
             "kernel_name": kernel_name,
-            "x_name": "model_config", "x_label": "model configuration",
+            "x_name": "model_config",
+            "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
             "kernel_providers": ["liger", "torch"],
             "extra_benchmark_configs": [
-                {"model_configs": model_configs_info, "B": B, "T": T,
-                 "importance_sampling_level": importance_sampling_level}
+                {
+                    "model_configs": model_configs_info,
+                    "B": B,
+                    "T": T,
+                    "importance_sampling_level": importance_sampling_level,
+                }
             ],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_grpo_loss_model_config,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_grpo_loss_model_config,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_grpo_loss_model_config,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_grpo_loss_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
     else:
         model = get_benchmark_model_config(args.model)
         T = 1024
@@ -190,10 +217,13 @@ def _run_grpo_benchmarks(args, importance_sampling_level, kernel_name_suffix):
         def _probe():
             B = max(1, probe_bt // T)
             probe_input = SingleBenchmarkRunInput(
-                x=B, kernel_provider="torch",
+                x=B,
+                kernel_provider="torch",
                 extra_benchmark_config={
-                    "hidden_size": model.hidden_size, "vocab_size": model.vocab_size,
-                    "dtype": model.dtype, "T": T,
+                    "hidden_size": model.hidden_size,
+                    "vocab_size": model.vocab_size,
+                    "dtype": model.dtype,
+                    "T": T,
                     "importance_sampling_level": importance_sampling_level,
                 },
             )
@@ -206,20 +236,36 @@ def _run_grpo_benchmarks(args, importance_sampling_level, kernel_name_suffix):
 
         common_configs = {
             "kernel_name": kernel_name,
-            "x_name": "B", "x_label": "Batch Size (B)",
+            "x_name": "B",
+            "x_label": "Batch Size (B)",
             "x_values": [2**i for i in range(1, int(math.log2(max(2, config.batch_size * config.seq_len // T))) + 1)],
             "kernel_providers": ["liger", "torch"],
             "extra_benchmark_configs": [
-                {"hidden_size": model.hidden_size, "vocab_size": model.vocab_size, "dtype": model.dtype,
-                 "T": T, "importance_sampling_level": importance_sampling_level}
+                {
+                    "hidden_size": model.hidden_size,
+                    "vocab_size": model.vocab_size,
+                    "dtype": model.dtype,
+                    "T": T,
+                    "importance_sampling_level": importance_sampling_level,
+                }
             ],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_grpo_loss,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_grpo_loss,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_grpo_loss,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_grpo_loss,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
 
 
 if __name__ == "__main__":

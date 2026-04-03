@@ -47,10 +47,16 @@ def _setup_rope(input: SingleBenchmarkRunInput):
         after_kwargs={"config": LlamaConfig(num_kv_heads=num_kv_heads, head_dim=head_dim), "device": device},
     )
     q = torch.randn(
-        (1, seq_len, num_q_heads, head_dim), device=device, requires_grad=True, dtype=dtype,
+        (1, seq_len, num_q_heads, head_dim),
+        device=device,
+        requires_grad=True,
+        dtype=dtype,
     ).transpose(1, 2)
     k = torch.randn(
-        (1, seq_len, num_kv_heads, head_dim), device=device, requires_grad=True, dtype=dtype,
+        (1, seq_len, num_kv_heads, head_dim),
+        device=device,
+        requires_grad=True,
+        dtype=dtype,
     ).transpose(1, 2)
     dq, dk = torch.randn_like(q, device=device, dtype=dtype), torch.randn_like(k, device=device)
     pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
@@ -76,12 +82,16 @@ def bench_speed_rope(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
         q_out, k_out = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: torch.autograd.grad((q_out, k_out), (q, k), (dq, dk), allow_unused=True, retain_graph=True),
-            grad_to_none=[q, k], rep=400, quantiles=QUANTILES,
+            grad_to_none=[q, k],
+            rep=400,
+            quantiles=QUANTILES,
         )
     elif mode == "full":
+
         def full():
             q_out, k_out = fwd_fn()
             torch.autograd.grad((q_out, k_out), (q, k), (dq, dk), allow_unused=True)
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=[q, k], rep=400, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -127,12 +137,16 @@ def bench_speed_rope_model_config(input: SingleBenchmarkRunInput) -> SingleBench
         q_out, k_out = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: torch.autograd.grad((q_out, k_out), (q, k), (dq, dk), allow_unused=True, retain_graph=True),
-            grad_to_none=[q, k], rep=400, quantiles=QUANTILES,
+            grad_to_none=[q, k],
+            rep=400,
+            quantiles=QUANTILES,
         )
     elif mode == "full":
+
         def full():
             q_out, k_out = fwd_fn()
             torch.autograd.grad((q_out, k_out), (q, k), (dq, dk), allow_unused=True)
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=[q, k], rep=400, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -160,52 +174,70 @@ if __name__ == "__main__":
         def _probe_factory(model_cfg, probe_bt):
             def _probe():
                 probe_input = SingleBenchmarkRunInput(
-                    x=0, kernel_provider="huggingface",
+                    x=0,
+                    kernel_provider="huggingface",
                     extra_benchmark_config={
                         "hidden_size": model_cfg.hidden_size,
                         "num_q_heads": model_cfg.num_attention_heads,
                         "num_kv_heads": model_cfg.num_key_value_heads,
-                        "dtype": model_cfg.dtype, "seq_len": seq_len,
+                        "dtype": model_cfg.dtype,
+                        "seq_len": seq_len,
                     },
                 )
                 _, _, _, _, fwd_fn = _setup_rope(probe_input)
                 return fwd_fn()[0]  # return q_out for memory estimation
+
             return _probe
 
         sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
         model_configs_info = {
             cfg.name: {
-                "hidden_size": cfg.hidden_size, "num_q_heads": cfg.num_attention_heads,
-                "num_kv_heads": cfg.num_key_value_heads, "dtype": cfg.dtype,
+                "hidden_size": cfg.hidden_size,
+                "num_q_heads": cfg.num_attention_heads,
+                "num_kv_heads": cfg.num_key_value_heads,
+                "dtype": cfg.dtype,
             }
             for cfg in sweep.model_configs
         }
 
         common_configs = {
             "kernel_name": "rope",
-            "x_name": "model_config", "x_label": "model configuration",
+            "x_name": "model_config",
+            "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
             "kernel_providers": ["liger", "huggingface"],
             "extra_benchmark_configs": [{"model_configs": model_configs_info, "seq_len": seq_len}],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_rope_model_config,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_rope_model_config,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_rope_model_config,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_rope_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
     else:
         model = get_benchmark_model_config(args.model)
         probe_seq_len = 2048
 
         def _probe():
             probe_input = SingleBenchmarkRunInput(
-                x=0, kernel_provider="huggingface",
+                x=0,
+                kernel_provider="huggingface",
                 extra_benchmark_config={
                     "hidden_size": model.hidden_size,
                     "num_q_heads": model.num_attention_heads,
                     "num_kv_heads": model.num_key_value_heads,
-                    "dtype": model.dtype, "seq_len": probe_seq_len,
+                    "dtype": model.dtype,
+                    "seq_len": probe_seq_len,
                 },
             )
             _, _, _, _, fwd_fn = _setup_rope(probe_input)
@@ -217,17 +249,32 @@ if __name__ == "__main__":
 
         common_configs = {
             "kernel_name": "rope",
-            "x_name": "T", "x_label": "sequence length",
+            "x_name": "T",
+            "x_label": "sequence length",
             "x_values": [2**i for i in range(10, int(math.log2(max(1024, config.seq_len))) + 1)],
             "kernel_providers": ["liger", "huggingface"],
             "extra_benchmark_configs": [
-                {"hidden_size": model.hidden_size, "num_q_heads": model.num_attention_heads,
-                 "num_kv_heads": model.num_key_value_heads, "dtype": model.dtype}
+                {
+                    "hidden_size": model.hidden_size,
+                    "num_q_heads": model.num_attention_heads,
+                    "num_kv_heads": model.num_key_value_heads,
+                    "dtype": model.dtype,
+                }
             ],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_rope,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_rope,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_rope,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_rope,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )

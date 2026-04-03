@@ -338,7 +338,6 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
         providers = df.sort_values("kernel_provider")["kernel_provider"].unique()
         x_values = df["x_value"].unique()
         n_providers = len(providers)
-        n_x = len(x_values)
         bar_width = 0.8 / n_providers  # seaborn default total width is 0.8
 
         for i, provider in enumerate(providers):
@@ -352,7 +351,8 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
                 y_err_upper = row["y_value_80"].values[0] - y_val
                 bar_x = j + (i - (n_providers - 1) / 2) * bar_width
                 ax.errorbar(
-                    bar_x, y_val,
+                    bar_x,
+                    y_val,
                     yerr=[[y_err_lower], [y_err_upper]],
                     fmt="none",
                     color="black",

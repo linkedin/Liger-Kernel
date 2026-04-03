@@ -114,15 +114,31 @@ def _setup_fused_neighborhood_attention(input: SingleBenchmarkRunInput):
     batch_size = cfg.get("batch_size", 2)
     seq_len = cfg.get("seq_len", input.x)
 
-    liger_attn = LigerFusedNeighborhoodAttention(
-        hidden_size=hidden_size, num_heads=num_heads, kernel_size=kernel_size,
-        dilation=dilation, bias=bias, dropout=0.0,
-    ).to(device).to(dtype)
+    liger_attn = (
+        LigerFusedNeighborhoodAttention(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            kernel_size=kernel_size,
+            dilation=dilation,
+            bias=bias,
+            dropout=0.0,
+        )
+        .to(device)
+        .to(dtype)
+    )
 
-    torch_attn = TorchNeighborhoodAttention(
-        hidden_size=hidden_size, num_heads=num_heads, kernel_size=kernel_size,
-        dilation=dilation, bias=bias, dropout=0.0,
-    ).to(device).to(dtype)
+    torch_attn = (
+        TorchNeighborhoodAttention(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            kernel_size=kernel_size,
+            dilation=dilation,
+            bias=bias,
+            dropout=0.0,
+        )
+        .to(device)
+        .to(dtype)
+    )
 
     with torch.no_grad():
         torch_attn.q_proj.weight.copy_(liger_attn.q_proj.weight)
@@ -162,12 +178,17 @@ def bench_speed_fused_neighborhood_attention(input: SingleBenchmarkRunInput) -> 
     elif mode == "backward":
         y = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(dy, retain_graph=True), grad_to_none=[x], rep=100, quantiles=QUANTILES,
+            lambda: y.backward(dy, retain_graph=True),
+            grad_to_none=[x],
+            rep=100,
+            quantiles=QUANTILES,
         )
     elif mode == "full":
+
         def full():
             y = fwd_fn()
             y.backward(dy, retain_graph=True)
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=[x], rep=100, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -219,12 +240,17 @@ def bench_speed_fused_neighborhood_attention_model_config(input: SingleBenchmark
     elif mode == "backward":
         y = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(dy, retain_graph=True), grad_to_none=[x], rep=100, quantiles=QUANTILES,
+            lambda: y.backward(dy, retain_graph=True),
+            grad_to_none=[x],
+            rep=100,
+            quantiles=QUANTILES,
         )
     elif mode == "full":
+
         def full():
             y = fwd_fn()
             y.backward(dy, retain_graph=True)
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=[x], rep=100, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -253,42 +279,67 @@ if __name__ == "__main__":
         def _probe_factory(model_cfg, probe_bt):
             def _probe():
                 probe_input = SingleBenchmarkRunInput(
-                    x=0, kernel_provider="torch",
+                    x=0,
+                    kernel_provider="torch",
                     extra_benchmark_config={
                         "hidden_size": model_cfg.hidden_size,
                         "num_heads": model_cfg.num_attention_heads,
-                        "dtype": model_cfg.dtype, "seq_len": seq_len,
-                        "batch_size": batch_size, "kernel_size": 7, "dilation": 1, "bias": True,
+                        "dtype": model_cfg.dtype,
+                        "seq_len": seq_len,
+                        "batch_size": batch_size,
+                        "kernel_size": 7,
+                        "dilation": 1,
+                        "bias": True,
                     },
                 )
                 _, _, fwd_fn = _setup_fused_neighborhood_attention(probe_input)
                 return fwd_fn()
+
             return _probe
 
         sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
         model_configs_info = {
             cfg.name: {
-                "hidden_size": cfg.hidden_size, "num_heads": cfg.num_attention_heads, "dtype": cfg.dtype,
+                "hidden_size": cfg.hidden_size,
+                "num_heads": cfg.num_attention_heads,
+                "dtype": cfg.dtype,
             }
             for cfg in sweep.model_configs
         }
 
         common_configs = {
             "kernel_name": "fused_neighborhood_attention",
-            "x_name": "model_config", "x_label": "model configuration",
+            "x_name": "model_config",
+            "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
             "kernel_providers": ["liger", "torch"],
-            "extra_benchmark_configs": [{
-                "model_configs": model_configs_info, "seq_len": seq_len,
-                "batch_size": batch_size, "kernel_size": 7, "dilation": 1, "bias": True,
-            }],
+            "extra_benchmark_configs": [
+                {
+                    "model_configs": model_configs_info,
+                    "seq_len": seq_len,
+                    "batch_size": batch_size,
+                    "kernel_size": 7,
+                    "dilation": 1,
+                    "bias": True,
+                }
+            ],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_fused_neighborhood_attention_model_config,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_fused_neighborhood_attention_model_config,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_fused_neighborhood_attention_model_config,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_fused_neighborhood_attention_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
     else:
         model = get_benchmark_model_config(args.model)
         batch_size = 2
@@ -296,11 +347,17 @@ if __name__ == "__main__":
 
         def _probe():
             probe_input = SingleBenchmarkRunInput(
-                x=0, kernel_provider="torch",
+                x=0,
+                kernel_provider="torch",
                 extra_benchmark_config={
-                    "hidden_size": model.hidden_size, "num_heads": model.num_attention_heads,
-                    "dtype": model.dtype, "seq_len": probe_seq_len,
-                    "batch_size": batch_size, "kernel_size": 7, "dilation": 1, "bias": True,
+                    "hidden_size": model.hidden_size,
+                    "num_heads": model.num_attention_heads,
+                    "dtype": model.dtype,
+                    "seq_len": probe_seq_len,
+                    "batch_size": batch_size,
+                    "kernel_size": 7,
+                    "dilation": 1,
+                    "bias": True,
                 },
             )
             _, _, fwd_fn = _setup_fused_neighborhood_attention(probe_input)
@@ -312,18 +369,35 @@ if __name__ == "__main__":
 
         common_configs = {
             "kernel_name": "fused_neighborhood_attention",
-            "x_name": "seq_len", "x_label": "sequence length",
+            "x_name": "seq_len",
+            "x_label": "sequence length",
             "x_values": [2**i for i in range(6, int(math.log2(max(64, config.seq_len))) + 1)],
             "kernel_providers": ["liger", "torch"],
             "extra_benchmark_configs": [
-                {"hidden_size": model.hidden_size, "num_heads": model.num_attention_heads,
-                 "dtype": model.dtype, "batch_size": batch_size,
-                 "kernel_size": 7, "dilation": 1, "bias": True}
+                {
+                    "hidden_size": model.hidden_size,
+                    "num_heads": model.num_attention_heads,
+                    "dtype": model.dtype,
+                    "batch_size": batch_size,
+                    "kernel_size": 7,
+                    "dilation": 1,
+                    "bias": True,
+                }
             ],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_fused_neighborhood_attention,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_fused_neighborhood_attention,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_fused_neighborhood_attention,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_fused_neighborhood_attention,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )

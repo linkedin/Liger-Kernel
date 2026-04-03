@@ -137,7 +137,9 @@ def _setup_tiled_mlp(input: SingleBenchmarkRunInput):
     seq_len = cfg.get("seq_len", input.x)
 
     llama_config = LlamaConfig(
-        hidden_size=hidden_size, intermediate_size=intermediate_size, hidden_act=hidden_act,
+        hidden_size=hidden_size,
+        intermediate_size=intermediate_size,
+        hidden_act=hidden_act,
     )
 
     x = torch.randn(bsz, seq_len, hidden_size, device=device, dtype=dtype, requires_grad=True)
@@ -181,12 +183,17 @@ def bench_speed_tiled_mlp(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
         do = torch.randn_like(x)
         y = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(do, retain_graph=True), grad_to_none=[x], rep=10, quantiles=QUANTILES,
+            lambda: y.backward(do, retain_graph=True),
+            grad_to_none=[x],
+            rep=10,
+            quantiles=QUANTILES,
         )
     elif mode == "full":
+
         def full():
             y = fwd_fn()
             y.backward(torch.randn_like(y), retain_graph=True)
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=[x], rep=10, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -204,9 +211,11 @@ def bench_memory_tiled_mlp(input: SingleBenchmarkRunInput) -> SingleBenchmarkRun
         y = fwd_fn()
         mem_50, mem_20, mem_80 = _test_memory(lambda: y.backward(do, retain_graph=True), quantiles=QUANTILES)
     else:
+
         def full():
             y = fwd_fn()
             y.backward(torch.randn_like(y), retain_graph=True)
+
         mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
 
@@ -242,12 +251,17 @@ def bench_speed_tiled_mlp_model_config(input: SingleBenchmarkRunInput) -> Single
         do = torch.randn_like(x)
         y = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(do, retain_graph=True), grad_to_none=[x], rep=10, quantiles=QUANTILES,
+            lambda: y.backward(do, retain_graph=True),
+            grad_to_none=[x],
+            rep=10,
+            quantiles=QUANTILES,
         )
     elif mode == "full":
+
         def full():
             y = fwd_fn()
             y.backward(torch.randn_like(y), retain_graph=True)
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=[x], rep=10, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -265,9 +279,11 @@ def bench_memory_tiled_mlp_model_config(input: SingleBenchmarkRunInput) -> Singl
         y = fwd_fn()
         mem_50, mem_20, mem_80 = _test_memory(lambda: y.backward(do, retain_graph=True), quantiles=QUANTILES)
     else:
+
         def full():
             y = fwd_fn()
             y.backward(torch.randn_like(y), retain_graph=True)
+
         mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
     return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
 
@@ -284,43 +300,67 @@ def _run_tiled_mlp_benchmarks(args, activation_type, hidden_act, kernel_name):
         def _probe_factory(model_cfg, probe_bt):
             def _probe():
                 probe_input = SingleBenchmarkRunInput(
-                    x=0, kernel_provider="huggingface",
+                    x=0,
+                    kernel_provider="huggingface",
                     extra_benchmark_config={
-                        "hidden_size": model_cfg.hidden_size, "intermediate_size": model_cfg.intermediate_size,
-                        "hidden_act": hidden_act, "dtype": model_cfg.dtype,
-                        "activation_type": activation_type, "num_shards": 4,
-                        "bsz": bsz, "seq_len": seq_len,
+                        "hidden_size": model_cfg.hidden_size,
+                        "intermediate_size": model_cfg.intermediate_size,
+                        "hidden_act": hidden_act,
+                        "dtype": model_cfg.dtype,
+                        "activation_type": activation_type,
+                        "num_shards": 4,
+                        "bsz": bsz,
+                        "seq_len": seq_len,
                     },
                 )
                 _, fwd_fn = _setup_tiled_mlp(probe_input)
                 return fwd_fn()
+
             return _probe
 
         sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
         model_configs_info = {
             cfg.name: {
-                "hidden_size": cfg.hidden_size, "intermediate_size": cfg.intermediate_size,
-                "hidden_act": cfg.hidden_act, "dtype": cfg.dtype,
+                "hidden_size": cfg.hidden_size,
+                "intermediate_size": cfg.intermediate_size,
+                "hidden_act": cfg.hidden_act,
+                "dtype": cfg.dtype,
             }
             for cfg in sweep.model_configs
         }
 
         common_configs = {
             "kernel_name": kernel_name,
-            "x_name": "model_config", "x_label": "model configuration",
+            "x_name": "model_config",
+            "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
             "kernel_providers": kernel_providers,
-            "extra_benchmark_configs": [{
-                "model_configs": model_configs_info, "activation_type": activation_type,
-                "num_shards": 4, "bsz": bsz, "seq_len": seq_len,
-            }],
+            "extra_benchmark_configs": [
+                {
+                    "model_configs": model_configs_info,
+                    "activation_type": activation_type,
+                    "num_shards": 4,
+                    "bsz": bsz,
+                    "seq_len": seq_len,
+                }
+            ],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_tiled_mlp_model_config,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_tiled_mlp_model_config,
-                       kernel_operation_modes=["full", "forward", "backward"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_tiled_mlp_model_config,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_tiled_mlp_model_config,
+            kernel_operation_modes=["full", "forward", "backward"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
     else:
         model = get_benchmark_model_config(args.model)
         bsz = 2
@@ -328,12 +368,17 @@ def _run_tiled_mlp_benchmarks(args, activation_type, hidden_act, kernel_name):
 
         def _probe():
             probe_input = SingleBenchmarkRunInput(
-                x=0, kernel_provider="huggingface",
+                x=0,
+                kernel_provider="huggingface",
                 extra_benchmark_config={
-                    "hidden_size": model.hidden_size, "intermediate_size": model.intermediate_size,
-                    "hidden_act": hidden_act, "dtype": model.dtype,
-                    "activation_type": activation_type, "num_shards": 4,
-                    "bsz": bsz, "seq_len": probe_seq_len,
+                    "hidden_size": model.hidden_size,
+                    "intermediate_size": model.intermediate_size,
+                    "hidden_act": hidden_act,
+                    "dtype": model.dtype,
+                    "activation_type": activation_type,
+                    "num_shards": 4,
+                    "bsz": bsz,
+                    "seq_len": probe_seq_len,
                 },
             )
             _, fwd_fn = _setup_tiled_mlp(probe_input)
@@ -345,21 +390,38 @@ def _run_tiled_mlp_benchmarks(args, activation_type, hidden_act, kernel_name):
 
         common_configs = {
             "kernel_name": kernel_name,
-            "x_name": "T", "x_label": "sequence length",
+            "x_name": "T",
+            "x_label": "sequence length",
             "x_values": [2**i for i in range(10, int(math.log2(max(1024, config.seq_len))) + 1)],
             "kernel_providers": kernel_providers,
-            "extra_benchmark_configs": [{
-                "hidden_size": model.hidden_size, "intermediate_size": model.intermediate_size,
-                "hidden_act": hidden_act, "dtype": model.dtype,
-                "activation_type": activation_type, "num_shards": 4, "bsz": bsz,
-            }],
+            "extra_benchmark_configs": [
+                {
+                    "hidden_size": model.hidden_size,
+                    "intermediate_size": model.intermediate_size,
+                    "hidden_act": hidden_act,
+                    "dtype": model.dtype,
+                    "activation_type": activation_type,
+                    "num_shards": 4,
+                    "bsz": bsz,
+                }
+            ],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_tiled_mlp,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_tiled_mlp,
-                       kernel_operation_modes=["full", "forward", "backward"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_tiled_mlp,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_tiled_mlp,
+            kernel_operation_modes=["full", "forward", "backward"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
 
 
 if __name__ == "__main__":

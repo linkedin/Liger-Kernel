@@ -109,13 +109,23 @@ def _setup_distill_cosine_loss(input: SingleBenchmarkRunInput):
 
     if input.kernel_provider == "liger":
         loss_module = LigerCosineSimilarityLoss(
-            H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias,
-            weight_hard_loss=weight_hard_loss, weight_soft_loss=weight_soft_loss,
+            H=H,
+            V=V,
+            dtype=dtype,
+            ignore_index=ignore_index,
+            bias=bias,
+            weight_hard_loss=weight_hard_loss,
+            weight_soft_loss=weight_soft_loss,
         ).to(device)
     elif input.kernel_provider == "torch":
         loss_module = TorchCosineSimilarityLoss(
-            H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias,
-            weight_hard_loss=weight_hard_loss, weight_soft_loss=weight_soft_loss,
+            H=H,
+            V=V,
+            dtype=dtype,
+            ignore_index=ignore_index,
+            bias=bias,
+            weight_hard_loss=weight_hard_loss,
+            weight_soft_loss=weight_soft_loss,
         ).to(device)
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for DistillCosineLoss")

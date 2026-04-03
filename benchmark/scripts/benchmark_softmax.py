@@ -55,12 +55,17 @@ def bench_speed_softmax(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOut
     elif mode == "backward":
         y = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(dy, retain_graph=True), quantiles=QUANTILES, grad_to_none=[x], rep=500,
+            lambda: y.backward(dy, retain_graph=True),
+            quantiles=QUANTILES,
+            grad_to_none=[x],
+            rep=500,
         )
     elif mode == "full":
+
         def full():
             y = fwd_fn()
             y.backward(dy, retain_graph=True)
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, grad_to_none=[x], rep=500)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -103,12 +108,17 @@ def bench_speed_softmax_model_config(input: SingleBenchmarkRunInput) -> SingleBe
     elif mode == "backward":
         y = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(dy, retain_graph=True), quantiles=QUANTILES, grad_to_none=[x], rep=500,
+            lambda: y.backward(dy, retain_graph=True),
+            quantiles=QUANTILES,
+            grad_to_none=[x],
+            rep=500,
         )
     elif mode == "full":
+
         def full():
             y = fwd_fn()
             y.backward(dy, retain_graph=True)
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, grad_to_none=[x], rep=500)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -136,43 +146,60 @@ if __name__ == "__main__":
         def _probe_factory(model_cfg, probe_bt):
             def _probe():
                 probe_input = SingleBenchmarkRunInput(
-                    x=0, kernel_provider="torch",
+                    x=0,
+                    kernel_provider="torch",
                     extra_benchmark_config={
-                        "hidden_size": model_cfg.hidden_size, "dtype": model_cfg.dtype, "M": M,
+                        "hidden_size": model_cfg.hidden_size,
+                        "dtype": model_cfg.dtype,
+                        "M": M,
                     },
                 )
                 _, _, fwd_fn = _setup_softmax(probe_input)
                 return fwd_fn()
+
             return _probe
 
         sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
         model_configs_info = {
-            cfg.name: {"hidden_size": cfg.hidden_size, "dtype": cfg.dtype}
-            for cfg in sweep.model_configs
+            cfg.name: {"hidden_size": cfg.hidden_size, "dtype": cfg.dtype} for cfg in sweep.model_configs
         }
 
         common_configs = {
             "kernel_name": "softmax",
-            "x_name": "model_config", "x_label": "model configuration",
+            "x_name": "model_config",
+            "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
             "kernel_providers": ["liger", "torch"],
             "extra_benchmark_configs": [{"model_configs": model_configs_info, "M": M}],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_softmax_model_config,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_softmax_model_config,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_softmax_model_config,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_softmax_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
     else:
         model = get_benchmark_model_config(args.model)
         probe_bt = 2048
 
         def _probe():
             probe_input = SingleBenchmarkRunInput(
-                x=0, kernel_provider="torch",
+                x=0,
+                kernel_provider="torch",
                 extra_benchmark_config={
-                    "hidden_size": model.hidden_size, "dtype": model.dtype, "M": probe_bt,
+                    "hidden_size": model.hidden_size,
+                    "dtype": model.dtype,
+                    "M": probe_bt,
                 },
             )
             _, _, fwd_fn = _setup_softmax(probe_input)
@@ -184,16 +211,25 @@ if __name__ == "__main__":
 
         common_configs = {
             "kernel_name": "softmax",
-            "x_name": "BT", "x_label": "B x T",
+            "x_name": "BT",
+            "x_label": "B x T",
             "x_values": [2**i for i in range(10, int(math.log2(max(1024, config.batch_size * config.seq_len))) + 1)],
             "kernel_providers": ["liger", "torch"],
-            "extra_benchmark_configs": [
-                {"hidden_size": model.hidden_size, "dtype": model.dtype}
-            ],
+            "extra_benchmark_configs": [{"hidden_size": model.hidden_size, "dtype": model.dtype}],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_softmax,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_softmax,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_softmax,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_softmax,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )

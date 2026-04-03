@@ -146,14 +146,18 @@ if __name__ == "__main__":
             def _probe():
                 B = max(1, probe_bt // T)
                 probe_input = SingleBenchmarkRunInput(
-                    x=B, kernel_provider="huggingface",
+                    x=B,
+                    kernel_provider="huggingface",
                     extra_benchmark_config={
-                        "hidden_size": model_cfg.hidden_size, "vocab_size": model_cfg.vocab_size,
-                        "dtype": model_cfg.dtype, "T": T,
+                        "hidden_size": model_cfg.hidden_size,
+                        "vocab_size": model_cfg.vocab_size,
+                        "dtype": model_cfg.dtype,
+                        "T": T,
                     },
                 )
                 _, fwd_fn = _setup_simpo_loss(probe_input)
                 return fwd_fn()
+
             return _probe
 
         sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
@@ -165,17 +169,28 @@ if __name__ == "__main__":
 
         common_configs = {
             "kernel_name": "fused_linear_simpo_loss",
-            "x_name": "model_config", "x_label": "model configuration",
+            "x_name": "model_config",
+            "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
             "kernel_providers": ["liger", "huggingface"],
             "extra_benchmark_configs": [{"model_configs": model_configs_info, "B": B, "T": T}],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_simpo_loss_model_config,
-                       kernel_operation_modes=["forward", "full", "backward"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_simpo_loss_model_config,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_simpo_loss_model_config,
+            kernel_operation_modes=["forward", "full", "backward"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_simpo_loss_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
     else:
         model = get_benchmark_model_config(args.model)
         T = 1024
@@ -184,10 +199,13 @@ if __name__ == "__main__":
         def _probe():
             B = max(1, probe_bt // T)
             probe_input = SingleBenchmarkRunInput(
-                x=B, kernel_provider="huggingface",
+                x=B,
+                kernel_provider="huggingface",
                 extra_benchmark_config={
-                    "hidden_size": model.hidden_size, "vocab_size": model.vocab_size,
-                    "dtype": model.dtype, "T": T,
+                    "hidden_size": model.hidden_size,
+                    "vocab_size": model.vocab_size,
+                    "dtype": model.dtype,
+                    "T": T,
                 },
             )
             _, fwd_fn = _setup_simpo_loss(probe_input)
@@ -199,7 +217,8 @@ if __name__ == "__main__":
 
         common_configs = {
             "kernel_name": "fused_linear_simpo_loss",
-            "x_name": "B", "x_label": "Batch Size (B)",
+            "x_name": "B",
+            "x_label": "Batch Size (B)",
             "x_values": [2**i for i in range(1, int(math.log2(max(2, config.batch_size * config.seq_len // T))) + 1)],
             "kernel_providers": ["liger", "huggingface"],
             "extra_benchmark_configs": [
@@ -208,7 +227,17 @@ if __name__ == "__main__":
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_simpo_loss,
-                       kernel_operation_modes=["forward", "full", "backward"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_simpo_loss,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_simpo_loss,
+            kernel_operation_modes=["forward", "full", "backward"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_simpo_loss,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
