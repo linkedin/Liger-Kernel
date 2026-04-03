@@ -307,14 +307,19 @@ def layer_norm_backward(dY, X, W, B, Mean, RSTD):
 class LigerLayerNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, B, eps):
+    def forward(X, W, B, eps):
         Y, X, Mean, RSTD, BLOCK_SIZE, num_warps = layer_norm_forward(X, W, B, eps)
-        ctx.save_for_backward(X, W, B, Mean, RSTD)
-        return Y
+        return Y, X, Mean, RSTD
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        _X, W, B, eps = inputs
+        Y, X_out, Mean, RSTD = output
+        ctx.save_for_backward(X_out, W, B, Mean, RSTD)
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, dY):
+    def backward(ctx, dY, _dX_out, _dMean, _dRSTD):
         X, W, B, Mean, RSTD = ctx.saved_tensors
         DX, DW, DB = layer_norm_backward(dY, X, W, B, Mean, RSTD)
         return DX, DW, DB, None

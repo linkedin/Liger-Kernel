@@ -103,7 +103,7 @@ def test_liger_layer_norm_functional(
     b2 = b.clone().requires_grad_(True)
 
     y1 = liger_layer_norm(X=x1, W=w1, B=b1, eps=1e-6)
-    y2 = LigerLayerNormFunction.apply(x2, w2, b2, 1e-6)
+    y2 = LigerLayerNormFunction.apply(x2, w2, b2, 1e-6)[0]
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
 

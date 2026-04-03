@@ -18,7 +18,7 @@ class LigerLayerNorm(nn.Module):
         self.variance_epsilon = eps
 
     def forward(self, hidden_states):
-        return LigerLayerNormFunction.apply(hidden_states, self.weight, self.bias, self.variance_epsilon)
+        return LigerLayerNormFunction.apply(hidden_states, self.weight, self.bias, self.variance_epsilon)[0]
 
     def extra_repr(self):
         return f"{self.hidden_size}, eps={self.eps}"
