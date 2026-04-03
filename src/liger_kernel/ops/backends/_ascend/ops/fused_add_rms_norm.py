@@ -746,22 +746,29 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, R, W, eps, offset=0.0, casting_mode="llama", in_place=False):
+    def forward(X, R, W, eps, offset=0.0, casting_mode="llama", in_place=False):
         """
         X: (B, T, H) or (BxT, H)
         R: (B, T, H) or (BxT, H)
         W: (H,)
         """
         Y, S, RSTD, casting_mode = fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode)
+        return Y, S, RSTD, casting_mode
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        W = inputs[2]
+        offset = inputs[4] if len(inputs) > 4 else 0.0
+        in_place = inputs[6] if len(inputs) > 6 else False
+        Y, S, RSTD, casting_mode = output
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.in_place = in_place
         ctx.save_for_backward(S, W, RSTD)
-        return Y, S
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, dY, dS_out):
+    def backward(ctx, dY, dS_out, _grad_RSTD, _grad_casting_mode):
         """
         dY: (B, T, H) or (BxT, H)
         dS_out: (B, T, H) or (BxT, H)

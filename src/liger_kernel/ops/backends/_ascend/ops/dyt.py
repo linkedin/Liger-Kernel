@@ -272,10 +272,14 @@ def liger_dyt_bwd(dy, x, alpha, gamma, beta):
 class LigerDyTFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, x, alpha, gamma, beta):
+    def forward(x, alpha, gamma, beta):
         y = liger_dyt_fwd(x, alpha, gamma, beta)
-        ctx.save_for_backward(x, alpha, gamma, beta)
         return y
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        x, alpha, gamma, beta = inputs
+        ctx.save_for_backward(x, alpha, gamma, beta)
 
     @staticmethod
     @ensure_contiguous

@@ -630,7 +630,6 @@ def reduce_loss(per_token_loss, mask, loss_type, max_completion_length, batch_si
 
 
 def grpo_loss_forward_triton(
-    ctx,
     logits,
     old_logp,
     ref_logp,
@@ -760,7 +759,7 @@ def grpo_loss_forward_triton(
             BLOCK_N=block_n,
         )
 
-        ctx.save_for_backward(
+        saved_tensors = (
             logits,
             old_logp,
             ref_logp,
@@ -800,11 +799,11 @@ def grpo_loss_forward_triton(
             N,
             BLOCK_N=block_n,
         )
-        ctx.save_for_backward(
+        saved_tensors = (
             logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, vllm_is_ratio_ptr
         )
 
-    ctx.infos = (
+    infos = (
         temperature,
         beta,
         eps_low,
@@ -832,10 +831,10 @@ def grpo_loss_forward_triton(
         loss_out = loss * mask
         kl_out = kl * mask if kl is not None else None
         is_clipped_out = is_clipped * mask
-        return loss_out, kl_out, is_clipped_out
+        return loss_out, kl_out, is_clipped_out, saved_tensors, infos
 
     reduced_loss = reduce_loss(loss, mask, loss_type, max_completion_length, B, L)
-    return reduced_loss, kl_mean, clip_ratio
+    return reduced_loss, kl_mean, clip_ratio, saved_tensors, infos
 
 
 def grpo_loss_backward_triton(ctx, *args):
@@ -997,10 +996,19 @@ def grpo_loss_backward_triton(ctx, *args):
 class GrpoLossFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, *args):
-        return grpo_loss_forward_triton(ctx, *args)
+    def forward(*args):
+        result = grpo_loss_forward_triton(*args)
+        return result
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        result1, result2, result3, saved_tensors, infos = output
+        ctx.save_for_backward(*saved_tensors)
+        ctx.infos = infos
 
     @staticmethod
     @ensure_contiguous
     def backward(ctx, *args):
-        return grpo_loss_backward_triton(ctx, *args)
+        # args has 5 grad outputs (3 original + 2 for saved_tensors, infos)
+        # grpo_loss_backward_triton only uses args[0]
+        return grpo_loss_backward_triton(ctx, *args[:3])

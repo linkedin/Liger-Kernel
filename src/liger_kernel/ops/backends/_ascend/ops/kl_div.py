@@ -275,7 +275,6 @@ class LigerKLDivLossFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(
-        ctx,
         y_pred: torch.Tensor,
         y_true: torch.Tensor,
         reduction: REDUCTION_LITERAL = "batchmean",
@@ -285,7 +284,6 @@ class LigerKLDivLossFunction(torch.autograd.Function):
         """A forward pass for the KL Divergence Loss.
 
         Args:
-            ctx: Torch autograd context
             y_pred (torch.Tensor): A tensor of shape (BT, V) containing the predicted values, expected to be log-probabilities.
             y_true (torch.Tensor): A tensor of shape (BT, V) containing the target values, expected to be either probabilities or log-probabilities, depending on the value of `log_target`.
             reduction (REDUCTION_LITERAL, optional): Reduction to be used. Defaults to "batchmean".
@@ -295,10 +293,16 @@ class LigerKLDivLossFunction(torch.autograd.Function):
         Returns:
             torch.Tensor: The computed KL Divergence Loss, with shape (BT, V) if `reduction` is "none", else a scalar.
         """
+        return kldiv_forward_triton(y_pred, y_true, log_target=log_target, reduction=reduction, eps=eps)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        y_true = inputs[1]
+        reduction = inputs[2] if len(inputs) > 2 else "batchmean"
+        log_target = inputs[3] if len(inputs) > 3 else False
         ctx.save_for_backward(y_true)
         ctx.reduction = reduction
         ctx.log_target = log_target
-        return kldiv_forward_triton(y_pred, y_true, log_target=log_target, reduction=reduction, eps=eps)
 
     @staticmethod
     @ensure_contiguous

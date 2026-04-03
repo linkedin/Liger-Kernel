@@ -171,7 +171,6 @@ class LigerTVDLossFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(
-        ctx,
         p: torch.Tensor,
         q: torch.Tensor,
         shift_labels: Optional[torch.Tensor] = None,
@@ -181,7 +180,6 @@ class LigerTVDLossFunction(torch.autograd.Function):
         """A forward pass for the Total Variation Distance Loss.
 
         Args:
-            ctx: Torch autograd context
             p (torch.Tensor): A tensor of shape (BT, V) containing the first distribution.
             q (torch.Tensor): A tensor of shape (BT, V) containing the second distribution.
             shift_labels (Optional[torch.Tensor]): A tensor of shape (BT,) containing the labels.
@@ -200,12 +198,16 @@ class LigerTVDLossFunction(torch.autograd.Function):
             has_label = True
 
         loss, grads = tv_distance_forward_triton(p, q, shift_labels, reduction, ignore_index, has_label)
+        return loss, grads
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        loss, grads = output
         ctx.save_for_backward(grads)
-        return loss
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
+    def backward(ctx, grad_output: torch.Tensor, _grad_grads) -> torch.Tensor:
         """A backward pass for the Total Variation Distance Loss.
 
         Args:

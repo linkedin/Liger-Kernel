@@ -738,7 +738,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, in_place):
 class LigerRMSNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, eps, offset=0.0, casting_mode="llama", in_place=True, row_mode=None):
+    def forward(X, W, eps, offset=0.0, casting_mode="llama", in_place=True, row_mode=None):
         """
         X: (B, T, H) or (BxT, H)
         W: (H,)
@@ -751,6 +751,14 @@ class LigerRMSNormFunction(torch.autograd.Function):
             X = X.full_tensor()
 
         Y, X, RSTD, casting_mode = rms_norm_forward(X, W, eps, offset, casting_mode)
+        return Y, X, RSTD, casting_mode
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        W = inputs[1]
+        offset = inputs[3] if len(inputs) > 3 else 0.0
+        in_place = inputs[5] if len(inputs) > 5 else True
+        Y, X, RSTD, casting_mode = output
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.in_place = in_place
@@ -759,11 +767,10 @@ class LigerRMSNormFunction(torch.autograd.Function):
             ctx.save_for_backward(X, W, RSTD)
         else:
             ctx.save_for_backward(X, RSTD)
-        return Y
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, dY):
+    def backward(ctx, dY, _grad_X, _grad_RSTD, _grad_casting_mode):
         """
         Y: (B, T, H) or (BxT, H)
         """

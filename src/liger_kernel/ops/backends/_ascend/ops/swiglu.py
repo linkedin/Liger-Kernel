@@ -124,10 +124,14 @@ def swiglu_backward(a, b, dc):
 
 class LigerSiLUMulFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, a, b):
+    def forward(a, b):
         c = swiglu_forward(a, b)
-        ctx.save_for_backward(a, b)
         return c
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        a, b = inputs
+        ctx.save_for_backward(a, b)
 
     @staticmethod
     def backward(ctx, dc):

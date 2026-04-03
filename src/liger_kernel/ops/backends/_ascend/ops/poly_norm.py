@@ -754,7 +754,7 @@ class LigerPolyNormFunction(torch.autograd.Function):
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, B, eps=1e-6, in_place=True):
+    def forward(X, W, B, eps=1e-6, in_place=True):
         """
         Args:
             X: input tensor of shape (B, T, H) or (BxT, H)
@@ -767,13 +767,19 @@ class LigerPolyNormFunction(torch.autograd.Function):
             Y: output tensor of same shape as X
         """
         Y, X, RSTD = poly_norm_forward(X, W, B, eps)
+        return Y, X, RSTD
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        W = inputs[1]
+        in_place = inputs[4] if len(inputs) > 4 else True
+        Y, X, RSTD = output
         ctx.in_place = in_place
         ctx.save_for_backward(X, W, RSTD)
-        return Y
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output, _grad_X, _grad_RSTD):
         """
         Args:
             grad_output: gradient of output

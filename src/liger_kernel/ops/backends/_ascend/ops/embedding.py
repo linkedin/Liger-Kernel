@@ -196,10 +196,14 @@ def embedding_backward(embeddings, indices, grad_output):
 class LigerEmbeddingFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, embeddings: torch.Tensor, indices: torch.Tensor):
+    def forward(embeddings: torch.Tensor, indices: torch.Tensor):
         output = embedding_forward(embeddings, indices)
-        ctx.save_for_backward(indices, embeddings)
         return output
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        embeddings, indices = inputs
+        ctx.save_for_backward(indices, embeddings)
 
     @staticmethod
     @ensure_contiguous

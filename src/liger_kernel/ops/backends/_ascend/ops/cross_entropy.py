@@ -474,7 +474,6 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        ctx,
         _input: torch.Tensor,
         target: torch.Tensor,
         weight: Optional[torch.FloatTensor],
@@ -491,7 +490,6 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         The forward pass of the Liger Cross Entropy loss.
 
         Parameters:
-        ctx : The context object.
         _input (tensor): The input tensor of shape (BT, V) where B is batch size, T is sequence length, V is vocab size.
         target (tensor): The target tensor of shape (BT) where each value is in [0, V-1].
         weight(Tensor, optional): a manual rescaling weight given to each class. If given, has to be a Tensor of size V and floating point dtype
@@ -505,7 +503,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         return_predicted_tokens (bool): When `return_predicted_tokens` is `True`, returns per-token predicted class indices (argmax) without materializing logits. Default: `False`
 
         Returns:
-        tuple: A tuple with the computed losses, accuracy, and predicted tokens: (loss, z_loss, token_accuracy, predicted_tokens). z_loss, token_accuracy, and predicted_tokens are None if not requested.
+        tuple: A tuple with the computed losses, accuracy, and predicted tokens: (loss, z_loss, token_accuracy, predicted_tokens, _input). z_loss, token_accuracy, and predicted_tokens are None if not requested.
         """
         input_requires_grad = _input.requires_grad
 
@@ -522,16 +520,23 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             return_token_accuracy,
             return_predicted_tokens,
         )
-        if input_requires_grad:
+        return loss, z_loss, token_accuracy, predicted_tokens, _input
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        original_input = inputs[0]
+        return_z_loss = inputs[8] if len(inputs) > 8 else False
+        return_token_accuracy = inputs[9] if len(inputs) > 9 else False
+        return_predicted_tokens = inputs[10] if len(inputs) > 10 else False
+        loss, z_loss, token_accuracy, predicted_tokens, _input = output
+        if original_input.requires_grad:
             ctx.save_for_backward(_input.detach())
         ctx.return_z_loss = return_z_loss
         ctx.return_token_accuracy = return_token_accuracy
         ctx.return_predicted_tokens = return_predicted_tokens
 
-        return loss, z_loss, token_accuracy, predicted_tokens
-
     @staticmethod
-    def backward(ctx, grad_output, grad_output2, grad_output3, grad_output4):
+    def backward(ctx, grad_output, grad_output2, grad_output3, grad_output4, _grad_input):
         """
         The backward pass of the Liger Cross Entropy loss.
 

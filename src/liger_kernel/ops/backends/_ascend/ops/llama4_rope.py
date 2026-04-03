@@ -293,11 +293,15 @@ def llama4_rope_backward(dq, dk, freqs_cis):
 
 class LigerLlama4RopeFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, q, k, freqs_cis, BLOCK_SIZE: int = None):
+    def forward(q, k, freqs_cis, BLOCK_SIZE: int = None):
         # BLOCK_SIZE is ignored for Ascend (we auto-tile heads by UB), kept for API compatibility
         q_out, k_out = llama4_rope_forward(q, k, freqs_cis)
-        ctx.save_for_backward(freqs_cis.detach() if isinstance(freqs_cis, torch.Tensor) else freqs_cis)
         return q_out, k_out
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        freqs_cis = inputs[2]
+        ctx.save_for_backward(freqs_cis.detach() if isinstance(freqs_cis, torch.Tensor) else freqs_cis)
 
     @staticmethod
     def backward(ctx, dq, dk):

@@ -246,7 +246,7 @@ def qwen2vl_mrope_backward(dq, dk, cos, sin, mrope_section):
 
 class LigerQwen2VLMRopeFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, q, k, cos, sin, mrope_section, unsqueeze_dim=1):
+    def forward(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
         """
         q size: (bsz, n_q_head, seq_len, head_dim)
         k size: (bsz, n_kv_head, seq_len, head_dim)
@@ -254,12 +254,17 @@ class LigerQwen2VLMRopeFunction(torch.autograd.Function):
         sin size: (3, bsz, seq_len, head_dim)
         """
         q, k, cos, sin = qwen2vl_mrope_forward(q, k, cos, sin, mrope_section)
-        ctx.save_for_backward(cos, sin)
-        ctx.mrope_section = mrope_section
-        return q, k
+        return q, k, cos.view_as(cos), sin.view_as(sin)
 
     @staticmethod
-    def backward(ctx, dq, dk):
+    def setup_context(ctx, inputs, output):
+        mrope_section = inputs[4]
+        q, k, cos, sin = output
+        ctx.save_for_backward(cos, sin)
+        ctx.mrope_section = mrope_section
+
+    @staticmethod
+    def backward(ctx, dq, dk, _grad_cos, _grad_sin):
         """
         dq size: (bsz, n_q_head, seq_len, head_dim)
         dk size: (bsz, n_kv_head, seq_len, head_dim)
