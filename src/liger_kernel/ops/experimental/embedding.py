@@ -76,7 +76,7 @@ def embedding_backward_kernel(
 class LigerEmbeddingFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, embeddings: torch.Tensor, indices: torch.Tensor):
+    def forward(embeddings: torch.Tensor, indices: torch.Tensor):
         ori_shape = indices.shape
         indices = indices.view(-1)
         output = torch.empty(
@@ -106,9 +106,12 @@ class LigerEmbeddingFunction(torch.autograd.Function):
             BLOCK_SIZE_N=BLOCK_SIZE_N,
         )
 
-        ctx.save_for_backward(indices, embeddings)
-
         return output.view(*ori_shape, -1)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        embeddings, indices = inputs
+        ctx.save_for_backward(indices, embeddings)
 
     @staticmethod
     @ensure_contiguous
