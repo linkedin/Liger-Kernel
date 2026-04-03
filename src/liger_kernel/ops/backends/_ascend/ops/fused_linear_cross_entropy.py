@@ -13,18 +13,11 @@ def get_optimal_block_size(n_cols, has_gradients=True):
     """
     Calculate optimal Block Size using compute_default_tiling_strategy
     """
-    # Cross entropy is more memory intensive than swiglu because it needs softmax computation
-    # Forward needs online softmax calculation, backward needs more memory for intermediate variables
-    # 10.0 and 16.0 are empirical values based on Atlas 800I A2 UB (192KB)
     multiplier = 12.0 if has_gradients else 8.0
-
-    # Call calculation function
-    # Treat input as 1D (n_cols,), only tiling on dim 0
     tile_shapes = compute_default_tiling_strategy(
         safety_margin=0.9, dtype_size=4, memory_multiplier=multiplier, shapes=((n_cols,),), tiling_dims=(0,)
     )
 
-    # Parse result
     if tile_shapes and len(tile_shapes) > 0:
         block_size = tile_shapes[0][0]
         return block_size
@@ -37,14 +30,10 @@ def get_optimal_block_size_element_mul(n_cols, dtype_size):
     Calculate optimal Block Size using compute_default_tiling_strategy for element-wise multiplication in backward pass
     """
     multiplier = 3.0
-
-    # Call calculation function
-    # Treat input as 1D (n_cols,), only tiling on dim 0
     tile_shapes = compute_default_tiling_strategy(
         safety_margin=0.9, dtype_size=dtype_size, memory_multiplier=multiplier, shapes=((n_cols,),), tiling_dims=(0,)
     )
 
-    # Parse result
     if tile_shapes and len(tile_shapes) > 0:
         block_size = tile_shapes[0][0]
         return block_size
@@ -77,16 +66,7 @@ def fused_linear_cross_entropy_forward(
         f"return_predicted_tokens must be True or False. Got: {return_predicted_tokens}"
     )
     device = _input.device
-
     input_requires_grad = _input.requires_grad
-
-    # inputs have shape: BT x H
-    # materialized activations will have shape: BT x V
-    # the increase in memory = BT x V
-    # reduction can be achieved by partitioning the number of tokens BT into smaller chunks.
-    # for ex: if we were to achieve the same memory consumption as BT x H, then the chunk size should be:
-    # inc_factor = (V+H-1)//H, chunk_size = (BT + inc_factor - 1)//inc_factor
-    # for ex: BT = 4096*4, V = 32000, H = 4096 ==> inc_factor = 8, chunk_size = 2048
     BT, H = _input.shape
     V = weight.shape[0]
     BLOCK_SIZE = get_optimal_block_size(V, has_gradients=_input.requires_grad)
@@ -130,13 +110,15 @@ def fused_linear_cross_entropy_forward(
         if ce_weight.stride(-1) != 1:
             ce_weight = ce_weight.contiguous()
 
+    num_cores = get_npu_core_count()
+    logits = _input @ weight.t()  # BT x V
+
     for chunk_id in range(num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = min((chunk_id + 1) * chunk_size, BT)
-        _input_chunk = _input[start_idx:end_idx]  # chunk_size x H
+        # # when doing matmul, use the original precision
 
-        # when doing matmul, use the original precision
-        logits_chunk = _input_chunk @ weight.t()  # chunk_size x V
+        logits_chunk = logits[start_idx:end_idx]  # chunk_size x V
         if bias is not None:
             logits_chunk = logits_chunk + bias
 
@@ -183,10 +165,7 @@ def fused_linear_cross_entropy_forward(
         # ensure _input and target are contiguous
         logits_chunk = logits_chunk.contiguous()
         target_chunk = target_chunk.contiguous()
-        num_cores = get_npu_core_count()
 
-        # Here we calculate the gradient of logits_chunk in place so we can save memory.
-        # Grid size is capped at NPU core count; the kernel uses a grid-stride loop
         liger_cross_entropy_kernel[(min(n_rows, num_cores),)](
             X_ptr=logits_chunk,
             X_stride=logits_chunk.stride(-2),
@@ -247,31 +226,26 @@ def fused_linear_cross_entropy_forward(
         if input_requires_grad:
             grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
-        if grad_weight is not None and input_requires_grad:
-            grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
+        if bias is not None:
+            logits[start_idx:end_idx] = grad_logits_chunk
 
-        if bias is not None and input_requires_grad:
-            torch.add(
-                input=grad_bias,
-                other=grad_logits_chunk.sum(dim=0),
-                out=grad_bias,
-                alpha=1.0,
-            )
-
-    # Need extra calculations for backward if reduction=='none'. Not supporting reduction='none' now.
-    # if reduction == "none":
-    #     loss = loss_1d
-    #     z_loss = z_loss_1d if return_z_loss else None
+    if grad_weight is not None and input_requires_grad:
+        grad_weight = logits.t() @ _input
+    if bias is not None and input_requires_grad:
+        torch.add(
+            input=grad_bias,
+            other=logits.sum(dim=0),
+            out=grad_bias,
+            alpha=1.0,
+        )
 
     if reduction == "none":
-        # Return per-token losses
         loss = loss_1d
         z_loss = z_loss_1d if return_z_loss else None
         token_accuracy = token_accuracy_1d if return_token_accuracy else None
     else:
         loss = torch.sum(loss_1d)
         z_loss = torch.sum(z_loss_1d) if return_z_loss else None
-        # For accuracy, we compute the mean across all non-ignored tokens
         token_accuracy = torch.sum(token_accuracy_1d) / total_n_non_ignore if return_token_accuracy else None
 
     predicted_tokens = predicted_tokens_1d if return_predicted_tokens else None
@@ -286,8 +260,6 @@ def fused_linear_cross_entropy_forward(
 def fused_linear_cross_entropy_backward(grad_output, grad_input, grad_weight, grad_bias):
     # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
     if not torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
-        # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
         BT, H = grad_input.shape
         n_rows = BT
         BLOCK_SIZE = get_optimal_block_size_element_mul(H, grad_output.element_size())
