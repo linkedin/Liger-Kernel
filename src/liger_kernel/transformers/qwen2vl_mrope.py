@@ -17,4 +17,5 @@ def liger_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section, unsqueeze_dim
         Tuple[torch.Tensor, torch.Tensor]: The query and key tensors after applying the M-RoPE operation.
     """
 
-    return LigerQwen2VLMRopeFunction.apply(q, k, cos, sin, mrope_section, unsqueeze_dim)
+    q, k, _, _ = LigerQwen2VLMRopeFunction.apply(q, k, cos, sin, mrope_section, unsqueeze_dim)
+    return q, k

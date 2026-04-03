@@ -111,7 +111,7 @@ def test_functional_correctness(bsz, seq_len, num_q_heads, num_kv_heads, head_di
     cos, sin = rotary_emb(k1, pos_ids)
 
     functional_q, functional_k = liger_qwen2vl_mrope(q1, k1, cos, sin, mrope_section)
-    class_q, class_k = LigerQwen2VLMRopeFunction.apply(q2, k2, cos, sin, mrope_section)
+    class_q, class_k, _, _ = LigerQwen2VLMRopeFunction.apply(q2, k2, cos, sin, mrope_section)
 
     torch.testing.assert_close(functional_q, class_q, atol=atol, rtol=rtol)
     torch.testing.assert_close(functional_k, class_k, atol=atol, rtol=rtol)
