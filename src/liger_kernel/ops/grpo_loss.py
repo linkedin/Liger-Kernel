@@ -550,7 +550,6 @@ def _reduce_loss(per_token_loss, mask, loss_type, max_completion_length, B, L):
 class GrpoLossFunction(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx,
         logits,
         old_logp,
         ref_logp,
@@ -692,20 +691,9 @@ class GrpoLossFunction(torch.autograd.Function):
                 **kwargs,
             )
 
-            # Save extra tensors for backward
-            ctx.save_for_backward(
-                logits,
-                old_logp,
-                ref_logp,
-                completion_ids,
-                advantages,
-                completion_mask,
-                lse,
-                mask,
-                coef_1,
-                seq_lens,
-                vllm_is_ratio_ptr,
-            )
+            # Save coef_1 and seq_lens for sequence-level backward
+            _coef_1 = coef_1
+            _seq_lens = seq_lens
         else:
             # Token-level: use optimized Triton kernel with LOSS_TYPE branching
             kwargs = {"BLOCK_N": 2048, "num_stages": 2, "num_warps": 1}
@@ -735,29 +723,8 @@ class GrpoLossFunction(torch.autograd.Function):
                 N,
                 **kwargs,
             )
-            ctx.save_for_backward(
-                logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, vllm_is_ratio_ptr
-            )
-
-        ctx.infos = (
-            temperature,
-            beta,
-            eps_low,
-            eps_high,
-            inplace,
-            loss_type,
-            loss_type_int,
-            sapo_temperature_pos,
-            sapo_temperature_neg,
-            max_completion_length,
-            B,
-            L,
-            importance_sampling_level,
-            vllm_is_ratio_stride,
-            reduce,
-            delta_val,
-            use_bias_correction_kl,
-        )
+            _coef_1 = None
+            _seq_lens = None
 
         # Compute metrics before reduction
         mask_sum = mask.sum().clamp(min=1.0)
@@ -768,10 +735,48 @@ class GrpoLossFunction(torch.autograd.Function):
             loss_out = loss * mask
             kl_out = kl * mask if kl is not None else None
             is_clipped_out = is_clipped * mask
-            return loss_out, kl_out, is_clipped_out
+            return loss_out, kl_out, is_clipped_out, lse, mask, _coef_1, _seq_lens, vllm_is_ratio_ptr
 
         reduced_loss = _reduce_loss(loss, mask, loss_type, max_completion_length, B, L)
-        return reduced_loss, kl_mean, clip_ratio
+        return reduced_loss, kl_mean, clip_ratio, lse, mask, _coef_1, _seq_lens, vllm_is_ratio_ptr
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        (
+            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask,
+            temperature, beta, eps_low, eps_high, inplace, loss_type,
+            max_completion_length, reduce, importance_sampling_level,
+            sapo_temperature_pos, sapo_temperature_neg, vllm_is_ratio, delta,
+            use_bias_correction_kl,
+        ) = inputs
+        # output has 8 elements: 3 main outputs + 5 intermediates
+        _, _, _, lse, mask, coef_1, seq_lens, vllm_is_ratio_ptr = output
+
+        B, L_ADD_1, N = logits.shape
+        L = L_ADD_1 - 1
+        loss_type_int = _str_to_loss_type[loss_type]
+        delta_val = 0.0 if delta is None else float(delta)
+        vllm_is_ratio_stride = L  # default
+        if vllm_is_ratio is not None:
+            vllm_is_ratio_stride = vllm_is_ratio.shape[1] if vllm_is_ratio.dim() > 1 else 1
+
+        if importance_sampling_level == "sequence":
+            ctx.save_for_backward(
+                logits, old_logp, ref_logp, completion_ids, advantages,
+                completion_mask, lse, mask, coef_1, seq_lens, vllm_is_ratio_ptr,
+            )
+        else:
+            ctx.save_for_backward(
+                logits, old_logp, ref_logp, completion_ids, advantages,
+                completion_mask, lse, mask, vllm_is_ratio_ptr,
+            )
+
+        ctx.infos = (
+            temperature, beta, eps_low, eps_high, inplace, loss_type, loss_type_int,
+            sapo_temperature_pos, sapo_temperature_neg, max_completion_length,
+            B, L, importance_sampling_level, vllm_is_ratio_stride, reduce, delta_val,
+            use_bias_correction_kl,
+        )
 
     @staticmethod
     def backward(ctx, *args):

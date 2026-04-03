@@ -89,11 +89,12 @@ def triton_grpo_loss(
     )
 
     if not reduce:
-        # Returns (per_token_loss, per_token_kl, is_clipped) - all (B, L) tensors
-        return result
+        # Returns (per_token_loss, per_token_kl, is_clipped, ...) - first 3 are (B, L) tensors
+        per_token_loss, per_token_kl, is_clipped, *_ = result
+        return per_token_loss, per_token_kl, is_clipped
 
-    # reduce=True: Returns (reduced_loss, kl_mean, clip_ratio) - all scalars
-    reduced_loss, kl_mean, clip_ratio = result
+    # reduce=True: Returns (reduced_loss, kl_mean, clip_ratio, ...) - first 3 are scalars
+    reduced_loss, kl_mean, clip_ratio, *_ = result
     metrics = []
     if beta != 0.0 and kl_mean is not None:
         metrics.append(kl_mean)
