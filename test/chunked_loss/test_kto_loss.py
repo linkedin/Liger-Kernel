@@ -366,7 +366,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
     ref_bias1 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
     ref_bias2 = _ref_bias.detach().clone().requires_grad_(True) if ref_bias else None
 
-    loss1, aggregated_aux_outputs1 = LigerFusedLinearKTOFunction.apply(
+    loss1, aggregated_aux_outputs1, _, _, _ = LigerFusedLinearKTOFunction.apply(
         input1,
         weight1,
         target,
@@ -377,7 +377,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
         ref_bias1,
         kl,
     )
-    loss2, aggregated_aux_outputs2 = liger_fused_linear_kto(
+    loss2, aggregated_aux_outputs2, _, _, _ = liger_fused_linear_kto(
         input2,
         weight2,
         target,

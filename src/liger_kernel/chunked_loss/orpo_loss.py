@@ -45,7 +45,6 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
     @classmethod
     def forward(
         cls,
-        ctx,
         _input,
         weight,
         target,
@@ -75,7 +74,6 @@ class LigerFusedLinearORPOFunction(LigerFusedLinearPreferenceBase):
         """
         return super().forward(
             cls=cls,
-            ctx=ctx,
             _input=_input,
             weight=weight,
             target=target,
@@ -130,7 +128,7 @@ class LigerFusedLinearORPOLoss(torch.nn.Module):
         bias=None,
         nll_target=None,
     ):
-        return LigerFusedLinearORPOFunction.apply(
+        result = LigerFusedLinearORPOFunction.apply(
             _input,
             lin_weight,
             target,
@@ -142,3 +140,5 @@ class LigerFusedLinearORPOLoss(torch.nn.Module):
             self.compiled,
             self.chunk_size,
         )
+        # Return only loss and aux outputs, not the grad tensors
+        return result[0], result[1]

@@ -35,7 +35,6 @@ class LigerFusedLinearCosineSimilarityFunction(LigerFusedLinearDistillationBase)
     @classmethod
     def forward(
         cls,
-        ctx,
         student_input: torch.Tensor,
         student_weight: torch.Tensor,
         teacher_input: torch.Tensor,
@@ -54,7 +53,6 @@ class LigerFusedLinearCosineSimilarityFunction(LigerFusedLinearDistillationBase)
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         return super().forward(
             cls=cls,
-            ctx=ctx,
             student_input=student_input,
             student_weight=student_weight,
             teacher_input=teacher_input,
@@ -123,7 +121,7 @@ class LigerFusedLinearCosineSimilarityLoss(torch.nn.Module):
         student_bias: torch.Tensor = None,
         teacher_bias: torch.Tensor = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
-        return LigerFusedLinearCosineSimilarityFunction.apply(
+        result = LigerFusedLinearCosineSimilarityFunction.apply(
             student_input,
             student_weight,
             teacher_input,
@@ -140,3 +138,7 @@ class LigerFusedLinearCosineSimilarityLoss(torch.nn.Module):
             self.chunk_size,
             self.return_soft_hard_loss,
         )
+        # Return only loss (and optionally soft/hard losses), not the grad tensors
+        if self.return_soft_hard_loss:
+            return result[0], result[1], result[2]
+        return result[0]

@@ -59,7 +59,6 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
     @classmethod
     def forward(
         cls,
-        ctx,
         student_input: torch.Tensor,
         student_weight: torch.Tensor,
         teacher_input: torch.Tensor,
@@ -97,7 +96,6 @@ class LigerFusedLinearJSDFunction(LigerFusedLinearDistillationBase):
         """
         return super().forward(
             cls=cls,
-            ctx=ctx,
             student_input=student_input,
             student_weight=student_weight,
             teacher_input=teacher_input,
@@ -196,7 +194,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
                 If return_soft_hard_loss is False: Computed combined loss
                 If return_soft_hard_loss is True: Tuple of (combined_loss, soft_loss, hard_loss)
         """
-        return LigerFusedLinearJSDFunction.apply(
+        result = LigerFusedLinearJSDFunction.apply(
             student_input,
             student_weight,
             teacher_input,
@@ -213,3 +211,7 @@ class LigerFusedLinearJSDLoss(torch.nn.Module):
             self.chunk_size,
             self.return_soft_hard_loss,
         )
+        # Return only loss (and optionally soft/hard losses), not the grad tensors
+        if self.return_soft_hard_loss:
+            return result[0], result[1], result[2]
+        return result[0]

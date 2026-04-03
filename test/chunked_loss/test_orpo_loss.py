@@ -252,8 +252,8 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias):
     bias1 = _bias.detach().clone().requires_grad_(True) if bias else None
     bias2 = _bias.detach().clone().requires_grad_(True) if bias else None
 
-    loss1, _ = LigerFusedLinearORPOFunction.apply(input1, weight1, target, bias1)
-    loss2, _ = liger_fused_linear_orpo(input2, weight2, target, bias2)
+    loss1, _, _, _, _ = LigerFusedLinearORPOFunction.apply(input1, weight1, target, bias1)
+    loss2, _, _, _, _ = liger_fused_linear_orpo(input2, weight2, target, bias2)
 
     assert_verbose_allclose(loss1, loss2, atol=atol, rtol=rtol)
 

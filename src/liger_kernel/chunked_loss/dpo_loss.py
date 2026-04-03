@@ -98,7 +98,6 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
     @classmethod
     def forward(
         cls,
-        ctx,
         _input,
         weight,
         target,
@@ -137,7 +136,6 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         """
         return super().forward(
             cls=cls,
-            ctx=ctx,
             _input=_input,
             weight=weight,
             target=target,
@@ -210,7 +208,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         ref_weight=None,
         ref_bias=None,
     ):
-        return LigerFusedLinearDPOFunction.apply(
+        result = LigerFusedLinearDPOFunction.apply(
             _input,
             lin_weight,
             target,
@@ -227,3 +225,5 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             self.chunk_size,
             self.loss_type,
         )
+        # Return only loss and aux outputs, not the grad tensors
+        return result[0], result[1]

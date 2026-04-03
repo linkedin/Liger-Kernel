@@ -745,7 +745,7 @@ def test_functional_correctness(
     old_per_token_logps = None
     ref_per_token_logps = None
 
-    loss1, aux1 = liger_fused_linear_grpo(
+    loss1, aux1, _, _, _ = liger_fused_linear_grpo(
         input1,
         weight1,
         selected_token_ids,
@@ -769,7 +769,7 @@ def test_functional_correctness(
         1,
     )
 
-    loss2, aux2 = LigerFusedLinearGRPOFunction.apply(
+    loss2, aux2, _, _, _ = LigerFusedLinearGRPOFunction.apply(
         input2,
         weight2,
         selected_token_ids,

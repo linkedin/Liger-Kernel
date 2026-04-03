@@ -50,7 +50,6 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
     @classmethod
     def forward(
         cls,
-        ctx,
         _input,
         weight,
         target,
@@ -84,7 +83,6 @@ class LigerFusedLinearSimPOFunction(LigerFusedLinearPreferenceBase):
         """
         return super().forward(
             cls=cls,
-            ctx=ctx,
             _input=_input,
             weight=weight,
             target=target,
@@ -149,7 +147,7 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
         target,
         bias=None,
     ):
-        return LigerFusedLinearSimPOFunction.apply(
+        result = LigerFusedLinearSimPOFunction.apply(
             _input,
             lin_weight,
             target,
@@ -163,3 +161,5 @@ class LigerFusedLinearSimPOLoss(torch.nn.Module):
             self.gamma,
             self.chunk_size,
         )
+        # Return only loss and aux outputs, not the grad tensors
+        return result[0], result[1]

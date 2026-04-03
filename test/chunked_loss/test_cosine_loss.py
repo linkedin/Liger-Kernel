@@ -277,7 +277,7 @@ def test_correctness_functional(
     target = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
     # Functional call using the fused cosine similarity function
-    output1 = liger_fused_linear_cosine(
+    output1, *_ = liger_fused_linear_cosine(
         student_input1,
         student_weight1,
         teacher_input,
@@ -293,7 +293,7 @@ def test_correctness_functional(
         True,
         1024,
     )
-    output2 = LigerFusedLinearCosineSimilarityFunction.apply(
+    output2, *_ = LigerFusedLinearCosineSimilarityFunction.apply(
         student_input2,
         student_weight2,
         teacher_input,

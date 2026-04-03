@@ -224,7 +224,6 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
     @classmethod
     def forward(
         cls,
-        ctx,
         _input,
         weight,
         selected_token_ids,
@@ -290,7 +289,6 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
 
         return super().forward(
             cls=cls,
-            ctx=ctx,
             _input=_input,
             weight=weight,
             selected_token_ids=selected_token_ids,
@@ -432,7 +430,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         ref_bias=None,
         vllm_is_ratio=None,
     ):
-        return LigerFusedLinearGRPOFunction.apply(
+        result = LigerFusedLinearGRPOFunction.apply(
             _input,
             lin_weight,
             selected_token_ids,
@@ -460,3 +458,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.delta,
             self.use_bias_correction_kl,
         )
+        # Return only loss and metrics, not the grad tensors
+        return result[0], result[1]

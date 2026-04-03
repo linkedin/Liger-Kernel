@@ -71,7 +71,6 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
     @classmethod
     def forward(
         cls,
-        ctx,
         _input,
         weight,
         target,
@@ -111,7 +110,6 @@ class LigerFusedLinearKTOFunction(LigerFusedLinearUnpairedPreferenceBase):
         """
         return super().forward(
             cls=cls,
-            ctx=ctx,
             _input=_input,
             weight=weight,
             target=target,
@@ -191,7 +189,7 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
         ref_bias=None,
         kl=None,
     ):
-        return LigerFusedLinearKTOFunction.apply(
+        result = LigerFusedLinearKTOFunction.apply(
             _input,
             lin_weight,
             target,
@@ -208,3 +206,5 @@ class LigerFusedLinearKTOLoss(torch.nn.Module):
             self.average_log_prob,
             self.chunk_size,
         )
+        # Return only loss and aux outputs, not the grad tensors
+        return result[0], result[1]

@@ -399,7 +399,7 @@ def test_correctness_functional(
 
     label = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
-    output1 = liger_fused_linear_jsd(
+    output1, *_ = liger_fused_linear_jsd(
         student_input1,
         student_weight1,
         teacher_input,
@@ -413,7 +413,7 @@ def test_correctness_functional(
         ignore_index,
         temperature,
     )
-    output2 = LigerFusedLinearJSDFunction.apply(
+    output2, *_ = LigerFusedLinearJSDFunction.apply(
         student_input2,
         student_weight2,
         teacher_input,
