@@ -31,7 +31,7 @@ class LigerFusedAddRMSNorm(nn.Module):
             self.offset,
             self.casting_mode,
             self.in_place,
-        )
+        )[:2]
 
     def extra_repr(self):
         return (

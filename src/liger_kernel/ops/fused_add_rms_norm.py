@@ -372,24 +372,29 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, R, W, eps, offset=0.0, casting_mode="llama", in_place=False):
+    def forward(X, R, W, eps, offset=0.0, casting_mode="llama", in_place=False):
         """
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
         # TODO: add row_mode
         Y, S, RSTD, BLOCK_SIZE, num_warps, casting_mode = fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode)
+        return Y, S, RSTD, BLOCK_SIZE, num_warps, casting_mode
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        X, R, W, eps, offset, casting_mode, in_place = inputs
+        Y, S, RSTD, BLOCK_SIZE, num_warps, casting_mode_out = output
         ctx.offset = offset
-        ctx.casting_mode = casting_mode
+        ctx.casting_mode = casting_mode_out
         ctx.in_place = in_place
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
         ctx.save_for_backward(S, W, RSTD)
-        return Y, S
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, dY, dS_out):
+    def backward(ctx, dY, dS_out, _dRSTD, _dBLOCK_SIZE, _dnum_warps, _dcasting_mode):
         """
         Y: (B, T, H) or (BxT, H)
         """
@@ -407,4 +412,4 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
             ctx.in_place,
         )
 
-        return dX, dR, dW, None, None, None, None, None
+        return dX, dR, dW, None, None, None, None
