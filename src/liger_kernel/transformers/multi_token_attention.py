@@ -61,4 +61,4 @@ class LigerMultiTokenAttention(nn.Module):
             self.dilation,
             self.groups,
             self.sparse,
-        )
+        )[0]

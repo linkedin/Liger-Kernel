@@ -118,26 +118,20 @@ def _mask_zero_backward(grad: torch.Tensor) -> torch.Tensor:
 class LigerMultiTokenAttentionFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, scores, weight, bias=None, stride=1, padding=0, dilation=1, groups=1, sparse=False):
+    def forward(scores, weight, bias=None, stride=1, padding=0, dilation=1, groups=1, sparse=False):
         scores_inf = _mask_inf_forward(scores)
 
         out_flat_sparse = None
         activation_output = None
-
-        ctx.sparse = sparse
 
         if sparse:
             if scores_inf.dtype != torch.float32:
                 raise RuntimeError("Liger sparse multi-token attention currently only supports fp32 input scores")
             probs_sparse, out_flat_sparse = _sparsemax_forward(scores_inf, dim=-1)
             activation_output = probs_sparse
-            ctx.save_for_backward(scores_inf, activation_output, out_flat_sparse, weight, bias)
-            ctx.out_flat_sparse_saved = True
         else:
             probs_softmax, _, _, _ = _softmax_forward(scores_inf)
             activation_output = probs_softmax
-            ctx.save_for_backward(scores_inf, activation_output, weight, bias)
-            ctx.out_flat_sparse_saved = False
 
         out_conv = F.conv2d(
             activation_output,
@@ -151,17 +145,36 @@ class LigerMultiTokenAttentionFunction(torch.autograd.Function):
 
         out = _mask_zero_forward(out_conv)
 
+        return out, scores_inf, activation_output, out_flat_sparse
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        scores, weight, bias = inputs[:3]
+        stride = inputs[3] if len(inputs) > 3 else 1
+        padding = inputs[4] if len(inputs) > 4 else 0
+        dilation = inputs[5] if len(inputs) > 5 else 1
+        groups = inputs[6] if len(inputs) > 6 else 1
+        sparse = inputs[7] if len(inputs) > 7 else False
+
+        out, scores_inf, activation_output, out_flat_sparse = output
+
+        ctx.sparse = sparse
+        if sparse:
+            ctx.save_for_backward(scores_inf, activation_output, out_flat_sparse, weight, bias)
+            ctx.out_flat_sparse_saved = True
+        else:
+            ctx.save_for_backward(scores_inf, activation_output, weight, bias)
+            ctx.out_flat_sparse_saved = False
+
         ctx.stride = _pair(stride)
         ctx.padding = _pair(padding)
         ctx.dilation = _pair(dilation)
         ctx.groups = groups
         ctx.dim = -1
 
-        return out
-
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, grad_out):
+    def backward(ctx, grad_out, _grad_scores_inf, _grad_activation_output, _grad_out_flat_sparse):
         if ctx.out_flat_sparse_saved:
             scores_inf, activation_output, out_flat_sparse, weight, bias = ctx.saved_tensors
         else:
