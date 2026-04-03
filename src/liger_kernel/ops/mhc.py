@@ -1392,7 +1392,6 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(  # type: ignore[override]
-        ctx: Any,
         x: torch.Tensor,  # [..., HC, C] bf16/fp16 (or fp32 if allow_fp32)
         phi: torch.Tensor,  # [HC*C, M]
         b: torch.Tensor,  # [M]
@@ -1405,7 +1404,7 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
         pre_eps: float,
         sinkhorn_eps: float,
         post_mult: float,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if allow_fp32:
             assert x.dtype in (
                 torch.bfloat16,
@@ -1429,47 +1428,18 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
         mix, invr = mhc_mm_norm_fwd(x_mat, phi, eps=float(rms_eps))
 
         # (2) split + sigmoid + sinkhorn
-        need_hist = any(ctx.needs_input_grad)
-        if need_hist:
-            h_pre, h_post, h_res, hist = mhc_split_sinkhorn_fwd(
-                mix,
-                b,
-                alpha_pre,
-                alpha_post,
-                alpha_res,
-                tmax=int(tmax),
-                pre_eps=float(pre_eps),
-                sinkhorn_eps=float(sinkhorn_eps),
-                post_mult=float(post_mult),
-                return_hist=True,
-            )
-        else:
-            h_pre, h_post, h_res = mhc_split_sinkhorn_fwd(
-                mix,
-                b,
-                alpha_pre,
-                alpha_post,
-                alpha_res,
-                tmax=int(tmax),
-                pre_eps=float(pre_eps),
-                sinkhorn_eps=float(sinkhorn_eps),
-                post_mult=float(post_mult),
-            )
-            hist = None
-
-        # Save for backward
-        if hist is not None:
-            ctx.save_for_backward(x_mat, phi, b, mix, invr, alpha_pre, alpha_post, alpha_res, hist)
-        else:
-            ctx.save_for_backward(x_mat, phi, b, mix, invr, alpha_pre, alpha_post, alpha_res)
-        ctx.meta = (
-            x_shape,
-            HC,
-            C,
-            int(tmax),
-            float(sinkhorn_eps),
-            float(post_mult),
-            hist is not None,
+        # Always compute history since we cannot check needs_input_grad without ctx
+        h_pre, h_post, h_res, hist = mhc_split_sinkhorn_fwd(
+            mix,
+            b,
+            alpha_pre,
+            alpha_post,
+            alpha_res,
+            tmax=int(tmax),
+            pre_eps=float(pre_eps),
+            sinkhorn_eps=float(sinkhorn_eps),
+            post_mult=float(post_mult),
+            return_hist=True,
         )
 
         # Reshape to original leading dims
@@ -1478,6 +1448,35 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
             h_pre.view(*outer, HC),
             h_post.view(*outer, HC),
             h_res.view(*outer, HC, HC),
+            x_mat, mix, invr, hist,
+        )
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        x = inputs[0]
+        phi = inputs[1]
+        b = inputs[2]
+        alpha_pre = inputs[3]
+        alpha_post = inputs[4]
+        alpha_res = inputs[5]
+        tmax = inputs[7]
+        sinkhorn_eps = inputs[10]
+        post_mult = inputs[11]
+
+        h_pre, h_post, h_res, x_mat, mix, invr, hist = output
+        x_shape = x.shape
+        x_flat, _ = _flatten_tokens(x)
+        N, HC, C = x_flat.shape
+
+        ctx.save_for_backward(x_mat, phi, b, mix, invr, alpha_pre, alpha_post, alpha_res, hist)
+        ctx.meta = (
+            x_shape,
+            HC,
+            C,
+            int(tmax),
+            float(sinkhorn_eps),
+            float(post_mult),
+            True,
         )
 
     @staticmethod
@@ -1487,6 +1486,10 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
         grad_h_pre: torch.Tensor | None,
         grad_h_post: torch.Tensor | None,
         grad_h_res: torch.Tensor | None,
+        _grad_x_mat,
+        _grad_mix,
+        _grad_invr,
+        _grad_hist,
     ):
         saved = ctx.saved_tensors
         x_shape, HC, C, tmax, sinkhorn_eps, post_mult, has_hist = ctx.meta
@@ -1615,19 +1618,24 @@ class LigerMHCCoeffsFunction(torch.autograd.Function):
 class LigerMHCPreFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx: Any, x: torch.Tensor, h_pre: torch.Tensor) -> torch.Tensor:
+    def forward(x: torch.Tensor, h_pre: torch.Tensor) -> torch.Tensor:
         x_shape = x.shape
         x_flat, _ = _flatten_tokens(x)
         h_pre_flat = h_pre.view(-1, x_flat.shape[1]).to(torch.float32)
         out = mhc_pre_fwd(x_flat, h_pre_flat)  # [N,C] fp32
-        ctx.save_for_backward(x_flat, h_pre_flat)
-        ctx.x_shape = x_shape
         out = out.to(x_flat.dtype)
-        return out.view(*x_shape[:-2], out.shape[-1])
+        return out.view(*x_shape[:-2], out.shape[-1]), x_flat, h_pre_flat
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        x, h_pre = inputs
+        out_val, x_flat, h_pre_flat = output
+        ctx.save_for_backward(x_flat, h_pre_flat)
+        ctx.x_shape = x.shape
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx: Any, grad_out: torch.Tensor):
+    def backward(ctx: Any, grad_out: torch.Tensor, _grad_x_flat, _grad_h_pre_flat):
         x_flat, h_pre_flat = ctx.saved_tensors
         x_shape = ctx.x_shape
         N, HC, C = x_flat.shape
@@ -1641,7 +1649,7 @@ class LigerMHCPostResFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(
-        ctx: Any, x: torch.Tensor, f_out: torch.Tensor, h_post: torch.Tensor, h_res: torch.Tensor
+        x: torch.Tensor, f_out: torch.Tensor, h_post: torch.Tensor, h_res: torch.Tensor
     ) -> torch.Tensor:
         x_shape = x.shape
         x_flat, _ = _flatten_tokens(x)
@@ -1650,14 +1658,19 @@ class LigerMHCPostResFunction(torch.autograd.Function):
         h_post_flat = h_post.view(-1, HC).to(torch.float32)
         h_res_flat = h_res.view(-1, HC, HC).to(torch.float32)
         out = mhc_post_res_fwd(x_flat, f_flat, h_post_flat, h_res_flat)  # [N,HC,C] fp32
-        ctx.save_for_backward(x_flat, f_flat, h_post_flat, h_res_flat)
-        ctx.x_shape = x_shape
         out = out.to(x_flat.dtype)
-        return out.view(*x_shape)
+        return out.view(*x_shape), x_flat, f_flat, h_post_flat, h_res_flat
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        x = inputs[0]
+        out_val, x_flat, f_flat, h_post_flat, h_res_flat = output
+        ctx.save_for_backward(x_flat, f_flat, h_post_flat, h_res_flat)
+        ctx.x_shape = x.shape
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx: Any, grad_out: torch.Tensor):
+    def backward(ctx: Any, grad_out: torch.Tensor, _grad_x_flat, _grad_f_flat, _grad_h_post_flat, _grad_h_res_flat):
         x_flat, f_flat, h_post_flat, h_res_flat = ctx.saved_tensors
         x_shape = ctx.x_shape
         N, HC, C = x_flat.shape
