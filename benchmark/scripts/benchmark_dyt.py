@@ -1,9 +1,12 @@
+import math
 import os
 import sys
 
 import torch
 
-from benchmark_model_configs import compute_hidden_size_sweep_config
+from benchmark_model_configs import MODEL_REGISTRY
+from benchmark_model_configs import compute_model_config_sweep_config
+from benchmark_model_configs import compute_seq_len_sweep_config
 from benchmark_model_configs import estimate_kernel_peak_memory
 from benchmark_model_configs import get_benchmark_model_config
 from utils import SingleBenchmarkRunInput
@@ -26,8 +29,9 @@ def _setup_dyt(input: SingleBenchmarkRunInput):
     from test.transformers.test_dyt import TorchDyT
 
     cfg = input.extra_benchmark_config
-    hidden_size = input.x
-    x = torch.randn(cfg["BT"], hidden_size, device=device, dtype=cfg["dtype"], requires_grad=True)
+    hidden_size = cfg["hidden_size"]
+    bt = input.x
+    x = torch.randn(bt, hidden_size, device=device, dtype=cfg["dtype"], requires_grad=True)
     if input.kernel_provider == "liger":
         layer = LigerDyT(hidden_size=hidden_size, beta=cfg["beta"]).to(device)
     elif input.kernel_provider == "torch":
@@ -49,48 +53,147 @@ def bench_memory_dyt(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
     return run_memory_benchmark(lambda: layer(x), input.kernel_operation_mode)
 
 
-BT = 4096
+def _resolve_model_config_dyt(input: SingleBenchmarkRunInput):
+    """Resolve model-config-sweep input into standard setup args."""
+    cfg = input.extra_benchmark_config
+    model_info = cfg["model_configs"][input.x]
+    return _setup_dyt(
+        SingleBenchmarkRunInput(
+            x=cfg["BT"],
+            kernel_provider=input.kernel_provider,
+            extra_benchmark_config={
+                "hidden_size": model_info["hidden_size"],
+                "dtype": model_info["dtype"],
+                "beta": cfg["beta"],
+            },
+        )
+    )
+
+
+def bench_speed_dyt_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    x, layer = _resolve_model_config_dyt(input)
+    return run_speed_benchmark(lambda: layer(x), input.kernel_operation_mode, [x])
+
+
+def bench_memory_dyt_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    x, layer = _resolve_model_config_dyt(input)
+    return run_memory_benchmark(lambda: layer(x), input.kernel_operation_mode)
+
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
-    model = get_benchmark_model_config(args.model)
 
-    for beta in [False, True]:
+    if args.sweep_mode == "model_config":
+        all_model_configs = list(MODEL_REGISTRY.values())
 
-        def _probe():
-            probe_input = SingleBenchmarkRunInput(
-                x=model.hidden_size,
-                kernel_provider="torch",
-                extra_benchmark_config={"BT": BT, "dtype": model.dtype, "beta": beta},
+        for beta in [False, True]:
+
+            def _probe_factory(model_cfg, probe_bt, _beta=beta):
+                def _probe():
+                    probe_input = SingleBenchmarkRunInput(
+                        x=probe_bt,
+                        kernel_provider="torch",
+                        extra_benchmark_config={
+                            "hidden_size": model_cfg.hidden_size,
+                            "dtype": model_cfg.dtype,
+                            "beta": _beta,
+                        },
+                    )
+                    x, layer = _setup_dyt(probe_input)
+                    return layer(x)
+
+                return _probe
+
+            sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
+
+            model_configs_info = {
+                cfg.name: {
+                    "hidden_size": cfg.hidden_size,
+                    "dtype": cfg.dtype,
+                }
+                for cfg in sweep.model_configs
+            }
+            common_configs = {
+                "kernel_name": f"dyt_beta={beta}",
+                "x_name": "model_config",
+                "x_label": "model configuration",
+                "x_values": [cfg.name for cfg in sweep.model_configs],
+                "kernel_providers": ["liger", "torch", "torch_compile"],
+                "extra_benchmark_configs": [
+                    {
+                        "model_configs": model_configs_info,
+                        "BT": sweep.bt,
+                        "beta": beta,
+                    }
+                ],
+                "overwrite": args.overwrite,
+            }
+
+            run_benchmarks(
+                bench_test_fn=bench_speed_dyt_model_config,
+                kernel_operation_modes=["full", "forward", "backward"],
+                metric_name="speed",
+                metric_unit="ms",
+                **common_configs,
             )
-            x, layer = _setup_dyt(probe_input)
-            return layer(x)
+            run_benchmarks(
+                bench_test_fn=bench_memory_dyt_model_config,
+                kernel_operation_modes=["full", "forward", "backward"],
+                metric_name="memory",
+                metric_unit="MB",
+                **common_configs,
+            )
+    else:
+        model = get_benchmark_model_config(args.model)
+        probe_bt = 1024
 
-        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
-        sweep_config = compute_hidden_size_sweep_config(model, peak_bytes, bt=BT)
-        x_values = [1024 * i for i in range(1, 17) if 1024 * i <= sweep_config.max_hidden_size] or [model.hidden_size]
+        for beta in [False, True]:
 
-        common_configs = {
-            "kernel_name": f"dyt_beta={beta}",
-            "x_name": "hidden_size",
-            "x_label": "hidden_size",
-            "x_values": x_values,
-            "kernel_providers": ["liger", "torch", "torch_compile"],
-            "extra_benchmark_configs": [{"BT": sweep_config.bt, "dtype": model.dtype, "beta": beta}],
-            "overwrite": args.overwrite,
-        }
+            def _probe():
+                probe_input = SingleBenchmarkRunInput(
+                    x=probe_bt,
+                    kernel_provider="torch",
+                    extra_benchmark_config={
+                        "hidden_size": model.hidden_size,
+                        "dtype": model.dtype,
+                        "beta": beta,
+                    },
+                )
+                x, layer = _setup_dyt(probe_input)
+                return layer(x)
 
-        run_benchmarks(
-            bench_test_fn=bench_speed_dyt,
-            kernel_operation_modes=["full", "forward", "backward"],
-            metric_name="speed",
-            metric_unit="ms",
-            **common_configs,
-        )
-        run_benchmarks(
-            bench_test_fn=bench_memory_dyt,
-            kernel_operation_modes=["full", "forward", "backward"],
-            metric_name="memory",
-            metric_unit="MB",
-            **common_configs,
-        )
+            peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
+            kernel_bpt = peak_bytes // probe_bt
+
+            config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+
+            common_configs = {
+                "kernel_name": f"dyt_beta={beta}",
+                "x_name": "BT",
+                "x_label": "B * T",
+                "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
+                "kernel_providers": ["liger", "torch", "torch_compile"],
+                "extra_benchmark_configs": [
+                    {
+                        "hidden_size": model.hidden_size,
+                        "dtype": model.dtype,
+                        "beta": beta,
+                    }
+                ],
+                "overwrite": args.overwrite,
+            }
+
+            run_benchmarks(
+                bench_test_fn=bench_speed_dyt,
+                kernel_operation_modes=["full", "forward", "backward"],
+                metric_name="speed",
+                metric_unit="ms",
+                **common_configs,
+            )
+            run_benchmarks(
+                bench_test_fn=bench_memory_dyt,
+                kernel_operation_modes=["full", "forward", "backward"],
+                metric_name="memory",
+                metric_unit="MB",
+                **common_configs,
+            )
