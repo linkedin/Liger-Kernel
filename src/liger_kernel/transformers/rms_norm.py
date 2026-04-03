@@ -43,7 +43,7 @@ class LigerRMSNorm(nn.Module):
             self.casting_mode,
             self.in_place,
             self.row_mode,
-        )
+        )[0]
 
     def extra_repr(self):
         return f"weight_shape={tuple(self.weight.shape) if self.weight is not None else None}, eps={self.variance_epsilon}, offset={self.offset}, in_place={self.in_place}, row_mode={self.row_mode}"

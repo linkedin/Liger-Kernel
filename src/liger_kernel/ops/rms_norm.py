@@ -604,7 +604,7 @@ class LigerRMSNormFunction(torch.autograd.Function):
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, eps, offset=0.0, casting_mode="llama", in_place=True, row_mode=None):
+    def forward(X, W, eps, offset=0.0, casting_mode="llama", in_place=True, row_mode=None):
         """
         X: (B, T, H) or (BxT, H)
         W: (H,)
@@ -617,22 +617,27 @@ class LigerRMSNormFunction(torch.autograd.Function):
             X = X.full_tensor()
 
         Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(X, W, eps, offset, casting_mode, row_mode)
+        return Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        X, W, eps, offset, casting_mode, in_place, row_mode = inputs
+        Y, X_out, RSTD, BLOCK_SIZE, num_warps, casting_mode_out = output
         ctx.offset = offset
-        ctx.casting_mode = casting_mode
+        ctx.casting_mode = casting_mode_out
         ctx.in_place = in_place
         ctx.row_mode = row_mode
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
         ctx.elementwise_affine = W is not None
         if W is not None:
-            ctx.save_for_backward(X, W, RSTD)
+            ctx.save_for_backward(X_out, W, RSTD)
         else:
-            ctx.save_for_backward(X, RSTD)
-        return Y
+            ctx.save_for_backward(X_out, RSTD)
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, dY):
+    def backward(ctx, dY, _dX_out, _dRSTD, _dBLOCK_SIZE, _dnum_warps, _dcasting_mode):
         """
         Y: (B, T, H) or (BxT, H)
         """
