@@ -34,18 +34,12 @@ class LigerTiledMLPFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(
-        ctx,
         fn: Callable,
         mlp_module: torch.nn.Module,
         x: torch.Tensor,
         shards: int,
         compute_params: Optional[List[torch.nn.Parameter]] = None,
     ) -> torch.Tensor:
-        ctx.fn = fn
-        ctx.mlp_module = mlp_module
-        ctx.shards = shards
-        ctx.save_for_backward(x)
-
         # x.shape could be [bs, seqlen, hidden_size] or [seqlen, hidden_size] (moe experts)
         x_shards = list(torch.chunk(x, chunks=shards, dim=-2))
         with torch.no_grad():
@@ -53,6 +47,14 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         output_unsharded = torch.cat(output_shards, dim=-2)
 
         return output_unsharded
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        fn, mlp_module, x, shards = inputs[:4]
+        ctx.fn = fn
+        ctx.mlp_module = mlp_module
+        ctx.shards = shards
+        ctx.save_for_backward(x)
 
     @staticmethod
     @ensure_contiguous
