@@ -44,7 +44,7 @@ class LigerTiledGEGLUMLP(nn.Module):
         """Internal MLP forward function for tiled computation."""
         gate = module.gate_proj(x)
         up = module.up_proj(x)
-        return module.down_proj(LigerGELUMulFunction.apply(gate, up))
+        return module.down_proj(LigerGELUMulFunction.apply(gate, up)[0])
 
     def forward(self, x):
         """
@@ -101,7 +101,7 @@ class LigerTiledSwiGLUMLP(nn.Module):
         """Internal MLP forward function for tiled computation."""
         gate = module.gate_proj(x)
         up = module.up_proj(x)
-        return module.down_proj(LigerSiLUMulFunction.apply(gate, up))
+        return module.down_proj(LigerSiLUMulFunction.apply(gate, up)[0])
 
     def forward(self, x):
         """

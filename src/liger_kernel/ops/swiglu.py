@@ -103,7 +103,7 @@ def swiglu_backward(a, b, dc):
 class LigerSiLUMulFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, a, b):
+    def forward(a, b):
         if isinstance(a, torch.distributed.tensor.DTensor) or isinstance(b, torch.distributed.tensor.DTensor):
             device_mesh, placements = (
                 (a.device_mesh, a.placements)
@@ -118,18 +118,23 @@ class LigerSiLUMulFunction(torch.autograd.Function):
             if not isinstance(b, torch.distributed.tensor.DTensor):
                 b = torch.distributed.tensor.distribute_tensor(b, device_mesh=device_mesh, placements=placements)
             a_local, b_local, c_local = swiglu_forward(a.to_local(), b.to_local())
-            ctx.save_for_backward(a_local, b_local)
-            ctx.dtensor_metadata = (device_mesh, placements)
-            return torch.distributed.tensor.DTensor.from_local(c_local, device_mesh, placements)
+            c = torch.distributed.tensor.DTensor.from_local(c_local, device_mesh, placements)
+            dtensor_metadata = (device_mesh, placements)
+            return c, a_local, b_local, dtensor_metadata
         else:
             a, b, c = swiglu_forward(a, b)
-            ctx.save_for_backward(a, b)
-            ctx.dtensor_metadata = None
-            return c
+            dtensor_metadata = None
+            return c, a, b, dtensor_metadata
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        c, a, b, dtensor_metadata = output
+        ctx.save_for_backward(a, b)
+        ctx.dtensor_metadata = dtensor_metadata
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, dc):
+    def backward(ctx, dc, _da, _db, _dmeta):
         a, b = ctx.saved_tensors
         if ctx.dtensor_metadata is not None:
             device_mesh, placements = ctx.dtensor_metadata

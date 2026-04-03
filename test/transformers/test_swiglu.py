@@ -396,7 +396,7 @@ def test_correctness_functional(bsz, seq_len, size, dtype, atol, rtol):
     b2 = _b.clone().requires_grad_(True)
 
     y1 = liger_swiglu(a=x1, b=b1)
-    y2 = LigerSiLUMulFunction.apply(x2, b2)
+    y2 = LigerSiLUMulFunction.apply(x2, b2)[0]
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
 
@@ -446,8 +446,8 @@ def _test_dtensor_liger_silumul(rank, world_size, bsz, seq_len, hidden_size, dty
     a2 = _a.clone().detach().requires_grad_(True)
     b2 = _b.clone().detach().requires_grad_(True)
 
-    c1 = LigerSiLUMulFunction.apply(da, db)
-    c2 = LigerSiLUMulFunction.apply(a2, b2)
+    c1 = LigerSiLUMulFunction.apply(da, db)[0]
+    c2 = LigerSiLUMulFunction.apply(a2, b2)[0]
 
     torch.testing.assert_close(c1.full_tensor(), c2, atol=atol, rtol=rtol)
 
