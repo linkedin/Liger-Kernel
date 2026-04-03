@@ -36,7 +36,7 @@ class LigerPolyNorm(nn.Module):
             self.bias,
             self.variance_epsilon,
             self.in_place,
-        )
+        )[0]
 
     def extra_repr(self):
         return f"weight_shape={tuple(self.weight.shape)}, eps={self.variance_epsilon}, in_place={self.in_place}"

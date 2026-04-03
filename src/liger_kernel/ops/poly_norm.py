@@ -350,7 +350,7 @@ class LigerPolyNormFunction(torch.autograd.Function):
 
     @staticmethod
     @ensure_contiguous
-    def forward(ctx, X, W, B, eps=1e-6, in_place=True):
+    def forward(X, W, B, eps=1e-6, in_place=True):
         """
         Args:
             X: input tensor of shape (B, T, H) or (BxT, H)
@@ -361,17 +361,26 @@ class LigerPolyNormFunction(torch.autograd.Function):
 
         Returns:
             Y: output tensor of same shape as X
+            X: input tensor (for setup_context)
+            RSTD: reciprocal standard deviation (for setup_context)
+            BLOCK_SIZE: triton block size (for setup_context)
+            num_warps: triton num warps (for setup_context)
         """
         Y, X, RSTD, BLOCK_SIZE, num_warps = poly_norm_forward(X, W, B, eps)
+        return Y, X, RSTD, BLOCK_SIZE, num_warps
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        _X, W, B, eps, in_place = inputs
+        Y, X_out, RSTD, BLOCK_SIZE, num_warps = output
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
         ctx.in_place = in_place
-        ctx.save_for_backward(X, W, RSTD)
-        return Y
+        ctx.save_for_backward(X_out, W, RSTD)
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output, _dX_out, _dRSTD, _dBLOCK_SIZE, _dnum_warps):
         """
         Args:
             grad_output: gradient of output

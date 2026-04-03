@@ -197,7 +197,7 @@ def test_correctness_functional(bs, sl, hd, dtype, atol, rtol):
     y1 = liger_poly_norm(x1, weight1, bias1, 1e-6)
 
     # Second call - Function.apply API (should be identical)
-    y2 = LigerPolyNormFunction.apply(x2, weight2, bias2, 1e-6)
+    y2 = LigerPolyNormFunction.apply(x2, weight2, bias2, 1e-6)[0]
 
     # Check forward pass
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
