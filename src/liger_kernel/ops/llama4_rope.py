@@ -165,16 +165,23 @@ def llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE: int = None, imag_sign: floa
 
 class LigerLlama4RopeFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, q, k, freqs_cis, BLOCK_SIZE: int = None):
+    def forward(q, k, freqs_cis, BLOCK_SIZE: int = None):
         q_out, k_out = llama4_rope_forward(q, k, freqs_cis, BLOCK_SIZE, imag_sign=1.0)
-        ctx.save_for_backward(freqs_cis.detach() if isinstance(freqs_cis, torch.Tensor) else freqs_cis)
-        ctx.BLOCK_SIZE = BLOCK_SIZE
-        return q_out, k_out
+        freqs_cis_saved = freqs_cis.detach() if isinstance(freqs_cis, torch.Tensor) else freqs_cis
+        return q_out, k_out, freqs_cis_saved
 
     @staticmethod
-    def backward(ctx, dq, dk):
+    def setup_context(ctx, inputs, output):
+        _q, _k, _freqs_cis = inputs[:3]
+        BLOCK_SIZE = inputs[3] if len(inputs) > 3 else None
+        _q_out, _k_out, freqs_cis_saved = output
+        ctx.save_for_backward(freqs_cis_saved)
+        ctx.BLOCK_SIZE = BLOCK_SIZE
+
+    @staticmethod
+    def backward(ctx, dq, dk, _grad_freqs):
         (freqs_cis,) = ctx.saved_tensors
         BLOCK_SIZE = getattr(ctx, "BLOCK_SIZE", None)
         # Use imag_sign=-1.0 for conjugate without materializing a new tensor
         dq_out, dk_out = llama4_rope_forward(dq, dk, freqs_cis, BLOCK_SIZE, imag_sign=-1.0)
-        return dq_out, dk_out, None
+        return dq_out, dk_out, None, None

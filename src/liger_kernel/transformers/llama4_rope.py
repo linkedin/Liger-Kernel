@@ -28,7 +28,8 @@ def liger_llama4_text_rotary_pos_emb(
         Tuple[torch.Tensor, torch.Tensor]: Rotated query and key tensors
     """
     # Use fused Triton kernel for complex RoPE
-    return LigerLlama4RopeFunction.apply(xq, xk, freqs_cis)
+    q_out, k_out, _ = LigerLlama4RopeFunction.apply(xq, xk, freqs_cis)
+    return q_out, k_out
 
 
 def liger_llama4_vision_rotary_pos_emb(
@@ -71,7 +72,8 @@ def liger_llama4_vision_rotary_pos_emb(
         raise ValueError(f"Unexpected freqs_ci shape: {freqs_ci.shape}")
 
     # Use the same fused kernel as text RoPE
-    return LigerLlama4RopeFunction.apply(query, key, freqs_ci)
+    q_out, k_out, _ = LigerLlama4RopeFunction.apply(query, key, freqs_ci)
+    return q_out, k_out
 
 
 # Note: We only patch the functions, not the classes

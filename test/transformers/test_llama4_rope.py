@@ -122,7 +122,7 @@ def test_functional_correctness(bsz, seq_len, num_q_heads, num_kv_heads, head_di
     freqs_cis = rotary_emb(q1, pos_ids)
 
     functional_q, functional_k = liger_llama4_text_rotary_pos_emb(q1, k1, freqs_cis)
-    class_q, class_k = LigerLlama4RopeFunction.apply(q2, k2, freqs_cis)
+    class_q, class_k, _ = LigerLlama4RopeFunction.apply(q2, k2, freqs_cis)
 
     assert torch.allclose(functional_q, class_q, atol=atol, rtol=rtol)
     assert torch.allclose(functional_k, class_k, atol=atol, rtol=rtol)
