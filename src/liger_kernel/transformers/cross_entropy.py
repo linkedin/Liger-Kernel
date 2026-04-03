@@ -40,7 +40,7 @@ class LigerCrossEntropyLoss(torch.nn.Module):
         self.return_predicted_tokens = return_predicted_tokens
 
     def forward(self, _input: torch.Tensor, target: torch.Tensor):
-        loss, z_loss, token_accuracy, predicted_tokens = LigerCrossEntropyFunction.apply(
+        loss, z_loss, token_accuracy, predicted_tokens, _ = LigerCrossEntropyFunction.apply(
             _input,
             target,
             self.weight,

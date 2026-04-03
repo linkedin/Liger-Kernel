@@ -512,7 +512,7 @@ def _test_correctness_functional(
     )
     y1 = result.loss
     y1_z = result.z_loss
-    y2, y2_z, _, _ = LigerCrossEntropyFunction.apply(x2, target, None, 0, 1e-4, 0.1, "mean", 30.0, True, False, False)
+    y2, y2_z, _, _, _ = LigerCrossEntropyFunction.apply(x2, target, None, 0, 1e-4, 0.1, "mean", 30.0, True, False, False)
 
     assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
     assert torch.allclose(y1_z, y2_z, atol=atol, rtol=rtol)

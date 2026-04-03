@@ -55,7 +55,7 @@ def liger_cross_entropy(
     return_token_accuracy: bool = False,
     return_predicted_tokens: bool = False,
 ):
-    loss, z_loss, token_accuracy, predicted_tokens = LigerCrossEntropyFunction.apply(
+    loss, z_loss, token_accuracy, predicted_tokens, _ = LigerCrossEntropyFunction.apply(
         input,
         target,
         weight,
@@ -143,7 +143,7 @@ def liger_fused_linear_jsd(
 
 
 def liger_geglu(a, b):
-    return LigerGELUMulFunction.apply(a, b)
+    return LigerGELUMulFunction.apply(a, b)[0]
 
 
 def liger_group_norm(
@@ -161,7 +161,7 @@ def liger_group_norm(
         num_channels,
         num_groups,
         eps,
-    )
+    )[0]
 
 
 def liger_jsd(
@@ -171,13 +171,14 @@ def liger_jsd(
     beta: float = 0.5,
     ignore_index: int = -100,
 ):
-    return LigerJSDFunction.apply(
+    loss, _ = LigerJSDFunction.apply(
         input,
         target,
         shift_labels,
         beta,
         ignore_index,
     )
+    return loss
 
 
 # conform to the function signature in https://pytorch.org/docs/stable/generated/torch.nn.functional.kl_div.html#torch.nn.functional.kl_div
@@ -205,7 +206,7 @@ def liger_sparsemax(
     input,
     dim: int = -1,
 ):
-    return LigerSparsemaxFunction.apply(input, dim)
+    return LigerSparsemaxFunction.apply(input, dim)[0]
 
 
 def liger_multi_token_attention(
@@ -233,7 +234,7 @@ def liger_multi_token_attention(
     Returns:
         Output tensor after applying multi-token attention.
     """
-    return LigerMultiTokenAttentionFunction.apply(scores, weight, bias, stride, padding, dilation, groups, sparse)
+    return LigerMultiTokenAttentionFunction.apply(scores, weight, bias, stride, padding, dilation, groups, sparse)[0]
 
 
 def liger_fused_neighborhood_attention(
@@ -260,7 +261,7 @@ def liger_fused_neighborhood_attention(
     Returns:
         Output tensor of shape [batch_size, num_heads, seq_len, head_dim]
     """
-    return LigerFusedNeighborhoodAttentionFunction.apply(query, key, value, kernel_size, dilation, scale)
+    return LigerFusedNeighborhoodAttentionFunction.apply(query, key, value, kernel_size, dilation, scale)[0]
 
 
 def liger_tvd(
@@ -270,49 +271,52 @@ def liger_tvd(
     reduction: str = "mean",
     ignore_index: int = -100,
 ):
-    return LigerTVDLossFunction.apply(
+    loss, _ = LigerTVDLossFunction.apply(
         input,
         target,
         shift_labels,
         reduction,
         ignore_index,
     )
+    return loss
 
 
 def liger_layer_norm(X, W, B, eps):
-    return LigerLayerNormFunction.apply(X, W, B, eps)
+    return LigerLayerNormFunction.apply(X, W, B, eps)[0]
 
 
 def liger_qwen2vl_mrope(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
-    return LigerQwen2VLMRopeFunction.apply(q, k, cos, sin, mrope_section, unsqueeze_dim)
+    q, k, _, _ = LigerQwen2VLMRopeFunction.apply(q, k, cos, sin, mrope_section, unsqueeze_dim)
+    return q, k
 
 
 def liger_relu_squared(x):
-    return LigerReLUSquaredFunction.apply(x)
+    return LigerReLUSquaredFunction.apply(x)[0]
 
 
 def liger_rms_norm(X, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):
-    return LigerRMSNormFunction.apply(X, W, eps, offset, casting_mode, in_place)
+    return LigerRMSNormFunction.apply(X, W, eps, offset, casting_mode, in_place)[0]
 
 
 def liger_poly_norm(X, W, B, eps=1e-6, in_place=True):
-    return LigerPolyNormFunction.apply(X, W, B, eps, in_place)
+    return LigerPolyNormFunction.apply(X, W, B, eps, in_place)[0]
 
 
 def liger_fused_add_rms_norm(X, R, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):
-    return LigerFusedAddRMSNormFunction.apply(X, R, W, eps, offset, casting_mode, in_place)
+    return LigerFusedAddRMSNormFunction.apply(X, R, W, eps, offset, casting_mode, in_place)[:2]
 
 
 def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
-    return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+    q, k, _, _ = LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+    return q, k
 
 
 def liger_swiglu(a, b):
-    return LigerSiLUMulFunction.apply(a, b)
+    return LigerSiLUMulFunction.apply(a, b)[0]
 
 
 def liger_softmax(x):
-    return LigerSoftmaxFunction.apply(x)
+    return LigerSoftmaxFunction.apply(x)[0]
 
 
 def liger_dyt(x, alpha, gamma, beta):
@@ -336,7 +340,7 @@ def liger_mhc_coeffs(
 ):
     # Convert config scalars to Python types so they are not included in the
     # autograd computation graph (they are not learnable parameters).
-    return LigerMHCCoeffsFunction.apply(
+    result = LigerMHCCoeffsFunction.apply(
         x,
         phi,
         b,
@@ -350,14 +354,15 @@ def liger_mhc_coeffs(
         float(sinkhorn_eps),
         float(post_mult),
     )
+    return result[0], result[1], result[2]
 
 
 def liger_mhc_pre(x, h_pre):
-    return LigerMHCPreFunction.apply(x, h_pre)
+    return LigerMHCPreFunction.apply(x, h_pre)[0]
 
 
 def liger_mhc_post_res(x, f_out, h_post, h_res):
-    return LigerMHCPostResFunction.apply(x, f_out, h_post, h_res)
+    return LigerMHCPostResFunction.apply(x, f_out, h_post, h_res)[0]
 
 
 def liger_mhc_apply(x, f_out, h_pre, h_post, h_res, *, return_x_in: bool = False):
@@ -425,7 +430,7 @@ def liger_attn_res(V, w_query, w_norm, eps: float = 1e-6):
         #         V = torch.stack(block_outputs)  # [N, B, T, D]
         #         return liger_attn_res(V, self.w_query, self.w_norm)
     """
-    return LigerAttnResFunction.apply(V, w_query, w_norm, eps)
+    return LigerAttnResFunction.apply(V, w_query, w_norm, eps)[0]
 
 
 def liger_mhc_forward(
