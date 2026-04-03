@@ -157,7 +157,6 @@ class LigerJSDFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(
-        ctx,
         _input: torch.Tensor,
         target: torch.Tensor,
         shift_labels: Optional[torch.Tensor] = None,
@@ -173,7 +172,7 @@ class LigerJSDFunction(torch.autograd.Function):
             ignore_index (int): the index to ignore. Default: -100
 
         Returns:
-            loss (torch.Tensor): generalized JSD
+            tuple: (loss, dX) where dX is saved for backward
         """
         has_label = False
         if shift_labels is not None:
@@ -184,12 +183,16 @@ class LigerJSDFunction(torch.autograd.Function):
             has_label = True
 
         loss, dX = jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label)
+        return loss, dX
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        loss, dX = output
         ctx.save_for_backward(dX)
-        return loss
 
     @staticmethod
     @ensure_contiguous
-    def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
+    def backward(ctx, grad_output: torch.Tensor, _) -> torch.Tensor:
         (dX,) = ctx.saved_tensors
         dX = jsd_backward(dX, grad_output)
         return (

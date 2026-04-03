@@ -248,7 +248,7 @@ def _test_correctness_functional(B, T, V, beta, ignore_index, is_last_layer, dty
     indices_to_assign = torch.randperm(B * T)[:num_elements_to_assign]  # Randomly select indices
     label[indices_to_assign] = ignore_index
 
-    output = LigerJSDFunction.apply(x1, target, label, beta, ignore_index)
+    output, _ = LigerJSDFunction.apply(x1, target, label, beta, ignore_index)
     output2 = liger_jsd(
         input=x2,
         target=target,
