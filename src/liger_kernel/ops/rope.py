@@ -215,7 +215,7 @@ class LigerRopeFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+    def forward(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
         """
         q size: (bsz, n_q_head, seq_len, head_dim)
         k size: (bsz, n_kv_head, seq_len, head_dim)
@@ -223,10 +223,15 @@ class LigerRopeFunction(torch.autograd.Function):
         sin size: (1, seq_len, head_dim) or (bsz, seq_len, head_dim)
         """
         q, k, cos, sin = rope_forward(q, k, cos, sin)
-        ctx.save_for_backward(cos, sin)
-        return q, k
+        return q, k, cos.view_as(cos), sin.view_as(sin)
 
-    def backward(ctx, dq, dk):
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        q, k, cos, sin = output
+        ctx.save_for_backward(cos, sin)
+
+    @staticmethod
+    def backward(ctx, dq, dk, _grad_cos, _grad_sin):
         """
         dq size: (bsz, n_q_head, seq_len, head_dim)
         dk size: (bsz, n_kv_head, seq_len, head_dim)

@@ -155,7 +155,7 @@ def test_functional_correctness(
     cos, sin = rotary_emb(k1, pos_ids)
 
     functional_q, functional_k = liger_rope(q=q1, k=k1, cos=cos, sin=sin)
-    class_q, class_k = LigerRopeFunction.apply(q2, k2, cos, sin)
+    class_q, class_k, _, _ = LigerRopeFunction.apply(q2, k2, cos, sin)
 
     assert torch.allclose(functional_q, class_q, atol=atol, rtol=rtol)
     assert torch.allclose(functional_k, class_k, atol=atol, rtol=rtol)
