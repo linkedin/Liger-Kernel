@@ -150,7 +150,6 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
     @staticmethod
     def forward(
         cls,
-        ctx,
         student_input,
         student_weight,
         teacher_input,
@@ -279,14 +278,16 @@ class LigerFusedLinearDistillationBase(torch.autograd.Function):
             grad_input = accumulate_chunk(student_input_chunk, teacher_input_chunk, target_chunk)
             grad_inputs.append(grad_input)
 
-        ctx.save_for_backward(
-            torch.cat(grad_inputs, dim=0),
-            grad_weight,
-            grad_bias,
-        )
-        if return_soft_hard_loss:
-            return loss_acc, soft_loss_acc, hard_loss_acc
-        return loss_acc
+        # Return grad tensors as extra outputs for setup_context
+        grad_input_cat = torch.cat(grad_inputs, dim=0)
+        # Always return 6 values for consistent setup_context unpacking
+        # When return_soft_hard_loss=False, soft_loss_acc and hard_loss_acc are None
+        return loss_acc, soft_loss_acc, hard_loss_acc, grad_input_cat, grad_weight, grad_bias
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        _, _, _, grad_input_cat, grad_weight, grad_bias = output
+        ctx.save_for_backward(grad_input_cat, grad_weight, grad_bias)
 
     @staticmethod
     def backward(ctx, grad_output, *args):

@@ -17,7 +17,6 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
     @staticmethod
     def forward(
         cls,
-        ctx,
         _input,
         weight,
         target,
@@ -193,11 +192,8 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
             if isinstance(aux, list):
                 aggregated_aux_outputs[i] = torch.cat(aux, dim=0)
 
-        ctx.save_for_backward(
-            torch.cat(grad_inputs, dim=0),
-            grad_weight,
-            grad_bias,
-        )
+        # Return grad tensors as extra outputs for setup_context
+        grad_input_cat = torch.cat(grad_inputs, dim=0)
 
         return_vars = (
             chosen_logps_sum,
@@ -206,7 +202,12 @@ class LigerFusedLinearUnpairedPreferenceBase(torch.autograd.Function):
             rejected_logits_sum,
         )
 
-        return loss_acc, (*return_vars, *aggregated_aux_outputs)
+        return loss_acc, (*return_vars, *aggregated_aux_outputs), grad_input_cat, grad_weight, grad_bias
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        loss_acc, aux_tuple, grad_input_cat, grad_weight, grad_bias = output
+        ctx.save_for_backward(grad_input_cat, grad_weight, grad_bias)
 
     @staticmethod
     def backward(ctx, *grad_output):

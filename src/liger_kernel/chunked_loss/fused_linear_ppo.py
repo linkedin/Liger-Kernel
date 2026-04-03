@@ -17,7 +17,6 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
     @staticmethod
     def forward(
         cls,
-        ctx,
         _input,
         weight,
         selected_token_ids,
@@ -50,7 +49,6 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
 
         Args:
             cls: The class
-            ctx: Context for backward
             _input: Input tensor
             weight: Weight tensor
             selected_token_ids: Selected token ids tensor
@@ -271,9 +269,6 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         # Combine gradients
         grad_input = torch.cat(grad_inputs, dim=0)
 
-        # Save for backward
-        ctx.save_for_backward(grad_input, grad_weight, grad_bias)
-
         # Finalize metrics
         final_metrics = []
         for metric in aggregated_metrics:
@@ -282,7 +277,13 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             else:
                 final_metrics.append(metric)
 
-        return loss_acc, tuple(final_metrics)
+        # Return grad tensors as extra outputs for setup_context
+        return loss_acc, tuple(final_metrics), grad_input, grad_weight, grad_bias
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        loss_acc, final_metrics, grad_input, grad_weight, grad_bias = output
+        ctx.save_for_backward(grad_input, grad_weight, grad_bias)
 
     @staticmethod
     def _compute_dapo_normalizer(attention_mask):
