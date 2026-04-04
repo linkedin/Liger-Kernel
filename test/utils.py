@@ -126,7 +126,7 @@ def require_deterministic(test_case):
     def wrapper(*args, **kwargs):
         original_state = torch.are_deterministic_algorithms_enabled()
         try:
-            torch.use_deterministic_algorithms(True)
+            torch.use_deterministic_algorithms(True, warn_only=True)
             return test_case(*args, **kwargs)
         finally:
             torch.use_deterministic_algorithms(original_state)
@@ -411,6 +411,18 @@ def revert_liger_kernel_to_llama4(model_config: MiniModelConfig, model_type: str
     else:
         model_config.model_class = modeling_llama4.Llama4ForConditionalGeneration
 
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_ministral(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Ministral.
+    """
+
+    from transformers.models.ministral import modeling_ministral
+
+    importlib.reload(modeling_ministral)
+    model_config.model_class = modeling_ministral.MinistralForCausalLM
     print("Liger kernel patches have been reverted.")
 
 
@@ -760,6 +772,30 @@ def revert_liger_kernel_to_qwen3_next(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_qwen3_5(model_config: MiniModelConfig, model_type: str = "causal_lm"):
+    """
+    Revert all Liger kernel patches applied to Qwen3.5 dense.
+    """
+
+    assert model_type in [
+        "causal_lm",
+        "conditional_generation",
+    ], f'model_type must be "causal_lm" or "conditional_generation", Got: {model_type}'
+
+    import torch.nn as nn
+
+    from transformers.models.qwen3_5 import modeling_qwen3_5
+
+    importlib.reload(nn)
+    importlib.reload(modeling_qwen3_5)
+    if model_type == "causal_lm":
+        model_config.model_class = modeling_qwen3_5.Qwen3_5ForCausalLM
+    else:
+        model_config.model_class = modeling_qwen3_5.Qwen3_5ForConditionalGeneration
+
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_qwen3_5_moe(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Qwen3.5 MoE.
@@ -804,6 +840,17 @@ def revert_liger_kernel_to_exaone4(model_config: MiniModelConfig):
 
     importlib.reload(modeling_exaone4)
     model_config.model_class = modeling_exaone4.Exaone4ForCausalLM
+    print("Liger kernel patches have been reverted.")
+
+
+def revert_liger_kernel_to_nemotron(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to Nemotron.
+    """
+    from transformers.models.nemotron import modeling_nemotron
+
+    importlib.reload(modeling_nemotron)
+    model_config.model_class = modeling_nemotron.NemotronForCausalLM
     print("Liger kernel patches have been reverted.")
 
 

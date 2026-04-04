@@ -40,9 +40,11 @@ from liger_kernel.transformers import apply_liger_kernel_to_internvl
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 from liger_kernel.transformers import apply_liger_kernel_to_llama4
 from liger_kernel.transformers import apply_liger_kernel_to_llava
+from liger_kernel.transformers import apply_liger_kernel_to_ministral
 from liger_kernel.transformers import apply_liger_kernel_to_mistral
 from liger_kernel.transformers import apply_liger_kernel_to_mixtral
 from liger_kernel.transformers import apply_liger_kernel_to_mllama
+from liger_kernel.transformers import apply_liger_kernel_to_nemotron
 from liger_kernel.transformers import apply_liger_kernel_to_olmo2
 from liger_kernel.transformers import apply_liger_kernel_to_olmo3
 from liger_kernel.transformers import apply_liger_kernel_to_phi3
@@ -50,6 +52,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_qwen2
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_next
@@ -79,9 +82,11 @@ from test.utils import revert_liger_kernel_to_internvl
 from test.utils import revert_liger_kernel_to_llama
 from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
+from test.utils import revert_liger_kernel_to_ministral
 from test.utils import revert_liger_kernel_to_mistral
 from test.utils import revert_liger_kernel_to_mixtral
 from test.utils import revert_liger_kernel_to_mllama
+from test.utils import revert_liger_kernel_to_nemotron
 from test.utils import revert_liger_kernel_to_olmo2
 from test.utils import revert_liger_kernel_to_olmo3
 from test.utils import revert_liger_kernel_to_phi3
@@ -89,6 +94,7 @@ from test.utils import revert_liger_kernel_to_qwen2
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3
+from test.utils import revert_liger_kernel_to_qwen3_5
 from test.utils import revert_liger_kernel_to_qwen3_5_moe
 from test.utils import revert_liger_kernel_to_qwen3_moe
 from test.utils import revert_liger_kernel_to_qwen3_next
@@ -116,6 +122,14 @@ try:
     MLLAMA_AVAILABLE = True
 except ImportError:
     MLLAMA_AVAILABLE = False
+
+try:
+    from transformers.models.ministral.configuration_ministral import MinistralConfig
+    from transformers.models.ministral.modeling_ministral import MinistralForCausalLM
+
+    MINISTRAL_AVAILABLE = True
+except ImportError:
+    MINISTRAL_AVAILABLE = False
 
 try:
     # Qwen2-VL is only available in transformers>4.52.4
@@ -303,6 +317,14 @@ except ImportError:
     QWEN3_5_MOE_AVAILABLE = False
 
 try:
+    from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
+
+    QWEN3_5_AVAILABLE = True
+except ImportError:
+    QWEN3_5_AVAILABLE = False
+
+try:
     from transformers.models.hunyuan_v1_dense.configuration_hunyuan_v1_dense import HunYuanDenseV1Config
     from transformers.models.hunyuan_v1_dense.modeling_hunyuan_v1_dense import HunYuanDenseV1ForCausalLM
     from transformers.models.hunyuan_v1_moe.configuration_hunyuan_v1_moe import HunYuanMoEV1Config
@@ -319,6 +341,14 @@ try:
     EXAONE4_AVAILABLE = True
 except ImportError:
     EXAONE4_AVAILABLE = False
+
+try:
+    from transformers.models.nemotron.configuration_nemotron import NemotronConfig
+    from transformers.models.nemotron.modeling_nemotron import NemotronForCausalLM
+
+    NEMOTRON_AVAILABLE = True
+except ImportError:
+    NEMOTRON_AVAILABLE = False
 
 
 device = infer_device()
@@ -542,6 +572,32 @@ MINI_MODEL_SETUPS = {
         ),
     ),
 }
+if MINISTRAL_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_ministral"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_ministral,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_ministral,
+        model_class=MinistralForCausalLM,
+        mini_model_config=MinistralConfig(
+            attention_dropout=0.0,
+            bos_token_id=1,
+            eos_token_id=2,
+            head_dim=128,
+            hidden_act="silu",
+            hidden_size=1024,
+            initializer_range=0.02,
+            intermediate_size=2048,
+            max_position_embeddings=32768,
+            num_attention_heads=8,
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            rms_norm_eps=1e-5,
+            sliding_window=4096,
+            tie_word_embeddings=False,
+            use_cache=True,
+            vocab_size=32000,
+            attn_implementation="sdpa",
+        ),
+    )
 if LLAMA4_AVAILABLE:
     MINI_MODEL_SETUPS["mini_llama4"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_llama4,
@@ -1425,6 +1481,37 @@ if QWEN3_5_MOE_AVAILABLE:
         ),
     )
 
+if QWEN3_5_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_5"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_5,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_5,
+        model_class=Qwen3_5ForCausalLM,
+        mini_model_config=Qwen3_5TextConfig(
+            vocab_size=32000,
+            hidden_size=896,
+            intermediate_size=4864,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=True,
+            tie_word_embeddings=False,
+            attention_bias=False,
+            attention_dropout=0.0,
+            head_dim=128,
+            linear_conv_kernel_dim=4,
+            linear_key_head_dim=64,
+            linear_value_head_dim=64,
+            linear_num_key_heads=8,
+            linear_num_value_heads=8,
+            layer_types=["linear_attention", "linear_attention", "linear_attention", "full_attention"],
+            dtype=torch.float32,
+        ),
+    )
+
 if HUNYUAN_V1_AVAILABLE:
     MINI_MODEL_SETUPS["mini_hunyuan_v1"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_hunyuan_v1_dense,
@@ -1506,6 +1593,29 @@ if EXAONE4_AVAILABLE:
         ),
     )
 
+if NEMOTRON_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_nemotron"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_nemotron,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_nemotron,
+        model_class=NemotronForCausalLM,
+        mini_model_config=NemotronConfig(
+            attention_bias=False,
+            attention_dropout=0.0,
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act="relu2",
+            hidden_size=1024,
+            initializer_range=0.02,
+            intermediate_size=2048,
+            max_position_embeddings=8192,
+            num_attention_heads=8,
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            norm_eps=1e-5,
+            vocab_size=32000,
+        ),
+    )
+
 
 def create_model(model_name="mini_llama3"):
     """
@@ -1542,7 +1652,7 @@ def run_mini_model(
             "rms_norm": True,
         }
 
-        if "glm4" in model_name or "qwen3_next" in model_name or "qwen3_5_moe" in model_name:
+        if "glm4" in model_name or "qwen3_next" in model_name or "qwen3_5" in model_name:
             kwargs["rope"] = False
 
         model_supports_layer_norm = "qwen2_vl" in model_name
@@ -1891,6 +2001,23 @@ def run_mini_model(
             1e-5,
             marks=[],
         ),
+        pytest.param(
+            "mini_ministral",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not MINISTRAL_AVAILABLE, reason="Ministral not available in this version of transformers"
+                ),
+            ],
+        ),
         # TODO: mixtral is flaky so disable the test for now
         # ("mini_mixtral", 32, 1e-4, torch.float32, 5e-4, 1e-4, 5e-3, 1e-5, 1e-2, 1e-5),
         # Gemma 1.1 and 2 has more tolerance because currently, the kernel is not a perfect match (casts are not done the same way)
@@ -2006,6 +2133,28 @@ def run_mini_model(
             ],
         ),
         pytest.param(
+            "mini_qwen3_5",
+            32,
+            1e-5,
+            torch.float32,
+            1e-8,
+            1e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not QWEN3_5_AVAILABLE,
+                    reason="Qwen3_5 not available in this version of transformers",
+                ),
+                pytest.mark.skip(
+                    reason="flash-linear-attention's ChunkGatedDeltaRuleFunction does not support float32.\n"
+                    + " Torch's implementation takes too long"
+                ),
+            ],
+        ),
+        pytest.param(
             "mini_hunyuan_v1",
             32,
             1e-4,
@@ -2052,6 +2201,19 @@ def run_mini_model(
                 not EXAONE4_AVAILABLE,
                 reason="EXAONE4 not available in this version of transformers",
             ),
+        ),
+        pytest.param(
+            "mini_nemotron",
+            32,
+            1e-4,
+            torch.float32,
+            1e-8,
+            2e-5,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=pytest.mark.skipif(not NEMOTRON_AVAILABLE, reason="Nemotron not available"),
         ),
     ],
 )

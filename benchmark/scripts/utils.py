@@ -29,7 +29,7 @@ QUANTILES = [0.5, 0.2, 0.8]
 
 @dataclass
 class SingleBenchmarkRunInput:
-    x: Union[int, float]
+    x: Union[int, float, str]
     kernel_provider: str
     kernel_operation_mode: Optional[str] = ""
     extra_benchmark_config: Optional[Dict[str, Any]] = None
@@ -59,7 +59,7 @@ class BenchmarkData:
     gpu_name: str
     x_name: str
     x_label: str
-    x_values: List[float]
+    x_values: List[Union[float, str]]
     y_values_50: List[float]
     y_values_20: List[float]
     y_values_80: List[float]
@@ -79,7 +79,7 @@ class BenchmarkDataCSVRow:
     metric_unit: str
     x_name: str
     x_label: str
-    x_value: float
+    x_value: Union[float, str]
     y_value_50: float
     y_value_20: float
     y_value_80: float
@@ -112,6 +112,83 @@ def _test_memory(
             quantiles_data = quantiles_data[0]
         return quantiles_data
     return getattr(torch, return_mode)(total_mem).item()
+
+
+def run_speed_benchmark(
+    fwd_fn: Callable,
+    mode: str,
+    input_tensors: List[torch.Tensor],
+    rep: int = 10,
+) -> "SingleBenchmarkRunOutput":
+    """Measure execution speed for forward, backward, or full (fwd+bwd).
+
+    Covers the common case where the forward function returns a single tensor
+    and backward uses a random gradient of the same shape.  For kernels with
+    scalar output (losses) or multiple outputs (e.g. RoPE), write custom
+    measurement logic instead.
+    """
+    import triton
+
+    if mode == "forward":
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            fwd_fn,
+            grad_to_none=input_tensors,
+            rep=rep,
+            quantiles=QUANTILES,
+        )
+    elif mode == "backward":
+        y = fwd_fn()
+        do = torch.randn_like(y)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            lambda: y.backward(do, retain_graph=True),
+            grad_to_none=input_tensors,
+            rep=rep,
+            quantiles=QUANTILES,
+        )
+    elif mode == "full":
+
+        def full():
+            y = fwd_fn()
+            y.backward(torch.randn_like(y), retain_graph=True)
+
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            full,
+            grad_to_none=input_tensors,
+            rep=rep,
+            quantiles=QUANTILES,
+        )
+    else:
+        raise ValueError(f"Unsupported mode: {mode}. Use 'forward', 'backward', or 'full'.")
+    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+
+
+def run_memory_benchmark(
+    fwd_fn: Callable,
+    mode: str,
+) -> "SingleBenchmarkRunOutput":
+    """Measure peak memory for forward, backward, or full (fwd+bwd).
+
+    Same caveats as :func:`run_speed_benchmark` regarding output shape.
+    """
+    if mode == "forward":
+        mem_50, mem_20, mem_80 = _test_memory(fwd_fn, quantiles=QUANTILES)
+    elif mode == "backward":
+        y = fwd_fn()
+        do = torch.randn_like(y)
+        mem_50, mem_20, mem_80 = _test_memory(
+            lambda: y.backward(do, retain_graph=True),
+            quantiles=QUANTILES,
+        )
+    elif mode == "full":
+
+        def full():
+            y = fwd_fn()
+            y.backward(torch.randn_like(y), retain_graph=True)
+
+        mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
+    else:
+        raise ValueError(f"Unsupported mode: {mode}. Use 'forward', 'backward', or 'full'.")
+    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
 
 
 def get_current_file_directory() -> str:
@@ -264,7 +341,7 @@ def run_benchmarks(
     metric_unit: str,
     x_name: str,
     x_label: str,
-    x_values: List[Union[float, int]],
+    x_values: List[Union[float, int, str]],
     kernel_providers: List[str],
     kernel_operation_modes: Optional[List[str]] = [None],
     extra_benchmark_configs: Optional[List[Dict[str, Any]]] = None,
@@ -343,12 +420,40 @@ def run_benchmarks(
 def parse_benchmark_script_args():
     parser = argparse.ArgumentParser(description="Benchmarking script for Liger-Kernel")
 
-    # Add an optional --overwrite flag
     parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Flag to overwrite existing benchmark data with current run.",
     )
-
+    parser.add_argument(
+        "--sweep-mode",
+        type=str,
+        default="token_length",
+        choices=["token_length", "model_config"],
+        help=(
+            "Benchmark sweep dimension. "
+            "'token_length': sweep sequence length with fixed model. "
+            "'model_config': sweep model configs with fixed token length."
+        ),
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help=(
+            "Model config name from MODEL_REGISTRY "
+            "(e.g. llama_2_7b, llama_3_8b). "
+            "Defaults to llama_3_8b when not specified."
+        ),
+    )
+    parser.add_argument(
+        "--bt",
+        type=int,
+        default=2048,
+        help=(
+            "Target total tokens (batch_size * seq_len) for model-config "
+            "sweep. Only used when --sweep-mode=model_config."
+        ),
+    )
     args = parser.parse_args()
     return args

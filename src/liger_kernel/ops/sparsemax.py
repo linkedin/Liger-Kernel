@@ -32,16 +32,14 @@ def _sparsemax_forward_kernel(
         ptr_sorted_x_data_row + offs,
         mask=mask,
         other=-float("inf"),
-        cache_modifier=".ca",
+        cache_modifier=".cg",
     ).to(tl.float32)
 
     z_valid = tl.where(mask, z_sorted_block, 0.0)
     cssv = tl.cumsum(z_valid, 0)
 
     r = (offs + 1).to(tl.float32)
-    safe_r = tl.where(mask, r, 1.0)
-
-    t_vec = (cssv - 1.0) / safe_r
+    t_vec = (cssv - 1.0) / r
 
     support = (z_sorted_block > t_vec) & mask
 
@@ -57,7 +55,7 @@ def _sparsemax_forward_kernel(
         ptr_x_data_row + offs,
         mask=mask,
         other=0.0,
-        cache_modifier=".ca",
+        cache_modifier=".cg",
     ).to(tl.float32)
 
     y = tl.maximum(x_block - tau, 0.0)
