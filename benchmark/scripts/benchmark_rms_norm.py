@@ -41,6 +41,7 @@ def bench_speed_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     M = extra_benchmark_config["M"]
     eps = extra_benchmark_config["eps"]
     dtype = extra_benchmark_config["dtype"]
+    freeze_weight = extra_benchmark_config.get("freeze_weight", False)
 
     x_shape = (M, N)
 
@@ -51,6 +52,10 @@ def bench_speed_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     dy = torch.randn_like(x)
     x.requires_grad_(True)
 
+    if freeze_weight:
+        triton_rms.weight.requires_grad_(False)
+        llama_rms.weight.requires_grad_(False)
+
     # utility functions
 
     def y_fwd():
@@ -60,10 +65,16 @@ def bench_speed_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
         if provider == "huggingface":
             return llama_rms(x)
 
+    grad_to_none = [x]
+    if provider == "liger" and triton_rms.weight.requires_grad:
+        grad_to_none.append(triton_rms.weight)
+    elif provider == "huggingface" and llama_rms.weight.requires_grad:
+        grad_to_none.append(llama_rms.weight)
+
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             y_fwd,
-            grad_to_none=[x],
+            grad_to_none=grad_to_none,
             rep=500,
             quantiles=QUANTILES,
         )
@@ -71,7 +82,7 @@ def bench_speed_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
         y = y_fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(dy, retain_graph=True),
-            grad_to_none=[x],
+            grad_to_none=grad_to_none,
             rep=500,
             quantiles=QUANTILES,
         )
@@ -83,7 +94,7 @@ def bench_speed_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             full,
-            grad_to_none=[x],
+            grad_to_none=grad_to_none,
             rep=500,
             quantiles=QUANTILES,
         )
@@ -103,6 +114,7 @@ def bench_memory_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     M = extra_benchmark_config["M"]
     eps = extra_benchmark_config["eps"]
     dtype = extra_benchmark_config["dtype"]
+    freeze_weight = extra_benchmark_config.get("freeze_weight", False)
 
     x_shape = (M, N)
 
@@ -112,6 +124,10 @@ def bench_memory_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
     x = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
     x.requires_grad_(True)
+
+    if freeze_weight:
+        triton_rms.weight.requires_grad_(False)
+        llama_rms.weight.requires_grad_(False)
 
     # utility functions
     def y_fwd():
@@ -142,7 +158,10 @@ if __name__ == "__main__":
         "x_label": "hidden size",
         "x_values": [2**i for i in range(10, 16)],
         "kernel_providers": ["liger", "huggingface"],
-        "extra_benchmark_configs": [{"M": 2048, "dtype": torch.bfloat16, "eps": 1e-6}],
+        "extra_benchmark_configs": [
+            {"M": 2048, "dtype": torch.bfloat16, "eps": 1e-6, "freeze_weight": False},
+            {"M": 2048, "dtype": torch.bfloat16, "eps": 1e-6, "freeze_weight": True},
+        ],
         "overwrite": args.overwrite,
     }
 

@@ -1,3 +1,4 @@
+import math
 import operator
 
 import torch
@@ -113,6 +114,8 @@ def _poly_norm_backward_kernel(
     n_cols,
     rows_per_program: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    compute_dW: tl.constexpr,
+    compute_dB: tl.constexpr,
 ):
     """
     PolyNorm Backward Kernel Gradient:
@@ -131,10 +134,12 @@ def _poly_norm_backward_kernel(
     mask = col_offsets < n_cols
 
     # Initialize accumulators for weight and bias gradients (scalars)
-    dW0_acc = 0.0
-    dW1_acc = 0.0
-    dW2_acc = 0.0
-    dB_acc = 0.0
+    if compute_dW:
+        dW0_acc = 0.0
+        dW1_acc = 0.0
+        dW2_acc = 0.0
+    if compute_dB:
+        dB_acc = 0.0
 
     # Load weights
     w0 = tl.load(W_ptr + 0).to(tl.float32)
@@ -161,7 +166,8 @@ def _poly_norm_backward_kernel(
         X_pow1 = X_row
 
         # Accumulate bias gradient: dB = sum(dY)
-        dB_acc += tl.sum(dY_row, axis=0)
+        if compute_dB:
+            dB_acc += tl.sum(dY_row, axis=0)
 
         # Compute gradient w.r.t. input using closed-form formula
         # For p=3: ∂L/∂x from w0 * norm(x³)
@@ -182,9 +188,10 @@ def _poly_norm_backward_kernel(
         grad_x_1 = w2 * (1.0 * rstd_1 * dY_row - (1.0 / n_cols) * X_row * (rstd_1 * rstd_1 * rstd_1) * S_1)
 
         # Accumulate weight gradients using closed-form: dW_p = rstd_p * S_p
-        dW0_acc += rstd_3 * S_3
-        dW1_acc += rstd_2 * S_2
-        dW2_acc += rstd_1 * S_1
+        if compute_dW:
+            dW0_acc += rstd_3 * S_3
+            dW1_acc += rstd_2 * S_2
+            dW2_acc += rstd_1 * S_1
 
         # Total gradient
         dX_row = grad_x_3 + grad_x_2 + grad_x_1
@@ -193,10 +200,12 @@ def _poly_norm_backward_kernel(
         tl.store(dx_base + col_offsets, dX_row, mask=mask)
 
     # Store accumulated gradients (scalars)
-    tl.store(dW_ptr + row_block_id * dW_row_stride + 0, dW0_acc)
-    tl.store(dW_ptr + row_block_id * dW_row_stride + 1, dW1_acc)
-    tl.store(dW_ptr + row_block_id * dW_row_stride + 2, dW2_acc)
-    tl.store(dB_ptr + row_block_id, dB_acc)
+    if compute_dW:
+        tl.store(dW_ptr + row_block_id * dW_row_stride + 0, dW0_acc)
+        tl.store(dW_ptr + row_block_id * dW_row_stride + 1, dW1_acc)
+        tl.store(dW_ptr + row_block_id * dW_row_stride + 2, dW2_acc)
+    if compute_dB:
+        tl.store(dB_ptr + row_block_id, dB_acc)
 
 
 def poly_norm_forward(X, W, B, eps=1e-6):
@@ -255,7 +264,7 @@ def poly_norm_forward(X, W, B, eps=1e-6):
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps
 
 
-def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps, in_place):
+def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps, in_place, compute_dW, compute_dB):
     """
     PolyNorm Backward Pass
 
@@ -279,8 +288,6 @@ def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps, in_place):
     n_rows, n_cols = dY.shape
 
     # Get number of SMs for parallelization
-    import math
-
     sm_count = 1
     if X.device.type == "cuda":
         sm_count = torch.cuda.get_device_properties(X.device).multi_processor_count
@@ -295,8 +302,14 @@ def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps, in_place):
     else:
         dX = torch.zeros_like(dY)
 
-    _dW = torch.empty((sm_count, 3), dtype=torch.float32, device=W.device)
-    _dB = torch.empty((sm_count,), dtype=torch.float32, device=W.device)
+    if compute_dW:
+        _dW = torch.empty((sm_count, 3), dtype=torch.float32, device=W.device)
+    else:
+        _dW = None
+    if compute_dB:
+        _dB = torch.empty((sm_count,), dtype=torch.float32, device=W.device)
+    else:
+        _dB = None
 
     rows_per_program = math.ceil(n_rows / sm_count)
     grid = (sm_count,)
@@ -317,21 +330,29 @@ def poly_norm_backward(dY, X, W, RSTD, BLOCK_SIZE, num_warps, in_place):
         W,
         RSTD,
         RSTD.stride(0),
-        _dW,
-        _dW.stride(0),
-        _dB,
+        _dW if compute_dW else X,
+        _dW.stride(0) if compute_dW else 0,
+        _dB if compute_dB else X,
         n_rows,
         n_cols,
         rows_per_program,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
+        compute_dW=compute_dW,
+        compute_dB=compute_dB,
         **kernel_args,
     )
 
     # Reduce gradients across SMs
     dX = dX.view(*shape)
-    dW = _dW.sum(dim=0).to(W.dtype)
-    dB = _dB.sum().to(W.dtype)
+    if compute_dW:
+        dW = _dW.sum(dim=0).to(W.dtype)
+    else:
+        dW = None
+    if compute_dB:
+        dB = _dB.sum().to(W.dtype)
+    else:
+        dB = None
 
     return dX, dW, dB
 
@@ -380,5 +401,9 @@ class LigerPolyNormFunction(torch.autograd.Function):
             dX, dW, dB: gradients w.r.t. X, W, B
         """
         X, W, RSTD = ctx.saved_tensors
-        dX, dW, dB = poly_norm_backward(grad_output, X, W, RSTD, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place)
+        need_dW = ctx.needs_input_grad[1]
+        need_dB = ctx.needs_input_grad[2]
+        dX, dW, dB = poly_norm_backward(
+            grad_output, X, W, RSTD, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place, compute_dW=need_dW, compute_dB=need_dB
+        )
         return dX, dW, dB, None, None
