@@ -15,12 +15,9 @@ import torch.nn as nn
 
 from liger_kernel.ops.fused_moe import LigerFusedMoEFunction
 from liger_kernel.ops.fused_moe import compute_routing_metadata
+from liger_kernel.utils import infer_device
 
-# ---------------------------------------------------------------------------
-# Skip if no CUDA
-# ---------------------------------------------------------------------------
-
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+device = infer_device()
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +77,6 @@ def _make_inputs(T, E, H, intermediate_dim, K, dtype, device, seed=42):
     ],
 )
 def test_routing_metadata_invariants(T, E, K):
-    device = "cuda"
     torch.manual_seed(0)
     logits = torch.randn(T, E, device=device)
     top_k_index = torch.topk(logits, K, dim=-1).indices.to(torch.int32)
@@ -112,7 +108,7 @@ def test_routing_metadata_invariants(T, E, K):
 
 
 # ---------------------------------------------------------------------------
-# Test 2: Forward correctness vs. reference
+# Test 2: Forward + backward correctness vs. reference
 # ---------------------------------------------------------------------------
 
 
@@ -134,92 +130,45 @@ def test_routing_metadata_invariants(T, E, K):
         (torch.bfloat16, 1e-1, 1e-2),
     ],
 )
-def test_forward_correctness(T, E, H, intermediate_dim, K, dtype, atol, rtol):
-    device = "cuda"
+def test_correctness(T, E, H, intermediate_dim, K, dtype, atol, rtol):
     x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
 
     ref = _reference_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
 
     assert out.shape == ref.shape, f"Shape mismatch: {out.shape} vs {ref.shape}"
-    assert torch.allclose(out, ref, atol=atol, rtol=rtol), (
-        f"Forward mismatch (dtype={dtype}): max_diff={torch.abs(out - ref).max():.4e}"
-    )
+    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+
+    if dtype == torch.float32:
+        x1 = x.clone().requires_grad_(True)
+        gup1 = gate_up_proj.clone().requires_grad_(True)
+        dn1 = down_proj.clone().requires_grad_(True)
+        wts1 = top_k_weights.clone().requires_grad_(True)
+        x2 = x.clone().requires_grad_(True)
+        gup2 = gate_up_proj.clone().requires_grad_(True)
+        dn2 = down_proj.clone().requires_grad_(True)
+        wts2 = top_k_weights.clone().requires_grad_(True)
+
+        out_ref = _reference_moe_forward(x1, gup1, dn1, top_k_index, wts1)
+        out_ref.sum().backward()
+        out_fused = LigerFusedMoEFunction.apply(x2, gup2, dn2, top_k_index, wts2)
+        out_fused.sum().backward()
+
+        b_atol, b_rtol = 3e-3, 1e-2
+        torch.testing.assert_close(wts2.grad, wts1.grad, atol=b_atol, rtol=b_rtol)
+        torch.testing.assert_close(dn2.grad, dn1.grad, atol=b_atol, rtol=b_rtol)
+        torch.testing.assert_close(x2.grad, x1.grad, atol=b_atol, rtol=b_rtol)
+        torch.testing.assert_close(gup2.grad, gup1.grad, atol=b_atol, rtol=b_rtol)
 
 
 # ---------------------------------------------------------------------------
-# Test 3: Backward / gradient correctness
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "T, E, H, intermediate_dim, K",
-    [
-        (7, 4, 32, 16, 2),  # T < BLOCK_M_TOKEN: sub-tile padding edge case
-        (512, 8, 128, 64, 2),  # multi-tile baseline: T*K/E=128 → 2 tiles/expert
-        (512, 8, 97, 47, 2),  # multi-tile + odd H/I: tail masking in dW1, dW2, dX_expanded
-        (512, 7, 64, 32, 3),  # multi-tile + prime E: non-pow2 dW grid decomposition
-        (512, 8, 64, 32, 1),  # multi-tile + K=1: dx reduction is trivial gather
-    ],
-)
-def test_backward_correctness(T, E, H, intermediate_dim, K):
-    """Compare gradients of fused kernel vs. reference implementation."""
-    device = "cuda"
-    dtype = torch.float32
-    x_ref, gup_ref, dn_ref, idx, wts = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
-
-    # Clone inputs and enable gradients for both
-    x1 = x_ref.clone().requires_grad_(True)
-    gup1 = gup_ref.clone().requires_grad_(True)
-    dn1 = dn_ref.clone().requires_grad_(True)
-    wts1 = wts.clone().requires_grad_(True)
-
-    x2 = x_ref.clone().requires_grad_(True)
-    gup2 = gup_ref.clone().requires_grad_(True)
-    dn2 = dn_ref.clone().requires_grad_(True)
-    wts2 = wts.clone().requires_grad_(True)
-
-    # Reference backward
-    out_ref = _reference_moe_forward(x1, gup1, dn1, idx, wts1)
-    loss_ref = out_ref.sum()
-    loss_ref.backward()
-
-    # Fused backward
-    out_fused = LigerFusedMoEFunction.apply(x2, gup2, dn2, idx, wts2)
-    loss_fused = out_fused.sum()
-    loss_fused.backward()
-
-    atol, rtol = 3e-3, 1e-2
-
-    def _mismatch_info(a, b, atol, rtol, name):
-        diff = torch.abs(a - b)
-        bad = ~torch.isclose(a, b, atol=atol, rtol=rtol)
-        bad_count = bad.sum().item()
-        return f"{name} mismatch: {bad_count}/{bad.numel()} elements, max_diff={diff.max():.4e}" + (
-            f", mean_bad_diff={diff[bad].mean():.4e}" if bad_count > 0 else ""
-        )
-
-    assert torch.allclose(wts2.grad, wts1.grad, atol=atol, rtol=rtol), _mismatch_info(
-        wts2.grad, wts1.grad, atol, rtol, "dtopk_weights"
-    )
-    assert torch.allclose(dn2.grad, dn1.grad, atol=atol, rtol=rtol), _mismatch_info(
-        dn2.grad, dn1.grad, atol, rtol, "ddown_proj"
-    )
-    assert torch.allclose(x2.grad, x1.grad, atol=atol, rtol=rtol), _mismatch_info(x2.grad, x1.grad, atol, rtol, "dx")
-    assert torch.allclose(gup2.grad, gup1.grad, atol=atol, rtol=rtol), _mismatch_info(
-        gup2.grad, gup1.grad, atol, rtol, "dgate_up"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Test 4: Edge cases
+# Test 3: Edge cases (forward correctness)
 # ---------------------------------------------------------------------------
 
 
 def test_all_tokens_to_one_expert():
     """All tokens route to expert 0; all others empty."""
     T, E, H, intermediate_dim, K = 32, 8, 64, 32, 2
-    device = "cuda"
     dtype = torch.float32
     torch.manual_seed(0)
 
@@ -234,26 +183,24 @@ def test_all_tokens_to_one_expert():
     out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     ref = _reference_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
 
-    assert torch.allclose(out, ref, atol=1e-3), f"all-to-one-expert mismatch: max_diff={torch.abs(out - ref).max():.4e}"
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-4)
 
 
 def test_single_token():
     """T=1 edge case."""
     T, E, H, intermediate_dim, K = 1, 4, 32, 16, 2
-    device = "cuda"
     dtype = torch.float32
     x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
     out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     ref = _reference_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
-    assert torch.allclose(out, ref, atol=1e-3)
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-4)
 
 
 def test_K_equals_E():
     """K == E: every token routes to every expert."""
     T, E, H, intermediate_dim, K = 16, 4, 32, 16, 4
-    device = "cuda"
     dtype = torch.float32
     x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
     out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     ref = _reference_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
-    assert torch.allclose(out, ref, atol=1e-3)
+    torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-4)

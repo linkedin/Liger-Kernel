@@ -292,9 +292,7 @@ def test_correctness_mixtralexperts(bsz, seq_len, hidden_size, intermediate_size
             f"\n    max_abs={diff.max():.4g}  ref={af.flatten()[abs_idx]:.4g}  liger={bf.flatten()[abs_idx]:.4g}"
             f"\n    max_rel={rel.max():.4g}   ref={af.flatten()[rel_idx]:.4g}  liger={bf.flatten()[rel_idx]:.4g}"
         )
-        assert torch.allclose(a, b, atol=atol, rtol=rtol), (
-            f"{label}: max_abs={diff.max():.4g}  max_rel={rel.max():.4g}  (atol={atol}, rtol={rtol})"
-        )
+        torch.testing.assert_close(a, b, atol=float(atol), rtol=float(rtol))
 
     _assert_close(y1, y2, "forward output")
 

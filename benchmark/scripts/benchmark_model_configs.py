@@ -91,7 +91,35 @@ class ModelConfigSweepConfig:
     seq_len: int
 
 
-# ── Model Profiles ──────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class MoEModelConfig:
+    """MoE model architecture profile for fused MoE benchmarks.
+
+    EP-adjusted values should be baked in: T = total_tokens / ep_size,
+    E = total_experts / ep_size.
+    """
+
+    name: str
+    T: int  # tokens per GPU (EP-adjusted)
+    E: int  # experts per GPU (EP-adjusted)
+    H: int  # hidden size
+    intermediate_dim: int  # expert intermediate size
+    K: int  # top-k
+
+
+# ── MoE Model Profiles ───────────────────────────────────────────────────────
+
+QWEN3_MOE_30B = MoEModelConfig(
+    name="qwen3_moe_30b",
+    T=8192,
+    E=128,
+    H=2048,
+    intermediate_dim=768,
+    K=8,
+)
+
+
+# ── Dense Model Profiles ─────────────────────────────────────────────────────
 
 LLAMA_2_7B = ModelConfig(
     name="llama_2_7b",
