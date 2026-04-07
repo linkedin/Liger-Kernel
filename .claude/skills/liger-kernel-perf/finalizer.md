@@ -126,30 +126,47 @@ If it still fails after auto-fix, report the remaining checkstyle issues but do 
 
 Generate 3-way comparison plots showing the original Liger kernel, the optimized kernel, and the HuggingFace/PyTorch baseline. This gives the user a visual demonstration of the improvement.
 
-#### Step 5a: Run Benchmarks with "liger_original" Provider
+#### Step 5a: Benchmark Both Old and New Kernels for Comparison
 
-Before the winning variant was applied (Step 2), the Profiler already collected baseline benchmarks. These are stored in `optimization/{kernel}/benchmarks/v0_baseline.csv` with `kernel_provider="liger"`.
+The goal is to have 3 providers in `all_benchmark_data.csv` for plotting: the original "liger" kernel (renamed to "liger_original" for the comparison), the optimized kernel (as the new "liger"), and the huggingface/torch baseline.
 
-To create a 3-way comparison, we need to add a separate provider for the original kernel. Temporarily restore the original, benchmark it with a custom provider name, then re-apply the winner:
+**Procedure:**
 
-```bash
-# Save the optimized kernel
-cp src/liger_kernel/ops/{kernel}.py /tmp/optimized_{kernel}.py
+1. **Back up the current CSV** so we can restore if needed:
+   ```bash
+   cp benchmark/data/all_benchmark_data.csv benchmark/data/all_benchmark_data.csv.bak
+   ```
 
-# Restore original for benchmarking as "liger_original"
-cp optimization/{kernel}/original_{kernel}.py src/liger_kernel/ops/{kernel}.py
+2. **Benchmark the original kernel as "liger_original"**: Temporarily restore the original kernel and run benchmarks. To get a custom provider name, temporarily edit the benchmark script's `kernel_providers` list to use `"liger_original"` instead of `"liger"`, run, then revert the benchmark script:
+   ```bash
+   # Swap in original kernel
+   cp optimization/{kernel}/original_{kernel}.py src/liger_kernel/ops/{kernel}.py
+   
+   # Edit benchmark script: replace "liger" with "liger_original" in kernel_providers
+   sed -i 's/"liger"/"liger_original"/g' benchmark/scripts/benchmark_{kernel}.py
+   
+   # Run benchmarks (appends "liger_original" rows to CSV)
+   cd benchmark/scripts && python benchmark_{kernel}.py
+   
+   # Revert the benchmark script change
+   git checkout benchmark/scripts/benchmark_{kernel}.py
+   ```
 
-# The benchmark script already has the "liger" provider — these results represent the original.
-# No action needed if v0_baseline.csv already has "liger" provider data.
+3. **Benchmark the optimized kernel as "liger"**: Re-apply the optimized kernel and run the standard benchmarks. This overwrites the old "liger" rows with the new optimized results:
+   ```bash
+   # Swap in optimized kernel
+   cp optimization/{kernel}/{kernel}_v{N}.py src/liger_kernel/ops/{kernel}.py
+   
+   # Run benchmarks (overwrites "liger" rows with optimized kernel results)
+   cd benchmark/scripts && python benchmark_{kernel}.py --overwrite
+   ```
 
-# Re-apply the optimized kernel
-cp /tmp/optimized_{kernel}.py src/liger_kernel/ops/{kernel}.py
+After this, `all_benchmark_data.csv` contains:
+- `"liger"` — the **optimized** kernel (this is the permanent update)
+- `"liger_original"` — the old kernel (for comparison plots)
+- `"huggingface"` / `"torch"` — the baseline
 
-# Run benchmarks with the optimized kernel — results go in as "liger" provider (overwriting)
-cd benchmark/scripts && python benchmark_{kernel}.py --overwrite
-```
-
-**Alternative (preferred if the benchmark script supports custom providers):** Modify the benchmark run to use provider name "liger_optimized" for the new kernel, keeping the original "liger" results intact. This produces 3 distinct providers in the CSV: "liger" (original), "liger_optimized" (new), and "huggingface"/"torch" (baseline).
+The "liger" provider in the CSV now reflects the optimized kernel going forward. This is the desired end state — the benchmark data should always represent the current production kernel.
 
 #### Step 5b: Generate Plots
 
@@ -219,18 +236,18 @@ Before saving the report, verify:
 
 ### Step 7: Create Pull Request
 
-Create a PR with **only the kernel code changes**. Do NOT include plots, optimization workspace files, or benchmark data in the PR.
+Create a PR with the kernel code changes and the updated benchmark data. Do NOT include plots or optimization workspace files in the PR.
 
 #### Step 7a: Stage Only Relevant Files
 
 ```bash
 git add src/liger_kernel/ops/{kernel}.py
+git add benchmark/data/all_benchmark_data.csv
 ```
 
 Do NOT add:
 - `optimization/` directory (workspace files, notes, plots)
-- `benchmark/visualizations/` (generated plots)
-- `benchmark/data/all_benchmark_data.csv` (benchmark results)
+- `benchmark/visualizations/` (generated plots -- these are for local review only)
 
 #### Step 7b: Create a Descriptive Commit
 
