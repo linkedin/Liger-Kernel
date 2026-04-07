@@ -126,18 +126,11 @@ If it still fails after auto-fix, report the remaining checkstyle issues but do 
 
 Generate 3-way comparison plots showing the original Liger kernel, the optimized kernel, and the HuggingFace/PyTorch baseline. This gives the user a visual demonstration of the improvement.
 
-#### Step 5a: Benchmark Both Old and New Kernels for Comparison
+The procedure has 3 phases: (1) benchmark both kernels for plots, (2) generate plots, (3) clean the CSV so only the optimized kernel's data remains permanently.
 
-The goal is to have 3 providers in `all_benchmark_data.csv` for plotting: the original "liger" kernel (renamed to "liger_original" for the comparison), the optimized kernel (as the new "liger"), and the huggingface/torch baseline.
+#### Step 5a: Benchmark Both Kernels for Plotting
 
-**Procedure:**
-
-1. **Back up the current CSV** so we can restore if needed:
-   ```bash
-   cp benchmark/data/all_benchmark_data.csv benchmark/data/all_benchmark_data.csv.bak
-   ```
-
-2. **Benchmark the original kernel as "liger_original"**: Temporarily restore the original kernel and run benchmarks. To get a custom provider name, temporarily edit the benchmark script's `kernel_providers` list to use `"liger_original"` instead of `"liger"`, run, then revert the benchmark script:
+1. **Benchmark the original kernel as "liger_original"**: Temporarily restore the original kernel and run benchmarks with a custom provider name:
    ```bash
    # Swap in original kernel
    cp optimization/{kernel}/original_{kernel}.py src/liger_kernel/ops/{kernel}.py
@@ -152,25 +145,20 @@ The goal is to have 3 providers in `all_benchmark_data.csv` for plotting: the or
    git checkout benchmark/scripts/benchmark_{kernel}.py
    ```
 
-3. **Benchmark the optimized kernel as "liger"**: Re-apply the optimized kernel and run the standard benchmarks. This overwrites the old "liger" rows with the new optimized results:
+2. **Benchmark the optimized kernel as "liger"**: Re-apply the optimized kernel and run benchmarks normally. Use `--overwrite` so the "liger" rows reflect the optimized kernel:
    ```bash
    # Swap in optimized kernel
    cp optimization/{kernel}/{kernel}_v{N}.py src/liger_kernel/ops/{kernel}.py
    
-   # Run benchmarks (overwrites "liger" rows with optimized kernel results)
+   # Run benchmarks (writes "liger" rows with optimized kernel)
    cd benchmark/scripts && python benchmark_{kernel}.py --overwrite
    ```
 
-After this, `all_benchmark_data.csv` contains:
-- `"liger"` — the **optimized** kernel (this is the permanent update)
-- `"liger_original"` — the old kernel (for comparison plots)
-- `"huggingface"` / `"torch"` — the baseline
-
-The "liger" provider in the CSV now reflects the optimized kernel going forward. This is the desired end state — the benchmark data should always represent the current production kernel.
+At this point the CSV has 3 providers: `"liger_original"`, `"liger"` (optimized), and `"huggingface"`/`"torch"`. This is what we need for the 3-way comparison plots.
 
 #### Step 5b: Generate Plots
 
-Generate speed and memory comparison plots:
+Generate plots while all 3 providers are in the CSV:
 
 ```bash
 # Speed plots for all modes (forward, backward, full)
@@ -186,12 +174,31 @@ python benchmark/benchmarks_visualizer.py \
   --overwrite
 ```
 
-Plots are saved to `benchmark/visualizations/`. Copy them to the optimization workspace:
+Copy plots to the optimization workspace:
 
 ```bash
 cp benchmark/visualizations/{kernel}_speed_*.png optimization/{kernel}/
 cp benchmark/visualizations/{kernel}_memory_*.png optimization/{kernel}/
 ```
+
+#### Step 5c: Clean CSV for Permanent State
+
+Now remove the temporary `"liger_original"` rows and ensure the CSV only contains clean data for the optimized kernel. Delete ALL rows for this kernel, then re-run the benchmark to append fresh data:
+
+```bash
+# Delete all existing rows for this kernel from CSV (keep header + other kernels)
+head -1 benchmark/data/all_benchmark_data.csv > /tmp/benchmark_header.csv
+grep -v "^{kernel}," benchmark/data/all_benchmark_data.csv > /tmp/benchmark_other.csv || true
+cat /tmp/benchmark_header.csv <(tail -n +2 /tmp/benchmark_other.csv) > benchmark/data/all_benchmark_data.csv
+
+# Re-run benchmarks with optimized kernel (appends fresh rows)
+cd benchmark/scripts && python benchmark_{kernel}.py
+```
+
+After this, `all_benchmark_data.csv` contains:
+- `"liger"` — the **optimized** kernel (clean fresh data)
+- `"huggingface"` / `"torch"` — the baseline (also fresh)
+- NO `"liger_original"` — that was only needed for the plots
 
 #### Step 5c: Generate Additional Custom Plots (Optional)
 
