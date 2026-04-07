@@ -152,19 +152,24 @@ The goal is to have 3 providers in `all_benchmark_data.csv` for plotting: the or
    git checkout benchmark/scripts/benchmark_{kernel}.py
    ```
 
-3. **Benchmark the optimized kernel as "liger"**: Re-apply the optimized kernel and run the standard benchmarks. This overwrites the old "liger" rows with the new optimized results:
+3. **Delete old benchmark rows for this kernel, then re-benchmark with the optimized kernel**: The `--overwrite` flag does not reliably replace all old rows. Instead, delete all rows for this kernel from the CSV, then re-run the benchmark so the new data is appended cleanly:
    ```bash
    # Swap in optimized kernel
    cp optimization/{kernel}/{kernel}_v{N}.py src/liger_kernel/ops/{kernel}.py
    
-   # Run benchmarks (overwrites "liger" rows with optimized kernel results)
-   cd benchmark/scripts && python benchmark_{kernel}.py --overwrite
+   # Delete all existing rows for this kernel (keep the header)
+   head -1 benchmark/data/all_benchmark_data.csv > /tmp/benchmark_header.csv
+   grep -v "^{kernel}," benchmark/data/all_benchmark_data.csv > /tmp/benchmark_other.csv || true
+   cat /tmp/benchmark_header.csv <(tail -n +2 /tmp/benchmark_other.csv) > benchmark/data/all_benchmark_data.csv
+   
+   # Run benchmarks (appends fresh "liger" rows with optimized kernel)
+   cd benchmark/scripts && python benchmark_{kernel}.py
    ```
 
 After this, `all_benchmark_data.csv` contains:
-- `"liger"` — the **optimized** kernel (this is the permanent update)
-- `"liger_original"` — the old kernel (for comparison plots)
-- `"huggingface"` / `"torch"` — the baseline
+- `"liger"` — the **optimized** kernel (fresh data, replaces old)
+- `"liger_original"` — the old kernel (for comparison plots, from step 2)
+- `"huggingface"` / `"torch"` — the baseline (also fresh from this run)
 
 The "liger" provider in the CSV now reflects the optimized kernel going forward. This is the desired end state — the benchmark data should always represent the current production kernel.
 
