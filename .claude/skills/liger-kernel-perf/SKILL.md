@@ -113,5 +113,3 @@ These apply to EVERY variant, regardless of mode:
 - [finalizer.md](finalizer.md) -- Finalizer Agent specification
 - [optimization-strategies.md](optimization-strategies.md) -- Catalog of optimization techniques
 - Templates in [templates/](templates/) -- Output format templates
-- [examples/rms-norm-optimization.md](examples/rms-norm-optimization.md) -- Example: optimizing a Tier 2 kernel
-- [examples/canary-kernel.md](examples/canary-kernel.md) -- Sub-optimal test kernel for skill validation
