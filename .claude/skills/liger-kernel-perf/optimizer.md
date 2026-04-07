@@ -139,8 +139,15 @@ Rules:
 2. The variant file must be a drop-in replacement for `src/liger_kernel/ops/{kernel}.py` — same public API, same class names, same function signatures.
 3. Do not change the `torch.autograd.Function` class name or the public API.
 4. Do not remove safety checks, dtype handling, or multi-device support (XPU, NPU paths) unless the change is specifically about those areas.
-5. Preserve all docstrings and comments that explain mathematical formulas.
-6. Add a comment block at the top of the file documenting what was changed:
+5. **Preserve ALL existing comments** — function docstrings, mathematical formula explanations, inline rationale comments, and section headers. Do NOT delete or shorten comments that explain what the code does or why.
+6. **Add explanatory comments for every optimization change** — each modified section should have a comment explaining what was changed and why it improves performance. For example:
+   ```python
+   # Optimization: compute dW before dX to allow register reuse.
+   # The original order kept 8 vectors live simultaneously (115 regs/thread).
+   # This reordering reduces peak liveness to 5-6 vectors (95 regs/thread).
+   ```
+7. **Preserve function-level docstrings** — if the original kernel functions have docstrings or parameter descriptions, keep them. Update them if the function signature changes.
+8. Add a comment block at the top of the file documenting what was changed:
 
 ```python
 """

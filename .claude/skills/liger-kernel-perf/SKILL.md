@@ -87,10 +87,12 @@ The agent:
 1. Applies the winning variant in-place to `src/liger_kernel/ops/{kernel}.py`
 2. Runs the full test suite: `python -m pytest test/transformers/test_{kernel}.py -xvs` (hard gate)
 3. Runs checkstyle: `make checkstyle` (auto-fix with `ruff check . --fix && ruff format .`)
-4. Generates the final optimization report → `optimization/{kernel}/report.md`
-5. Presents the before/after summary
+4. Generates 3-way comparison plots (original liger vs optimized liger vs huggingface baseline) using `benchmarks_visualizer.py`
+5. Generates the final optimization report → `optimization/{kernel}/report.md`
+6. Creates a PR with only the kernel code changes (no plots or optimization workspace files)
+7. Presents the before/after summary with plots
 
-**Human checkpoint (interactive mode):** Present the final report with before/after numbers, variant comparison table, and test results.
+**Human checkpoint (interactive mode):** Present the final report with before/after numbers, comparison plots, and test results.
 
 ## Guardrails
 

@@ -122,7 +122,67 @@ make checkstyle
 
 If it still fails after auto-fix, report the remaining checkstyle issues but do NOT revert the kernel (checkstyle is not a correctness gate). Note the issues in the report so they can be fixed manually.
 
-### Step 5: Generate the Final Optimization Report
+### Step 5: Generate Comparison Plots
+
+Generate 3-way comparison plots showing the original Liger kernel, the optimized kernel, and the HuggingFace/PyTorch baseline. This gives the user a visual demonstration of the improvement.
+
+#### Step 5a: Run Benchmarks with "liger_original" Provider
+
+Before the winning variant was applied (Step 2), the Profiler already collected baseline benchmarks. These are stored in `optimization/{kernel}/benchmarks/v0_baseline.csv` with `kernel_provider="liger"`.
+
+To create a 3-way comparison, we need to add a separate provider for the original kernel. Temporarily restore the original, benchmark it with a custom provider name, then re-apply the winner:
+
+```bash
+# Save the optimized kernel
+cp src/liger_kernel/ops/{kernel}.py /tmp/optimized_{kernel}.py
+
+# Restore original for benchmarking as "liger_original"
+cp optimization/{kernel}/original_{kernel}.py src/liger_kernel/ops/{kernel}.py
+
+# The benchmark script already has the "liger" provider — these results represent the original.
+# No action needed if v0_baseline.csv already has "liger" provider data.
+
+# Re-apply the optimized kernel
+cp /tmp/optimized_{kernel}.py src/liger_kernel/ops/{kernel}.py
+
+# Run benchmarks with the optimized kernel — results go in as "liger" provider (overwriting)
+cd benchmark/scripts && python benchmark_{kernel}.py --overwrite
+```
+
+**Alternative (preferred if the benchmark script supports custom providers):** Modify the benchmark run to use provider name "liger_optimized" for the new kernel, keeping the original "liger" results intact. This produces 3 distinct providers in the CSV: "liger" (original), "liger_optimized" (new), and "huggingface"/"torch" (baseline).
+
+#### Step 5b: Generate Plots
+
+Generate speed and memory comparison plots:
+
+```bash
+# Speed plots for all modes (forward, backward, full)
+python benchmark/benchmarks_visualizer.py \
+  --kernel-name {kernel} \
+  --metric-name speed \
+  --overwrite
+
+# Memory plot
+python benchmark/benchmarks_visualizer.py \
+  --kernel-name {kernel} \
+  --metric-name memory \
+  --overwrite
+```
+
+Plots are saved to `benchmark/visualizations/`. Copy them to the optimization workspace:
+
+```bash
+cp benchmark/visualizations/{kernel}_speed_*.png optimization/{kernel}/
+cp benchmark/visualizations/{kernel}_memory_*.png optimization/{kernel}/
+```
+
+#### Step 5c: Generate Additional Custom Plots (Optional)
+
+If the optimization shows interesting size-dependent behavior (e.g., bigger gains at larger sizes), generate targeted plots highlighting this. Use matplotlib directly if the standard visualizer does not cover the comparison you want to show.
+
+Save any additional plots to `optimization/{kernel}/`.
+
+### Step 6: Generate the Final Optimization Report
 
 Write the report to `optimization/{kernel}/report.md`. The report is the permanent record of the entire optimization effort.
 
@@ -132,7 +192,8 @@ Use the structure from [templates/optimization-report.md](templates/optimization
 
 1. **Optimization Applied** field in the Summary: `Yes` or `No (reverted due to test failures)`
 2. **Key Code Diff** in the Winning Changes section: run `diff optimization/{kernel}/original_{kernel}.py src/liger_kernel/ops/{kernel}.py` and include the most important 20-40 lines. Do NOT write the diff from memory.
-3. **Reproduction** section at the end:
+3. **Comparison Plots** section: reference the plots generated in Step 5 with file paths.
+4. **Reproduction** section at the end:
    ```bash
    # Reproduce baseline benchmarks:
    cd benchmark/scripts && python benchmark_{kernel}.py --overwrite
@@ -154,8 +215,126 @@ Before saving the report, verify:
 - [ ] If optimization was reverted, this is stated in the Summary, the header, and Section 6
 - [ ] Reproduction commands use the correct file paths
 - [ ] The code diff in Section 4 is accurate (diff the actual files, do not write from memory)
+- [ ] Comparison plots are generated and referenced in the report
 
-### Step 6: Present the Before/After Summary
+### Step 7: Create Pull Request
+
+Create a PR with **only the kernel code changes**. Do NOT include plots, optimization workspace files, or benchmark data in the PR.
+
+#### Step 7a: Stage Only Relevant Files
+
+```bash
+git add src/liger_kernel/ops/{kernel}.py
+```
+
+Do NOT add:
+- `optimization/` directory (workspace files, notes, plots)
+- `benchmark/visualizations/` (generated plots)
+- `benchmark/data/all_benchmark_data.csv` (benchmark results)
+
+#### Step 7b: Create a Descriptive Commit
+
+```bash
+git commit -m "$(cat <<'EOF'
+[Perf] Optimize {kernel} kernel: {headline improvement}
+
+{2-3 sentence summary of the optimization technique and its impact.}
+
+Key changes:
+- {Change 1}: {what and why}
+- {Change 2}: {what and why}
+
+Benchmark results ({gpu_name}):
+- Speed (forward): {delta}% {faster/slower}
+- Speed (backward): {delta}% {faster/slower}
+- Speed (full): {delta}% {faster/slower}
+- Memory: {delta}% {reduction/increase}
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+EOF
+)"
+```
+
+#### Step 7c: Push and Create PR
+
+```bash
+git push -u origin HEAD
+```
+
+Create the PR using `gh pr create`. The PR body must clearly explain:
+
+1. **What was optimized** -- which kernel, which pass, what bottleneck
+2. **What changes were made** -- specific code changes with rationale for each
+3. **How they help** -- tie back to the bottleneck diagnosis (e.g., "reduced register pressure from 115 to 95 registers/thread, increasing occupancy from 12.5% to 25%")
+4. **Benchmark results** -- before/after table with speed and memory numbers at representative sizes
+5. **Correctness** -- confirm all tests pass
+
+Use this PR template:
+
+```bash
+gh pr create --title "[Perf] Optimize {kernel}: {headline}" --body "$(cat <<'EOF'
+## Summary
+
+{2-3 sentences: what was optimized, the key technique, and the headline result.}
+
+## Bottleneck Diagnosis
+
+- **Kernel**: `{kernel}` ({tier} — {tier_description})
+- **GPU**: {gpu_name} ({architecture})
+- **Classification**: {memory-bound / compute-bound / balanced}
+- **Root cause**: {specific bottleneck explanation}
+
+## Changes
+
+{For each change, explain WHAT was changed and WHY it helps:}
+
+### 1. {Change title}
+{Description of the code change and its performance rationale.}
+
+### 2. {Change title}
+{Description of the code change and its performance rationale.}
+
+## Benchmark Results
+
+Tested on {gpu_name}. Values are median ms (speed) or MB (memory).
+
+### Speed (ms, lower is better)
+
+| x_value | Mode | Before | After | Improvement |
+|---------|------|--------|-------|-------------|
+| {x1} | forward | {before} | {after} | {delta}% |
+| {x1} | backward | {before} | {after} | {delta}% |
+| {x1} | full | {before} | {after} | {delta}% |
+| ... | ... | ... | ... | ... |
+
+### Memory (MB, lower is better)
+
+| x_value | Before | After | Improvement |
+|---------|--------|-------|-------------|
+| {x1} | {before} | {after} | {delta}% |
+| ... | ... | ... | ... |
+
+## Correctness
+
+- Full test suite: **PASSED** (`python -m pytest test/transformers/test_{kernel}.py -xvs`)
+- Checkstyle: **PASSED** (`make checkstyle`)
+
+## Test Plan
+
+- [x] All existing unit tests pass
+- [x] Benchmarks show improvement across all input sizes
+- [x] No regression on non-target metrics (speed/memory balance maintained)
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+```
+
+**Important**: Do NOT include plots as image attachments in the PR. Plots are for local review only and live in the optimization workspace.
+
+### Step 8: Present the Before/After Summary
+
+Include the plot file paths in the summary so the user can view them.
 
 Display a concise summary to the user:
 
