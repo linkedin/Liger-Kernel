@@ -112,4 +112,5 @@ These apply to EVERY variant, regardless of mode:
 - [optimizer.md](optimizer.md) -- Optimizer Agent specification
 - [finalizer.md](finalizer.md) -- Finalizer Agent specification
 - [optimization-strategies.md](optimization-strategies.md) -- Catalog of optimization techniques
-- Templates in [templates/](templates/) -- Output format templates
+- [templates/optimization-profile.md](templates/optimization-profile.md) -- Profiling output format (cross-stage contract)
+- [templates/variant-notes.md](templates/variant-notes.md) -- Per-variant lab notebook format

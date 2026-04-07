@@ -203,14 +203,17 @@ Save any additional plots to `optimization/{kernel}/`.
 
 Write the report to `optimization/{kernel}/report.md`. The report is the permanent record of the entire optimization effort.
 
-Use the structure from [templates/optimization-report.md](templates/optimization-report.md) as the base format, with these additional sections that MUST be included:
+The report must include these sections:
 
-**Required sections (beyond template):**
-
-1. **Optimization Applied** field in the Summary: `Yes` or `No (reverted due to test failures)`
-2. **Key Code Diff** in the Winning Changes section: run `diff optimization/{kernel}/original_{kernel}.py src/liger_kernel/ops/{kernel}.py` and include the most important 20-40 lines. Do NOT write the diff from memory.
-3. **Comparison Plots** section: reference the plots generated in Step 5 with file paths.
-4. **Reproduction** section at the end:
+1. **Summary**: kernel name, GPU, goal, variants tried, best variant, improvement %, and whether the optimization was applied (`Yes` / `No — reverted due to test failures`)
+2. **Baseline Profile**: bottleneck classification with evidence, NCU highlights if available
+3. **Variant Comparison**: include the table from `optimization/{kernel}/comparison.md` (produced by the Optimizer)
+4. **Winning Changes**: what was changed, why it worked, and a key code diff. Run `diff optimization/{kernel}/original_{kernel}.py src/liger_kernel/ops/{kernel}.py` — do NOT write the diff from memory.
+5. **Rejected Approaches**: for each rejected variant, what was tried and why it failed
+6. **Comparison Plots**: reference the plots generated in Step 5 with file paths
+7. **Correctness Verification**: smoke test results, full test suite results, checkstyle results
+8. **Recommendations**: unexplored optimization opportunities, suggested follow-ups
+9. **Reproduction** section:
    ```bash
    # Reproduce baseline benchmarks:
    cd benchmark/scripts && python benchmark_{kernel}.py --overwrite

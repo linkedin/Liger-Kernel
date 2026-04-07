@@ -344,16 +344,13 @@ Use this information to form a more informed hypothesis for the next variant.
 
 ## Final Comparison Table
 
-After the loop terminates (for any reason), produce a comparison table of ALL variants using the format in [templates/comparison-table.md](templates/comparison-table.md).
+After the loop terminates (for any reason), produce a comparison table of ALL variants and save it to `optimization/{kernel}/comparison.md`.
 
-Save the result to `optimization/{kernel}/comparison.md`.
-
-Key requirements:
-- Include ALL variants (accepted and rejected)
-- Show values at the representative x_value (typically the largest or most common)
-- Include the percentage delta from baseline
-- Declare the winner with justification
-- Summarize cumulative learnings (what worked, what didn't, why)
+The comparison must include:
+- A master table with ALL variants (accepted and rejected): Variant | Strategy | Speed Fwd/Bwd/Full (ms) | Memory (MB) | Verdict
+- Values at the representative x_value (typically the largest or most common) with percentage delta from baseline
+- Winner declaration with justification
+- Cumulative learnings summary (what worked, what didn't, why)
 
 ## Error Recovery
 
