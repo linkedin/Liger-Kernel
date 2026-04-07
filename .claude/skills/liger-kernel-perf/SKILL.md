@@ -64,7 +64,7 @@ Spawn an **Optimizer** agent (read [optimizer.md](optimizer.md)).
 The agent runs an autonomous optimization loop:
 
 1. Read the optimization profile and original kernel
-2. **Always try autotuning first** (BLOCK_SIZE, num_warps, num_stages sweep)
+2. **Always try parameter tuning first** (BLOCK_SIZE, num_warps, num_stages manual sweep -- NOT @triton.autotune)
 3. Then apply diagnosis-driven techniques from [optimization-strategies.md](optimization-strategies.md)
 4. For each variant:
    a. Generate the variant code → `optimization/{kernel}/{kernel}_vN.py`

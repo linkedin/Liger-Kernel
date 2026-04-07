@@ -1,6 +1,6 @@
 # Optimization Strategies Catalog
 
-Reference catalog for the Optimizer Agent. Techniques are ordered by recommended trial order within each category. The agent should **always start with autotuning**, then apply diagnosis-driven techniques based on the bottleneck classification from the Profiler stage.
+Reference catalog for the Optimizer Agent. Techniques are ordered by recommended trial order within each category. The agent should **always start with parameter tuning**, then apply diagnosis-driven techniques based on the bottleneck classification from the Profiler stage.
 
 ---
 
@@ -8,7 +8,7 @@ Reference catalog for the Optimizer Agent. Techniques are ordered by recommended
 
 After reading the optimization profile, follow this priority:
 
-1. **Always first**: Autotuning (Section 1)
+1. **Always first**: Parameter Tuning (Section 1)
 2. **Memory-bound kernel**: Section 2 techniques, then Section 5
 3. **Compute-bound kernel**: Section 3 techniques, then Section 5
 4. **Balanced kernel**: Interleave Section 2 and Section 3, then Section 5
@@ -16,9 +16,21 @@ After reading the optimization profile, follow this priority:
 
 ---
 
-## 1. Always First: Autotuning
+## 1. Always First: Parameter Tuning
 
-**Why first**: Autotuning is the cheapest technique (no code changes to the kernel body) and frequently delivers the largest single improvement. The current codebase uses `calculate_settings()` which picks BLOCK_SIZE as the next power of 2 and num_warps via a fixed heuristic. This is a reasonable default but leaves significant performance on the table for specific input shapes and GPU architectures.
+**Why first**: Parameter tuning is the cheapest technique (minimal code changes) and frequently delivers the largest single improvement. The current codebase uses `calculate_settings()` which picks BLOCK_SIZE as the next power of 2 and num_warps via a fixed heuristic. This is a reasonable default but leaves significant performance on the table for specific input shapes and GPU architectures.
+
+### Why NOT @triton.autotune
+
+Liger production kernels **cannot use `@triton.autotune`** for three architectural reasons:
+
+1. **Forward-backward context coupling**: Liger kernels use `torch.autograd.Function` where `forward()` computes `BLOCK_SIZE`/`num_warps` via `calculate_settings()`, stores them in `ctx`, and `backward()` retrieves them to launch its kernel with identical config. With `@triton.autotune`, these become compile-time constants managed by Triton -- they cannot be stored in `ctx`, and the backward kernel has no way to know which config the forward kernel auto-selected for a given input.
+
+2. **Multi-backend incompatibility**: NPU/Ascend does not support `num_warps` or `num_stages` at all (commit `8b965b9` explicitly removed them). `@triton.autotune` relies on these parameters.
+
+3. **Inference warmup latency**: Each new input shape triggers autotuning (benchmarks all configs). Adds 100ms+ first-call penalty per unique shape, unacceptable for LLM inference with variable sequence lengths.
+
+The commented-out `@triton.autotune` decorators in `dyt.py` and `grpo_loss.py` are evidence of prior exploration that was abandoned for these reasons. Do NOT re-introduce `@triton.autotune` on production kernels.
 
 ### Parameters to Tune
 
@@ -29,63 +41,51 @@ After reading the optimization profile, follow this priority:
 | `num_stages` | Software pipelining depth | 1, 2, 3, 4, 5 |
 | `BLOCK_ROW` | Rows per program (block-row mode only) | 1, 2, 4, 8, 16, 32 |
 
-### Method A: @triton.autotune Decorator
+### Method: Manual Sweep with Improved Heuristic
 
-The most straightforward approach. Replace `calculate_settings()` with an autotune decorator on the kernel.
+Replace `calculate_settings()` with a better heuristic derived from benchmarking. The variant must still pass `BLOCK_SIZE` and `num_warps` through `ctx` to the backward kernel.
 
+**Step 1**: Identify the current config for the benchmark's input sizes:
 ```python
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_SIZE": 512}, num_warps=4, num_stages=2),
-        triton.Config({"BLOCK_SIZE": 1024}, num_warps=4, num_stages=2),
-        triton.Config({"BLOCK_SIZE": 1024}, num_warps=8, num_stages=2),
-        triton.Config({"BLOCK_SIZE": 2048}, num_warps=8, num_stages=3),
-        triton.Config({"BLOCK_SIZE": 4096}, num_warps=16, num_stages=3),
-        triton.Config({"BLOCK_SIZE": 8192}, num_warps=16, num_stages=4),
-        triton.Config({"BLOCK_SIZE": 8192}, num_warps=32, num_stages=4),
-    ],
-    key=["n_cols"],  # re-tune when n_cols changes
-)
-@triton.jit
-def my_kernel(..., n_cols, BLOCK_SIZE: tl.constexpr):
-    ...
+# calculate_settings() returns (next_power_of_2(n), num_warps_heuristic)
+# For n_cols=4096: BLOCK_SIZE=4096, num_warps=8
+# For n_cols=8192: BLOCK_SIZE=8192, num_warps=16
+# Note: num_stages is never set (Triton defaults to 1)
 ```
 
-**Important**: When using `@triton.autotune`, the kernel signature changes. The `BLOCK_SIZE` parameter must NOT be passed explicitly from the launch site -- autotune manages it. The `num_warps` and `num_stages` keyword arguments must also be removed from the launch call.
-
-**Key constraint**: All parameters in a `triton.Config` dict must be `tl.constexpr` parameters in the kernel signature. Parameters like `n_cols` that vary across calls should go in the `key` list.
-
-### Method B: Manual Sweep (Benchmark-Driven)
-
-When `@triton.autotune` has issues (e.g., incompatible with certain kernel patterns, adds warmup latency, or when you need to measure across many input shapes rather than one), run a manual sweep:
-
+**Step 2**: Create a variant with an improved selection function:
 ```python
-# In the optimization variant, parameterize the launch:
-CONFIGS = [
-    (512, 4, 2),   # (BLOCK_SIZE, num_warps, num_stages)
-    (1024, 4, 2),
-    (1024, 8, 2),
-    (2048, 8, 3),
-    (4096, 16, 3),
-    (8192, 16, 4),
-    (8192, 32, 4),
-]
-
-# Then benchmark each config at representative shapes
-for BLOCK_SIZE, num_warps, num_stages in CONFIGS:
-    kernel[(grid,)](
-        ...,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-        num_stages=num_stages,
-    )
+def optimized_settings(n):
+    """Improved heuristic derived from benchmarking on {gpu_arch}."""
+    BLOCK_SIZE = triton.next_power_of_2(n)
+    if BLOCK_SIZE > 65536:
+        raise RuntimeError(...)
+    # Tuned values (from benchmark sweep):
+    if BLOCK_SIZE >= 8192:
+        num_warps = 16
+        num_stages = 3   # NEW: calculate_settings doesn't set this
+    elif BLOCK_SIZE >= 2048:
+        num_warps = 8
+        num_stages = 2
+    else:
+        num_warps = 4
+        num_stages = 2
+    return BLOCK_SIZE, num_warps, num_stages
 ```
 
-Pick the best config per input-size bucket and hardcode the selection logic, or use `@triton.autotune` with the pruned config list.
+**Step 3**: Update the kernel launcher to pass `num_stages`:
+```python
+# The kernel launch gains num_stages (previously unset, defaulted to 1):
+kernel[(grid,)](..., BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages)
+```
 
-### Architecture-Specific Autotune Guidance
+**Step 4**: Update `ctx` to also store `num_stages` and pass it to the backward kernel.
 
-- **Ampere (SM 8.x)**: `num_stages=2` is usually optimal. Higher stages rarely help and can increase register pressure. `num_warps` up to 16 for large BLOCK_SIZE; 32 warps rarely improve Ampere.
+**Key insight**: `num_stages` is the most commonly overlooked parameter. `calculate_settings()` does not set it at all, so Triton defaults to `num_stages=1`. Simply adding `num_stages=2` or `num_stages=3` to existing kernel launches is often the single biggest win, especially on Hopper.
+
+### Architecture-Specific Guidance
+
+- **Ampere (SM 8.x)**: `num_stages=2` is usually optimal. Higher stages rarely help and can increase register pressure. `num_warps` sweet spot is 4-16.
 - **Hopper (SM 9.0)**: Benefits significantly from higher `num_stages` (3-5) due to TMA and async pipeline support. Also tolerates `num_warps=32` better due to deeper warp scheduling.
 - **Blackwell (SM 10.0)**: Similar to Hopper but with even more pipeline depth tolerance. Start with `num_stages=4-5`.
 
@@ -95,14 +95,15 @@ Always. This is the mandatory first optimization attempt for every kernel.
 
 ### Expected Impact
 
-5-40% speedup depending on how far the `calculate_settings()` heuristic is from optimal for the target shapes and GPU.
+5-40% speedup depending on how far the `calculate_settings()` heuristic is from optimal for the target shapes and GPU. Adding `num_stages` alone can yield 10-25% on Hopper.
 
 ### Risks/Gotchas
 
-- `@triton.autotune` adds a warmup cost on first invocation for each unique `key` value. This can be problematic for inference workloads with many distinct shapes.
-- Autotuned configs are shape-specific. A config optimal for `n_cols=4096` may be terrible for `n_cols=128`. Always tune across representative shapes.
+- Configs are shape-dependent. A config optimal for `n_cols=4096` may be suboptimal for `n_cols=128`. Always benchmark across ALL x_values from the existing benchmark suite.
 - If BLOCK_SIZE exceeds `n_cols`, the kernel still works (masked loads) but wastes warps. Prune configs where `BLOCK_SIZE >> n_cols`.
-- The `calculate_settings()` function enforces `MAX_FUSED_SIZE = 65536`. This limit exists to prevent register spilling. Autotune configs should respect this unless you have verified that larger blocks work on target hardware.
+- The `calculate_settings()` function enforces `MAX_FUSED_SIZE = 65536`. This limit exists to prevent register spilling. Respect this unless verified otherwise.
+- When adding `num_stages` to existing kernels, the backward kernel must also receive the same `num_stages` value via `ctx`.
+- On NPU/Ascend, `num_warps` and `num_stages` are ignored. Optimizations targeting these parameters are NVIDIA-specific.
 
 ### Kernel Tiers
 

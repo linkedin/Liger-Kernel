@@ -56,31 +56,36 @@ while variant_number <= max_variants:
 
 ## Strategy Selection
 
-### Always Try Autotuning First (v1)
+### Always Try Parameter Tuning First (v1)
 
-The first variant MUST be autotuning. This is the cheapest optimization with the highest expected payoff. Replace `calculate_settings(n_cols)` with `@triton.autotune`:
+The first variant MUST be a parameter sweep over `BLOCK_SIZE`, `num_warps`, and `num_stages`. This is the cheapest optimization with the highest expected payoff.
+
+**Why NOT @triton.autotune**: Liger kernels use `torch.autograd.Function` where the forward pass stores `BLOCK_SIZE` and `num_warps` in `ctx` and passes them to the backward kernel. With `@triton.autotune`, these become compile-time constants that cannot be stored in `ctx` — the backward kernel would not know which config the forward used. Additionally, NPU/Ascend backends do not support `num_warps` or `num_stages` at all. For these reasons, `@triton.autotune` is intentionally not used in Liger production kernels.
+
+**Instead, do a manual parameter sweep**: Replace the `calculate_settings(n_cols)` call with hardcoded values and benchmark each configuration:
 
 ```python
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_SIZE": bs}, num_warps=nw, num_stages=ns)
-        for bs in [256, 512, 1024, 2048, 4096, 8192]
-        for nw in [2, 4, 8, 16]
-        for ns in [1, 2, 3, 4]
-    ],
-    key=["n_cols"],
-)
+# In the variant, replace:
+#   BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+# With a specific config to test:
+BLOCK_SIZE = 2048   # Try: 256, 512, 1024, 2048, 4096, 8192
+num_warps = 8       # Try: 2, 4, 8, 16, 32
+num_stages = 2      # Try: 1, 2, 3, 4
 ```
 
-Important autotune rules:
-- Add `@triton.autotune` above `@triton.jit` on BOTH forward and backward kernels
-- Remove `BLOCK_SIZE: tl.constexpr` from the function signature — autotune provides it
-- Keep `num_warps` and `num_stages` out of the function signature — autotune provides them
-- The `key` parameter should include the dimensions that affect optimal config
-- The launcher code must stop passing `BLOCK_SIZE=`, `num_warps=`, and `num_stages=` explicitly
-- Update the `torch.autograd.Function` to not save/pass `BLOCK_SIZE` and `num_warps` (autotune handles them)
-- If the kernel has both a regular and a `_block_` variant (like rms_norm), autotune each separately
-- Test a reasonable config space — too many configs slow down the first call but do not affect steady-state
+**Sweep procedure for v1**:
+1. Read the current `calculate_settings(n_cols)` output for the benchmark's representative input sizes
+2. Create a variant that replaces `calculate_settings` with a custom function that returns a better config
+3. Test 3-5 promising configs (not the full cartesian product — use the architecture guidance below to prune)
+4. Pick the best config across ALL benchmark x_values (not just one size)
+5. The variant should implement a smarter `calculate_settings` replacement, not just a single hardcoded value
+
+**Architecture-specific guidance for config selection**:
+- **Ampere**: `num_stages=2`, `num_warps` up to 16, BLOCK_SIZE 1024-4096
+- **Hopper**: `num_stages=3-5`, `num_warps` up to 32, BLOCK_SIZE 2048-8192
+- **Blackwell**: `num_stages=4-5`, similar to Hopper
+
+**Important**: Keep the same forward/backward ctx pattern. Both kernels must use the same `BLOCK_SIZE` and `num_warps` for a given input. The variant must still pass these through `ctx` just like the original.
 
 ### Subsequent Variants: Diagnosis-Driven
 
