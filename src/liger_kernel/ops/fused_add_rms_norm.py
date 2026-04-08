@@ -153,6 +153,10 @@ def _fused_add_rms_norm_backward_kernel(
 
     The backward pass computation logic is same as the rms_norm backward kernel, except that the gradient
     of the hidden_states in step 3 and the gradient of the residual in step 2 are summed up.
+
+    NOTE: The computation order below is intentionally structured to reduce register pressure.
+    dW is accumulated before computing dX so the compiler can reuse dY_row's registers for m.
+    The dX formula is factored as `rstd * m + c * X` (c is a scalar) to minimize live vectors.
     """
 
     row_block_id = tl.program_id(0).to(tl.int64)
@@ -169,45 +173,40 @@ def _fused_add_rms_norm_backward_kernel(
     for row_idx in range(row_start, row_end):
         dy_base = dY_ptr + row_idx * dY_row_stride
         dx_base = dX_ptr + row_idx * dX_row_stride
-
         x_base = X_ptr + row_idx * X_row_stride
         rstd_base = RSTD_ptr + row_idx * RSTD_row_stride
 
         dY_row = tl.load(dy_base + col_offsets, mask=mask, other=0.0)
         X_row = tl.load(x_base + col_offsets, mask=mask, other=0.0)
-
-        # Get cached rms
         rstd_row = tl.load(rstd_base)
 
         X_row = X_row.to(tl.float32)
 
-        # Different bacward graphs for different casting modes
+        # Calculate the gradient of W first to reduce peak register liveness
+        if casting_mode == _CASTING_MODE_LLAMA:
+            dW_row += dY_row * (X_row * rstd_row).to(X_dtype)
+        else:
+            # here X_row is already in fp32 (see previous cast)
+            dW_row += dY_row * (X_row * rstd_row)
+
+        # Different backward graphs for different casting modes
         if casting_mode == _CASTING_MODE_LLAMA:
             m = (dY_row * W_row).to(tl.float32)
-
         elif casting_mode == _CASTING_MODE_GEMMA:
             dY_row = dY_row.to(tl.float32)
             m = dY_row * W_row
         else:
             m = dY_row * W_row
 
-        dX_row = rstd_row * m
+        # dX = rstd * m - (rstd^3 / n_cols) * dot(m, X) * X + dS_out
+        dot = tl.sum(m * X_row, axis=0)
+        c = -(1.0 / n_cols) * rstd_row * rstd_row * rstd_row * dot
+        dX_row = rstd_row * m + c * X_row
 
         if has_dS_out:
             ds_base = dS_out_ptr + row_idx * dS_out_row_stride
             dS_out_row = tl.load(ds_base + col_offsets, mask=mask, other=0.0)
-            dX_row += (rstd_row) * (
-                -(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row
-            ) + dS_out_row
-        else:
-            dX_row += (rstd_row) * (-(1 / n_cols) * rstd_row * rstd_row * tl.sum(m * X_row, axis=0) * X_row)
-
-        # calculate the gradient of W
-        if casting_mode == _CASTING_MODE_LLAMA:
-            dW_row += dY_row * (X_row * rstd_row).to(X_dtype)
-        else:
-            # here X_row is already in fp32 (see previous if block)
-            dW_row += dY_row * (X_row * rstd_row)
+            dX_row += dS_out_row
 
         tl.store(dx_base + col_offsets, dX_row.to(X_dtype), mask=mask)
 
@@ -234,6 +233,8 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
     R = R.view(-1, dim)
     n_rows, n_cols = X.shape
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+
+    num_stages = 2
 
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
     S = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
@@ -270,13 +271,16 @@ def fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode):
         casting_mode,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
+        num_stages=num_stages,
         **kernel_args,  # XPU-specific optimization
     )
 
-    return Y.view(*shape), S.view(*shape), RSTD, BLOCK_SIZE, num_warps, casting_mode
+    return Y.view(*shape), S.view(*shape), RSTD, BLOCK_SIZE, num_warps, num_stages, casting_mode
 
 
-def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, in_place):
+def fused_add_rms_norm_backward(
+    dY, dS_out, S, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warps, num_stages, in_place
+):
     shape = dY.shape
     dim = shape[-1]
     dY = dY.view(-1, dim)
@@ -334,6 +338,7 @@ def fused_add_rms_norm_backward(dY, dS_out, S, W, RSTD, offset, casting_mode, BL
         casting_mode,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
+        num_stages=num_stages,
         has_dS_out=dS_out is not None,
         **kernel_args,  # XPU-specific optimization
     )
@@ -378,12 +383,15 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
         W: (H,)
         """
         # TODO: add row_mode
-        Y, S, RSTD, BLOCK_SIZE, num_warps, casting_mode = fused_add_rms_norm_forward(X, R, W, eps, offset, casting_mode)
+        Y, S, RSTD, BLOCK_SIZE, num_warps, num_stages, casting_mode = fused_add_rms_norm_forward(
+            X, R, W, eps, offset, casting_mode
+        )
         ctx.offset = offset
         ctx.casting_mode = casting_mode
         ctx.in_place = in_place
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
+        ctx.num_stages = num_stages
         ctx.save_for_backward(S, W, RSTD)
         return Y, S
 
@@ -404,6 +412,7 @@ class LigerFusedAddRMSNormFunction(torch.autograd.Function):
             ctx.casting_mode,
             ctx.BLOCK_SIZE,
             ctx.num_warps,
+            ctx.num_stages,
             ctx.in_place,
         )
 
