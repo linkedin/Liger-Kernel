@@ -2,15 +2,14 @@ import torch
 
 from liger_kernel.chunked_loss.fused_linear_ppo import LigerFusedLinearPPOBase
 from liger_kernel.ops import GrpoLossFunction
-from liger_kernel.ops import fused_linear_grpo_loss
 
 
 def triton_grpo_loss(
-    logits=None,
-    old_logp=None,
-    ref_logp=None,
-    completion_ids=None,
-    advantages=None,
+    logits,
+    old_logp,
+    ref_logp,
+    completion_ids,
+    advantages,
     completion_mask=None,
     temperature=0.9,
     beta=0.04,
@@ -26,16 +25,12 @@ def triton_grpo_loss(
     vllm_is_ratio=None,
     delta=None,
     use_bias_correction_kl=False,
-    *,
-    hidden_states=None,
-    lm_head_weight=None,
-    lm_head_bias=None,
 ):
     """
     Triton-optimized GRPO loss function.
 
     Args:
-        logits: Legacy logits input (B, L+1, V).
+        logits: Model logits (B, L+1, V)
         old_logp: Old policy log probabilities (B, L) or None
         ref_logp: Reference model log probabilities (B, L) or None (required if beta != 0)
         completion_ids: Token IDs for completions (B, L)
@@ -58,68 +53,40 @@ def triton_grpo_loss(
             types (grpo, bnpo, dr_grpo, dapo, luspo). None means disabled.
         use_bias_correction_kl: If True, multiply KL divergence by coef_1 (importance sampling
             ratio) for bias-corrected KL estimation (DeepSeek-V3.2). Default False.
-        hidden_states: Model hidden states before lm_head (B, L+1, H).
-        lm_head_weight: LM head weight (V, H).
-        lm_head_bias: Optional LM head bias (V,) or None.
 
     Returns:
         If reduce=True: (loss, metrics) where metrics = [kl_mean, clip_ratio] or [clip_ratio]
         If reduce=False: (per_token_loss, per_token_kl, is_clipped)
     """
+    assert logits is not None and completion_ids is not None and advantages is not None, (
+        "must provide logits, completion_ids and advantages"
+    )
     assert importance_sampling_level in ("token", "sequence"), (
         f"importance_sampling_level must be 'token' or 'sequence', got {importance_sampling_level}"
     )
 
-    if hidden_states is not None and lm_head_weight is not None:
-        result = fused_linear_grpo_loss(
-            hidden_states,
-            lm_head_weight,
-            old_logp,
-            ref_logp,
-            completion_ids,
-            advantages,
-            completion_mask=completion_mask,
-            lm_head_bias=lm_head_bias,
-            temperature=temperature,
-            beta=beta,
-            eps_low=eps_low,
-            eps_high=eps_high,
-            loss_type=loss_type,
-            max_completion_length=max_completion_length,
-            importance_sampling_level=importance_sampling_level,
-            reduce=reduce,
-            sapo_temperature_pos=sapo_temperature_pos,
-            sapo_temperature_neg=sapo_temperature_neg,
-            vllm_is_ratio=vllm_is_ratio,
-            delta=delta,
-            use_bias_correction_kl=use_bias_correction_kl,
-        )
-    else:
-        assert logits is not None and completion_ids is not None and advantages is not None, (
-            "must provide either hidden_states + lm_head_weight, or logits"
-        )
-        result = GrpoLossFunction.apply(
-            logits,
-            old_logp,
-            ref_logp,
-            completion_ids,
-            advantages,
-            completion_mask,
-            temperature,
-            beta,
-            eps_low,
-            eps_high,
-            inplace,
-            loss_type,
-            max_completion_length,
-            reduce,
-            importance_sampling_level,
-            sapo_temperature_pos,
-            sapo_temperature_neg,
-            vllm_is_ratio,
-            delta,
-            use_bias_correction_kl,
-        )
+    result = GrpoLossFunction.apply(
+        logits,
+        old_logp,
+        ref_logp,
+        completion_ids,
+        advantages,
+        completion_mask,
+        temperature,
+        beta,
+        eps_low,
+        eps_high,
+        inplace,
+        loss_type,
+        max_completion_length,
+        reduce,
+        importance_sampling_level,
+        sapo_temperature_pos,
+        sapo_temperature_neg,
+        vllm_is_ratio,
+        delta,
+        use_bias_correction_kl,
+    )
 
     if not reduce:
         # Returns (per_token_loss, per_token_kl, is_clipped) - all (B, L) tensors
@@ -178,20 +145,8 @@ from trl.extras.profiling import profiling_decorator
 @profiling_decorator
 def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
     # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-    outputs = model(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        logits_to_keep=logits_to_keep + 1,
-        output_hidden_states=True,
-    )
-    hidden_states = outputs.hidden_states[-1]
-    return LigerFusedLinearPPOBase.chunk_forward(
-        hidden_states[:, :-1, :].contiguous(),
-        model.lm_head.weight,
-        input_ids[:, -logits_to_keep:].contiguous(),
-        bias=getattr(model.lm_head, "bias", None),
-        temperature=self.temperature,
-    )
+    logits = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
+    return fused_selective_log_softmax(logits, input_ids, self.temperature, mask=attention_mask)
 
 @profiling_decorator
 def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
@@ -204,13 +159,7 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
     input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
     attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
     logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-    outputs = model(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        logits_to_keep=logits_to_keep + 1,
-        output_hidden_states=True,
-    )
-    hidden_states = outputs.hidden_states[-1]
+    logits = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
 
     ref_per_token_logps = inputs["ref_per_token_logps"]
     advantages = inputs["advantages"]
@@ -220,14 +169,12 @@ def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=N
     vllm_is_ratio = inputs.get("importance_sampling_ratio", None)
 
     per_token_loss, per_token_kl, is_clipped = triton_grpo_loss(
-        hidden_states=hidden_states,
-        lm_head_weight=model.lm_head.weight,
-        old_logp=old_per_token_logps,
-        ref_logp=ref_per_token_logps,
-        completion_ids=completion_ids,
-        advantages=advantages,
-        completion_mask=completion_mask,
-        lm_head_bias=getattr(model.lm_head, "bias", None),
+        logits,
+        old_per_token_logps,
+        ref_per_token_logps,
+        completion_ids,
+        advantages,
+        completion_mask,
         temperature=self.temperature,
         beta=self.beta,
         eps_low=self.epsilon_low,

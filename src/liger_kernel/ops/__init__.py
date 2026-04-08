@@ -30,9 +30,6 @@ Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import .
 # All of these can be replaced by vendor-specific implementations.
 # =============================================================================
 
-from liger_kernel.ops.attn_res import LigerAttnResFunction  # noqa: F401
-from liger_kernel.ops.attn_res import attn_res_backward  # noqa: F401
-from liger_kernel.ops.attn_res import attn_res_forward  # noqa: F401
 from liger_kernel.ops.cross_entropy import LigerCrossEntropyFunction  # noqa: F401
 from liger_kernel.ops.cross_entropy import cross_entropy_backward  # noqa: F401
 from liger_kernel.ops.cross_entropy import cross_entropy_forward  # noqa: F401
@@ -55,7 +52,6 @@ from liger_kernel.ops.group_norm import LigerGroupNormFunction  # noqa: F401
 from liger_kernel.ops.group_norm import group_norm_backward  # noqa: F401
 from liger_kernel.ops.group_norm import group_norm_forward  # noqa: F401
 from liger_kernel.ops.grpo_loss import GrpoLossFunction  # noqa: F401
-from liger_kernel.ops.grpo_loss import fused_linear_grpo_loss  # noqa: F401
 from liger_kernel.ops.jsd import LigerJSDFunction  # noqa: F401
 from liger_kernel.ops.jsd import jsd_backward  # noqa: F401
 from liger_kernel.ops.jsd import jsd_forward  # noqa: F401
@@ -72,9 +68,6 @@ from liger_kernel.ops.poly_norm import LigerPolyNormFunction  # noqa: F401
 from liger_kernel.ops.poly_norm import poly_norm_backward  # noqa: F401
 from liger_kernel.ops.poly_norm import poly_norm_forward  # noqa: F401
 from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction  # noqa: F401
-from liger_kernel.ops.relu_squared import LigerReLUSquaredFunction  # noqa: F401
-from liger_kernel.ops.relu_squared import relu_squared_backward  # noqa: F401
-from liger_kernel.ops.relu_squared import relu_squared_forward  # noqa: F401
 from liger_kernel.ops.rms_norm import LigerRMSNormFunction  # noqa: F401
 from liger_kernel.ops.rms_norm import rms_norm_backward  # noqa: F401
 from liger_kernel.ops.rms_norm import rms_norm_forward  # noqa: F401
