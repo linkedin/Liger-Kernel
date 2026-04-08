@@ -31,7 +31,8 @@ from liger_kernel.ops.utils import get_npu_core_count
 
 
 def _mhc_mm_norm_block_sizes(N, K, M, dtype_size=4):
-    """Compute UB-safe (BLOCK_N, BLOCK_K, BLOCK_M) for the matmul+norm kernel.
+    """
+    Compute UB-safe (BLOCK_N, BLOCK_K, BLOCK_M) for the matmul+norm kernel.
 
     Adaptive strategy:
       - BLOCK_M covers all M columns when M is small (typical for mHC where
@@ -70,7 +71,8 @@ def _mhc_mm_norm_block_sizes(N, K, M, dtype_size=4):
 
 
 def _mhc_pre_post_block_c(C, HC, block_n=4, is_post=False, is_bwd=False):
-    """Compute UB-safe BLOCK_C for pre / post_res kernels via unified tiling.
+    """
+    Compute UB-safe BLOCK_C for pre / post_res kernels via unified tiling.
 
     Estimates memory_multiplier from the number of [BN, BC]-sized float32 tiles
     simultaneously resident in UB (with 2× multi-buffer factor).
@@ -92,11 +94,6 @@ def _mhc_pre_post_block_c(C, HC, block_n=4, is_post=False, is_bwd=False):
     )
     block_c = tile_shapes[0][1] if tile_shapes else 128
     return max(32, min(block_c, C))
-
-
-# ===========================================================================
-# (1) Fused matmul + RMS norm  – forward
-# ===========================================================================
 
 
 @triton.jit
@@ -210,11 +207,6 @@ def mhc_mm_norm_fwd(
         BLOCK_M=block_m,
     )
     return out_mix, out_invr
-
-
-# ===========================================================================
-# (1) Fused matmul + RMS norm  – backward
-# ===========================================================================
 
 
 @triton.jit
@@ -377,11 +369,6 @@ def mhc_mm_norm_bwd(
     if out_grad_phi.dtype != phi.dtype:
         out_grad_phi = out_grad_phi.to(phi.dtype)
     return out_grad_x, out_grad_phi
-
-
-# ===========================================================================
-# (2) Sinkhorn  – forward
-# ===========================================================================
 
 
 @triton.jit
@@ -558,11 +545,6 @@ def mhc_split_sinkhorn_fwd(
     return out_hpre, out_hpost, out_hres
 
 
-# ===========================================================================
-# (2) Sinkhorn – backward (history-based path)
-# ===========================================================================
-
-
 @triton.jit
 def _mhc_sinkhorn_bwd_hist_kernel_npu(
     mix_ptr,
@@ -613,11 +595,12 @@ def _mhc_sinkhorn_bwd_hist_kernel_npu(
         col_sum0 = tl.sum(p_eps, axis=0)
         mat0 = p_eps / (col_sum0[None, :] + sinkhorn_eps)
 
+        # Start backward from grad_out
         g = tl.load(
             grad_out_ptr + sample_id * stride_go_n + rows * stride_go_i + cols * stride_go_j,
         ).to(tl.float32)
 
-        # Reverse iterations using stored mats
+        # Reverse iterations (TMAX-1 .. 1) using stored mats
         for t in tl.static_range(TMAX - 1, 0, -1):
             mat_t = tl.load(hist_ptr + sample_id * stride_hn + t * stride_ht + rows * stride_hi + cols * stride_hj).to(
                 tl.float32
@@ -639,19 +622,16 @@ def _mhc_sinkhorn_bwd_hist_kernel_npu(
             dot_row = tl.sum(g_row * m_row, axis=1)
             g = (g_row - dot_row[:, None]) / denom_row[:, None]
 
-        # Undo initial col norm
+        # Undo initial col norm (t=0)
         denom_col0 = col_sum0 + sinkhorn_eps
         dot_col0 = tl.sum(g * mat0, axis=0)
         g_p = (g - dot_col0[None, :]) / denom_col0[None, :]
 
-        # Softmax backward
+        # Softmax backward on rows: p * (g_p - sum(g_p * p))
         dot_soft = tl.sum(g_p * p, axis=1)
         grad_logits = p * (g_p - dot_soft[:, None])
 
-        tl.store(
-            grad_logits_ptr + sample_id * stride_gl_n + rows * stride_gl_i + cols * stride_gl_j,
-            grad_logits,
-        )
+        tl.store(grad_logits_ptr + sample_id * stride_gl_n + rows * stride_gl_i + cols * stride_gl_j, grad_logits)
 
 
 @triton.jit
@@ -813,11 +793,6 @@ def mhc_sinkhorn_bwd(
     return out_grad_logits
 
 
-# ===========================================================================
-# (3) Pre-aggregate  – forward / backward
-# ===========================================================================
-
-
 @triton.jit
 def _mhc_pre_fwd_kernel_npu(
     x_ptr,
@@ -926,7 +901,7 @@ def _mhc_pre_bwd_kernel_npu(
             part,
             mask=n_offs < N,
         )
-        
+
 
 def _select_pre_post_blocks(N, C, HC, is_post, is_bwd):
     """Jointly select (BLOCK_N, BLOCK_C) that fits UB and maximises core usage.
@@ -936,7 +911,7 @@ def _select_pre_post_blocks(N, C, HC, is_post, is_bwd):
     is enough to keep all NPU cores busy.
     """
     num_cores = get_npu_core_count()
-    for bn in [16, 8, 4, 2, 1]:
+    for bn in [32, 16, 8, 4, 2, 1]:
         bc = _mhc_pre_post_block_c(C, HC, block_n=bn, is_post=is_post, is_bwd=is_bwd)
         if triton.cdiv(N, bn) * triton.cdiv(C, bc) >= num_cores:
             return bn, bc
@@ -1026,11 +1001,6 @@ def mhc_pre_bwd(
         BLOCK_C=block_c,
     )
     return out_grad_x, out_grad_h
-
-
-# ===========================================================================
-# (4) Post + Residual  – forward / backward
-# ===========================================================================
 
 
 @triton.jit
@@ -1339,14 +1309,8 @@ def mhc_post_res_bwd(
     return out_grad_x, out_grad_f, out_grad_hpost, out_grad_hres
 
 
-# ===========================================================================
-# (5) Fused backward coefficient assembly  (sigmoid bwd + grad_mix + reductions)
-# ===========================================================================
-
-
 @triton.jit
 def _mhc_coeffs_bwd_assemble_kernel_npu(
-    # inputs
     mix_ptr,
     b_ptr,
     gh_pre_ptr,
@@ -1355,28 +1319,23 @@ def _mhc_coeffs_bwd_assemble_kernel_npu(
     alpha_pre_ptr,
     alpha_post_ptr,
     alpha_res_ptr,
-    # outputs
     grad_mix_ptr,
     grad_b_ptr,
     grad_alpha_pre_ptr,
     grad_alpha_post_ptr,
     grad_alpha_res_ptr,
-    # dims
     N: tl.constexpr,
     HC: tl.constexpr,
-    # scalars
     post_mult: tl.constexpr,
-    # strides (all tensors are contiguous row-major)
     stride_mn: tl.constexpr,
     stride_ghn: tl.constexpr,
     stride_grn: tl.constexpr,
-    # block sizes (power-of-2 ≥ HC / HC*HC)
     BLOCK_HC: tl.constexpr,
     BLOCK_RES: tl.constexpr,
 ):
-    """Fuse sigmoid backward + grad_mix assembly + grad_b / grad_alpha reductions.
+    """
+    Fuse sigmoid backward + grad_mix assembly + grad_b / grad_alpha reductions.
 
-    Replaces ~15 separate PyTorch ops with a single persistent kernel.
     Grid: (min(N, num_cores),) with grid-stride loop over rows.
     """
     pid = tl.program_id(0)
@@ -1509,19 +1468,9 @@ def mhc_coeffs_bwd_assemble(
     )
 
 
-# ===========================================================================
-# Helper: flatten tokens
-# ===========================================================================
-
-
 def _flatten_tokens(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Size]:
     assert x.dim() >= 3
     return x.contiguous().view(-1, x.shape[-2], x.shape[-1]), x.shape
-
-
-# ===========================================================================
-# Autograd Functions
-# ===========================================================================
 
 
 class LigerMHCCoeffsFunction(torch.autograd.Function):
