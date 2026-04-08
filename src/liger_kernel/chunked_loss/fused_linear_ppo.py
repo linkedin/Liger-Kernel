@@ -4,7 +4,6 @@ from functools import partial
 import torch
 import torch._dynamo.config
 
-
 _SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE = 4096
 _SELECTIVE_LOGPROB_SEQ_CHUNK_SIZE = 2048
 
@@ -266,16 +265,22 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
 
                 # Step 1: compute logprobs OUTSIDE compile (custom autograd, memory-efficient)
                 per_token_logps = LigerFusedLinearPPOBase.chunk_forward(
-                    input_chunk, weight_local, selected_token_ids_chunk,
-                    bias=bias_local, temperature=temperature,
+                    input_chunk,
+                    weight_local,
+                    selected_token_ids_chunk,
+                    bias=bias_local,
+                    temperature=temperature,
                 )
 
                 # Compute ref logprobs if needed (also outside compile)
                 if use_ref_model and ref_per_token_logps_chunk is None:
                     with torch.no_grad():
                         ref_per_token_logps_chunk = LigerFusedLinearPPOBase.chunk_forward(
-                            ref_input_chunk, ref_weight, selected_token_ids_chunk,
-                            bias=ref_bias, temperature=temperature,
+                            ref_input_chunk,
+                            ref_weight,
+                            selected_token_ids_chunk,
+                            bias=ref_bias,
+                            temperature=temperature,
                         )
 
                 # Step 2: compute loss INSIDE compile (just math, torch.compile-friendly)
