@@ -328,6 +328,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
     ],
 )
 def test_selective_chunk_forward_matches_reference(B, T, H, V, dtype, atol, rtol, bias):
+    set_seed()
     x = torch.randn(B, T, H, device=device, dtype=dtype, requires_grad=True)
     weight = torch.randn(V, H, device=device, dtype=dtype, requires_grad=True)
     bias_tensor = torch.randn(V, device=device, dtype=dtype, requires_grad=True) if bias else None
@@ -347,6 +348,7 @@ def test_selective_chunk_forward_matches_reference(B, T, H, V, dtype, atol, rtol
 @pytest.mark.parametrize("compiled", [True, False])
 def test_correctness_large_seq_exercises_chunking(loss_type, compiled):
     """Test with N > seq_chunk_size and V > vocab_chunk_size to exercise both chunking loops."""
+    set_seed()
     torch.compiler.reset()
     B, T, H, V = 1, 4096, 256, 5000
     dtype = torch.float32
