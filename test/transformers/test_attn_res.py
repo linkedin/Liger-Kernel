@@ -7,7 +7,7 @@ from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
 
-from liger_kernel.ops.attn_res import LigerAttnResFunction
+from liger_kernel.ops import LigerAttnResFunction
 from liger_kernel.transformers.functional import liger_attn_res
 from liger_kernel.utils import infer_device
 
