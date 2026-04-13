@@ -41,12 +41,12 @@ _CASTING_MODE_LLAMA: tl.constexpr = tl.constexpr(0)
 _CASTING_MODE_GEMMA: tl.constexpr = tl.constexpr(1)
 
 
-def _calculate_settings(n, device_type="cuda"):
+def _calculate_settings(n):
     MAX_FUSED_SIZE = 65536
     BLOCK_SIZE = triton.next_power_of_2(n)
     if BLOCK_SIZE > MAX_FUSED_SIZE:
         raise RuntimeError(
-            f"Cannot launch Triton kernel since n = {n} exceeds the recommended Triton blocksize = {MAX_FUSED_SIZE}."
+            f"Cannot launch Triton kernel since n = {n} exceeds the maximum supported Triton block size = {MAX_FUSED_SIZE}."
         )
     if BLOCK_SIZE >= 32768:
         num_warps = 32 if not is_hip() else 16
@@ -437,7 +437,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
     dim = shape[-1]
     X = X.view(-1, dim)
     n_rows, n_cols = X.shape
-    BLOCK_SIZE, num_warps = _calculate_settings(n_cols, X.device.type)
+    BLOCK_SIZE, num_warps = _calculate_settings(n_cols)
 
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
     rstd_dtype = torch.float32 if casting_mode in (_CASTING_MODE_LLAMA.value, _CASTING_MODE_GEMMA.value) else X.dtype
