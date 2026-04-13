@@ -17,10 +17,10 @@ import torch
 import triton
 import triton.language as tl
 
-from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
+from liger_kernel.ops.utils import is_hip
 from liger_kernel.ops.utils import set_large_grf_mode
 from liger_kernel.ops.utils import torch_to_triton_dtype
 from liger_kernel.utils import is_npu_available
@@ -39,6 +39,26 @@ else:
 _CASTING_MODE_NONE: tl.constexpr = tl.constexpr(-1)
 _CASTING_MODE_LLAMA: tl.constexpr = tl.constexpr(0)
 _CASTING_MODE_GEMMA: tl.constexpr = tl.constexpr(1)
+
+
+def _calculate_settings(n, device_type="cuda"):
+    MAX_FUSED_SIZE = 65536
+    BLOCK_SIZE = triton.next_power_of_2(n)
+    if BLOCK_SIZE > MAX_FUSED_SIZE:
+        raise RuntimeError(
+            f"Cannot launch Triton kernel since n = {n} exceeds the recommended Triton blocksize = {MAX_FUSED_SIZE}."
+        )
+    if BLOCK_SIZE >= 32768:
+        num_warps = 32 if not is_hip() else 16
+    elif BLOCK_SIZE >= 8192:
+        num_warps = 16
+    elif BLOCK_SIZE >= 2048:
+        num_warps = 8
+    elif BLOCK_SIZE >= 512:
+        num_warps = 4
+    else:
+        num_warps = 2
+    return BLOCK_SIZE, num_warps
 
 
 @triton.jit
@@ -417,16 +437,13 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
     dim = shape[-1]
     X = X.view(-1, dim)
     n_rows, n_cols = X.shape
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    BLOCK_SIZE, num_warps = _calculate_settings(n_cols, X.device.type)
 
     Y = torch.empty((n_rows, n_cols), dtype=X.dtype, device=X.device)
-    # RSTD is to cache rstd for each row
-    # RSTD is always computed/stored in fp32 if we are using Llama or Gemma casting mode
     rstd_dtype = torch.float32 if casting_mode in (_CASTING_MODE_LLAMA.value, _CASTING_MODE_GEMMA.value) else X.dtype
     RSTD = torch.empty(n_rows, dtype=rstd_dtype, device=X.device)
 
     if W is not None:
-        # Check constraints.
         assert X.shape[1] == W.shape[0], (
             "Incompatible hidden size dimension between tensor1.shape[1] and tensor2.shape[0]"
         )
@@ -434,11 +451,11 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
     else:
         elementwise_affine = False
 
-    # XPU-specific optimization
     kernel_args = {}
     if X.device.type == "xpu":
         set_large_grf_mode(kernel_args)
-    if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
+    use_per_row = row_mode or BLOCK_SIZE > 256 or n_rows < 32768
+    if use_per_row:
         _rms_norm_forward_kernel[(n_rows,)](
             Y,
             Y.stride(0),
@@ -455,7 +472,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
             elementwise_affine=elementwise_affine,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
-            **kernel_args,  # XPU-specific optimization
+            **kernel_args,
         )
     else:
         BLOCK_ROW = 16
@@ -476,8 +493,8 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
             casting_mode,
             elementwise_affine=elementwise_affine,
             BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-            **kernel_args,  # XPU-specific optimization
+            num_warps=max(num_warps, 4),
+            **kernel_args,
         )
     return Y.view(*shape), X, RSTD, BLOCK_SIZE, num_warps, casting_mode
 
@@ -495,6 +512,8 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
         sm_count = torch.xpu.get_device_properties(X.device).gpu_eu_count
     elif X.device.type == "npu":
         sm_count = get_npu_core_count()
+
+    use_per_row = row_mode or BLOCK_SIZE > 256 or n_rows < 32768
 
     if W is not None:
         # fp32 for numerical stability especially.
@@ -519,7 +538,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     if X.device.type == "xpu":
         set_large_grf_mode(kernel_args)
 
-    if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
+    if use_per_row:
         _rms_norm_backward_kernel[grid](
             dY,
             dY.stride(0),
@@ -567,8 +586,8 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
             casting_mode,
             elementwise_affine=elementwise_affine,
             BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-            **kernel_args,  # XPU-specific optimization
+            num_warps=max(num_warps, 4),
+            **kernel_args,
         )
     dX = dX.view(*shape)
 
@@ -649,6 +668,15 @@ class LigerRMSNormFunction(torch.autograd.Function):
             dY = dY.full_tensor()
 
         dX, dW = rms_norm_backward(
-            dY, X, W, RSTD, ctx.offset, ctx.casting_mode, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place, ctx.row_mode
+            dY,
+            X,
+            W,
+            RSTD,
+            ctx.offset,
+            ctx.casting_mode,
+            ctx.BLOCK_SIZE,
+            ctx.num_warps,
+            ctx.in_place,
+            ctx.row_mode,
         )
         return dX, dW, None, None, None, None, None
