@@ -94,14 +94,17 @@ def bench_speed_fused_add_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenc
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            y_fwd, grad_to_none=[x, r], rep=100, quantiles=QUANTILES
+            y_fwd,
+            grad_to_none=[x, r],
+            rep=500,
+            quantiles=QUANTILES,
         )
     elif mode == "backward":
         y, s = y_fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: torch.autograd.backward((y, s), (dy, ds), retain_graph=True),
             grad_to_none=[x, r],
-            rep=100,
+            rep=500,
             quantiles=QUANTILES,
         )
     elif mode == "full":
@@ -111,12 +114,19 @@ def bench_speed_fused_add_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenc
             torch.autograd.backward((y, s), (dy, ds))
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full, grad_to_none=[x, r], rep=100, quantiles=QUANTILES
+            full,
+            grad_to_none=[x, r],
+            rep=500,
+            quantiles=QUANTILES,
         )
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_fused_add_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -162,9 +172,7 @@ def bench_speed_fused_add_rms_norm_model_config(input: SingleBenchmarkRunInput) 
         return layer(x, r)
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            y_fwd, grad_to_none=[x, r], rep=100, quantiles=QUANTILES
-        )
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(y_fwd, grad_to_none=[x, r], rep=100, quantiles=QUANTILES)
     elif mode == "backward":
         y, s = y_fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -179,9 +187,7 @@ def bench_speed_fused_add_rms_norm_model_config(input: SingleBenchmarkRunInput) 
             y, s = y_fwd()
             torch.autograd.backward((y, s), (dy, ds))
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full, grad_to_none=[x, r], rep=100, quantiles=QUANTILES
-        )
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=[x, r], rep=100, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
@@ -201,7 +207,11 @@ def bench_memory_fused_add_rms_norm_model_config(input: SingleBenchmarkRunInput)
         torch.autograd.backward((y, s), (dy, ds))
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":

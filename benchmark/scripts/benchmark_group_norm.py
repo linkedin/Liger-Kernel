@@ -36,10 +36,13 @@ def _setup_group_norm(input: SingleBenchmarkRunInput):
         dtype=cfg["dtype"],
         requires_grad=True,
     )
+    dtype = cfg["dtype"]
     if input.kernel_provider == "liger":
-        layer = LigerGroupNorm(num_channels=num_channels, num_groups=num_groups, eps=eps).to(device)
+        layer = LigerGroupNorm(num_channels=num_channels, num_groups=num_groups, eps=eps).to(device=device, dtype=dtype)
     elif input.kernel_provider == "huggingface":
-        layer = torch.nn.GroupNorm(num_groups=num_groups, num_channels=num_channels, eps=eps).to(device)
+        layer = torch.nn.GroupNorm(num_groups=num_groups, num_channels=num_channels, eps=eps).to(
+            device=device, dtype=dtype
+        )
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for GroupNorm")
     return x, layer

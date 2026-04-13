@@ -60,6 +60,15 @@ class ModelConfig:
     rms_norm_eps: float = 1e-5
     dtype: torch.dtype = torch.bfloat16
 
+    # ===== MoE-specific (optional) =====
+    num_experts: Optional[int] = None
+    topk: Optional[int] = None
+    moe_intermediate_size: Optional[int] = None
+
+    @property
+    def is_moe(self) -> bool:
+        return self.num_experts is not None
+
 
 @dataclass(frozen=True)
 class SeqLenSweepConfig:
@@ -126,7 +135,7 @@ QWEN_2_5_7B = ModelConfig(
     num_key_value_heads=4,
     head_dim=128,
     hidden_act="silu",
-    max_position_embeddings=131072,
+    max_position_embeddings=32768,
 )
 
 QWEN_2_5_14B = ModelConfig(
@@ -138,7 +147,7 @@ QWEN_2_5_14B = ModelConfig(
     num_key_value_heads=8,
     head_dim=128,
     hidden_act="silu",
-    max_position_embeddings=131072,
+    max_position_embeddings=32768,
 )
 
 QWEN_2_5_72B = ModelConfig(
@@ -150,7 +159,7 @@ QWEN_2_5_72B = ModelConfig(
     num_key_value_heads=8,
     head_dim=128,
     hidden_act="silu",
-    max_position_embeddings=131072,
+    max_position_embeddings=32768,
 )
 
 DEEPSEEK_V2_LITE = ModelConfig(
@@ -163,6 +172,9 @@ DEEPSEEK_V2_LITE = ModelConfig(
     head_dim=128,
     hidden_act="silu",
     max_position_embeddings=163840,
+    moe_intermediate_size=1408,
+    num_experts=64,
+    topk=6,
 )
 
 DEEPSEEK_V3 = ModelConfig(
@@ -172,11 +184,12 @@ DEEPSEEK_V3 = ModelConfig(
     vocab_size=129280,
     num_attention_heads=128,
     num_key_value_heads=128,
-    head_dim=128,  # v_head_dim; MLA splits Q/K into nope(128) + rope(64) dims internally
-    # MLA-specific params for reference:
-    # qk_nope_head_dim=128, qk_rope_head_dim=64, v_head_dim=128
+    head_dim=128,
     hidden_act="silu",
     max_position_embeddings=163840,
+    moe_intermediate_size=2048,
+    num_experts=256,
+    topk=8,
 )
 
 MODEL_REGISTRY: Dict[str, ModelConfig] = {

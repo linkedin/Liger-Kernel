@@ -45,17 +45,29 @@ class NaivePolyNorm(nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.variance_epsilon)
 
     def forward(self, hidden_states):
+        """
+        Forward pass of PolyNorm
+
+        Args:
+            hidden_states: input tensor of shape (..., H)
+
+        Returns:
+            output tensor of same shape as input
+        """
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
 
+        # Compute powers
         x_pow3 = hidden_states**3
         x_pow2 = hidden_states**2
         x_pow1 = hidden_states**1
 
+        # Normalize each power
         norm_x3 = self._norm(x_pow3)
         norm_x2 = self._norm(x_pow2)
         norm_x1 = self._norm(x_pow1)
 
+        # Weighted sum with bias
         output = self.weight[0] * norm_x3 + self.weight[1] * norm_x2 + self.weight[2] * norm_x1 + self.bias
 
         return output.to(input_dtype)
