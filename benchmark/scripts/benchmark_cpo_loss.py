@@ -55,7 +55,11 @@ def bench_speed_cpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     mode = input.kernel_operation_mode
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd_fn, rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            fwd_fn,
+            rep=100,
+            quantiles=QUANTILES,
+        )
     elif mode == "backward":
         y = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -74,7 +78,11 @@ def bench_speed_cpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOu
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_cpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -85,7 +93,11 @@ def bench_memory_cpo_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunO
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 def _resolve_model_config_cpo_loss(input: SingleBenchmarkRunInput):
@@ -107,13 +119,17 @@ def _resolve_model_config_cpo_loss(input: SingleBenchmarkRunInput):
 
 
 def bench_speed_cpo_loss_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    _input, fwd_fn = _resolve_model_config_cpo_loss(input)
+    _input, fwd = _resolve_model_config_cpo_loss(input)
     mode = input.kernel_operation_mode
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd_fn, rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            fwd,
+            rep=100,
+            quantiles=QUANTILES,
+        )
     elif mode == "backward":
-        y = fwd_fn()
+        y = fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True),
             grad_to_none=[_input],
@@ -123,14 +139,22 @@ def bench_speed_cpo_loss_model_config(input: SingleBenchmarkRunInput) -> SingleB
     elif mode == "full":
 
         def full():
-            y = fwd_fn()
+            y = fwd()
             y.backward()
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            full,
+            rep=100,
+            quantiles=QUANTILES,
+        )
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_cpo_loss_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -141,7 +165,11 @@ def bench_memory_cpo_loss_model_config(input: SingleBenchmarkRunInput) -> Single
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":
@@ -218,7 +246,7 @@ if __name__ == "__main__":
         probe_bt = 1024
 
         def _probe():
-            B = max(1, probe_bt // T)
+            B = probe_bt // T
             probe_input = SingleBenchmarkRunInput(
                 x=B,
                 kernel_provider="huggingface",

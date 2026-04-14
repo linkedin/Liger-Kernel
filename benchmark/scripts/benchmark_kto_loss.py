@@ -25,34 +25,72 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 
 class TorchLMHeadKTO(torch.nn.Module):
-    def __init__(self, H, V, dtype, use_bias=False, use_ref_bias=False, ignore_index=-100, beta=0.1):
+    def __init__(
+        self,
+        H: int,
+        V: int,
+        dtype: torch.dtype,
+        use_bias: bool = False,
+        use_ref_bias: bool = False,
+        ignore_index: int = -100,
+        beta: float = 0.1,
+    ):
         from test.chunked_loss.test_kto_loss import HFKTOLoss
 
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=use_bias, dtype=dtype)
         self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=use_ref_bias, dtype=dtype)
-        self.KTO_loss = HFKTOLoss(ignore_index=ignore_index, beta=beta, use_ref_model=True).get_batch_loss_metrics
+        self.KTO_loss = HFKTOLoss(
+            ignore_index=ignore_index,
+            beta=beta,
+            use_ref_model=True,
+        ).get_batch_loss_metrics
 
     def forward(self, x, ref_x, y, preference_labels, kl=None):
         return self.KTO_loss(
-            weight=self.lin.weight, _input=x, target=y, bias=self.lin.bias,
-            ref_input=ref_x, ref_weight=self.ref_lin.weight, ref_bias=self.ref_lin.bias,
-            preference_labels=preference_labels, kl=kl,
+            weight=self.lin.weight,
+            _input=x,
+            target=y,
+            bias=self.lin.bias,
+            ref_input=ref_x,
+            ref_weight=self.ref_lin.weight,
+            ref_bias=self.ref_lin.bias,
+            preference_labels=preference_labels,
+            kl=kl,
         )
 
 
 class LigerLMHeadKTO(torch.nn.Module):
-    def __init__(self, H, V, dtype, use_bias=False, use_ref_bias=False, ignore_index=-100, beta=0.1):
+    def __init__(
+        self,
+        H: int,
+        V: int,
+        dtype: torch.dtype,
+        use_bias: bool = False,
+        use_ref_bias: bool = False,
+        ignore_index: int = -100,
+        beta: float = 0.1,
+    ):
         super().__init__()
         self.lin = torch.nn.Linear(in_features=H, out_features=V, bias=use_bias, dtype=dtype)
         self.ref_lin = torch.nn.Linear(in_features=H, out_features=V, bias=use_ref_bias, dtype=dtype)
-        self.KTO_loss = LigerFusedLinearKTOLoss(ignore_index=ignore_index, beta=beta, use_ref_model=True)
+        self.KTO_loss = LigerFusedLinearKTOLoss(
+            ignore_index=ignore_index,
+            beta=beta,
+            use_ref_model=True,
+        )
 
     def forward(self, x, ref_x, y, preference_labels, kl=None):
         return self.KTO_loss(
-            _input=x, lin_weight=self.lin.weight, target=y, preference_labels=preference_labels,
-            bias=self.lin.bias, ref_input=ref_x, ref_weight=self.ref_lin.weight,
-            ref_bias=self.ref_lin.bias, kl=kl,
+            _input=x,
+            lin_weight=self.lin.weight,
+            target=y,
+            preference_labels=preference_labels,
+            bias=self.lin.bias,
+            ref_input=ref_x,
+            ref_weight=self.ref_lin.weight,
+            ref_bias=self.ref_lin.bias,
+            kl=kl,
         )
 
 
@@ -68,10 +106,15 @@ def _setup_kto_loss(input: SingleBenchmarkRunInput):
     B = input.x
     T = cfg["T"]
 
+    # Input shape: [B, T, H]
     _input = torch.randn(B, T, H, device=device, dtype=dtype)
     ref_input = torch.randn(B, T, H, device=device, dtype=dtype)
     target = torch.randint(V, (B, T), dtype=torch.long, device=device)
+    # Preference labels shape: [B]
+    # Create binary preference labels (0 or 1) for each sequence in the batch
+    # Used to indicate preferred sequences (1) vs non-preferred sequences (0)
     preference_labels = torch.randint(2, (B,), dtype=torch.bool, device=device)
+    # Precomputed KL divergence between policy and reference distributions
     kl = torch.randn(1, device=device, dtype=dtype)
 
     num_elements_to_assign = torch.randint(1, B * T // 2, (1,)).item()
@@ -79,44 +122,63 @@ def _setup_kto_loss(input: SingleBenchmarkRunInput):
     target.view(-1)[indices_to_assign] = ignore_index
 
     if input.kernel_provider == "liger":
-        loss_module = LigerLMHeadKTO(H=H, V=V, dtype=dtype, use_bias=bias, use_ref_bias=bias,
-                                      ignore_index=ignore_index, beta=beta).to(device)
+        loss_module = LigerLMHeadKTO(
+            H=H, V=V, dtype=dtype, use_bias=bias, use_ref_bias=bias, ignore_index=ignore_index, beta=beta
+        ).to(device)
     elif input.kernel_provider == "huggingface":
-        loss_module = TorchLMHeadKTO(H=H, V=V, dtype=dtype, use_bias=bias, use_ref_bias=bias,
-                                      ignore_index=ignore_index, beta=beta).to(device)
+        loss_module = TorchLMHeadKTO(
+            H=H, V=V, dtype=dtype, use_bias=bias, use_ref_bias=bias, ignore_index=ignore_index, beta=beta
+        ).to(device)
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for KTOLoss")
 
-    fwd_fn = lambda: loss_module(x=_input, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl)[0]
-    return _input, fwd_fn
+    fwd = lambda: loss_module(x=_input, ref_x=ref_input, y=target, preference_labels=preference_labels, kl=kl)[0]
+    return _input, fwd
 
 
 def bench_speed_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    _input, fwd_fn = _setup_kto_loss(input)
+    _input, fwd = _setup_kto_loss(input)
     mode = input.kernel_operation_mode
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd_fn, rep=100, quantiles=QUANTILES)
-    elif mode == "backward":
-        y = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(retain_graph=True), grad_to_none=[_input], rep=100, quantiles=QUANTILES
+            fwd,
+            rep=100,
+            quantiles=QUANTILES,
+        )
+    elif mode == "backward":
+        y = fwd()
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            lambda: y.backward(retain_graph=True),
+            grad_to_none=[_input],
+            rep=100,
+            quantiles=QUANTILES,
         )
     elif mode == "full":
+
         def full():
-            y = fwd_fn()
+            y = fwd()
             y.backward()
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
+
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            full,
+            rep=100,
+            quantiles=QUANTILES,
+        )
     else:
         raise ValueError(f"Unsupported mode: {mode}")
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_kto_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    _input, fwd_fn = _setup_kto_loss(input)
+    _input, fwd = _setup_kto_loss(input)
 
     def full():
-        y = fwd_fn()
+        y = fwd()
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
@@ -128,31 +190,38 @@ def _resolve_model_config_kto_loss(input: SingleBenchmarkRunInput):
     model_info = cfg["model_configs"][input.x]
     return _setup_kto_loss(
         SingleBenchmarkRunInput(
-            x=cfg["B"], kernel_provider=input.kernel_provider,
+            x=cfg["B"],
+            kernel_provider=input.kernel_provider,
             extra_benchmark_config={
-                "hidden_size": model_info["hidden_size"], "vocab_size": model_info["vocab_size"],
-                "dtype": model_info["dtype"], "T": cfg["T"],
-                "bias": cfg["bias"], "beta": cfg["beta"], "ignore_index": cfg["ignore_index"],
+                "hidden_size": model_info["hidden_size"],
+                "vocab_size": model_info["vocab_size"],
+                "dtype": model_info["dtype"],
+                "T": cfg["T"],
+                "bias": cfg["bias"],
+                "beta": cfg["beta"],
+                "ignore_index": cfg["ignore_index"],
             },
         )
     )
 
 
 def bench_speed_kto_loss_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    _input, fwd_fn = _resolve_model_config_kto_loss(input)
+    _input, fwd = _resolve_model_config_kto_loss(input)
     mode = input.kernel_operation_mode
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd_fn, rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
     elif mode == "backward":
-        y = fwd_fn()
+        y = fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True), grad_to_none=[_input], rep=100, quantiles=QUANTILES
         )
     elif mode == "full":
+
         def full():
-            y = fwd_fn()
+            y = fwd()
             y.backward()
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -160,10 +229,10 @@ def bench_speed_kto_loss_model_config(input: SingleBenchmarkRunInput) -> SingleB
 
 
 def bench_memory_kto_loss_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    _input, fwd_fn = _resolve_model_config_kto_loss(input)
+    _input, fwd = _resolve_model_config_kto_loss(input)
 
     def full():
-        y = fwd_fn()
+        y = fwd()
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
@@ -181,14 +250,21 @@ if __name__ == "__main__":
             def _probe():
                 B = max(1, probe_bt // T)
                 probe_input = SingleBenchmarkRunInput(
-                    x=B, kernel_provider="huggingface",
+                    x=B,
+                    kernel_provider="huggingface",
                     extra_benchmark_config={
-                        "hidden_size": model_cfg.hidden_size, "vocab_size": model_cfg.vocab_size,
-                        "dtype": model_cfg.dtype, "T": T, "bias": True, "beta": 0.1, "ignore_index": 42,
+                        "hidden_size": model_cfg.hidden_size,
+                        "vocab_size": model_cfg.vocab_size,
+                        "dtype": model_cfg.dtype,
+                        "T": T,
+                        "bias": True,
+                        "beta": 0.1,
+                        "ignore_index": 42,
                     },
                 )
-                _, fwd_fn = _setup_kto_loss(probe_input)
-                return fwd_fn()
+                _, fwd = _setup_kto_loss(probe_input)
+                return fwd()
+
             return _probe
 
         sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
@@ -199,7 +275,9 @@ if __name__ == "__main__":
         B = max(1, sweep.bt // T)
 
         common_configs = {
-            "kernel_name": "kto_loss", "x_name": "model_config", "x_label": "model configuration",
+            "kernel_name": "kto_loss",
+            "x_name": "model_config",
+            "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
             "kernel_providers": ["liger", "huggingface"],
             "extra_benchmark_configs": [
@@ -208,43 +286,78 @@ if __name__ == "__main__":
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_kto_loss_model_config,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_kto_loss_model_config,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_kto_loss_model_config,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_kto_loss_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
     else:
         model = get_benchmark_model_config(args.model)
         T = 512
         probe_bt = 1024
 
         def _probe():
-            B = max(1, probe_bt // T)
+            B = probe_bt // T
             probe_input = SingleBenchmarkRunInput(
-                x=B, kernel_provider="huggingface",
+                x=B,
+                kernel_provider="huggingface",
                 extra_benchmark_config={
-                    "hidden_size": model.hidden_size, "vocab_size": model.vocab_size,
-                    "dtype": model.dtype, "T": T, "bias": True, "beta": 0.1, "ignore_index": 42,
+                    "hidden_size": model.hidden_size,
+                    "vocab_size": model.vocab_size,
+                    "dtype": model.dtype,
+                    "T": T,
+                    "bias": True,
+                    "beta": 0.1,
+                    "ignore_index": 42,
                 },
             )
-            _, fwd_fn = _setup_kto_loss(probe_input)
-            return fwd_fn()
+            _, fwd = _setup_kto_loss(probe_input)
+            return fwd()
 
         peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
         kernel_bpt = peak_bytes // probe_bt
         config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
 
         common_configs = {
-            "kernel_name": "kto_loss", "x_name": "B", "x_label": "Batch Size (B)",
+            "kernel_name": "kto_loss",
+            "x_name": "B",
+            "x_label": "Batch Size (B)",
             "x_values": [2**i for i in range(1, int(math.log2(max(2, config.batch_size * config.seq_len // T))) + 1)],
             "kernel_providers": ["liger", "huggingface"],
             "extra_benchmark_configs": [
-                {"hidden_size": model.hidden_size, "vocab_size": model.vocab_size, "dtype": model.dtype,
-                 "T": T, "bias": True, "beta": 0.1, "ignore_index": 42}
+                {
+                    "hidden_size": model.hidden_size,
+                    "vocab_size": model.vocab_size,
+                    "dtype": model.dtype,
+                    "T": T,
+                    "bias": True,
+                    "beta": 0.1,
+                    "ignore_index": 42,
+                }
             ],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_kto_loss,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_kto_loss,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_kto_loss,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_kto_loss,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )

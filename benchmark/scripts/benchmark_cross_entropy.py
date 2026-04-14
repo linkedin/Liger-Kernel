@@ -1,13 +1,6 @@
-import math
-
 import torch
 import triton
 
-from benchmark_model_configs import MODEL_REGISTRY
-from benchmark_model_configs import compute_model_config_sweep_config
-from benchmark_model_configs import compute_seq_len_sweep_config
-from benchmark_model_configs import estimate_kernel_peak_memory
-from benchmark_model_configs import get_benchmark_model_config
 from torch.nn import CrossEntropyLoss
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
@@ -22,87 +15,58 @@ from liger_kernel.utils import infer_device
 device = infer_device()
 
 
-def _setup_cross_entropy(input: SingleBenchmarkRunInput):
-    """Create input tensor, target, and CE loss from benchmark config."""
-    cfg = input.extra_benchmark_config
-    V = cfg["vocab_size"]
-    BT = input.x
-    _input = torch.randn(BT, V, requires_grad=True, device=device)
-    target = torch.randint(V, (BT, 1), device=device).squeeze(1)
-    if input.kernel_provider == "liger":
-        loss_fn = LigerCrossEntropyLoss()
-    elif input.kernel_provider == "huggingface":
-        loss_fn = CrossEntropyLoss()
-    else:
-        raise ValueError(f"Invalid provider: {input.kernel_provider} for CrossEntropy")
-    return _input, target, loss_fn
+def bench_memory_cross_entropy(
+    input: SingleBenchmarkRunInput,
+) -> SingleBenchmarkRunOutput:
+    torch_ce = CrossEntropyLoss()
+    liger_ce = LigerCrossEntropyLoss()
 
+    V = input.x
+    provider = input.kernel_provider
+    B = input.extra_benchmark_config["B"]
+    T = input.extra_benchmark_config["T"]
 
-def bench_speed_cross_entropy(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    _input, target, loss_fn = _setup_cross_entropy(input)
-    mode = input.kernel_operation_mode
+    _input = torch.randn(B * T, V, requires_grad=True, device=device)
+    target = torch.randint(V, (B * T, 1), device=device).squeeze(1)
 
     def fwd():
-        return loss_fn(_input, target)
-
-    if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
-    elif mode == "no-grad-forward":
-        with torch.no_grad():
-            ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
-    elif mode == "backward":
-        y = fwd()
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(retain_graph=True),
-            grad_to_none=[_input],
-            rep=100,
-            quantiles=QUANTILES,
-        )
-    elif mode == "full":
-
-        def full():
-            y = fwd()
-            y.backward()
-
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
-    else:
-        raise ValueError(f"Unsupported mode: {mode}")
-
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
-
-
-def bench_memory_cross_entropy(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    _input, target, loss_fn = _setup_cross_entropy(input)
+        if provider == "liger":
+            return liger_ce(_input, target)
+        else:
+            return torch_ce(_input, target)
 
     def full():
-        y = loss_fn(_input, target)
+        y = fwd()
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
-
-
-def _resolve_model_config_cross_entropy(input: SingleBenchmarkRunInput):
-    """Resolve model-config-sweep input into standard setup args."""
-    cfg = input.extra_benchmark_config
-    model_info = cfg["model_configs"][input.x]
-    return _setup_cross_entropy(
-        SingleBenchmarkRunInput(
-            x=cfg["BT"],
-            kernel_provider=input.kernel_provider,
-            extra_benchmark_config={
-                "vocab_size": model_info["vocab_size"],
-            },
-        )
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
     )
 
 
-def bench_speed_cross_entropy_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    _input, target, loss_fn = _resolve_model_config_cross_entropy(input)
+def bench_speed_cross_entropy(
+    input: SingleBenchmarkRunInput,
+) -> SingleBenchmarkRunOutput:
+    torch_ce = CrossEntropyLoss()
+    liger_ce = LigerCrossEntropyLoss()
+
+    V = input.x
+    provider = input.kernel_provider
     mode = input.kernel_operation_mode
+    B = input.extra_benchmark_config["B"]
+    T = input.extra_benchmark_config["T"]
+
+    _input = torch.randn(B * T, V, requires_grad=True, device=device)
+    target = torch.randint(V, (B * T, 1), device=device).squeeze(1)
 
     def fwd():
-        return loss_fn(_input, target)
+        if provider == "liger":
+            return liger_ce(_input, target)
+        else:
+            return torch_ce(_input, target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
@@ -111,6 +75,7 @@ def bench_speed_cross_entropy_model_config(input: SingleBenchmarkRunInput) -> Si
             ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
     elif mode == "backward":
         y = fwd()
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True),
             grad_to_none=[_input],
@@ -124,126 +89,38 @@ def bench_speed_cross_entropy_model_config(input: SingleBenchmarkRunInput) -> Si
             y.backward()
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
-    else:
-        raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
-
-
-def bench_memory_cross_entropy_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    _input, target, loss_fn = _resolve_model_config_cross_entropy(input)
-
-    def full():
-        y = loss_fn(_input, target)
-        y.backward()
-
-    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    if args.sweep_mode == "model_config":
-        all_model_configs = list(MODEL_REGISTRY.values())
+    common_configs = {
+        "kernel_name": "cross_entropy",
+        "x_name": "V",
+        "x_label": "vocab size",
+        "x_values": [2**i for i in range(12, 18)],
+        "kernel_providers": ["liger", "huggingface"],
+        "extra_benchmark_configs": [{"B": 8, "T": 2048}],
+        "overwrite": args.overwrite,
+    }
 
-        def _probe_factory(model_cfg, probe_bt):
-            def _probe():
-                probe_input = SingleBenchmarkRunInput(
-                    x=probe_bt,
-                    kernel_provider="huggingface",
-                    extra_benchmark_config={
-                        "vocab_size": model_cfg.vocab_size,
-                    },
-                )
-                _input, target, loss_fn = _setup_cross_entropy(probe_input)
-                return loss_fn(_input, target)
-
-            return _probe
-
-        sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
-
-        model_configs_info = {
-            cfg.name: {
-                "vocab_size": cfg.vocab_size,
-            }
-            for cfg in sweep.model_configs
-        }
-
-        common_configs = {
-            "kernel_name": "cross_entropy",
-            "x_name": "model_config",
-            "x_label": "model configuration",
-            "x_values": [cfg.name for cfg in sweep.model_configs],
-            "kernel_providers": ["liger", "huggingface"],
-            "extra_benchmark_configs": [
-                {
-                    "model_configs": model_configs_info,
-                    "BT": sweep.bt,
-                }
-            ],
-            "overwrite": args.overwrite,
-        }
-
-        run_benchmarks(
-            bench_test_fn=bench_speed_cross_entropy_model_config,
-            kernel_operation_modes=["forward", "backward", "full"],
-            metric_name="speed",
-            metric_unit="ms",
-            **common_configs,
-        )
-        run_benchmarks(
-            bench_test_fn=bench_memory_cross_entropy_model_config,
-            kernel_operation_modes=["full"],
-            metric_name="memory",
-            metric_unit="MB",
-            **common_configs,
-        )
-    else:
-        model = get_benchmark_model_config(args.model)
-        probe_bt = 1024
-
-        def _probe():
-            probe_input = SingleBenchmarkRunInput(
-                x=probe_bt,
-                kernel_provider="huggingface",
-                extra_benchmark_config={
-                    "vocab_size": model.vocab_size,
-                },
-            )
-            _input, target, loss_fn = _setup_cross_entropy(probe_input)
-            return loss_fn(_input, target)
-
-        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
-        kernel_bpt = peak_bytes // probe_bt
-
-        config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
-
-        common_configs = {
-            "kernel_name": "cross_entropy",
-            "x_name": "BT",
-            "x_label": "B * T",
-            "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
-            "kernel_providers": ["liger", "huggingface"],
-            "extra_benchmark_configs": [
-                {
-                    "vocab_size": model.vocab_size,
-                }
-            ],
-            "overwrite": args.overwrite,
-        }
-
-        run_benchmarks(
-            bench_test_fn=bench_speed_cross_entropy,
-            kernel_operation_modes=["forward", "backward", "full", "no-grad-forward"],
-            metric_name="speed",
-            metric_unit="ms",
-            **common_configs,
-        )
-        run_benchmarks(
-            bench_test_fn=bench_memory_cross_entropy,
-            kernel_operation_modes=["full"],
-            metric_name="memory",
-            metric_unit="MB",
-            **common_configs,
-        )
+    run_benchmarks(
+        bench_test_fn=bench_speed_cross_entropy,
+        kernel_operation_modes=["forward", "backward", "full", "no-grad-forward"],
+        metric_name="speed",
+        metric_unit="ms",
+        **common_configs,
+    )
+    run_benchmarks(
+        bench_test_fn=bench_memory_cross_entropy,
+        kernel_operation_modes=["full"],
+        metric_name="memory",
+        metric_unit="MB",
+        **common_configs,
+    )

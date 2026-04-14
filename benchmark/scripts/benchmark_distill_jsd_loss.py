@@ -113,13 +113,23 @@ def _setup_distill_jsd_loss(input: SingleBenchmarkRunInput):
 
     if input.kernel_provider == "liger":
         loss_module = LigerJSDLoss(
-            H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias,
-            weight_hard_loss=weight_hard_loss, weight_soft_loss=weight_soft_loss,
+            H=H,
+            V=V,
+            dtype=dtype,
+            ignore_index=ignore_index,
+            bias=bias,
+            weight_hard_loss=weight_hard_loss,
+            weight_soft_loss=weight_soft_loss,
         ).to(device)
     elif input.kernel_provider == "torch":
         loss_module = TorchJSDLoss(
-            H=H, V=V, dtype=dtype, ignore_index=ignore_index, bias=bias,
-            weight_hard_loss=weight_hard_loss, weight_soft_loss=weight_soft_loss,
+            H=H,
+            V=V,
+            dtype=dtype,
+            ignore_index=ignore_index,
+            bias=bias,
+            weight_hard_loss=weight_hard_loss,
+            weight_soft_loss=weight_soft_loss,
         ).to(device)
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for DistillJSDLoss")
@@ -134,7 +144,11 @@ def bench_speed_distill_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchm
         return loss_module(student_input, teacher_input, target)
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            fwd,
+            rep=100,
+            quantiles=QUANTILES,
+        )
     elif mode == "backward":
         y = fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -153,7 +167,11 @@ def bench_speed_distill_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchm
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_distill_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -164,7 +182,11 @@ def bench_memory_distill_jsd_loss(input: SingleBenchmarkRunInput) -> SingleBench
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 def _resolve_model_config_distill_jsd_loss(input: SingleBenchmarkRunInput):
@@ -196,7 +218,11 @@ def bench_speed_distill_jsd_loss_model_config(input: SingleBenchmarkRunInput) ->
         return loss_module(student_input, teacher_input, target)
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            fwd,
+            rep=100,
+            quantiles=QUANTILES,
+        )
     elif mode == "backward":
         y = fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -211,11 +237,19 @@ def bench_speed_distill_jsd_loss_model_config(input: SingleBenchmarkRunInput) ->
             y = fwd()
             y.backward()
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            full,
+            rep=100,
+            quantiles=QUANTILES,
+        )
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_distill_jsd_loss_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -226,7 +260,11 @@ def bench_memory_distill_jsd_loss_model_config(input: SingleBenchmarkRunInput) -
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":
