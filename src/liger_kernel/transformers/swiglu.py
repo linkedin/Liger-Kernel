@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+from liger_kernel.ops import LigerFusedMoEFunction
 from liger_kernel.ops import LigerSiLUMulFunction
 
 
@@ -45,12 +46,12 @@ class LigerExperts(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        if "num_experts" in config:
+        if hasattr(config, "num_experts"):
             # qwen3_moe, qwen3_next uses num_experts
             self.num_experts = config.num_experts
         else:
             self.num_experts = config.num_local_experts
-        if "moe_intermediate_size" in config:
+        if hasattr(config, "moe_intermediate_size"):
             # qwen3_moe, qwen3_next uses moe_intermediate_size
             self.intermediate_dim = config.moe_intermediate_size
         else:
@@ -64,25 +65,16 @@ class LigerExperts(nn.Module):
             raise ValueError(f"Activation function {config.hidden_act} not supported.")
 
     def forward(self, hidden_states, top_k_index, top_k_weights):
-        final_hidden_states = torch.zeros_like(hidden_states)
-        with torch.no_grad():
-            expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts)
-            expert_mask = expert_mask.permute(2, 1, 0)
-            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+        # Reshape to 2D if needed (e.g. batch × seq → tokens)
+        orig_shape = hidden_states.shape
+        x = hidden_states.view(-1, self.hidden_dim)
 
-        for expert_idx in expert_hit:
-            expert_idx = expert_idx[0]
-            if expert_idx == self.num_experts:
-                continue
-            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
-            current_state = hidden_states[token_idx]
-            gate, up = nn.functional.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)
-            current_hidden_states = LigerSiLUMulFunction.apply(gate, up)
-            current_hidden_states = nn.functional.linear(current_hidden_states, self.down_proj[expert_idx])
-            current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
-            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+        # top_k_index / top_k_weights may come in as (batch, seq, K) or (T, K)
+        top_k_index_2d = top_k_index.view(-1, top_k_index.shape[-1]).to(torch.int32)
+        top_k_weights_2d = top_k_weights.view(-1, top_k_weights.shape[-1])
 
-        return final_hidden_states
+        out = LigerFusedMoEFunction.apply(x, self.gate_up_proj, self.down_proj, top_k_index_2d, top_k_weights_2d)
+        return out.view(orig_shape)
 
 
 class LigerPhi3SwiGLUMLP(nn.Module):
