@@ -30,6 +30,7 @@ def fused_linear_cross_entropy_forward(
     use_token_scaling=False,
     return_token_accuracy=False,
     return_predicted_tokens=False,
+    num_chunks_override=None,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     assert isinstance(return_token_accuracy, bool), (
@@ -53,9 +54,13 @@ def fused_linear_cross_entropy_forward(
     V = weight.shape[0]
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
-    inc_factor = triton.cdiv(V, H)  # (V + H - 1) // H
-    chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
-    num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
+    if num_chunks_override is not None:
+        chunk_size = triton.next_power_of_2(max(1, BT // num_chunks_override))
+        num_chunks = triton.cdiv(BT, chunk_size)
+    else:
+        inc_factor = triton.cdiv(V, H)  # (V + H - 1) // H
+        chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
+        num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
     grad_input = torch.zeros_like(_input, device=device)
 
@@ -219,6 +224,8 @@ def fused_linear_cross_entropy_forward(
                 alpha=1.0,
             )
 
+        del logits_chunk, grad_logits_chunk, _input_chunk
+
     # Need extra calculations for backward if reduction=='none'. Not supporting reduction='none' now.
     # if reduction == "none":
     #     loss = loss_1d
@@ -311,6 +318,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
         use_token_scaling: bool = False,
         return_token_accuracy: bool = False,
         return_predicted_tokens: bool = False,
+        num_chunks_override=None,
     ):
         """
         Fusing the last linear layer with cross-entropy loss
@@ -355,6 +363,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
                 use_token_scaling=use_token_scaling,
                 return_token_accuracy=return_token_accuracy,
                 return_predicted_tokens=return_predicted_tokens,
+                num_chunks_override=num_chunks_override,
             )
         )
         # downcast to dtype and store for backward

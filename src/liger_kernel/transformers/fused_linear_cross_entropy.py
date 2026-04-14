@@ -42,6 +42,7 @@ class LigerFusedLinearCrossEntropyLoss(torch.nn.Module):
         self.use_token_scaling = use_token_scaling
         self.return_token_accuracy = return_token_accuracy
         self.return_predicted_tokens = return_predicted_tokens
+        self.num_chunks_override = None
 
     def forward(self, lin_weight, _input, target, bias=None):
         loss, z_loss, token_accuracy, predicted_tokens = LigerFusedLinearCrossEntropyFunction.apply(
@@ -60,6 +61,7 @@ class LigerFusedLinearCrossEntropyLoss(torch.nn.Module):
             self.use_token_scaling,
             self.return_token_accuracy,
             self.return_predicted_tokens,
+            self.num_chunks_override,
         )
         if not self.return_z_loss and not self.return_token_accuracy and not self.return_predicted_tokens:
             return loss
