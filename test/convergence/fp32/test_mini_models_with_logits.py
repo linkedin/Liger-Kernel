@@ -1791,19 +1791,15 @@ def run_mini_model(
             1e-4,
             torch.float32,
             1e-8,
-            2e-5,
+            1e-3,  # LigerExperts fused MoE kernel needs higher loss rtol
             5e-3,
-            1e-5,
+            1e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol (matching qwen3_moe)
             5e-3,
             1e-5,
             marks=[
                 pytest.mark.skipif(
                     not QWEN3_VL_MOE_AVAILABLE,
                     reason="Qwen3-VL-MoE not available in this version of transformers",
-                ),
-                pytest.mark.skipif(
-                    True,
-                    reason="Flaky test",
                 ),
             ],
         ),
@@ -1877,9 +1873,9 @@ def run_mini_model(
             1e-4,
             torch.float32,
             1e-8,
-            1e-5,
+            1e-3,  # LigerExperts fused MoE kernel needs higher loss rtol (matching fp32 FLCE)
             5e-3,
-            1e-5,
+            1e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol (matching qwen3_moe)
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(

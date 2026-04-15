@@ -1797,7 +1797,6 @@ def run_mini_model(
                     not QWEN3_VL_MOE_AVAILABLE,
                     reason="Qwen3-VL-MoE not available in this version of transformers",
                 ),
-                pytest.mark.skipif(True, reason="Flaky test"),
             ],
         ),
         pytest.param(

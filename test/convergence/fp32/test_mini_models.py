@@ -1897,7 +1897,7 @@ def run_mini_model(
             1e-5,
             1e-1,
             5e-3,
-            1e-5,
+            1e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol (matching qwen3_moe)
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(
@@ -1977,7 +1977,7 @@ def run_mini_model(
             1e-8,
             1e-3,
             5e-3,
-            1e-5,
+            1e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol (matching qwen3_moe)
             5e-3,
             1e-5,
             marks=[
