@@ -13,8 +13,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from liger_kernel.ops.fused_moe import LigerFusedMoEFunction
-from liger_kernel.ops.fused_moe import compute_routing_metadata
+from liger_kernel.ops import LigerFusedMoEFunction
+from liger_kernel.ops import compute_routing_metadata
 from liger_kernel.utils import infer_device
 
 device = infer_device()

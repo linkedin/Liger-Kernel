@@ -24,7 +24,7 @@ from utils import run_benchmarks
 from utils import run_memory_benchmark
 from utils import run_speed_benchmark
 
-from liger_kernel.ops.fused_moe import LigerFusedMoEFunction
+from liger_kernel.ops import LigerFusedMoEFunction
 from liger_kernel.utils import get_total_gpu_memory
 from liger_kernel.utils import infer_device
 
@@ -106,11 +106,11 @@ def _setup_fused_moe(input: SingleBenchmarkRunInput):
     if input.kernel_provider == "liger":
 
         def fwd_fn():
-            return LigerFusedMoEFunction.apply(x, gup, dn, idx, wts)
+            return LigerFusedMoEFunction.apply(x, gup, dn, idx, wts).to(device)
     elif input.kernel_provider == "huggingface":
 
         def fwd_fn():
-            return _huggingface_moe_forward(x, gup, dn, idx, wts)
+            return _huggingface_moe_forward(x, gup, dn, idx, wts).to(device)
     else:
         raise ValueError(f"Unknown provider: {input.kernel_provider}")
 
@@ -157,7 +157,10 @@ def _warmup_liger(T, E, H, intermediate_dim, K, dtype, sweep_dim):
     warmup_out = warmup_fn()
     warmup_out.sum().backward()
     del warmup_out
-    torch.cuda.synchronize()
+    if device == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize()
+    elif device == "npu" and hasattr(torch, "npu") and torch.npu.is_available():
+        torch.npu.synchronize()
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +234,11 @@ if __name__ == "__main__":
             print(f"  warmup E={e_val}...")
             _warmup_liger(probe_T, e_val, H, intermediate_dim, K, dtype, sweep_dim="E")
 
-    torch.cuda.synchronize()
+    if device == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize()
+    elif device == "npu" and hasattr(torch, "npu") and torch.npu.is_available():
+        torch.npu.synchronize()
+
     print("Autotune warmup complete.\n")
 
     if args.sweep_dim == "num_tokens":
