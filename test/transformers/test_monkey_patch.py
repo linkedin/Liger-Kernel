@@ -1340,10 +1340,6 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
                 assert inspect.getsource(layer.feed_forward.shared_expert.forward) != inspect.getsource(
                     LigerSwiGLUMLP.forward
                 )
-                if IS_TRANSFORMERS_V5_OR_LATER:
-                    assert inspect.getsource(layer.feed_forward.experts.forward) != inspect.getsource(
-                        LigerExperts.forward
-                    )
             else:
                 assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
@@ -1359,10 +1355,6 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
                 assert inspect.getsource(layer.feed_forward.shared_expert.forward) == inspect.getsource(
                     LigerSwiGLUMLP.forward
                 )
-                if IS_TRANSFORMERS_V5_OR_LATER:
-                    assert inspect.getsource(layer.feed_forward.experts.forward) == inspect.getsource(
-                        LigerExperts.forward
-                    )
             else:
                 assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
@@ -1416,10 +1408,6 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
                 assert inspect.getsource(layer.feed_forward.shared_expert.forward) != inspect.getsource(
                     LigerSwiGLUMLP.forward
                 )
-                if IS_TRANSFORMERS_V5_OR_LATER:
-                    assert inspect.getsource(layer.feed_forward.experts.forward) != inspect.getsource(
-                        LigerExperts.forward
-                    )
             else:
                 assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
@@ -1449,10 +1437,6 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
                 assert inspect.getsource(layer.feed_forward.shared_expert.forward) == inspect.getsource(
                     LigerSwiGLUMLP.forward
                 )
-                if IS_TRANSFORMERS_V5_OR_LATER:
-                    assert inspect.getsource(layer.feed_forward.experts.forward) == inspect.getsource(
-                        LigerExperts.forward
-                    )
             else:
                 assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)

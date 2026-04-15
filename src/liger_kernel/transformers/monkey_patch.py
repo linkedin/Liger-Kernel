@@ -472,8 +472,6 @@ def apply_liger_kernel_to_llama4(
         modeling_llama4.Llama4TextRMSNorm = LigerRMSNorm
     if swiglu:
         modeling_llama4.Llama4TextMLP = LigerSwiGLUMLP
-        if IS_TRANSFORMERS_V5_OR_LATER:
-            modeling_llama4.Llama4TextExperts = LigerExperts
 
     if cross_entropy:
         modeling_llama4.CrossEntropyLoss = LigerCrossEntropyLoss
@@ -505,8 +503,6 @@ def apply_liger_kernel_to_llama4(
                 if swiglu:
                     if decoder_layer.is_moe_layer:
                         _patch_swiglu_module(decoder_layer.feed_forward.shared_expert, LigerSwiGLUMLP)
-                        if IS_TRANSFORMERS_V5_OR_LATER:
-                            _patch_swiglu_module(decoder_layer.feed_forward.experts, LigerExperts)
                     else:
                         _patch_swiglu_module(decoder_layer.feed_forward, LigerSwiGLUMLP)
                 if rms_norm:
@@ -2374,7 +2370,7 @@ def apply_liger_kernel_to_glm4v_moe(
             modeling_glm4v_moe.Glm4vMoeForConditionalGeneration.forward = glm4v_moe_lce_forward
     if swiglu:
         if IS_TRANSFORMERS_V5_OR_LATER:
-            modeling_glm4v_moe.Glm4vMoeTextExperts = LigerExperts
+            modeling_glm4v_moe.Glm4vMoeTextNaiveMoe = LigerExperts
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
