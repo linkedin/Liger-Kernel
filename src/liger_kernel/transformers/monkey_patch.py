@@ -2382,15 +2382,12 @@ def apply_liger_kernel_to_glm4v_moe(
         if isinstance(model, Glm4vMoeForConditionalGeneration):
             text_model: Glm4vMoeTextModel = model.model.language_model
             vision_model: Glm4vMoeVisionModel = model.model.visual
-            Glm4vMoeTextMoE = modeling_glm4v_moe.Glm4vMoeTextMoE
         elif isinstance(model, Glm4vMoeModel):
             text_model: Glm4vMoeTextModel = model.language_model
             vision_model: Glm4vMoeVisionModel = model.visual
-            Glm4vMoeTextMoE = modeling_glm4v_moe.Glm4vMoeTextMoE
         elif isinstance(model, Glm4vMoeTextModel):
             text_model: Glm4vMoeTextModel = model
             vision_model = None
-            Glm4vMoeTextMoE = modeling_glm4v_moe.Glm4vMoeTextMoE
         else:
             # Note: Currently there's no support for patching vision model only. Feel free to raise an issue if needed.
             raise TypeError(
@@ -2415,16 +2412,16 @@ def apply_liger_kernel_to_glm4v_moe(
                     _patch_rms_norm_module(decoder_layer.input_layernorm)
                     _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
                 if swiglu:
-                    if isinstance(Glm4vMoeTextMoE, type) and isinstance(decoder_layer.mlp, Glm4vMoeTextMoE):
-                        experts = getattr(decoder_layer.mlp, "experts", None)
-                        if experts is not None:
-                            if IS_TRANSFORMERS_V5_OR_LATER:
-                                _patch_swiglu_module(experts, LigerExperts)
-                            else:
-                                for expert in experts:
-                                    _patch_swiglu_module(expert, LigerSwiGLUMLP)
-                        if decoder_layer.mlp.shared_experts is not None:
-                            _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
+                    experts = getattr(decoder_layer.mlp, "experts", None)
+                    if experts is not None:
+                        if IS_TRANSFORMERS_V5_OR_LATER:
+                            _patch_swiglu_module(experts, LigerExperts)
+                        else:
+                            for expert in experts:
+                                _patch_swiglu_module(expert, LigerSwiGLUMLP)
+                        shared_experts = getattr(decoder_layer.mlp, "shared_experts", None)
+                        if shared_experts is not None:
+                            _patch_swiglu_module(shared_experts, LigerSwiGLUMLP)
                     else:
                         _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
 
