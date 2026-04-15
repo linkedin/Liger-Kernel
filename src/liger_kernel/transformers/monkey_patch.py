@@ -472,6 +472,8 @@ def apply_liger_kernel_to_llama4(
         modeling_llama4.Llama4TextRMSNorm = LigerRMSNorm
     if swiglu:
         modeling_llama4.Llama4TextMLP = LigerSwiGLUMLP
+        if IS_TRANSFORMERS_V5_OR_LATER:
+            modeling_llama4.Llama4TextExperts = LigerExperts
 
     if cross_entropy:
         modeling_llama4.CrossEntropyLoss = LigerCrossEntropyLoss
@@ -503,6 +505,8 @@ def apply_liger_kernel_to_llama4(
                 if swiglu:
                     if decoder_layer.is_moe_layer:
                         _patch_swiglu_module(decoder_layer.feed_forward.shared_expert, LigerSwiGLUMLP)
+                        if IS_TRANSFORMERS_V5_OR_LATER:
+                            _patch_swiglu_module(decoder_layer.feed_forward.experts, LigerExperts)
                     else:
                         _patch_swiglu_module(decoder_layer.feed_forward, LigerSwiGLUMLP)
                 if rms_norm:
@@ -1878,7 +1882,7 @@ def apply_liger_kernel_to_qwen3_vl_moe(
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
-    swiglu: bool = False,
+    swiglu: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -1889,7 +1893,7 @@ def apply_liger_kernel_to_qwen3_vl_moe(
         fused_linear_cross_entropy (bool):
             Whether to apply Liger's fused linear cross entropy loss. Default is False.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
-        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is False.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -1923,7 +1927,11 @@ def apply_liger_kernel_to_qwen3_vl_moe(
         else:
             modeling_qwen3_vl_moe.Qwen3VLMoeForConditionalGeneration.forward = qwen3_vl_moe_lce_forward
 
-    if model is not None and rms_norm:
+    if swiglu:
+        if IS_TRANSFORMERS_V5_OR_LATER:
+            modeling_qwen3_vl_moe.Qwen3VLMoeTextExperts = LigerExperts
+
+    if model is not None:
         if isinstance(model, Qwen3VLMoeForConditionalGeneration):
             text_model: Qwen3VLMoeTextModel = model.model.language_model
         elif isinstance(model, Qwen3VLMoeModel):
@@ -1938,16 +1946,23 @@ def apply_liger_kernel_to_qwen3_vl_moe(
         _patch_qwen3_vl_moe_rms_norm = partial(_patch_rms_norm_module, offset=0.0, casting_mode="llama")
 
         if text_model is not None:
-            _patch_qwen3_vl_moe_rms_norm(text_model.norm)
+            if rms_norm:
+                _patch_qwen3_vl_moe_rms_norm(text_model.norm)
             for decoder_layer in text_model.layers:
-                _patch_qwen3_vl_moe_rms_norm(decoder_layer.input_layernorm)
-                _patch_qwen3_vl_moe_rms_norm(decoder_layer.post_attention_layernorm)
-                self_attn = getattr(decoder_layer, "self_attn", None)
-                if self_attn is not None:
-                    if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
-                        _patch_qwen3_vl_moe_rms_norm(self_attn.q_norm)
-                    if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
-                        _patch_qwen3_vl_moe_rms_norm(self_attn.k_norm)
+                if rms_norm:
+                    _patch_qwen3_vl_moe_rms_norm(decoder_layer.input_layernorm)
+                    _patch_qwen3_vl_moe_rms_norm(decoder_layer.post_attention_layernorm)
+                    self_attn = getattr(decoder_layer, "self_attn", None)
+                    if self_attn is not None:
+                        if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                            _patch_qwen3_vl_moe_rms_norm(self_attn.q_norm)
+                        if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                            _patch_qwen3_vl_moe_rms_norm(self_attn.k_norm)
+                if swiglu:
+                    experts = getattr(decoder_layer.mlp, "experts", None)
+                    if experts is not None:
+                        if IS_TRANSFORMERS_V5_OR_LATER:
+                            _patch_swiglu_module(experts, LigerExperts)
 
 
 def apply_liger_kernel_to_phi3(
@@ -2357,6 +2372,9 @@ def apply_liger_kernel_to_glm4v_moe(
             model.forward = MethodType(glm4v_moe_lce_forward, model)
         else:
             modeling_glm4v_moe.Glm4vMoeForConditionalGeneration.forward = glm4v_moe_lce_forward
+    if swiglu:
+        if IS_TRANSFORMERS_V5_OR_LATER:
+            modeling_glm4v_moe.Glm4vMoeTextExperts = LigerExperts
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -2372,6 +2390,7 @@ def apply_liger_kernel_to_glm4v_moe(
         elif isinstance(model, Glm4vMoeTextModel):
             text_model: Glm4vMoeTextModel = model
             vision_model = None
+            Glm4vMoeTextMoE = modeling_glm4v_moe.Glm4vMoeTextMoE
         else:
             # Note: Currently there's no support for patching vision model only. Feel free to raise an issue if needed.
             raise TypeError(
@@ -2392,22 +2411,22 @@ def apply_liger_kernel_to_glm4v_moe(
             if rms_norm:
                 _patch_rms_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
                 if swiglu:
-                    decoder_layer.mlp = _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
-                if rms_norm:
-                    _patch_rms_norm_module(decoder_layer.input_layernorm)
-                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-        if isinstance(Glm4vMoeTextMoE, type) and isinstance(decoder_layer.mlp, Glm4vMoeTextMoE):
-            experts = getattr(decoder_layer.mlp, "experts", None)
-            if experts is not None:
-                for expert in experts:
-                    _patch_swiglu_module(expert, LigerSwiGLUMLP)
-            if decoder_layer.mlp.shared_experts is not None:
-                _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
-            for decoder_layer in text_model.layers:
-                if rms_norm:
-                    _patch_rms_norm_module(decoder_layer.input_layernorm)
-                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                    if isinstance(Glm4vMoeTextMoE, type) and isinstance(decoder_layer.mlp, Glm4vMoeTextMoE):
+                        experts = getattr(decoder_layer.mlp, "experts", None)
+                        if experts is not None:
+                            if IS_TRANSFORMERS_V5_OR_LATER:
+                                _patch_swiglu_module(experts, LigerExperts)
+                            else:
+                                for expert in experts:
+                                    _patch_swiglu_module(expert, LigerSwiGLUMLP)
+                        if decoder_layer.mlp.shared_experts is not None:
+                            _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
+                    else:
+                        _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
 
 
 def apply_liger_kernel_to_internvl(

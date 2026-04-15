@@ -832,6 +832,9 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
                     assert inspect.getsource(self_attn.q_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
                 if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
                     assert inspect.getsource(self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            experts = getattr(decoder_layer.mlp, "experts", None)
+            if experts is not None and IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(experts.forward) != inspect.getsource(LigerExperts.forward)
 
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
@@ -852,6 +855,9 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_for_conditional_generat
                     assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
                 if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
                     assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            experts = getattr(decoder_layer.mlp, "experts", None)
+            if experts is not None and IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(experts.forward) == inspect.getsource(LigerExperts.forward)
 
         try:
             print(dummy_model_instance)
@@ -935,6 +941,9 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
                     assert inspect.getsource(self_attn.q_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
                 if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
                     assert inspect.getsource(self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            experts = getattr(decoder_layer.mlp, "experts", None)
+            if experts is not None and IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(experts.forward) != inspect.getsource(LigerExperts.forward)
 
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
@@ -955,6 +964,9 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe():
                     assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
                 if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
                     assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            experts = getattr(decoder_layer.mlp, "experts", None)
+            if experts is not None and IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(experts.forward) == inspect.getsource(LigerExperts.forward)
 
         try:
             print(dummy_model_instance)
@@ -1011,6 +1023,9 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
                     assert inspect.getsource(self_attn.q_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
                 if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
                     assert inspect.getsource(self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            experts = getattr(decoder_layer.mlp, "experts", None)
+            if experts is not None and IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(experts.forward) != inspect.getsource(LigerExperts.forward)
 
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
@@ -1029,6 +1044,9 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_moe_text():
                     assert inspect.getsource(self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
                 if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
                     assert inspect.getsource(self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            experts = getattr(decoder_layer.mlp, "experts", None)
+            if experts is not None and IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(experts.forward) == inspect.getsource(LigerExperts.forward)
 
         try:
             print(dummy_model_instance)
@@ -1322,6 +1340,10 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
                 assert inspect.getsource(layer.feed_forward.shared_expert.forward) != inspect.getsource(
                     LigerSwiGLUMLP.forward
                 )
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(layer.feed_forward.experts.forward) != inspect.getsource(
+                        LigerExperts.forward
+                    )
             else:
                 assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
@@ -1337,6 +1359,10 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_causal_lm():
                 assert inspect.getsource(layer.feed_forward.shared_expert.forward) == inspect.getsource(
                     LigerSwiGLUMLP.forward
                 )
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(layer.feed_forward.experts.forward) == inspect.getsource(
+                        LigerExperts.forward
+                    )
             else:
                 assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
@@ -1390,6 +1416,10 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
                 assert inspect.getsource(layer.feed_forward.shared_expert.forward) != inspect.getsource(
                     LigerSwiGLUMLP.forward
                 )
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(layer.feed_forward.experts.forward) != inspect.getsource(
+                        LigerExperts.forward
+                    )
             else:
                 assert inspect.getsource(layer.feed_forward.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
@@ -1419,6 +1449,10 @@ def test_apply_liger_kernel_to_instance_for_llama4_for_conditional_generation():
                 assert inspect.getsource(layer.feed_forward.shared_expert.forward) == inspect.getsource(
                     LigerSwiGLUMLP.forward
                 )
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(layer.feed_forward.experts.forward) == inspect.getsource(
+                        LigerExperts.forward
+                    )
             else:
                 assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
