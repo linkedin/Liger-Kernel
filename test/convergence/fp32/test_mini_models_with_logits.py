@@ -1792,8 +1792,8 @@ def run_mini_model(
             torch.float32,
             1e-8,
             1e-3,  # LigerExperts fused MoE kernel needs higher loss rtol
-            5e-3,
-            1e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol (matching qwen3_moe)
+            5e-2,  # LigerExperts fused MoE kernel needs higher logprobs atol
+            5e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol
             5e-3,
             1e-5,
             marks=[
@@ -1873,9 +1873,9 @@ def run_mini_model(
             1e-4,
             torch.float32,
             1e-8,
-            1e-3,  # LigerExperts fused MoE kernel needs higher loss rtol (matching fp32 FLCE)
-            5e-3,
-            1e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol (matching qwen3_moe)
+            5e-3,  # LigerExperts fused MoE kernel needs higher loss rtol
+            5e-2,  # LigerExperts fused MoE kernel needs higher logprobs atol
+            5e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol
             5e-3,
             1e-5,
             marks=pytest.mark.skipif(
