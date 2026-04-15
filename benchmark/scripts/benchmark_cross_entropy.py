@@ -68,7 +68,11 @@ def bench_speed_cross_entropy(input: SingleBenchmarkRunInput) -> SingleBenchmark
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_cross_entropy(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -79,7 +83,11 @@ def bench_memory_cross_entropy(input: SingleBenchmarkRunInput) -> SingleBenchmar
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 def _resolve_model_config_cross_entropy(input: SingleBenchmarkRunInput):
@@ -111,6 +119,7 @@ def bench_speed_cross_entropy_model_config(input: SingleBenchmarkRunInput) -> Si
             ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
     elif mode == "backward":
         y = fwd()
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True),
             grad_to_none=[_input],
@@ -127,7 +136,11 @@ def bench_speed_cross_entropy_model_config(input: SingleBenchmarkRunInput) -> Si
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_cross_entropy_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -138,7 +151,11 @@ def bench_memory_cross_entropy_model_config(input: SingleBenchmarkRunInput) -> S
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":

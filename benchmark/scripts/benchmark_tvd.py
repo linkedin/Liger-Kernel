@@ -70,6 +70,7 @@ def bench_speed_tvd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
         ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
     elif mode == "backward":
         y = fwd()
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True),
             quantiles=QUANTILES,
@@ -86,7 +87,11 @@ def bench_speed_tvd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_tvd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -97,7 +102,11 @@ def bench_memory_tvd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
         y.backward(retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 def _resolve_model_config_tvd(input: SingleBenchmarkRunInput):
@@ -153,7 +162,12 @@ def bench_memory_tvd_model_config(input: SingleBenchmarkRunInput) -> SingleBench
         y.backward(retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":

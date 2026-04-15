@@ -68,7 +68,11 @@ def bench_speed_kl_div(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_kl_div(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -79,7 +83,11 @@ def bench_memory_kl_div(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOut
         y.backward(retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 def _resolve_model_config_kl_div(input: SingleBenchmarkRunInput):
@@ -124,7 +132,11 @@ def bench_speed_kl_div_model_config(input: SingleBenchmarkRunInput) -> SingleBen
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_kl_div_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -135,7 +147,12 @@ def bench_memory_kl_div_model_config(input: SingleBenchmarkRunInput) -> SingleBe
         y.backward(retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":
@@ -159,7 +176,6 @@ if __name__ == "__main__":
             return _probe
 
         sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
-
         model_configs_info = {
             cfg.name: {
                 "vocab_size": cfg.vocab_size,

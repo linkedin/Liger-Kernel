@@ -178,7 +178,11 @@ def bench_speed_fused_linear_jsd(input: SingleBenchmarkRunInput) -> SingleBenchm
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_fused_linear_jsd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -189,7 +193,11 @@ def bench_memory_fused_linear_jsd(input: SingleBenchmarkRunInput) -> SingleBench
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 def _resolve_model_config_fused_linear_jsd(input: SingleBenchmarkRunInput):
@@ -217,9 +225,14 @@ def bench_speed_fused_linear_jsd_model_config(input: SingleBenchmarkRunInput) ->
         return lm_head(student_input, teacher_input)
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            fwd,
+            rep=100,
+            quantiles=QUANTILES,
+        )
     elif mode == "backward":
         y = fwd()
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True),
             grad_to_none=[student_input],
@@ -232,11 +245,19 @@ def bench_speed_fused_linear_jsd_model_config(input: SingleBenchmarkRunInput) ->
             y = fwd()
             y.backward()
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            full,
+            rep=100,
+            quantiles=QUANTILES,
+        )
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_fused_linear_jsd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -247,7 +268,11 @@ def bench_memory_fused_linear_jsd_model_config(input: SingleBenchmarkRunInput) -
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":

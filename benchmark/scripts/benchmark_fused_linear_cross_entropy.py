@@ -67,10 +67,8 @@ def _setup_fused_linear_cross_entropy(input: SingleBenchmarkRunInput):
         lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     elif input.kernel_provider == "liger-fp32-accum":
         lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
-    elif input.kernel_provider == "huggingface":
-        lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     else:
-        raise ValueError(f"Invalid provider: {input.kernel_provider} for FusedLinearCrossEntropy")
+        lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
     return _input, target, lm_head_ce
 
 
@@ -82,7 +80,11 @@ def bench_speed_fused_linear_cross_entropy(input: SingleBenchmarkRunInput) -> Si
         return lm_head_ce(_input, target)
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            fwd,
+            rep=100,
+            quantiles=QUANTILES,
+        )
     elif mode == "no-grad-forward":
         with torch.no_grad():
             ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
@@ -104,7 +106,11 @@ def bench_speed_fused_linear_cross_entropy(input: SingleBenchmarkRunInput) -> Si
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_fused_linear_cross_entropy(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -115,7 +121,12 @@ def bench_memory_fused_linear_cross_entropy(input: SingleBenchmarkRunInput) -> S
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 def _resolve_model_config_fused_linear_cross_entropy(input: SingleBenchmarkRunInput):
@@ -143,12 +154,21 @@ def bench_speed_fused_linear_cross_entropy_model_config(input: SingleBenchmarkRu
         return lm_head_ce(_input, target)
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            fwd,
+            rep=100,
+            quantiles=QUANTILES,
+        )
     elif mode == "no-grad-forward":
         with torch.no_grad():
-            ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(
+                fwd,
+                rep=100,
+                quantiles=QUANTILES,
+            )
     elif mode == "backward":
         y = fwd()
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True),
             grad_to_none=[_input],
@@ -161,11 +181,19 @@ def bench_speed_fused_linear_cross_entropy_model_config(input: SingleBenchmarkRu
             y = fwd()
             y.backward()
 
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            full,
+            rep=100,
+            quantiles=QUANTILES,
+        )
     else:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_fused_linear_cross_entropy_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -176,7 +204,11 @@ def bench_memory_fused_linear_cross_entropy_model_config(input: SingleBenchmarkR
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":

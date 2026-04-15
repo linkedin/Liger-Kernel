@@ -1,4 +1,3 @@
-import math
 import os
 import sys
 
@@ -7,11 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import triton
 
-from benchmark_model_configs import MODEL_REGISTRY
-from benchmark_model_configs import compute_model_config_sweep_config
-from benchmark_model_configs import compute_seq_len_sweep_config
-from benchmark_model_configs import estimate_kernel_peak_memory
-from benchmark_model_configs import get_benchmark_model_config
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
@@ -123,8 +117,17 @@ class MLPBlock(nn.Module):
 
 class TorchMHC(nn.Module):
     def __init__(
-        self, layer: nn.Module, *, hc: int, c: int, tmax: int,
-        rms_eps: float, pre_eps: float, sinkhorn_eps: float, post_mult: float, phi_dtype: torch.dtype,
+        self,
+        layer: nn.Module,
+        *,
+        hc: int,
+        c: int,
+        tmax: int,
+        rms_eps: float,
+        pre_eps: float,
+        sinkhorn_eps: float,
+        post_mult: float,
+        phi_dtype: torch.dtype,
     ):
         super().__init__()
         self.layer = layer
@@ -153,9 +156,17 @@ class TorchMHC(nn.Module):
         from test.transformers.test_mhc import mhc_coeffs_ref
 
         return mhc_coeffs_ref(
-            x, self.phi, self.b, self.alpha_pre, self.alpha_post, self.alpha_res,
-            tmax=self.tmax, rms_eps=self.rms_eps, pre_eps=self.pre_eps,
-            sinkhorn_eps=self.sinkhorn_eps, post_mult=self.post_mult,
+            x,
+            self.phi,
+            self.b,
+            self.alpha_pre,
+            self.alpha_post,
+            self.alpha_res,
+            tmax=self.tmax,
+            rms_eps=self.rms_eps,
+            pre_eps=self.pre_eps,
+            sinkhorn_eps=self.sinkhorn_eps,
+            post_mult=self.post_mult,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -164,18 +175,50 @@ class TorchMHC(nn.Module):
         if x_in.dtype != self.layer_dtype:
             x_in = x_in.to(self.layer_dtype)
         f_out = self.layer(x_in)
-        x_out = torch.einsum("...oi,...ic->...oc", h_res, x.float()) + h_post.unsqueeze(-1) * f_out.float().unsqueeze(-2)
+        x_out = torch.einsum("...oi,...ic->...oc", h_res, x.float()) + h_post.unsqueeze(-1) * f_out.float().unsqueeze(
+            -2
+        )
         return x_out.to(x.dtype)
 
 
 class MHCDecoderLayer(nn.Module):
-    def __init__(self, mhc_cls, *, hidden_size, hc, num_heads, intermediate_mult, tmax, dtype, device):
+    def __init__(
+        self,
+        mhc_cls: type[nn.Module],
+        *,
+        hidden_size: int,
+        hc: int,
+        num_heads: int,
+        intermediate_mult: int,
+        tmax: int,
+        dtype: torch.dtype,
+        device: str,
+    ):
         super().__init__()
         attn = AttentionBlock(hidden_size, num_heads, dtype=dtype, device=device)
         mlp = MLPBlock(hidden_size, intermediate_mult, dtype=dtype, device=device)
-        mhc_kwargs = dict(hc=hc, c=hidden_size, tmax=tmax, rms_eps=1e-6, pre_eps=1e-4, sinkhorn_eps=1e-6, post_mult=2.0, phi_dtype=dtype)
-        self.attn = mhc_cls(attn, **mhc_kwargs)
-        self.mlp = mhc_cls(mlp, **mhc_kwargs)
+        self.attn = mhc_cls(
+            attn,
+            hc=hc,
+            c=hidden_size,
+            tmax=tmax,
+            rms_eps=1e-6,
+            pre_eps=1e-4,
+            sinkhorn_eps=1e-6,
+            post_mult=2.0,
+            phi_dtype=dtype,
+        )
+        self.mlp = mhc_cls(
+            mlp,
+            hc=hc,
+            c=hidden_size,
+            tmax=tmax,
+            rms_eps=1e-6,
+            pre_eps=1e-4,
+            sinkhorn_eps=1e-6,
+            post_mult=2.0,
+            phi_dtype=dtype,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.attn(x)
@@ -184,16 +227,39 @@ class MHCDecoderLayer(nn.Module):
 
 
 class BenchMiniMHCLM(nn.Module):
-    def __init__(self, mhc_cls, *, vocab_size, hidden_size, hc, num_layers, num_heads, intermediate_mult, tmax, dtype, device):
+    def __init__(
+        self,
+        mhc_cls: type[nn.Module],
+        *,
+        vocab_size: int,
+        hidden_size: int,
+        hc: int,
+        num_layers: int,
+        num_heads: int,
+        intermediate_mult: int,
+        tmax: int,
+        dtype: torch.dtype,
+        device: str,
+    ):
         super().__init__()
         self.hc = hc
         self.hidden_size = hidden_size
         self.embed = nn.Embedding(vocab_size, hc * hidden_size, dtype=dtype, device=device)
-        self.layers = nn.ModuleList([
-            MHCDecoderLayer(mhc_cls, hidden_size=hidden_size, hc=hc, num_heads=num_heads,
-                            intermediate_mult=intermediate_mult, tmax=tmax, dtype=dtype, device=device)
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                MHCDecoderLayer(
+                    mhc_cls,
+                    hidden_size=hidden_size,
+                    hc=hc,
+                    num_heads=num_heads,
+                    intermediate_mult=intermediate_mult,
+                    tmax=tmax,
+                    dtype=dtype,
+                    device=device,
+                )
+                for _ in range(num_layers)
+            ]
+        )
         self.final_norm = RMSNorm(hidden_size, eps=1e-6, dtype=dtype, device=device)
         self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False, dtype=dtype, device=device)
 
@@ -208,202 +274,182 @@ class BenchMiniMHCLM(nn.Module):
         return self.lm_head(x)
 
 
-def _build_model(provider, *, hidden_size, hc, num_layers, num_heads, intermediate_mult, vocab_size, tmax, dtype):
+def _build_model(
+    provider: str,
+    *,
+    hidden_size: int,
+    hc: int,
+    num_layers: int,
+    num_heads: int,
+    intermediate_mult: int,
+    vocab_size: int,
+    tmax: int,
+    dtype: torch.dtype,
+):
     mhc_cls = LigerMHC if provider == "liger" else TorchMHC
     return BenchMiniMHCLM(
-        mhc_cls, vocab_size=vocab_size, hidden_size=hidden_size, hc=hc,
-        num_layers=num_layers, num_heads=num_heads, intermediate_mult=intermediate_mult,
-        tmax=tmax, dtype=dtype, device=device,
+        mhc_cls,
+        vocab_size=vocab_size,
+        hidden_size=hidden_size,
+        hc=hc,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        intermediate_mult=intermediate_mult,
+        tmax=tmax,
+        dtype=dtype,
+        device=device,
     )
-
-
-def _setup_mhc_lm(input: SingleBenchmarkRunInput):
-    """Create model and inputs for MHC LM benchmark."""
-    cfg = input.extra_benchmark_config
-    hidden_size = cfg["hidden_size"]
-    bsz = cfg["B"]
-    seq_len = cfg.get("T", input.x)
-    hc = cfg["HC"]
-    num_layers = cfg["layers"]
-    num_heads = cfg["heads"]
-    vocab_size = cfg["vocab"]
-    dtype = cfg["dtype"]
-    tmax = cfg["tmax"]
-    intermediate_mult = cfg["intermediate_mult"]
-
-    model = _build_model(
-        input.kernel_provider, hidden_size=hidden_size, hc=hc, num_layers=num_layers,
-        num_heads=num_heads, intermediate_mult=intermediate_mult, vocab_size=vocab_size,
-        tmax=tmax, dtype=dtype,
-    )
-
-    input_ids = torch.randint(0, vocab_size, (bsz, seq_len), device=device)
-    grad_to_none = list(model.parameters())
-
-    fwd_fn = lambda: model(input_ids)
-    fwd_loss_fn = lambda: fwd_fn().float().mean()
-    return grad_to_none, fwd_fn, fwd_loss_fn
 
 
 def bench_speed_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    grad_to_none, fwd_fn, fwd_loss_fn = _setup_mhc_lm(input)
+    hidden_size = int(input.x)
+    provider = input.kernel_provider
     mode = input.kernel_operation_mode
+    extra = input.extra_benchmark_config
+    bsz = extra["B"]
+    seq_len = extra["T"]
+    hc = extra["HC"]
+    num_layers = extra["layers"]
+    num_heads = extra["heads"]
+    vocab_size = extra["vocab"]
+    dtype = extra["dtype"]
+    tmax = extra["tmax"]
+    intermediate_mult = extra["intermediate_mult"]
+
+    if hidden_size % num_heads != 0:
+        raise ValueError("hidden_size must be divisible by num_heads")
+
+    model = _build_model(
+        provider,
+        hidden_size=hidden_size,
+        hc=hc,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        intermediate_mult=intermediate_mult,
+        vocab_size=vocab_size,
+        tmax=tmax,
+        dtype=dtype,
+    )
+
+    input_ids = torch.randint(0, vocab_size, (bsz, seq_len), device=device)
+
+    def fwd():
+        return model(input_ids)
+
+    def fwd_loss():
+        return fwd().float().mean()
+
+    grad_to_none = list(model.parameters())
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd_fn, quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100)
     elif mode == "backward":
-        loss = fwd_loss_fn()
+        loss = fwd_loss()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: loss.backward(retain_graph=True), quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100,
+            lambda: loss.backward(retain_graph=True),
+            quantiles=QUANTILES,
+            grad_to_none=grad_to_none,
+            rep=100,
         )
     elif mode == "full":
+
         def full():
-            loss = fwd_loss_fn()
+            loss = fwd_loss()
             loss.backward()
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100)
     else:
-        raise ValueError(f"Unsupported mode: {mode}")
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+        raise ValueError(f"Unknown mode: {mode}")
 
-
-def bench_memory_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    grad_to_none, fwd_fn, fwd_loss_fn = _setup_mhc_lm(input)
-
-    def full():
-        loss = fwd_loss_fn()
-        loss.backward()
-
-    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
-
-
-def _resolve_model_config_mhc_lm(input: SingleBenchmarkRunInput):
-    cfg = input.extra_benchmark_config
-    model_info = cfg["model_configs"][input.x]
-    return _setup_mhc_lm(
-        SingleBenchmarkRunInput(
-            x=input.x,
-            kernel_provider=input.kernel_provider,
-            extra_benchmark_config={
-                "hidden_size": model_info["hidden_size"],
-                "dtype": model_info["dtype"],
-                "B": cfg["B"], "T": cfg["T"], "HC": cfg["HC"],
-                "layers": cfg["layers"], "heads": cfg["heads"],
-                "vocab": cfg["vocab"], "tmax": cfg["tmax"],
-                "intermediate_mult": cfg["intermediate_mult"],
-            },
-        )
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
     )
 
 
-def bench_speed_mhc_lm_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    grad_to_none, fwd_fn, fwd_loss_fn = _resolve_model_config_mhc_lm(input)
-    mode = input.kernel_operation_mode
+def bench_memory_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    hidden_size = int(input.x)
+    provider = input.kernel_provider
+    extra = input.extra_benchmark_config
+    bsz = extra["B"]
+    seq_len = extra["T"]
+    hc = extra["HC"]
+    num_layers = extra["layers"]
+    num_heads = extra["heads"]
+    vocab_size = extra["vocab"]
+    dtype = extra["dtype"]
+    tmax = extra["tmax"]
+    intermediate_mult = extra["intermediate_mult"]
 
-    if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd_fn, quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100)
-    elif mode == "backward":
-        loss = fwd_loss_fn()
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: loss.backward(retain_graph=True), quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100,
-        )
-    elif mode == "full":
-        def full():
-            loss = fwd_loss_fn()
-            loss.backward()
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100)
-    else:
-        raise ValueError(f"Unsupported mode: {mode}")
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    if hidden_size % num_heads != 0:
+        raise ValueError("hidden_size must be divisible by num_heads")
 
+    model = _build_model(
+        provider,
+        hidden_size=hidden_size,
+        hc=hc,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        intermediate_mult=intermediate_mult,
+        vocab_size=vocab_size,
+        tmax=tmax,
+        dtype=dtype,
+    )
 
-def bench_memory_mhc_lm_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    grad_to_none, fwd_fn, fwd_loss_fn = _resolve_model_config_mhc_lm(input)
+    input_ids = torch.randint(0, vocab_size, (bsz, seq_len), device=device)
+
+    def fwd():
+        return model(input_ids)
 
     def full():
-        loss = fwd_loss_fn()
+        loss = fwd().float().mean()
         loss.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    mhc_lm_defaults = {"HC": 4, "layers": 2, "heads": 8, "vocab": 4096, "tmax": 8, "intermediate_mult": 4}
+    common_configs = {
+        "kernel_name": "mhc_llama_like_lm",
+        "x_name": "hidden_size",
+        "x_label": "hidden_size",
+        "x_values": [256, 512, 1024],
+        "kernel_providers": ["liger", "torch"],
+        "extra_benchmark_configs": [
+            {
+                "B": 2,
+                "T": 256,
+                "HC": 4,
+                "layers": 2,
+                "heads": 8,
+                "vocab": 4096,
+                "dtype": torch.bfloat16,
+                "tmax": 8,
+                "intermediate_mult": 4,
+            }
+        ],
+        "overwrite": args.overwrite,
+    }
 
-    if args.sweep_mode == "model_config":
-        all_model_configs = list(MODEL_REGISTRY.values())
-        B = 2
-        T = 256
-
-        def _probe_factory(model_cfg, probe_bt):
-            def _probe():
-                probe_input = SingleBenchmarkRunInput(
-                    x=0, kernel_provider="torch",
-                    extra_benchmark_config={
-                        "hidden_size": model_cfg.hidden_size, "dtype": model_cfg.dtype,
-                        "B": B, "T": T, **mhc_lm_defaults,
-                    },
-                )
-                _, _, fwd_loss_fn = _setup_mhc_lm(probe_input)
-                return fwd_loss_fn()
-            return _probe
-
-        sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
-        model_configs_info = {
-            cfg.name: {"hidden_size": cfg.hidden_size, "dtype": cfg.dtype}
-            for cfg in sweep.model_configs
-        }
-
-        common_configs = {
-            "kernel_name": "mhc_llama_like_lm",
-            "x_name": "model_config", "x_label": "model configuration",
-            "x_values": [cfg.name for cfg in sweep.model_configs],
-            "kernel_providers": ["liger", "torch"],
-            "extra_benchmark_configs": [{
-                "model_configs": model_configs_info, "B": B, "T": T, **mhc_lm_defaults,
-            }],
-            "overwrite": args.overwrite,
-        }
-
-        run_benchmarks(bench_test_fn=bench_speed_mhc_lm_model_config,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_mhc_lm_model_config,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
-    else:
-        model = get_benchmark_model_config(args.model)
-        B = 2
-        probe_T = 256
-
-        def _probe():
-            probe_input = SingleBenchmarkRunInput(
-                x=0, kernel_provider="torch",
-                extra_benchmark_config={
-                    "hidden_size": model.hidden_size, "dtype": model.dtype,
-                    "B": B, "T": probe_T, **mhc_lm_defaults,
-                },
-            )
-            _, _, fwd_loss_fn = _setup_mhc_lm(probe_input)
-            return fwd_loss_fn()
-
-        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
-        kernel_bpt = peak_bytes // probe_T
-        config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
-
-        common_configs = {
-            "kernel_name": "mhc_llama_like_lm",
-            "x_name": "T", "x_label": "sequence length",
-            "x_values": [2**i for i in range(7, int(math.log2(max(128, config.seq_len))) + 1)],
-            "kernel_providers": ["liger", "torch"],
-            "extra_benchmark_configs": [{
-                "hidden_size": model.hidden_size, "B": B, "dtype": model.dtype, **mhc_lm_defaults,
-            }],
-            "overwrite": args.overwrite,
-        }
-
-        run_benchmarks(bench_test_fn=bench_speed_mhc_lm,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_mhc_lm,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+    run_benchmarks(
+        bench_test_fn=bench_speed_mhc_lm,
+        kernel_operation_modes=["forward", "backward", "full"],
+        metric_name="speed",
+        metric_unit="ms",
+        **common_configs,
+    )
+    run_benchmarks(
+        bench_test_fn=bench_memory_mhc_lm,
+        kernel_operation_modes=["full"],
+        metric_name="memory",
+        metric_unit="MB",
+        **common_configs,
+    )
