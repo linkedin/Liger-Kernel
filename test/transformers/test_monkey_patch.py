@@ -2838,23 +2838,24 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
         )
 
         for decoder_layer in dummy_model_instance.model.language_model.layers:
-            assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNormForGlm4.forward
             )
             assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(
                 LigerRMSNormForGlm4.forward
             )
-        if decoder_layer.mlp.experts is not None:
-            if IS_TRANSFORMERS_V5_OR_LATER:
-                assert inspect.getsource(decoder_layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+            experts = getattr(decoder_layer.mlp, "experts", None)
+            if experts is not None:
+                if IS_TRANSFORMERS_V5_OR_LATER:
+                    assert inspect.getsource(experts.forward) != inspect.getsource(LigerExperts.forward)
+                else:
+                    for expert in experts:
+                        assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+                shared_experts = getattr(decoder_layer.mlp, "shared_experts", None)
+                if shared_experts is not None:
+                    assert inspect.getsource(shared_experts.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             else:
-                for expert in decoder_layer.mlp.experts:
-                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
-            if decoder_layer.mlp.shared_experts is not None:
-                assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) != inspect.getsource(
-                    LigerSwiGLUMLP.forward
-                )
+                assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
         for vision_block in dummy_model_instance.model.visual.blocks:
             assert inspect.getsource(vision_block.norm1.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.norm2.forward) != inspect.getsource(LigerRMSNormForGlm4.forward)
@@ -2863,7 +2864,7 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
         # Test applying kernels to the model instance
         _apply_liger_kernel_to_instance(model=dummy_model_instance)
 
-        # Check that model instance variables are not yet patched with Liger modules
+        # Check that the model's instance variables were correctly patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(glm4v_moe_lce_forward)
         assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) == inspect.getsource(
             LigerRMSNormForGlm4.forward
@@ -2876,26 +2877,24 @@ def test_apply_liger_kernel_to_instance_for_glm4v_moe():
         )
 
         for decoder_layer in dummy_model_instance.model.language_model.layers:
-            if decoder_layer.mlp is not None:
-                assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
-                assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
-                    LigerRMSNormForGlm4.forward
-                )
-                assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(
-                    LigerRMSNormForGlm4.forward
-                )
-            if getattr(decoder_layer.mlp, "experts", None) is not None:
+            assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
+            assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(
+                LigerRMSNormForGlm4.forward
+            )
+            experts = getattr(decoder_layer.mlp, "experts", None)
+            if experts is not None:
                 if IS_TRANSFORMERS_V5_OR_LATER:
-                    assert inspect.getsource(decoder_layer.mlp.experts.forward) == inspect.getsource(
-                        LigerExperts.forward
-                    )
+                    assert inspect.getsource(experts.forward) == inspect.getsource(LigerExperts.forward)
                 else:
-                    for expert in decoder_layer.mlp.experts:
+                    for expert in experts:
                         assert inspect.getsource(expert.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
-            if getattr(decoder_layer.mlp, "shared_experts", None) is not None:
-                assert inspect.getsource(decoder_layer.mlp.shared_experts.forward) == inspect.getsource(
-                    LigerSwiGLUMLP.forward
-                )
+                shared_experts = getattr(decoder_layer.mlp, "shared_experts", None)
+                if shared_experts is not None:
+                    assert inspect.getsource(shared_experts.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
+            else:
+                assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
         for vision_block in dummy_model_instance.model.visual.blocks:
             assert inspect.getsource(vision_block.norm1.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
             assert inspect.getsource(vision_block.norm2.forward) == inspect.getsource(LigerRMSNormForGlm4.forward)
