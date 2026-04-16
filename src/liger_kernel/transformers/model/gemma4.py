@@ -76,6 +76,7 @@ def causal_forward(
         skip_logits = self.training and (labels is not None or shift_labels is not None)
 
     if skip_logits:
+        # final_logit_softcapping via getattr: some future Gemma 4 variants may omit the attribute entirely.
         result = LigerForCausalLMLoss(
             hidden_states=kept_hidden_states,
             lm_head_weight=self.lm_head.weight,

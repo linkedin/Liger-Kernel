@@ -1898,6 +1898,8 @@ def test_apply_liger_kernel_to_instance_for_gemma4_text():
         # Pre-patch assertions
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(gemma4_causal_forward)
         assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        # q_norm / k_norm are only present on non-KV-shared layers; we pin
+        # num_kv_shared_layers=0 in the config above so every layer has them.
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)

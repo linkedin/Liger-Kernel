@@ -256,6 +256,7 @@ except ImportError:
     GEMMA3_AVAILABLE = False
 
 try:
+    # Gemma4 is only available in transformers>=5.5.0
     from transformers.models.gemma4.configuration_gemma4 import Gemma4TextConfig
     from transformers.models.gemma4.modeling_gemma4 import Gemma4ForCausalLM
 
