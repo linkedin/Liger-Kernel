@@ -12,6 +12,15 @@
 
 ---
 
+## Target model context (from user's deployment)
+
+- **Checkpoint in use:** `gemma-4-31b-text-sharded` — a user-extracted text-only variant of `google/gemma-4-31B` (vision/audio weights stripped, 30.7B params, 2 safetensors shards, 61.4 GB). 60 decoder layers, hidden 5120, vocab 262,144, bf16.
+- **Custom class hierarchy:** the user's extraction loads as `Gemma4TextForCausalLM` (**not** stock HF). The stock HF class `Gemma4ForCausalLM` still exists and must also be patched — we patch both classes defensively.
+- **Primary memory motivation:** with vocab 262,144 × bf16, the logits tensor is **16 GB at seq_len=8192** (8 GB at 4096, 4 GB at 2048). The fused-linear-CE path (`skip_logits=True` → `LigerForCausalLMLoss`) eliminates this tensor entirely — this is the single biggest training-memory win from this port, bigger than any single layer's all-gathered parameters.
+- **Tied weights:** `embed_tokens.weight` ↔ `lm_head.weight` are tied (matches the 31B config `tie_word_embeddings: true`). Our `causal_forward` reads `self.lm_head.weight` directly — no special handling needed, but downstream users must run FSDP with `fsdp_use_orig_params: true` (out of our scope but relevant for anyone reading this plan).
+
+---
+
 ## Why the 31B-only scope dramatically simplifies this
 
 The published `google/gemma-4-31B` text config has **every novel Gemma 4 knob turned off**:
@@ -36,6 +45,23 @@ The smaller Gemma 4 models (E2B, E4B) use MoE, double-wide MLP, KV sharing, and 
 - Gemma 4 multimodal (`Gemma4ForConditionalGeneration`, `Gemma4VisionModel`, `Gemma4AudioModel`). User explicitly scoped to text-only.
 - E2B / E4B / 26B-A4B variants. Their config flips on PLE, MoE, KV sharing, or double-wide MLP — none of which we patch here.
 - Proportional vs default RoPE correctness verification beyond the convergence test. The apply function is plain; the rotary embedding module constructs cos/sin itself.
+
+---
+
+## Known quirks of the user's setup (acknowledged, not addressed here)
+
+These are flagged in the user's deployment spec. None require code in this plan — each is either handled by existing Liger patches, is a downstream concern, or is explicitly out-of-scope:
+
+1. **`_no_split_modules` inherited from multimodal parent** (`Gemma4VisionEncoderLayer`, `Gemma4AudioLayer` listed but absent at runtime → FSDP validation fail). **Downstream/FSDP concern, not a kernel concern.**
+2. **`mm_token_type_ids` spurious required-input check during training** (HF issue #45200 / PR #45222). The user's `Gemma4TextForCausalLM` class exists specifically to dodge this. Our `causal_forward` replaces the class-level `forward`, so when it's bound to their text-only class the check is bypassed automatically.
+3. **Tied `embed_tokens.weight` ↔ `lm_head.weight`** — our `causal_forward` reads `self.lm_head.weight`. No code change needed. (Users must run FSDP with `fsdp_use_orig_params: true` — outside this plan.)
+4. **60 missing `layer_scalar` parameters initialized to 1.0** — HF-side parameter-init concern, not ours. Our patches don't touch these.
+5. **`fix_mistral_regex=True` tokenizer warning** — cosmetic, tokenizer-side, not ours.
+6. **No current Liger support for `gemma4_text` model_type** — this is exactly what this plan fixes. After landing, `AutoLigerKernelForCausalLM` + `apply_liger_kernel_to_gemma4_text` will route correctly.
+7. **Logits tensor blow-up: `seq_len × 262144 × bf16`** (16 GB at 8192). **This is our primary motivation** — the `skip_logits=True` path in `causal_forward` avoids materializing logits entirely.
+8. **`Gemma4TextExperts` / `Gemma4TextRouter` MoE modules exist in the model family** — but the 31B config has `enable_moe_block=false` and `num_experts=null`, so they're inert for this checkpoint. We defensively skip MLP patching on any layer with `enable_moe_block=True` to remain safe if a future variant flips this on.
+9. **Practical context cap at 4096 on MI250X** (vs Google's official 256K) — LUMI memory constraint, affects test run sizing but not kernel correctness.
+10. **`Gemma4TextDecoderLayer(Gemma3DecoderLayer)` inheritance** — the reason this port is largely Gemma 3 + a corrected RMSNorm subclass.
 
 ---
 
@@ -259,6 +285,7 @@ Design choices — captured up front so reviewers can verify intent:
 - **31B has `num_kv_shared_layers=0`** → q_norm/k_norm exist on every layer. We still use `getattr(..., None)` for forward-compat with smaller variants.
 - **31B has `enable_moe_block=false`** → no router/experts to guard. We still add a `getattr(decoder_layer, "enable_moe_block", False)` skip for forward-compat.
 - **`Gemma4RMSNorm` ones-init / no-offset** → `partial(_patch_rms_norm_module, offset=0.0, casting_mode="gemma", in_place=False)`. (The weight values come from the existing parameter; `_patch_rms_norm_module` does not reinitialize — only swaps forward.)
+- **Two causal-LM class names to patch:** stock HF defines `Gemma4ForCausalLM`. The user's text-only extraction loads as `Gemma4TextForCausalLM` (not in mainline HF — a custom subclass created to avoid the `mm_token_type_ids` training-time check from HF issue #45200). We use `hasattr(modeling_gemma4, ...)` to patch whichever class(es) are present without ImportError.
 
 - [ ] **Step 3.1: Verify `_patch_rms_norm_module` signature**
 
@@ -307,6 +334,10 @@ def apply_liger_kernel_to_gemma4_text(
     from liger_kernel.transformers.model.gemma4 import causal_forward
     from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma4
 
+    # The user's text-only extraction loads as Gemma4TextForCausalLM
+    # (custom subclass, not in mainline HF). Grab it if present.
+    Gemma4TextForCausalLM = getattr(modeling_gemma4, "Gemma4TextForCausalLM", None)
+
     # Gemma4RMSNorm uses ones-init, no +1 offset, fp32 compute.
     _patch_rms_norm_module_for_gemma4 = partial(
         _patch_rms_norm_module, offset=0.0, casting_mode="gemma", in_place=False
@@ -331,10 +362,16 @@ def apply_liger_kernel_to_gemma4_text(
             model.forward = MethodType(causal_forward, model)
         else:
             modeling_gemma4.Gemma4ForCausalLM.forward = causal_forward
+            # Also patch the user's custom text-only class if it's defined.
+            if Gemma4TextForCausalLM is not None:
+                Gemma4TextForCausalLM.forward = causal_forward
 
     if model is not None:
-        if isinstance(model, Gemma4ForCausalLM) or isinstance(model, Gemma4TextModel):
-            base_model = model.model if isinstance(model, Gemma4ForCausalLM) else model
+        causal_lm_types = tuple(
+            cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM) if cls is not None
+        )
+        if isinstance(model, causal_lm_types) or isinstance(model, Gemma4TextModel):
+            base_model = model.model if isinstance(model, causal_lm_types) else model
 
             if rms_norm:
                 _patch_rms_norm_module_for_gemma4(base_model.norm)
@@ -358,7 +395,9 @@ def apply_liger_kernel_to_gemma4_text(
                     if k_norm is not None:
                         _patch_rms_norm_module_for_gemma4(k_norm)
         else:
-            raise TypeError("The model must be Gemma4ForCausalLM or Gemma4TextModel.")
+            raise TypeError(
+                "The model must be Gemma4ForCausalLM, Gemma4TextForCausalLM, or Gemma4TextModel."
+            )
 ```
 
 - [ ] **Step 3.3: Register `gemma4_text` in `MODEL_TYPE_TO_APPLY_LIGER_FN`**
@@ -381,7 +420,13 @@ git commit -m "gemma4: add apply_liger_kernel_to_gemma4_text + model-type regist
 
 Patches RMSNorm (norm, input_layernorm, post_attention_layernorm,
 pre_feedforward_layernorm, post_feedforward_layernorm, q_norm, k_norm),
-GEGLU MLP, rotary, and fused-linear-CE on Gemma4ForCausalLM.
+GEGLU MLP, rotary, and fused-linear-CE on Gemma4ForCausalLM. Also
+patches Gemma4TextForCausalLM if it is present (some users extract a
+text-only subclass to dodge HF issue #45200's mm_token_type_ids check).
+
+Primary memory motivation: vocab 262,144 + seq_len 8192 -> a 16 GB
+logits tensor in bf16. The fused-linear-CE path (skip_logits=True)
+eliminates it entirely, which is the largest training-memory win here.
 
 Primary target: Gemma 4 31B (dense, text-only). Registers 'gemma4_text'
 only; the multimodal 'gemma4' model_type is intentionally NOT registered
