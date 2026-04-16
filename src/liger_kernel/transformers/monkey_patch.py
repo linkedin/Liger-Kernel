@@ -1256,8 +1256,15 @@ def apply_liger_kernel_to_gemma4_text(
     (num_kv_shared_layers=0), and double-wide MLP (use_double_wide_mlp=false),
     so every decoder layer is a plain (norm, attn, norm, mlp, norm) stack.
 
+    Known limitation: rope kernel swap is a no-op on Gemma 4 — HF's
+    apply_rotary_pos_emb takes a single tensor at a time, which is incompatible
+    with Liger's (q, k, cos, sin) signature. HF's plain pytorch rope stays in
+    place. The large training-memory win (fused linear cross-entropy, 16 GB
+    logits tensor eliminated at seq 8192 / vocab 262144) is unaffected.
+
     Args:
-        rope (bool): Whether to apply Liger's rotary position embedding. Default True.
+        rope (bool): Reserved for API consistency with other apply_liger_kernel_to_*
+            functions. Currently a no-op for Gemma 4 (emits a warning). Default True.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default False.
         fused_linear_cross_entropy (bool): Fused linear CE for memory efficiency. Default True.
             Mutually exclusive with `cross_entropy`.
@@ -1302,7 +1309,20 @@ def apply_liger_kernel_to_gemma4_text(
         _patch_rms_norm_module_for_gemma4(module)
 
     if rope:
-        modeling_gemma4.apply_rotary_pos_emb = liger_rotary_pos_emb
+        # HF's Gemma 4 apply_rotary_pos_emb has signature
+        #   apply_rotary_pos_emb(x, cos, sin, unsqueeze_dim=2)
+        # (single tensor at a time) whereas liger_rotary_pos_emb takes
+        # (q, k, cos, sin, ...). Dropping it in raises
+        # "TypeError: missing 1 required positional argument: 'sin'".
+        # Until a Gemma-4-specific rope wrapper exists, leave HF's plain
+        # pytorch rope in place. Large wins (RMSNorm, GEGLU, fused LCE)
+        # still apply. Emit a single warning so callers flipping rope on
+        # aren't silently ignored.
+        logger.warning(
+            "rope=True is currently a no-op for Gemma 4: HF's "
+            "apply_rotary_pos_emb uses a single-tensor signature that is "
+            "incompatible with liger_rotary_pos_emb. Skipping rope kernel swap."
+        )
 
     if rms_norm:
         modeling_gemma4.Gemma4RMSNorm = LigerRMSNormForGemma4
