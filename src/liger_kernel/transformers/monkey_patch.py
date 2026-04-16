@@ -1238,6 +1238,110 @@ def apply_liger_kernel_to_gemma3(
             raise TypeError("The model must be Gemma3ForConditionalGeneration.")
 
 
+def apply_liger_kernel_to_gemma4_text(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    geglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma4
+    text models (Gemma4ForCausalLM / Gemma4TextModel).
+
+    Primary target: Gemma 4 31B. The 31B config disables PLE
+    (hidden_size_per_layer_input=0), MoE (enable_moe_block=false), KV sharing
+    (num_kv_shared_layers=0), and double-wide MLP (use_double_wide_mlp=false),
+    so every decoder layer is a plain (norm, attn, norm, mlp, norm) stack.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default True.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default False.
+        fused_linear_cross_entropy (bool): Fused linear CE for memory efficiency. Default True.
+            Mutually exclusive with `cross_entropy`.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default True.
+        model (PreTrainedModel): An already-instantiated model to patch in-place.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.gemma4 import modeling_gemma4
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4ForCausalLM
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4TextDecoderLayer
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4TextModel
+
+    from liger_kernel.transformers.model.gemma4 import causal_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma4
+
+    # The user's text-only extraction loads as Gemma4TextForCausalLM
+    # (custom subclass, not in mainline HF). Grab it if present.
+    Gemma4TextForCausalLM = getattr(modeling_gemma4, "Gemma4TextForCausalLM", None)
+
+    # Gemma4RMSNorm uses ones-init, no +1 offset, fp32 compute.
+    _patch_rms_norm_module_for_gemma4 = partial(
+        _patch_rms_norm_module, offset=0.0, casting_mode="gemma", in_place=False
+    )
+
+    if rope:
+        modeling_gemma4.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if rms_norm:
+        modeling_gemma4.Gemma4RMSNorm = LigerRMSNormForGemma4
+
+    if geglu:
+        modeling_gemma4.Gemma4TextMLP = LigerGEGLUMLP
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(causal_forward, model)
+        else:
+            modeling_gemma4.Gemma4ForCausalLM.forward = causal_forward
+            # Also patch the user's custom text-only class if it's defined.
+            if Gemma4TextForCausalLM is not None:
+                Gemma4TextForCausalLM.forward = causal_forward
+
+    if model is not None:
+        causal_lm_types = tuple(
+            cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM) if cls is not None
+        )
+        if isinstance(model, causal_lm_types) or isinstance(model, Gemma4TextModel):
+            base_model = model.model if isinstance(model, causal_lm_types) else model
+
+            if rms_norm:
+                _patch_rms_norm_module_for_gemma4(base_model.norm)
+
+            for decoder_layer in base_model.layers:
+                decoder_layer: Gemma4TextDecoderLayer
+                # Defensive: skip MLP rebind if a future variant flips MoE on.
+                if geglu and not getattr(decoder_layer, "enable_moe_block", False):
+                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                if rms_norm:
+                    _patch_rms_norm_module_for_gemma4(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module_for_gemma4(decoder_layer.post_attention_layernorm)
+                    _patch_rms_norm_module_for_gemma4(decoder_layer.pre_feedforward_layernorm)
+                    _patch_rms_norm_module_for_gemma4(decoder_layer.post_feedforward_layernorm)
+                    # q_norm / k_norm exist on every 31B layer (num_kv_shared_layers=0)
+                    # but stay defensive for future variants.
+                    q_norm = getattr(decoder_layer.self_attn, "q_norm", None)
+                    k_norm = getattr(decoder_layer.self_attn, "k_norm", None)
+                    if q_norm is not None:
+                        _patch_rms_norm_module_for_gemma4(q_norm)
+                    if k_norm is not None:
+                        _patch_rms_norm_module_for_gemma4(k_norm)
+        else:
+            raise TypeError(
+                "The model must be Gemma4ForCausalLM, Gemma4TextForCausalLM, or Gemma4TextModel."
+            )
+
+
 def apply_liger_kernel_to_paligemma(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -3182,6 +3286,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma2": apply_liger_kernel_to_gemma2,
     "gemma3_text": apply_liger_kernel_to_gemma3_text,
     "gemma3": apply_liger_kernel_to_gemma3,
+    "gemma4_text": apply_liger_kernel_to_gemma4_text,
     "glm4": apply_liger_kernel_to_glm4,
     "glm4v": apply_liger_kernel_to_glm4v,
     "glm4v_moe": apply_liger_kernel_to_glm4v_moe,
