@@ -1248,7 +1248,7 @@ def apply_liger_kernel_to_gemma4_text(
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace Gemma4
-    text models (Gemma4ForCausalLM / Gemma4TextModel).
+    text models (Gemma4ForCausalLM / Gemma4TextForCausalLM / Gemma4TextModel).
 
     Primary target: Gemma 4 31B. The 31B config disables PLE
     (hidden_size_per_layer_input=0), MoE (enable_moe_block=false), KV sharing
@@ -1294,6 +1294,7 @@ def apply_liger_kernel_to_gemma4_text(
     if geglu:
         modeling_gemma4.Gemma4TextMLP = LigerGEGLUMLP
 
+    # Handle loss function
     if cross_entropy:
         from transformers.loss.loss_utils import nn
 
@@ -1309,10 +1310,14 @@ def apply_liger_kernel_to_gemma4_text(
                 Gemma4TextForCausalLM.forward = causal_forward
 
     if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+
         causal_lm_types = tuple(
             cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM) if cls is not None
         )
         if isinstance(model, causal_lm_types) or isinstance(model, Gemma4TextModel):
+            # get the base model from the model instance
             base_model = model.model if isinstance(model, causal_lm_types) else model
 
             if rms_norm:
