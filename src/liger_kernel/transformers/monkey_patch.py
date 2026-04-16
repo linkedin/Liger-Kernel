@@ -1285,6 +1285,21 @@ def apply_liger_kernel_to_gemma4_text(
         _patch_rms_norm_module, offset=0.0, casting_mode="gemma", in_place=False
     )
 
+    def _maybe_patch_scaled_norm(module):
+        """Patch only Gemma4RMSNorm modules that carry a weight.
+
+        Attention's ``v_norm`` is instantiated with ``with_scale=False`` — no
+        weight exists, so Liger's weight-multiplying kernel cannot apply. We
+        leave these as HF's scale-free RMSNorm (kernelized copies already
+        swapped at the class level via LigerRMSNormForGemma4 which also
+        handles with_scale=False correctly in its forward).
+        """
+        if module is None:
+            return
+        if not getattr(module, "with_scale", True):
+            return
+        _patch_rms_norm_module_for_gemma4(module)
+
     if rope:
         modeling_gemma4.apply_rotary_pos_emb = liger_rotary_pos_emb
 
@@ -1321,7 +1336,7 @@ def apply_liger_kernel_to_gemma4_text(
             base_model = model.model if isinstance(model, causal_lm_types) else model
 
             if rms_norm:
-                _patch_rms_norm_module_for_gemma4(base_model.norm)
+                _maybe_patch_scaled_norm(base_model.norm)
 
             for decoder_layer in base_model.layers:
                 decoder_layer: Gemma4TextDecoderLayer
@@ -1329,18 +1344,17 @@ def apply_liger_kernel_to_gemma4_text(
                 if geglu and not getattr(decoder_layer, "enable_moe_block", False):
                     _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
                 if rms_norm:
-                    _patch_rms_norm_module_for_gemma4(decoder_layer.input_layernorm)
-                    _patch_rms_norm_module_for_gemma4(decoder_layer.post_attention_layernorm)
-                    _patch_rms_norm_module_for_gemma4(decoder_layer.pre_feedforward_layernorm)
-                    _patch_rms_norm_module_for_gemma4(decoder_layer.post_feedforward_layernorm)
+                    _maybe_patch_scaled_norm(decoder_layer.input_layernorm)
+                    _maybe_patch_scaled_norm(decoder_layer.post_attention_layernorm)
+                    _maybe_patch_scaled_norm(decoder_layer.pre_feedforward_layernorm)
+                    _maybe_patch_scaled_norm(decoder_layer.post_feedforward_layernorm)
                     # q_norm / k_norm exist on every 31B layer (num_kv_shared_layers=0)
-                    # but stay defensive for future variants.
-                    q_norm = getattr(decoder_layer.self_attn, "q_norm", None)
-                    k_norm = getattr(decoder_layer.self_attn, "k_norm", None)
-                    if q_norm is not None:
-                        _patch_rms_norm_module_for_gemma4(q_norm)
-                    if k_norm is not None:
-                        _patch_rms_norm_module_for_gemma4(k_norm)
+                    # but stay defensive for future variants. v_norm is scale-free
+                    # (with_scale=False) on all Gemma 4 variants so the helper
+                    # intentionally leaves it untouched.
+                    _maybe_patch_scaled_norm(getattr(decoder_layer.self_attn, "q_norm", None))
+                    _maybe_patch_scaled_norm(getattr(decoder_layer.self_attn, "k_norm", None))
+                    _maybe_patch_scaled_norm(getattr(decoder_layer.self_attn, "v_norm", None))
         else:
             raise TypeError(
                 "The model must be Gemma4ForCausalLM, Gemma4TextForCausalLM, or Gemma4TextModel."
