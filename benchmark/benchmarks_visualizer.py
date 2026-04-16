@@ -319,50 +319,97 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
 
     plt.figure(figsize=(10, 6))
     sns.set(style="whitegrid")
-    try:
-        ax = sns.lineplot(
+
+    use_bar_chart = config.sweep_mode == "model_config"
+
+    if use_bar_chart:
+        # Grouped bar chart for model_config sweep
+        ax = sns.barplot(
             data=df,
             x="x_value",
             y="y_value_50",
             hue="kernel_provider",
-            marker="o",
             palette="tab10",
-            errorbar=("ci", None),
-        )
-    except Exception:
-        ax = sns.lineplot(
-            data=df,
-            x="x_value",
-            y="y_value_50",
-            hue="kernel_provider",
-            marker="o",
-            palette="tab10",
-            errorbar=None,
+            edgecolor="black",
+            linewidth=0.5,
         )
 
-    # For numeric x axes, show tick labels only at actual data points
-    if is_numeric_x:
-        tick_values = sorted(df["x_value"].unique())
-        ax.set_xticks(tick_values)
-        ax.set_xticklabels([str(int(v)) if v == int(v) else str(v) for v in tick_values])
+        # Add error bars on each bar using pre-computed percentiles
+        providers = df.sort_values("kernel_provider")["kernel_provider"].unique()
+        x_values = df["x_value"].unique()
+        n_providers = len(providers)
+        bar_width = 0.8 / n_providers  # seaborn default total width is 0.8
 
-    # Seaborn can't plot pre-computed error bars, so we need to do it manually
-    lines = ax.get_lines()
-    colors = [line.get_color() for line in lines]
+        for i, provider in enumerate(providers):
+            group_data = df[df["kernel_provider"] == provider]
+            for j, x_val in enumerate(x_values):
+                row = group_data[group_data["x_value"] == x_val]
+                if row.empty:
+                    continue
+                y_val = row["y_value_50"].values[0]
+                y_err_lower = y_val - row["y_value_20"].values[0]
+                y_err_upper = row["y_value_80"].values[0] - y_val
+                bar_x = j + (i - (n_providers - 1) / 2) * bar_width
+                ax.errorbar(
+                    bar_x,
+                    y_val,
+                    yerr=[[y_err_lower], [y_err_upper]],
+                    fmt="none",
+                    color="black",
+                    capsize=3,
+                    linewidth=1,
+                )
 
-    for (_, group_data), color in zip(df.groupby("kernel_provider"), colors):
-        y_error_lower = group_data["y_value_50"] - group_data["y_value_20"]
-        y_error_upper = group_data["y_value_80"] - group_data["y_value_50"]
-        y_error = [y_error_lower, y_error_upper]
+        # Rotate x labels if they are long model config names
+        if not is_numeric_x:
+            plt.xticks(rotation=30, ha="right")
+    else:
+        # Line chart for token_length sweep
+        try:
+            ax = sns.lineplot(
+                data=df,
+                x="x_value",
+                y="y_value_50",
+                hue="kernel_provider",
+                marker="o",
+                palette="tab10",
+                errorbar=("ci", None),
+            )
+        except Exception:
+            ax = sns.lineplot(
+                data=df,
+                x="x_value",
+                y="y_value_50",
+                hue="kernel_provider",
+                marker="o",
+                palette="tab10",
+                errorbar=None,
+            )
 
-        plt.errorbar(
-            group_data["x_value"],
-            group_data["y_value_50"],
-            yerr=y_error,
-            fmt="o",
-            color=color,
-            capsize=5,
-        )
+        # For numeric x axes, show tick labels only at actual data points
+        if is_numeric_x:
+            tick_values = sorted(df["x_value"].unique())
+            ax.set_xticks(tick_values)
+            ax.set_xticklabels([str(int(v)) if v == int(v) else str(v) for v in tick_values])
+
+        # Seaborn can't plot pre-computed error bars, so we need to do it manually
+        lines = ax.get_lines()
+        colors = [line.get_color() for line in lines]
+
+        for (_, group_data), color in zip(df.groupby("kernel_provider"), colors):
+            y_error_lower = group_data["y_value_50"] - group_data["y_value_20"]
+            y_error_upper = group_data["y_value_80"] - group_data["y_value_50"]
+            y_error = [y_error_lower, y_error_upper]
+
+            plt.errorbar(
+                group_data["x_value"],
+                group_data["y_value_50"],
+                yerr=y_error,
+                fmt="o",
+                color=color,
+                capsize=5,
+            )
+
     plt.legend(title="Kernel Provider")
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
