@@ -70,6 +70,19 @@ class LigerRMSNormForGemma3(LigerRMSNorm):
         super().__init__(dim, eps, offset, casting_mode, init_fn, in_place)
 
 
+class LigerRMSNormForGemma4(LigerRMSNorm):
+    """Gemma4RMSNorm inherits from Gemma3nRMSNorm, NOT from Gemma3RMSNorm.
+
+    Differences from LigerRMSNormForGemma3:
+      - weight initialized to ones (not zeros)
+      - no (1 + weight) offset — scales by weight directly
+      - still uses fp32 compute (gemma casting mode)
+    """
+
+    def __init__(self, dim, eps=1e-6, offset=0.0, casting_mode="gemma", init_fn="ones", in_place=False):
+        super().__init__(dim, eps, offset, casting_mode, init_fn, in_place)
+
+
 class LigerRMSNormForOlmo2(LigerRMSNorm):
     def __init__(
         self, hidden_size, eps=1e-6, offset=0.0, casting_mode="llama", init_fn="ones", in_place=False, row_mode=None
