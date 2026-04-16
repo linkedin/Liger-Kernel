@@ -58,6 +58,7 @@ def _setup_mhc(input: SingleBenchmarkRunInput):
     grad_to_none = [x, phi, b_param, alpha_pre, alpha_post, alpha_res] if need_grad else None
 
     if sub_kernel == "coeffs":
+
         def fwd():
             if input.kernel_provider == "liger":
                 return liger_mhc_coeffs(x, phi, b_param, alpha_pre, alpha_post, alpha_res, **coeffs_cfg)
@@ -70,8 +71,13 @@ def _setup_mhc(input: SingleBenchmarkRunInput):
     elif sub_kernel == "pre":
         with torch.no_grad():
             h_pre_c, _, _ = liger_mhc_coeffs(
-                x.detach(), phi.detach(), b_param.detach(),
-                alpha_pre.detach(), alpha_post.detach(), alpha_res.detach(), **coeffs_cfg,
+                x.detach(),
+                phi.detach(),
+                b_param.detach(),
+                alpha_pre.detach(),
+                alpha_post.detach(),
+                alpha_res.detach(),
+                **coeffs_cfg,
             )
         h_pre_c.requires_grad_(need_grad)
         grad_to_none = [x, h_pre_c] if need_grad else None
@@ -87,8 +93,13 @@ def _setup_mhc(input: SingleBenchmarkRunInput):
     elif sub_kernel == "post_res":
         with torch.no_grad():
             _, h_post_c, h_res_c = liger_mhc_coeffs(
-                x.detach(), phi.detach(), b_param.detach(),
-                alpha_pre.detach(), alpha_post.detach(), alpha_res.detach(), **coeffs_cfg,
+                x.detach(),
+                phi.detach(),
+                b_param.detach(),
+                alpha_pre.detach(),
+                alpha_post.detach(),
+                alpha_res.detach(),
+                **coeffs_cfg,
             )
         h_post_c.requires_grad_(need_grad)
         h_res_c.requires_grad_(need_grad)
@@ -117,12 +128,17 @@ def bench_speed_mhc(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
     elif mode == "backward":
         y = fwd_loss()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(retain_graph=True), grad_to_none=grad_to_none, rep=100, quantiles=QUANTILES,
+            lambda: y.backward(retain_graph=True),
+            grad_to_none=grad_to_none,
+            rep=100,
+            quantiles=QUANTILES,
         )
     elif mode == "full":
+
         def full():
             y = fwd_loss()
             y.backward()
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=grad_to_none, rep=100, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -149,10 +165,15 @@ def _resolve_model_config_mhc(input: SingleBenchmarkRunInput):
             kernel_provider=input.kernel_provider,
             kernel_operation_mode=input.kernel_operation_mode,
             extra_benchmark_config={
-                "B": cfg["B"], "HC": cfg["HC"], "C": model_info["hidden_size"],
-                "T": cfg["T"], "sub_kernel": cfg["sub_kernel"],
-                "tmax": cfg["tmax"], "rms_eps": cfg["rms_eps"],
-                "pre_eps": cfg["pre_eps"], "sinkhorn_eps": cfg["sinkhorn_eps"],
+                "B": cfg["B"],
+                "HC": cfg["HC"],
+                "C": model_info["hidden_size"],
+                "T": cfg["T"],
+                "sub_kernel": cfg["sub_kernel"],
+                "tmax": cfg["tmax"],
+                "rms_eps": cfg["rms_eps"],
+                "pre_eps": cfg["pre_eps"],
+                "sinkhorn_eps": cfg["sinkhorn_eps"],
                 "post_mult": cfg["post_mult"],
             },
         )
@@ -168,12 +189,17 @@ def bench_speed_mhc_model_config(input: SingleBenchmarkRunInput) -> SingleBenchm
     elif mode == "backward":
         y = fwd_loss()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(retain_graph=True), grad_to_none=grad_to_none, rep=100, quantiles=QUANTILES,
+            lambda: y.backward(retain_graph=True),
+            grad_to_none=grad_to_none,
+            rep=100,
+            quantiles=QUANTILES,
         )
     elif mode == "full":
+
         def full():
             y = fwd_loss()
             y.backward()
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=grad_to_none, rep=100, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -199,46 +225,68 @@ if __name__ == "__main__":
     for sub_kernel in ["coeffs", "pre", "post_res"]:
         if args.sweep_mode == "model_config":
             all_model_configs = list(MODEL_REGISTRY.values())
-            T = 256
             B = 4
             HC = 4
 
             def _probe_factory(model_cfg, probe_bt, _sk=sub_kernel):
                 def _probe():
+                    T = max(1, probe_bt // B)
                     probe_input = SingleBenchmarkRunInput(
-                        x=0, kernel_provider="torch",
+                        x=0,
+                        kernel_provider="torch",
                         kernel_operation_mode="full",
                         extra_benchmark_config={
-                            "B": B, "HC": HC, "C": model_cfg.hidden_size,
-                            "T": T, "sub_kernel": _sk, **mhc_defaults,
+                            "B": B,
+                            "HC": HC,
+                            "C": model_cfg.hidden_size,
+                            "T": T,
+                            "sub_kernel": _sk,
+                            **mhc_defaults,
                         },
                     )
                     _, _, fwd_loss = _setup_mhc(probe_input)
                     return fwd_loss()
+
                 return _probe
 
             sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
             model_configs_info = {
-                cfg.name: {"hidden_size": cfg.hidden_size, "dtype": cfg.dtype}
-                for cfg in sweep.model_configs
+                cfg.name: {"hidden_size": cfg.hidden_size, "dtype": cfg.dtype} for cfg in sweep.model_configs
             }
 
             common_configs = {
                 "kernel_name": f"mhc_{sub_kernel}",
-                "x_name": "model_config", "x_label": "model configuration",
+                "x_name": "model_config",
+                "x_label": "model configuration",
                 "x_values": [cfg.name for cfg in sweep.model_configs],
                 "kernel_providers": ["liger", "torch"],
-                "extra_benchmark_configs": [{
-                    "model_configs": model_configs_info, "B": B, "HC": HC, "T": T,
-                    "sub_kernel": sub_kernel, **mhc_defaults,
-                }],
+                "extra_benchmark_configs": [
+                    {
+                        "model_configs": model_configs_info,
+                        "B": sweep.batch_size,
+                        "HC": HC,
+                        "T": sweep.seq_len,
+                        "sub_kernel": sub_kernel,
+                        **mhc_defaults,
+                    }
+                ],
                 "overwrite": args.overwrite,
             }
 
-            run_benchmarks(bench_test_fn=bench_speed_mhc_model_config,
-                           kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-            run_benchmarks(bench_test_fn=bench_memory_mhc_model_config,
-                           kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+            run_benchmarks(
+                bench_test_fn=bench_speed_mhc_model_config,
+                kernel_operation_modes=["forward", "backward", "full"],
+                metric_name="speed",
+                metric_unit="ms",
+                **common_configs,
+            )
+            run_benchmarks(
+                bench_test_fn=bench_memory_mhc_model_config,
+                kernel_operation_modes=["full"],
+                metric_name="memory",
+                metric_unit="MB",
+                **common_configs,
+            )
         else:
             model = get_benchmark_model_config(args.model)
             B = 4
@@ -247,11 +295,16 @@ if __name__ == "__main__":
 
             def _probe(_sk=sub_kernel):
                 probe_input = SingleBenchmarkRunInput(
-                    x=0, kernel_provider="torch",
+                    x=0,
+                    kernel_provider="torch",
                     kernel_operation_mode="full",
                     extra_benchmark_config={
-                        "B": B, "HC": HC, "C": model.hidden_size,
-                        "T": probe_T, "sub_kernel": _sk, **mhc_defaults,
+                        "B": B,
+                        "HC": HC,
+                        "C": model.hidden_size,
+                        "T": probe_T,
+                        "sub_kernel": _sk,
+                        **mhc_defaults,
                     },
                 )
                 _, _, fwd_loss = _setup_mhc(probe_input)
@@ -263,17 +316,33 @@ if __name__ == "__main__":
 
             common_configs = {
                 "kernel_name": f"mhc_{sub_kernel}",
-                "x_name": "T", "x_label": "Sequence Length (T)",
+                "x_name": "T",
+                "x_label": "Sequence Length (T)",
                 "x_values": [2**i for i in range(7, int(math.log2(max(128, config.seq_len))) + 1)],
                 "kernel_providers": ["liger", "torch"],
-                "extra_benchmark_configs": [{
-                    "B": B, "HC": HC, "C": model.hidden_size,
-                    "sub_kernel": sub_kernel, **mhc_defaults,
-                }],
+                "extra_benchmark_configs": [
+                    {
+                        "B": B,
+                        "HC": HC,
+                        "C": model.hidden_size,
+                        "sub_kernel": sub_kernel,
+                        **mhc_defaults,
+                    }
+                ],
                 "overwrite": args.overwrite,
             }
 
-            run_benchmarks(bench_test_fn=bench_speed_mhc,
-                           kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-            run_benchmarks(bench_test_fn=bench_memory_mhc,
-                           kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+            run_benchmarks(
+                bench_test_fn=bench_speed_mhc,
+                kernel_operation_modes=["forward", "backward", "full"],
+                metric_name="speed",
+                metric_unit="ms",
+                **common_configs,
+            )
+            run_benchmarks(
+                bench_test_fn=bench_memory_mhc,
+                kernel_operation_modes=["full"],
+                metric_name="memory",
+                metric_unit="MB",
+                **common_configs,
+            )

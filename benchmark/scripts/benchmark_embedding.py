@@ -25,6 +25,9 @@ device = infer_device()
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+# NOTE: For torch compile, we will just use default inductor settings. No further customization
+# is needed.
+
 
 def _setup_embedding(input: SingleBenchmarkRunInput):
     """Create input tensors and embedding module from benchmark config."""
@@ -57,25 +60,33 @@ def _setup_embedding(input: SingleBenchmarkRunInput):
 
 
 def bench_speed_embedding(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    input_ids, fwd_fn = _setup_embedding(input)
+    input_ids, fwd = _setup_embedding(input)
     mode = input.kernel_operation_mode
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd_fn, quantiles=QUANTILES, rep=100)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
     elif mode == "backward":
-        output = fwd_fn()
+        output = fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: output.backward(torch.randn_like(output), retain_graph=True),
-            quantiles=QUANTILES, grad_to_none=[input_ids], rep=100,
+            quantiles=QUANTILES,
+            grad_to_none=[input_ids],
+            rep=100,
         )
     elif mode == "full":
+
         def full():
-            output = fwd_fn()
+            output = fwd()
             output.backward(torch.randn_like(output))
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_embedding(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -117,12 +128,16 @@ def bench_speed_embedding_model_config(input: SingleBenchmarkRunInput) -> Single
         output = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: output.backward(torch.randn_like(output), retain_graph=True),
-            quantiles=QUANTILES, grad_to_none=[input_ids], rep=100,
+            quantiles=QUANTILES,
+            grad_to_none=[input_ids],
+            rep=100,
         )
     elif mode == "full":
+
         def full():
             output = fwd_fn()
             output.backward(torch.randn_like(output))
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -137,7 +152,11 @@ def bench_memory_embedding_model_config(input: SingleBenchmarkRunInput) -> Singl
         output.backward(torch.randn_like(output))
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":
@@ -145,21 +164,25 @@ if __name__ == "__main__":
 
     if args.sweep_mode == "model_config":
         all_model_configs = list(MODEL_REGISTRY.values())
-        T = 512
-        BT = 2048
+        B = 2
 
         def _probe_factory(model_cfg, probe_bt):
             def _probe():
-                B = max(1, probe_bt // T)
+                T = max(1, probe_bt // B)
                 probe_input = SingleBenchmarkRunInput(
-                    x=0, kernel_provider="huggingface",
+                    x=0,
+                    kernel_provider="huggingface",
                     extra_benchmark_config={
-                        "vocab_size": model_cfg.vocab_size, "hidden_size": model_cfg.hidden_size,
-                        "dtype": model_cfg.dtype, "BT": B * T, "T": T,
+                        "vocab_size": model_cfg.vocab_size,
+                        "hidden_size": model_cfg.hidden_size,
+                        "dtype": model_cfg.dtype,
+                        "BT": probe_bt,
+                        "T": T,
                     },
                 )
                 _, fwd_fn = _setup_embedding(probe_input)
                 return fwd_fn()
+
             return _probe
 
         sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
@@ -167,33 +190,47 @@ if __name__ == "__main__":
             cfg.name: {"vocab_size": cfg.vocab_size, "hidden_size": cfg.hidden_size, "dtype": cfg.dtype}
             for cfg in sweep.model_configs
         }
-        BT = sweep.bt
 
         common_configs = {
             "kernel_name": "embedding",
-            "x_name": "model_config", "x_label": "model configuration",
+            "x_name": "model_config",
+            "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
             "kernel_providers": ["liger", "huggingface", "torch_compile"],
-            "extra_benchmark_configs": [{"model_configs": model_configs_info, "BT": BT, "T": T}],
+            "extra_benchmark_configs": [{"model_configs": model_configs_info, "BT": sweep.bt, "T": sweep.seq_len}],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_embedding_model_config,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_embedding_model_config,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_embedding_model_config,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_embedding_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
     else:
         model = get_benchmark_model_config(args.model)
         T = 512
         probe_bt = 2048
 
         def _probe():
-            B = max(1, probe_bt // T)
+            B = probe_bt // T
             probe_input = SingleBenchmarkRunInput(
-                x=0, kernel_provider="huggingface",
+                x=0,
+                kernel_provider="huggingface",
                 extra_benchmark_config={
-                    "vocab_size": model.vocab_size, "hidden_size": model.hidden_size,
-                    "dtype": model.dtype, "BT": B * T, "T": T,
+                    "vocab_size": model.vocab_size,
+                    "hidden_size": model.hidden_size,
+                    "dtype": model.dtype,
+                    "BT": B * T,
+                    "T": T,
                 },
             )
             _, fwd_fn = _setup_embedding(probe_input)
@@ -205,7 +242,8 @@ if __name__ == "__main__":
 
         common_configs = {
             "kernel_name": "embedding",
-            "x_name": "BT", "x_label": "B x T",
+            "x_name": "BT",
+            "x_label": "B x T",
             "x_values": [2**i for i in range(10, int(math.log2(max(1024, config.batch_size * config.seq_len))) + 1)],
             "kernel_providers": ["liger", "huggingface", "torch_compile"],
             "extra_benchmark_configs": [
@@ -214,7 +252,17 @@ if __name__ == "__main__":
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_embedding,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_embedding,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_embedding,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_embedding,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )

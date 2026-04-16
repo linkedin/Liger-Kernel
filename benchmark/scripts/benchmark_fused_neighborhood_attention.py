@@ -5,7 +5,6 @@ import sys
 import torch
 import triton
 
-from benchmark_model_configs import MODEL_REGISTRY
 from benchmark_model_configs import compute_model_config_sweep_config
 from benchmark_model_configs import compute_seq_len_sweep_config
 from benchmark_model_configs import estimate_kernel_peak_memory
@@ -114,21 +113,38 @@ def _setup_fused_neighborhood_attention(input: SingleBenchmarkRunInput):
     batch_size = cfg.get("batch_size", 2)
     seq_len = cfg.get("seq_len", input.x)
 
-    liger_attn = LigerFusedNeighborhoodAttention(
-        hidden_size=hidden_size, num_heads=num_heads, kernel_size=kernel_size,
-        dilation=dilation, bias=bias, dropout=0.0,
-    ).to(device).to(dtype)
+    liger_attn = (
+        LigerFusedNeighborhoodAttention(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            kernel_size=kernel_size,
+            dilation=dilation,
+            bias=bias,
+            dropout=0.0,
+        )
+        .to(device)
+        .to(dtype)
+    )
 
-    torch_attn = TorchNeighborhoodAttention(
-        hidden_size=hidden_size, num_heads=num_heads, kernel_size=kernel_size,
-        dilation=dilation, bias=bias, dropout=0.0,
-    ).to(device).to(dtype)
+    torch_attn = (
+        TorchNeighborhoodAttention(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            kernel_size=kernel_size,
+            dilation=dilation,
+            bias=bias,
+            dropout=0.0,
+        )
+        .to(device)
+        .to(dtype)
+    )
 
     with torch.no_grad():
         torch_attn.q_proj.weight.copy_(liger_attn.q_proj.weight)
         torch_attn.k_proj.weight.copy_(liger_attn.k_proj.weight)
         torch_attn.v_proj.weight.copy_(liger_attn.v_proj.weight)
         torch_attn.out_proj.weight.copy_(liger_attn.out_proj.weight)
+
         if bias:
             torch_attn.q_proj.bias.copy_(liger_attn.q_proj.bias)
             torch_attn.k_proj.bias.copy_(liger_attn.k_proj.bias)
@@ -149,29 +165,39 @@ def _setup_fused_neighborhood_attention(input: SingleBenchmarkRunInput):
 
 
 def bench_speed_fused_neighborhood_attention(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    x, dy, fwd_fn = _setup_fused_neighborhood_attention(input)
+    x, dy, fwd = _setup_fused_neighborhood_attention(input)
     mode = input.kernel_operation_mode
 
     # Warmup
-    _ = fwd_fn()
+    _ = fwd()
     if mode in ("backward", "full"):
         _.backward(dy, retain_graph=True)
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd_fn, grad_to_none=[x], rep=100, quantiles=QUANTILES)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, grad_to_none=[x], rep=100, quantiles=QUANTILES)
     elif mode == "backward":
-        y = fwd_fn()
+        y = fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(dy, retain_graph=True), grad_to_none=[x], rep=100, quantiles=QUANTILES,
+            lambda: y.backward(dy, retain_graph=True),
+            grad_to_none=[x],
+            rep=100,
+            quantiles=QUANTILES,
         )
     elif mode == "full":
+
         def full():
-            y = fwd_fn()
+            y = fwd()
             y.backward(dy, retain_graph=True)
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=[x], rep=100, quantiles=QUANTILES)
+
     else:
         raise ValueError(f"Unsupported mode: {mode}")
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_fused_neighborhood_attention(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -182,7 +208,11 @@ def bench_memory_fused_neighborhood_attention(input: SingleBenchmarkRunInput) ->
         y.backward(dy, retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 def _resolve_model_config_fused_neighborhood_attention(input: SingleBenchmarkRunInput):
@@ -219,16 +249,25 @@ def bench_speed_fused_neighborhood_attention_model_config(input: SingleBenchmark
     elif mode == "backward":
         y = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(dy, retain_graph=True), grad_to_none=[x], rep=100, quantiles=QUANTILES,
+            lambda: y.backward(dy, retain_graph=True),
+            grad_to_none=[x],
+            rep=100,
+            quantiles=QUANTILES,
         )
     elif mode == "full":
+
         def full():
             y = fwd_fn()
             y.backward(dy, retain_graph=True)
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, grad_to_none=[x], rep=100, quantiles=QUANTILES)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_fused_neighborhood_attention_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
@@ -239,56 +278,151 @@ def bench_memory_fused_neighborhood_attention_model_config(input: SingleBenchmar
         y.backward(dy, retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
     if args.sweep_mode == "model_config":
-        all_model_configs = list(MODEL_REGISTRY.values())
-        seq_len = 256
-        batch_size = 2
+        # Use predefined attention configurations instead of MODEL_REGISTRY
+        attention_configs = [
+            {
+                "name": "small_fp32",
+                "batch_size": 2,
+                "hidden_size": 512,
+                "num_heads": 8,
+                "kernel_size": 7,
+                "dilation": 1,
+                "bias": True,
+                "dtype": torch.float32,
+            },
+            {
+                "name": "medium_fp32",
+                "batch_size": 4,
+                "hidden_size": 768,
+                "num_heads": 12,
+                "kernel_size": 7,
+                "dilation": 1,
+                "bias": True,
+                "dtype": torch.float32,
+            },
+            {
+                "name": "large_fp32",
+                "batch_size": 2,
+                "hidden_size": 1024,
+                "num_heads": 16,
+                "kernel_size": 9,
+                "dilation": 1,
+                "bias": True,
+                "dtype": torch.float32,
+            },
+            {
+                "name": "small_dilated_fp32",
+                "batch_size": 2,
+                "hidden_size": 512,
+                "num_heads": 8,
+                "kernel_size": 7,
+                "dilation": 2,
+                "bias": True,
+                "dtype": torch.float32,
+            },
+            {
+                "name": "small_bf16",
+                "batch_size": 2,
+                "hidden_size": 512,
+                "num_heads": 8,
+                "kernel_size": 7,
+                "dilation": 1,
+                "bias": True,
+                "dtype": torch.bfloat16,
+            },
+            {
+                "name": "medium_bf16",
+                "batch_size": 4,
+                "hidden_size": 768,
+                "num_heads": 12,
+                "kernel_size": 7,
+                "dilation": 1,
+                "bias": True,
+                "dtype": torch.bfloat16,
+            },
+            {
+                "name": "large_bf16",
+                "batch_size": 2,
+                "hidden_size": 1024,
+                "num_heads": 16,
+                "kernel_size": 9,
+                "dilation": 1,
+                "bias": True,
+                "dtype": torch.bfloat16,
+            },
+            {
+                "name": "small_dilated_bf16",
+                "batch_size": 2,
+                "hidden_size": 512,
+                "num_heads": 8,
+                "kernel_size": 7,
+                "dilation": 2,
+                "bias": True,
+                "dtype": torch.bfloat16,
+            },
+        ]
 
-        def _probe_factory(model_cfg, probe_bt):
+        def _probe_factory(attn_cfg, probe_bt):
             def _probe():
                 probe_input = SingleBenchmarkRunInput(
-                    x=0, kernel_provider="torch",
+                    x=0,
+                    kernel_provider="torch",
                     extra_benchmark_config={
-                        "hidden_size": model_cfg.hidden_size,
-                        "num_heads": model_cfg.num_attention_heads,
-                        "dtype": model_cfg.dtype, "seq_len": seq_len,
-                        "batch_size": batch_size, "kernel_size": 7, "dilation": 1, "bias": True,
+                        "hidden_size": attn_cfg["hidden_size"],
+                        "num_heads": attn_cfg["num_heads"],
+                        "dtype": attn_cfg["dtype"],
+                        "seq_len": probe_bt // attn_cfg["batch_size"],
+                        "batch_size": attn_cfg["batch_size"],
+                        "kernel_size": attn_cfg["kernel_size"],
+                        "dilation": attn_cfg["dilation"],
+                        "bias": attn_cfg["bias"],
                     },
                 )
                 _, _, fwd_fn = _setup_fused_neighborhood_attention(probe_input)
                 return fwd_fn()
+
             return _probe
 
-        sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
-        model_configs_info = {
-            cfg.name: {
-                "hidden_size": cfg.hidden_size, "num_heads": cfg.num_attention_heads, "dtype": cfg.dtype,
-            }
-            for cfg in sweep.model_configs
-        }
+        sweep = compute_model_config_sweep_config(attention_configs, probe_fn_factory=_probe_factory, bt=args.bt)
+
+        # Add seq_len to each config
+        attention_configs_with_seq_len = [{**cfg, "seq_len": sweep.seq_len} for cfg in attention_configs]
 
         common_configs = {
             "kernel_name": "fused_neighborhood_attention",
-            "x_name": "model_config", "x_label": "model configuration",
-            "x_values": [cfg.name for cfg in sweep.model_configs],
+            "x_name": "model_config",
+            "x_label": "model configuration",
+            "x_values": [cfg["name"] for cfg in sweep.model_configs],
             "kernel_providers": ["liger", "torch"],
-            "extra_benchmark_configs": [{
-                "model_configs": model_configs_info, "seq_len": seq_len,
-                "batch_size": batch_size, "kernel_size": 7, "dilation": 1, "bias": True,
-            }],
+            "extra_benchmark_configs": attention_configs_with_seq_len,
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_fused_neighborhood_attention_model_config,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_fused_neighborhood_attention_model_config,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_fused_neighborhood_attention,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_fused_neighborhood_attention,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
     else:
         model = get_benchmark_model_config(args.model)
         batch_size = 2
@@ -296,11 +430,17 @@ if __name__ == "__main__":
 
         def _probe():
             probe_input = SingleBenchmarkRunInput(
-                x=0, kernel_provider="torch",
+                x=0,
+                kernel_provider="torch",
                 extra_benchmark_config={
-                    "hidden_size": model.hidden_size, "num_heads": model.num_attention_heads,
-                    "dtype": model.dtype, "seq_len": probe_seq_len,
-                    "batch_size": batch_size, "kernel_size": 7, "dilation": 1, "bias": True,
+                    "hidden_size": model.hidden_size,
+                    "num_heads": model.num_attention_heads,
+                    "dtype": model.dtype,
+                    "seq_len": probe_seq_len,
+                    "batch_size": batch_size,
+                    "kernel_size": 7,
+                    "dilation": 1,
+                    "bias": True,
                 },
             )
             _, _, fwd_fn = _setup_fused_neighborhood_attention(probe_input)
@@ -312,18 +452,35 @@ if __name__ == "__main__":
 
         common_configs = {
             "kernel_name": "fused_neighborhood_attention",
-            "x_name": "seq_len", "x_label": "sequence length",
+            "x_name": "seq_len",
+            "x_label": "sequence length",
             "x_values": [2**i for i in range(6, int(math.log2(max(64, config.seq_len))) + 1)],
             "kernel_providers": ["liger", "torch"],
             "extra_benchmark_configs": [
-                {"hidden_size": model.hidden_size, "num_heads": model.num_attention_heads,
-                 "dtype": model.dtype, "batch_size": batch_size,
-                 "kernel_size": 7, "dilation": 1, "bias": True}
+                {
+                    "hidden_size": model.hidden_size,
+                    "num_heads": model.num_attention_heads,
+                    "dtype": model.dtype,
+                    "batch_size": batch_size,
+                    "kernel_size": 7,
+                    "dilation": 1,
+                    "bias": True,
+                }
             ],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_fused_neighborhood_attention,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_fused_neighborhood_attention,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_fused_neighborhood_attention,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_fused_neighborhood_attention,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )

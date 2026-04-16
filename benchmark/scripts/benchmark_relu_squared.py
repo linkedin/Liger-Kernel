@@ -53,35 +53,48 @@ def _setup_relu_squared(input: SingleBenchmarkRunInput):
 
 
 def bench_speed_relu_squared(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    x, dy, fwd_fn = _setup_relu_squared(input)
+    x, dy, y_fwd = _setup_relu_squared(input)
     mode = input.kernel_operation_mode
 
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd_fn, quantiles=QUANTILES, grad_to_none=[x], rep=500)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(y_fwd, quantiles=QUANTILES, grad_to_none=[x], rep=500)
     elif mode == "backward":
-        y = fwd_fn()
+        y = y_fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(dy, retain_graph=True), quantiles=QUANTILES, grad_to_none=[x], rep=500,
+            lambda: y.backward(dy, retain_graph=True),
+            quantiles=QUANTILES,
+            grad_to_none=[x],
+            rep=500,
         )
     elif mode == "full":
+
         def full():
-            y = fwd_fn()
+            y = y_fwd()
             y.backward(dy, retain_graph=True)
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, grad_to_none=[x], rep=500)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
 
 
 def bench_memory_relu_squared(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    x, dy, fwd_fn = _setup_relu_squared(input)
+    x, dy, y_fwd = _setup_relu_squared(input)
 
     def full():
-        y = fwd_fn()
+        y = y_fwd()
         y.backward(torch.ones_like(y), retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 def _resolve_model_config_relu_squared(input: SingleBenchmarkRunInput):
@@ -109,12 +122,17 @@ def bench_speed_relu_squared_model_config(input: SingleBenchmarkRunInput) -> Sin
     elif mode == "backward":
         y = fwd_fn()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(dy, retain_graph=True), quantiles=QUANTILES, grad_to_none=[x], rep=500,
+            lambda: y.backward(dy, retain_graph=True),
+            quantiles=QUANTILES,
+            grad_to_none=[x],
+            rep=500,
         )
     elif mode == "full":
+
         def full():
             y = fwd_fn()
             y.backward(dy, retain_graph=True)
+
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, grad_to_none=[x], rep=500)
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -129,7 +147,11 @@ def bench_memory_relu_squared_model_config(input: SingleBenchmarkRunInput) -> Si
         y.backward(torch.ones_like(y), retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":
@@ -137,48 +159,64 @@ if __name__ == "__main__":
 
     if args.sweep_mode == "model_config":
         all_model_configs = list(MODEL_REGISTRY.values())
-        M = 2048
 
         def _probe_factory(model_cfg, probe_bt):
             def _probe():
                 probe_input = SingleBenchmarkRunInput(
-                    x=0, kernel_provider="torch",
+                    x=0,
+                    kernel_provider="torch",
                     extra_benchmark_config={
-                        "hidden_size": model_cfg.hidden_size, "dtype": model_cfg.dtype, "M": M,
+                        "hidden_size": model_cfg.hidden_size,
+                        "dtype": model_cfg.dtype,
+                        "M": probe_bt,
                     },
                 )
                 _, _, fwd_fn = _setup_relu_squared(probe_input)
                 return fwd_fn()
+
             return _probe
 
         sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
         model_configs_info = {
-            cfg.name: {"hidden_size": cfg.hidden_size, "dtype": cfg.dtype}
-            for cfg in sweep.model_configs
+            cfg.name: {"hidden_size": cfg.hidden_size, "dtype": cfg.dtype} for cfg in sweep.model_configs
         }
 
         common_configs = {
             "kernel_name": "relu_squared",
-            "x_name": "model_config", "x_label": "model configuration",
+            "x_name": "model_config",
+            "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
             "kernel_providers": ["liger", "torch"],
-            "extra_benchmark_configs": [{"model_configs": model_configs_info, "M": M}],
+            "extra_benchmark_configs": [{"model_configs": model_configs_info, "M": sweep.bt}],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_relu_squared_model_config,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_relu_squared_model_config,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_relu_squared_model_config,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_relu_squared_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
     else:
         model = get_benchmark_model_config(args.model)
         probe_bt = 2048
 
         def _probe():
             probe_input = SingleBenchmarkRunInput(
-                x=0, kernel_provider="torch",
+                x=0,
+                kernel_provider="torch",
                 extra_benchmark_config={
-                    "hidden_size": model.hidden_size, "dtype": model.dtype, "M": probe_bt,
+                    "hidden_size": model.hidden_size,
+                    "dtype": model.dtype,
+                    "M": probe_bt,
                 },
             )
             _, _, fwd_fn = _setup_relu_squared(probe_input)
@@ -190,16 +228,25 @@ if __name__ == "__main__":
 
         common_configs = {
             "kernel_name": "relu_squared",
-            "x_name": "BT", "x_label": "B x T",
+            "x_name": "BT",
+            "x_label": "B x T",
             "x_values": [2**i for i in range(10, int(math.log2(max(1024, config.batch_size * config.seq_len))) + 1)],
             "kernel_providers": ["liger", "torch"],
-            "extra_benchmark_configs": [
-                {"hidden_size": model.hidden_size, "dtype": model.dtype}
-            ],
+            "extra_benchmark_configs": [{"hidden_size": model.hidden_size, "dtype": model.dtype}],
             "overwrite": args.overwrite,
         }
 
-        run_benchmarks(bench_test_fn=bench_speed_relu_squared,
-                       kernel_operation_modes=["forward", "backward", "full"], metric_name="speed", metric_unit="ms", **common_configs)
-        run_benchmarks(bench_test_fn=bench_memory_relu_squared,
-                       kernel_operation_modes=["full"], metric_name="memory", metric_unit="MB", **common_configs)
+        run_benchmarks(
+            bench_test_fn=bench_speed_relu_squared,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_relu_squared,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )

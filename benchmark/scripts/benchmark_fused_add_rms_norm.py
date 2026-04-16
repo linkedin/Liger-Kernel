@@ -1,14 +1,7 @@
-import math
-
 import torch
 import torch.nn as nn
 import triton
 
-from benchmark_model_configs import MODEL_REGISTRY
-from benchmark_model_configs import compute_model_config_sweep_config
-from benchmark_model_configs import compute_seq_len_sweep_config
-from benchmark_model_configs import estimate_kernel_peak_memory
-from benchmark_model_configs import get_benchmark_model_config
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
@@ -63,45 +56,56 @@ class AddLigerRMSNorm(nn.Module):
         return self.weight * hidden_states.to(input_dtype), residual.to(input_dtype)
 
 
-def _setup_fused_add_rms_norm(input: SingleBenchmarkRunInput):
-    """Create input tensors and FusedAddRMSNorm layer from benchmark config."""
-    cfg = input.extra_benchmark_config
-    hidden_size = cfg["hidden_size"]
-    eps = cfg["eps"]
-    x_shape = (input.x, hidden_size)
-    x = torch.randn(x_shape, dtype=cfg["dtype"], device=device, requires_grad=True)
-    r = torch.randn(x_shape, dtype=cfg["dtype"], device=device, requires_grad=True)
-
-    if input.kernel_provider == "liger_fused_add_rms_norm":
-        layer = LigerFusedAddRMSNorm(hidden_size=hidden_size, eps=eps).to(device)
-    elif input.kernel_provider == "huggingface":
-        layer = NaiveAddRMSNorm(hidden_size=hidden_size, eps=eps).to(device)
-    elif input.kernel_provider == "liger_rms_norm":
-        layer = AddLigerRMSNorm(hidden_size=hidden_size, eps=eps).to(device)
-    else:
-        raise ValueError(f"Invalid provider: {input.kernel_provider} for FusedAddRMSNorm")
-    return x, r, layer
-
-
-def bench_speed_fused_add_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    x, r, layer = _setup_fused_add_rms_norm(input)
+def bench_speed_fused_residual_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    N = input.x
+    provider = input.kernel_provider
     mode = input.kernel_operation_mode
+
+    extra_benchmark_config = input.extra_benchmark_config
+    M = extra_benchmark_config["M"]
+    eps = extra_benchmark_config["eps"]
+    dtype = extra_benchmark_config["dtype"]
+
+    x_shape = (M, N)
+
+    # Fused Add RMS Norm
+    fused_add_rms_norm = LigerFusedAddRMSNorm(hidden_size=N, eps=eps).to(device)
+    # Naive implementation
+    naive_rms_norm = NaiveAddRMSNorm(hidden_size=N, eps=eps).to(device)
+    # LigerRMSNorm without fused residual addition
+    liger_rms_norm = AddLigerRMSNorm(hidden_size=N, eps=eps).to(device)
+
+    x = torch.randn(x_shape, dtype=dtype, device=device)
+    r = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
     ds = torch.randn_like(r)
+    x.requires_grad_(True)
+    r.requires_grad_(True)
+    # utility functions
 
     def y_fwd():
-        return layer(x, r)
+        if provider == "liger_fused_add_rms_norm":
+            return fused_add_rms_norm(x, r)
+
+        if provider == "huggingface":
+            return naive_rms_norm(x, r)
+
+        if provider == "liger_rms_norm":
+            return liger_rms_norm(x, r)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            y_fwd, grad_to_none=[x, r], rep=100, quantiles=QUANTILES
+            y_fwd,
+            grad_to_none=[x, r],
+            rep=500,
+            quantiles=QUANTILES,
         )
     elif mode == "backward":
         y, s = y_fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: torch.autograd.backward((y, s), (dy, ds), retain_graph=True),
             grad_to_none=[x, r],
-            rep=100,
+            rep=500,
             quantiles=QUANTILES,
         )
     elif mode == "full":
@@ -111,212 +115,87 @@ def bench_speed_fused_add_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenc
             torch.autograd.backward((y, s), (dy, ds))
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full, grad_to_none=[x, r], rep=100, quantiles=QUANTILES
+            full,
+            grad_to_none=[x, r],
+            rep=500,
+            quantiles=QUANTILES,
         )
-    else:
-        raise ValueError(f"Unsupported mode: {mode}")
 
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
-
-
-def bench_memory_fused_add_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    x, r, layer = _setup_fused_add_rms_norm(input)
-    dy = torch.randn_like(x)
-    ds = torch.randn_like(r)
-
-    def y_fwd():
-        return layer(x, r)
-
-    def full():
-        y, s = y_fwd()
-        torch.autograd.backward((y, s), (dy, ds))
-
-    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
-
-
-def _resolve_model_config_fused_add_rms_norm(input: SingleBenchmarkRunInput):
-    """Resolve model-config-sweep input into standard setup args."""
-    cfg = input.extra_benchmark_config
-    model_info = cfg["model_configs"][input.x]
-    return _setup_fused_add_rms_norm(
-        SingleBenchmarkRunInput(
-            x=cfg["BT"],
-            kernel_provider=input.kernel_provider,
-            extra_benchmark_config={
-                "hidden_size": model_info["hidden_size"],
-                "dtype": model_info["dtype"],
-                "eps": cfg["eps"],
-            },
-        )
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
     )
 
 
-def bench_speed_fused_add_rms_norm_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    x, r, layer = _resolve_model_config_fused_add_rms_norm(input)
-    mode = input.kernel_operation_mode
+def bench_memory_fused_residual_rms_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    N = input.x
+    provider = input.kernel_provider
+
+    extra_benchmark_config = input.extra_benchmark_config
+    M = extra_benchmark_config["M"]
+    eps = extra_benchmark_config["eps"]
+    dtype = extra_benchmark_config["dtype"]
+
+    x_shape = (M, N)
+
+    fused_add_rms_norm = LigerFusedAddRMSNorm(hidden_size=N, eps=eps).to(device)
+    naive_rms_norm = NaiveAddRMSNorm(hidden_size=N, eps=eps).to(device)
+    liger_rms_norm = AddLigerRMSNorm(hidden_size=N, eps=eps).to(device)
+
+    x = torch.randn(x_shape, dtype=dtype, device=device)
+    r = torch.randn(x_shape, dtype=dtype, device=device)
     dy = torch.randn_like(x)
     ds = torch.randn_like(r)
+    x.requires_grad_(True)
+    r.requires_grad_(True)
 
+    # utility functions
     def y_fwd():
-        return layer(x, r)
-
-    if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            y_fwd, grad_to_none=[x, r], rep=100, quantiles=QUANTILES
-        )
-    elif mode == "backward":
-        y, s = y_fwd()
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: torch.autograd.backward((y, s), (dy, ds), retain_graph=True),
-            grad_to_none=[x, r],
-            rep=100,
-            quantiles=QUANTILES,
-        )
-    elif mode == "full":
-
-        def full():
-            y, s = y_fwd()
-            torch.autograd.backward((y, s), (dy, ds))
-
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full, grad_to_none=[x, r], rep=100, quantiles=QUANTILES
-        )
-    else:
-        raise ValueError(f"Unsupported mode: {mode}")
-
-    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
-
-
-def bench_memory_fused_add_rms_norm_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    x, r, layer = _resolve_model_config_fused_add_rms_norm(input)
-    dy = torch.randn_like(x)
-    ds = torch.randn_like(r)
-
-    def y_fwd():
-        return layer(x, r)
+        if provider == "liger_fused_add_rms_norm":
+            return fused_add_rms_norm(x, r)
+        if provider == "huggingface":
+            return naive_rms_norm(x, r)
+        if provider == "liger_rms_norm":
+            return liger_rms_norm(x, r)
 
     def full():
         y, s = y_fwd()
         torch.autograd.backward((y, s), (dy, ds))
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
 
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    if args.sweep_mode == "model_config":
-        all_model_configs = list(MODEL_REGISTRY.values())
+    common_configs = {
+        "kernel_name": "fused_add_rms_norm",
+        "x_name": "H",
+        "x_label": "hidden size",
+        "x_values": [2**i for i in range(10, 16)],
+        "kernel_providers": ["liger_fused_add_rms_norm", "huggingface", "liger_rms_norm"],
+        "extra_benchmark_configs": [{"M": 2048, "dtype": torch.float32, "eps": 1e-6}],
+        "overwrite": args.overwrite,
+    }
 
-        def _probe_factory(model_cfg, probe_bt):
-            def _probe():
-                probe_input = SingleBenchmarkRunInput(
-                    x=probe_bt,
-                    kernel_provider="huggingface",
-                    extra_benchmark_config={
-                        "hidden_size": model_cfg.hidden_size,
-                        "dtype": model_cfg.dtype,
-                        "eps": 1e-6,
-                    },
-                )
-                x, r, layer = _setup_fused_add_rms_norm(probe_input)
-                y, s = layer(x, r)
-                return y + s  # combine for backward probe
-
-            return _probe
-
-        sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
-
-        model_configs_info = {
-            cfg.name: {
-                "hidden_size": cfg.hidden_size,
-                "dtype": cfg.dtype,
-            }
-            for cfg in sweep.model_configs
-        }
-
-        common_configs = {
-            "kernel_name": "fused_add_rms_norm",
-            "x_name": "model_config",
-            "x_label": "model configuration",
-            "x_values": [cfg.name for cfg in sweep.model_configs],
-            "kernel_providers": ["liger_fused_add_rms_norm", "huggingface", "liger_rms_norm"],
-            "extra_benchmark_configs": [
-                {
-                    "model_configs": model_configs_info,
-                    "BT": sweep.bt,
-                    "eps": 1e-6,
-                }
-            ],
-            "overwrite": args.overwrite,
-        }
-
-        run_benchmarks(
-            bench_test_fn=bench_speed_fused_add_rms_norm_model_config,
-            kernel_operation_modes=["full", "forward", "backward"],
-            metric_name="speed",
-            metric_unit="ms",
-            **common_configs,
-        )
-        run_benchmarks(
-            bench_test_fn=bench_memory_fused_add_rms_norm_model_config,
-            kernel_operation_modes=["full"],
-            metric_name="memory",
-            metric_unit="MB",
-            **common_configs,
-        )
-    else:
-        model = get_benchmark_model_config(args.model)
-        probe_bt = 1024
-
-        def _probe():
-            probe_input = SingleBenchmarkRunInput(
-                x=probe_bt,
-                kernel_provider="huggingface",
-                extra_benchmark_config={
-                    "hidden_size": model.hidden_size,
-                    "dtype": model.dtype,
-                    "eps": 1e-6,
-                },
-            )
-            x, r, layer = _setup_fused_add_rms_norm(probe_input)
-            y, s = layer(x, r)
-            return y + s
-
-        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
-        kernel_bpt = peak_bytes // probe_bt
-
-        config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
-
-        common_configs = {
-            "kernel_name": "fused_add_rms_norm",
-            "x_name": "BT",
-            "x_label": "B * T",
-            "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
-            "kernel_providers": ["liger_fused_add_rms_norm", "huggingface", "liger_rms_norm"],
-            "extra_benchmark_configs": [
-                {
-                    "hidden_size": model.hidden_size,
-                    "dtype": model.dtype,
-                    "eps": 1e-6,
-                }
-            ],
-            "overwrite": args.overwrite,
-        }
-
-        run_benchmarks(
-            bench_test_fn=bench_speed_fused_add_rms_norm,
-            kernel_operation_modes=["full", "forward", "backward"],
-            metric_name="speed",
-            metric_unit="ms",
-            **common_configs,
-        )
-        run_benchmarks(
-            bench_test_fn=bench_memory_fused_add_rms_norm,
-            kernel_operation_modes=["full"],
-            metric_name="memory",
-            metric_unit="MB",
-            **common_configs,
-        )
+    run_benchmarks(
+        bench_test_fn=bench_speed_fused_residual_rms_norm,
+        kernel_operation_modes=["forward", "full", "backward"],
+        metric_name="speed",
+        metric_unit="ms",
+        **common_configs,
+    )
+    run_benchmarks(
+        bench_test_fn=bench_memory_fused_residual_rms_norm,
+        kernel_operation_modes=["full"],
+        metric_name="memory",
+        metric_unit="MB",
+        **common_configs,
+    )

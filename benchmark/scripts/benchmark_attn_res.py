@@ -121,6 +121,7 @@ if __name__ == "__main__":
                 )
                 V, fn = _setup_attn_res(probe_input)
                 return fn()
+
             return _probe
 
         sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
