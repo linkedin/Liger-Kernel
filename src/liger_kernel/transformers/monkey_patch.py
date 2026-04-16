@@ -14,6 +14,7 @@ from transformers import PreTrainedModel
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
+from liger_kernel.transformers.geglu import LigerGEGLUMLPForGemma4
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
@@ -1307,7 +1308,10 @@ def apply_liger_kernel_to_gemma4_text(
         modeling_gemma4.Gemma4RMSNorm = LigerRMSNormForGemma4
 
     if geglu:
-        modeling_gemma4.Gemma4TextMLP = LigerGEGLUMLP
+        # Gemma4TextMLP is constructed with (config, layer_idx); the wrapper
+        # subclass accepts and discards layer_idx so the class-level swap
+        # doesn't crash model construction.
+        modeling_gemma4.Gemma4TextMLP = LigerGEGLUMLPForGemma4
 
     # Handle loss function
     if cross_entropy:

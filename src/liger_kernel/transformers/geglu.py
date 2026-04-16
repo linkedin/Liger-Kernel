@@ -20,3 +20,17 @@ class LigerGEGLUMLP(nn.Module):
 
     def forward(self, x):
         return self.down_proj(LigerGELUMulFunction.apply(self.gate_proj(x), self.up_proj(x)))
+
+
+class LigerGEGLUMLPForGemma4(LigerGEGLUMLP):
+    """GEGLU MLP wrapper that tolerates Gemma4TextMLP's two-arg constructor.
+
+    HF's Gemma4TextMLP is instantiated as ``Gemma4TextMLP(config, layer_idx)``;
+    swapping in plain LigerGEGLUMLP (single-arg) breaks model construction.
+    This subclass accepts and ignores ``layer_idx`` — 31B has
+    ``use_double_wide_mlp=false``, so the layer_idx never needed to feed the
+    doubled intermediate_size path. Forward is inherited unchanged.
+    """
+
+    def __init__(self, config, layer_idx=None):
+        super().__init__(config)
