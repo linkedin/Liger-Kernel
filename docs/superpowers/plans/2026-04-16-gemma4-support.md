@@ -89,6 +89,12 @@ These are flagged in the user's deployment spec. None require code in this plan 
 - `test/convergence/bf16/test_mini_models.py`
   Add `GEMMA4_AVAILABLE` import guard, `mini_gemma4_text` `MINI_MODEL_SETUPS` entry, and `pytest.param("mini_gemma4_text", ...)` case with bf16 tolerances mirroring `mini_gemma3_text`.
 
+- `test/convergence/bf16/test_mini_models_with_logits.py`
+  Parallel entry to the loss-only convergence file — same `MINI_MODEL_SETUPS` entry and `pytest.param(...)` case. This is the **stricter** logits-parity test.
+
+- `test/transformers/test_monkey_patch.py`
+  Add `is_gemma4_available()` helper and `test_apply_liger_kernel_to_instance_for_gemma4_text` — instance-level verification that every patched module's `forward` matches Liger's (via `inspect.getsource`).
+
 ---
 
 ## Task 1: Add `LigerRMSNormForGemma4` subclass
@@ -623,21 +629,224 @@ flags explicitly (PLE, MoE, KV sharing, double-wide MLP)."
 
 ---
 
-## Task 7: Lint + smoke-import sanity check
+## Task 7: Add `mini_gemma4_text` to bf16 `test_mini_models_with_logits.py`
 
-- [ ] **Step 7.1: Run ruff**
+**Files:**
+- Modify: `test/convergence/bf16/test_mini_models_with_logits.py`
 
-Run: `ruff check src/liger_kernel/transformers/model/gemma4.py src/liger_kernel/transformers/monkey_patch.py src/liger_kernel/transformers/rms_norm.py src/liger_kernel/transformers/__init__.py test/utils.py test/convergence/bf16/test_mini_models.py`
+This file runs the stricter convergence check — it compares LOGITS (not just loss) between the Liger-patched and unpatched models. Gemma 3 has the same test pair; we mirror it for review symmetry.
+
+- [ ] **Step 7.1: Add availability guard + imports**
+
+Near the existing `GEMMA3_AVAILABLE` block (around line 249), add:
+
+```python
+try:
+    from transformers.models.gemma4.configuration_gemma4 import Gemma4TextConfig
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4ForCausalLM
+
+    GEMMA4_AVAILABLE = True
+except ImportError:
+    GEMMA4_AVAILABLE = False
+```
+
+At the liger imports near line 31:
+
+```python
+from liger_kernel.transformers import apply_liger_kernel_to_gemma4_text
+```
+
+At the `test.utils` imports near line 71:
+
+```python
+from test.utils import revert_liger_kernel_to_gemma4_text
+```
+
+- [ ] **Step 7.2: Add the `MINI_MODEL_SETUPS` entry**
+
+Insert after the `mini_gemma3_text` block (around line 805) — copy the same config from Task 6.3. Use the exact same mini-model shape so the two test files stay in lockstep.
+
+- [ ] **Step 7.3: Add the `pytest.param` entry**
+
+Insert after the `mini_gemma3_text` `pytest.param(...)` block (around line 2057). Match the tolerance pattern Gemma 3 uses in this stricter file:
+
+```python
+        pytest.param(
+            "mini_gemma4_text",
+            32,
+            1e-5,
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            3e-1,  # 1e-1 too flaky (same as gemma3_text in this file)
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not GEMMA4_AVAILABLE,
+                    reason="Gemma4 not available in this version of transformers",
+                ),
+            ],
+        ),
+```
+
+- [ ] **Step 7.4: Commit**
+
+```bash
+git add test/convergence/bf16/test_mini_models_with_logits.py
+git commit -m "gemma4: add mini_gemma4_text to bf16 logits-parity convergence test
+
+Mirrors the gemma3_text coverage pattern: every gemma3_text test entry
+has a matching one here. This file compares logits directly (stricter
+than the loss-only test in test_mini_models.py) so any RMSNorm semantic
+divergence (e.g. using wrong init / offset) surfaces immediately."
+```
+
+---
+
+## Task 8: Add `test_apply_liger_kernel_to_instance_for_gemma4_text`
+
+**Files:**
+- Modify: `test/transformers/test_monkey_patch.py`
+
+This is the instance-level patch verification test. It constructs a tiny `Gemma4ForCausalLM`, asserts every relevant sub-module's `forward` source does NOT match Liger's, runs `_apply_liger_kernel_to_instance`, and asserts every one now DOES match. Gemma 3 has `test_apply_liger_kernel_to_instance_for_gemma3_text` at line 1719 — we copy that pattern exactly, only swapping class names.
+
+- [ ] **Step 8.1: Add `is_gemma4_available` helper**
+
+Near `is_gemma3_available` (around line 186), add:
+
+```python
+def is_gemma4_available():
+    try:
+        import transformers.models.gemma4  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+```
+
+- [ ] **Step 8.2: Add the test function**
+
+Insert after `test_apply_liger_kernel_to_instance_for_gemma3_text` (after the Gemma 3 multimodal test, around line 1835). Match the Gemma 3 structure byte-for-byte except for class names:
+
+```python
+@pytest.mark.skipif(not is_gemma4_available(), reason="gemma4 module not available")
+def test_apply_liger_kernel_to_instance_for_gemma4_text():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.gemma4.modeling_gemma4"):
+        from liger_kernel.transformers.model.gemma4 import causal_forward as gemma4_causal_forward
+
+        # Instantiate a dummy model
+        config = transformers.models.gemma4.configuration_gemma4.Gemma4TextConfig(
+            dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=16,
+            # Pin every novel Gemma 4 knob off so the test exercises the dense path.
+            num_kv_shared_layers=0,
+            use_double_wide_mlp=False,
+            enable_moe_block=False,
+            hidden_size_per_layer_input=0,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        # Pre-patch assertions
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(gemma4_causal_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.post_feedforward_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.self_attn.q_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Apply kernels to the instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Post-patch assertions
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(gemma4_causal_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.post_feedforward_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+```
+
+- [ ] **Step 8.3: Add `apply_liger_kernel_to_gemma4_text` to the imports near the top of the test file**
+
+Around line 272 where `apply_liger_kernel_to_gemma3_text` is imported, add:
+
+```python
+        from liger_kernel.transformers import apply_liger_kernel_to_gemma4_text  # noqa: F401
+```
+
+(Match the existing import style — whether it's at module scope or inside a helper.)
+
+- [ ] **Step 8.4: Commit**
+
+```bash
+git add test/transformers/test_monkey_patch.py
+git commit -m "gemma4: add test_apply_liger_kernel_to_instance_for_gemma4_text
+
+Mirrors test_apply_liger_kernel_to_instance_for_gemma3_text byte-for-byte
+except for class names. Verifies that _apply_liger_kernel_to_instance
+swaps every expected sub-module's forward (6 RMSNorms per layer + MLP
++ top-level norm + causal_forward). Matches the PR-review expectation:
+same test structure as Gemma 3, different model class."
+```
+
+---
+
+## Task 9: Lint + smoke-import sanity check
+
+- [ ] **Step 9.1: Run ruff**
+
+Run: `ruff check src/liger_kernel/transformers/model/gemma4.py src/liger_kernel/transformers/monkey_patch.py src/liger_kernel/transformers/rms_norm.py src/liger_kernel/transformers/__init__.py test/utils.py test/convergence/bf16/test_mini_models.py test/convergence/bf16/test_mini_models_with_logits.py test/transformers/test_monkey_patch.py`
 
 Expected: no errors. Apply `ruff check --fix` for import-order / formatting.
 
-- [ ] **Step 7.2: Smoke-import (if transformers>=5.5.0 is installed locally)**
+- [ ] **Step 9.2: Smoke-import (if transformers>=5.5.0 is installed locally)**
 
 Run: `python -c "from liger_kernel.transformers import apply_liger_kernel_to_gemma4_text; print('ok')"`
 
 Expected: `ok`. If transformers 5.5.0 isn't available locally, skip — LUMI will exercise this.
 
-- [ ] **Step 7.3: Commit any lint fixes**
+- [ ] **Step 9.3: Run the instance-patch test locally (no GPU required)**
+
+Run: `pytest test/transformers/test_monkey_patch.py::test_apply_liger_kernel_to_instance_for_gemma4_text -v`
+
+This test only uses `inspect.getsource` comparisons and a tiny 2-layer model constructed from config — it doesn't allocate Triton kernels and can pass on CPU / Apple Silicon. If transformers 5.5.0 isn't installed it'll skip via the `is_gemma4_available()` guard.
+
+- [ ] **Step 9.4: Commit any lint fixes**
 
 ```bash
 git add -A
@@ -646,11 +855,11 @@ git commit -m "gemma4: ruff fixes" --allow-empty
 
 ---
 
-## Task 8: LUMI-only convergence run (manual)
+## Task 10: LUMI-only convergence run (manual)
 
 This cannot be automated from this session.
 
-- [ ] **Step 8.1: On LUMI, install dependencies**
+- [ ] **Step 10.1: On LUMI, install dependencies**
 
 ```bash
 module load rocm pytorch
@@ -658,18 +867,23 @@ pip install -e ".[dev]"
 pip install "transformers>=5.5.0"
 ```
 
-- [ ] **Step 8.2: Run the new test**
+- [ ] **Step 10.2: Run all three new tests**
 
 ```bash
+pytest test/transformers/test_monkey_patch.py::test_apply_liger_kernel_to_instance_for_gemma4_text -v
 pytest test/convergence/bf16/test_mini_models.py -k mini_gemma4_text -v
+pytest test/convergence/bf16/test_mini_models_with_logits.py -k mini_gemma4_text -v
 ```
 
-Expected: PASS. Debugging notes if FAIL:
-- Loss diverges from the reference: check `LigerRMSNormForGemma4` — it must use `offset=0.0`, `init_fn="ones"`, and `casting_mode="gemma"`. Using the Gemma 3 variant here is the most likely cause of silent divergence.
-- Shape mismatch in MLP: the mini model config may have accidentally enabled `use_double_wide_mlp`, or the `Gemma4TextMLP.__init__` signature differs from `LigerGEGLUMLP.__init__`. Inspect `Gemma4TextMLP(Gemma3MLP).__init__` — it takes `(config, layer_idx)`, while `LigerGEGLUMLP.__init__` takes `(config)` alone. If the class swap fails at instantiation, we need a shim `__init__`.
-- Rotary errors: verify `liger_rotary_pos_emb` still accepts `(q, k, cos, sin, unsqueeze_dim=…)`.
+Expected: 3 × PASS. Debugging order if anything fails:
 
-- [ ] **Step 8.3: On green, push**
+1. **Instance-patch test fails first** → a module-level swap is missing or wrong class name. Easy to localize via the specific failing `assert`.
+2. **bf16 loss convergence fails but logits test passes** → unlikely (stricter test should fail first). If it happens, investigate `LigerForCausalLMLoss` shift-labels handling.
+3. **Logits-parity test fails but loss convergence passes** → silent numerical divergence. The prime suspect is `LigerRMSNormForGemma4` — verify `offset=0.0`, `init_fn="ones"`, `casting_mode="gemma"`. Using the Gemma 3 variant here is the most likely cause.
+4. **Shape mismatch at model construction** → `Gemma4TextMLP.__init__(config, layer_idx)` vs `LigerGEGLUMLP.__init__(config)` signature divergence. Fix with a shim subclass that accepts/ignores `layer_idx`.
+5. **Rotary errors** → verify `liger_rotary_pos_emb` still accepts `(q, k, cos, sin, unsqueeze_dim=…)` in the installed Liger version.
+
+- [ ] **Step 10.3: On green, push**
 
 ```bash
 git push -u origin feat/gemma4-support
@@ -695,8 +909,11 @@ git push -u origin feat/gemma4-support
   - Fused-linear-CE on `Gemma4ForCausalLM`: Task 2, Task 3. ✅
   - `final_logit_softcapping=30.0` handling: Task 2. ✅
   - Auto-detection via model_type: Task 3 (Step 3.3). ✅
-  - Tests: Task 6. ✅
+  - Tests mirror Gemma 3's full coverage pattern:
+    - bf16 loss/accuracy convergence: Task 6 (matches `test_mini_models.py` gemma3_text entry). ✅
+    - bf16 logits-parity convergence: Task 7 (matches `test_mini_models_with_logits.py` gemma3_text entry). ✅
+    - Instance-level patch verification via `inspect.getsource`: Task 8 (matches `test_apply_liger_kernel_to_instance_for_gemma3_text`). ✅
   - Dependency handling: not bumping the `transformers` floor; per-test `GEMMA4_AVAILABLE` guard is the conventional pattern (see `SMOLLM3_AVAILABLE`, `QWEN3NEXT_AVAILABLE`, `FALCONH1_AVAILABLE`). ✅
   - No gaps for the 31B text-only scope.
 - **Placeholder scan:** no TBD / TODO / "implement later" / "add appropriate error handling" left in the plan. ✅
-- **Type consistency:** `LigerRMSNormForGemma4` (Task 1) is consumed in Task 3. `causal_forward` (Task 2) is imported in Task 3. `revert_liger_kernel_to_gemma4_text` (Task 5) is used in Task 6. `GEMMA4_AVAILABLE` spelling consistent. ✅
+- **Type consistency:** `LigerRMSNormForGemma4` (Task 1) is consumed in Task 3. `causal_forward` (Task 2) is imported in Tasks 3 and 8. `revert_liger_kernel_to_gemma4_text` (Task 5) is used in Tasks 6 and 7. `GEMMA4_AVAILABLE` spelling consistent across Tasks 6 and 7. `is_gemma4_available()` used in Task 8. ✅
