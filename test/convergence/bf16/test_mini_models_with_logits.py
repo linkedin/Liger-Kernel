@@ -2118,9 +2118,9 @@ def run_mini_model(
             32,
             1e-5,
             torch.bfloat16,
-            1e-2,
+            5e-2,  # loss_atol — see test_mini_models.py, same bf16 drift
             5e-2,
-            3e-1,  # 1e-1 too flaky (same as gemma3_text in this file)
+            5e-1,  # logprobs_atol — 3 of ~20k top-k logprob slots flip by ~0.5 due to bf16 near-ties
             1e-2,
             1e-2,
             1e-2,

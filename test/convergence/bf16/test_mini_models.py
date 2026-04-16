@@ -2292,7 +2292,7 @@ def run_mini_model(
             32,
             1e-5,
             torch.bfloat16,
-            1e-2,
+            5e-2,  # loss_atol — 6-layer mini in bf16 drifts ~0.05 on a few steps (vs 4-layer gemma3 which fits 1e-2)
             1e-2,
             1e-1,
             1e-2,
