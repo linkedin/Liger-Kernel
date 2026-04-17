@@ -34,11 +34,16 @@ def lce_forward(
     mm_token_type_ids: Optional[torch.IntTensor] = None,
     cache_position: Optional[torch.LongTensor] = None,
     second_per_grid_ts: Optional[torch.Tensor] = None,
+    logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
     **kwargs,
 ) -> Union[Tuple, LigerQwen3VLMoeCausalLMOutputWithPast]:
     """
     Qwen3-VL-MoE forward with fused linear cross entropy support mirroring Qwen3-VL behaviour.
+
+    logits_to_keep (`int` or `torch.Tensor`, *optional*):
+        If an `int`, compute logits for the last `logits_to_keep` tokens. If `0`, calculate logits for all
+        input tokens. If a `torch.Tensor`, it must contain the sequence indices to keep.
     """
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -68,6 +73,8 @@ def lce_forward(
     )
 
     hidden_states = outputs[0]
+    slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+    kept_hidden_states = hidden_states[:, slice_indices, :]
 
     shift_labels = kwargs.pop("shift_labels", None)
     loss = None
@@ -83,7 +90,7 @@ def lce_forward(
 
     if skip_logits:
         result = LigerForCausalLMLoss(
-            hidden_states=hidden_states,
+            hidden_states=kept_hidden_states,
             lm_head_weight=self.lm_head.weight,
             labels=labels,
             shift_labels=shift_labels,
@@ -92,10 +99,16 @@ def lce_forward(
         )
         loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
     else:
-        logits = self.lm_head(hidden_states)
+        logits = self.lm_head(kept_hidden_states)
 
-        if labels is not None:
-            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size)
+        if labels is not None or shift_labels is not None:
+            loss = self.loss_function(
+                logits=logits,
+                labels=labels,
+                shift_labels=shift_labels,
+                vocab_size=self.config.text_config.vocab_size,
+                **kwargs,
+            )
 
     # Compute auxiliary load-balancing loss for MoE when requested
     aux_loss = None
