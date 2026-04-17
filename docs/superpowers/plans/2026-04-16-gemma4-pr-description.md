@@ -88,6 +88,37 @@ Three plan-level assumptions that only showed up under real model construction �
 
 ## Test plan
 
+- Hardware Type: AMD MI250X (LUMI HPC)
+- [x] run `make test` to ensure correctness
+- [x] run `make checkstyle` to ensure code style
+- [x] run `make test-convergence` to ensure convergence
+
+### CPU-runnable (included in `make test`)
+
+```
+$ python -m pytest test/transformers/test_monkey_patch.py::test_apply_liger_kernel_to_instance_for_gemma4_text -v
+collected 1 item
+
+test/transformers/test_monkey_patch.py::test_apply_liger_kernel_to_instance_for_gemma4_text
+-------------------------------- live log call ---------------------------------
+INFO     liger_kernel.transformers.monkey_patch: Applying Liger kernels to model instance with model type: gemma4_text with kwargs: {}
+WARNING  liger_kernel.transformers.monkey_patch: rope=True is currently a no-op for Gemma 4: HF's apply_rotary_pos_emb uses a single-tensor signature that is incompatible with liger_rotary_pos_emb. Skipping rope kernel swap.
+PASSED                                                                   [100%]
+
+======================== 1 passed, 1 warning in 21.27s =========================
+```
+
+### checkstyle
+
+```
+$ ruff check --output-format=concise .
+All checks passed!
+$ ruff format --check .
+264 files already formatted
+```
+
+### LUMI (MI250X, ROCm 6.2.4, PyTorch 2.7.1, transformers 5.5.4)
+
 - [x] `pytest test/transformers/test_monkey_patch.py::test_apply_liger_kernel_to_instance_for_gemma4_text` — runs on CPU
 - [x] `pytest test/convergence/bf16/test_mini_models.py -k mini_gemma4_text` — MI250X ROCm
 - [x] `pytest test/convergence/bf16/test_mini_models_with_logits.py -k mini_gemma4_text` — MI250X ROCm
@@ -99,5 +130,9 @@ Three plan-level assumptions that only showed up under real model construction �
 Environment: LUMI HPC, AMD MI250X, `lumi-pytorch-rocm-6.2.4-python-3.12-pytorch-v2.7.1.sif`, `transformers==5.5.4`.
 
 ---
+
+## AI-assisted development disclosure
+
+Drafted with **Claude Opus 4.7** (Claude Code CLI) following the pattern established by maintainer-merged model patches (gemma3, ministral, nemotron). No auto-generation skill (e.g. `liger-autopatch`) was used end-to-end — the scaffolding and LUMI-verified fixes were developed and reviewed interactively. Pre-PR code-quality, compliance, and documentation audits were delegated to Sonnet 4.6 subagents; findings were synthesized and applied on the branch before opening this PR.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
