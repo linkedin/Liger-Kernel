@@ -31,12 +31,42 @@ def causal_forward(
     skip_logits: Optional[bool] = None,
     **loss_kwargs,
 ) -> Union[Tuple, LigerCausalLMOutputWithPast]:
-    """Fused-linear-cross-entropy forward for Gemma4ForCausalLM.
+    r"""
+        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+            config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+            (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
 
-    Mirrors liger's gemma3 causal_forward. Gemma 4 31B uses
-    final_logit_softcapping=30.0, so the softcap branch is exercised on
-    the non-fused path.
-    """
+        logits_to_keep (`int` or `torch.Tensor`, *optional*):
+            If an `int`, compute logits for the last `logits_to_keep` tokens. If `0`, calculate logits for all
+            `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
+            token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
+            If a `torch.Tensor`, must be 1D corresponding to the indices to keep in the sequence length dimension.
+            This is useful when using packed tensor format (single dimension for batch and sequence length).
+
+    Fused-linear-cross-entropy forward for Gemma4ForCausalLM. Mirrors liger's
+    gemma3 causal_forward. Gemma 4 31B uses final_logit_softcapping=30.0, so
+    the softcap branch is exercised on the non-fused path.
+
+    Returns:
+
+    Example:
+
+    ```python
+    >>> from transformers import AutoTokenizer, Gemma4ForCausalLM
+
+    >>> model = Gemma4ForCausalLM.from_pretrained("google/gemma-4-31b")  # illustrative slug
+    >>> tokenizer = AutoTokenizer.from_pretrained("google/gemma-4-31b")
+
+    >>> prompt = "What is your favorite condiment?"
+    >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+    >>> # Generate
+    >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+    >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+    "What is your favorite condiment?"
+    ```"""
+
     if self.training and self.config._attn_implementation != "eager":
         logger.warning_once(
             "It is strongly recommended to train Gemma4 models with the `eager` attention implementation "

@@ -71,7 +71,11 @@ class LigerRMSNormForGemma3(LigerRMSNorm):
 
 
 class LigerRMSNormForGemma4(LigerRMSNorm):
-    """Gemma4RMSNorm semantics (see transformers.models.gemma4.modeling_gemma4):
+    """Gemma4RMSNorm inherits Gemma3nRMSNorm (not Gemma3RMSNorm); reusing
+    LigerRMSNormForGemma3 here would silently diverge training because
+    Gemma3's subclass applies ``(1 + w) * x`` semantics via the +1 offset.
+
+    Gemma4RMSNorm semantics (see transformers.models.gemma4.modeling_gemma4):
       - weight initialized to ones (not zeros, unlike Gemma3)
       - no (1 + weight) offset — scales by weight directly
       - fp32 compute, cast back to input dtype
@@ -92,9 +96,7 @@ class LigerRMSNormForGemma4(LigerRMSNorm):
         in_place=False,
         with_scale=True,
     ):
-        super().__init__(
-            dim, eps, offset, casting_mode, init_fn, in_place, elementwise_affine=with_scale
-        )
+        super().__init__(dim, eps, offset, casting_mode, init_fn, in_place, elementwise_affine=with_scale)
         self.with_scale = with_scale
 
     def forward(self, hidden_states):

@@ -32,5 +32,6 @@ class LigerGEGLUMLPForGemma4(LigerGEGLUMLP):
     doubled intermediate_size path. Forward is inherited unchanged.
     """
 
+    # Internal monkey-patch helper only — not part of the public API surface.
     def __init__(self, config, layer_idx=None):
         super().__init__(config)

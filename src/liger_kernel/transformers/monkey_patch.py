@@ -1289,6 +1289,9 @@ def apply_liger_kernel_to_gemma4_text(
     Gemma4TextForCausalLM = getattr(modeling_gemma4, "Gemma4TextForCausalLM", None)
 
     # Gemma4RMSNorm uses ones-init, no +1 offset, fp32 compute.
+    # offset=0.0 + casting_mode="gemma" is deliberate: the "gemma" path upcasts
+    # to fp32 as HF does, and offset=0.0 yields ``w * x`` (no +1 bias) which
+    # matches ones-init weight semantics.
     _patch_rms_norm_module_for_gemma4 = partial(
         _patch_rms_norm_module, offset=0.0, casting_mode="gemma", in_place=False
     )
@@ -1318,7 +1321,7 @@ def apply_liger_kernel_to_gemma4_text(
         # pytorch rope in place. Large wins (RMSNorm, GEGLU, fused LCE)
         # still apply. Emit a single warning so callers flipping rope on
         # aren't silently ignored.
-        logger.warning(
+        logger.warning_once(
             "rope=True is currently a no-op for Gemma 4: HF's "
             "apply_rotary_pos_emb uses a single-tensor signature that is "
             "incompatible with liger_rotary_pos_emb. Skipping rope kernel swap."
@@ -1352,9 +1355,7 @@ def apply_liger_kernel_to_gemma4_text(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        causal_lm_types = tuple(
-            cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM) if cls is not None
-        )
+        causal_lm_types = tuple(cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM) if cls is not None)
         if isinstance(model, causal_lm_types) or isinstance(model, Gemma4TextModel):
             # get the base model from the model instance
             base_model = model.model if isinstance(model, causal_lm_types) else model
@@ -1380,9 +1381,7 @@ def apply_liger_kernel_to_gemma4_text(
                     _maybe_patch_scaled_norm(getattr(decoder_layer.self_attn, "k_norm", None))
                     _maybe_patch_scaled_norm(getattr(decoder_layer.self_attn, "v_norm", None))
         else:
-            raise TypeError(
-                "The model must be Gemma4ForCausalLM, Gemma4TextForCausalLM, or Gemma4TextModel."
-            )
+            raise TypeError("The model must be Gemma4ForCausalLM, Gemma4TextForCausalLM, or Gemma4TextModel.")
 
 
 def apply_liger_kernel_to_paligemma(

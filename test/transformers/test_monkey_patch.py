@@ -1903,12 +1903,8 @@ def test_apply_liger_kernel_to_instance_for_gemma4_text():
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
-            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_feedforward_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
             )
@@ -1924,17 +1920,18 @@ def test_apply_liger_kernel_to_instance_for_gemma4_text():
         for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
-            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(
-                LigerRMSNorm.forward
-            )
-            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(
-                LigerRMSNorm.forward
-            )
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_feedforward_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
             )
             assert inspect.getsource(layer.self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            # v_norm is scale-free (with_scale=False); _maybe_patch_scaled_norm
+            # intentionally skips it, so the instance must retain the HF forward.
+            v_norm = getattr(layer.self_attn, "v_norm", None)
+            if v_norm is not None:
+                assert inspect.getsource(v_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
 
         try:
             print(dummy_model_instance)

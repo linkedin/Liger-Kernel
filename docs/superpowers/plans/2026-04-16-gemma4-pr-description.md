@@ -25,7 +25,7 @@ Adds Liger-Kernel support for Google's **Gemma 4** family (text, dense variants 
 
 ## Headline: Peak HBM at seq_len=8192
 
-Measured on **AMD MI250X (LUMI)** with a 4-layer Gemma-4-shaped mini model at full 31B vocab (262,144), `bf16`, batch=1, seq=8192, forward+backward:
+Measured on **AMD MI250X (LUMI)** with a 6-layer Gemma-4-shaped mini model at full 31B vocab (262,144), `bf16`, batch=1, seq=8192, forward+backward:
 
 | Peak HBM | Value |
 |---|---|
