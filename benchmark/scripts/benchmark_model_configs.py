@@ -60,6 +60,15 @@ class ModelConfig:
     rms_norm_eps: float = 1e-5
     dtype: torch.dtype = torch.bfloat16
 
+    # ===== MoE-specific (optional) =====
+    num_experts: Optional[int] = None
+    topk: Optional[int] = None
+    moe_intermediate_size: Optional[int] = None
+
+    @property
+    def is_moe(self) -> bool:
+        return self.num_experts is not None
+
 
 @dataclass(frozen=True)
 class SeqLenSweepConfig:
@@ -91,7 +100,35 @@ class ModelConfigSweepConfig:
     seq_len: int
 
 
-# ── Model Profiles ──────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class MoEModelConfig:
+    """MoE model architecture profile for fused MoE benchmarks.
+
+    EP-adjusted values should be baked in: T = total_tokens / ep_size,
+    E = total_experts / ep_size.
+    """
+
+    name: str
+    T: int  # tokens per GPU (EP-adjusted)
+    E: int  # experts per GPU (EP-adjusted)
+    H: int  # hidden size
+    intermediate_dim: int  # expert intermediate size
+    K: int  # top-k
+
+
+# ── MoE Model Profiles ───────────────────────────────────────────────────────
+
+QWEN3_MOE_30B = MoEModelConfig(
+    name="qwen3_moe_30b",
+    T=8192,
+    E=128,
+    H=2048,
+    intermediate_dim=768,
+    K=8,
+)
+
+
+# ── Dense Model Profiles ─────────────────────────────────────────────────────
 
 LLAMA_2_7B = ModelConfig(
     name="llama_2_7b",
@@ -117,9 +154,80 @@ LLAMA_3_8B = ModelConfig(
     max_position_embeddings=8192,
 )
 
+QWEN_2_5_7B = ModelConfig(
+    name="qwen2.5_7b",
+    hidden_size=3584,
+    intermediate_size=18944,
+    vocab_size=152064,
+    num_attention_heads=28,
+    num_key_value_heads=4,
+    head_dim=128,
+    hidden_act="silu",
+    max_position_embeddings=32768,
+)
+
+QWEN_2_5_14B = ModelConfig(
+    name="qwen2.5_14b",
+    hidden_size=5120,
+    intermediate_size=13824,
+    vocab_size=152064,
+    num_attention_heads=40,
+    num_key_value_heads=8,
+    head_dim=128,
+    hidden_act="silu",
+    max_position_embeddings=32768,
+)
+
+QWEN_2_5_72B = ModelConfig(
+    name="qwen2.5_72b",
+    hidden_size=8192,
+    intermediate_size=29568,
+    vocab_size=152064,
+    num_attention_heads=64,
+    num_key_value_heads=8,
+    head_dim=128,
+    hidden_act="silu",
+    max_position_embeddings=32768,
+)
+
+DEEPSEEK_V2_LITE = ModelConfig(
+    name="deepseek_v2_lite",
+    hidden_size=2048,
+    intermediate_size=10944,
+    vocab_size=102400,
+    num_attention_heads=16,
+    num_key_value_heads=16,
+    head_dim=128,
+    hidden_act="silu",
+    max_position_embeddings=163840,
+    moe_intermediate_size=1408,
+    num_experts=64,
+    topk=6,
+)
+
+DEEPSEEK_V3 = ModelConfig(
+    name="deepseek_v3",
+    hidden_size=7168,
+    intermediate_size=18432,
+    vocab_size=129280,
+    num_attention_heads=128,
+    num_key_value_heads=128,
+    head_dim=128,
+    hidden_act="silu",
+    max_position_embeddings=163840,
+    moe_intermediate_size=2048,
+    num_experts=256,
+    topk=8,
+)
+
 MODEL_REGISTRY: Dict[str, ModelConfig] = {
     "llama_2_7b": LLAMA_2_7B,
     "llama_3_8b": LLAMA_3_8B,
+    "qwen2.5_7b": QWEN_2_5_7B,
+    "qwen2.5_14b": QWEN_2_5_14B,
+    "qwen2.5_72b": QWEN_2_5_72B,
+    "deepseek_v2_lite": DEEPSEEK_V2_LITE,
+    "deepseek_v3": DEEPSEEK_V3,
 }
 
 DEFAULT_MODEL_CONFIG = LLAMA_3_8B

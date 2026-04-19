@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 
@@ -5,6 +6,11 @@ import torch
 import torch.nn as nn
 import triton
 
+from benchmark_model_configs import MODEL_REGISTRY
+from benchmark_model_configs import compute_model_config_sweep_config
+from benchmark_model_configs import compute_seq_len_sweep_config
+from benchmark_model_configs import estimate_kernel_peak_memory
+from benchmark_model_configs import get_benchmark_model_config
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
@@ -84,106 +90,54 @@ class LigerCosineSimilarityLoss(nn.Module):
         )
 
 
-def bench_memory_cosine_similarity_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+def _setup_distill_cosine_loss(input: SingleBenchmarkRunInput):
+    """Create input tensors and cosine similarity loss from benchmark config."""
+    cfg = input.extra_benchmark_config
+    H = cfg["hidden_size"]
+    V = cfg["vocab_size"]
+    dtype = cfg["dtype"]
+    bias = cfg["bias"]
+    weight_hard_loss = cfg["weight_hard_loss"]
+    weight_soft_loss = cfg["weight_soft_loss"]
+    ignore_index = cfg["ignore_index"]
     BT = input.x
-    H = input.extra_benchmark_config["H"]
-    V = input.extra_benchmark_config["V"]
-    dtype = input.extra_benchmark_config["dtype"]
-    bias = input.extra_benchmark_config["bias"]
-    weight_hard_loss = input.extra_benchmark_config["weight_hard_loss"]
-    weight_soft_loss = input.extra_benchmark_config["weight_soft_loss"]
-    ignore_index = input.extra_benchmark_config["ignore_index"]
-    provider = input.kernel_provider
-
-    torch_cosine_loss = TorchCosineSimilarityLoss(
-        H=H,
-        V=V,
-        dtype=dtype,
-        weight_hard_loss=weight_hard_loss,
-        weight_soft_loss=weight_soft_loss,
-        bias=bias,
-    ).to(device)
-    liger_cosine_loss = LigerCosineSimilarityLoss(
-        H=H,
-        V=V,
-        dtype=dtype,
-        ignore_index=ignore_index,
-        bias=bias,
-        weight_hard_loss=weight_hard_loss,
-        weight_soft_loss=weight_soft_loss,
-    ).to(device)
 
     _tensor = torch.rand(BT, H // 2, device=device, dtype=dtype)
-    student_input1 = _tensor.detach().clone().requires_grad_(True)
-    student_input2 = _tensor.detach().clone().requires_grad_(True)
-
+    student_input = _tensor.detach().clone().requires_grad_(True)
     teacher_input = torch.rand(BT, H, device=device, dtype=dtype)
-
     target = torch.randint(0, V, (BT,), device=device, dtype=torch.long)
 
-    def fwd():
-        if provider == "liger":
-            return liger_cosine_loss(student_input1, teacher_input, target)
-        elif provider == "torch":
-            return torch_cosine_loss(student_input2, teacher_input, target)
+    if input.kernel_provider == "liger":
+        loss_module = LigerCosineSimilarityLoss(
+            H=H,
+            V=V,
+            dtype=dtype,
+            ignore_index=ignore_index,
+            bias=bias,
+            weight_hard_loss=weight_hard_loss,
+            weight_soft_loss=weight_soft_loss,
+        ).to(device)
+    elif input.kernel_provider == "torch":
+        loss_module = TorchCosineSimilarityLoss(
+            H=H,
+            V=V,
+            dtype=dtype,
+            ignore_index=ignore_index,
+            bias=bias,
+            weight_hard_loss=weight_hard_loss,
+            weight_soft_loss=weight_soft_loss,
+        ).to(device)
+    else:
+        raise ValueError(f"Invalid provider: {input.kernel_provider} for DistillCosineLoss")
+    return student_input, teacher_input, target, loss_module
 
-    def full():
-        y = fwd()
-        y.backward()
 
-    mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(
-        y_20=mem_20,
-        y_50=mem_50,
-        y_80=mem_80,
-    )
-
-
-def bench_speed_cosine_similarity_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    BT = input.x
-    H = input.extra_benchmark_config["H"]
-    V = input.extra_benchmark_config["V"]
-    dtype = input.extra_benchmark_config["dtype"]
-    bias = input.extra_benchmark_config["bias"]
-    weight_hard_loss = input.extra_benchmark_config["weight_hard_loss"]
-    weight_soft_loss = input.extra_benchmark_config["weight_soft_loss"]
-    ignore_index = input.extra_benchmark_config["ignore_index"]
-    provider = input.kernel_provider
+def bench_speed_distill_cosine_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    student_input, teacher_input, target, loss_module = _setup_distill_cosine_loss(input)
     mode = input.kernel_operation_mode
 
-    torch_cosine_loss = TorchCosineSimilarityLoss(
-        H=H,
-        V=V,
-        dtype=dtype,
-        ignore_index=ignore_index,
-        bias=bias,
-        weight_hard_loss=weight_hard_loss,
-        weight_soft_loss=weight_soft_loss,
-    ).to(device)
-
-    liger_cosine_loss = LigerCosineSimilarityLoss(
-        H=H,
-        V=V,
-        dtype=dtype,
-        ignore_index=ignore_index,
-        bias=bias,
-        weight_hard_loss=weight_hard_loss,
-        weight_soft_loss=weight_soft_loss,
-    ).to(device)
-
-    _tensor = torch.rand(BT, H // 2, device=device, dtype=dtype)
-    student_input1 = _tensor.detach().clone().requires_grad_(True)
-    student_input2 = _tensor.detach().clone().requires_grad_(True)
-
-    teacher_input = torch.rand(BT, H, device=device, dtype=dtype)
-
-    target = torch.randint(0, V, (BT,), device=device, dtype=torch.long)
-
     def fwd():
-        if provider == "liger":
-            return liger_cosine_loss(student_input1, teacher_input, target)
-        elif provider == "torch":
-            return torch_cosine_loss(student_input2, teacher_input, target)
+        return loss_module(student_input, teacher_input, target)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -194,15 +148,8 @@ def bench_speed_cosine_similarity_loss(input: SingleBenchmarkRunInput) -> Single
     elif mode == "backward":
         y = fwd()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            fwd,
-            rep=100,
-            quantiles=QUANTILES,
-        )
-    elif mode == "backward":
-        y = fwd()
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
             lambda: y.backward(retain_graph=True),
-            grad_to_none=[student_input1, student_input2],
+            grad_to_none=[student_input],
             rep=100,
             quantiles=QUANTILES,
         )
@@ -217,6 +164,8 @@ def bench_speed_cosine_similarity_loss(input: SingleBenchmarkRunInput) -> Single
             rep=100,
             quantiles=QUANTILES,
         )
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
 
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
@@ -225,42 +174,226 @@ def bench_speed_cosine_similarity_loss(input: SingleBenchmarkRunInput) -> Single
     )
 
 
+def bench_memory_distill_cosine_loss(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    student_input, teacher_input, target, loss_module = _setup_distill_cosine_loss(input)
+
+    def full():
+        y = loss_module(student_input, teacher_input, target)
+        y.backward()
+
+    mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
+
+
+def _resolve_model_config_distill_cosine_loss(input: SingleBenchmarkRunInput):
+    """Resolve model-config-sweep input into standard setup args."""
+    cfg = input.extra_benchmark_config
+    model_info = cfg["model_configs"][input.x]
+    return _setup_distill_cosine_loss(
+        SingleBenchmarkRunInput(
+            x=cfg["BT"],
+            kernel_provider=input.kernel_provider,
+            extra_benchmark_config={
+                "hidden_size": model_info["hidden_size"],
+                "vocab_size": model_info["vocab_size"],
+                "dtype": model_info["dtype"],
+                "bias": cfg["bias"],
+                "weight_hard_loss": cfg["weight_hard_loss"],
+                "weight_soft_loss": cfg["weight_soft_loss"],
+                "ignore_index": cfg["ignore_index"],
+            },
+        )
+    )
+
+
+def bench_speed_distill_cosine_loss_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    student_input, teacher_input, target, loss_module = _resolve_model_config_distill_cosine_loss(input)
+    mode = input.kernel_operation_mode
+
+    def fwd():
+        return loss_module(student_input, teacher_input, target)
+
+    if mode == "forward":
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            fwd,
+            rep=100,
+            quantiles=QUANTILES,
+        )
+    elif mode == "backward":
+        y = fwd()
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            lambda: y.backward(retain_graph=True),
+            grad_to_none=[student_input],
+            rep=100,
+            quantiles=QUANTILES,
+        )
+    elif mode == "full":
+
+        def full():
+            y = fwd()
+            y.backward()
+
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            full,
+            rep=100,
+            quantiles=QUANTILES,
+        )
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
+
+
+def bench_memory_distill_cosine_loss_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    student_input, teacher_input, target, loss_module = _resolve_model_config_distill_cosine_loss(input)
+
+    def full():
+        y = loss_module(student_input, teacher_input, target)
+        y.backward()
+
+    mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
+
+
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    common_configs = {
-        "kernel_name": "distill_cosine_loss",
-        "x_name": "BT",
-        "x_label": "B x T",
-        "x_values": [2**i for i in range(10, 14)],
-        "kernel_providers": ["liger", "torch"],
-        "extra_benchmark_configs": [
-            {
-                "H": 4096,
-                "V": 128256,
-                "mode": "forward",
-                "dtype": torch.bfloat16,
-                "bias": False,
-                "weight_hard_loss": 0.5,
-                "weight_soft_loss": 0.5,
-                "ignore_index": -100,
+    if args.sweep_mode == "model_config":
+        all_model_configs = list(MODEL_REGISTRY.values())
+
+        def _probe_factory(model_cfg, probe_bt):
+            def _probe():
+                probe_input = SingleBenchmarkRunInput(
+                    x=probe_bt,
+                    kernel_provider="torch",
+                    extra_benchmark_config={
+                        "hidden_size": model_cfg.hidden_size,
+                        "vocab_size": model_cfg.vocab_size,
+                        "dtype": model_cfg.dtype,
+                        "bias": False,
+                        "weight_hard_loss": 0.5,
+                        "weight_soft_loss": 0.5,
+                        "ignore_index": -100,
+                    },
+                )
+                student_input, teacher_input, target, loss_module = _setup_distill_cosine_loss(probe_input)
+                return loss_module(student_input, teacher_input, target)
+
+            return _probe
+
+        sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
+
+        model_configs_info = {
+            cfg.name: {
+                "hidden_size": cfg.hidden_size,
+                "vocab_size": cfg.vocab_size,
+                "dtype": cfg.dtype,
             }
-        ],
-        "overwrite": args.overwrite,
-    }
+            for cfg in sweep.model_configs
+        }
 
-    run_benchmarks(
-        bench_test_fn=bench_speed_cosine_similarity_loss,
-        kernel_operation_modes=["forward", "full"],
-        metric_name="speed",
-        metric_unit="ms",
-        **common_configs,
-    )
+        common_configs = {
+            "kernel_name": "distill_cosine_loss",
+            "x_name": "model_config",
+            "x_label": "model configuration",
+            "x_values": [cfg.name for cfg in sweep.model_configs],
+            "kernel_providers": ["liger", "torch"],
+            "extra_benchmark_configs": [
+                {
+                    "model_configs": model_configs_info,
+                    "BT": sweep.bt,
+                    "bias": False,
+                    "weight_hard_loss": 0.5,
+                    "weight_soft_loss": 0.5,
+                    "ignore_index": -100,
+                }
+            ],
+            "overwrite": args.overwrite,
+        }
 
-    run_benchmarks(
-        bench_test_fn=bench_memory_cosine_similarity_loss,
-        kernel_operation_modes=["full"],
-        metric_name="memory",
-        metric_unit="MB",
-        **common_configs,
-    )
+        run_benchmarks(
+            bench_test_fn=bench_speed_distill_cosine_loss_model_config,
+            kernel_operation_modes=["forward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_distill_cosine_loss_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
+    else:
+        model = get_benchmark_model_config(args.model)
+        probe_bt = 1024
+
+        def _probe():
+            probe_input = SingleBenchmarkRunInput(
+                x=probe_bt,
+                kernel_provider="torch",
+                extra_benchmark_config={
+                    "hidden_size": model.hidden_size,
+                    "vocab_size": model.vocab_size,
+                    "dtype": model.dtype,
+                    "bias": False,
+                    "weight_hard_loss": 0.5,
+                    "weight_soft_loss": 0.5,
+                    "ignore_index": -100,
+                },
+            )
+            student_input, teacher_input, target, loss_module = _setup_distill_cosine_loss(probe_input)
+            return loss_module(student_input, teacher_input, target)
+
+        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
+        kernel_bpt = peak_bytes // probe_bt
+
+        config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+
+        common_configs = {
+            "kernel_name": "distill_cosine_loss",
+            "x_name": "BT",
+            "x_label": "B * T",
+            "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
+            "kernel_providers": ["liger", "torch"],
+            "extra_benchmark_configs": [
+                {
+                    "hidden_size": model.hidden_size,
+                    "vocab_size": model.vocab_size,
+                    "dtype": model.dtype,
+                    "bias": False,
+                    "weight_hard_loss": 0.5,
+                    "weight_soft_loss": 0.5,
+                    "ignore_index": -100,
+                }
+            ],
+            "overwrite": args.overwrite,
+        }
+
+        run_benchmarks(
+            bench_test_fn=bench_speed_distill_cosine_loss,
+            kernel_operation_modes=["forward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_distill_cosine_loss,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
