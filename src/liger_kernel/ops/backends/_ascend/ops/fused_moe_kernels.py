@@ -268,11 +268,9 @@ def _get_gemm_autotune_configs():
     # tests and first-run unbearable.  One stable config is enough for correctness.
     # Keep BLOCK_N/BLOCK_K moderate — large tiles overflow UB in bwd kernels.
     return [
-        # NOTE: Triton requires total grid programs < 65536. For large MoE shapes
-        # (e.g. E=128, T=8192, K=8, BLOCK_M_TOKEN=32), num_m_tiles can be ~2048.
-        # With BLOCK_N=64 and H=2048 => grid=(2048, 32) => 65536 (invalid).
-        # Use a larger BLOCK_N to reduce grid-y and stay below the limit.
-        triton.Config({"BLOCK_N": 128, "BLOCK_K": 32}, num_warps=4, num_stages=2),
+        # NOTE: Triton requires total grid programs < 65536. Keep a robust
+        # compile-safe config for Ascend.
+        triton.Config({"BLOCK_N": 192, "BLOCK_K": 64}, num_warps=4, num_stages=2),
     ]
 
 
@@ -473,6 +471,8 @@ def _fused_down_proj_kernel(
 def _get_token_gather_autotune_configs():
     return [
         triton.Config({"BLOCK_H": 128, "BLOCK_K": 8}, num_warps=4, num_stages=4),
+        triton.Config({"BLOCK_H": 256, "BLOCK_K": 8}, num_warps=4, num_stages=4),
+        triton.Config({"BLOCK_H": 256, "BLOCK_K": 16}, num_warps=4, num_stages=4),
     ]
 
 
@@ -651,8 +651,9 @@ def _moe_bwd_down_proj_kernel(
 @triton.autotune(
     configs=[
         # Keep total grid programs < 65536 for large E/H/I.
-        # Grid: (E * ceil(I/BLOCK_M), ceil(H/BLOCK_N)). Larger BLOCK_N reduces grid-y.
-        triton.Config({"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 16}, num_warps=4, num_stages=2),
+        # Larger BLOCK_M/BLOCK_K improve arithmetic intensity on long-sequence
+        # backward workloads and cut K-loop overhead.
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 240, "BLOCK_K": 32}, num_warps=4, num_stages=2),
     ],
     key=["H_dim", "I_dim"],
     reset_to_zero=["dW2_ptr"],
@@ -712,16 +713,16 @@ def _moe_bwd_dW2_kernel(
         k_mask = k_idx < M_e
         row_offs = expert_start + k_idx
 
-        wact_ptrs = weighted_act_ptr + row_offs[None, :] * stride_wact_TK + i_idx[:, None] * stride_wact_I
-        wact_tile = tl.load(wact_ptrs, mask=k_mask[None, :] & i_mask[:, None], other=0.0)
+        wact_ptrs = weighted_act_ptr + row_offs[:, None] * stride_wact_TK + i_idx[None, :] * stride_wact_I
+        wact_tile = tl.load(wact_ptrs, mask=k_mask[:, None] & i_mask[None, :], other=0.0)
 
         token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0)
         dout_ptrs = dout_ptr + token_idx[:, None] * stride_dout_T + h_idx[None, :] * stride_dout_H
         dout_tile = tl.load(dout_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
 
-        # dW2[h, i] = sum_t dout_g[t, h] * wa[t, i]  <=>  (H,T)*(T,I) with wa (T,I), dout_g (T,H)
-        # wact_tile is (I_blk, T_blk); dout_tile is (T_blk, H_blk) — previous tl.dot(wa, dout) gave (I,H), wrong layout.
-        acc += tl.dot(tl.trans(dout_tile), tl.trans(wact_tile))
+        # dW2[h, i] = sum_t dout_g[t, h] * wa[t, i]  <=>  (H,T) @ (T,I)
+        # Keep weighted_act as (T_blk, I_blk) so only one transpose is needed.
+        acc += tl.dot(tl.trans(dout_tile), wact_tile)
 
     # acc layout is (H_blk, I_blk) — match dW2[e, h, i] with h on the first broadcast axis.
     dW2_ptrs = dW2_ptr + expert_idx * stride_dW2_E + h_idx[:, None] * stride_dW2_H + i_idx[None, :] * stride_dW2_I
@@ -823,8 +824,8 @@ def _moe_bwd_dX_expanded_kernel(
 @triton.autotune(
     configs=[
         # Keep total grid programs < 65536 for large E/H/I.
-        # Grid: (E * ceil(H/BLOCK_M), ceil(2I/BLOCK_N)). Larger BLOCK_N reduces grid-y.
-        triton.Config({"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 16}, num_warps=4, num_stages=2),
+        # Match dW2 tiling for better large-shape throughput.
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 240, "BLOCK_K": 32}, num_warps=4, num_stages=2),
     ],
     key=["H_dim", "I_dim"],
     reset_to_zero=["dW1_ptr"],
