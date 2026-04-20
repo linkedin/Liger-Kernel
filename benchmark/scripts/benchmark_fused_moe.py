@@ -106,11 +106,11 @@ def _setup_fused_moe(input: SingleBenchmarkRunInput):
     if input.kernel_provider == "liger":
 
         def fwd_fn():
-            return LigerFusedMoEFunction.apply(x, gup, dn, idx, wts).to(device)
+            return LigerFusedMoEFunction.apply(x, gup, dn, idx, wts)
     elif input.kernel_provider == "huggingface":
 
         def fwd_fn():
-            return _huggingface_moe_forward(x, gup, dn, idx, wts).to(device)
+            return _huggingface_moe_forward(x, gup, dn, idx, wts)
     else:
         raise ValueError(f"Unknown provider: {input.kernel_provider}")
 
@@ -157,9 +157,9 @@ def _warmup_liger(T, E, H, intermediate_dim, K, dtype, sweep_dim):
     warmup_out = warmup_fn()
     warmup_out.sum().backward()
     del warmup_out
-    if device == "cuda" and torch.cuda.is_available():
+    if device == "cuda":
         torch.cuda.synchronize()
-    elif device == "npu" and hasattr(torch, "npu") and torch.npu.is_available():
+    elif device == "npu":
         torch.npu.synchronize()
 
 
@@ -234,9 +234,9 @@ if __name__ == "__main__":
             print(f"  warmup E={e_val}...")
             _warmup_liger(probe_T, e_val, H, intermediate_dim, K, dtype, sweep_dim="E")
 
-    if device == "cuda" and torch.cuda.is_available():
+    if device == "cuda":
         torch.cuda.synchronize()
-    elif device == "npu" and hasattr(torch, "npu") and torch.npu.is_available():
+    elif device == "npu":
         torch.npu.synchronize()
 
     print("Autotune warmup complete.\n")

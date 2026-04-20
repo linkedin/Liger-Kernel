@@ -1,42 +1,11 @@
-# Triton kernels for fused MoE expert computation.
-#
-# Routing metadata kernels (Kernels 1-3) are adapted from:
-#   SonicMoE (https://github.com/linkedin/sonic-moe)
-#   Copyright 2025 Wentao Guo, Mayank Mishra, Xinle Cheng, Ion Stoica, Tri Dao
-#
-# Grouped GEMM kernels and backward kernels are new Triton implementations
-# inspired by the SonicMoE paper (arXiv:2512.14080), ported to portable Triton
-# (no Hopper-specific WGMMA/TMA) for general GPU support.
+# Triton kernels for fused MoE on Ascend.
+# Routing metadata kernels are adapted from SonicMoE:
+# https://github.com/linkedin/sonic-moe
 
 import triton
 import triton.language as tl
 
-# ---------------------------------------------------------------------------
-# Routing metadata overview
-#
-# Three kernels produce permutation arrays for grouped GEMM:
-#
-#   K1 — Histogram: count (token,k) assignments per expert per tile.
-#   K2 — Prefix sums: convert tile counts to exclusive prefix sums;
-#         compute expert_start_idx (token offsets) and tile offsets.
-#   K3 — Scatter: sort by expert, assign globally sorted positions,
-#         write x_gather_idx / s_scatter_idx / s_reverse_scatter_idx
-#         and tile metadata (tile_row_start, tile_expert).
-#
-# GEMM kernels consume:
-#   x_gather_idx          (TK,)   sorted_pos → original token index
-#   s_scatter_idx         (TK,)   sorted_pos → flat (t,k) index
-#   s_reverse_scatter_idx (TK,)   flat (t,k) → sorted_pos
-#   expert_start_idx      (E+1,)  exclusive cumsum of tokens per expert
-#   tile_row_start        (M,)    absolute row_start in sorted space per M-tile
-#   tile_expert           (M,)    expert index per M-tile
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Tiled histogram of expert token counts
-# Adapted from sonic-moe _compute_col_partial_sum_kernel
-# ---------------------------------------------------------------------------
+# Routing metadata: histogram -> prefix sum -> scatter.
 
 
 @triton.jit
@@ -51,18 +20,7 @@ def _moe_router_histogram_kernel(
     K: tl.constexpr,
     E_POW2: tl.constexpr,
 ):
-    """Count how many of this tile's (token, k) assignments route to each expert.
-
-    Grid: (n_tiles,).  Each CTA owns one contiguous slice of TOKENS_PER_TILE
-    tokens and atomically increments partial_sum[expert_id, tile_id] for every
-    (token, k) pair it sees.
-
-    partial_sum is stored row-major with shape (E, n_tiles) so that K2 can
-    read each expert's column (partial_sum[e, :]) with a stride-1 access.
-
-    Ascend note: avoid 2-D tensor + tl.reshape — BiShengHIR fails on
-    memref.collapse_shape.  Use 1-D tl.arange + elementwise indexing (no reshape).
-    """
+    """Count per-expert assignments for each token tile."""
     tile_id = tl.program_id(0)
 
     # Zero this tile's column before counting — partial_sum is not pre-cleared.
@@ -84,12 +42,6 @@ def _moe_router_histogram_kernel(
     tl.atomic_add(partial_sum_ptr + eid * n_tiles + tile_id, 1, mask=m)
 
 
-# ---------------------------------------------------------------------------
-# Per-expert tile prefix sums + global token/tile offsets
-# Adapted from sonic-moe _bitmatrix_metadata_compute_stage1
-# ---------------------------------------------------------------------------
-
-
 @triton.jit
 def _moe_router_prefix_sum_kernel(
     expert_freq_ptr,  # (E,) int32 — total tokens assigned to each expert
@@ -103,31 +55,9 @@ def _moe_router_prefix_sum_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_M_TOKEN: tl.constexpr,
 ):
-    """Convert histogram counts into prefix sums; compute token and tile offsets.
-
-    Grid: (E+2,).  Three disjoint roles, all running concurrently:
-
-    PIDs 0..E-1  — Per-expert tile prefix scan
-        Each CTA converts its expert's row of partial_sum from raw tile
-        counts into exclusive prefix sums across tiles.  After K3 reads
-        partial_sum[e, tile_id], it knows how many of expert e's tokens
-        appeared in earlier tiles, which it adds to within_expert_rank to
-        get the global sorted position.
-
-    PID E  — Global token and M-tile offset computation
-        Sequentially scans all expert frequencies in blocks of BLOCK_N to
-        build two exclusive cumsums in a single pass:
-          expert_start_idx[e]    = sum of expert_frequency[0..e-1]
-          expert_tile_offset[e]  = sum of ceil(freq[0..e-1] / BLOCK_M_TOKEN)
-        Also writes the sentinel expert_tile_offset[E] = total M-tiles.
-
-    PID E+1  — Token sentinel
-        Writes expert_start_idx[E] = TK.
-    """
+    """Build expert offsets and per-tile prefix sums used by scatter."""
     pid = tl.program_id(0)
     if pid < E:
-        # Per-expert tile prefix scan: transform partial_sum[pid, :] from
-        # raw counts to exclusive prefix sums for conflict-free output positions.
         expert_partial_sum_ptr = partial_sum_ptr + pid * n_tiles
         curr_sum = 0
         for start in range(0, n_tiles, BLOCK_M):
@@ -137,9 +67,6 @@ def _moe_router_prefix_sum_kernel(
             curr_sum += tl.sum(tile_counts, 0)
             tl.store(expert_partial_sum_ptr + offs, excl_cumsum, mask=offs < n_tiles)
     elif pid == E:
-        # Global token and M-tile offsets (single sequential CTA).
-        # Both expert_start_idx and expert_tile_offset are exclusive prefix sums
-        # accumulated together to avoid a second pass.
         curr_freq_sum = 0
         curr_tile_sum = 0
         for start in tl.static_range(0, E, BLOCK_N):
@@ -150,23 +77,14 @@ def _moe_router_prefix_sum_kernel(
             curr_freq_sum += tl.sum(expert_freq, 0)
             tl.store(expert_freq_offs_ptr + offs, excl_freq, mask=offs < E)
 
-            # Number of BLOCK_M_TOKEN-sized M-tiles needed for each expert.
             expert_m_tiles = (expert_freq + BLOCK_M_TOKEN - 1) // BLOCK_M_TOKEN
             excl_tile = tl.cumsum(expert_m_tiles, 0) - expert_m_tiles + curr_tile_sum
             curr_tile_sum += tl.sum(expert_m_tiles, 0)
             tl.store(expert_tile_offset_ptr + offs, excl_tile, mask=offs < E)
 
-        # Write total M-tile count as the sentinel.
         tl.store(expert_tile_offset_ptr + E, curr_tile_sum)
     elif pid == E + 1:
-        # Token sentinel: expert_start_idx[E] = TK.
         tl.store(expert_freq_offs_ptr + E, TK)
-
-
-# ---------------------------------------------------------------------------
-# Sort assignments by expert, compute output positions, emit tile metadata
-# Adapted from sonic-moe _bitmatrix_metadata_compute_stage2
-# ---------------------------------------------------------------------------
 
 
 @triton.jit
@@ -190,29 +108,7 @@ def _moe_router_scatter_kernel(
     TOKENS_PER_BLOCK: tl.constexpr,
     BLOCK_M_TOKEN: tl.constexpr,
 ):
-    """Assign every (token, k) pair its globally-sorted output position.
-
-    Grid: (n_tiles,).  Ascend cannot compile tl.sort / tl.associative_scan here
-    (BiShengHIR issues).  Instead: walk slots in fixed (token, k) order within
-    the tile and assign within-tile expert ranks via tl.atomic_add on a scratch
-    row — equivalent to a stable sort by (expert_id, original_index).
-
-    rank_scratch[tile_id, e] counts how many earlier slots in this tile already
-    claimed an index for expert e; the returned old counter is the within-tile
-    rank r used with partial_sum[e, tile_id].
-
-    Ascend: avoid masked tl.atomic_add on invalid/padded slots. Some builds can
-    ignore the mask and execute the atomic using a bogus expert id (e.g. -1),
-    corrupting scratch and producing out-of-range / duplicate s_rev.
-
-    Instead, we still walk the full padded BLOCK_SIZE in a fixed order (so the
-    valid entries match the original stable sort order), but for invalid slots
-    we:
-      - redirect expert index to 0 (in-bounds), and
-      - add a delta of 0 (no-op) in the atomic.
-    This keeps the loop fully compile-time while eliminating out-of-bounds
-    atomics and mask-dependent behavior.
-    """
+    """Scatter routing indices into expert-sorted order."""
     BLOCK_SIZE: tl.constexpr = TOKENS_PER_BLOCK * K_POW2
     IS_POW2_K: tl.constexpr = K == K_POW2
     tl.static_assert(BLOCK_SIZE <= 32768)
@@ -236,7 +132,7 @@ def _moe_router_scatter_kernel(
             expert_i = tl.load(topk_indices_ptr + token_i * K + sk, mask=valid, other=0).to(tl.int32)
             entry_idx = (token_i * K + sk).to(tl.int32)
 
-        # For invalid slots: atomic add 0 to an in-bounds expert (0), and mask all writes.
+        # For invalid slots, issue a no-op atomic to a safe in-bounds expert.
         expert_safe = tl.where(valid, expert_i, 0)
         delta = valid.to(tl.int32)
 
@@ -258,26 +154,10 @@ def _moe_router_scatter_kernel(
         tl.store(x_gather_idx_ptr + s_rev, token_i, mask=valid)
 
 
-# ---------------------------------------------------------------------------
-# Shared autotune config for all GEMM kernels
-# ---------------------------------------------------------------------------
-
-
 def _get_gemm_autotune_configs():
-    # Ascend: each autotune candidate is a full BiSheng compile; a large grid makes
-    # tests and first-run unbearable.  One stable config is enough for correctness.
-    # Keep BLOCK_N/BLOCK_K moderate — large tiles overflow UB in bwd kernels.
     return [
-        # NOTE: Triton requires total grid programs < 65536. Keep a robust
-        # compile-safe config for Ascend.
         triton.Config({"BLOCK_N": 192, "BLOCK_K": 64}, num_warps=4, num_stages=2),
     ]
-
-
-# ---------------------------------------------------------------------------
-# Forward — fused gather + grouped GEMM + SwiGLU
-# 2D grid: (num_m_tiles, ceil(I/BLOCK_N))
-# ---------------------------------------------------------------------------
 
 
 @triton.autotune(
@@ -380,12 +260,6 @@ def _fused_up_proj_swiglu_kernel(
     tl.store(post_ptrs, a_out.to(post_act_ptr.dtype.element_ty), mask=out_mask)
 
 
-# ---------------------------------------------------------------------------
-# Forward — grouped GEMM down-projection
-# 2D grid: (num_m_tiles, ceil(H/BLOCK_N))
-# ---------------------------------------------------------------------------
-
-
 @triton.autotune(
     configs=_get_gemm_autotune_configs(),
     key=["H_dim", "I_dim"],
@@ -444,12 +318,7 @@ def _fused_down_proj_kernel(
             # Keep bf16 for dot operands → tensor cores. acc stays fp32.
             a_tile = tl.load(a_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
-            w_ptrs = (
-                down_proj_ptr
-                + expert_idx * stride_w_E
-                + n_idx[:, None] * stride_w_H
-                + k_idx[None, :] * stride_w_I
-            )
+            w_ptrs = down_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_H + k_idx[None, :] * stride_w_I
             w_tile = tl.load(
                 w_ptrs,
                 mask=n_mask[:, None] & k_mask[None, :],
@@ -460,12 +329,6 @@ def _fused_down_proj_kernel(
 
         Y_ptrs = Y_ptr + row_offs[:, None] * stride_Y_TK + n_idx[None, :] * stride_Y_H
         tl.store(Y_ptrs, acc.to(Y_ptr.dtype.element_ty), mask=row_mask[:, None] & n_mask[None, :])
-
-
-# ---------------------------------------------------------------------------
-# Forward — token gather + weighted sum
-# Adapted from sonic-moe token_gather_sum_kernel
-# ---------------------------------------------------------------------------
 
 
 def _get_token_gather_autotune_configs():
@@ -526,12 +389,6 @@ def _token_gather_weighted_sum_kernel(
 
         out_ptrs = out_ptr + t * stride_out_T + h_idx * stride_out_H
         tl.store(out_ptrs, acc.to(out_ptr.dtype.element_ty), mask=h_mask)
-
-
-# ---------------------------------------------------------------------------
-# Backward — fused down-proj backward + SwiGLU backward
-# 2D grid: (num_m_tiles, ceil(I/BLOCK_N))
-# ---------------------------------------------------------------------------
 
 
 @triton.autotune(
@@ -642,17 +499,8 @@ def _moe_bwd_down_proj_kernel(
     tl.store(dup_ptrs, dup.to(d_pre_act_ptr.dtype.element_ty), mask=out_mask)
 
 
-# ---------------------------------------------------------------------------
-# Backward — dW2 = weighted_act^T @ dout_gathered (per expert, weight grad)
-# Lambda grid: (E * ceil(I/BLOCK_M), ceil(H/BLOCK_N))
-# ---------------------------------------------------------------------------
-
-
 @triton.autotune(
     configs=[
-        # Keep total grid programs < 65536 for large E/H/I.
-        # Larger BLOCK_M/BLOCK_K improve arithmetic intensity on long-sequence
-        # backward workloads and cut K-loop overhead.
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 240, "BLOCK_K": 32}, num_warps=4, num_stages=2),
     ],
     key=["H_dim", "I_dim"],
@@ -727,12 +575,6 @@ def _moe_bwd_dW2_kernel(
     # acc layout is (H_blk, I_blk) — match dW2[e, h, i] with h on the first broadcast axis.
     dW2_ptrs = dW2_ptr + expert_idx * stride_dW2_E + h_idx[:, None] * stride_dW2_H + i_idx[None, :] * stride_dW2_I
     tl.store(dW2_ptrs, acc.to(dW2_ptr.dtype.element_ty), mask=h_mask[:, None] & i_mask[None, :])
-
-
-# ---------------------------------------------------------------------------
-# Backward — dx_expanded = d_pre_act @ W1^T (grouped GEMM, no atomics)
-# 2D grid: (num_m_tiles, ceil(H/BLOCK_N))
-# ---------------------------------------------------------------------------
 
 
 @triton.autotune(
@@ -815,16 +657,8 @@ def _moe_bwd_dX_expanded_kernel(
         tl.store(dxe_ptrs, acc.to(dx_expanded_ptr.dtype.element_ty), mask=row_mask[:, None] & h_mask[None, :])
 
 
-# ---------------------------------------------------------------------------
-# Backward — dW1 = Gathered_X^T @ d_pre_act (per expert, weight grad)
-# Lambda grid: (E * ceil(H/BLOCK_M), ceil(2I/BLOCK_N))
-# ---------------------------------------------------------------------------
-
-
 @triton.autotune(
     configs=[
-        # Keep total grid programs < 65536 for large E/H/I.
-        # Match dW2 tiling for better large-shape throughput.
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 240, "BLOCK_K": 32}, num_warps=4, num_stages=2),
     ],
     key=["H_dim", "I_dim"],

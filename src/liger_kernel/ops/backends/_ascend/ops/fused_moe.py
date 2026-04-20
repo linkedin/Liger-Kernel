@@ -8,6 +8,8 @@ Backward: memory-efficient — recomputes dA' = dO@W2^T to avoid caching Y (TK×
 import torch
 import triton
 
+from liger_kernel.ops.utils import ensure_contiguous
+
 from .fused_moe_kernels import _fused_down_proj_kernel
 from .fused_moe_kernels import _fused_up_proj_swiglu_kernel
 from .fused_moe_kernels import _moe_bwd_down_proj_kernel
@@ -18,19 +20,9 @@ from .fused_moe_kernels import _moe_router_histogram_kernel
 from .fused_moe_kernels import _moe_router_prefix_sum_kernel
 from .fused_moe_kernels import _moe_router_scatter_kernel
 from .fused_moe_kernels import _token_gather_weighted_sum_kernel
-from liger_kernel.ops.utils import ensure_contiguous
 
-# Token-dimension tile size for M.
-# Not in the inner-loop autotune because tile_row_start/tile_expert and the
-# grid dim-0 (num_m_tiles) must be recomputed for every candidate value.
-# To tune: change this constant and re-run benchmarks.
-# Smaller M-tiles compile/run reliably on Ascend (UB scratch is tight vs CUDA).
+# Token-dimension tile size used across fused MoE kernels.
 BLOCK_M_TOKEN = 32
-
-
-# ---------------------------------------------------------------------------
-# Routing metadata
-# ---------------------------------------------------------------------------
 
 
 def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: int = BLOCK_M_TOKEN):
@@ -61,7 +53,6 @@ def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: 
     TOKENS_PER_BLOCK = max(1, 1024 // K_POW2)
     n_tiles = triton.cdiv(T, TOKENS_PER_BLOCK)
 
-    # Kernel 1: tiled histogram → tile_expert_counts (E, n_tiles)
     tile_expert_counts = torch.empty(E, n_tiles, dtype=torch.int32, device=device)
     _moe_router_histogram_kernel[(n_tiles,)](
         topk_indices,
@@ -77,7 +68,6 @@ def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: 
 
     expert_token_count = tile_expert_counts.sum(dim=1, dtype=torch.int32)  # (E,)
 
-    # Kernel 2: prefix sums + expert offsets + tile offsets (all in one pass)
     expert_start_idx = torch.empty(E + 1, dtype=torch.int32, device=device)
     expert_tile_offset = torch.empty(E + 1, dtype=torch.int32, device=device)
     _moe_router_prefix_sum_kernel[(E + 2,)](
@@ -93,19 +83,16 @@ def compute_routing_metadata(topk_indices: torch.Tensor, E: int, block_m_token: 
         BLOCK_M_TOKEN=block_m_token,
     )
 
-    # One sync to get num_m_tiles for buffer allocation and GEMM grid.
     num_m_tiles = int(expert_tile_offset[-1].item())
 
     tile_row_start = torch.empty(num_m_tiles, dtype=torch.int32, device=device)
     tile_expert = torch.empty(num_m_tiles, dtype=torch.int32, device=device)
 
-    # Kernel 3: sort by expert + scatter permutation arrays + tile metadata
     s_scatter_idx = torch.empty(TK, dtype=torch.int32, device=device)
     s_reverse_scatter_idx = torch.empty(TK, dtype=torch.int32, device=device)
     x_gather_idx = torch.empty(TK, dtype=torch.int32, device=device)
 
     if TK > 0:
-        # Per-tile per-expert atomic counters (zeroed); used by Ascend-safe scatter.
         scatter_rank_scratch = torch.zeros((n_tiles, E), dtype=torch.int32, device=device)
         _moe_router_scatter_kernel[(n_tiles,)](
             s_scatter_idx,
@@ -157,11 +144,6 @@ def _token_aggregation(Y, topk_weights_flat, s_reverse_scatter_idx, T, K, H):
         w_is_None=False,
     )
     return out
-
-
-# ---------------------------------------------------------------------------
-# Autograd Function
-# ---------------------------------------------------------------------------
 
 
 class LigerFusedMoEFunction(torch.autograd.Function):
@@ -308,10 +290,9 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         TK = ctx.TK
         num_m_tiles = ctx.num_m_tiles
 
-        # dA' = dO @ W2^T, SwiGLU backward, write d_pre_act and dS
         d_pre_act = torch.empty(TK, 2 * intermediate_dim, dtype=dO.dtype, device=dO.device)
         weighted_act = torch.empty(TK, intermediate_dim, dtype=dO.dtype, device=dO.device)
-        dS = torch.zeros(TK, dtype=dO.dtype, device=dO.device)  # zeros: atomic_add in kernel accumulates across N-tiles
+        dS = torch.zeros(TK, dtype=dO.dtype, device=dO.device)  # atomic_add accumulates across N-tiles
 
         if num_m_tiles > 0:
             _moe_bwd_down_proj_kernel[lambda meta: (num_m_tiles, triton.cdiv(intermediate_dim, meta["BLOCK_N"]))](
@@ -343,7 +324,6 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 BLOCK_M=BLOCK_M_TOKEN,
             )
 
-        # dW2 = (s_k * y1)^T @ dO_gathered
         ddown_proj = torch.zeros_like(down_proj)
         _moe_bwd_dW2_kernel[
             lambda meta: (
@@ -367,7 +347,6 @@ class LigerFusedMoEFunction(torch.autograd.Function):
             stride_dW2_I=ddown_proj.stride(2),
         )
 
-        # dx_expanded = d_pre_act @ W1^T
         dx_expanded = torch.empty(TK, H, dtype=dO.dtype, device=dO.device)
 
         if num_m_tiles > 0:
@@ -390,12 +369,11 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 BLOCK_M=BLOCK_M_TOKEN,
             )
 
-        # dx = unweighted gather-sum of dx_expanded
         dx = torch.zeros(T, H, dtype=dO.dtype, device=dO.device)
         if TK > 0:
             _token_gather_weighted_sum_kernel[(T,)](
                 dx_expanded,
-                dS,  # dummy w_ptr — never loaded when w_is_None=True
+                dS,  # dummy w_ptr; unused when w_is_None=True
                 s_reverse_scatter_idx,
                 dx,
                 H_dim=H,
@@ -407,7 +385,6 @@ class LigerFusedMoEFunction(torch.autograd.Function):
                 w_is_None=True,
             )
 
-        # dW1 = X_gathered^T @ d_pre_act
         dgate_up_proj = torch.zeros_like(gate_up_proj)
         _moe_bwd_dW1_kernel[
             lambda meta: (
