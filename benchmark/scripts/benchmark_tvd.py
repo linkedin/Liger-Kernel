@@ -1,6 +1,13 @@
+import math
+
 import torch
 import triton
 
+from benchmark_model_configs import MODEL_REGISTRY
+from benchmark_model_configs import compute_model_config_sweep_config
+from benchmark_model_configs import compute_seq_len_sweep_config
+from benchmark_model_configs import estimate_kernel_peak_memory
+from benchmark_model_configs import get_benchmark_model_config
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
@@ -9,7 +16,6 @@ from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
 from liger_kernel.transformers.tvd import LigerTVDLoss
-from liger_kernel.utils import get_total_gpu_memory
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -34,28 +40,35 @@ class TorchTVDLoss(torch.nn.Module):
             raise ValueError("Invalid reduction type.")
 
 
-S, E = 12, 18
+def _setup_tvd(input: SingleBenchmarkRunInput):
+    """Create input tensors and TVD loss from benchmark config."""
+    cfg = input.extra_benchmark_config
+    V = cfg["vocab_size"]
+    BT = input.x
+    reduction = "batchmean"
+
+    _input = torch.randn(BT, V, requires_grad=True, device=device).softmax(dim=-1)
+    target = torch.randn(BT, V, device=device).softmax(dim=-1)
+
+    if input.kernel_provider == "liger":
+        loss_fn = LigerTVDLoss(reduction=reduction)
+    elif input.kernel_provider == "torch":
+        loss_fn = TorchTVDLoss(reduction=reduction)
+    else:
+        raise ValueError(f"Invalid provider: {input.kernel_provider} for TVD")
+    return _input, target, loss_fn
 
 
 def bench_speed_tvd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    reduction = "batchmean"
-    V = input.x
-    B, T = input.extra_benchmark_config["B"], input.extra_benchmark_config["T"]
-    torch_tvd = TorchTVDLoss(reduction=reduction)
-    liger_tvd = LigerTVDLoss(reduction=reduction)
-
-    _input = torch.randn(B * T, V, requires_grad=True, device=device).softmax(dim=-1)
-    target = torch.randn(B * T, V, device=device).softmax(dim=-1)
+    _input, target, loss_fn = _setup_tvd(input)
+    mode = input.kernel_operation_mode
 
     def fwd():
-        if input.kernel_provider == "liger":
-            return liger_tvd(_input, target)
-        else:
-            return torch_tvd(_input, target)
+        return loss_fn(_input, target)
 
-    if input.kernel_operation_mode == "forward":
+    if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
-    elif input.kernel_operation_mode == "backward":
+    elif mode == "backward":
         y = fwd()
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -64,13 +77,16 @@ def bench_speed_tvd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
             grad_to_none=[_input],
             rep=100,
         )
-    elif input.kernel_operation_mode == "full":
+    elif mode == "full":
 
         def full():
             y = fwd()
             y.backward(retain_graph=True)
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
         y_50=ms_50,
@@ -79,24 +95,70 @@ def bench_speed_tvd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
 
 
 def bench_memory_tvd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    reduction = "batchmean"
-    torch_tvd = TorchTVDLoss(reduction=reduction)
-    liger_tvd = LigerTVDLoss(reduction=reduction)
-
-    V = input.x
-    B, T = input.extra_benchmark_config["B"], input.extra_benchmark_config["T"]
-
-    _input = torch.randn(B * T, V, requires_grad=True, device=device).softmax(dim=-1)
-    target = torch.randn(B * T, V, device=device).softmax(dim=-1)
-
-    def fwd():
-        if input.kernel_provider == "liger":
-            return liger_tvd(_input, target)
-        else:
-            return torch_tvd(_input, target)
+    _input, target, loss_fn = _setup_tvd(input)
 
     def full():
+        y = loss_fn(_input, target)
+        y.backward(retain_graph=True)
+
+    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
+
+
+def _resolve_model_config_tvd(input: SingleBenchmarkRunInput):
+    """Resolve model-config-sweep input into standard setup args."""
+    cfg = input.extra_benchmark_config
+    model_info = cfg["model_configs"][input.x]
+    return _setup_tvd(
+        SingleBenchmarkRunInput(
+            x=cfg["BT"],
+            kernel_provider=input.kernel_provider,
+            extra_benchmark_config={
+                "vocab_size": model_info["vocab_size"],
+            },
+        )
+    )
+
+
+def bench_speed_tvd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    _input, target, loss_fn = _resolve_model_config_tvd(input)
+    mode = input.kernel_operation_mode
+
+    def fwd():
+        return loss_fn(_input, target)
+
+    if mode == "forward":
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, rep=100)
+    elif mode == "backward":
         y = fwd()
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            lambda: y.backward(retain_graph=True),
+            quantiles=QUANTILES,
+            grad_to_none=[_input],
+            rep=100,
+        )
+    elif mode == "full":
+
+        def full():
+            y = fwd()
+            y.backward(retain_graph=True)
+
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, rep=100)
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
+    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+
+
+def bench_memory_tvd_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    _input, target, loss_fn = _resolve_model_config_tvd(input)
+
+    def full():
+        y = loss_fn(_input, target)
         y.backward(retain_graph=True)
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
@@ -110,36 +172,107 @@ def bench_memory_tvd(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
-    gpu_memory_gbs = get_total_gpu_memory()
-    # We know that the full test will require 66GBs for vocab size 2^17
-    if gpu_memory_gbs >= 66:
-        x_max = 17
-    elif gpu_memory_gbs >= 32:
-        x_max = 16
+
+    if args.sweep_mode == "model_config":
+        all_model_configs = list(MODEL_REGISTRY.values())
+
+        def _probe_factory(model_cfg, probe_bt):
+            def _probe():
+                probe_input = SingleBenchmarkRunInput(
+                    x=probe_bt,
+                    kernel_provider="torch",
+                    extra_benchmark_config={
+                        "vocab_size": model_cfg.vocab_size,
+                    },
+                )
+                _input, target, loss_fn = _setup_tvd(probe_input)
+                return loss_fn(_input, target)
+
+            return _probe
+
+        sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
+
+        model_configs_info = {
+            cfg.name: {
+                "vocab_size": cfg.vocab_size,
+            }
+            for cfg in sweep.model_configs
+        }
+
+        common_configs = {
+            "kernel_name": "tvd",
+            "x_name": "model_config",
+            "x_label": "model configuration",
+            "x_values": [cfg.name for cfg in sweep.model_configs],
+            "kernel_providers": ["liger", "torch"],
+            "extra_benchmark_configs": [
+                {
+                    "model_configs": model_configs_info,
+                    "BT": sweep.bt,
+                }
+            ],
+            "overwrite": args.overwrite,
+        }
+
+        run_benchmarks(
+            bench_test_fn=bench_speed_tvd_model_config,
+            kernel_operation_modes=["forward", "full", "backward"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_tvd_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
     else:
-        x_max = 15
-    common_args = {
-        "kernel_name": "tvd",
-        "x_name": "V",
-        "x_label": "vocab size",
-        "x_values": [2**i for i in range(12, x_max + 1)],
-        "kernel_providers": ["liger", "torch"],
-        "extra_benchmark_configs": [{"B": 8, "T": 2048}],
-        "overwrite": args.overwrite,
-    }
+        model = get_benchmark_model_config(args.model)
+        probe_bt = 1024
 
-    run_benchmarks(
-        bench_test_fn=bench_memory_tvd,
-        kernel_operation_modes=["full"],
-        metric_name="memory",
-        metric_unit="MB",
-        **common_args,
-    )
+        def _probe():
+            probe_input = SingleBenchmarkRunInput(
+                x=probe_bt,
+                kernel_provider="torch",
+                extra_benchmark_config={
+                    "vocab_size": model.vocab_size,
+                },
+            )
+            _input, target, loss_fn = _setup_tvd(probe_input)
+            return loss_fn(_input, target)
 
-    run_benchmarks(
-        bench_test_fn=bench_speed_tvd,
-        kernel_operation_modes=["forward", "full", "backward"],
-        metric_name="speed",
-        metric_unit="ms",
-        **common_args,
-    )
+        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
+        kernel_bpt = peak_bytes // probe_bt
+
+        config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+
+        common_configs = {
+            "kernel_name": "tvd",
+            "x_name": "BT",
+            "x_label": "B * T",
+            "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
+            "kernel_providers": ["liger", "torch"],
+            "extra_benchmark_configs": [
+                {
+                    "vocab_size": model.vocab_size,
+                }
+            ],
+            "overwrite": args.overwrite,
+        }
+
+        run_benchmarks(
+            bench_test_fn=bench_speed_tvd,
+            kernel_operation_modes=["forward", "full", "backward"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_tvd,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
