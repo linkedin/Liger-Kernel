@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   nvi-correctness-tests:
-    if: github.event_name == 'merge_group'
+    #if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
