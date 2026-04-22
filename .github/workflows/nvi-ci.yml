@@ -41,7 +41,7 @@ jobs:
 
     - name: Run tests
       run: |
-        modal run dev.modal.tests::liger_correctness_tests
+        modal run -m dev.modal.tests::liger_correctness_tests
 
   nvi-convergence-tests:
     if: github.event_name == 'merge_group'
@@ -66,7 +66,7 @@ jobs:
 
     - name: Run tests
       run: |
-        modal run dev.modal.tests::liger_convergence_tests
+        modal run -m dev.modal.tests::liger_convergence_tests
 
   nvi-correctness-tests-with-transformers-4-52-0:
     if: github.event_name == 'merge_group'
@@ -91,7 +91,7 @@ jobs:
 
     - name: Run tests
       run: |
-        modal run dev.modal.tests::liger_oldest_v4_correctness_tests
+        modal run -m dev.modal.tests::liger_oldest_v4_correctness_tests
 
 
   nvi-convergence-tests-with-transformers-4-52-0:
@@ -117,4 +117,4 @@ jobs:
 
     - name: Run tests
       run: |
-        modal run dev.modal.tests::liger_oldest_v4_convergence_tests
+        modal run -m dev.modal.tests::liger_oldest_v4_convergence_tests
