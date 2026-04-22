@@ -39,12 +39,6 @@ jobs:
         python -m pip install --upgrade pip
         pip install modal
 
-    - name: Authenticate Modal
-      run: |
-        modal token set \
-        --token-id $MODAL_TOKEN_ID \
-        --token-secret $MODAL_TOKEN_SECRET
-
     - name: Run tests
       run: |
         modal run -m dev.modal.tests::liger_correctness_tests
