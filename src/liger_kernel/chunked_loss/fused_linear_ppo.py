@@ -13,7 +13,9 @@ def _maybe_mark_dynamic_dim1(tensor):
         torch._dynamo.maybe_mark_dynamic(tensor, 1)
 
 
-def _selective_logprob_forward(hidden, weight, targets, bias=None, temperature=1.0, vocab_chunk_size=8192):
+def _selective_logprob_forward(
+    hidden, weight, targets, bias=None, temperature=1.0, vocab_chunk_size=_SELECTIVE_LOGPROB_VOCAB_CHUNK_SIZE
+):
     """Compute selective log-probabilities by streaming over sequence and vocab chunks.
 
     Dual chunking (sequence × vocab) bounds peak temporary memory to
