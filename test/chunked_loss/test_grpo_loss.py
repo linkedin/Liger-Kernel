@@ -492,9 +492,13 @@ def test_correctness(
     if loss_type == "luspo" and V >= 4096 and device == "cuda" and torch.cuda.get_device_capability()[0] >= 9:
         pytest.skip("luspo at large V flakes on H100+ due to torch.compile cache pollution; passes in isolation")
     if loss_type == "vespo" and dtype == torch.bfloat16:
-        pytest.skip("vespo bf16 is numerically unstable: exp(log_phi) amplifies bf16 rounding in chunked per_token_logps")
+        pytest.skip(
+            "vespo bf16 is numerically unstable: exp(log_phi) amplifies bf16 rounding in chunked per_token_logps"
+        )
     if loss_type == "vespo" and V >= 4096:
-        pytest.skip("vespo at large V is numerically unstable due to exp(log_phi) amplification of chunked logprob noise")
+        pytest.skip(
+            "vespo at large V is numerically unstable due to exp(log_phi) amplification of chunked logprob noise"
+        )
 
     # Reset torch compiler cache for each parameter of the test case
     torch.compiler.reset()
