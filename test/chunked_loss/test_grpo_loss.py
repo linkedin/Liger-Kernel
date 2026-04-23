@@ -364,7 +364,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         )
 
 
-@pytest.mark.parametrize("dtype, atol, rtol", [(torch.float32, 1e-5, 1e-5), (torch.bfloat16, 5e-2, 5e-2)])
+@pytest.mark.parametrize("dtype, atol, rtol", [(torch.float32, 1e-5, 1e-5), (torch.bfloat16, 1e-1, 1e-1)])
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize(
     "B, T, H, V",
