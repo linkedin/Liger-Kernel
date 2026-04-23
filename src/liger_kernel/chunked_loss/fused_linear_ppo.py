@@ -194,6 +194,10 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         vllm_is_ratio=None,
         delta=None,
         use_bias_correction_kl=False,
+        vespo_k_pos=2.0,
+        vespo_lambda_pos=3.0,
+        vespo_k_neg=3.0,
+        vespo_lambda_neg=2.0,
     ):
         """Chunked forward pass for PPO loss computation.
 
@@ -244,6 +248,10 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             sapo_temperature_neg=sapo_temperature_neg,
             delta=delta,
             use_bias_correction_kl=use_bias_correction_kl,
+            vespo_k_pos=vespo_k_pos,
+            vespo_lambda_pos=vespo_lambda_pos,
+            vespo_k_neg=vespo_k_neg,
+            vespo_lambda_neg=vespo_lambda_neg,
         )
         compiled_compute_loss = torch.compile(compute_loss) if compiled else compute_loss
 
@@ -457,6 +465,10 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         sapo_temperature_neg=1.05,
         delta=None,
         use_bias_correction_kl=False,
+        vespo_k_pos=2.0,
+        vespo_lambda_pos=3.0,
+        vespo_k_neg=3.0,
+        vespo_lambda_neg=2.0,
     ):
         """Compute loss from pre-computed logprobs. This is the torch.compile-friendly part."""
         chunk_loss, chunk_metrics = ppo_loss_fn(
@@ -477,6 +489,10 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             vllm_is_ratio=vllm_is_ratio_chunk,
             delta=delta,
             use_bias_correction_kl=use_bias_correction_kl,
+            vespo_k_pos=vespo_k_pos,
+            vespo_lambda_pos=vespo_lambda_pos,
+            vespo_k_neg=vespo_k_neg,
+            vespo_lambda_neg=vespo_lambda_neg,
         )
         return chunk_loss, chunk_metrics
 
