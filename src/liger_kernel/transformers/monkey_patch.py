@@ -1240,7 +1240,7 @@ def apply_liger_kernel_to_gemma3(
 
 
 def apply_liger_kernel_to_gemma4_text(
-    rope: bool = True,
+    rope: bool = False,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
@@ -1263,8 +1263,8 @@ def apply_liger_kernel_to_gemma4_text(
     logits tensor eliminated at seq 8192 / vocab 262144) is unaffected.
 
     Args:
-        rope (bool): Reserved for API consistency with other apply_liger_kernel_to_*
-            functions. Currently a no-op for Gemma 4 (emits a warning). Default True.
+        rope (bool): Currently a no-op for Gemma 4 (HF uses single-tensor
+            apply_rotary_pos_emb incompatible with Liger). Default False.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default False.
         fused_linear_cross_entropy (bool): Fused linear CE for memory efficiency. Default True.
             Mutually exclusive with `cross_entropy`.
@@ -3329,6 +3329,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma3_text": apply_liger_kernel_to_gemma3_text,
     "gemma3": apply_liger_kernel_to_gemma3,
     "gemma4_text": apply_liger_kernel_to_gemma4_text,
+    "gemma4": apply_liger_kernel_to_gemma4_text,
     "glm4": apply_liger_kernel_to_glm4,
     "glm4v": apply_liger_kernel_to_glm4v,
     "glm4v_moe": apply_liger_kernel_to_glm4v_moe,
