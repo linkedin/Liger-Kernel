@@ -1,4 +1,5 @@
 import math
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -9,7 +10,7 @@ from transformers.models.llama.modeling_llama import LlamaMLP
 
 from liger_kernel.ops import LigerGELUMulFunction
 from liger_kernel.transformers.functional import liger_geglu
-from liger_kernel.transformers.geglu import LigerGEGLUMLP
+from liger_kernel.transformers.geglu import LigerGEGLUMLP, LigerGEGLUMLPForGemma4
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -262,3 +263,110 @@ def test_correctness_functional(bsz, seq_len, size, dtype, atol, rtol):
 
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
     assert torch.allclose(b1.grad, b2.grad, atol=atol, rtol=rtol)
+
+
+# ---------------------------------------------------------------------------
+# Gemma 4 double-wide MLP edge cases
+# ---------------------------------------------------------------------------
+
+
+def _make_gemma4_config(
+    hidden_size=2048,
+    intermediate_size=4096,
+    num_hidden_layers=32,
+    num_kv_shared_layers=0,
+    use_double_wide_mlp=False,
+    hidden_activation="gelu_pytorch_tanh",
+):
+    """Minimal fake config matching Gemma4TextConfig's MLP-relevant fields."""
+    return SimpleNamespace(
+        hidden_size=hidden_size,
+        intermediate_size=intermediate_size,
+        num_hidden_layers=num_hidden_layers,
+        num_kv_shared_layers=num_kv_shared_layers,
+        use_double_wide_mlp=use_double_wide_mlp,
+        hidden_activation=hidden_activation,
+    )
+
+
+def test_gemma4_mlp_no_doubling_without_layer_idx():
+    """layer_idx=None (default) → standard intermediate_size, no doubling."""
+    cfg = _make_gemma4_config(use_double_wide_mlp=True, num_kv_shared_layers=8)
+    mlp = LigerGEGLUMLPForGemma4(cfg)
+    assert mlp.intermediate_size == cfg.intermediate_size
+
+
+def test_gemma4_mlp_no_doubling_when_flag_false():
+    """use_double_wide_mlp=False (31B production) → never doubles."""
+    cfg = _make_gemma4_config(use_double_wide_mlp=False)
+    for layer_idx in [0, 15, 31]:
+        mlp = LigerGEGLUMLPForGemma4(cfg, layer_idx=layer_idx)
+        assert mlp.intermediate_size == cfg.intermediate_size
+
+
+def test_gemma4_mlp_no_doubling_for_non_kv_shared_layer():
+    """Early layers (before KV-sharing starts) → standard size."""
+    cfg = _make_gemma4_config(
+        num_hidden_layers=32,
+        num_kv_shared_layers=8,
+        use_double_wide_mlp=True,
+    )
+    # first_kv_shared = 32 - 8 = 24.  Layer 0 and 23 are NOT shared.
+    for layer_idx in [0, 10, 23]:
+        mlp = LigerGEGLUMLPForGemma4(cfg, layer_idx=layer_idx)
+        assert mlp.intermediate_size == cfg.intermediate_size, (
+            f"Layer {layer_idx} should NOT be doubled"
+        )
+
+
+def test_gemma4_mlp_doubles_for_kv_shared_layer():
+    """KV-shared layers with use_double_wide_mlp=True → doubled intermediate_size."""
+    cfg = _make_gemma4_config(
+        hidden_size=2048,
+        intermediate_size=4096,
+        num_hidden_layers=32,
+        num_kv_shared_layers=8,
+        use_double_wide_mlp=True,
+    )
+    # first_kv_shared = 32 - 8 = 24.  Layers 24-31 are KV-shared → doubled.
+    for layer_idx in [24, 28, 31]:
+        mlp = LigerGEGLUMLPForGemma4(cfg, layer_idx=layer_idx)
+        assert mlp.intermediate_size == cfg.intermediate_size * 2, (
+            f"Layer {layer_idx} should be doubled"
+        )
+        assert mlp.gate_proj.in_features == cfg.hidden_size
+        assert mlp.gate_proj.out_features == cfg.intermediate_size * 2
+        assert mlp.up_proj.out_features == cfg.intermediate_size * 2
+        assert mlp.down_proj.in_features == cfg.intermediate_size * 2
+        assert mlp.down_proj.out_features == cfg.hidden_size
+
+
+def test_gemma4_mlp_doubled_forward_backward():
+    """Doubled MLP produces correct-shaped output and gradients flow."""
+    cfg = _make_gemma4_config(
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=4,
+        num_kv_shared_layers=2,
+        use_double_wide_mlp=True,
+    )
+    # layer 2 is KV-shared (first_kv_shared = 4-2 = 2)
+    mlp = LigerGEGLUMLPForGemma4(cfg, layer_idx=2).to(device)
+    x = torch.randn(2, 8, 64, device=device, requires_grad=True)
+    y = mlp(x)
+    assert y.shape == (2, 8, 64), f"Expected (2, 8, 64), got {y.shape}"
+    y.sum().backward()
+    assert x.grad is not None
+    assert x.grad.shape == x.shape
+
+
+def test_gemma4_mlp_no_doubling_when_zero_kv_shared():
+    """num_kv_shared_layers=0 → never doubles, even with use_double_wide_mlp=True."""
+    cfg = _make_gemma4_config(
+        num_hidden_layers=32,
+        num_kv_shared_layers=0,
+        use_double_wide_mlp=True,
+    )
+    for layer_idx in [0, 15, 31]:
+        mlp = LigerGEGLUMLPForGemma4(cfg, layer_idx=layer_idx)
+        assert mlp.intermediate_size == cfg.intermediate_size
