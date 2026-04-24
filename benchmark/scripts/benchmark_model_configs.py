@@ -341,7 +341,7 @@ def compute_seq_len_sweep_config(
 def compute_model_config_sweep_config(
     model_configs: List[ModelConfig],
     probe_fn_factory: Callable[[ModelConfig, int], Callable[[], torch.Tensor]],
-    bt: int = 2048,
+    bt: int = 1024,
     memory_utilization: float = 0.4,
 ) -> ModelConfigSweepConfig:
     """Find safe (batch_size, seq_len) that works across all model configs.
@@ -383,3 +383,88 @@ def compute_model_config_sweep_config(
         batch_size=batch_size,
         seq_len=seq_len,
     )
+
+
+def build_model_config_sweep(
+    kernel_name: str,
+    all_model_configs: List[ModelConfig],
+    probe_fn: Callable[[ModelConfig, int], torch.Tensor],
+    extra_benchmark_config: Dict,
+    bt: int = 2048,
+    overwrite: bool = False,
+) -> Dict:
+    """Build benchmark config dict for model-config sweep.
+
+    Returns a single extra_benchmark_config (with a model_configs lookup dict
+    and seq_len filled in from the sweep), so run_benchmarks iterates over
+    model names as x_values rather than repeating per-model configs.
+
+    Args:
+        kernel_name: Name of the kernel being benchmarked.
+        all_model_configs: List of model configs to sweep over.
+        probe_fn: Callable(model_cfg, probe_seq_len) -> output tensor for memory estimation.
+        extra_benchmark_config: Base config dict. seq_len will be set from sweep result.
+        bt: Target total tokens (batch_size * seq_len) used as probe bt.
+        overwrite: Whether to overwrite existing benchmark data.
+    """
+
+    def probe_fn_factory(model_cfg, probe_seq_len):
+        return lambda: probe_fn(model_cfg, probe_seq_len)
+
+    sweep = compute_model_config_sweep_config(
+        all_model_configs,
+        probe_fn_factory=probe_fn_factory,
+        bt=bt,
+    )
+
+    config = {**extra_benchmark_config, "bsz": sweep.batch_size, "seq_len": sweep.seq_len}
+
+    return {
+        "kernel_name": kernel_name,
+        "x_name": "model_config",
+        "x_label": "model configuration",
+        "x_values": [cfg.name for cfg in sweep.model_configs],
+        "extra_benchmark_configs": [config],
+        "overwrite": overwrite,
+    }
+
+
+def build_token_length_sweep(
+    kernel_name: str,
+    probe_seq_len: int,
+    model: ModelConfig,
+    probe_fn: Callable[[], torch.Tensor],
+    extra_config_fn: Callable[[SeqLenSweepConfig], Dict] | Dict,
+    x_values_fn: Callable[[SeqLenSweepConfig], List[int]],
+    overwrite: bool = False,
+) -> Dict:
+    """Build benchmark config dict for token-length sweep.
+
+    Args:
+        kernel_name: Name of the kernel being benchmarked.
+        model: Model config to use for the sweep.
+        probe_fn: Callable() -> output tensor for memory estimation.
+        extra_config_fn: Callable(config) -> dict with normalized keys
+            that _setup_* expects.
+        x_values_fn: Callable(config) -> list of sequence lengths to benchmark.
+        overwrite: Whether to overwrite existing benchmark data.
+
+    Returns:
+        Dict with keys: kernel_name, x_name, x_label, x_values, kernel_providers,
+        extra_benchmark_configs, overwrite.
+    """
+    peak_bytes = estimate_kernel_peak_memory(probe_fn=probe_fn)
+    kernel_bpt = peak_bytes // probe_seq_len
+
+    config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+
+    return {
+        "kernel_name": kernel_name,
+        "x_name": "T",
+        "x_label": "sequence length",
+        "x_values": x_values_fn(config),
+        "extra_benchmark_configs": [extra_config_fn]
+        if isinstance(extra_config_fn, dict)
+        else [extra_config_fn(config)],
+        "overwrite": overwrite,
+    }
