@@ -161,6 +161,8 @@ def _warmup_liger(T, E, H, intermediate_dim, K, dtype, sweep_dim):
         torch.cuda.synchronize()
     elif device == "npu":
         torch.npu.synchronize()
+    elif device == "xpu":
+        torch.xpu.synchronize()
     else:
         torch.cpu.synchronize()
 
@@ -240,6 +242,8 @@ if __name__ == "__main__":
         torch.cuda.synchronize()
     elif device == "npu":
         torch.npu.synchronize()
+    elif device == "xpu":
+        torch.xpu.synchronize()
     else:
         torch.cpu.synchronize()
 
