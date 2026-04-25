@@ -2688,7 +2688,7 @@ def apply_liger_kernel_to_falcon_h1(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _patch_swiglu_module(decoder_layer.mlp, LigerFalconH1SwiGLUMLP)
+                _patch_swiglu_module(decoder_layer.feed_forward, LigerFalconH1SwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.pre_ff_layernorm)
