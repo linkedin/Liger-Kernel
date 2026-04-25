@@ -1,4 +1,5 @@
 import math
+
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +11,8 @@ from transformers.models.llama.modeling_llama import LlamaMLP
 
 from liger_kernel.ops import LigerGELUMulFunction
 from liger_kernel.transformers.functional import liger_geglu
-from liger_kernel.transformers.geglu import LigerGEGLUMLP, LigerGEGLUMLPForGemma4
+from liger_kernel.transformers.geglu import LigerGEGLUMLP
+from liger_kernel.transformers.geglu import LigerGEGLUMLPForGemma4
 from liger_kernel.utils import infer_device
 
 device = infer_device()
@@ -314,9 +316,7 @@ def test_gemma4_mlp_no_doubling_for_non_kv_shared_layer():
     # first_kv_shared = 32 - 8 = 24.  Layer 0 and 23 are NOT shared.
     for layer_idx in [0, 10, 23]:
         mlp = LigerGEGLUMLPForGemma4(cfg, layer_idx=layer_idx)
-        assert mlp.intermediate_size == cfg.intermediate_size, (
-            f"Layer {layer_idx} should NOT be doubled"
-        )
+        assert mlp.intermediate_size == cfg.intermediate_size, f"Layer {layer_idx} should NOT be doubled"
 
 
 def test_gemma4_mlp_doubles_for_kv_shared_layer():
@@ -331,9 +331,7 @@ def test_gemma4_mlp_doubles_for_kv_shared_layer():
     # first_kv_shared = 32 - 8 = 24.  Layers 24-31 are KV-shared → doubled.
     for layer_idx in [24, 28, 31]:
         mlp = LigerGEGLUMLPForGemma4(cfg, layer_idx=layer_idx)
-        assert mlp.intermediate_size == cfg.intermediate_size * 2, (
-            f"Layer {layer_idx} should be doubled"
-        )
+        assert mlp.intermediate_size == cfg.intermediate_size * 2, f"Layer {layer_idx} should be doubled"
         assert mlp.gate_proj.in_features == cfg.hidden_size
         assert mlp.gate_proj.out_features == cfg.intermediate_size * 2
         assert mlp.up_proj.out_features == cfg.intermediate_size * 2
