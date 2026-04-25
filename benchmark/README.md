@@ -12,7 +12,8 @@ Follow these steps to benchmark and visualize kernel performance:
    Example: Benchmarking KTO Loss
    ```bash
    cd benchmark
-   python scripts/benchmark_kto_loss.py
+   python scripts/benchmark_kto_loss.py --sweep-mode model_config [--model llama_3_8b]
+   python scripts/benchmark_kto_loss.py [--sweep-mode token_length] [--bt 2048]
    ```
 
 3. Visualize results

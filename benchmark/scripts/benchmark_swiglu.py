@@ -1,5 +1,3 @@
-import math
-
 import torch
 
 from benchmark_model_configs import MODEL_REGISTRY
@@ -74,26 +72,14 @@ if __name__ == "__main__":
     if args.sweep_mode == "model_config":
         all_model_configs = list(MODEL_REGISTRY.values())
 
-        def probe_fn(model_cfg, probe_seq_len):
-            probe_input = SingleBenchmarkRunInput(
-                x=probe_seq_len,
-                kernel_provider="huggingface",
-                extra_benchmark_config={
-                    "bsz": 1,
-                    "hidden_act": "silu",
-                    "hidden_size": model_cfg.hidden_size,
-                    "intermediate_size": model_cfg.intermediate_size,
-                    "dtype": model_cfg.dtype,
-                },
-            )
-            x, layer = _setup_swiglu(probe_input)
-            return layer(x)
-
         common_configs = build_model_config_sweep(
             kernel_name="swiglu",
             all_model_configs=all_model_configs,
-            probe_fn=probe_fn,
-            extra_benchmark_config={
+            setup_fn=_setup_swiglu,
+            model_keys=["hidden_size", "intermediate_size", "dtype"],
+            probe_provider="huggingface",
+            extra_configs={
+                "bsz": 1,
                 "hidden_act": "silu",
             },
             bt=args.bt,
@@ -103,40 +89,14 @@ if __name__ == "__main__":
         model = get_benchmark_model_config(args.model)
         probe_seq_len = 1024
 
-        def probe_fn():
-            probe_input = SingleBenchmarkRunInput(
-                x=probe_seq_len,
-                kernel_provider="huggingface",
-                extra_benchmark_config={
-                    "bsz": 1,
-                    "hidden_size": model.hidden_size,
-                    "intermediate_size": model.intermediate_size,
-                    "hidden_act": "silu",
-                    "dtype": model.dtype,
-                },
-            )
-            x, layer = _setup_swiglu(probe_input)
-            return layer(x)
-
-        def extra_config_fn(config):
-            return {
-                "bsz": config.batch_size,
-                "hidden_size": model.hidden_size,
-                "intermediate_size": model.intermediate_size,
-                "hidden_act": "silu",
-                "dtype": model.dtype,
-            }
-
-        def x_values_fn(config):
-            return [2**i for i in range(10, int(math.log2(config.seq_len)) + 1)]
-
         common_configs = build_token_length_sweep(
             kernel_name="swiglu",
             probe_seq_len=probe_seq_len,
             model=model,
-            probe_fn=probe_fn,
-            extra_config_fn=extra_config_fn,
-            x_values_fn=x_values_fn,
+            setup_fn=_setup_swiglu,
+            model_keys=["hidden_size", "intermediate_size", "dtype"],
+            extra_configs={"hidden_act": "silu", "bsz": 1},
+            probe_provider="huggingface",
             overwrite=args.overwrite,
         )
 

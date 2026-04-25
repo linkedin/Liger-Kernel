@@ -1,5 +1,3 @@
-import math
-
 import torch
 
 from benchmark_model_configs import MODEL_REGISTRY
@@ -65,61 +63,33 @@ if __name__ == "__main__":
     if args.sweep_mode == "model_config":
         all_model_configs = list(MODEL_REGISTRY.values())
 
-        def probe_fn(model_cfg, probe_bt):
-            probe_input = SingleBenchmarkRunInput(
-                x=probe_bt,
-                kernel_provider="huggingface",
-                extra_benchmark_config={
-                    "hidden_size": model_cfg.hidden_size,
-                    "dtype": model_cfg.dtype,
-                    "eps": 1e-6,
-                },
-            )
-            x, layer = _setup_layer_norm(probe_input)
-            return layer(x)
-
         common_configs = build_model_config_sweep(
             kernel_name="layer_norm",
             all_model_configs=all_model_configs,
-            probe_fn=probe_fn,
-            extra_benchmark_config={
+            setup_fn=_setup_layer_norm,
+            model_keys=["hidden_size", "dtype"],
+            extra_configs={
                 "eps": 1e-6,
             },
+            probe_provider="huggingface",
             bt=args.bt,
             overwrite=args.overwrite,
         )
 
     else:
         model = get_benchmark_model_config(args.model)
-        probe_bt = 1024
-
-        def probe_fn():
-            probe_input = SingleBenchmarkRunInput(
-                x=probe_bt,
-                kernel_provider="huggingface",
-                extra_benchmark_config={
-                    "hidden_size": model.hidden_size,
-                    "dtype": model.dtype,
-                    "eps": 1e-6,
-                },
-            )
-            x, layer = _setup_layer_norm(probe_input)
-            return layer(x)
-
-        def x_values_fn(config):
-            return [2**i for i in range(10, int(math.log2(config.seq_len)) + 1)]
+        probe_seq_len = 1024
 
         common_configs = build_token_length_sweep(
             kernel_name="layer_norm",
-            probe_seq_len=probe_bt,
+            probe_seq_len=probe_seq_len,
             model=model,
-            probe_fn=probe_fn,
-            extra_config_fn={
-                "hidden_size": model.hidden_size,
-                "dtype": model.dtype,
+            setup_fn=_setup_layer_norm,
+            model_keys=["hidden_size", "dtype"],
+            extra_configs={
                 "eps": 1e-6,
             },
-            x_values_fn=x_values_fn,
+            probe_provider="huggingface",
             overwrite=args.overwrite,
         )
 

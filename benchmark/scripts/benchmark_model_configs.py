@@ -26,6 +26,7 @@ import gc
 import math
 
 from dataclasses import dataclass
+from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
@@ -33,6 +34,8 @@ from typing import Optional
 from typing import Tuple
 
 import torch
+
+from utils import SingleBenchmarkRunInput
 
 from liger_kernel.utils import get_total_gpu_memory
 from liger_kernel.utils import infer_device
@@ -385,31 +388,86 @@ def compute_model_config_sweep_config(
     )
 
 
+def build_extra_config(
+    model: ModelConfig,
+    model_keys: List[str],
+    extra_configs: Optional[Dict] = None,
+) -> Dict:
+    """Construct extra_benchmark_config dict.
+
+    Args:
+        model: The model configuration object.
+        model_keys: List of attribute names to read from `model`
+            (e.g. ["hidden_size", "dtype"]).
+        extra_configs: Optional dictionary of additional key/value pairs
+            that override or extend the extracted attributes.
+    """
+    extra_configs = extra_configs or {}
+    cfg = {k: getattr(model, k) for k in model_keys}
+    cfg.update(extra_configs)
+    return cfg
+
+
+def _default_forward_fn(x, layer):
+    """Default forward function for common (input, module) patterns.
+
+    Assumes `setup_fn` returns `(x, layer)` and simply applies:
+        layer(x)
+
+    This covers the majority of kernels that follow a
+    "tensor + nn.Module" execution pattern.
+    """
+    return layer(x)
+
+
 def build_model_config_sweep(
     kernel_name: str,
     all_model_configs: List[ModelConfig],
-    probe_fn: Callable[[ModelConfig, int], torch.Tensor],
-    extra_benchmark_config: Dict,
+    setup_fn: Callable[[SingleBenchmarkRunInput], Tuple[Any, ...]],
+    model_keys: List[str],
+    forward_fn: Callable[..., torch.Tensor] = _default_forward_fn,
+    probe_provider: str = "torch",
+    extra_configs: Optional[Dict] = None,
     bt: int = 2048,
     overwrite: bool = False,
 ) -> Dict:
     """Build benchmark config dict for model-config sweep.
 
-    Returns a single extra_benchmark_config (with a model_configs lookup dict
-    and seq_len filled in from the sweep), so run_benchmarks iterates over
-    model names as x_values rather than repeating per-model configs.
-
     Args:
         kernel_name: Name of the kernel being benchmarked.
-        all_model_configs: List of model configs to sweep over.
-        probe_fn: Callable(model_cfg, probe_seq_len) -> output tensor for memory estimation.
-        extra_benchmark_config: Base config dict. seq_len will be set from sweep result.
-        bt: Target total tokens (batch_size * seq_len) used as probe bt.
-        overwrite: Whether to overwrite existing benchmark data.
+        all_model_configs: List of model configurations to sweep over.
+        setup_fn: Function that prepares inputs and modules given a
+            `SingleBenchmarkRunInput`. Returns a tuple of objects consumed
+            by `forward_fn`.
+        model_keys: List of attributes to extract from each `ModelConfig`
+            and include in `extra_benchmark_config`.
+        forward_fn: Function that executes the kernel given the outputs of
+            `setup_fn`. Defaults to `(x, layer) -> layer(x)`.
+        probe_provider: Kernel provider used during memory probing.
+        extra_configs: Optional static overrides merged into the benchmark config.
+        bt: Target total tokens (batch_size * seq_len) used to derive sweep.
+        overwrite: Whether to overwrite existing benchmark results.
+
+    Returns:
+        A dictionary consumable by `run_benchmarks`.
     """
 
     def probe_fn_factory(model_cfg, probe_seq_len):
-        return lambda: probe_fn(model_cfg, probe_seq_len)
+        def _probe():
+            probe_input = SingleBenchmarkRunInput(
+                x=probe_seq_len,
+                kernel_provider=probe_provider,
+                extra_benchmark_config=build_extra_config(
+                    model_cfg,
+                    model_keys,
+                    extra_configs=extra_configs,
+                ),
+            )
+            setup_out = setup_fn(probe_input)
+
+            return forward_fn(*setup_out)
+
+        return _probe
 
     sweep = compute_model_config_sweep_config(
         all_model_configs,
@@ -417,14 +475,17 @@ def build_model_config_sweep(
         bt=bt,
     )
 
-    config = {**extra_benchmark_config, "bsz": sweep.batch_size, "seq_len": sweep.seq_len}
+    base_config = {"bsz": sweep.batch_size, "seq_len": sweep.seq_len}
+
+    if extra_configs:
+        base_config.update(extra_configs)
 
     return {
         "kernel_name": kernel_name,
         "x_name": "model_config",
         "x_label": "model configuration",
         "x_values": [cfg.name for cfg in sweep.model_configs],
-        "extra_benchmark_configs": [config],
+        "extra_benchmark_configs": [base_config],
         "overwrite": overwrite,
     }
 
@@ -433,38 +494,70 @@ def build_token_length_sweep(
     kernel_name: str,
     probe_seq_len: int,
     model: ModelConfig,
-    probe_fn: Callable[[], torch.Tensor],
-    extra_config_fn: Callable[[SeqLenSweepConfig], Dict] | Dict,
-    x_values_fn: Callable[[SeqLenSweepConfig], List[int]],
+    setup_fn: Callable[[SingleBenchmarkRunInput], Tuple[Any, ...]],
+    model_keys: List[str],
+    extra_configs: Optional[Dict] = None,
+    forward_fn: Callable[..., torch.Tensor] = _default_forward_fn,
+    probe_provider: str = "torch",
+    x_values_fn: Optional[Callable[[SeqLenSweepConfig], List[int]]] = None,
     overwrite: bool = False,
 ) -> Dict:
     """Build benchmark config dict for token-length sweep.
 
     Args:
         kernel_name: Name of the kernel being benchmarked.
-        model: Model config to use for the sweep.
-        probe_fn: Callable() -> output tensor for memory estimation.
-        extra_config_fn: Callable(config) -> dict with normalized keys
-            that _setup_* expects.
-        x_values_fn: Callable(config) -> list of sequence lengths to benchmark.
-        overwrite: Whether to overwrite existing benchmark data.
+        probe_seq_len: Sequence length used for memory probing.
+        model: Model configuration used for the sweep.
+        setup_fn: Function that prepares inputs and modules given a
+            `SingleBenchmarkRunInput`. Returns a tuple of objects consumed
+            by `forward_fn`.
+        model_keys: List of attributes to extract from `model` and include
+            in `extra_benchmark_config`.
+        extra_configs: Optional static overrides merged into the config.
+        forward_fn: Function that executes the kernel given the outputs of
+            `setup_fn`. Defaults to `(x, layer) -> layer(x)`.
+        probe_provider: Kernel provider used during memory probing.
+        x_values_fn: Optional function mapping `SeqLenSweepConfig` to a list
+            of sequence lengths. Defaults to powers of 2 up to max seq_len.
+        overwrite: Whether to overwrite existing benchmark results.
 
     Returns:
-        Dict with keys: kernel_name, x_name, x_label, x_values, kernel_providers,
-        extra_benchmark_configs, overwrite.
+        A dictionary consumable by `run_benchmarks`.
     """
+    extra_configs = extra_configs or {}
+
+    def probe_fn():
+        probe_input = SingleBenchmarkRunInput(
+            x=probe_seq_len,
+            kernel_provider=probe_provider,
+            extra_benchmark_config=build_extra_config(
+                model,
+                model_keys,
+                extra_configs=extra_configs,
+            ),
+        )
+        setup_out = setup_fn(probe_input)
+        return forward_fn(*setup_out)
+
     peak_bytes = estimate_kernel_peak_memory(probe_fn=probe_fn)
     kernel_bpt = peak_bytes // probe_seq_len
 
     config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+
+    if x_values_fn is None:
+        x_values_fn = lambda cfg: [2**i for i in range(10, int(math.log2(cfg.seq_len)) + 1)]
 
     return {
         "kernel_name": kernel_name,
         "x_name": "T",
         "x_label": "sequence length",
         "x_values": x_values_fn(config),
-        "extra_benchmark_configs": [extra_config_fn]
-        if isinstance(extra_config_fn, dict)
-        else [extra_config_fn(config)],
+        "extra_benchmark_configs": [
+            build_extra_config(
+                model,
+                model_keys,
+                extra_configs=extra_configs,
+            )
+        ],
         "overwrite": overwrite,
     }
