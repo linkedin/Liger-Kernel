@@ -165,17 +165,11 @@ class LigerFalconH1SwiGLUMLP(nn.Module):
         self.down_multiplier = float(down_multiplier)
 
     def forward(self, x):
-        # When patched onto an already-instantiated HF FalconH1MLP via _patch_swiglu_module,
-        # only `forward` is rebound — read multipliers from the instance if present, else config.
-        gate_multiplier = getattr(self, "gate_multiplier", None)
-        down_multiplier = getattr(self, "down_multiplier", None)
-        if gate_multiplier is None or down_multiplier is None:
-            gate_multiplier, down_multiplier = self.config.mlp_multipliers
         return self.down_proj(
             LigerSiLUMulFunction.apply(
                 self.gate_proj(x),
                 self.up_proj(x),
-                float(gate_multiplier),
-                float(down_multiplier),
+                float(self.gate_multiplier),
+                float(self.down_multiplier),
             )
         )

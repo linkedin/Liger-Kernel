@@ -462,14 +462,14 @@ def test_correctness_silumul_with_multipliers(bsz, seq_len, size, gate_multiplie
     y_ref = _torch_silu_mul_ref(a1, b1, gate_multiplier, down_multiplier)
     y_liger = LigerSiLUMulFunction.apply(a2, b2, gate_multiplier, down_multiplier)
 
-    assert torch.allclose(y_ref, y_liger, atol=atol, rtol=rtol)
+    torch.testing.assert_close(y_ref, y_liger, atol=atol, rtol=rtol)
 
     grad = torch.randn_like(y_ref)
     y_ref.backward(grad.clone())
     y_liger.backward(grad.clone())
 
-    assert torch.allclose(a1.grad, a2.grad, atol=atol, rtol=rtol)
-    assert torch.allclose(b1.grad, b2.grad, atol=atol, rtol=rtol)
+    torch.testing.assert_close(a1.grad, a2.grad, atol=atol, rtol=rtol)
+    torch.testing.assert_close(b1.grad, b2.grad, atol=atol, rtol=rtol)
 
 
 def test_silumul_default_multipliers_backward_compat():
@@ -579,16 +579,16 @@ def test_correctness_falcon_h1_mlp(
     y1 = ref_mlp(x1)
     y2 = liger_mlp(x2)
 
-    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
+    torch.testing.assert_close(y1, y2, atol=atol, rtol=rtol)
 
     dy = torch.randn_like(y1)
     y1.backward(dy.clone(), retain_graph=True)
     y2.backward(dy.clone(), retain_graph=True)
 
-    assert torch.allclose(ref_mlp.gate_proj.weight.grad, liger_mlp.gate_proj.weight.grad, atol=atol, rtol=rtol)
-    assert torch.allclose(ref_mlp.up_proj.weight.grad, liger_mlp.up_proj.weight.grad, atol=atol, rtol=rtol)
-    assert torch.allclose(ref_mlp.down_proj.weight.grad, liger_mlp.down_proj.weight.grad, atol=atol, rtol=rtol)
-    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
+    torch.testing.assert_close(ref_mlp.gate_proj.weight.grad, liger_mlp.gate_proj.weight.grad, atol=atol, rtol=rtol)
+    torch.testing.assert_close(ref_mlp.up_proj.weight.grad, liger_mlp.up_proj.weight.grad, atol=atol, rtol=rtol)
+    torch.testing.assert_close(ref_mlp.down_proj.weight.grad, liger_mlp.down_proj.weight.grad, atol=atol, rtol=rtol)
+    torch.testing.assert_close(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
 
 def _test_dtensor_liger_silumul(rank, world_size, bsz, seq_len, hidden_size, dtype, atol, rtol, file_name):
