@@ -2627,7 +2627,7 @@ def apply_liger_kernel_to_falcon_h1(
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
-    swiglu: bool = False,
+    swiglu: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -2652,6 +2652,8 @@ def apply_liger_kernel_to_falcon_h1(
     from transformers.models.falcon_h1 import modeling_falcon_h1
     from transformers.models.falcon_h1.modeling_falcon_h1 import FalconH1Model
 
+    from liger_kernel.transformers.swiglu import LigerFalconH1SwiGLUMLP
+
     if rope:
         logger.info("Apply liger rotary pos emb.")
         modeling_falcon_h1.apply_rotary_pos_emb = liger_rotary_pos_emb
@@ -2659,7 +2661,8 @@ def apply_liger_kernel_to_falcon_h1(
         logger.info("Apply liger RMSNorm")
         modeling_falcon_h1.FalconH1RMSNorm = LigerRMSNorm
     if swiglu:
-        logger.warning("LigerSwiGLUMLP is not available for Falcon-H1 models. There will be no effect.")
+        logger.info("Apply liger SwiGLU")
+        modeling_falcon_h1.FalconH1MLP = LigerFalconH1SwiGLUMLP
 
     if cross_entropy:
         logger.info("Apply liger cross entropy")
@@ -2685,7 +2688,7 @@ def apply_liger_kernel_to_falcon_h1(
 
         for decoder_layer in base_model.layers:
             if swiglu:
-                _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+                _patch_swiglu_module(decoder_layer.mlp, LigerFalconH1SwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.pre_ff_layernorm)

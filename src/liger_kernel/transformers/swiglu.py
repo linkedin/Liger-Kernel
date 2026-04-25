@@ -135,3 +135,47 @@ class LigerHunyuanV1SwiGLUMLP(nn.Module):
 
     def forward(self, x):
         return self.down_proj(LigerSiLUMulFunction.apply(self.gate_proj(x), self.up_proj(x)))
+
+
+class LigerFalconH1SwiGLUMLP(nn.Module):
+    """
+    Patch FalconH1MLP to use LigerSiLUMulFunction with gate / down multipliers.
+
+    Falcon H1's MLP block pre-scales the gate pre-activation and post-scales the
+    down projection output:
+
+        y = down_proj(silu(gate_proj(x) * gate_mult) * up_proj(x)) * down_mult
+
+    https://github.com/huggingface/transformers/blob/main/src/transformers/models/falcon_h1/modeling_falcon_h1.py
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size
+        bias = getattr(config, "mlp_bias", False)
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=bias)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=bias)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=bias)
+        if config.hidden_act not in ["silu", "swish"]:
+            raise ValueError(f"Activation function {config.hidden_act} not supported.")
+        gate_multiplier, down_multiplier = config.mlp_multipliers
+        self.gate_multiplier = float(gate_multiplier)
+        self.down_multiplier = float(down_multiplier)
+
+    def forward(self, x):
+        # When patched onto an already-instantiated HF FalconH1MLP via _patch_swiglu_module,
+        # only `forward` is rebound — read multipliers from the instance if present, else config.
+        gate_multiplier = getattr(self, "gate_multiplier", None)
+        down_multiplier = getattr(self, "down_multiplier", None)
+        if gate_multiplier is None or down_multiplier is None:
+            gate_multiplier, down_multiplier = self.config.mlp_multipliers
+        return self.down_proj(
+            LigerSiLUMulFunction.apply(
+                self.gate_proj(x),
+                self.up_proj(x),
+                float(gate_multiplier),
+                float(down_multiplier),
+            )
+        )

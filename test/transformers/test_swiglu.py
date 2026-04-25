@@ -17,6 +17,7 @@ from liger_kernel.ops import LigerSiLUMulFunction
 from liger_kernel.transformers.functional import liger_swiglu
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerExperts
+from liger_kernel.transformers.swiglu import LigerFalconH1SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 from liger_kernel.utils import infer_comm_backend
@@ -414,6 +415,180 @@ def test_correctness_functional(bsz, seq_len, size, dtype, atol, rtol):
     # Check if gradients are close for x
     assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
     assert torch.allclose(b1.grad, b2.grad, atol=atol, rtol=rtol)
+
+
+def _torch_silu_mul_ref(a, b, gate_multiplier, down_multiplier):
+    """Pure-PyTorch reference for silu(a * gate_mult) * b * down_mult."""
+    scaled = a * gate_multiplier
+    return torch.nn.functional.silu(scaled) * b * down_multiplier
+
+
+@pytest.mark.parametrize(
+    "bsz, seq_len, size",
+    [
+        (2, 8, 8),
+        (9, 7, 41),
+    ],
+)
+@pytest.mark.parametrize(
+    "gate_multiplier, down_multiplier",
+    [
+        (0.7, 1.3),
+        (1.5, 0.5),
+        (1.0, 1.0),  # degenerate case — must match the no-multiplier path
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-3, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_correctness_silumul_with_multipliers(bsz, seq_len, size, gate_multiplier, down_multiplier, dtype, atol, rtol):
+    _a = torch.randn(bsz, seq_len, size, device=device, dtype=dtype)
+    _b = torch.randn(bsz, seq_len, size, device=device, dtype=dtype)
+
+    a1 = _a.clone().detach().requires_grad_(True)
+    b1 = _b.clone().detach().requires_grad_(True)
+    a2 = _a.clone().detach().requires_grad_(True)
+    b2 = _b.clone().detach().requires_grad_(True)
+
+    y_ref = _torch_silu_mul_ref(a1, b1, gate_multiplier, down_multiplier)
+    y_liger = LigerSiLUMulFunction.apply(a2, b2, gate_multiplier, down_multiplier)
+
+    assert torch.allclose(y_ref, y_liger, atol=atol, rtol=rtol)
+
+    grad = torch.randn_like(y_ref)
+    y_ref.backward(grad.clone())
+    y_liger.backward(grad.clone())
+
+    assert torch.allclose(a1.grad, a2.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(b1.grad, b2.grad, atol=atol, rtol=rtol)
+
+
+def test_silumul_default_multipliers_backward_compat():
+    """Calling LigerSiLUMulFunction.apply(a, b) without multipliers must behave exactly as before."""
+    _a = torch.randn(4, 16, 32, device=device, dtype=torch.float32)
+    _b = torch.randn(4, 16, 32, device=device, dtype=torch.float32)
+
+    a1 = _a.clone().detach().requires_grad_(True)
+    b1 = _b.clone().detach().requires_grad_(True)
+    a2 = _a.clone().detach().requires_grad_(True)
+    b2 = _b.clone().detach().requires_grad_(True)
+
+    y_default = LigerSiLUMulFunction.apply(a1, b1)
+    y_explicit = LigerSiLUMulFunction.apply(a2, b2, 1.0, 1.0)
+
+    torch.testing.assert_close(y_default, y_explicit)
+
+    grad = torch.randn_like(y_default)
+    y_default.backward(grad.clone())
+    y_explicit.backward(grad.clone())
+
+    torch.testing.assert_close(a1.grad, a2.grad)
+    torch.testing.assert_close(b1.grad, b2.grad)
+
+
+class _FalconH1MLPRef(torch.nn.Module):
+    """Pure-PyTorch reference matching Falcon H1's MLP forward from issue #936."""
+
+    def __init__(self, hidden_size, intermediate_size, gate_multiplier, down_multiplier):
+        super().__init__()
+        self.gate_proj = torch.nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.up_proj = torch.nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.down_proj = torch.nn.Linear(intermediate_size, hidden_size, bias=False)
+        self.gate_multiplier = gate_multiplier
+        self.down_multiplier = down_multiplier
+
+    def forward(self, x):
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        activated = torch.nn.functional.silu(gate * self.gate_multiplier) * up
+        return self.down_proj(activated) * self.down_multiplier
+
+
+@pytest.mark.parametrize(
+    "bsz, seq_len, hidden_size, intermediate_size",
+    [
+        (2, 256, 256, 512),
+        (6, 42, 123, 431),
+    ],
+)
+@pytest.mark.parametrize(
+    "gate_multiplier, down_multiplier",
+    [
+        (0.7, 1.3),
+        (1.5, 0.5),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-0, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e4,
+            1e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_correctness_falcon_h1_mlp(
+    bsz, seq_len, hidden_size, intermediate_size, gate_multiplier, down_multiplier, dtype, atol, rtol
+):
+    """Parity test for LigerFalconH1SwiGLUMLP against a pure-PyTorch reference.
+
+    A pure-PyTorch reference is used rather than HF's FalconH1MLP so the test
+    doesn't depend on transformers exposing FalconH1MLP at module scope.
+    """
+
+    class _FakeConfig:
+        def __init__(self):
+            self.hidden_size = hidden_size
+            self.intermediate_size = intermediate_size
+            self.hidden_act = "silu"
+            self.mlp_bias = False
+            self.mlp_multipliers = (gate_multiplier, down_multiplier)
+
+    config = _FakeConfig()
+
+    _input = torch.randn(bsz, seq_len, hidden_size, device=device, dtype=dtype)
+    x1 = _input.clone().requires_grad_(True)
+    x2 = _input.clone().requires_grad_(True)
+
+    G = torch.randn(hidden_size, intermediate_size, device=device, dtype=dtype)
+    U = torch.randn(hidden_size, intermediate_size, device=device, dtype=dtype)
+    D = torch.randn(intermediate_size, hidden_size, device=device, dtype=dtype)
+
+    ref_mlp = _FalconH1MLPRef(hidden_size, intermediate_size, gate_multiplier, down_multiplier).to(device).to(dtype)
+    ref_mlp.gate_proj.weight.data = G.T.contiguous()
+    ref_mlp.up_proj.weight.data = U.T.contiguous()
+    ref_mlp.down_proj.weight.data = D.T.contiguous()
+
+    liger_mlp = LigerFalconH1SwiGLUMLP(config=config).to(device).to(dtype)
+    liger_mlp.gate_proj.weight.data = G.T.contiguous()
+    liger_mlp.up_proj.weight.data = U.T.contiguous()
+    liger_mlp.down_proj.weight.data = D.T.contiguous()
+
+    y1 = ref_mlp(x1)
+    y2 = liger_mlp(x2)
+
+    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
+
+    dy = torch.randn_like(y1)
+    y1.backward(dy.clone(), retain_graph=True)
+    y2.backward(dy.clone(), retain_graph=True)
+
+    assert torch.allclose(ref_mlp.gate_proj.weight.grad, liger_mlp.gate_proj.weight.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(ref_mlp.up_proj.weight.grad, liger_mlp.up_proj.weight.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(ref_mlp.down_proj.weight.grad, liger_mlp.down_proj.weight.grad, atol=atol, rtol=rtol)
+    assert torch.allclose(x1.grad, x2.grad, atol=atol, rtol=rtol)
 
 
 def _test_dtensor_liger_silumul(rank, world_size, bsz, seq_len, hidden_size, dtype, atol, rtol, file_name):
