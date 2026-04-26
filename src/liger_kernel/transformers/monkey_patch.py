@@ -1447,8 +1447,14 @@ def apply_liger_kernel_to_gemma4(
     # Dispatch: if the caller passed a text-only instance, route to the text
     # path so this entry point works as a single user-facing API.
     if model is not None:
+        # `isinstance(cls, type)` filter (rather than `cls is not None`) so we
+        # also drop the MagicMock the test harness substitutes for
+        # `Gemma4TextForCausalLM` under `with patch("...modeling_gemma4")` —
+        # an `isinstance` check against a non-class entry raises TypeError.
         text_classes = tuple(
-            cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM, Gemma4TextModel) if cls is not None
+            cls
+            for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM, Gemma4TextModel)
+            if isinstance(cls, type)
         )
         if isinstance(model, text_classes):
             apply_liger_kernel_to_gemma4_text(
