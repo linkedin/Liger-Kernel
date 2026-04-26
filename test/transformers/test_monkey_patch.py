@@ -1872,6 +1872,89 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
 
 
 @pytest.mark.skipif(not is_gemma4_available(), reason="gemma4 module not available")
+def test_apply_liger_kernel_to_instance_for_gemma4_conditional_generation():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.gemma4.modeling_gemma4"):
+        from transformers.models.gemma4.modeling_gemma4 import Gemma4ForConditionalGeneration
+
+        from liger_kernel.transformers.model.gemma4 import multimodal_forward as gemma4_multimodal_forward
+
+        # Minimal dense-path text config — same knobs pinned off as the
+        # text-only test below (no PLE, MoE, KV-share, double-wide MLP).
+        text_config = transformers.models.gemma4.configuration_gemma4.Gemma4TextConfig(
+            dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=16,
+            num_kv_shared_layers=0,
+            use_double_wide_mlp=False,
+            enable_moe_block=False,
+            hidden_size_per_layer_input=0,
+        )
+        # Vision/audio configs left as None — Gemma4Model wraps both towers in
+        # `if config.<m>_config is not None`, so a None-towers model still
+        # constructs as Gemma4ForConditionalGeneration and exercises the
+        # multimodal forward we're patching. The towers themselves are
+        # polymorphic (AutoModel.from_config) and not in this PR's scope.
+        config = transformers.models.gemma4.configuration_gemma4.Gemma4Config(
+            text_config=text_config,
+            vision_config=None,
+            audio_config=None,
+        )
+
+        dummy_model_instance = Gemma4ForConditionalGeneration._from_config(config)
+        assert isinstance(dummy_model_instance, Gemma4ForConditionalGeneration)
+
+        # Pre-patch: forward and language-model norms must NOT be Liger.
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(gemma4_multimodal_forward)
+        assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.model.language_model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerGEGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_feedforward_layernorm.forward) != inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.self_attn.q_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.k_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Post-patch: top-level forward is multimodal_forward, language_model
+        # norms / MLPs are Liger.
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(gemma4_multimodal_forward)
+        assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.model.language_model.layers:
+            assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerGEGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.pre_feedforward_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_feedforward_layernorm.forward) == inspect.getsource(
+                LigerRMSNorm.forward
+            )
+            assert inspect.getsource(layer.self_attn.q_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.k_norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            v_norm = getattr(layer.self_attn, "v_norm", None)
+            if v_norm is not None:
+                # with_scale=False → intentionally not patched.
+                assert inspect.getsource(v_norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_gemma4_available(), reason="gemma4 module not available")
 def test_apply_liger_kernel_to_instance_for_gemma4_text():
     # Ensure any monkey patching is cleaned up for subsequent tests
     with patch("transformers.models.gemma4.modeling_gemma4"):

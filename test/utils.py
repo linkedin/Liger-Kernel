@@ -519,6 +519,21 @@ def revert_liger_kernel_to_gemma3(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_gemma4(model_config: MiniModelConfig):
+    """Revert all Liger kernel patches applied to Gemma4 multimodal model."""
+
+    from transformers.models.gemma4 import modeling_gemma4
+
+    # Vision/audio towers are loaded via AutoModel.from_config, so their
+    # module classes are polymorphic — no class-level swap to revert there.
+    # Reloading modeling_gemma4 resets Gemma4RMSNorm / Gemma4TextMLP /
+    # Gemma4ForConditionalGeneration.forward, which is the surface the
+    # multimodal patch touches.
+    importlib.reload(modeling_gemma4)
+    model_config.model_class = modeling_gemma4.Gemma4ForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_Paligemma(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Paligemma.

@@ -1384,6 +1384,126 @@ def apply_liger_kernel_to_gemma4_text(
             raise TypeError("The model must be Gemma4ForCausalLM, Gemma4TextForCausalLM, or Gemma4TextModel.")
 
 
+def apply_liger_kernel_to_gemma4(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    geglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma4
+    multimodal models (`Gemma4ForConditionalGeneration`).
+
+    Dispatches on class: text-only variants (`Gemma4ForCausalLM`,
+    `Gemma4TextForCausalLM`, `Gemma4TextModel`) are routed to
+    :func:`apply_liger_kernel_to_gemma4_text` for backwards compatibility, so the
+    same entry point works for both shapes when an instance is supplied.
+
+    The primary win is the fused-linear-cross-entropy path on the multimodal
+    class: with vocab=262,144, the (B, T, V) fp32 logits tensor is ~17 GB at
+    T=8192 in bf16 (and ~34 GB once the loss path upcasts), OOMing 96 GB cards.
+    Fused CE materializes only the loss scalar.
+
+    Out of scope (deferred to future PRs):
+    - Vision and audio tower kernel swaps. Gemma 4's vision and audio towers
+      are loaded via `AutoModel.from_config(config.vision_config)` and
+      `AutoModel.from_config(config.audio_config)` respectively, so their
+      module classes are polymorphic. A safe class-level swap would need to
+      enumerate supported tower types — out of scope here; FLCE on the LM head
+      is what unblocks training OOM.
+    - PLE (Per-Layer Embeddings) kernels. PLE state passes through the inner
+      forward unchanged; verified end-to-end on E4B-it without explicit
+      handling.
+    - Gemma 4 MoE expert kernels (`Gemma4TextExperts`); guarded out via the
+      same `enable_moe_block` check used in the text path.
+
+    Args:
+        rope (bool): Currently a no-op (HF's apply_rotary_pos_emb signature is
+            incompatible with Liger's fused variant). Default False.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss.
+            Default False. Mutually exclusive with `fused_linear_cross_entropy`.
+        fused_linear_cross_entropy (bool): Fused linear CE for memory
+            efficiency. Default True.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default True.
+        model (PreTrainedModel): An already-instantiated model to patch
+            in-place. Default None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.gemma4 import modeling_gemma4
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4ForCausalLM
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4ForConditionalGeneration
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4TextModel
+
+    from liger_kernel.transformers.model.gemma4 import multimodal_forward
+
+    Gemma4TextForCausalLM = getattr(modeling_gemma4, "Gemma4TextForCausalLM", None)
+
+    # Dispatch: if the caller passed a text-only instance, route to the text
+    # path so this entry point works as a single user-facing API.
+    if model is not None:
+        text_classes = tuple(
+            cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM, Gemma4TextModel) if cls is not None
+        )
+        if isinstance(model, text_classes):
+            apply_liger_kernel_to_gemma4_text(
+                rope=rope,
+                cross_entropy=cross_entropy,
+                fused_linear_cross_entropy=fused_linear_cross_entropy,
+                rms_norm=rms_norm,
+                geglu=geglu,
+                model=model,
+            )
+            return
+        if not isinstance(model, Gemma4ForConditionalGeneration):
+            raise TypeError(
+                "The model must be Gemma4ForConditionalGeneration (or a Gemma 4 "
+                "text-only variant; those are routed to "
+                "apply_liger_kernel_to_gemma4_text)."
+            )
+
+    # Class-level patches for the text decoder layers (RMSNorm, GeGLU MLP).
+    # We disable FLCE here because the multimodal class needs its own forward
+    # (handles pixel_values / input_features / mm_token_type_ids / etc.) — we
+    # install that below.
+    apply_liger_kernel_to_gemma4_text(
+        rope=rope,
+        cross_entropy=False,
+        fused_linear_cross_entropy=False,
+        rms_norm=rms_norm,
+        geglu=geglu,
+    )
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(multimodal_forward, model)
+        else:
+            modeling_gemma4.Gemma4ForConditionalGeneration.forward = multimodal_forward
+
+    if model is not None:
+        # Recurse into the language model for instance-level RMSNorm / GeGLU
+        # patching. (The class-level swap above already covers freshly
+        # instantiated modules; this catches the already-built ones.)
+        apply_liger_kernel_to_gemma4_text(
+            rope=rope,
+            cross_entropy=False,
+            fused_linear_cross_entropy=False,
+            rms_norm=rms_norm,
+            geglu=geglu,
+            model=model.model.language_model,
+        )
+
+
 def apply_liger_kernel_to_paligemma(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -3329,6 +3449,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma3_text": apply_liger_kernel_to_gemma3_text,
     "gemma3": apply_liger_kernel_to_gemma3,
     "gemma4_text": apply_liger_kernel_to_gemma4_text,
+    "gemma4": apply_liger_kernel_to_gemma4,
     "glm4": apply_liger_kernel_to_glm4,
     "glm4v": apply_liger_kernel_to_glm4v,
     "glm4v_moe": apply_liger_kernel_to_glm4v_moe,
