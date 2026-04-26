@@ -25,6 +25,7 @@ def triton_grpo_loss(
     vllm_is_ratio=None,
     delta=None,
     use_bias_correction_kl=False,
+    num_items_in_batch=None,
 ):
     """
     Triton-optimized GRPO loss function.
@@ -53,6 +54,10 @@ def triton_grpo_loss(
             types (grpo, bnpo, dr_grpo, dapo, luspo). None means disabled.
         use_bias_correction_kl: If True, multiply KL divergence by coef_1 (importance sampling
             ratio) for bias-corrected KL estimation (DeepSeek-V3.2). Default False.
+        num_items_in_batch: Optional total active tokens across the entire generation batch
+            (all gradient-accumulation micro-batches × all processes). When provided, dapo /
+            cispo normalization uses ``num_items_in_batch / num_processes`` to match TRL's
+            ``compute_loss``. When None, falls back to the current micro-batch's mask sum.
 
     Returns:
         If reduce=True: (loss, metrics) where metrics = [kl_mean, clip_ratio] or [clip_ratio]
@@ -86,6 +91,7 @@ def triton_grpo_loss(
         vllm_is_ratio,
         delta,
         use_bias_correction_kl,
+        num_items_in_batch,
     )
 
     if not reduce:
@@ -101,7 +107,7 @@ def triton_grpo_loss(
     return reduced_loss, metrics
 
 
-def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion_length):
+def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion_length, num_items_in_batch=None):
     mask = completion_mask
     if mask is None:
         mask = torch.ones_like(per_token_loss, dtype=per_token_loss.dtype, device=per_token_loss.device)
@@ -119,7 +125,7 @@ def _reduce_grpo_loss(per_token_loss, completion_mask, loss_type, max_completion
         return (per_token_loss * mask).sum() / (batch * max_len)
     if loss_type == "dapo" or loss_type == "cispo":
         # CISPO uses the same normalization as DAPO
-        normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask)
+        normalizer = LigerFusedLinearPPOBase._compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
         return (per_token_loss * mask).sum() / normalizer
     if loss_type == "luspo":
         # LUSPO: scale each sequence's loss by its valid token count, then average across sequences
