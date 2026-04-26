@@ -187,8 +187,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
             ref_per_token_logps = ref_per_token_logps.float()
             kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
             if use_bias_correction_kl:
-                token_coef_1 = torch.exp(per_token_logps - old_per_token_logps)
-                kl_div = kl_div * token_coef_1
+                # TRL: per_token_kl *= coef_1 with coef_1 reflecting importance_sampling_level.
+                kl_div = kl_div * torch.exp(log_importance_weights)
             per_token_loss = per_token_loss + beta * kl_div
 
         # Adjust clipping metric calculation based on importance sampling level
@@ -648,14 +648,23 @@ def test_correctness(
 
 
 @pytest.mark.parametrize("loss_type", ["grpo", "dapo"])
+@pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
         (torch.float32, 1e-5, 5e-4),
     ],
 )
-def test_correctness_with_bias_correction_kl(loss_type, dtype, atol, rtol):
-    """Test use_bias_correction_kl (importance-sampling-corrected KL from DeepSeek-V3.2)."""
+def test_correctness_with_bias_correction_kl(loss_type, importance_sampling_level, dtype, atol, rtol):
+    """Test use_bias_correction_kl (importance-sampling-corrected KL from DeepSeek-V3.2).
+
+    Covers both ``importance_sampling_level`` values: TRL multiplies ``per_token_kl``
+    by ``coef_1`` whose shape mirrors the importance-sampling level (token: (B, T);
+    sequence: (B, 1)). Liger must do the same — historically it always recomputed a
+    token-level ratio, which silently miscomputed the bias-corrected KL when
+    sequence-level importance sampling was selected.
+    """
+    set_seed()
     B, T, H, V = 3, 47, 31, 123
     beta = 0.1  # Must be non-zero for KL to matter
     torch.compiler.reset()
@@ -666,6 +675,7 @@ def test_correctness_with_bias_correction_kl(loss_type, dtype, atol, rtol):
         dtype=dtype,
         beta=beta,
         loss_type=loss_type,
+        importance_sampling_level=importance_sampling_level,
         use_bias_correction_kl=True,
     )
     liger_lm_head_grpo = LigerLMHeadGRPO(
@@ -674,6 +684,7 @@ def test_correctness_with_bias_correction_kl(loss_type, dtype, atol, rtol):
         dtype=dtype,
         beta=beta,
         loss_type=loss_type,
+        importance_sampling_level=importance_sampling_level,
         use_bias_correction_kl=True,
     )
 

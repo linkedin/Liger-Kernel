@@ -210,9 +210,11 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             # Compute KL penalty (approximates KL[per_token_logps, ref_per_token_logps])
             kl_div = k3_loss_fn(ref_per_token_logps, per_token_logps)
             if use_bias_correction_kl:
-                # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= token-level coef_1
-                token_coef_1 = torch.exp(per_token_logps - old_per_token_logps)
-                kl_div = kl_div * token_coef_1
+                # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= coef_1.
+                # Use exp(log_importance_weights) so the ratio's shape matches
+                # importance_sampling_level (token: (B, T); sequence: (B, 1)),
+                # mirroring TRL's ``per_token_kl * coef_1`` (un-clamped, before delta).
+                kl_div = kl_div * torch.exp(log_importance_weights)
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
 
