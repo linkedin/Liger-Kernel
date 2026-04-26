@@ -1355,7 +1355,11 @@ def apply_liger_kernel_to_gemma4_text(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        causal_lm_types = tuple(cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM) if cls is not None)
+        # `isinstance(cls, type)` filter (rather than `cls is not None`) so we
+        # also drop the MagicMock the test harness substitutes for
+        # `Gemma4TextForCausalLM` under `with patch("...modeling_gemma4")` —
+        # an `isinstance` check against a non-class entry raises TypeError.
+        causal_lm_types = tuple(cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM) if isinstance(cls, type))
         if isinstance(model, causal_lm_types) or isinstance(model, Gemma4TextModel):
             # get the base model from the model instance
             base_model = model.model if isinstance(model, causal_lm_types) else model
