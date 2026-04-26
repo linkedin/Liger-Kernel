@@ -7,6 +7,7 @@ import triton.language as tl
 _LOSS_TYPE_GRPO: tl.constexpr = tl.constexpr(0)
 _LOSS_TYPE_CISPO: tl.constexpr = tl.constexpr(1)
 _LOSS_TYPE_SAPO: tl.constexpr = tl.constexpr(2)
+_LOSS_TYPE_VESPO: tl.constexpr = tl.constexpr(3)
 
 _str_to_loss_type = {
     "grpo": _LOSS_TYPE_GRPO.value,
@@ -16,6 +17,7 @@ _str_to_loss_type = {
     "luspo": _LOSS_TYPE_GRPO.value,
     "cispo": _LOSS_TYPE_CISPO.value,
     "sapo": _LOSS_TYPE_SAPO.value,
+    "vespo": _LOSS_TYPE_VESPO.value,
 }
 
 
@@ -93,6 +95,7 @@ def _grpo_loss_fwd_kernel(
     ADVANTAGES,
     VLLM_IS_RATIO,
     VLLM_IS_RATIO_STRIDE,
+    PHI_SEQ,  # VESPO gamma weight per sequence (B,) or None
     LOSS,
     LSE,
     KL,
@@ -177,8 +180,16 @@ def _grpo_loss_fwd_kernel(
         per_token_loss = -sapo_coef * advantage
         is_clipped = 0.0  # SAPO has no clipping concept
 
+    elif LOSS_TYPE == 3:  # VESPO: detached gamma weighting phi(w) on per-token logp
+        # Reference: TRL grpo_trainer.get_gamma_weights / chunked_loss/grpo_loss.py
+        # phi_seq is precomputed per-sequence, vllm correction is folded into phi_seq.
+        phi_seq = tl.load(PHI_SEQ + off_b).to(tl.float32)
+        per_token_loss = -phi_seq * advantage * logp
+        is_clipped = 0.0  # VESPO has no clipping concept
+
     # Apply vLLM importance sampling correction BEFORE adding KL penalty
-    if VLLM_IS_RATIO is not None:
+    # VESPO folds this into phi_seq (in log space), so we skip it here.
+    if VLLM_IS_RATIO is not None and LOSS_TYPE != 3:
         # Use modulo to support both (B, L) per-token and (B, 1) per-sequence shapes
         vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
             tl.float32
@@ -407,6 +418,7 @@ def _grpo_loss_bwd_kernel(
     LSE,
     VLLM_IS_RATIO,
     VLLM_IS_RATIO_STRIDE,
+    PHI_SEQ,  # VESPO gamma weight per sequence (B,) or None
     TEMPERATURE,
     BETA: tl.constexpr,
     EPS_LOW,
@@ -489,8 +501,14 @@ def _grpo_loss_bwd_kernel(
         d_sapo_d_coef1 = 4.0 * sigmoid_val * (1.0 - sigmoid_val)
         dlogp = -advantage * d_sapo_d_coef1 * coef_1
 
+    elif LOSS_TYPE == 3:  # VESPO: detached gamma weighting on per-token logp
+        # loss = -phi_seq * advantage * logp; phi_seq is detached → ∂loss/∂logp = -phi_seq * advantage
+        phi_seq = tl.load(PHI_SEQ + off_b).to(tl.float32)
+        dlogp = -phi_seq * advantage
+
     # Apply vLLM IS ratio to PPO gradient (before KL gradient)
-    if VLLM_IS_RATIO is not None:
+    # VESPO folds vllm correction into phi_seq, so we skip it here.
+    if VLLM_IS_RATIO is not None and LOSS_TYPE != 3:
         # Use modulo to support both (B, L) per-token and (B, 1) per-sequence shapes
         vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
             tl.float32
@@ -555,11 +573,13 @@ def _reduce_loss(per_token_loss, mask, loss_type, max_completion_length, B, L, n
     elif loss_type == "dr_grpo":
         max_len = max_completion_length if max_completion_length is not None else L
         return (per_token_loss * mask).sum() / (B * max_len)
-    elif loss_type == "dapo" or loss_type == "cispo":
+    elif loss_type == "dapo" or loss_type == "cispo" or loss_type == "vespo":
         return (per_token_loss * mask).sum() / _compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
     elif loss_type == "luspo":
         return (per_token_loss * mask.sum(-1, keepdim=True)).mean()
-    raise ValueError(f"Unknown loss_type: {loss_type}. Expected one of: grpo, bnpo, dr_grpo, dapo, cispo, sapo, luspo")
+    raise ValueError(
+        f"Unknown loss_type: {loss_type}. Expected one of: grpo, bnpo, dr_grpo, dapo, cispo, sapo, luspo, vespo"
+    )
 
 
 class GrpoLossFunction(torch.autograd.Function):
@@ -587,6 +607,7 @@ class GrpoLossFunction(torch.autograd.Function):
         delta=None,
         use_bias_correction_kl=False,
         num_items_in_batch=None,
+        phi_seq=None,
     ):
         assert logits.is_contiguous() and completion_ids.is_contiguous()
         assert old_logp is None or old_logp.is_contiguous()
@@ -600,14 +621,14 @@ class GrpoLossFunction(torch.autograd.Function):
             raise ValueError(f"Unknown loss_type '{loss_type}'. Supported types: {list(_str_to_loss_type.keys())}")
 
         # Validate delta + loss_type combinations
-        if delta is not None and loss_type in ("cispo", "sapo"):
+        if delta is not None and loss_type in ("cispo", "sapo", "vespo"):
             raise ValueError(f"delta (two-sided clipping) is not supported for loss_type='{loss_type}'.")
 
         # Map delta to float for Triton (Triton can't handle None)
         delta_val = 0.0 if delta is None else float(delta)
 
         # Validate sequence-level + loss_type combinations
-        if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo"):
+        if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo", "vespo"):
             raise ValueError(
                 f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'. "
                 f"Use importance_sampling_level='token' instead."
@@ -625,6 +646,15 @@ class GrpoLossFunction(torch.autograd.Function):
 
         B, L_ADD_1, N = logits.shape
         L = L_ADD_1 - 1
+
+        # VESPO requires phi_seq pre-computed by the caller (uses get_gamma_weights).
+        if loss_type == "vespo":
+            if phi_seq is None:
+                raise ValueError("loss_type='vespo' requires phi_seq pre-computed (use the triton_grpo_loss wrapper).")
+            assert phi_seq.shape in ((B,), (B, 1)), f"phi_seq must be (B,) or (B, 1), got {tuple(phi_seq.shape)}"
+            phi_seq = phi_seq.reshape(-1).contiguous()
+        else:
+            phi_seq = None
 
         if completion_mask is not None:
             assert completion_mask.is_contiguous()
@@ -735,6 +765,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 advantages,
                 vllm_is_ratio_ptr,
                 vllm_is_ratio_stride,
+                phi_seq,  # PHI_SEQ (B,) for VESPO, None otherwise
                 loss,
                 lse,
                 kl,
@@ -753,7 +784,16 @@ class GrpoLossFunction(torch.autograd.Function):
                 **kwargs,
             )
             ctx.save_for_backward(
-                logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, vllm_is_ratio_ptr
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                advantages,
+                completion_mask,
+                lse,
+                mask,
+                vllm_is_ratio_ptr,
+                phi_seq,
             )
 
         ctx.infos = (
@@ -832,10 +872,20 @@ class GrpoLossFunction(torch.autograd.Function):
                 seq_lens,
                 vllm_is_ratio,
             ) = saved_tensors
+            phi_seq = None
         else:
-            (logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, vllm_is_ratio) = (
-                saved_tensors
-            )
+            (
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                advantages,
+                completion_mask,
+                lse,
+                mask,
+                vllm_is_ratio,
+                phi_seq,
+            ) = saved_tensors
 
         _, L_ADD_1, N = logits.shape
 
@@ -850,7 +900,7 @@ class GrpoLossFunction(torch.autograd.Function):
         elif loss_type == "dr_grpo":
             max_len = max_completion_length if max_completion_length is not None else L
             dloss = dloss_input * mask / (B * max_len)
-        elif loss_type == "dapo" or loss_type == "cispo":
+        elif loss_type == "dapo" or loss_type == "cispo" or loss_type == "vespo":
             dloss = dloss_input * mask / _compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
         elif loss_type == "luspo":
             # loss = mean(per_token_loss * seq_lens), mean divides by B*L
@@ -910,6 +960,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 lse,
                 vllm_is_ratio,
                 vllm_is_ratio_stride,
+                phi_seq,
                 temperature,
                 beta,
                 eps_low,
@@ -926,7 +977,7 @@ class GrpoLossFunction(torch.autograd.Function):
             )
 
         dlogits[:, -1, :] = 0
-        # Return gradients for all forward inputs: dlogits + 20 None for non-differentiable params
+        # Return gradients for all forward inputs: dlogits + 21 None for non-differentiable params
         return (
             dlogits,
             None,
@@ -949,4 +1000,5 @@ class GrpoLossFunction(torch.autograd.Function):
             None,
             None,
             None,  # num_items_in_batch
+            None,  # phi_seq
         )

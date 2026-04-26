@@ -496,8 +496,14 @@ def trl_reference_grpo_loss(
     importance_sampling_level,
     delta=None,
     use_bias_correction_kl=False,
+    vespo_k_pos=2.0,
+    vespo_lambda_pos=3.0,
+    vespo_k_neg=3.0,
+    vespo_lambda_neg=2.0,
 ):
     """TRL reference implementation from grpo_trainer.py"""
+    from liger_kernel.chunked_loss.grpo_loss import get_gamma_weights
+
     B, L_ADD_1, V = logits.shape
     L = L_ADD_1 - 1
 
@@ -517,16 +523,31 @@ def trl_reference_grpo_loss(
         log_importance_weights = log_importance_weights.unsqueeze(-1)
 
     coef_1 = torch.exp(log_importance_weights)
-    coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
-    if delta is not None:
-        coef_1 = torch.clamp(coef_1, max=delta)
 
-    per_token_loss1 = coef_1 * advantages.unsqueeze(-1)
-    per_token_loss2 = coef_2 * advantages.unsqueeze(-1)
-    per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+    if loss_type == "vespo":
+        # VESPO: detached gamma weighting on per-token logp, no clipping.
+        # phi_seq replaces the (coef_1, coef_2) clipping pair.
+        phi_seq = get_gamma_weights(
+            advantages=advantages,
+            log_ratio_per_token=log_ratio,
+            mask=completion_mask,
+            k_pos=vespo_k_pos,
+            lambda_pos=vespo_lambda_pos,
+            k_neg=vespo_k_neg,
+            lambda_neg=vespo_lambda_neg,
+        )  # (B, 1)
+        per_token_loss = -phi_seq * advantages.unsqueeze(-1) * per_token_logps
+    else:
+        coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+        if delta is not None:
+            coef_1 = torch.clamp(coef_1, max=delta)
 
-    if importance_sampling_level == "sequence":
-        per_token_loss = per_token_loss.expand(B, L)
+        per_token_loss1 = coef_1 * advantages.unsqueeze(-1)
+        per_token_loss2 = coef_2 * advantages.unsqueeze(-1)
+        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        if importance_sampling_level == "sequence":
+            per_token_loss = per_token_loss.expand(B, L)
 
     if beta != 0.0:
         kl = torch.exp(ref_logp - per_token_logps) - (ref_logp - per_token_logps) - 1.0
@@ -543,7 +564,7 @@ def trl_reference_grpo_loss(
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
     elif loss_type == "dr_grpo":
         loss = (per_token_loss * completion_mask).sum() / (B * L)
-    elif loss_type == "dapo":
+    elif loss_type == "dapo" or loss_type == "vespo":
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
     elif loss_type == "luspo":
         loss = (per_token_loss * completion_mask.sum(-1, keepdim=True)).mean()
@@ -553,7 +574,7 @@ def trl_reference_grpo_loss(
 
 @pytest.mark.parametrize("delta", [None, 1.5])
 @pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
-@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"])
+@pytest.mark.parametrize("loss_type", ["grpo", "bnpo", "dr_grpo", "dapo", "luspo", "vespo"])
 @pytest.mark.parametrize("beta,use_bias_correction_kl", [(0.0, False), (0.04, False), (0.04, True)])
 @pytest.mark.parametrize(
     "B, T, V",
@@ -565,6 +586,10 @@ def test_grpo_loss_vs_trl(B, T, V, beta, use_bias_correction_kl, loss_type, impo
     """Test that triton_grpo_loss matches TRL's exact implementation."""
     if importance_sampling_level == "token" and loss_type == "luspo":
         pytest.skip("Token-level importance sampling is not supported for loss_type='luspo'")
+    if importance_sampling_level == "sequence" and loss_type == "vespo":
+        pytest.skip("Sequence-level importance sampling is not supported for loss_type='vespo'")
+    if delta is not None and loss_type == "vespo":
+        pytest.skip("delta (two-sided clipping) is not supported for loss_type='vespo'")
     torch.manual_seed(42)
 
     logits = torch.randn(B, T + 1, V, device=device, dtype=torch.float32)
