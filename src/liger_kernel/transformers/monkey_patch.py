@@ -1452,9 +1452,7 @@ def apply_liger_kernel_to_gemma4(
         # `Gemma4TextForCausalLM` under `with patch("...modeling_gemma4")` —
         # an `isinstance` check against a non-class entry raises TypeError.
         text_classes = tuple(
-            cls
-            for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM, Gemma4TextModel)
-            if isinstance(cls, type)
+            cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM, Gemma4TextModel) if isinstance(cls, type)
         )
         if isinstance(model, text_classes):
             apply_liger_kernel_to_gemma4_text(
