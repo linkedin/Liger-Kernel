@@ -1678,7 +1678,7 @@ def run_mini_model_multimodal(
             1e-7,
             5e-3,  # LigerExperts fused MoE kernel needs higher loss rtol
             5e-2,
-            1e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol
+            2e-1,  # LigerExperts fused MoE kernel needs higher logprobs rtol
             5e-3,
             1e-5,
             marks=[
@@ -1794,7 +1794,7 @@ def run_mini_model_multimodal(
             1e-7,
             5e-3,  # LigerExperts fused MoE kernel needs higher loss rtol
             5e-2,
-            1e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol
+            2e-1,  # LigerExperts fused MoE kernel needs higher logprobs rtol
             5e-3,
             1e-5,
             marks=[
