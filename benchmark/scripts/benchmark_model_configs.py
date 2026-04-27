@@ -36,6 +36,7 @@ from typing import Tuple
 import torch
 
 from utils import SingleBenchmarkRunInput
+from utils import default_forward_fn
 
 from liger_kernel.utils import get_total_gpu_memory
 from liger_kernel.utils import infer_device
@@ -354,7 +355,7 @@ def compute_model_config_sweep_config(
 
     Args:
         model_configs: Model configs to benchmark.
-        probe_fn_factory: Factory ``(model_cfg, probe_seq_len) -> probe_fn``.
+        probe_fn_factory: Factory ``(model_cfg) -> probe_fn``.
             The returned probe_fn should perform setup + forward pass and
             return a tensor suitable for ``.backward()``, same contract as
             :func:`estimate_kernel_peak_memory`'s *probe_fn*.
@@ -368,7 +369,7 @@ def compute_model_config_sweep_config(
     max_bytes_per_token = 0
 
     for model_cfg in model_configs:
-        probe_fn = probe_fn_factory(model_cfg, probe_seq_len)
+        probe_fn = probe_fn_factory(model_cfg)
         peak_bytes = estimate_kernel_peak_memory(probe_fn)
         bpt = max(1, peak_bytes // probe_seq_len)
         max_bytes_per_token = max(max_bytes_per_token, bpt)
@@ -408,27 +409,16 @@ def build_extra_config(
     return cfg
 
 
-def _default_forward_fn(x, layer):
-    """Default forward function for common (input, module) patterns.
-
-    Assumes `setup_fn` returns `(x, layer)` and simply applies:
-        layer(x)
-
-    This covers the majority of kernels that follow a
-    "tensor + nn.Module" execution pattern.
-    """
-    return layer(x)
-
-
 def build_model_config_sweep(
     kernel_name: str,
     all_model_configs: List[ModelConfig],
     setup_fn: Callable[[SingleBenchmarkRunInput], Tuple[Any, ...]],
     model_keys: List[str],
-    forward_fn: Callable[..., torch.Tensor] = _default_forward_fn,
-    probe_provider: str = "torch",
+    forward_fn: Callable[..., torch.Tensor] = default_forward_fn,
+    probe_provider: str = "huggingface",
     extra_configs: Optional[Dict] = None,
     bt: int = 2048,
+    probe_x: int = None,
     overwrite: bool = False,
 ) -> Dict:
     """Build benchmark config dict for model-config sweep.
@@ -445,17 +435,20 @@ def build_model_config_sweep(
             `setup_fn`. Defaults to `(x, layer) -> layer(x)`.
         probe_provider: Kernel provider used during memory probing.
         extra_configs: Optional static overrides merged into the benchmark config.
+        token_length: Optional token length used for memory probing and sweep config.
         bt: Target total tokens (batch_size * seq_len) used to derive sweep.
+        probe_x: Value of x passed to setup_fn during probing. This should be
+            specified if the kernel's input.x is not T.
         overwrite: Whether to overwrite existing benchmark results.
 
     Returns:
         A dictionary consumable by `run_benchmarks`.
     """
 
-    def probe_fn_factory(model_cfg, probe_seq_len):
+    def probe_fn_factory(model_cfg):
         def _probe():
             probe_input = SingleBenchmarkRunInput(
-                x=probe_seq_len,
+                x=probe_x if probe_x is not None else bt,
                 kernel_provider=probe_provider,
                 extra_benchmark_config=build_extra_config(
                     model_cfg,
@@ -492,13 +485,16 @@ def build_model_config_sweep(
 
 def build_token_length_sweep(
     kernel_name: str,
-    probe_seq_len: int,
+    probe_x: int,
     model: ModelConfig,
     setup_fn: Callable[[SingleBenchmarkRunInput], Tuple[Any, ...]],
     model_keys: List[str],
     extra_configs: Optional[Dict] = None,
-    forward_fn: Callable[..., torch.Tensor] = _default_forward_fn,
-    probe_provider: str = "torch",
+    forward_fn: Callable[..., torch.Tensor] = default_forward_fn,
+    probe_provider: str = "huggingface",
+    probe_bt: Optional[int] = 1024,
+    x_name: str = "T",
+    x_label: str = "sequence length",
     x_values_fn: Optional[Callable[[SeqLenSweepConfig], List[int]]] = None,
     overwrite: bool = False,
 ) -> Dict:
@@ -506,7 +502,7 @@ def build_token_length_sweep(
 
     Args:
         kernel_name: Name of the kernel being benchmarked.
-        probe_seq_len: Sequence length used for memory probing.
+        probe_x: Value of x passed to setup_fn during probing.
         model: Model configuration used for the sweep.
         setup_fn: Function that prepares inputs and modules given a
             `SingleBenchmarkRunInput`. Returns a tuple of objects consumed
@@ -517,8 +513,11 @@ def build_token_length_sweep(
         forward_fn: Function that executes the kernel given the outputs of
             `setup_fn`. Defaults to `(x, layer) -> layer(x)`.
         probe_provider: Kernel provider used during memory probing.
+        probe_bt: Target total tokens (batch_size * seq_len) used to derive sweep.
+        x_name: Name of the x-axis variable (e.g. "T" or "B").
+        x_label: Label for the x-axis (e.g. "sequence length" or "batch size").
         x_values_fn: Optional function mapping `SeqLenSweepConfig` to a list
-            of sequence lengths. Defaults to powers of 2 up to max seq_len.
+            of x values. Defaults to powers of 2 up to max seq_len.
         overwrite: Whether to overwrite existing benchmark results.
 
     Returns:
@@ -528,7 +527,7 @@ def build_token_length_sweep(
 
     def probe_fn():
         probe_input = SingleBenchmarkRunInput(
-            x=probe_seq_len,
+            x=probe_x,
             kernel_provider=probe_provider,
             extra_benchmark_config=build_extra_config(
                 model,
@@ -540,17 +539,16 @@ def build_token_length_sweep(
         return forward_fn(*setup_out)
 
     peak_bytes = estimate_kernel_peak_memory(probe_fn=probe_fn)
-    kernel_bpt = peak_bytes // probe_seq_len
+    kernel_bpt = max(1, peak_bytes // max(probe_x, probe_bt))
 
     config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
-
     if x_values_fn is None:
-        x_values_fn = lambda cfg: [2**i for i in range(10, int(math.log2(cfg.seq_len)) + 1)]
+        x_values_fn = lambda cfg: [2**i for i in range(10, int(math.log2(cfg.seq_len * cfg.batch_size)) + 1)]
 
     return {
         "kernel_name": kernel_name,
-        "x_name": "T",
-        "x_label": "sequence length",
+        "x_name": x_name,
+        "x_label": x_label,
         "x_values": x_values_fn(config),
         "extra_benchmark_configs": [
             build_extra_config(

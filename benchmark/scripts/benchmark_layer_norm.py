@@ -5,11 +5,10 @@ from benchmark_model_configs import build_model_config_sweep
 from benchmark_model_configs import build_token_length_sweep
 from benchmark_model_configs import get_benchmark_model_config
 from utils import SingleBenchmarkRunInput
-from utils import SingleBenchmarkRunOutput
+from utils import build_memory_bench_fn
+from utils import build_speed_bench_fn
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
-from utils import run_memory_benchmark
-from utils import run_speed_benchmark
 
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.utils import infer_device
@@ -17,7 +16,7 @@ from liger_kernel.utils import infer_device
 device = infer_device()
 
 
-def _setup_layer_norm(input: SingleBenchmarkRunInput):
+def setup_layer_norm(input: SingleBenchmarkRunInput):
     """Create input tensor and LayerNorm layer from benchmark config."""
     cfg = input.extra_benchmark_config
     if isinstance(input.x, str):
@@ -47,16 +46,6 @@ def _setup_layer_norm(input: SingleBenchmarkRunInput):
     return x, layer
 
 
-def bench_speed_layer_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    x, layer = _setup_layer_norm(input)
-    return run_speed_benchmark(lambda: layer(x), input.kernel_operation_mode, [x])
-
-
-def bench_memory_layer_norm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    x, layer = _setup_layer_norm(input)
-    return run_memory_benchmark(lambda: layer(x), input.kernel_operation_mode)
-
-
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
@@ -66,7 +55,7 @@ if __name__ == "__main__":
         common_configs = build_model_config_sweep(
             kernel_name="layer_norm",
             all_model_configs=all_model_configs,
-            setup_fn=_setup_layer_norm,
+            setup_fn=setup_layer_norm,
             model_keys=["hidden_size", "dtype"],
             extra_configs={
                 "eps": 1e-6,
@@ -82,9 +71,9 @@ if __name__ == "__main__":
 
         common_configs = build_token_length_sweep(
             kernel_name="layer_norm",
-            probe_seq_len=probe_seq_len,
+            probe_x=probe_seq_len,
             model=model,
-            setup_fn=_setup_layer_norm,
+            setup_fn=setup_layer_norm,
             model_keys=["hidden_size", "dtype"],
             extra_configs={
                 "eps": 1e-6,
@@ -96,14 +85,14 @@ if __name__ == "__main__":
     common_configs["kernel_providers"] = ["liger", "huggingface"]
 
     run_benchmarks(
-        bench_test_fn=bench_speed_layer_norm,
+        bench_test_fn=build_speed_bench_fn(setup_layer_norm),
         kernel_operation_modes=["full", "forward", "backward"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,
     )
     run_benchmarks(
-        bench_test_fn=bench_memory_layer_norm,
+        bench_test_fn=build_memory_bench_fn(setup_layer_norm),
         kernel_operation_modes=["full", "forward", "backward"],
         metric_name="memory",
         metric_unit="MB",
