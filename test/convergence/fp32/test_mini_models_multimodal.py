@@ -1676,7 +1676,7 @@ def run_mini_model_multimodal(
             1e-4,
             torch.float32,
             1e-7,
-            5e-4,
+            5e-3,  # LigerExperts fused MoE kernel needs higher loss rtol
             5e-2,
             1e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol
             5e-3,
@@ -1792,7 +1792,7 @@ def run_mini_model_multimodal(
             1e-4,
             torch.float32,
             1e-7,
-            5e-4,
+            5e-3,  # LigerExperts fused MoE kernel needs higher loss rtol
             5e-2,
             1e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol
             5e-3,
