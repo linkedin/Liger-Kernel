@@ -22,6 +22,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_pixtral
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_smolvlm
@@ -48,6 +49,7 @@ from test.utils import revert_liger_kernel_to_pixtral
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3_5
+from test.utils import revert_liger_kernel_to_qwen3_5_moe
 from test.utils import revert_liger_kernel_to_qwen3_vl
 from test.utils import revert_liger_kernel_to_qwen3_vl_moe
 from test.utils import revert_liger_kernel_to_smolvlm2
@@ -128,6 +130,16 @@ try:
     QWEN3_VL_MOE_AVAILABLE = True
 except ImportError:
     QWEN3_VL_MOE_AVAILABLE = False
+
+try:
+    from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeConfig
+    from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeTextConfig
+    from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeVisionConfig
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForConditionalGeneration
+
+    QWEN3_5_MOE_AVAILABLE = True
+except ImportError:
+    QWEN3_5_MOE_AVAILABLE = False
 
 try:
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
@@ -909,6 +921,61 @@ if QWEN3_5_AVAILABLE:
         ),
     )
 
+if QWEN3_5_MOE_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_5_moe"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_5_moe,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_5_moe,
+        model_class=Qwen3_5MoeForConditionalGeneration,
+        mini_model_config=Qwen3_5MoeConfig(
+            attn_implementation="sdpa",
+            image_token_id=4,
+            video_token_id=5,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            tie_word_embeddings=True,
+            vision_config=Qwen3_5MoeVisionConfig(
+                depth=4,
+                hidden_size=256,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=512,
+                num_heads=4,
+                in_channels=3,
+                patch_size=16,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=512,
+                num_position_embeddings=256,
+                initializer_range=0.02,
+            ).to_dict(),
+            text_config=Qwen3_5MoeTextConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=64,
+                hidden_act="silu",
+                max_position_embeddings=32768,
+                initializer_range=0.02,
+                rms_norm_eps=1e-6,
+                use_cache=False,
+                tie_word_embeddings=True,
+                attention_dropout=0.0,
+                attention_bias=False,
+                linear_conv_kernel_dim=4,
+                linear_key_head_dim=64,
+                linear_value_head_dim=64,
+                linear_num_key_heads=2,
+                linear_num_value_heads=2,
+                moe_intermediate_size=1024,
+                shared_expert_intermediate_size=1024,
+                num_experts_per_tok=2,
+                num_experts=4,
+                pad_token_id=None,
+            ).to_dict(),
+        ),
+    )
+
 
 if PIXTRAL_AVAILABLE:
     MINI_MODEL_SETUPS["mini_pixtral"] = MiniModelConfig(
@@ -976,7 +1043,7 @@ def create_processor(model_name: str):
             tokenizer=qwen_tokenizer,
         )
 
-    elif model_name in ("mini_qwen3_vl", "mini_qwen3_vl_moe", "mini_qwen3_5"):
+    elif model_name in ("mini_qwen3_vl", "mini_qwen3_vl_moe", "mini_qwen3_5", "mini_qwen3_5_moe"):
         tokenizer_config = load_tokenizer_config(
             os.path.join(FAKE_CONFIGS_PATH, "Qwen/Qwen3-VL-4B-Instruct/tokenizer_config.json")
         )
@@ -1611,6 +1678,29 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not QWEN3_5_AVAILABLE,
                     reason="Qwen3.5 not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    not is_torchvision_available(),
+                    reason="Qwen3VLVideoProcessor requires torchvision",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_5_moe",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,
+            5e-2,
+            1e-1,
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not QWEN3_5_MOE_AVAILABLE,
+                    reason="Qwen3.5-MoE not available in this version of transformers",
                 ),
                 pytest.mark.skipif(
                     not is_torchvision_available(),
