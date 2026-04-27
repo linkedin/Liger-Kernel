@@ -2961,11 +2961,8 @@ def apply_liger_kernel_to_qwen3_5_moe(
                 model.forward = MethodType(qwen3_5_moe_lce_forward, model)
             elif isinstance(model, Qwen3_5MoeForConditionalGeneration):
                 model.forward = MethodType(qwen3_5_moe_conditional_generation_lce_forward, model)
-            else:
-                raise TypeError(
-                    "fused_linear_cross_entropy is only applicable on Qwen3_5MoeForCausalLM or "
-                    f"Qwen3_5MoeForConditionalGeneration. Got: {type(model)}"
-                )
+            # Qwen3_5MoeModel / Qwen3_5MoeTextModel have no LM head — RMSNorm / SwiGLU
+            # patches below still apply, but FLCE is a no-op.
         else:
             modeling_qwen3_5_moe.Qwen3_5MoeForCausalLM.forward = qwen3_5_moe_lce_forward
             modeling_qwen3_5_moe.Qwen3_5MoeForConditionalGeneration.forward = (
