@@ -3067,6 +3067,166 @@ def test_apply_liger_kernel_to_instance_for_qwen3_5_moe():
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
 
 
+def _build_qwen3_5_moe_multimodal_config():
+    text_config = transformers.models.qwen3_5_moe.configuration_qwen3_5_moe.Qwen3_5MoeTextConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        moe_intermediate_size=16,
+        shared_expert_intermediate_size=16,
+        hidden_act="silu",
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=16,
+        linear_conv_kernel_dim=4,
+        linear_key_head_dim=16,
+        linear_value_head_dim=16,
+        linear_num_key_heads=2,
+        linear_num_value_heads=2,
+        num_experts=2,
+        num_experts_per_tok=1,
+    )
+    vision_config = transformers.models.qwen3_5_moe.configuration_qwen3_5_moe.Qwen3_5MoeVisionConfig(
+        depth=2,
+        hidden_size=32,
+        hidden_act="gelu_pytorch_tanh",
+        intermediate_size=64,
+        num_heads=2,
+        in_channels=3,
+        patch_size=16,
+        spatial_merge_size=2,
+        temporal_patch_size=2,
+        out_hidden_size=32,
+        num_position_embeddings=64,
+        initializer_range=0.02,
+    )
+    return transformers.models.qwen3_5_moe.configuration_qwen3_5_moe.Qwen3_5MoeConfig(
+        attn_implementation="sdpa",
+        image_token_id=4,
+        video_token_id=5,
+        vision_start_token_id=1,
+        vision_end_token_id=2,
+        tie_word_embeddings=True,
+        text_config=text_config.to_dict(),
+        vision_config=vision_config.to_dict(),
+    )
+
+
+@pytest.mark.skipif(not is_qwen3_5_moe_available(), reason="qwen3_5_moe module not available")
+def test_apply_liger_kernel_to_instance_for_qwen3_5_moe_for_conditional_generation():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3_5_moe.modeling_qwen3_5_moe"):
+        from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForConditionalGeneration
+
+        from liger_kernel.transformers.model.qwen3_5_moe import (
+            lce_forward_conditional_generation as qwen3_5_moe_conditional_generation_lce_forward,
+        )
+
+        config = _build_qwen3_5_moe_multimodal_config()
+        dummy_model_instance = Qwen3_5MoeForConditionalGeneration._from_config(config)
+
+        assert isinstance(dummy_model_instance, Qwen3_5MoeForConditionalGeneration)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(
+            qwen3_5_moe_conditional_generation_lce_forward
+        )
+        assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.model.language_model.layers:
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.mlp.shared_expert.forward) != inspect.getsource(
+                LigerQwen3MoeSwiGLUMLP.forward
+            )
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(
+            qwen3_5_moe_conditional_generation_lce_forward
+        )
+        assert inspect.getsource(dummy_model_instance.model.language_model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.model.language_model.layers:
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.mlp.shared_expert.forward) == inspect.getsource(
+                LigerQwen3MoeSwiGLUMLP.forward
+            )
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_5_moe_available(), reason="qwen3_5_moe module not available")
+def test_apply_liger_kernel_to_instance_for_qwen3_5_moe_model():
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.qwen3_5_moe.modeling_qwen3_5_moe"):
+        from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeModel
+
+        config = _build_qwen3_5_moe_multimodal_config()
+        dummy_model_instance = Qwen3_5MoeModel._from_config(config)
+
+        assert isinstance(dummy_model_instance, Qwen3_5MoeModel)
+
+        # Check that model instance variables are not yet patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) != inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.language_model.layers:
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.mlp.shared_expert.forward) != inspect.getsource(
+                LigerQwen3MoeSwiGLUMLP.forward
+            )
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        # Test applying kernels to the model instance
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        # Check that the model's instance variables were correctly patched with Liger modules
+        assert inspect.getsource(dummy_model_instance.language_model.norm.forward) == inspect.getsource(
+            LigerRMSNorm.forward
+        )
+        for layer in dummy_model_instance.language_model.layers:
+            if IS_TRANSFORMERS_V5_OR_LATER:
+                assert inspect.getsource(layer.mlp.experts.forward) == inspect.getsource(LigerExperts.forward)
+            else:
+                for expert in layer.mlp.experts:
+                    assert inspect.getsource(expert.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.mlp.shared_expert.forward) == inspect.getsource(
+                LigerQwen3MoeSwiGLUMLP.forward
+            )
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
 @pytest.mark.skipif(not is_qwen3_5_available(), reason="qwen3_5 module not available")
 def test_apply_liger_kernel_to_instance_for_qwen3_5():
     # Ensure any monkey patching is cleaned up for subsequent tests

@@ -2914,6 +2914,10 @@ def apply_liger_kernel_to_qwen3_5_moe(
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen3.5 MoE models.
 
+    Supports both the text-only (`Qwen3_5MoeForCausalLM`, `Qwen3_5MoeTextModel`) and the
+    multimodal (`Qwen3_5MoeForConditionalGeneration`, `Qwen3_5MoeModel`) classes. The vision
+    tower itself is not patched.
+
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
@@ -2932,9 +2936,14 @@ def apply_liger_kernel_to_qwen3_5_moe(
 
     from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
     from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForCausalLM
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForConditionalGeneration
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeModel
     from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeTextModel
 
     from liger_kernel.transformers.model.qwen3_5_moe import lce_forward as qwen3_5_moe_lce_forward
+    from liger_kernel.transformers.model.qwen3_5_moe import (
+        lce_forward_conditional_generation as qwen3_5_moe_conditional_generation_lce_forward,
+    )
     from liger_kernel.transformers.rms_norm import LigerRMSNormForQwen3Next
     from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
 
@@ -2950,23 +2959,35 @@ def apply_liger_kernel_to_qwen3_5_moe(
         if model is not None:
             if isinstance(model, Qwen3_5MoeForCausalLM):
                 model.forward = MethodType(qwen3_5_moe_lce_forward, model)
+            elif isinstance(model, Qwen3_5MoeForConditionalGeneration):
+                model.forward = MethodType(qwen3_5_moe_conditional_generation_lce_forward, model)
             else:
                 raise TypeError(
-                    f" fused_linear_cross_entropy is only applicable on Qwen3_5MoeForCausalLM. Got: {type(model)}"
+                    "fused_linear_cross_entropy is only applicable on Qwen3_5MoeForCausalLM or "
+                    f"Qwen3_5MoeForConditionalGeneration. Got: {type(model)}"
                 )
         else:
             modeling_qwen3_5_moe.Qwen3_5MoeForCausalLM.forward = qwen3_5_moe_lce_forward
+            modeling_qwen3_5_moe.Qwen3_5MoeForConditionalGeneration.forward = (
+                qwen3_5_moe_conditional_generation_lce_forward
+            )
     if swiglu:
         modeling_qwen3_5_moe.Qwen3_5MoeExperts = LigerExperts
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
-        if isinstance(model, (Qwen3_5MoeForCausalLM, Qwen3_5MoeTextModel)):
+        if isinstance(model, Qwen3_5MoeForConditionalGeneration):
+            base_model: Qwen3_5MoeTextModel = model.model.language_model
+        elif isinstance(model, Qwen3_5MoeModel):
+            base_model: Qwen3_5MoeTextModel = model.language_model
+        elif isinstance(model, (Qwen3_5MoeForCausalLM, Qwen3_5MoeTextModel)):
             base_model: Qwen3_5MoeTextModel = getattr(model, model.base_model_prefix, model)
         else:
             raise TypeError(
-                f"Unsupported qwen3_5_moe model type. `model` must be `Qwen3_5MoeForCausalLM`, `Qwen3_5MoeTextModel`. Got: {type(model)}"
+                "Unsupported qwen3_5_moe model type. `model` must be `Qwen3_5MoeForConditionalGeneration`, "
+                "`Qwen3_5MoeModel`, `Qwen3_5MoeForCausalLM` or `Qwen3_5MoeTextModel`. "
+                f"Got: {type(model)}"
             )
 
         _patch_rms_norm_module_for_qwen3_5_moe = partial(
