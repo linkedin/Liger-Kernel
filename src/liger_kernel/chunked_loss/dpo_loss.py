@@ -14,6 +14,8 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         ref_rejected_logps=None,
         beta=0.1,
         loss_type="sigmoid",
+        label_smoothing=0.0,
+        discopop_tau=0.05,
     ):
         """
         Paper: https://arxiv.org/pdf/2305.18290
@@ -36,6 +38,9 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             ref_chosen_logps: Reference log probs of chosen tokens (batch_size,)
             ref_rejected_logps: Reference log probs of rejected tokens (batch_size,)
             beta: Weight for the direct preference loss
+            loss_type: Variant of DPO loss to compute
+            label_smoothing: Label smoothing for "robust" / "exo_pair" / cDPO
+            discopop_tau: Temperature for the DiscoPOP modulation term
         """
 
         if ref_chosen_logps is None:
@@ -49,26 +54,60 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         chosen_rewards = beta * chosen_logratios
         rejected_rewards = beta * rejected_logratios
 
+        logits_diff = beta * (chosen_logratios - rejected_logratios)
+        n_pairs = full_target.shape[0] // 2
+
         if loss_type == "sigmoid":
-            logits_diff = beta * (chosen_logratios - rejected_logratios)
-            loss = -F.logsigmoid(logits_diff).sum() / (full_target.shape[0] // 2)
+            loss = -F.logsigmoid(logits_diff).sum() / n_pairs
 
-        elif loss_type == "apo_zero":
-            # Eqn (7) of the APO paper (https://huggingface.co/papers/2408.06266)
-            # Use this loss when you believe the chosen outputs are better than your model's default output
-            losses_chosen = 1 - F.sigmoid(beta * chosen_logratios)  # Increase chosen likelihood
-            losses_rejected = F.sigmoid(beta * rejected_logratios)
-            losses = losses_chosen + losses_rejected
-            loss = losses.sum() / (full_target.shape[0] // 2)
+        elif loss_type == "hinge":
+            # Hinge loss on the normalized likelihood: max(0, 1 - β * (chosen_logratios - rejected_logratios))
+            losses = torch.relu(1 - logits_diff)
+            loss = losses.sum() / n_pairs
 
-        elif loss_type == "apo_down":
-            # Eqn (8) of the APO paper (https://huggingface.co/papers/2408.06266)
-            # Use this loss when you believe the chosen outputs are worse than your model's default output.
-            # Decrease chosen likelihood and decrease rejected likelihood more
-            losses_chosen = F.sigmoid(beta * chosen_logratios)
-            losses_rejected = 1 - F.sigmoid(beta * (chosen_logratios - rejected_logratios))
-            losses = losses_chosen + losses_rejected
-            loss = losses.sum() / (full_target.shape[0] // 2)
+        elif loss_type == "ipo":
+            raise NotImplementedError(
+                "loss_type='ipo' is not yet supported by Liger DPO because it requires per-sample completion-token "
+                "counts to length-normalize the squared margin."
+            )
+
+        elif loss_type == "exo_pair":
+            # Implements EXO-pref from the paper https://huggingface.co/papers/2402.00856 (Eq. 16)
+            # Minimize KL(p_fθ || p_rh) for K=2; p_rh = [(1−ε), ε].
+            if label_smoothing <= 0.0:
+                raise ValueError("label_smoothing must be > 0 for loss_type='exo_pair'. The EXO paper recommends 1e-3.")
+            epsilon = torch.tensor(label_smoothing, device=chosen_logps.device)
+            qw = torch.sigmoid(logits_diff)
+            log_qw = F.logsigmoid(logits_diff)
+            log_pw = torch.log1p(-epsilon)
+            ql = torch.sigmoid(-logits_diff)
+            log_ql = F.logsigmoid(-logits_diff)
+            log_pl = torch.log(epsilon)
+            losses = qw * (log_qw - log_pw) + ql * (log_ql - log_pl)
+            loss = losses.sum() / n_pairs
+
+        elif loss_type == "nca_pair":
+            losses = (
+                -F.logsigmoid(chosen_rewards)
+                - 0.5 * F.logsigmoid(-chosen_rewards)
+                - 0.5 * F.logsigmoid(-rejected_rewards)
+            )
+            loss = losses.sum() / n_pairs
+
+        elif loss_type == "robust":
+            # cDPO / robust loss: assumes a fraction `label_smoothing` of preference labels are flipped.
+            if not (0.0 <= label_smoothing < 0.5):
+                raise ValueError(
+                    f"label_smoothing must lie in [0.0, 0.5) for loss_type='robust'. Got {label_smoothing}."
+                )
+            clean_loss_term = -(1 - label_smoothing) * F.logsigmoid(logits_diff)
+            flipped_loss_term = -label_smoothing * F.logsigmoid(-logits_diff)
+            losses = (clean_loss_term - flipped_loss_term) / (1 - 2 * label_smoothing)
+            loss = losses.sum() / n_pairs
+
+        elif loss_type == "bco_pair":
+            losses = -F.logsigmoid(chosen_rewards) - F.logsigmoid(-rejected_rewards)
+            loss = losses.sum() / n_pairs
 
         elif loss_type == "sppo_hard":
             # In the paper (https://huggingface.co/papers/2405.00675), SPPO employs a soft probability approach,
@@ -78,19 +117,37 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             a = chosen_logps - ref_chosen_logps
             b = rejected_logps - ref_rejected_logps
             losses = (a - 0.5 / beta) ** 2 + (b + 0.5 / beta) ** 2
-            loss = losses.sum() / (full_target.shape[0] // 2)
+            loss = losses.sum() / n_pairs
 
-        elif loss_type == "nca_pair":
-            losses = (
-                -F.logsigmoid(chosen_rewards)
-                - 0.5 * F.logsigmoid(-chosen_rewards)
-                - 0.5 * F.logsigmoid(-rejected_rewards)
-            )
-            loss = losses.sum() / (full_target.shape[0] // 2)
+        elif loss_type == "apo_zero":
+            # Eqn (7) of the APO paper (https://huggingface.co/papers/2408.06266)
+            # Use this loss when you believe the chosen outputs are better than your model's default output
+            losses_chosen = 1 - F.sigmoid(beta * chosen_logratios)  # Increase chosen likelihood
+            losses_rejected = F.sigmoid(beta * rejected_logratios)
+            losses = losses_chosen + losses_rejected
+            loss = losses.sum() / n_pairs
+
+        elif loss_type == "apo_down":
+            # Eqn (8) of the APO paper (https://huggingface.co/papers/2408.06266)
+            # Use this loss when you believe the chosen outputs are worse than your model's default output.
+            # Decrease chosen likelihood and decrease rejected likelihood more
+            losses_chosen = F.sigmoid(beta * chosen_logratios)
+            losses_rejected = 1 - F.sigmoid(beta * (chosen_logratios - rejected_logratios))
+            losses = losses_chosen + losses_rejected
+            loss = losses.sum() / n_pairs
+
+        elif loss_type == "discopop":
+            # Eqn (5) of the DiscoPOP paper (https://huggingface.co/papers/2406.08414)
+            log_ratio_modulation = torch.sigmoid(logits_diff / discopop_tau)
+            logistic_component = -F.logsigmoid(logits_diff)
+            exp_component = torch.exp(-logits_diff)
+            losses = logistic_component * (1 - log_ratio_modulation) + exp_component * log_ratio_modulation
+            loss = losses.sum() / n_pairs
 
         else:
             raise ValueError(
-                f"Unsupported loss_type: {loss_type}. Supported types are: sigmoid, apo_zero, apo_down, sppo_hard, nca_pair"
+                f"Unsupported loss_type: {loss_type}. Supported types are: sigmoid, hinge, exo_pair, nca_pair, "
+                "robust, bco_pair, sppo_hard, apo_zero, apo_down, discopop"
             )
 
         return loss, chosen_rewards, rejected_rewards
@@ -114,6 +171,8 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         average_log_prob=False,
         chunk_size=1,
         loss_type="sigmoid",
+        label_smoothing=0.0,
+        discopop_tau=0.05,
     ):
         """
         Fused linear layer with DPO loss.
@@ -132,6 +191,9 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             use_ref_model (bool): Whether to use a reference model
             average_log_prob (bool): Whether to average the log probability per non-masked token
             chunk_size (int): Size of chunks for processing.
+            loss_type (str): Variant of DPO loss to compute.
+            label_smoothing (float): Label smoothing for "robust" / "exo_pair" / cDPO.
+            discopop_tau (float): Temperature for the DiscoPOP modulation term.
         Returns:
             torch.Tensor: Computed loss
         """
@@ -153,18 +215,33 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             average_log_prob=average_log_prob,
             chunk_size=chunk_size,
             loss_type=loss_type,
+            label_smoothing=label_smoothing,
+            discopop_tau=discopop_tau,
         )
 
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None, None, None, None, None, None, None, None
+        return *grads, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 
 class LigerFusedLinearDPOLoss(torch.nn.Module):
     """
     Fused linear layer with DPO loss.
     """
+
+    _SUPPORTED_LOSS_TYPES = {
+        "sigmoid",
+        "hinge",
+        "exo_pair",
+        "nca_pair",
+        "robust",
+        "bco_pair",
+        "sppo_hard",
+        "apo_zero",
+        "apo_down",
+        "discopop",
+    }
 
     def __init__(
         self,
@@ -176,6 +253,8 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         average_log_prob: bool = False,
         chunk_size: int = 1,
         loss_type: str = "sigmoid",
+        label_smoothing: float = 0.0,
+        discopop_tau: float = 0.05,
     ):
         """
         Args:
@@ -186,6 +265,11 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             use_ref_model (bool): Whether to use a reference model for the DPO loss.
             average_log_prob (bool): Whether to average the log probability per non-masked token.
             chunk_size (int): Size of chunks for processing.
+            loss_type (str): Variant of DPO loss to compute. One of:
+                "sigmoid", "hinge", "exo_pair", "nca_pair", "robust", "bco_pair",
+                "sppo_hard", "apo_zero", "apo_down", "discopop".
+            label_smoothing (float): Label smoothing for "robust" / "exo_pair" / cDPO.
+            discopop_tau (float): Temperature for the DiscoPOP modulation term.
         """
         super().__init__()
         self.ignore_index = ignore_index
@@ -196,9 +280,18 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         self.average_log_prob = average_log_prob
         self.chunk_size = chunk_size
         self.loss_type = loss_type
-        supported_loss_types = {"sigmoid", "apo_zero", "apo_down", "sppo_hard", "nca_pair"}
-        if self.loss_type not in supported_loss_types:
-            raise ValueError(f"Unsupported loss_type: {self.loss_type}. Supported types are: {supported_loss_types}")
+        self.label_smoothing = label_smoothing
+        self.discopop_tau = discopop_tau
+        if self.loss_type not in self._SUPPORTED_LOSS_TYPES:
+            raise ValueError(
+                f"Unsupported loss_type: {self.loss_type}. Supported types are: {self._SUPPORTED_LOSS_TYPES}"
+            )
+        if self.loss_type == "exo_pair" and self.label_smoothing <= 0.0:
+            raise ValueError("label_smoothing must be > 0 for loss_type='exo_pair'. The EXO paper recommends 1e-3.")
+        if self.loss_type == "robust" and not (0.0 <= self.label_smoothing < 0.5):
+            raise ValueError(
+                f"label_smoothing must lie in [0.0, 0.5) for loss_type='robust'. Got {self.label_smoothing}."
+            )
 
     def forward(
         self,
@@ -226,4 +319,6 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             self.average_log_prob,
             self.chunk_size,
             self.loss_type,
+            self.label_smoothing,
+            self.discopop_tau,
         )
