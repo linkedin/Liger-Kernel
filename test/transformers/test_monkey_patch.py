@@ -564,6 +564,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
             LigerRMSNorm.forward
         )
         for decoder_layer in dummy_model_instance.model.language_model.layers:
+            assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
@@ -584,6 +585,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_for_conditional_generation(
             LigerRMSNorm.forward
         )
         for decoder_layer in dummy_model_instance.model.language_model.layers:
+            assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
@@ -661,6 +663,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
             LigerRMSNorm.forward
         )
         for decoder_layer in dummy_model_instance.language_model.layers:
+            assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
@@ -681,6 +684,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl():
             LigerRMSNorm.forward
         )
         for decoder_layer in dummy_model_instance.language_model.layers:
+            assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
@@ -731,6 +735,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_text():
         # Note: Text models don't have forward method patching, so skip this check
         assert inspect.getsource(dummy_model_instance.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
         for decoder_layer in dummy_model_instance.layers:
+            assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(decoder_layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) != inspect.getsource(
                 LigerRMSNorm.forward
@@ -749,6 +754,7 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_text():
         # Note: Text models don't have forward method patching, so skip this check
         assert inspect.getsource(dummy_model_instance.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
         for decoder_layer in dummy_model_instance.layers:
+            assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
             assert inspect.getsource(decoder_layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(decoder_layer.post_attention_layernorm.forward) == inspect.getsource(
                 LigerRMSNorm.forward
@@ -764,6 +770,47 @@ def test_apply_liger_kernel_to_instance_for_qwen3_vl_text():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_qwen3_vl_available(), reason="qwen3_vl module not available")
+def test_apply_liger_kernel_to_qwen3_vl_swiglu_flag_patches_mlp():
+    with patch("transformers.models.qwen3_vl.modeling_qwen3_vl"):
+        from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel
+
+        config = transformers.models.qwen3_vl.configuration_qwen3_vl.Qwen3VLTextConfig(
+            vocab_size=32000,
+            hidden_size=512,
+            intermediate_size=2048,
+            num_hidden_layers=2,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            head_dim=64,
+            hidden_act="silu",
+            max_position_embeddings=32768,
+            initializer_range=0.02,
+            rms_norm_eps=1e-6,
+            use_cache=False,
+            tie_word_embeddings=True,
+            attention_dropout=0.0,
+            attention_bias=False,
+            **get_qwen3_vl_rope_config(),
+        )
+        dummy_model_instance = Qwen3VLTextModel._from_config(config)
+
+        for decoder_layer in dummy_model_instance.layers:
+            assert inspect.getsource(decoder_layer.mlp.forward) != inspect.getsource(LigerSwiGLUMLP.forward)
+
+        monkey_patch.apply_liger_kernel_to_qwen3_vl(
+            model=dummy_model_instance,
+            rope=False,
+            cross_entropy=False,
+            fused_linear_cross_entropy=False,
+            rms_norm=False,
+            swiglu=True,
+        )
+
+        for decoder_layer in dummy_model_instance.layers:
+            assert inspect.getsource(decoder_layer.mlp.forward) == inspect.getsource(LigerSwiGLUMLP.forward)
 
 
 @pytest.mark.skipif(not is_qwen3_vl_moe_available(), reason="qwen3_vl_moe module not available")
