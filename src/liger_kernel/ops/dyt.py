@@ -60,6 +60,11 @@ def _dyt_fwd_kernel(X, Y, Alpha, Gamma, Beta, HAVE_BETA: tl.constexpr, N: tl.con
         for nw in [4, 8, 16]
     ],
     key=["N"],
+    # DA is indexed by program_id(0), so different BLOCK_N configs write to
+    # different slot counts per SM. Autotune trials don't zero outputs between
+    # runs, so stale slots from a prior trial would leak into da.sum(). Reset
+    # DA between trials to isolate each config's writes.
+    reset_to_zero=["DA"],
 )
 @triton.jit
 def _dyt_bwd_kernel(
