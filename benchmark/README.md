@@ -41,8 +41,10 @@ The benchmarking system is designed to provide a **consistent, low-boilerplate w
 
     (a) `build_model_config_sweep`
 
-    * Sweeps across **model configurations**
+    * Sweeps across **model configurations**(e.g. hidden size, dtype, vocab size)
     * Keeps total tokens (`B * T`) approximately constant
+    * Automatically derives a suitable `(B, T)` that will not cause OOM under the given token budget
+    * `probe_dim` must align with how `input.x` is interpreted in `setup_fn`
 
     ```python
     common_configs = build_model_config_sweep(
@@ -50,13 +52,20 @@ The benchmarking system is designed to provide a **consistent, low-boilerplate w
         all_model_configs=...,
         setup_fn=...,
         model_keys=[...],
+        probe_dim: Literal["T", "B", "BT"] = "T"
     )
     ```
 
     (b) `build_token_length_sweep`
 
-    * Sweeps across **sequence length (T)**
-    * Keep one static model
+    * Sweeps along a **chosen scaling dimension**:
+
+    * `"T"` → sequence length
+    * `"B"` → batch size
+    * `"BT"` → total tokens
+    * Uses a **single fixed model configuration**
+    * Maintains a consistent memory model via bytes-per-token estimation
+    * `scale_dim` must align with how `input.x` is interpreted in `setup_fn`
 
     ```python
     common_configs = build_token_length_sweep(
@@ -65,6 +74,7 @@ The benchmarking system is designed to provide a **consistent, low-boilerplate w
         model=...,
         setup_fn=...,
         model_keys=[...],
+        scale_dim: Literal["T", "B", "BT"] = "T",
     )
     ```
 

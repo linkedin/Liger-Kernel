@@ -60,6 +60,7 @@ if __name__ == "__main__":
             extra_configs={
                 "eps": 1e-6,
             },
+            probe_dim="BT",
             probe_provider="huggingface",
             bt=args.bt,
             overwrite=args.overwrite,
@@ -78,6 +79,7 @@ if __name__ == "__main__":
             extra_configs={
                 "eps": 1e-6,
             },
+            scale_dim="BT",
             probe_provider="huggingface",
             overwrite=args.overwrite,
         )

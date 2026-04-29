@@ -71,6 +71,7 @@ if __name__ == "__main__":
                 "bsz": 1,
                 "hidden_act": "silu",
             },
+            probe_dim="BT",
             bt=args.bt,
             overwrite=args.overwrite,
         )
@@ -85,6 +86,7 @@ if __name__ == "__main__":
             setup_fn=setup_swiglu,
             model_keys=["hidden_size", "intermediate_size", "dtype"],
             extra_configs={"hidden_act": "silu", "bsz": 1},
+            scale_dim="BT",
             probe_provider="huggingface",
             overwrite=args.overwrite,
         )

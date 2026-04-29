@@ -63,11 +63,11 @@ if __name__ == "__main__":
 
         common_configs = build_model_config_sweep(
             kernel_name="cpo_loss",
-            probe_x=1,  # batch_size
             all_model_configs=all_model_configs,
             setup_fn=setup_cpo_loss,
             model_keys=["hidden_size", "vocab_size", "dtype"],
             extra_configs={"T": T},
+            probe_dim="B",
             probe_provider="huggingface",
             bt=args.bt,
             overwrite=args.overwrite,
@@ -82,12 +82,11 @@ if __name__ == "__main__":
             setup_fn=setup_cpo_loss,
             model_keys=["hidden_size", "vocab_size", "dtype"],
             extra_configs={"T": T},
+            scale_dim="B",
             probe_provider="huggingface",
             x_values_fn=lambda config: [
                 2**i for i in range(1, int(math.log2(max(2, config.batch_size * config.seq_len // T))) + 1)
             ],
-            x_name="B",  # default x is seq_len, but for CPO loss we want to sweep batch size instead
-            x_label="Batch Size",
             overwrite=args.overwrite,
         )
 

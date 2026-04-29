@@ -30,6 +30,7 @@ from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
+from typing import Literal
 from typing import Optional
 from typing import Tuple
 
@@ -414,11 +415,11 @@ def build_model_config_sweep(
     all_model_configs: List[ModelConfig],
     setup_fn: Callable[[SingleBenchmarkRunInput], Tuple[Any, ...]],
     model_keys: List[str],
+    probe_dim: Literal["T", "B", "BT"] = "T",
     forward_fn: Callable[..., torch.Tensor] = default_forward_fn,
     probe_provider: str = "huggingface",
     extra_configs: Optional[Dict] = None,
     bt: int = 2048,
-    probe_x: int = None,
     overwrite: bool = False,
 ) -> Dict:
     """Build benchmark config dict for model-config sweep.
@@ -448,7 +449,7 @@ def build_model_config_sweep(
     def probe_fn_factory(model_cfg):
         def _probe():
             probe_input = SingleBenchmarkRunInput(
-                x=probe_x if probe_x is not None else bt,
+                x=1 if probe_dim == "B" else bt,
                 kernel_provider=probe_provider,
                 extra_benchmark_config=build_extra_config(
                     model_cfg,
@@ -490,10 +491,9 @@ def build_token_length_sweep(
     setup_fn: Callable[[SingleBenchmarkRunInput], Tuple[Any, ...]],
     model_keys: List[str],
     extra_configs: Optional[Dict] = None,
+    scale_dim: Literal["T", "B", "BT"] = "T",
     forward_fn: Callable[..., torch.Tensor] = default_forward_fn,
     probe_provider: str = "huggingface",
-    probe_bt: Optional[int] = 1024,
-    x_name: str = "T",
     x_label: str = "sequence length",
     x_values_fn: Optional[Callable[[SeqLenSweepConfig], List[int]]] = None,
     overwrite: bool = False,
@@ -513,8 +513,7 @@ def build_token_length_sweep(
         forward_fn: Function that executes the kernel given the outputs of
             `setup_fn`. Defaults to `(x, layer) -> layer(x)`.
         probe_provider: Kernel provider used during memory probing.
-        probe_bt: Target total tokens (batch_size * seq_len) used to derive sweep.
-        x_name: Name of the x-axis variable (e.g. "T" or "B").
+        scale_dim: Dimension along which to scale the sweep (e.g. "T", "B", or "BT").
         x_label: Label for the x-axis (e.g. "sequence length" or "batch size").
         x_values_fn: Optional function mapping `SeqLenSweepConfig` to a list
             of x values. Defaults to powers of 2 up to max seq_len.
@@ -539,15 +538,39 @@ def build_token_length_sweep(
         return forward_fn(*setup_out)
 
     peak_bytes = estimate_kernel_peak_memory(probe_fn=probe_fn)
-    kernel_bpt = max(1, peak_bytes // max(probe_x, probe_bt))
+    # ---------------------------------------
+    # derive total tokens (BT) based on scale_dim
+    # ---------------------------------------
+    if scale_dim == "T":
+        B = extra_configs.get("B", 1)
+        probe_bt = probe_x * B
+
+    elif scale_dim == "B":
+        T = extra_configs.get("T")
+        if T is None:
+            raise ValueError("For B sweep, extra_configs['T'] must be provided")
+        probe_bt = probe_x * T
+
+    elif scale_dim == "BT":
+        probe_bt = probe_x
+
+    else:
+        raise ValueError(f"Unsupported scale_dim: {scale_dim}")
+
+    kernel_bpt = max(1, peak_bytes // probe_bt)
 
     config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
     if x_values_fn is None:
-        x_values_fn = lambda cfg: [2**i for i in range(10, int(math.log2(cfg.seq_len * cfg.batch_size)) + 1)]
+        if scale_dim == "T":
+            x_values_fn = lambda cfg: [2**i for i in range(10, int(math.log2(cfg.seq_len)) + 1)]
+        elif scale_dim == "B":
+            x_values_fn = lambda cfg: [2**i for i in range(0, int(math.log2(cfg.batch_size)) + 1)]
+        elif scale_dim == "BT":
+            x_values_fn = lambda cfg: [2**i for i in range(10, int(math.log2(cfg.seq_len * cfg.batch_size)) + 1)]
 
     return {
         "kernel_name": kernel_name,
-        "x_name": x_name,
+        "x_name": scale_dim,
         "x_label": x_label,
         "x_values": x_values_fn(config),
         "extra_benchmark_configs": [
