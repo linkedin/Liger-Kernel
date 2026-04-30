@@ -151,7 +151,6 @@ __all__ = [
     "fused_linear_cross_entropy_forward",
     "fused_linear_cross_entropy_backward",
     "LigerFusedMoEFunction",
-    "compute_routing_metadata",
     "LigerMHCCoeffsFunction",
     "LigerMHCPreFunction",
     "LigerMHCPostResFunction",

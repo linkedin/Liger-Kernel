@@ -79,6 +79,41 @@ def _group_norm_backward_batch_block_size(hidden_size_per_channel: int) -> int:
     return max(1, min(8, 4096 // block_h))
 
 
+# tl.arange(0, BLOCK_BATCH) and register pressure — stay within a typical Triton tile bound.
+_BACKWARD_DX_DWDB_MAX_BLOCK_BATCH = 1024
+
+
+def _group_norm_backward_dx_dwdb_launch_config(
+    batch_size: int,
+    num_groups: int,
+    hidden_size_per_channel: int,
+) -> tuple[int, int]:
+    """
+    Ascend Triton requires the launch grid to stay below 65536 blocks (product of grid dims).
+    This kernel uses grid (num_groups, num_partial_rows) with num_partial_rows = cdiv(batch_size, block_batch).
+    When batch is large and block_batch is tiny (default ≤ 8), the product overflows; raise block_batch as needed.
+    """
+    if num_groups > MAX_GRID_SIZE:
+        raise RuntimeError(f"group_norm backward: num_groups={num_groups} exceeds Ascend grid limit {MAX_GRID_SIZE}")
+
+    block_batch = _group_norm_backward_batch_block_size(hidden_size_per_channel)
+    max_partial_rows = max(1, MAX_GRID_SIZE // num_groups)
+    needed_block_batch = triton.cdiv(batch_size, max_partial_rows)
+    block_batch = max(block_batch, needed_block_batch)
+    block_batch = min(block_batch, batch_size, _BACKWARD_DX_DWDB_MAX_BLOCK_BATCH)
+
+    num_partial_rows = triton.cdiv(batch_size, block_batch)
+    while num_groups * num_partial_rows > MAX_GRID_SIZE and block_batch < batch_size:
+        block_batch = min(batch_size, block_batch * 2)
+        num_partial_rows = triton.cdiv(batch_size, block_batch)
+
+    if num_groups * num_partial_rows > MAX_GRID_SIZE:
+        block_batch = batch_size
+        num_partial_rows = 1
+
+    return block_batch, num_partial_rows
+
+
 @triton.jit
 def _group_norm_forward_single_task_kernel(
     Y_ptr,
@@ -428,8 +463,11 @@ def group_norm_backward(dY, X, W, Mean, RSTD, num_channels, num_groups, bias_dty
 
     DX = torch.empty_like(dY)
     block_h = _group_norm_backward_spatial_block_size(hidden_size_per_channel)
-    block_batch = _group_norm_backward_batch_block_size(hidden_size_per_channel)
-    num_partial_rows = triton.cdiv(batch_size, block_batch)
+    block_batch, num_partial_rows = _group_norm_backward_dx_dwdb_launch_config(
+        batch_size,
+        num_groups,
+        hidden_size_per_channel,
+    )
 
     DW_partial = torch.empty((num_partial_rows, num_channels), dtype=torch.float32, device=W.device)
     DB_partial = torch.empty((num_partial_rows, num_channels), dtype=torch.float32, device=W.device)
