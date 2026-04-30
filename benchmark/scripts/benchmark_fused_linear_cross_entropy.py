@@ -1,6 +1,13 @@
+import math
+
 import torch
 import triton
 
+from benchmark_model_configs import MODEL_REGISTRY
+from benchmark_model_configs import compute_model_config_sweep_config
+from benchmark_model_configs import compute_seq_len_sweep_config
+from benchmark_model_configs import estimate_kernel_peak_memory
+from benchmark_model_configs import get_benchmark_model_config
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
@@ -45,36 +52,72 @@ class LigerLMHeadCE(torch.nn.Module):
         return self.ce_loss(self.lin.weight, x, y)
 
 
-#############################################################################
-# Test the memory consumption of the linear fused cross entropy loss
-#############################################################################
-
-
-def bench_memory_fused_linear_cross_entropy(
-    input: SingleBenchmarkRunInput,
-) -> SingleBenchmarkRunOutput:
+def _setup_fused_linear_cross_entropy(input: SingleBenchmarkRunInput):
+    """Create input tensor, target, and fused linear CE from benchmark config."""
+    cfg = input.extra_benchmark_config
+    H = cfg["hidden_size"]
+    V = cfg["vocab_size"]
+    dtype = cfg["dtype"]
     BT = input.x
-    H = input.extra_benchmark_config["H"]
-    V = input.extra_benchmark_config["V"]
-    dtype = input.extra_benchmark_config["dtype"]
-    provider = input.kernel_provider
-
-    lm_head_ce = None
-    if provider == "liger":
-        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
-    elif provider == "liger-fp32-accum":
-        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
-    else:
-        lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
 
     _input = torch.randn(BT, H, requires_grad=True, dtype=dtype, device=device)
     target = torch.randint(V, (BT, 1), dtype=torch.long, device=device).squeeze(1)
 
+    if input.kernel_provider == "liger":
+        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
+    elif input.kernel_provider == "liger-fp32-accum":
+        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
+    else:
+        lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
+    return _input, target, lm_head_ce
+
+
+def bench_speed_fused_linear_cross_entropy(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    _input, target, lm_head_ce = _setup_fused_linear_cross_entropy(input)
+    mode = input.kernel_operation_mode
+
     def fwd():
         return lm_head_ce(_input, target)
 
-    def full():
+    if mode == "forward":
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            fwd,
+            rep=100,
+            quantiles=QUANTILES,
+        )
+    elif mode == "no-grad-forward":
+        with torch.no_grad():
+            ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
+    elif mode == "backward":
         y = fwd()
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            lambda: y.backward(retain_graph=True),
+            grad_to_none=[_input],
+            rep=100,
+            quantiles=QUANTILES,
+        )
+    elif mode == "full":
+
+        def full():
+            y = fwd()
+            y.backward()
+
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
+    return SingleBenchmarkRunOutput(
+        y_20=ms_20,
+        y_50=ms_50,
+        y_80=ms_80,
+    )
+
+
+def bench_memory_fused_linear_cross_entropy(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    _input, target, lm_head_ce = _setup_fused_linear_cross_entropy(input)
+
+    def full():
+        y = lm_head_ce(_input, target)
         y.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
@@ -86,31 +129,26 @@ def bench_memory_fused_linear_cross_entropy(
     )
 
 
-# #############################################################################
-# # Test the speed of the fused linear cross entropy loss
-# #############################################################################
+def _resolve_model_config_fused_linear_cross_entropy(input: SingleBenchmarkRunInput):
+    """Resolve model-config-sweep input into standard setup args."""
+    cfg = input.extra_benchmark_config
+    model_info = cfg["model_configs"][input.x]
+    return _setup_fused_linear_cross_entropy(
+        SingleBenchmarkRunInput(
+            x=cfg["BT"],
+            kernel_provider=input.kernel_provider,
+            extra_benchmark_config={
+                "hidden_size": model_info["hidden_size"],
+                "vocab_size": model_info["vocab_size"],
+                "dtype": model_info["dtype"],
+            },
+        )
+    )
 
 
-def bench_speed_fused_linear_cross_entropy(
-    input: SingleBenchmarkRunInput,
-) -> SingleBenchmarkRunOutput:
-    BT = input.x
-    H = input.extra_benchmark_config["H"]
-    V = input.extra_benchmark_config["V"]
-    dtype = input.extra_benchmark_config["dtype"]
-    provider = input.kernel_provider
+def bench_speed_fused_linear_cross_entropy_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    _input, target, lm_head_ce = _resolve_model_config_fused_linear_cross_entropy(input)
     mode = input.kernel_operation_mode
-
-    lm_head_ce = None
-    if provider == "liger":
-        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype).to(device)
-    elif provider == "liger-fp32-accum":
-        lm_head_ce = LigerLMHeadCE(H=H, V=V, dtype=dtype, accum_dtype=torch.float32).to(device)
-    else:
-        lm_head_ce = TorchLMHeadCE(H=H, V=V, dtype=dtype).to(device)
-
-    _input = torch.randn(BT, H, requires_grad=True, dtype=dtype, device=device)
-    target = torch.randint(V, (BT, 1), dtype=torch.long, device=device).squeeze(1)
 
     def fwd():
         return lm_head_ce(_input, target)
@@ -148,6 +186,9 @@ def bench_speed_fused_linear_cross_entropy(
             rep=100,
             quantiles=QUANTILES,
         )
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
     return SingleBenchmarkRunOutput(
         y_20=ms_20,
         y_50=ms_50,
@@ -155,30 +196,132 @@ def bench_speed_fused_linear_cross_entropy(
     )
 
 
+def bench_memory_fused_linear_cross_entropy_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    _input, target, lm_head_ce = _resolve_model_config_fused_linear_cross_entropy(input)
+
+    def full():
+        y = lm_head_ce(_input, target)
+        y.backward()
+
+    mem_50, mem_20, mem_80 = _test_memory(full, _iter=10, quantiles=QUANTILES)
+    return SingleBenchmarkRunOutput(
+        y_20=mem_20,
+        y_50=mem_50,
+        y_80=mem_80,
+    )
+
+
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    common_configs = {
-        "kernel_name": "fused_linear_cross_entropy",
-        "x_name": "BT",
-        "x_label": "B x T",
-        "x_values": [2**i for i in range(12, 16)],
-        "kernel_providers": ["liger", "liger-fp32-accum", "huggingface"],
-        "extra_benchmark_configs": [{"H": 4096, "V": 128256, "mode": "forward", "dtype": torch.bfloat16}],
-        "overwrite": args.overwrite,
-    }
+    if args.sweep_mode == "model_config":
+        all_model_configs = list(MODEL_REGISTRY.values())
 
-    run_benchmarks(
-        bench_test_fn=bench_speed_fused_linear_cross_entropy,
-        kernel_operation_modes=["forward", "backward", "full", "no-grad-forward"],
-        metric_name="speed",
-        metric_unit="ms",
-        **common_configs,
-    )
-    run_benchmarks(
-        bench_test_fn=bench_memory_fused_linear_cross_entropy,
-        kernel_operation_modes=["full"],
-        metric_name="memory",
-        metric_unit="MB",
-        **common_configs,
-    )
+        def _probe_factory(model_cfg, probe_bt):
+            def _probe():
+                probe_input = SingleBenchmarkRunInput(
+                    x=probe_bt,
+                    kernel_provider="huggingface",
+                    extra_benchmark_config={
+                        "hidden_size": model_cfg.hidden_size,
+                        "vocab_size": model_cfg.vocab_size,
+                        "dtype": model_cfg.dtype,
+                    },
+                )
+                _input, target, lm_head_ce = _setup_fused_linear_cross_entropy(probe_input)
+                return lm_head_ce(_input, target)
+
+            return _probe
+
+        sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
+
+        model_configs_info = {
+            cfg.name: {
+                "hidden_size": cfg.hidden_size,
+                "vocab_size": cfg.vocab_size,
+                "dtype": cfg.dtype,
+            }
+            for cfg in sweep.model_configs
+        }
+
+        common_configs = {
+            "kernel_name": "fused_linear_cross_entropy",
+            "x_name": "model_config",
+            "x_label": "model configuration",
+            "x_values": [cfg.name for cfg in sweep.model_configs],
+            "kernel_providers": ["liger", "liger-fp32-accum", "huggingface"],
+            "extra_benchmark_configs": [
+                {
+                    "model_configs": model_configs_info,
+                    "BT": sweep.bt,
+                }
+            ],
+            "overwrite": args.overwrite,
+        }
+
+        run_benchmarks(
+            bench_test_fn=bench_speed_fused_linear_cross_entropy_model_config,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_fused_linear_cross_entropy_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
+    else:
+        model = get_benchmark_model_config(args.model)
+        probe_bt = 1024
+
+        def _probe():
+            probe_input = SingleBenchmarkRunInput(
+                x=probe_bt,
+                kernel_provider="huggingface",
+                extra_benchmark_config={
+                    "hidden_size": model.hidden_size,
+                    "vocab_size": model.vocab_size,
+                    "dtype": model.dtype,
+                },
+            )
+            _input, target, lm_head_ce = _setup_fused_linear_cross_entropy(probe_input)
+            return lm_head_ce(_input, target)
+
+        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
+        kernel_bpt = peak_bytes // probe_bt
+
+        config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+
+        common_configs = {
+            "kernel_name": "fused_linear_cross_entropy",
+            "x_name": "BT",
+            "x_label": "B * T",
+            "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
+            "kernel_providers": ["liger", "liger-fp32-accum", "huggingface"],
+            "extra_benchmark_configs": [
+                {
+                    "hidden_size": model.hidden_size,
+                    "vocab_size": model.vocab_size,
+                    "dtype": model.dtype,
+                }
+            ],
+            "overwrite": args.overwrite,
+        }
+
+        run_benchmarks(
+            bench_test_fn=bench_speed_fused_linear_cross_entropy,
+            kernel_operation_modes=["forward", "backward", "full", "no-grad-forward"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_fused_linear_cross_entropy,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )

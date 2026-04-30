@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 
@@ -6,6 +7,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import triton
 
+from benchmark_model_configs import MODEL_REGISTRY
+from benchmark_model_configs import compute_model_config_sweep_config
+from benchmark_model_configs import compute_seq_len_sweep_config
+from benchmark_model_configs import estimate_kernel_peak_memory
+from benchmark_model_configs import get_benchmark_model_config
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
@@ -197,8 +203,7 @@ class MHCDecoderLayer(nn.Module):
         super().__init__()
         attn = AttentionBlock(hidden_size, num_heads, dtype=dtype, device=device)
         mlp = MLPBlock(hidden_size, intermediate_mult, dtype=dtype, device=device)
-        self.attn = mhc_cls(
-            attn,
+        mhc_kwargs = dict(
             hc=hc,
             c=hidden_size,
             tmax=tmax,
@@ -208,17 +213,8 @@ class MHCDecoderLayer(nn.Module):
             post_mult=2.0,
             phi_dtype=dtype,
         )
-        self.mlp = mhc_cls(
-            mlp,
-            hc=hc,
-            c=hidden_size,
-            tmax=tmax,
-            rms_eps=1e-6,
-            pre_eps=1e-4,
-            sinkhorn_eps=1e-6,
-            post_mult=2.0,
-            phi_dtype=dtype,
-        )
+        self.attn = mhc_cls(attn, **mhc_kwargs)
+        self.mlp = mhc_cls(mlp, **mhc_kwargs)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.attn(x)
@@ -301,26 +297,22 @@ def _build_model(
     )
 
 
-def bench_speed_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    hidden_size = int(input.x)
-    provider = input.kernel_provider
-    mode = input.kernel_operation_mode
-    extra = input.extra_benchmark_config
-    bsz = extra["B"]
-    seq_len = extra["T"]
-    hc = extra["HC"]
-    num_layers = extra["layers"]
-    num_heads = extra["heads"]
-    vocab_size = extra["vocab"]
-    dtype = extra["dtype"]
-    tmax = extra["tmax"]
-    intermediate_mult = extra["intermediate_mult"]
-
-    if hidden_size % num_heads != 0:
-        raise ValueError("hidden_size must be divisible by num_heads")
+def _setup_mhc_lm(input: SingleBenchmarkRunInput):
+    """Create model and inputs for MHC LM benchmark."""
+    cfg = input.extra_benchmark_config
+    hidden_size = cfg["hidden_size"]
+    bsz = cfg["B"]
+    seq_len = cfg.get("T", input.x)
+    hc = cfg["HC"]
+    num_layers = cfg["layers"]
+    num_heads = cfg["heads"]
+    vocab_size = cfg["vocab"]
+    dtype = cfg["dtype"]
+    tmax = cfg["tmax"]
+    intermediate_mult = cfg["intermediate_mult"]
 
     model = _build_model(
-        provider,
+        input.kernel_provider,
         hidden_size=hidden_size,
         hc=hc,
         num_layers=num_layers,
@@ -332,17 +324,19 @@ def bench_speed_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
     )
 
     input_ids = torch.randint(0, vocab_size, (bsz, seq_len), device=device)
-
-    def fwd():
-        return model(input_ids)
-
-    def fwd_loss():
-        return fwd().float().mean()
-
     grad_to_none = list(model.parameters())
 
+    fwd_fn = lambda: model(input_ids)
+    fwd_loss_fn = lambda: fwd_fn().float().mean()
+    return grad_to_none, fwd_fn, fwd_loss_fn
+
+
+def bench_speed_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    grad_to_none, fwd_fn, fwd_loss = _setup_mhc_lm(input)
+    mode = input.kernel_operation_mode
+
     if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100)
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd_fn, quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100)
     elif mode == "backward":
         loss = fwd_loss()
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
@@ -359,97 +353,197 @@ def bench_speed_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutp
 
         ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100)
     else:
-        raise ValueError(f"Unknown mode: {mode}")
-
-    return SingleBenchmarkRunOutput(
-        y_20=ms_20,
-        y_50=ms_50,
-        y_80=ms_80,
-    )
+        raise ValueError(f"Unsupported mode: {mode}")
+    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
 
 
 def bench_memory_mhc_lm(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    hidden_size = int(input.x)
-    provider = input.kernel_provider
-    extra = input.extra_benchmark_config
-    bsz = extra["B"]
-    seq_len = extra["T"]
-    hc = extra["HC"]
-    num_layers = extra["layers"]
-    num_heads = extra["heads"]
-    vocab_size = extra["vocab"]
-    dtype = extra["dtype"]
-    tmax = extra["tmax"]
-    intermediate_mult = extra["intermediate_mult"]
-
-    if hidden_size % num_heads != 0:
-        raise ValueError("hidden_size must be divisible by num_heads")
-
-    model = _build_model(
-        provider,
-        hidden_size=hidden_size,
-        hc=hc,
-        num_layers=num_layers,
-        num_heads=num_heads,
-        intermediate_mult=intermediate_mult,
-        vocab_size=vocab_size,
-        tmax=tmax,
-        dtype=dtype,
-    )
-
-    input_ids = torch.randint(0, vocab_size, (bsz, seq_len), device=device)
-
-    def fwd():
-        return model(input_ids)
+    grad_to_none, fwd_fn, fwd_loss_fn = _setup_mhc_lm(input)
 
     def full():
-        loss = fwd().float().mean()
+        loss = fwd_loss_fn()
         loss.backward()
 
     mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(
-        y_20=mem_20,
-        y_50=mem_50,
-        y_80=mem_80,
+    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
+
+
+def _resolve_model_config_mhc_lm(input: SingleBenchmarkRunInput):
+    cfg = input.extra_benchmark_config
+    model_info = cfg["model_configs"][input.x]
+    return _setup_mhc_lm(
+        SingleBenchmarkRunInput(
+            x=input.x,
+            kernel_provider=input.kernel_provider,
+            extra_benchmark_config={
+                "hidden_size": model_info["hidden_size"],
+                "dtype": model_info["dtype"],
+                "B": cfg["B"],
+                "T": cfg["T"],
+                "HC": cfg["HC"],
+                "layers": cfg["layers"],
+                "heads": cfg["heads"],
+                "vocab": cfg["vocab"],
+                "tmax": cfg["tmax"],
+                "intermediate_mult": cfg["intermediate_mult"],
+            },
+        )
     )
+
+
+def bench_speed_mhc_lm_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    grad_to_none, fwd_fn, fwd_loss = _resolve_model_config_mhc_lm(input)
+    mode = input.kernel_operation_mode
+
+    if mode == "forward":
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd_fn, quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100)
+    elif mode == "backward":
+        loss = fwd_loss()
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            lambda: loss.backward(retain_graph=True),
+            quantiles=QUANTILES,
+            grad_to_none=grad_to_none,
+            rep=100,
+        )
+    elif mode == "full":
+
+        def full():
+            loss = fwd_loss()
+            loss.backward()
+
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, grad_to_none=grad_to_none, rep=100)
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+    return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)
+
+
+def bench_memory_mhc_lm_model_config(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
+    grad_to_none, fwd_fn, fwd_loss = _resolve_model_config_mhc_lm(input)
+
+    def full():
+        loss = fwd_loss()
+        loss.backward()
+
+    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
+    return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
 
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    common_configs = {
-        "kernel_name": "mhc_llama_like_lm",
-        "x_name": "hidden_size",
-        "x_label": "hidden_size",
-        "x_values": [256, 512, 1024],
-        "kernel_providers": ["liger", "torch"],
-        "extra_benchmark_configs": [
-            {
-                "B": 2,
-                "T": 256,
-                "HC": 4,
-                "layers": 2,
-                "heads": 8,
-                "vocab": 4096,
-                "dtype": torch.bfloat16,
-                "tmax": 8,
-                "intermediate_mult": 4,
-            }
-        ],
-        "overwrite": args.overwrite,
-    }
+    mhc_lm_defaults = {"HC": 4, "layers": 2, "heads": 8, "vocab": 4096, "tmax": 8, "intermediate_mult": 4}
 
-    run_benchmarks(
-        bench_test_fn=bench_speed_mhc_lm,
-        kernel_operation_modes=["forward", "backward", "full"],
-        metric_name="speed",
-        metric_unit="ms",
-        **common_configs,
-    )
-    run_benchmarks(
-        bench_test_fn=bench_memory_mhc_lm,
-        kernel_operation_modes=["full"],
-        metric_name="memory",
-        metric_unit="MB",
-        **common_configs,
-    )
+    if args.sweep_mode == "model_config":
+        all_model_configs = list(MODEL_REGISTRY.values())
+        B = 2
+
+        def _probe_factory(model_cfg, probe_bt):
+            def _probe():
+                T = max(1, probe_bt // B)
+                probe_input = SingleBenchmarkRunInput(
+                    x=0,
+                    kernel_provider="torch",
+                    extra_benchmark_config={
+                        "hidden_size": model_cfg.hidden_size,
+                        "dtype": model_cfg.dtype,
+                        "B": B,
+                        "T": T,
+                        **mhc_lm_defaults,
+                    },
+                )
+                _, _, fwd_loss_fn = _setup_mhc_lm(probe_input)
+                return fwd_loss_fn()
+
+            return _probe
+
+        sweep = compute_model_config_sweep_config(all_model_configs, probe_fn_factory=_probe_factory, bt=args.bt)
+        model_configs_info = {
+            cfg.name: {"hidden_size": cfg.hidden_size, "dtype": cfg.dtype} for cfg in sweep.model_configs
+        }
+
+        common_configs = {
+            "kernel_name": "mhc_llama_like_lm",
+            "x_name": "model_config",
+            "x_label": "model configuration",
+            "x_values": [cfg.name for cfg in sweep.model_configs],
+            "kernel_providers": ["liger", "torch"],
+            "extra_benchmark_configs": [
+                {
+                    "model_configs": model_configs_info,
+                    "B": sweep.batch_size,
+                    "T": sweep.seq_len,
+                    **mhc_lm_defaults,
+                }
+            ],
+            "overwrite": args.overwrite,
+        }
+
+        run_benchmarks(
+            bench_test_fn=bench_speed_mhc_lm_model_config,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_mhc_lm_model_config,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )
+    else:
+        model = get_benchmark_model_config(args.model)
+        B = 2
+        probe_T = 256
+
+        def _probe():
+            probe_input = SingleBenchmarkRunInput(
+                x=0,
+                kernel_provider="torch",
+                extra_benchmark_config={
+                    "hidden_size": model.hidden_size,
+                    "dtype": model.dtype,
+                    "B": B,
+                    "T": probe_T,
+                    **mhc_lm_defaults,
+                },
+            )
+            _, _, fwd_loss_fn = _setup_mhc_lm(probe_input)
+            return fwd_loss_fn()
+
+        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
+        kernel_bpt = peak_bytes // probe_T
+        config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+
+        common_configs = {
+            "kernel_name": "mhc_llama_like_lm",
+            "x_name": "T",
+            "x_label": "sequence length",
+            "x_values": [2**i for i in range(7, int(math.log2(max(128, config.seq_len))) + 1)],
+            "kernel_providers": ["liger", "torch"],
+            "extra_benchmark_configs": [
+                {
+                    "hidden_size": model.hidden_size,
+                    "B": B,
+                    "dtype": model.dtype,
+                    **mhc_lm_defaults,
+                }
+            ],
+            "overwrite": args.overwrite,
+        }
+
+        run_benchmarks(
+            bench_test_fn=bench_speed_mhc_lm,
+            kernel_operation_modes=["forward", "backward", "full"],
+            metric_name="speed",
+            metric_unit="ms",
+            **common_configs,
+        )
+        run_benchmarks(
+            bench_test_fn=bench_memory_mhc_lm,
+            kernel_operation_modes=["full"],
+            metric_name="memory",
+            metric_unit="MB",
+            **common_configs,
+        )

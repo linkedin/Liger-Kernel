@@ -7,7 +7,11 @@ import torch
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
 from liger_kernel.transformers.model.output_classes import LigerCausalLMOutputWithPast
-from liger_kernel.transformers.model.output_classes import LigerQwen3_5CausalLMOutputWithPast
+
+try:
+    from liger_kernel.transformers.model.output_classes import LigerQwen3_5CausalLMOutputWithPast
+except ImportError:
+    LigerQwen3_5CausalLMOutputWithPast = None
 
 
 def lce_forward(
@@ -138,7 +142,7 @@ def lce_forward_for_multimodal(
     logits_to_keep: Union[int, torch.Tensor] = 0,
     skip_logits: Optional[bool] = None,
     **kwargs,
-) -> Union[tuple, LigerQwen3_5CausalLMOutputWithPast]:
+) -> Union[tuple, "LigerQwen3_5CausalLMOutputWithPast"]:
     r"""
     labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
         Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
