@@ -14,10 +14,14 @@ import torch
 import torch.nn as nn
 
 from liger_kernel.ops import LigerFusedMoEFunction
-from liger_kernel.ops import compute_routing_metadata
 from liger_kernel.utils import infer_device
 
 device = infer_device()
+
+if device == "npu":
+    from liger_kernel.ops.backends._ascend.ops.fused_moe import compute_routing_metadata
+else:
+    from liger_kernel.ops.fused_moe import compute_routing_metadata
 
 
 # ---------------------------------------------------------------------------
