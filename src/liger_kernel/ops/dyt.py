@@ -21,14 +21,17 @@ else:
     from triton.language.math import tanh
 
 
-# @triton.autotune([triton.Config({"BLOCK_N":bn}, num_stages=ns, num_warps=nw)
-#                   for bn in [1024, 2048, 4096]
-#                   for ns in [1,2,4]
-#                   for nw in [4, 8, 16, 32]
-#                   ],
-#                   key=['N'])
+@triton.autotune(
+    configs=[
+        triton.Config({"BLOCK_N": bn}, num_stages=ns, num_warps=nw)
+        for bn in [1024, 2048, 4096]
+        for ns in [1, 2]
+        for nw in [4, 8, 16]
+    ],
+    key=["N"],
+)
 @triton.jit
-def _dyt_fwd_kernel(X, Y, Alpha, Gamma, Beta, HAVE_BETA: tl.constexpr, N: tl.constexpr, BLOCK_N: tl.constexpr = 1024):
+def _dyt_fwd_kernel(X, Y, Alpha, Gamma, Beta, HAVE_BETA: tl.constexpr, N: tl.constexpr, BLOCK_N: tl.constexpr):
     col = tl.cast(tl.program_id(0), tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
     mask = col < N
     row_id = tl.cast(tl.program_id(1), tl.int64)
@@ -49,15 +52,23 @@ def _dyt_fwd_kernel(X, Y, Alpha, Gamma, Beta, HAVE_BETA: tl.constexpr, N: tl.con
     tl.store(Y + col, y, mask=mask)
 
 
-# @triton.autotune([triton.Config({"BLOCK_N":bn}, num_stages=ns, num_warps=nw)
-#                   for bn in [1024, 2048, 4096]
-#                   for ns in [1,2,4]
-#                   for nw in [4, 8, 16]
-#                   ],
-#                   key=['N'])
+@triton.autotune(
+    configs=[
+        triton.Config({"BLOCK_N": bn}, num_stages=ns, num_warps=nw)
+        for bn in [1024, 2048, 4096]
+        for ns in [1, 2]
+        for nw in [4, 8, 16]
+    ],
+    key=["N"],
+    # DA is indexed by program_id(0), so different BLOCK_N configs write to
+    # different slot counts per SM. Autotune trials don't zero outputs between
+    # runs, so stale slots from a prior trial would leak into da.sum(). Reset
+    # DA between trials to isolate each config's writes.
+    reset_to_zero=["DA"],
+)
 @triton.jit
 def _dyt_bwd_kernel(
-    DY, DX, DA, DG, DB, X, Alpha, Gamma, HAVE_BETA: tl.constexpr, M, N: tl.constexpr, BLOCK_N: tl.constexpr = 1024
+    DY, DX, DA, DG, DB, X, Alpha, Gamma, HAVE_BETA: tl.constexpr, M, N: tl.constexpr, BLOCK_N: tl.constexpr
 ):
     col = tl.cast(tl.program_id(0), tl.int64) * BLOCK_N + tl.arange(0, BLOCK_N)
     mask = col < N
@@ -96,13 +107,8 @@ def liger_dyt_fwd(x, alpha, gamma, beta):
 
     y = torch.empty_like(x)
 
-    if N >= 4096:
-        kwargs = {"BLOCK_N": min(triton.next_power_of_2(N), 2048), "num_warps": 4, "num_stages": 1}
-    else:
-        kwargs = {"BLOCK_N": min(triton.next_power_of_2(N), 1024), "num_warps": 4, "num_stages": 1}
-
     grid = lambda meta: (triton.cdiv(N, meta["BLOCK_N"]), M)
-    _dyt_fwd_kernel[(grid)](
+    _dyt_fwd_kernel[grid](
         x,
         y,
         alpha,
@@ -110,7 +116,6 @@ def liger_dyt_fwd(x, alpha, gamma, beta):
         beta,
         HAVE_BETA,
         N,
-        **kwargs,
     )
     return y.view(input_shape)
 
@@ -134,9 +139,8 @@ def liger_dyt_bwd(dy, x, alpha, gamma, beta):
     db = torch.empty(NUM_SMS, N, dtype=torch.float32, device=x.device) if HAVE_BETA else None
     dx = torch.empty_like(dy)
 
-    kwargs = {"BLOCK_N": min(triton.next_power_of_2(N), 1024), "num_warps": 8, "num_stages": 2}
     grid = lambda meta: (triton.cdiv(N, meta["BLOCK_N"]), NUM_SMS)
-    _dyt_bwd_kernel[grid](dy, dx, da, dg, db, x, alpha, gamma, HAVE_BETA, M, N, **kwargs)
+    _dyt_bwd_kernel[grid](dy, dx, da, dg, db, x, alpha, gamma, HAVE_BETA, M, N)
     if HAVE_BETA:
         db = db.sum(0).to(x.dtype)
     dg = dg.sum(0).to(gamma.dtype)
