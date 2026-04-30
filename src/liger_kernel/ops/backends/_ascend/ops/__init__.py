@@ -33,7 +33,6 @@ from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import LigerFusedLin
 from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import fused_linear_jsd_backward
 from liger_kernel.ops.backends._ascend.ops.fused_linear_jsd import fused_linear_jsd_forward
 from liger_kernel.ops.backends._ascend.ops.fused_moe import LigerFusedMoEFunction
-from liger_kernel.ops.backends._ascend.ops.fused_moe import compute_routing_metadata
 from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import LigerFusedNeighborhoodAttentionFunction
 from liger_kernel.ops.backends._ascend.ops.fused_neighborhood_attention import fused_neighborhood_attention_forward
 from liger_kernel.ops.backends._ascend.ops.geglu import LigerGELUMulFunction
