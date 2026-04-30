@@ -1846,7 +1846,7 @@ def run_mini_model(
             1e-2,
             5e-2,
             1e-1,
-            1e-2,
+            5e-2,  # LigerExperts fused MoE kernel needs higher logprobs rtol in bf16
             1e-2,
             1e-2,
             marks=[
@@ -1855,7 +1855,6 @@ def run_mini_model(
                     not QWEN3_VL_MOE_AVAILABLE,
                     reason="Qwen3-VL-MoE not available in this version of transformers",
                 ),
-                pytest.mark.skipif(True, reason="Flaky test"),
             ],
         ),
         pytest.param(
