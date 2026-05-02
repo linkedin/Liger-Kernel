@@ -70,6 +70,46 @@ class LigerRMSNormForGemma3(LigerRMSNorm):
         super().__init__(dim, eps, offset, casting_mode, init_fn, in_place)
 
 
+class LigerRMSNormForGemma4(LigerRMSNorm):
+    """Gemma4RMSNorm inherits Gemma3nRMSNorm (not Gemma3RMSNorm); reusing
+    LigerRMSNormForGemma3 here would silently diverge training because
+    Gemma3's subclass applies ``(1 + w) * x`` semantics via the +1 offset.
+
+    Gemma4RMSNorm semantics (see transformers.models.gemma4.modeling_gemma4):
+      - weight initialized to ones (not zeros, unlike Gemma3)
+      - no (1 + weight) offset — scales by weight directly
+      - fp32 compute, cast back to input dtype
+      - ``with_scale=False`` variant has NO weight parameter and is used for
+        ``v_norm`` on attention (scale-free RMS normalization).
+
+    When ``with_scale=False`` the Liger kernel has no weight to multiply by,
+    so we fall back to a plain torch implementation that matches HF exactly.
+    """
+
+    def __init__(
+        self,
+        dim,
+        eps=1e-6,
+        offset=0.0,
+        casting_mode="gemma",
+        init_fn="ones",
+        in_place=False,
+        with_scale=True,
+    ):
+        super().__init__(dim, eps, offset, casting_mode, init_fn, in_place, elementwise_affine=with_scale)
+        self.with_scale = with_scale
+
+    def forward(self, hidden_states):
+        if not self.with_scale:
+            # Mirrors HF's Gemma4RMSNorm forward for the with_scale=False case:
+            # scale-free RMS normalization with fp32 compute, cast back to input dtype.
+            input_dtype = hidden_states.dtype
+            x = hidden_states.float()
+            mean_sq = x.pow(2).mean(-1, keepdim=True) + self.variance_epsilon
+            return (x * torch.pow(mean_sq, -0.5)).to(input_dtype)
+        return super().forward(hidden_states)
+
+
 class LigerRMSNormForOlmo2(LigerRMSNorm):
     def __init__(
         self, hidden_size, eps=1e-6, offset=0.0, casting_mode="llama", init_fn="ones", in_place=False, row_mode=None

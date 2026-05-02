@@ -1,18 +1,18 @@
-from typing import TYPE_CHECKING
 from typing import List
 from typing import Optional
+from typing import Tuple
 from typing import Union
 
 import torch
 
 from transformers.modeling_outputs import MoeModelOutputWithPast
-
-if TYPE_CHECKING:
-    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import load_balancing_loss_func
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import load_balancing_loss_func
+from transformers.utils import can_return_tuple
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
 from liger_kernel.transformers.model.output_classes import LigerMoeCausalLMOutputWithPast
+from liger_kernel.transformers.model.output_classes import LigerQwen3_5MoeCausalLMOutputWithPast
 
 
 def lce_forward(
@@ -151,6 +151,99 @@ def lce_forward(
         past_key_values=outputs.past_key_values,
         hidden_states=outputs.hidden_states,
         attentions=outputs.attentions,
+        router_logits=outputs.router_logits,
+        token_accuracy=token_accuracy,
+        predicted_tokens=predicted_tokens,
+    )
+
+
+@can_return_tuple
+def lce_forward_conditional_generation(
+    self,
+    input_ids: torch.LongTensor = None,
+    attention_mask: Optional[torch.Tensor] = None,
+    position_ids: Optional[torch.LongTensor] = None,
+    past_key_values: Optional[List[torch.FloatTensor]] = None,
+    inputs_embeds: Optional[torch.FloatTensor] = None,
+    labels: Optional[torch.LongTensor] = None,
+    pixel_values: Optional[torch.Tensor] = None,
+    pixel_values_videos: Optional[torch.FloatTensor] = None,
+    image_grid_thw: Optional[torch.LongTensor] = None,
+    video_grid_thw: Optional[torch.LongTensor] = None,
+    mm_token_type_ids: Optional[torch.IntTensor] = None,
+    logits_to_keep: Union[int, torch.Tensor] = 0,
+    skip_logits: Optional[bool] = None,
+    **kwargs,
+) -> Union[Tuple, LigerQwen3_5MoeCausalLMOutputWithPast]:
+    """
+    Qwen3.5-MoE multimodal forward with fused linear cross entropy support.
+    """
+
+    outputs = self.model(
+        input_ids=input_ids,
+        pixel_values=pixel_values,
+        pixel_values_videos=pixel_values_videos,
+        image_grid_thw=image_grid_thw,
+        video_grid_thw=video_grid_thw,
+        mm_token_type_ids=mm_token_type_ids,
+        position_ids=position_ids,
+        attention_mask=attention_mask,
+        past_key_values=past_key_values,
+        inputs_embeds=inputs_embeds,
+        **kwargs,
+    )
+
+    hidden_states = outputs[0]
+    # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+    slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+    kept_hidden_states = hidden_states[:, slice_indices, :]
+
+    shift_labels = kwargs.pop("shift_labels", None)
+    loss = None
+    logits = None
+    token_accuracy = None
+    predicted_tokens = None
+
+    if skip_logits and labels is None and shift_labels is None:
+        raise ValueError("skip_logits is True, but labels and shift_labels are None")
+
+    if skip_logits is None:
+        skip_logits = self.training and (labels is not None or shift_labels is not None)
+
+    if skip_logits:
+        result = LigerForCausalLMLoss(
+            hidden_states=kept_hidden_states,
+            lm_head_weight=self.lm_head.weight,
+            labels=labels,
+            shift_labels=shift_labels,
+            hidden_size=self.config.text_config.hidden_size,
+            **kwargs,
+        )
+        loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
+    else:
+        logits = self.lm_head(kept_hidden_states)
+        if labels is not None:
+            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size)
+
+    aux_loss = None
+    if kwargs.get("output_router_logits", False):
+        aux_loss = load_balancing_loss_func(
+            outputs.router_logits,
+            self.config.text_config.num_experts,
+            self.config.text_config.num_experts_per_tok,
+            attention_mask,
+        )
+        if loss is not None and aux_loss is not None:
+            loss = loss + self.config.text_config.router_aux_loss_coef * aux_loss.to(loss.device)
+
+    return LigerQwen3_5MoeCausalLMOutputWithPast(
+        loss=loss,
+        aux_loss=aux_loss,
+        logits=logits,
+        past_key_values=outputs.past_key_values,
+        hidden_states=outputs.hidden_states,
+        attentions=outputs.attentions,
+        rope_deltas=outputs.rope_deltas,
         router_logits=outputs.router_logits,
         token_accuracy=token_accuracy,
         predicted_tokens=predicted_tokens,

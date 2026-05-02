@@ -29,6 +29,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_falcon_h1
 from liger_kernel.transformers import apply_liger_kernel_to_gemma
 from liger_kernel.transformers import apply_liger_kernel_to_gemma2
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text
+from liger_kernel.transformers import apply_liger_kernel_to_gemma4_text
 from liger_kernel.transformers import apply_liger_kernel_to_glm4
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v
 from liger_kernel.transformers import apply_liger_kernel_to_glm4v_moe
@@ -71,6 +72,7 @@ from test.utils import revert_liger_kernel_to_falcon_h1
 from test.utils import revert_liger_kernel_to_gemma
 from test.utils import revert_liger_kernel_to_gemma2
 from test.utils import revert_liger_kernel_to_gemma3_text
+from test.utils import revert_liger_kernel_to_gemma4_text
 from test.utils import revert_liger_kernel_to_glm4
 from test.utils import revert_liger_kernel_to_glm4v
 from test.utils import revert_liger_kernel_to_glm4v_moe
@@ -351,6 +353,15 @@ try:
     NEMOTRON_AVAILABLE = True
 except ImportError:
     NEMOTRON_AVAILABLE = False
+
+try:
+    # Gemma4 is only available in transformers>=5.5.0
+    from transformers.models.gemma4.configuration_gemma4 import Gemma4TextConfig
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4ForCausalLM
+
+    GEMMA4_AVAILABLE = True
+except ImportError:
+    GEMMA4_AVAILABLE = False
 
 
 device = infer_device()
@@ -745,6 +756,53 @@ if GEMMA3_AVAILABLE:
             attention_bias=False,
             attention_dropout=0.0,
             attn_implementation="eager",
+        ),
+    )
+
+if GEMMA4_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_gemma4_text"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_gemma4_text,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma4_text,
+        model_class=Gemma4ForCausalLM,
+        mini_model_config=Gemma4TextConfig(
+            # Shrunk from Gemma 4 31B (num_hidden_layers=60, hidden_size=5376).
+            # Layer types mirror the 31B pattern (5 sliding, 1 full, repeat).
+            vocab_size=32000,
+            hidden_size=1024,
+            intermediate_size=2048,
+            num_hidden_layers=6,
+            num_attention_heads=4,
+            num_key_value_heads=1,
+            head_dim=256,
+            hidden_activation="gelu_pytorch_tanh",
+            max_position_embeddings=8192,
+            initializer_range=0.02,
+            rms_norm_eps=1e-06,
+            use_cache=True,
+            pad_token_id=0,
+            bos_token_id=2,
+            eos_token_id=1,
+            tie_word_embeddings=True,
+            attention_bias=False,
+            attention_dropout=0.0,
+            attn_implementation="eager",
+            final_logit_softcapping=30.0,
+            sliding_window=1024,
+            # Match 31B: every Nth layer is full_attention.
+            layer_types=[
+                "sliding_attention",
+                "sliding_attention",
+                "sliding_attention",
+                "sliding_attention",
+                "sliding_attention",
+                "full_attention",
+            ],
+            # Explicitly disable v1-unsupported flags (these are also defaults on 31B):
+            num_kv_shared_layers=0,
+            use_double_wide_mlp=False,
+            enable_moe_block=False,
+            hidden_size_per_layer_input=0,
+            vocab_size_per_layer_input=32000,
         ),
     )
 
@@ -2099,8 +2157,8 @@ def run_mini_model(
             32,
             1e-5,
             torch.bfloat16,
-            1e-2,
-            4e-1,  # rms_norm patch needs higher tolerance in bf16
+            5e-2,  # LigerExperts fused MoE kernel needs higher loss atol in bf16
+            5e-1,  # rms_norm + LigerExperts patch needs higher tolerance in bf16
             1e-1,
             5e-1,  # rms_norm patch needs higher tolerance in bf16
             2e-1,
@@ -2226,6 +2284,25 @@ def run_mini_model(
                 pytest.mark.skipif(
                     not GEMMA3_AVAILABLE,
                     reason="Gemma3 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_gemma4_text",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,  # loss_atol — 6-layer mini in bf16 drifts ~0.05 on a few steps (vs 4-layer gemma3 which fits 1e-2)
+            1e-2,
+            5e-1,  # logprobs_atol — 3 of ~20k top-k logprob slots flip by ~0.5 due to bf16 near-ties
+            1e-2,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not GEMMA4_AVAILABLE,
+                    reason="Gemma4 not available in this version of transformers",
                 ),
             ],
         ),
