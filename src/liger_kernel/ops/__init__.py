@@ -87,6 +87,7 @@ from liger_kernel.ops.swiglu import LigerSiLUMulFunction  # noqa: F401
 from liger_kernel.ops.swiglu import swiglu_backward  # noqa: F401
 from liger_kernel.ops.swiglu import swiglu_forward  # noqa: F401
 from liger_kernel.ops.tiled_mlp import LigerTiledMLPFunction  # noqa: F401
+from liger_kernel.ops.tiled_mlp import LigerTiledMLPFunctionDDP  # noqa: F401
 from liger_kernel.ops.tiled_mlp import apply_tiled_mlp  # noqa: F401
 from liger_kernel.ops.tvd import LigerTVDLossFunction  # noqa: F401
 

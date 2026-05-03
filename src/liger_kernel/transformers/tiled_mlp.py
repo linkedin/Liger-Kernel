@@ -19,14 +19,17 @@ class LigerTiledGEGLUMLP(nn.Module):
         config: Model configuration with hidden_size and intermediate_size attributes
         num_shards: Number of shards to split the sequence. If None, automatically
                    calculated as ceil(seqlen / hidden_size)
+        ddp_safe: If True, use DDP-compatible backward (gradients assigned only after
+                  last shard). Set True when using with torch.nn.parallel.DistributedDataParallel.
     """
 
-    def __init__(self, config, num_shards: Optional[int] = None):
+    def __init__(self, config, num_shards: Optional[int] = None, ddp_safe: bool = False):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
         self.num_shards = num_shards
+        self.ddp_safe = ddp_safe
 
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
@@ -65,6 +68,7 @@ class LigerTiledGEGLUMLP(nn.Module):
             x=x,
             num_shards=self.num_shards,
             compute_params=compute_params,
+            ddp_safe=self.ddp_safe,
         )
 
 
@@ -80,14 +84,17 @@ class LigerTiledSwiGLUMLP(nn.Module):
         config: Model configuration with hidden_size and intermediate_size attributes
         num_shards: Number of shards to split the sequence. If None, automatically
                    calculated as ceil(seqlen / hidden_size)
+        ddp_safe: If True, use DDP-compatible backward (gradients assigned only after
+                  last shard). Set True when using with torch.nn.parallel.DistributedDataParallel.
     """
 
-    def __init__(self, config, num_shards: Optional[int] = None):
+    def __init__(self, config, num_shards: Optional[int] = None, ddp_safe: bool = False):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
         self.num_shards = num_shards
+        self.ddp_safe = ddp_safe
 
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
@@ -122,4 +129,5 @@ class LigerTiledSwiGLUMLP(nn.Module):
             x=x,
             num_shards=self.num_shards,
             compute_params=compute_params,
+            ddp_safe=self.ddp_safe,
         )
