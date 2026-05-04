@@ -1945,7 +1945,7 @@ def apply_liger_kernel_to_qwen3_vl(
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
-    swiglu: bool = False,
+    swiglu: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -1958,7 +1958,7 @@ def apply_liger_kernel_to_qwen3_vl(
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
-        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is False.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -1992,7 +1992,10 @@ def apply_liger_kernel_to_qwen3_vl(
         else:
             modeling_qwen3_vl.Qwen3VLForConditionalGeneration.forward = qwen3_vl_lce_forward
 
-    if model is not None and rms_norm:
+    if swiglu:
+        modeling_qwen3_vl.Qwen3VLTextMLP = LigerSwiGLUMLP
+
+    if model is not None:
         if isinstance(model, Qwen3VLForConditionalGeneration):
             text_model: Qwen3VLTextModel = model.model.language_model
         elif isinstance(model, Qwen3VLModel):
@@ -2007,16 +2010,20 @@ def apply_liger_kernel_to_qwen3_vl(
         _patch_qwen3_vl_rms_norm = partial(_patch_rms_norm_module, offset=0.0, casting_mode="llama")
 
         if text_model is not None:
-            _patch_qwen3_vl_rms_norm(text_model.norm)
+            if rms_norm:
+                _patch_qwen3_vl_rms_norm(text_model.norm)
             for decoder_layer in text_model.layers:
-                _patch_qwen3_vl_rms_norm(decoder_layer.input_layernorm)
-                _patch_qwen3_vl_rms_norm(decoder_layer.post_attention_layernorm)
-                self_attn = getattr(decoder_layer, "self_attn", None)
-                if self_attn is not None:
-                    if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
-                        _patch_qwen3_vl_rms_norm(self_attn.q_norm)
-                    if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
-                        _patch_qwen3_vl_rms_norm(self_attn.k_norm)
+                if swiglu:
+                    _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
+                if rms_norm:
+                    _patch_qwen3_vl_rms_norm(decoder_layer.input_layernorm)
+                    _patch_qwen3_vl_rms_norm(decoder_layer.post_attention_layernorm)
+                    self_attn = getattr(decoder_layer, "self_attn", None)
+                    if self_attn is not None:
+                        if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                            _patch_qwen3_vl_rms_norm(self_attn.q_norm)
+                        if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                            _patch_qwen3_vl_rms_norm(self_attn.k_norm)
 
 
 def apply_liger_kernel_to_qwen3_vl_moe(
