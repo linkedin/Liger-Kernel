@@ -50,11 +50,8 @@ if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
     if args.sweep_mode == "model_config":
-        all_model_configs = list(MODEL_REGISTRY.values())
-
         common_configs = build_model_config_sweep(
             kernel_name="layer_norm",
-            all_model_configs=all_model_configs,
             setup_fn=setup_layer_norm,
             model_keys=["hidden_size", "dtype"],
             extra_configs={

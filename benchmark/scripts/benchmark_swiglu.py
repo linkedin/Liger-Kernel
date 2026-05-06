@@ -59,11 +59,8 @@ if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
     if args.sweep_mode == "model_config":
-        all_model_configs = list(MODEL_REGISTRY.values())
-
         common_configs = build_model_config_sweep(
             kernel_name="swiglu",
-            all_model_configs=all_model_configs,
             setup_fn=setup_swiglu,
             model_keys=["hidden_size", "intermediate_size", "dtype"],
             probe_provider="huggingface",

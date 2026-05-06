@@ -412,9 +412,9 @@ def build_extra_config(
 
 def build_model_config_sweep(
     kernel_name: str,
-    all_model_configs: List[ModelConfig],
-    setup_fn: Callable[[SingleBenchmarkRunInput], Tuple[Any, ...]],
-    model_keys: List[str],
+    all_model_configs: Optional[List[ModelConfig]] = None,
+    setup_fn: Callable[[SingleBenchmarkRunInput], Tuple[Any, ...]] = None,
+    model_keys: List[str] = None,
     probe_dim: Literal["T", "B", "BT"] = "T",
     forward_fn: Callable[..., torch.Tensor] = default_forward_fn,
     probe_provider: str = "huggingface",
@@ -445,6 +445,9 @@ def build_model_config_sweep(
     Returns:
         A dictionary consumable by `run_benchmarks`.
     """
+
+    if all_model_configs is None:
+        all_model_configs = list(MODEL_REGISTRY.values())
 
     def probe_fn_factory(model_cfg):
         def _probe():

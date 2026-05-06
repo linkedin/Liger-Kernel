@@ -59,11 +59,8 @@ if __name__ == "__main__":
     T = 1024
 
     if args.sweep_mode == "model_config":
-        all_model_configs = list(MODEL_REGISTRY.values())
-
         common_configs = build_model_config_sweep(
             kernel_name="cpo_loss",
-            all_model_configs=all_model_configs,
             setup_fn=setup_cpo_loss,
             model_keys=["hidden_size", "vocab_size", "dtype"],
             extra_configs={"T": T},
