@@ -26,13 +26,18 @@ import gc
 import math
 
 from dataclasses import dataclass
+from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
+from typing import Literal
 from typing import Optional
 from typing import Tuple
 
 import torch
+
+from utils import SingleBenchmarkRunInput
+from utils import default_forward_fn
 
 from liger_kernel.utils import get_total_gpu_memory
 from liger_kernel.utils import infer_device
@@ -341,7 +346,7 @@ def compute_seq_len_sweep_config(
 def compute_model_config_sweep_config(
     model_configs: List[ModelConfig],
     probe_fn_factory: Callable[[ModelConfig, int], Callable[[], torch.Tensor]],
-    bt: int = 2048,
+    bt: int = 1024,
     memory_utilization: float = 0.4,
 ) -> ModelConfigSweepConfig:
     """Find safe (batch_size, seq_len) that works across all model configs.
@@ -351,7 +356,7 @@ def compute_model_config_sweep_config(
 
     Args:
         model_configs: Model configs to benchmark.
-        probe_fn_factory: Factory ``(model_cfg, probe_seq_len) -> probe_fn``.
+        probe_fn_factory: Factory ``(model_cfg) -> probe_fn``.
             The returned probe_fn should perform setup + forward pass and
             return a tensor suitable for ``.backward()``, same contract as
             :func:`estimate_kernel_peak_memory`'s *probe_fn*.
@@ -365,7 +370,7 @@ def compute_model_config_sweep_config(
     max_bytes_per_token = 0
 
     for model_cfg in model_configs:
-        probe_fn = probe_fn_factory(model_cfg, probe_seq_len)
+        probe_fn = probe_fn_factory(model_cfg)
         peak_bytes = estimate_kernel_peak_memory(probe_fn)
         bpt = max(1, peak_bytes // probe_seq_len)
         max_bytes_per_token = max(max_bytes_per_token, bpt)
@@ -383,3 +388,200 @@ def compute_model_config_sweep_config(
         batch_size=batch_size,
         seq_len=seq_len,
     )
+
+
+def build_extra_config(
+    model: ModelConfig,
+    model_keys: List[str],
+    extra_configs: Optional[Dict] = None,
+) -> Dict:
+    """Construct extra_benchmark_config dict.
+
+    Args:
+        model: The model configuration object.
+        model_keys: List of attribute names to read from `model`
+            (e.g. ["hidden_size", "dtype"]).
+        extra_configs: Optional dictionary of additional key/value pairs
+            that override or extend the extracted attributes.
+    """
+    extra_configs = extra_configs or {}
+    cfg = {k: getattr(model, k) for k in model_keys}
+    cfg.update(extra_configs)
+    return cfg
+
+
+def build_model_config_sweep(
+    kernel_name: str,
+    all_model_configs: Optional[List[ModelConfig]] = None,
+    setup_fn: Callable[[SingleBenchmarkRunInput], Tuple[Any, ...]] = None,
+    model_keys: List[str] = None,
+    probe_dim: Literal["T", "B", "BT"] = "T",
+    forward_fn: Callable[..., torch.Tensor] = default_forward_fn,
+    probe_provider: str = "huggingface",
+    extra_configs: Optional[Dict] = None,
+    bt: int = 2048,
+    overwrite: bool = False,
+) -> Dict:
+    """Build benchmark config dict for model-config sweep.
+
+    Args:
+        kernel_name: Name of the kernel being benchmarked.
+        all_model_configs: List of model configurations to sweep over.
+        setup_fn: Function that prepares inputs and modules given a
+            `SingleBenchmarkRunInput`. Returns a tuple of objects consumed
+            by `forward_fn`.
+        model_keys: List of attributes to extract from each `ModelConfig`
+            and include in `extra_benchmark_config`.
+        forward_fn: Function that executes the kernel given the outputs of
+            `setup_fn`. Defaults to `(x, layer) -> layer(x)`.
+        probe_provider: Kernel provider used during memory probing.
+        extra_configs: Optional static overrides merged into the benchmark config.
+        token_length: Optional token length used for memory probing and sweep config.
+        bt: Target total tokens (batch_size * seq_len) used to derive sweep.
+        probe_x: Value of x passed to setup_fn during probing. This should be
+            specified if the kernel's input.x is not T.
+        overwrite: Whether to overwrite existing benchmark results.
+
+    Returns:
+        A dictionary consumable by `run_benchmarks`.
+    """
+
+    if all_model_configs is None:
+        all_model_configs = list(MODEL_REGISTRY.values())
+
+    def probe_fn_factory(model_cfg):
+        def _probe():
+            probe_input = SingleBenchmarkRunInput(
+                x=1 if probe_dim == "B" else bt,
+                kernel_provider=probe_provider,
+                extra_benchmark_config=build_extra_config(
+                    model_cfg,
+                    model_keys,
+                    extra_configs=extra_configs,
+                ),
+            )
+            setup_out = setup_fn(probe_input)
+
+            return forward_fn(*setup_out)
+
+        return _probe
+
+    sweep = compute_model_config_sweep_config(
+        all_model_configs,
+        probe_fn_factory=probe_fn_factory,
+        bt=bt,
+    )
+
+    base_config = {"bsz": sweep.batch_size, "seq_len": sweep.seq_len}
+
+    if extra_configs:
+        base_config.update(extra_configs)
+
+    return {
+        "kernel_name": kernel_name,
+        "x_name": "model_config",
+        "x_label": "model configuration",
+        "x_values": [cfg.name for cfg in sweep.model_configs],
+        "extra_benchmark_configs": [base_config],
+        "overwrite": overwrite,
+    }
+
+
+def build_token_length_sweep(
+    kernel_name: str,
+    probe_x: int,
+    model: ModelConfig,
+    setup_fn: Callable[[SingleBenchmarkRunInput], Tuple[Any, ...]],
+    model_keys: List[str],
+    extra_configs: Optional[Dict] = None,
+    scale_dim: Literal["T", "B", "BT"] = "T",
+    forward_fn: Callable[..., torch.Tensor] = default_forward_fn,
+    probe_provider: str = "huggingface",
+    x_label: str = "sequence length",
+    x_values_fn: Optional[Callable[[SeqLenSweepConfig], List[int]]] = None,
+    overwrite: bool = False,
+) -> Dict:
+    """Build benchmark config dict for token-length sweep.
+
+    Args:
+        kernel_name: Name of the kernel being benchmarked.
+        probe_x: Value of x passed to setup_fn during probing.
+        model: Model configuration used for the sweep.
+        setup_fn: Function that prepares inputs and modules given a
+            `SingleBenchmarkRunInput`. Returns a tuple of objects consumed
+            by `forward_fn`.
+        model_keys: List of attributes to extract from `model` and include
+            in `extra_benchmark_config`.
+        extra_configs: Optional static overrides merged into the config.
+        forward_fn: Function that executes the kernel given the outputs of
+            `setup_fn`. Defaults to `(x, layer) -> layer(x)`.
+        probe_provider: Kernel provider used during memory probing.
+        scale_dim: Dimension along which to scale the sweep (e.g. "T", "B", or "BT").
+        x_label: Label for the x-axis (e.g. "sequence length" or "batch size").
+        x_values_fn: Optional function mapping `SeqLenSweepConfig` to a list
+            of x values. Defaults to powers of 2 up to max seq_len.
+        overwrite: Whether to overwrite existing benchmark results.
+
+    Returns:
+        A dictionary consumable by `run_benchmarks`.
+    """
+    extra_configs = extra_configs or {}
+
+    def probe_fn():
+        probe_input = SingleBenchmarkRunInput(
+            x=probe_x,
+            kernel_provider=probe_provider,
+            extra_benchmark_config=build_extra_config(
+                model,
+                model_keys,
+                extra_configs=extra_configs,
+            ),
+        )
+        setup_out = setup_fn(probe_input)
+        return forward_fn(*setup_out)
+
+    peak_bytes = estimate_kernel_peak_memory(probe_fn=probe_fn)
+    # ---------------------------------------
+    # derive total tokens (BT) based on scale_dim
+    # ---------------------------------------
+    if scale_dim == "T":
+        B = extra_configs.get("B", 1)
+        probe_bt = probe_x * B
+
+    elif scale_dim == "B":
+        T = extra_configs.get("T")
+        if T is None:
+            raise ValueError("For B sweep, extra_configs['T'] must be provided")
+        probe_bt = probe_x * T
+
+    elif scale_dim == "BT":
+        probe_bt = probe_x
+
+    else:
+        raise ValueError(f"Unsupported scale_dim: {scale_dim}")
+
+    kernel_bpt = max(1, peak_bytes // probe_bt)
+
+    config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+    if x_values_fn is None:
+        if scale_dim == "T":
+            x_values_fn = lambda cfg: [2**i for i in range(10, int(math.log2(cfg.seq_len)) + 1)]
+        elif scale_dim == "B":
+            x_values_fn = lambda cfg: [2**i for i in range(0, int(math.log2(cfg.batch_size)) + 1)]
+        elif scale_dim == "BT":
+            x_values_fn = lambda cfg: [2**i for i in range(10, int(math.log2(cfg.seq_len * cfg.batch_size)) + 1)]
+
+    return {
+        "kernel_name": kernel_name,
+        "x_name": scale_dim,
+        "x_label": x_label,
+        "x_values": x_values_fn(config),
+        "extra_benchmark_configs": [
+            build_extra_config(
+                model,
+                model_keys,
+                extra_configs=extra_configs,
+            )
+        ],
+        "overwrite": overwrite,
+    }
