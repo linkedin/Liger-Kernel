@@ -24,7 +24,7 @@ from utils import run_benchmarks
 from utils import run_memory_benchmark
 from utils import run_speed_benchmark
 
-from liger_kernel.ops.attn_res import LigerAttnResFunction
+from liger_kernel.ops import LigerAttnResFunction
 from liger_kernel.utils import infer_device
 
 device = infer_device()

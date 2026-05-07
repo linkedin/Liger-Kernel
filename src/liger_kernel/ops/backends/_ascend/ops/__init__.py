@@ -14,6 +14,9 @@ To add a new operator:
 If __all__ is not defined, all public symbols will be auto-discovered.
 """
 
+from liger_kernel.ops.backends._ascend.ops.attn_res import LigerAttnResFunction
+from liger_kernel.ops.backends._ascend.ops.attn_res import attn_res_backward
+from liger_kernel.ops.backends._ascend.ops.attn_res import attn_res_forward
 from liger_kernel.ops.backends._ascend.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.backends._ascend.ops.cross_entropy import cross_entropy_backward
 from liger_kernel.ops.backends._ascend.ops.cross_entropy import cross_entropy_forward
@@ -154,4 +157,7 @@ __all__ = [
     "LigerMHCCoeffsFunction",
     "LigerMHCPreFunction",
     "LigerMHCPostResFunction",
+    "LigerAttnResFunction",
+    "attn_res_forward",
+    "attn_res_backward",
 ]
