@@ -7,6 +7,7 @@ import triton.language as tl
 _LOSS_TYPE_GRPO: tl.constexpr = tl.constexpr(0)
 _LOSS_TYPE_CISPO: tl.constexpr = tl.constexpr(1)
 _LOSS_TYPE_SAPO: tl.constexpr = tl.constexpr(2)
+_LOSS_TYPE_VESPO: tl.constexpr = tl.constexpr(3)
 
 _str_to_loss_type = {
     "grpo": _LOSS_TYPE_GRPO.value,
@@ -16,6 +17,7 @@ _str_to_loss_type = {
     "luspo": _LOSS_TYPE_GRPO.value,
     "cispo": _LOSS_TYPE_CISPO.value,
     "sapo": _LOSS_TYPE_SAPO.value,
+    "vespo": _LOSS_TYPE_VESPO.value,
 }
 
 
@@ -93,6 +95,7 @@ def _grpo_loss_fwd_kernel(
     ADVANTAGES,
     VLLM_IS_RATIO,
     VLLM_IS_RATIO_STRIDE,
+    PHI_SEQ,  # VESPO gamma weight per sequence (B,) or None
     LOSS,
     LSE,
     KL,
@@ -177,8 +180,16 @@ def _grpo_loss_fwd_kernel(
         per_token_loss = -sapo_coef * advantage
         is_clipped = 0.0  # SAPO has no clipping concept
 
+    elif LOSS_TYPE == 3:  # VESPO: detached gamma weighting phi(w) on per-token logp
+        # Reference: TRL grpo_trainer.get_gamma_weights / chunked_loss/grpo_loss.py
+        # phi_seq is precomputed per-sequence, vllm correction is folded into phi_seq.
+        phi_seq = tl.load(PHI_SEQ + off_b).to(tl.float32)
+        per_token_loss = -phi_seq * advantage * logp
+        is_clipped = 0.0  # VESPO has no clipping concept
+
     # Apply vLLM importance sampling correction BEFORE adding KL penalty
-    if VLLM_IS_RATIO is not None:
+    # VESPO folds this into phi_seq (in log space), so we skip it here.
+    if VLLM_IS_RATIO is not None and LOSS_TYPE != 3:
         # Use modulo to support both (B, L) per-token and (B, 1) per-sequence shapes
         vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
             tl.float32
@@ -210,7 +221,8 @@ def _grpo_loss_fwd_kernel_seq(
     INPUT_IDS,
     COMPLETION_MASK,
     ADVANTAGES,
-    COEF_1,  # Pre-computed sequence-level importance weight (B,)
+    COEF_1,  # Pre-computed sequence-level importance weight, post delta-clamp (B,)
+    COEF_1_RAW,  # Pre-computed sequence-level importance weight, pre delta-clamp (B,)
     COEF_2,  # Pre-computed clipped coef (B,)
     IS_CLIPPED_SEQ,  # Pre-computed clipping indicator (B,)
     VLLM_IS_RATIO,  # vLLM importance sampling ratio (B, L) or (B, 1) or None
@@ -239,6 +251,7 @@ def _grpo_loss_fwd_kernel_seq(
     INPUT_IDS += off_b * L + off_l
     ADVANTAGES += off_b
     COEF_1 += off_b
+    COEF_1_RAW += off_b
     COEF_2 += off_b
     IS_CLIPPED_SEQ += off_b
     LOSS += off_b * L + off_l
@@ -284,12 +297,10 @@ def _grpo_loss_fwd_kernel_seq(
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
         kl = tl.exp(ref_logp - logp) - (ref_logp - logp) - 1
         if USE_BIAS_CORRECTION_KL:
-            # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= token-level coef_1
-            if OLD_LOGP is None:
-                old_logp = logp
-            else:
-                old_logp = tl.load(OLD_LOGP + off_b * L + off_l).to(tl.float32)
-            kl = kl * tl.exp(logp - old_logp)
+            # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= coef_1.
+            # Use the pre-clamp sequence-level coef_1 to match TRL — the same coef_1
+            # that was passed to ``per_token_kl * coef_1`` upstream of the delta clamp.
+            kl = kl * tl.load(COEF_1_RAW).to(tl.float32)
         per_token_loss += BETA * kl
         tl.store(KL, kl)
 
@@ -377,13 +388,10 @@ def _grpo_loss_bwd_kernel_seq(
         REF_LOGP += off_b * L + off_l
         ref_logp = tl.load(REF_LOGP).to(tl.float32)
         if USE_BIAS_CORRECTION_KL:
-            # d(kl * coef_1)/d(logp) = coef_1 * (logp - ref_logp), where coef_1 = exp(logp - old_logp)
-            if OLD_LOGP is None:
-                old_logp = logp
-            else:
-                old_logp = tl.load(OLD_LOGP + off_b * L + off_l).to(tl.float32)
-            token_coef_1 = tl.exp(logp - old_logp)
-            dlogp += BETA * token_coef_1 * (logp - ref_logp) * dloss
+            # d(kl * coef_1)/d(logp) ≈ coef_1 * (logp - ref_logp), with coef_1 detached.
+            # Use the loaded sequence-level coef_1 (pre delta-clamp) to match TRL's
+            # ``per_token_kl * coef_1`` for importance_sampling_level == "sequence".
+            dlogp += BETA * coef_1 * (logp - ref_logp) * dloss
         else:
             dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
 
@@ -410,6 +418,7 @@ def _grpo_loss_bwd_kernel(
     LSE,
     VLLM_IS_RATIO,
     VLLM_IS_RATIO_STRIDE,
+    PHI_SEQ,  # VESPO gamma weight per sequence (B,) or None
     TEMPERATURE,
     BETA: tl.constexpr,
     EPS_LOW,
@@ -492,8 +501,14 @@ def _grpo_loss_bwd_kernel(
         d_sapo_d_coef1 = 4.0 * sigmoid_val * (1.0 - sigmoid_val)
         dlogp = -advantage * d_sapo_d_coef1 * coef_1
 
+    elif LOSS_TYPE == 3:  # VESPO: detached gamma weighting on per-token logp
+        # loss = -phi_seq * advantage * logp; phi_seq is detached → ∂loss/∂logp = -phi_seq * advantage
+        phi_seq = tl.load(PHI_SEQ + off_b).to(tl.float32)
+        dlogp = -phi_seq * advantage
+
     # Apply vLLM IS ratio to PPO gradient (before KL gradient)
-    if VLLM_IS_RATIO is not None:
+    # VESPO folds vllm correction into phi_seq, so we skip it here.
+    if VLLM_IS_RATIO is not None and LOSS_TYPE != 3:
         # Use modulo to support both (B, L) per-token and (B, 1) per-sequence shapes
         vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
             tl.float32
@@ -519,19 +534,37 @@ def _grpo_loss_bwd_kernel(
         tl.store(DLOGITS + cols, dlogits, mask=cols < N)
 
 
-def _compute_dapo_normalizer(completion_mask):
-    """Global active tokens averaged per process (for distributed DAPO loss)."""
-    normalizer = completion_mask.to(torch.float32).sum()
+def _compute_dapo_normalizer(completion_mask, num_items_in_batch=None):
+    """Per-process normalizer for DAPO/CISPO.
+
+    When ``num_items_in_batch`` is provided it is used directly, matching TRL's
+    ``num_items_in_batch / num_processes`` (total active tokens across the entire
+    generation batch including all gradient-accumulation micro-batches × all
+    processes). Falling back to the current micro-batch's mask biases per-token
+    weights by micro-batch size when grad-accum micro-batches have unequal
+    completion lengths.
+    """
     world_size = 1
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        world_size = torch.distributed.get_world_size()
+
+    if num_items_in_batch is not None:
+        if isinstance(num_items_in_batch, torch.Tensor):
+            normalizer = num_items_in_batch.to(device=completion_mask.device, dtype=torch.float32)
+        else:
+            normalizer = torch.as_tensor(float(num_items_in_batch), device=completion_mask.device, dtype=torch.float32)
+        normalizer = normalizer / world_size
+        return torch.clamp(normalizer, min=1.0)
+
+    normalizer = completion_mask.to(torch.float32).sum()
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         normalizer = normalizer.clone()
         torch.distributed.all_reduce(normalizer, op=torch.distributed.ReduceOp.SUM)
-        world_size = torch.distributed.get_world_size()
     normalizer = normalizer / world_size
     return torch.clamp(normalizer, min=1.0)
 
 
-def _reduce_loss(per_token_loss, mask, loss_type, max_completion_length, B, L):
+def _reduce_loss(per_token_loss, mask, loss_type, max_completion_length, B, L, num_items_in_batch=None):
     """Apply loss reduction based on loss_type."""
     if loss_type == "grpo" or loss_type == "sapo":
         return ((per_token_loss * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)).mean()
@@ -540,11 +573,13 @@ def _reduce_loss(per_token_loss, mask, loss_type, max_completion_length, B, L):
     elif loss_type == "dr_grpo":
         max_len = max_completion_length if max_completion_length is not None else L
         return (per_token_loss * mask).sum() / (B * max_len)
-    elif loss_type == "dapo" or loss_type == "cispo":
-        return (per_token_loss * mask).sum() / _compute_dapo_normalizer(mask)
+    elif loss_type == "dapo" or loss_type == "cispo" or loss_type == "vespo":
+        return (per_token_loss * mask).sum() / _compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
     elif loss_type == "luspo":
         return (per_token_loss * mask.sum(-1, keepdim=True)).mean()
-    raise ValueError(f"Unknown loss_type: {loss_type}. Expected one of: grpo, bnpo, dr_grpo, dapo, cispo, sapo, luspo")
+    raise ValueError(
+        f"Unknown loss_type: {loss_type}. Expected one of: grpo, bnpo, dr_grpo, dapo, cispo, sapo, luspo, vespo"
+    )
 
 
 class GrpoLossFunction(torch.autograd.Function):
@@ -571,6 +606,8 @@ class GrpoLossFunction(torch.autograd.Function):
         vllm_is_ratio=None,
         delta=None,
         use_bias_correction_kl=False,
+        num_items_in_batch=None,
+        phi_seq=None,
     ):
         assert logits.is_contiguous() and completion_ids.is_contiguous()
         assert old_logp is None or old_logp.is_contiguous()
@@ -584,14 +621,14 @@ class GrpoLossFunction(torch.autograd.Function):
             raise ValueError(f"Unknown loss_type '{loss_type}'. Supported types: {list(_str_to_loss_type.keys())}")
 
         # Validate delta + loss_type combinations
-        if delta is not None and loss_type in ("cispo", "sapo"):
+        if delta is not None and loss_type in ("cispo", "sapo", "vespo"):
             raise ValueError(f"delta (two-sided clipping) is not supported for loss_type='{loss_type}'.")
 
         # Map delta to float for Triton (Triton can't handle None)
         delta_val = 0.0 if delta is None else float(delta)
 
         # Validate sequence-level + loss_type combinations
-        if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo"):
+        if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo", "vespo"):
             raise ValueError(
                 f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'. "
                 f"Use importance_sampling_level='token' instead."
@@ -609,6 +646,15 @@ class GrpoLossFunction(torch.autograd.Function):
 
         B, L_ADD_1, N = logits.shape
         L = L_ADD_1 - 1
+
+        # VESPO requires phi_seq pre-computed by the caller (uses get_gamma_weights).
+        if loss_type == "vespo":
+            if phi_seq is None:
+                raise ValueError("loss_type='vespo' requires phi_seq pre-computed (use the triton_grpo_loss wrapper).")
+            assert phi_seq.shape in ((B,), (B, 1)), f"phi_seq must be (B,) or (B, 1), got {tuple(phi_seq.shape)}"
+            phi_seq = phi_seq.reshape(-1).contiguous()
+        else:
+            phi_seq = None
 
         if completion_mask is not None:
             assert completion_mask.is_contiguous()
@@ -676,6 +722,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 completion_mask,
                 advantages,
                 coef_1_for_loss.contiguous(),
+                coef_1.contiguous(),  # COEF_1_RAW: pre delta-clamp, for bias-corrected KL
                 coef_2.contiguous(),
                 is_clipped_seq.contiguous(),
                 vllm_is_ratio_ptr,
@@ -718,6 +765,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 advantages,
                 vllm_is_ratio_ptr,
                 vllm_is_ratio_stride,
+                phi_seq,  # PHI_SEQ (B,) for VESPO, None otherwise
                 loss,
                 lse,
                 kl,
@@ -736,7 +784,16 @@ class GrpoLossFunction(torch.autograd.Function):
                 **kwargs,
             )
             ctx.save_for_backward(
-                logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, vllm_is_ratio_ptr
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                advantages,
+                completion_mask,
+                lse,
+                mask,
+                vllm_is_ratio_ptr,
+                phi_seq,
             )
 
         ctx.infos = (
@@ -757,6 +814,7 @@ class GrpoLossFunction(torch.autograd.Function):
             reduce,
             delta_val,
             use_bias_correction_kl,
+            num_items_in_batch,
         )
 
         # Compute metrics before reduction
@@ -770,7 +828,9 @@ class GrpoLossFunction(torch.autograd.Function):
             is_clipped_out = is_clipped * mask
             return loss_out, kl_out, is_clipped_out
 
-        reduced_loss = _reduce_loss(loss, mask, loss_type, max_completion_length, B, L)
+        reduced_loss = _reduce_loss(
+            loss, mask, loss_type, max_completion_length, B, L, num_items_in_batch=num_items_in_batch
+        )
         return reduced_loss, kl_mean, clip_ratio
 
     @staticmethod
@@ -795,6 +855,7 @@ class GrpoLossFunction(torch.autograd.Function):
             reduce,
             delta_val,
             use_bias_correction_kl,
+            num_items_in_batch,
         ) = ctx.infos
 
         if importance_sampling_level == "sequence":
@@ -811,10 +872,20 @@ class GrpoLossFunction(torch.autograd.Function):
                 seq_lens,
                 vllm_is_ratio,
             ) = saved_tensors
+            phi_seq = None
         else:
-            (logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, vllm_is_ratio) = (
-                saved_tensors
-            )
+            (
+                logits,
+                old_logp,
+                ref_logp,
+                completion_ids,
+                advantages,
+                completion_mask,
+                lse,
+                mask,
+                vllm_is_ratio,
+                phi_seq,
+            ) = saved_tensors
 
         _, L_ADD_1, N = logits.shape
 
@@ -829,8 +900,8 @@ class GrpoLossFunction(torch.autograd.Function):
         elif loss_type == "dr_grpo":
             max_len = max_completion_length if max_completion_length is not None else L
             dloss = dloss_input * mask / (B * max_len)
-        elif loss_type == "dapo" or loss_type == "cispo":
-            dloss = dloss_input * mask / _compute_dapo_normalizer(mask)
+        elif loss_type == "dapo" or loss_type == "cispo" or loss_type == "vespo":
+            dloss = dloss_input * mask / _compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
         elif loss_type == "luspo":
             # loss = mean(per_token_loss * seq_lens), mean divides by B*L
             seq_lens_bwd = mask.sum(-1, keepdim=True).clamp(min=1.0)
@@ -889,6 +960,7 @@ class GrpoLossFunction(torch.autograd.Function):
                 lse,
                 vllm_is_ratio,
                 vllm_is_ratio_stride,
+                phi_seq,
                 temperature,
                 beta,
                 eps_low,
@@ -905,7 +977,7 @@ class GrpoLossFunction(torch.autograd.Function):
             )
 
         dlogits[:, -1, :] = 0
-        # Return gradients for all forward inputs: dlogits + 19 None for non-differentiable params
+        # Return gradients for all forward inputs: dlogits + 21 None for non-differentiable params
         return (
             dlogits,
             None,
@@ -927,4 +999,6 @@ class GrpoLossFunction(torch.autograd.Function):
             None,
             None,
             None,
+            None,  # num_items_in_batch
+            None,  # phi_seq
         )
