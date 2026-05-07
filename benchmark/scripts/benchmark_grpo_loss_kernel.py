@@ -113,6 +113,7 @@ def bench_memory_grpo_loss_kernel(
     T = input.extra_benchmark_config["T"]
     V = input.extra_benchmark_config["V"]
     dtype = input.extra_benchmark_config["dtype"]
+    importance_sampling_level = input.extra_benchmark_config["importance_sampling_level"]
     provider = input.kernel_provider
 
     # Create inputs
@@ -144,7 +145,7 @@ def bench_memory_grpo_loss_kernel(
             "grpo",  # loss_type
             None,  # max_completion_length
             True,  # reduce
-            "token",  # importance_sampling_level
+            importance_sampling_level,  # importance_sampling_level
             1.0,  # sapo_temperature_pos
             1.05,  # sapo_temperature_neg
             None,  # vllm_is_ratio
@@ -198,6 +199,7 @@ def bench_speed_grpo_loss_kernel(
     T = input.extra_benchmark_config["T"]
     V = input.extra_benchmark_config["V"]
     dtype = input.extra_benchmark_config["dtype"]
+    importance_sampling_level = input.extra_benchmark_config["importance_sampling_level"]
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
@@ -230,7 +232,7 @@ def bench_speed_grpo_loss_kernel(
             "grpo",  # loss_type
             None,  # max_completion_length
             True,  # reduce
-            "token",  # importance_sampling_level
+            importance_sampling_level,  # importance_sampling_level
             1.0,  # sapo_temperature_pos
             1.05,  # sapo_temperature_neg
             None,  # vllm_is_ratio
@@ -294,27 +296,9 @@ def bench_speed_grpo_loss_kernel(
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    # Benchmark GRPO loss kernel without KL penalty
-    no_kl_configs = {
-        "kernel_name": "grpo_loss_kernel_no_kl",
-        "x_name": "B",
-        "x_label": "Batch Size",
-        "x_values": [2**i for i in range(1, 5)],
-        "kernel_providers": ["liger", "torch"],
-        "extra_benchmark_configs": [
-            {
-                "T": 512,
-                "V": 32000,
-                "beta": 0.0,
-                "dtype": torch.bfloat16,
-            }
-        ],
-        "overwrite": args.overwrite,
-    }
-
-    # Benchmark GRPO loss kernel with KL penalty
-    with_kl_configs = {
-        "kernel_name": "grpo_loss_kernel_with_kl",
+    # Benchmark token-level importance sampling (original GRPO)
+    token_configs = {
+        "kernel_name": "grpo_loss_kernel_token",
         "x_name": "B",
         "x_label": "Batch Size",
         "x_values": [2**i for i in range(1, 5)],
@@ -325,41 +309,61 @@ if __name__ == "__main__":
                 "V": 32000,
                 "beta": 0.1,
                 "dtype": torch.bfloat16,
+                "importance_sampling_level": "token",
             }
         ],
         "overwrite": args.overwrite,
     }
 
-    # Run benchmarks without KL
-    print("Benchmarking GRPO loss kernel (no KL penalty)...")
+    # Benchmark sequence-level importance sampling (GSPO)
+    sequence_configs = {
+        "kernel_name": "grpo_loss_kernel_sequence",
+        "x_name": "B",
+        "x_label": "Batch Size",
+        "x_values": [2**i for i in range(1, 5)],
+        "kernel_providers": ["liger", "torch"],
+        "extra_benchmark_configs": [
+            {
+                "T": 512,
+                "V": 32000,
+                "beta": 0.1,
+                "dtype": torch.bfloat16,
+                "importance_sampling_level": "sequence",
+            }
+        ],
+        "overwrite": args.overwrite,
+    }
+
+    # Run benchmarks for token-level (GRPO)
+    print("Benchmarking GRPO (token-level importance sampling)...")
     run_benchmarks(
         bench_test_fn=bench_speed_grpo_loss_kernel,
         kernel_operation_modes=["forward", "full", "backward"],
         metric_name="speed",
         metric_unit="ms",
-        **no_kl_configs,
+        **token_configs,
     )
     run_benchmarks(
         bench_test_fn=bench_memory_grpo_loss_kernel,
         kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
-        **no_kl_configs,
+        **token_configs,
     )
 
-    # Run benchmarks with KL
-    print("Benchmarking GRPO loss kernel (with KL penalty)...")
+    # Run benchmarks for sequence-level (GSPO)
+    print("Benchmarking GSPO (sequence-level importance sampling)...")
     run_benchmarks(
         bench_test_fn=bench_speed_grpo_loss_kernel,
         kernel_operation_modes=["forward", "full", "backward"],
         metric_name="speed",
         metric_unit="ms",
-        **with_kl_configs,
+        **sequence_configs,
     )
     run_benchmarks(
         bench_test_fn=bench_memory_grpo_loss_kernel,
         kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
-        **with_kl_configs,
+        **sequence_configs,
     )
