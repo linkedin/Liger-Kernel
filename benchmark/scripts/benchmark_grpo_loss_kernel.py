@@ -107,7 +107,7 @@ def torch_grpo_loss_kernel(
 def bench_memory_grpo_loss_kernel(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
-    from liger_kernel.ops.grpo_loss import GrpoLossFunction
+    from liger_kernel.ops import GrpoLossFunction
 
     B = input.x
     T = input.extra_benchmark_config["T"]
@@ -122,7 +122,8 @@ def bench_memory_grpo_loss_kernel(
     advantages = torch.randn(B, dtype=dtype, device=device)
     completion_mask = torch.ones(B, T, dtype=torch.bool, device=device)
     old_logp = None  # On-policy case
-    ref_logp = torch.randn(B, T, dtype=torch.float32, device=device) if input.extra_benchmark_config.get("beta", 0.0) > 0 else None
+    ref_logp = torch.randn(B, T, dtype=torch.float32, device=device) if input.extra_benchmark_config.get("beta",
+                                                                                                         0.0) > 0 else None
 
     temperature = 1.0
     beta = input.extra_benchmark_config.get("beta", 0.0)
@@ -209,7 +210,8 @@ def bench_speed_grpo_loss_kernel(
     advantages = torch.randn(B, dtype=dtype, device=device)
     completion_mask = torch.ones(B, T, dtype=torch.bool, device=device)
     old_logp = None  # On-policy case
-    ref_logp = torch.randn(B, T, dtype=torch.float32, device=device) if input.extra_benchmark_config.get("beta", 0.0) > 0 else None
+    ref_logp = torch.randn(B, T, dtype=torch.float32, device=device) if input.extra_benchmark_config.get("beta",
+                                                                                                         0.0) > 0 else None
 
     temperature = 1.0
     beta = input.extra_benchmark_config.get("beta", 0.0)
@@ -301,7 +303,7 @@ if __name__ == "__main__":
         "kernel_name": "grpo_loss_kernel_token",
         "x_name": "B",
         "x_label": "Batch Size",
-        "x_values": [2**i for i in range(1, 5)],
+        "x_values": [2 ** i for i in range(1, 5)],
         "kernel_providers": ["liger", "torch"],
         "extra_benchmark_configs": [
             {
@@ -320,7 +322,7 @@ if __name__ == "__main__":
         "kernel_name": "grpo_loss_kernel_sequence",
         "x_name": "B",
         "x_label": "Batch Size",
-        "x_values": [2**i for i in range(1, 5)],
+        "x_values": [2 ** i for i in range(1, 5)],
         "kernel_providers": ["liger", "torch"],
         "extra_benchmark_configs": [
             {
