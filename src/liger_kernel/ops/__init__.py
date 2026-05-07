@@ -24,6 +24,8 @@ Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import .
       are NOT affected by the replacement mechanism.
 """
 
+import os
+
 # =============================================================================
 # Import default implementations
 # Both Function classes and kernel functions are imported here.
@@ -117,33 +119,45 @@ def _replace_with_vendor_ops():
 
     Note: Vendor can both override existing ops AND add new vendor-specific ops.
     """
-    from liger_kernel.ops.backends import get_vendor_for_device
-    from liger_kernel.utils import infer_device
-
-    device = infer_device()
-
-    # Look up vendor info for this device
-    vendor_info = get_vendor_for_device(device)
-    if vendor_info is None:
-        return
+    cutile_backend = os.getenv("CUTILE_BACKEND", "").strip().lower()
+    cutile_enabled = cutile_backend in {"1", "true", "yes", "on", "cutile"}
+    device = None
 
     try:
         import importlib
+        from liger_kernel.ops.backends import get_vendor_for_device
+        from liger_kernel.utils import infer_device
 
-        vendor_ops = importlib.import_module(vendor_info.module_path)
+        def _apply_ops_module(backend_ops):
+            # Get names to export: use __all__ if defined, otherwise auto-discover
+            names_to_export = getattr(backend_ops, "__all__", None)
 
-        # Get names to export: use __all__ if defined, otherwise auto-discover
-        names_to_export = getattr(vendor_ops, "__all__", None)
+            if names_to_export is None:
+                # Auto-discover: find all public symbols (classes and functions)
+                names_to_export = [name for name in dir(backend_ops) if not name.startswith("_")]
 
-        if names_to_export is None:
-            # Auto-discover: find all public symbols (classes and functions)
-            names_to_export = [name for name in dir(vendor_ops) if not name.startswith("_")]
+            # Replace or add to this module's globals
+            for name in names_to_export:
+                globals()[name] = getattr(backend_ops, name)
 
-        # Replace or add to this module's globals
-        for name in names_to_export:
-            globals()[name] = getattr(vendor_ops, name)
+        device = infer_device()
+        if device == "cuda" and cutile_enabled:
+            cutile_ops = importlib.import_module("liger_kernel.ops.backends._cutile.ops")
+            if not getattr(cutile_ops, "TILEGYM_AVAILABLE", False):
+                cutile_ops._require_tilegym()
+            _apply_ops_module(cutile_ops)
+            return
+
+        # Look up vendor info for this device
+        vendor_info = get_vendor_for_device(device)
+        if vendor_info is None:
+            return
+
+        _apply_ops_module(importlib.import_module(vendor_info.module_path))
 
     except ImportError:
+        if device == "cuda" and cutile_enabled:
+            raise
         # Vendor module not available, use default implementations
         pass
 

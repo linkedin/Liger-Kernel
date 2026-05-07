@@ -18,6 +18,13 @@ from utils import run_benchmarks
 from liger_kernel.transformers.fused_linear_jsd import LigerFusedLinearJSD
 from liger_kernel.utils import infer_device
 
+try:
+    from liger_kernel.ops.backends._cutile.ops import TileGymLMHeadJSD
+    from liger_kernel.ops.backends._cutile.ops import TILEGYM_AVAILABLE
+except ImportError:
+    TileGymLMHeadJSD = None
+    TILEGYM_AVAILABLE = False
+
 device = infer_device()
 
 
@@ -145,6 +152,14 @@ def _setup_fused_linear_jsd(input: SingleBenchmarkRunInput):
         lm_head = liger_lm_head_jsd
     elif input.kernel_provider == "torch":
         lm_head = torch_lm_head_jsd
+    elif input.kernel_provider == "tilegym":
+        if not TILEGYM_AVAILABLE:
+            raise ImportError("tilegym is not available.")
+        tilegym_lm_head_jsd = TileGymLMHeadJSD(H=H, V=V, dtype=dtype, device=device)
+        with torch.no_grad():
+            tilegym_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data.clone()
+            tilegym_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data.clone()
+        lm_head = tilegym_lm_head_jsd
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for FusedLinearJSD")
 
@@ -313,7 +328,7 @@ if __name__ == "__main__":
             "x_name": "model_config",
             "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
-            "kernel_providers": ["liger", "torch"],
+            "kernel_providers": ["liger", "torch"] + (["tilegym"] if TILEGYM_AVAILABLE else []),
             "extra_benchmark_configs": [
                 {
                     "model_configs": model_configs_info,
@@ -364,7 +379,7 @@ if __name__ == "__main__":
             "x_name": "BT",
             "x_label": "B * T",
             "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
-            "kernel_providers": ["liger", "torch"],
+            "kernel_providers": ["liger", "torch"] + (["tilegym"] if TILEGYM_AVAILABLE else []),
             "extra_benchmark_configs": [
                 {
                     "hidden_size": model.hidden_size,

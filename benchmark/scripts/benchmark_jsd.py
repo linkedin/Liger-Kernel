@@ -18,6 +18,13 @@ from utils import run_benchmarks
 from liger_kernel.transformers.jsd import LigerJSD
 from liger_kernel.utils import infer_device
 
+try:
+    from liger_kernel.ops.backends._cutile.ops import TileGymJSD
+    from liger_kernel.ops.backends._cutile.ops import TILEGYM_AVAILABLE
+except ImportError:
+    TileGymJSD = None
+    TILEGYM_AVAILABLE = False
+
 device = infer_device()
 
 
@@ -71,6 +78,10 @@ def _setup_jsd(input: SingleBenchmarkRunInput):
         loss_fn = LigerJSD()
     elif input.kernel_provider == "torch":
         loss_fn = TorchJSD()
+    elif input.kernel_provider == "tilegym":
+        if not TILEGYM_AVAILABLE:
+            raise ImportError("tilegym is not available.")
+        loss_fn = TileGymJSD()
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for JSD")
     return _input, target, loss_fn
@@ -224,7 +235,7 @@ if __name__ == "__main__":
             "x_name": "model_config",
             "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
-            "kernel_providers": ["liger", "torch"],
+            "kernel_providers": ["liger", "torch"] + (["tilegym"] if TILEGYM_AVAILABLE else []),
             "extra_benchmark_configs": [
                 {
                     "model_configs": model_configs_info,
@@ -273,7 +284,7 @@ if __name__ == "__main__":
             "x_name": "BT",
             "x_label": "B * T",
             "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
-            "kernel_providers": ["liger", "torch"],
+            "kernel_providers": ["liger", "torch"] + (["tilegym"] if TILEGYM_AVAILABLE else []),
             "extra_benchmark_configs": [
                 {
                     "vocab_size": model.vocab_size,
