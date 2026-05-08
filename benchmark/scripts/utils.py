@@ -191,6 +191,33 @@ def run_memory_benchmark(
     return SingleBenchmarkRunOutput(y_20=mem_20, y_50=mem_50, y_80=mem_80)
 
 
+def default_forward_fn(*setup_out):
+    x, layer = setup_out[0], setup_out[1]
+    return layer(x)
+
+
+def build_speed_bench_fn(
+    setup_fn: Callable[["SingleBenchmarkRunInput"], Any],
+    forward_fn: Callable[..., torch.Tensor] = default_forward_fn,
+) -> Callable:
+    def bench_speed(input: "SingleBenchmarkRunInput") -> SingleBenchmarkRunOutput:
+        setup_out = setup_fn(input)
+        return run_speed_benchmark(lambda: forward_fn(*setup_out), input.kernel_operation_mode, [setup_out[0]])
+
+    return bench_speed
+
+
+def build_memory_bench_fn(
+    setup_fn: Callable[["SingleBenchmarkRunInput"], Any],
+    forward_fn: Callable[..., torch.Tensor] = default_forward_fn,
+) -> Callable:
+    def bench_memory(input: "SingleBenchmarkRunInput") -> SingleBenchmarkRunOutput:
+        setup_out = setup_fn(input)
+        return run_memory_benchmark(lambda: forward_fn(*setup_out), input.kernel_operation_mode)
+
+    return bench_memory
+
+
 def get_current_file_directory() -> str:
     """
     Returns the directory path of the current Python file.
