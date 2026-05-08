@@ -194,7 +194,7 @@ def bench_memory_grpo_loss_kernel(
 def bench_speed_grpo_loss_kernel(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
-    from liger_kernel.ops.grpo_loss import GrpoLossFunction
+    from liger_kernel.ops import GrpoLossFunction
 
     B = input.x
     T = input.extra_benchmark_config["T"]
