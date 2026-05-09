@@ -59,6 +59,7 @@ from liger_kernel.ops.backends._ascend.ops.llama4_rope import llama4_rope_forwar
 from liger_kernel.ops.backends._ascend.ops.mhc import LigerMHCCoeffsFunction
 from liger_kernel.ops.backends._ascend.ops.mhc import LigerMHCPostResFunction
 from liger_kernel.ops.backends._ascend.ops.mhc import LigerMHCPreFunction
+from liger_kernel.ops.backends._ascend.ops.multi_token_attention import LigerMultiTokenAttentionFunction
 from liger_kernel.ops.backends._ascend.ops.poly_norm import LigerPolyNormFunction
 from liger_kernel.ops.backends._ascend.ops.poly_norm import poly_norm_backward
 from liger_kernel.ops.backends._ascend.ops.poly_norm import poly_norm_forward
@@ -154,4 +155,5 @@ __all__ = [
     "LigerMHCCoeffsFunction",
     "LigerMHCPreFunction",
     "LigerMHCPostResFunction",
+    "LigerMultiTokenAttentionFunction",
 ]
