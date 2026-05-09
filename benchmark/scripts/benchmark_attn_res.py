@@ -15,7 +15,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 from benchmark_model_configs import MODEL_REGISTRY
 from benchmark_model_configs import compute_model_config_sweep_config
 from benchmark_model_configs import compute_seq_len_sweep_config
-from benchmark_model_configs import estimate_kernel_peak_memory
 from benchmark_model_configs import get_benchmark_model_config
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
@@ -185,10 +184,7 @@ if __name__ == "__main__":
             V, fn = _setup_attn_res(probe_input)
             return fn()
 
-        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
-        kernel_bpt = peak_bytes // probe_seq_len
-
-        config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+        config = compute_seq_len_sweep_config(model, probe_fn=_probe, probe_seq_len=probe_seq_len)
 
         common_configs = {
             "kernel_name": "attn_res",

@@ -7,7 +7,7 @@ import triton
 
 from benchmark_model_configs import MODEL_REGISTRY
 from benchmark_model_configs import compute_model_config_sweep_config
-from benchmark_model_configs import compute_seq_len_sweep_config_with_probe
+from benchmark_model_configs import compute_seq_len_sweep_config
 from benchmark_model_configs import get_benchmark_model_config
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
@@ -328,7 +328,7 @@ if __name__ == "__main__":
             _, _, fwd_fn = _setup_sparse_multi_token_attention(probe_input)
             return fwd_fn()
 
-        config = compute_seq_len_sweep_config_with_probe(
+        config = compute_seq_len_sweep_config(
             model_cfg=model,
             probe_fn=_probe,
             probe_seq_len=probe_L,

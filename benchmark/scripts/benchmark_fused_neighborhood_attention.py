@@ -7,7 +7,6 @@ import triton
 
 from benchmark_model_configs import compute_model_config_sweep_config
 from benchmark_model_configs import compute_seq_len_sweep_config
-from benchmark_model_configs import estimate_kernel_peak_memory
 from benchmark_model_configs import get_benchmark_model_config
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
@@ -446,9 +445,7 @@ if __name__ == "__main__":
             _, _, fwd_fn = _setup_fused_neighborhood_attention(probe_input)
             return fwd_fn()
 
-        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
-        kernel_bpt = peak_bytes // probe_seq_len
-        config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+        config = compute_seq_len_sweep_config(model, probe_fn=_probe, probe_seq_len=probe_seq_len)
 
         common_configs = {
             "kernel_name": "fused_neighborhood_attention",
