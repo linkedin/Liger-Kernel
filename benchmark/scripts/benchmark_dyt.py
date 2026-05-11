@@ -7,7 +7,6 @@ import torch
 from benchmark_model_configs import MODEL_REGISTRY
 from benchmark_model_configs import compute_model_config_sweep_config
 from benchmark_model_configs import compute_seq_len_sweep_config
-from benchmark_model_configs import estimate_kernel_peak_memory
 from benchmark_model_configs import get_benchmark_model_config
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
@@ -162,10 +161,7 @@ if __name__ == "__main__":
                 x, layer = _setup_dyt(probe_input)
                 return layer(x)
 
-            peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
-            kernel_bpt = peak_bytes // probe_bt
-
-            config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+            config = compute_seq_len_sweep_config(model, probe_fn=_probe, probe_seq_len=probe_bt)
 
             common_configs = {
                 "kernel_name": f"dyt_beta={beta}",

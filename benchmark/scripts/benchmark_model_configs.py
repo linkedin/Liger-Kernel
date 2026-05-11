@@ -17,9 +17,7 @@ Usage::
     model = get_benchmark_model_config(args.model)
 
     # Measure actual memory via a small probe, then compute sweep config
-    peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
-    bpt = peak_bytes // probe_num_tokens
-    config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=bpt)
+    config = compute_seq_len_sweep_config(model, probe_fn=_probe, probe_seq_len=probe_seq_len)
 """
 
 import gc
@@ -258,7 +256,8 @@ def estimate_kernel_peak_memory(probe_fn: Callable[[], torch.Tensor]) -> int:
     Call this with the *pure PyTorch* (e.g. huggingface) implementation --
     that typically has the highest memory footprint and therefore gives a
     safe upper-bound estimate.  Returns the total peak bytes; divide by
-    num_tokens if you need bytes-per-token for :func:`compute_seq_len_sweep_config`.
+    num_tokens if you need bytes-per-token. :func:`compute_seq_len_sweep_config`
+    accepts a ``probe_fn`` directly and will run this for you.
 
     The probe_fn performs setup and forward pass internally; cleanup is
     automatic, so callers do not need to manage tensor/layer lifecycle.
@@ -291,30 +290,66 @@ def estimate_kernel_peak_memory(probe_fn: Callable[[], torch.Tensor]) -> int:
     return max(1, peak_bytes)
 
 
+def _max_seqlen_under_memory(
+    *,
+    usable_bytes: float,
+    peak_bytes: int,
+    probe_batch_size: int,
+    probe_seq_len: int,
+    scaling_method: Literal["linear", "quadratic"],
+    target_batch_size: int,
+) -> int:
+    """Invert peak_bytes(B, L) for L at fixed target_batch_size.
+
+    - ``"linear"``: assumes peak ~ B * L. ``L_max = usable / (B * c_per_BL)``.
+    - ``"quadratic"``: assumes peak ~ B * L^2. ``L_max = sqrt(usable / (B * c_per_BL2))``.
+    """
+    if scaling_method == "linear":
+        c = max(1.0, peak_bytes / (probe_batch_size * probe_seq_len))
+        return max(1, int(usable_bytes / (target_batch_size * c)))
+    if scaling_method == "quadratic":
+        c = max(1.0, peak_bytes / (probe_batch_size * probe_seq_len * probe_seq_len))
+        return max(1, int(math.sqrt(usable_bytes / (target_batch_size * c))))
+    raise ValueError(f"scaling_method must be 'linear' or 'quadratic', got {scaling_method!r}")
+
+
+def _snap_pow2_seqlen(seq_len: int, max_seq_len: int) -> int:
+    """Clamp to *max_seq_len* and snap down to nearest power of 2 (floor at 1024)."""
+    seq_len = min(max_seq_len, seq_len)
+    return 2 ** int(math.log2(seq_len)) if seq_len >= 1024 else 1024
+
+
 def compute_seq_len_sweep_config(
     model_cfg: ModelConfig,
-    kernel_bytes_per_token: Optional[int] = None,
+    probe_fn: Callable[[], torch.Tensor],
+    probe_seq_len: int,
+    probe_batch_size: int = 1,
+    scaling_method: Literal["linear", "quadratic"] = "linear",
     memory_utilization: float = 0.4,
     max_seq_len: Optional[int] = None,
     max_batch_size: int = 32,
 ) -> SeqLenSweepConfig:
-    """Compute safe batch_size and seq_len for sequence-length sweep (e.g. GEGLU).
+    """Compute safe batch_size and seq_len for a sequence-length sweep.
 
-    Peak memory is estimated as
-    ``batch_size * seq_len * kernel_bytes_per_token`` and is capped at
-    device memory * memory_utilization.  Device memory is obtained
-    internally via :func:`~liger_kernel.utils.get_total_gpu_memory`.
+    Runs *probe_fn* once via :func:`estimate_kernel_peak_memory` to measure the
+    actual peak memory, then inverts the memory model according to
+    *scaling_method* to find the largest seq_len that fits in
+    ``device_memory * memory_utilization``. Device memory is obtained internally
+    via :func:`~liger_kernel.utils.get_total_gpu_memory`.
 
-    Prefer obtaining *kernel_bytes_per_token* via
-    :func:`estimate_kernel_peak_memory` (divide by num_tokens) rather
-    than hardcoding an analytical estimate.
+    For kernels whose memory grows non-linearly with seq_len (e.g. attention
+    kernels with O(L^2) scratch), pass ``scaling_method="quadratic"``.
 
     Args:
         model_cfg: Model architecture config.
-        kernel_bytes_per_token: Peak memory **per token** (``batch * seq_len``
-            axis).  Best obtained from :func:`estimate_kernel_peak_memory` / num_tokens.
-            Falls back to a conservative heuristic
-            (``hidden_size * dtype_bytes * 16``) when *None*.
+        probe_fn: Callable that performs setup, runs a forward pass, and
+            returns an output tensor suitable for ``.backward()``. Same
+            contract as :func:`estimate_kernel_peak_memory`'s *probe_fn*.
+        probe_seq_len: Sequence length used inside *probe_fn*. Required so the
+            inversion can isolate the seq-len-dependent term.
+        probe_batch_size: Batch size used inside *probe_fn*. Defaults to 1.
+        scaling_method: How peak memory scales with seq_len, holding batch
+            size fixed. See :func:`_max_seqlen_under_memory`.
         memory_utilization: Fraction of total device memory to target (0 to 1).
             Lower values are safer.  Default ``0.4`` leaves headroom for
             framework overhead and CUDA/NPU context.
@@ -323,22 +358,22 @@ def compute_seq_len_sweep_config(
             the model's native context window.
         max_batch_size: Hard upper bound for batch size.
     """
-    total_memory_gb = get_total_gpu_memory()
-    dtype_bytes = 2 if model_cfg.dtype in (torch.bfloat16, torch.float16) else 4
+    peak_bytes = estimate_kernel_peak_memory(probe_fn=probe_fn)
 
-    if kernel_bytes_per_token is None:
-        kernel_bytes_per_token = model_cfg.hidden_size * dtype_bytes * 16
-
+    usable_bytes = get_total_gpu_memory() * (1024**3) * memory_utilization
     if max_seq_len is None:
         max_seq_len = model_cfg.max_position_embeddings
 
-    usable_bytes = total_memory_gb * (1024**3) * memory_utilization
-    max_tokens = max(1, int(usable_bytes / kernel_bytes_per_token))
-
-    seq_len = min(max_seq_len, max_tokens)
-    seq_len = 2 ** int(math.log2(seq_len)) if seq_len >= 1024 else 1024
-
-    batch_size = max(1, min(max_tokens // seq_len, max_batch_size))
+    batch_size = max(1, min(max_batch_size, probe_batch_size))
+    max_seq_len_from_mem = _max_seqlen_under_memory(
+        usable_bytes=usable_bytes,
+        peak_bytes=peak_bytes,
+        probe_batch_size=probe_batch_size,
+        probe_seq_len=probe_seq_len,
+        scaling_method=scaling_method,
+        target_batch_size=batch_size,
+    )
+    seq_len = _snap_pow2_seqlen(max_seq_len_from_mem, max_seq_len)
 
     return SeqLenSweepConfig(batch_size=batch_size, seq_len=seq_len)
 
@@ -540,29 +575,33 @@ def build_token_length_sweep(
         setup_out = setup_fn(probe_input)
         return forward_fn(*setup_out)
 
-    peak_bytes = estimate_kernel_peak_memory(probe_fn=probe_fn)
     # ---------------------------------------
-    # derive total tokens (BT) based on scale_dim
+    # derive (probe_batch_size, probe_seq_len) based on scale_dim
     # ---------------------------------------
     if scale_dim == "T":
-        B = extra_configs.get("B", 1)
-        probe_bt = probe_x * B
+        probe_batch_size = extra_configs.get("B", 1)
+        probe_seq_len = probe_x
 
     elif scale_dim == "B":
         T = extra_configs.get("T")
         if T is None:
             raise ValueError("For B sweep, extra_configs['T'] must be provided")
-        probe_bt = probe_x * T
+        probe_batch_size = probe_x
+        probe_seq_len = T
 
     elif scale_dim == "BT":
-        probe_bt = probe_x
+        probe_batch_size = 1
+        probe_seq_len = probe_x
 
     else:
         raise ValueError(f"Unsupported scale_dim: {scale_dim}")
 
-    kernel_bpt = max(1, peak_bytes // probe_bt)
-
-    config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+    config = compute_seq_len_sweep_config(
+        model,
+        probe_fn=probe_fn,
+        probe_seq_len=probe_seq_len,
+        probe_batch_size=probe_batch_size,
+    )
     if x_values_fn is None:
         if scale_dim == "T":
             x_values_fn = lambda cfg: [2**i for i in range(10, int(math.log2(cfg.seq_len)) + 1)]
