@@ -1212,10 +1212,11 @@ def apply_liger_kernel_to_gemma3(
         if isinstance(model, Gemma3ForConditionalGeneration):
             if isinstance(model.model.vision_tower, SiglipVisionModel):
                 vision_tower = model.model.vision_tower
+                siglip_vision_model = getattr(vision_tower, "vision_model", vision_tower)
 
-                _patch_layer_norm_module(vision_tower.vision_model.post_layernorm)
+                _patch_layer_norm_module(siglip_vision_model.post_layernorm)
 
-                for layer in vision_tower.vision_model.encoder.layers:
+                for layer in siglip_vision_model.encoder.layers:
                     layer: SiglipEncoderLayer
                     if layer_norm:
                         _patch_layer_norm_module(layer.layer_norm1)
@@ -1458,10 +1459,11 @@ def apply_liger_kernel_to_paligemma(
             raise TypeError("model have to be of type PaliGemmaForConditionalGeneration")
 
         vision_tower: SiglipVisionModel = model.model.vision_tower
+        siglip_vision_model = getattr(vision_tower, "vision_model", vision_tower)
 
-        _patch_layer_norm_module(vision_tower.vision_model.post_layernorm)
+        _patch_layer_norm_module(siglip_vision_model.post_layernorm)
 
-        for layer in vision_tower.vision_model.encoder.layers:
+        for layer in siglip_vision_model.encoder.layers:
             layer: SiglipEncoderLayer
             if layer_norm:
                 _patch_layer_norm_module(layer.layer_norm1)
