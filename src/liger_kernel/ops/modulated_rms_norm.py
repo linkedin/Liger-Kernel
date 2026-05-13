@@ -234,15 +234,14 @@ _str_to_casting_mode = {
 
 def _check_modulation_shape(X, scale, shift):
     dim = X.shape[-1]
+    assert scale.numel() % dim == 0, "Scale element count must be a multiple of the hidden size."
     n_rows = X.numel() // dim
-    scale = scale.view(-1, dim)
-    scale_rows = scale.shape[0]
+    scale_rows = scale.numel() // dim
     assert scale_rows > 0, "Scale must have at least one row."
     assert n_rows % scale_rows == 0, "Scale rows must divide hidden state rows for broadcasting."
 
     if shift is not None:
-        shift = shift.view(-1, dim)
-        assert shift.shape[0] == scale_rows, "Shift must use the same broadcast rows as scale."
+        assert shift.numel() == scale_rows * dim, "Shift must use the same broadcast rows as scale."
 
     return scale_rows, n_rows // scale_rows
 
@@ -424,9 +423,28 @@ def modulated_rms_norm_backward(
 
 
 class LigerModulatedRMSNormFunction(torch.autograd.Function):
+    """
+    Performs modulated RMSNorm in a single fused kernel: ``y = (1 + scale) * RMSNorm(x) + shift``.
+
+    The base RMSNorm matches ``LigerRMSNormFunction`` semantics (``offset``, ``casting_mode``,
+    ``in_place`` behave identically). On top of that, ``scale`` and the optional ``shift`` apply
+    an affine modulation commonly used in Diffusion Transformer style architectures (AdaLN).
+
+    Broadcasting of ``scale`` / ``shift`` is determined by the leading shape, given hidden size H
+    and a flattened token count N = X.numel() / H:
+    - shape ``(H,)`` or ``(1, H)``: shared across every token (N rows reuse one modulation row).
+    - shape ``(B, H)`` with 3D X of shape ``(B, T, H)``: shared along the sequence axis.
+    - shape ``(N, H)`` (or matching X): per-token modulation, no atomic accumulation needed.
+    In general, ``scale.numel() // H`` must divide N. ``shift`` (if provided) must broadcast
+    identically to ``scale``.
+    """
+
     @staticmethod
     @ensure_contiguous
     def forward(ctx, X, W, scale, shift, eps, offset=0.0, casting_mode="llama", in_place=True):
+        if isinstance(X, torch.distributed.tensor.DTensor):
+            # Match LigerRMSNormFunction: gather TP-sharded input to a local tensor.
+            X = X.full_tensor()
         Y, RSTD, BLOCK_SIZE, num_warps, casting_mode, rows_per_modulation = modulated_rms_norm_forward(
             X,
             W,
@@ -457,6 +475,8 @@ class LigerModulatedRMSNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def backward(ctx, dY):
+        if isinstance(dY, torch.distributed.tensor.DTensor):
+            dY = dY.full_tensor()
         if ctx.has_weight and ctx.has_shift:
             X, W, scale, shift, RSTD = ctx.saved_tensors
         elif ctx.has_weight:

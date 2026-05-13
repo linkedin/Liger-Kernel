@@ -5,6 +5,24 @@ from liger_kernel.ops import LigerModulatedRMSNormFunction
 
 
 class LigerModulatedRMSNorm(nn.Module):
+    """
+    Fused modulated RMSNorm module: ``y = (1 + scale) * RMSNorm(x) + shift``.
+
+    Semantics of ``eps``, ``offset``, ``casting_mode`` and ``in_place`` mirror
+    :class:`liger_kernel.transformers.LigerRMSNorm`. ``scale`` and the optional
+    ``shift`` follow the broadcast rules documented on
+    :class:`liger_kernel.ops.LigerModulatedRMSNormFunction`.
+
+    Args:
+        hidden_size: trailing dimension over which RMS is computed.
+        eps: epsilon added to mean-square inside ``rsqrt``.
+        offset: constant added to the weight, e.g. ``1.0`` for Gemma-style norms.
+        casting_mode: ``"llama"`` / ``"gemma"`` / ``"none"`` — see ``LigerRMSNormFunction``.
+        init_fn: ``"ones"`` or ``"zeros"`` for the (optional) weight initialization.
+        in_place: whether the backward kernel writes ``dX`` over ``dY`` to save memory.
+        elementwise_affine: if False, no learnable weight is allocated.
+    """
+
     def __init__(
         self,
         hidden_size,

@@ -189,6 +189,57 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, offset, casting_mode, scale_
         assert_verbose_allclose(ref.weight.grad, triton_mod.weight.grad, atol=atol, rtol=rtol)
 
 
+@pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU")
+@pytest.mark.parametrize("scale_mode", ["global", "batch", "row"])
+@pytest.mark.parametrize("has_shift", [True, False])
+def test_mixed_dtype_modulation(scale_mode, has_shift):
+    """
+    X in bf16, scale/shift in fp32: a common DiT/AdaLN setup. Verifies the kernel
+    handles mismatched modulation dtype (atomic_add path requires an implicit cast),
+    preserves X.dtype on the output, and produces scale/shift gradients in their
+    original (fp32) dtype.
+    """
+    bs, sl, hd = 2, 4, 64
+    shape = (bs, sl, hd)
+    x_dtype = torch.bfloat16
+    mod_dtype = torch.float32
+
+    tensor = torch.randn(shape, device=device, dtype=x_dtype)
+    scale, shift = _make_modulation(shape, hd, scale_mode, mod_dtype)
+    shift = shift if has_shift else None
+
+    h_triton = tensor.clone().requires_grad_(True)
+    scale_triton = scale.clone().requires_grad_(True)
+    shift_triton = shift.clone().requires_grad_(True) if shift is not None else None
+
+    grad = torch.randn(shape, device=device, dtype=x_dtype)
+
+    triton_mod = LigerModulatedRMSNorm(hidden_size=hd, in_place=False).to(device).to(x_dtype)
+    triton_out = triton_mod(h_triton, scale_triton, shift_triton)
+    assert triton_out.dtype == x_dtype, "Liger must preserve X dtype on output"
+
+    triton_out.backward(grad)
+    assert scale_triton.grad.dtype == mod_dtype
+    if has_shift:
+        assert shift_triton.grad.dtype == mod_dtype
+
+    # Reference: do the whole computation in fp32, then compare against bf16 triton out.
+    h_ref = tensor.clone().float().requires_grad_(True)
+    scale_ref = scale.clone().requires_grad_(True)
+    shift_ref = shift.clone().requires_grad_(True) if shift is not None else None
+    ref = ModulatedRMSNormReference(hidden_size=hd).to(device).to(torch.float32)
+    with torch.no_grad():
+        ref.weight.copy_(triton_mod.weight.float())
+    ref_out_fp32 = ref(h_ref, scale_ref, shift_ref)
+    ref_out_fp32.backward(grad.float())
+
+    assert_verbose_allclose(ref_out_fp32.bfloat16(), triton_out, atol=2e-1, rtol=2e-2)
+    assert_verbose_allclose(h_ref.grad.bfloat16(), h_triton.grad, atol=2e-1, rtol=2e-2)
+    assert_verbose_allclose(scale_ref.grad, scale_triton.grad, atol=2e-1, rtol=2e-2)
+    if has_shift:
+        assert_verbose_allclose(shift_ref.grad, shift_triton.grad, atol=2e-1, rtol=2e-2)
+
+
 @pytest.mark.parametrize("in_place", [True, False])
 @pytest.mark.parametrize("has_shift", [True, False])
 @pytest.mark.parametrize("elementwise_affine", [True, False])
