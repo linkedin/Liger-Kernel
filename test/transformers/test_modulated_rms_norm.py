@@ -18,6 +18,12 @@ device = infer_device()
 set_seed(42)
 torch.use_deterministic_algorithms(True)
 
+#  Only setting torch.use_deterministic_algorithms(True) might throw the following error:
+#  RuntimeError: Deterministic behavior was enabled with either `torch.use_deterministic_algorithms(True)` or `at::Context::setDeterministicAlgorithms(true)`,
+#  but this operation is not deterministic because it uses CuBLAS and you have CUDA >= 10.2. To enable deterministic behavior in this case, you must set an
+#  environment variable before running your PyTorch application: CUBLAS_WORKSPACE_CONFIG=:4096:8 or CUBLAS_WORKSPACE_CONFIG=:16:8. For more information,
+#  go to https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
+
 if device == "cuda":
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -240,12 +246,23 @@ def test_mixed_dtype_modulation(scale_mode, has_shift):
         assert_verbose_allclose(shift_ref.grad, shift_triton.grad, atol=2e-1, rtol=2e-2)
 
 
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-6),
+        pytest.param(
+            torch.bfloat16,
+            2e-1,
+            2e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
 @pytest.mark.parametrize("in_place", [True, False])
 @pytest.mark.parametrize("has_shift", [True, False])
 @pytest.mark.parametrize("elementwise_affine", [True, False])
-def test_functional_correctness(in_place, has_shift, elementwise_affine):
+def test_correctness_functional(dtype, atol, rtol, in_place, has_shift, elementwise_affine):
     bs, sl, hd = 2, 3, 8
-    dtype = torch.float32
     tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
     scale = torch.randn(bs, hd, device=device, dtype=dtype) * 0.1
     shift = torch.randn(bs, hd, device=device, dtype=dtype) * 0.1 if has_shift else None
@@ -263,15 +280,15 @@ def test_functional_correctness(in_place, has_shift, elementwise_affine):
     y1 = liger_modulated_rms_norm(h1, w1, scale1, shift1, in_place=in_place)
     y2 = LigerModulatedRMSNormFunction.apply(h2, w2, scale2, shift2, 1e-6, 0.0, "llama", in_place)
 
-    assert_verbose_allclose(y1, y2, atol=1e-4, rtol=1e-6)
+    assert_verbose_allclose(y1, y2, atol=atol, rtol=rtol)
 
     grad = torch.randn_like(y2)
     y1.backward(grad.clone())
     y2.backward(grad.clone())
 
-    assert_verbose_allclose(h1.grad, h2.grad, atol=1e-4, rtol=1e-6)
-    assert_verbose_allclose(scale1.grad, scale2.grad, atol=1e-4, rtol=1e-6)
+    assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
+    assert_verbose_allclose(scale1.grad, scale2.grad, atol=atol, rtol=rtol)
     if has_shift:
-        assert_verbose_allclose(shift1.grad, shift2.grad, atol=1e-4, rtol=1e-6)
+        assert_verbose_allclose(shift1.grad, shift2.grad, atol=atol, rtol=rtol)
     if elementwise_affine:
-        assert_verbose_allclose(w1.grad, w2.grad, atol=1e-4, rtol=1e-6)
+        assert_verbose_allclose(w1.grad, w2.grad, atol=atol, rtol=rtol)

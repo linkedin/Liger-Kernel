@@ -22,8 +22,11 @@ from liger_kernel.utils import infer_device
 device = infer_device()
 
 
-class TorchModulatedRMSNorm(nn.Module):
+class NaiveModulatedRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
+        """
+        Naive implementation of modulated RMSNorm: y = (1 + scale) * RMSNorm(x) + shift.
+        """
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
@@ -40,8 +43,14 @@ class TorchModulatedRMSNorm(nn.Module):
         return output
 
 
-class LigerRMSNormWithTorchModulation(nn.Module):
+class LigerRMSNormWithNaiveModulation(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
+        """
+        LigerRMSNormWithNaiveModulation is equivalent to NaiveModulatedRMSNorm above, but
+        uses the LigerRMSNorm kernel for the base normalization step (modulation is
+        applied in eager PyTorch). Useful to isolate the benefit of fusing modulation
+        into the norm kernel.
+        """
         super().__init__()
         self.rms_norm = LigerRMSNorm(hidden_size=hidden_size, eps=eps, in_place=False)
 
@@ -53,6 +62,7 @@ class LigerRMSNormWithTorchModulation(nn.Module):
 
 
 def _setup_modulated_rms_norm(input: SingleBenchmarkRunInput):
+    """Create input tensors and ModulatedRMSNorm layer from benchmark config."""
     cfg = input.extra_benchmark_config
     hidden_size = cfg["hidden_size"]
     eps = cfg["eps"]
@@ -70,9 +80,9 @@ def _setup_modulated_rms_norm(input: SingleBenchmarkRunInput):
     if input.kernel_provider == "liger":
         layer = LigerModulatedRMSNorm(hidden_size=hidden_size, eps=eps, in_place=False).to(device)
     elif input.kernel_provider == "liger_rms_norm":
-        layer = LigerRMSNormWithTorchModulation(hidden_size=hidden_size, eps=eps).to(device)
-    elif input.kernel_provider == "torch":
-        layer = TorchModulatedRMSNorm(hidden_size=hidden_size, eps=eps).to(device)
+        layer = LigerRMSNormWithNaiveModulation(hidden_size=hidden_size, eps=eps).to(device)
+    elif input.kernel_provider == "huggingface":
+        layer = NaiveModulatedRMSNorm(hidden_size=hidden_size, eps=eps).to(device)
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for ModulatedRMSNorm")
     return x, scale, shift, layer
@@ -136,7 +146,7 @@ if __name__ == "__main__":
             def _probe():
                 probe_input = SingleBenchmarkRunInput(
                     x=probe_bt,
-                    kernel_provider="torch",
+                    kernel_provider="huggingface",
                     extra_benchmark_config={
                         "hidden_size": model_cfg.hidden_size,
                         "dtype": model_cfg.dtype,
@@ -164,7 +174,7 @@ if __name__ == "__main__":
             "x_name": "model_config",
             "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
-            "kernel_providers": ["liger", "liger_rms_norm", "torch"],
+            "kernel_providers": ["liger", "liger_rms_norm", "huggingface"],
             "extra_benchmark_configs": [
                 {
                     "model_configs": model_configs_info,
@@ -197,7 +207,7 @@ if __name__ == "__main__":
         def _probe():
             probe_input = SingleBenchmarkRunInput(
                 x=probe_bt,
-                kernel_provider="torch",
+                kernel_provider="huggingface",
                 extra_benchmark_config={
                     "hidden_size": model.hidden_size,
                     "dtype": model.dtype,
@@ -218,7 +228,7 @@ if __name__ == "__main__":
             "x_name": "BT",
             "x_label": "B * T",
             "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
-            "kernel_providers": ["liger", "liger_rms_norm", "torch"],
+            "kernel_providers": ["liger", "liger_rms_norm", "huggingface"],
             "extra_benchmark_configs": [
                 {
                     "hidden_size": model.hidden_size,
