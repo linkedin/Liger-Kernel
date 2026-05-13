@@ -26,6 +26,32 @@ implementations in PyTorch.
 !!! Example "Try it out"
     You can experiment as shown in this example [here](https://colab.research.google.com/drive/1CQYhul7MVG5F0gmqTBbx1O1HgolPgF0M?usp=sharing).
 
+### Modulated RMS Norm
+
+Modulated RMS Norm fuses RMSNorm with optional affine conditioning, a pattern commonly used in [FiLM](https://ojs.aaai.org/index.php/AAAI/article/view/11671) / [AdaLN](https://www.wpeebles.com/DiT.html)-style diffusion transformer blocks:
+
+```python
+y = rms_norm(x, weight, eps) * (1 + scale) + shift
+```
+
+`scale` and `shift` can be shared across tokens, shared per batch item, or provided per token. When `shift` is provided, it must follow the same broadcasting pattern as `scale`.
+
+```python
+import torch
+from liger_kernel.transformers import LigerModulatedRMSNorm
+
+hidden_size = 4096
+norm = LigerModulatedRMSNorm(hidden_size=hidden_size).cuda()
+
+x = torch.randn(2, 1024, hidden_size, device="cuda", dtype=torch.bfloat16)
+scale = torch.randn(2, hidden_size, device="cuda", dtype=torch.bfloat16)
+shift = torch.randn(2, hidden_size, device="cuda", dtype=torch.bfloat16)
+
+y = norm(x, scale, shift)
+```
+
+Functional API: `liger_kernel.transformers.functional.liger_modulated_rms_norm`
+
 ### RoPE
 
 RoPE (Rotary Position Embedding) enhances the positional encoding used in transformer models.
