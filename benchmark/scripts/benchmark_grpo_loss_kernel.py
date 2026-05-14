@@ -14,6 +14,7 @@ import os
 import sys
 
 import torch
+import torch.nn as nn
 import triton
 
 from utils import QUANTILES
@@ -31,72 +32,104 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 
 #############################################################################
-# Torch baseline implementation for GRPO loss kernel
+# Module wrappers for GRPO loss kernel
 #############################################################################
 
 
-def torch_grpo_loss_kernel(
-    logits,
-    old_logp,
-    ref_logp,
-    completion_ids,
-    advantages,
-    completion_mask,
-    temperature,
-    beta,
-    eps_low,
-    eps_high,
-    loss_type="grpo",
-):
-    """
-    Torch baseline implementation of GRPO loss kernel.
-    This mimics the kernel-level API without chunking.
-    """
-    B, L_ADD_1, N = logits.shape
-    L = L_ADD_1 - 1
+class TorchGRPOLoss(nn.Module):
+    """Torch baseline module for GRPO loss kernel."""
 
-    # Compute log probabilities
-    logits_for_loss = logits[:, :-1, :] / temperature
-    log_probs = torch.nn.functional.log_softmax(logits_for_loss, dim=-1)
+    def __init__(self, temperature=1.0, beta=0.0, eps_low=0.2, eps_high=0.2):
+        super().__init__()
+        self.temperature = temperature
+        self.beta = beta
+        self.eps_low = eps_low
+        self.eps_high = eps_high
 
-    # Gather log probs for selected tokens
-    completion_ids_expanded = completion_ids.unsqueeze(-1)
-    logp = log_probs.gather(dim=-1, index=completion_ids_expanded).squeeze(-1)
+    def forward(self, logits, old_logp, ref_logp, completion_ids, advantages, completion_mask):
+        B, L_ADD_1, N = logits.shape
+        L = L_ADD_1 - 1
 
-    # Compute importance ratio
-    if old_logp is None:
-        old_logp_val = logp
-    else:
-        old_logp_val = old_logp
+        # Compute log probabilities
+        logits_for_loss = logits[:, :-1, :] / self.temperature
+        log_probs = torch.nn.functional.log_softmax(logits_for_loss, dim=-1)
 
-    coef_1 = torch.exp(logp - old_logp_val)
+        # Gather log probs for selected tokens
+        completion_ids_expanded = completion_ids.unsqueeze(-1)
+        logp = log_probs.gather(dim=-1, index=completion_ids_expanded).squeeze(-1)
 
-    # Compute clipped coefficient
-    coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
+        # Compute importance ratio
+        if old_logp is None:
+            old_logp_val = logp
+        else:
+            old_logp_val = old_logp
 
-    # Expand advantages to per-token
-    advantages_expanded = advantages.unsqueeze(-1).expand(-1, L)
+        coef_1 = torch.exp(logp - old_logp_val)
 
-    # Compute per-token loss
-    per_token_loss1 = coef_1 * advantages_expanded
-    per_token_loss2 = coef_2 * advantages_expanded
-    per_token_loss = -torch.minimum(per_token_loss1, per_token_loss2)
+        # Compute clipped coefficient
+        coef_2 = torch.clamp(coef_1, 1 - self.eps_low, 1 + self.eps_high)
 
-    # Add KL penalty if beta > 0
-    if beta != 0.0 and ref_logp is not None:
-        kl = torch.exp(ref_logp - logp) - (ref_logp - logp) - 1
-        per_token_loss += beta * kl
+        # Expand advantages to per-token
+        advantages_expanded = advantages.unsqueeze(-1).expand(-1, L)
 
-    # Apply mask and reduce
-    if completion_mask is not None:
-        mask = completion_mask.float()
-    else:
-        mask = torch.ones(B, L, device=logits.device)
+        # Compute per-token loss
+        per_token_loss1 = coef_1 * advantages_expanded
+        per_token_loss2 = coef_2 * advantages_expanded
+        per_token_loss = -torch.minimum(per_token_loss1, per_token_loss2)
 
-    # Reduce loss (GRPO uses per-sequence mean)
-    loss = ((per_token_loss * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)).mean()
+        # Add KL penalty if beta > 0
+        if self.beta != 0.0 and ref_logp is not None:
+            kl = torch.exp(ref_logp - logp) - (ref_logp - logp) - 1
+            per_token_loss += self.beta * kl
 
-    return loss
+        # Apply mask and reduce
+        if completion_mask is not None:
+            mask = completion_mask.float()
+        else:
+            mask = torch.ones(B, L, device=logits.device)
+
+        # Reduce loss (GRPO uses per-sequence mean)
+        loss = ((per_token_loss * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)).mean()
+
+        return loss
+
+
+class LigerGRPOLoss(nn.Module):
+    """Liger module wrapper for GRPO loss kernel."""
+
+    def __init__(self, temperature=1.0, beta=0.0, eps_low=0.2, eps_high=0.2, importance_sampling_level="token"):
+        super().__init__()
+        self.temperature = temperature
+        self.beta = beta
+        self.eps_low = eps_low
+        self.eps_high = eps_high
+        self.importance_sampling_level = importance_sampling_level
+
+    def forward(self, logits, old_logp, ref_logp, completion_ids, advantages, completion_mask):
+        from liger_kernel.ops import GrpoLossFunction
+
+        return GrpoLossFunction.apply(
+            logits,
+            old_logp,
+            ref_logp,
+            completion_ids,
+            advantages,
+            completion_mask,
+            self.temperature,
+            self.beta,
+            self.eps_low,
+            self.eps_high,
+            False,  # inplace
+            "grpo",  # loss_type
+            None,  # max_completion_length
+            True,  # reduce
+            self.importance_sampling_level,
+            1.0,  # sapo_temperature_pos
+            1.05,  # sapo_temperature_neg
+            None,  # vllm_is_ratio
+            None,  # delta
+            False,  # use_bias_correction_kl
+        )[0]
 
 
 #############################################################################
@@ -107,8 +140,6 @@ def torch_grpo_loss_kernel(
 def bench_memory_grpo_loss_kernel(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
-    from liger_kernel.ops import GrpoLossFunction
-
     B = input.x
     T = input.extra_benchmark_config["T"]
     V = input.extra_benchmark_config["V"]
@@ -116,63 +147,34 @@ def bench_memory_grpo_loss_kernel(
     importance_sampling_level = input.extra_benchmark_config["importance_sampling_level"]
     provider = input.kernel_provider
 
+    temperature = 1.0
+    beta = input.extra_benchmark_config.get("beta", 0.0)
+    eps_low = 0.2
+    eps_high = 0.2
+
+    # Instantiate modules
+    torch_grpo = TorchGRPOLoss(temperature=temperature, beta=beta, eps_low=eps_low, eps_high=eps_high).to(device)
+    liger_grpo = LigerGRPOLoss(
+        temperature=temperature,
+        beta=beta,
+        eps_low=eps_low,
+        eps_high=eps_high,
+        importance_sampling_level=importance_sampling_level,
+    ).to(device)
+
     # Create inputs
     logits = torch.randn(B, T + 1, V, requires_grad=True, dtype=dtype, device=device)
     completion_ids = torch.randint(0, V, (B, T), dtype=torch.long, device=device)
     advantages = torch.randn(B, dtype=dtype, device=device)
     completion_mask = torch.ones(B, T, dtype=torch.bool, device=device)
     old_logp = None  # On-policy case
-    ref_logp = torch.randn(B, T, dtype=torch.float32, device=device) if input.extra_benchmark_config.get("beta",
-                                                                                                         0.0) > 0 else None
-
-    temperature = 1.0
-    beta = input.extra_benchmark_config.get("beta", 0.0)
-    eps_low = 0.2
-    eps_high = 0.2
-
-    def liger_fwd():
-        return GrpoLossFunction.apply(
-            logits,
-            old_logp,
-            ref_logp,
-            completion_ids,
-            advantages,
-            completion_mask,
-            temperature,
-            beta,
-            eps_low,
-            eps_high,
-            False,  # inplace
-            "grpo",  # loss_type
-            None,  # max_completion_length
-            True,  # reduce
-            importance_sampling_level,  # importance_sampling_level
-            1.0,  # sapo_temperature_pos
-            1.05,  # sapo_temperature_neg
-            None,  # vllm_is_ratio
-            None,  # delta
-            False,  # use_bias_correction_kl
-        )[0]
-
-    def torch_fwd():
-        return torch_grpo_loss_kernel(
-            logits,
-            old_logp,
-            ref_logp,
-            completion_ids,
-            advantages,
-            completion_mask,
-            temperature,
-            beta,
-            eps_low,
-            eps_high,
-        )
+    ref_logp = torch.randn(B, T, dtype=torch.float32, device=device) if beta > 0 else None
 
     def fwd():
         if provider == "liger":
-            return liger_fwd()
+            return liger_grpo(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask)
         elif provider == "torch":
-            return torch_fwd()
+            return torch_grpo(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask)
 
     def full():
         y = fwd()
@@ -194,8 +196,6 @@ def bench_memory_grpo_loss_kernel(
 def bench_speed_grpo_loss_kernel(
     input: SingleBenchmarkRunInput,
 ) -> SingleBenchmarkRunOutput:
-    from liger_kernel.ops import GrpoLossFunction
-
     B = input.x
     T = input.extra_benchmark_config["T"]
     V = input.extra_benchmark_config["V"]
@@ -204,63 +204,34 @@ def bench_speed_grpo_loss_kernel(
     provider = input.kernel_provider
     mode = input.kernel_operation_mode
 
+    temperature = 1.0
+    beta = input.extra_benchmark_config.get("beta", 0.0)
+    eps_low = 0.2
+    eps_high = 0.2
+
+    # Instantiate modules
+    torch_grpo = TorchGRPOLoss(temperature=temperature, beta=beta, eps_low=eps_low, eps_high=eps_high).to(device)
+    liger_grpo = LigerGRPOLoss(
+        temperature=temperature,
+        beta=beta,
+        eps_low=eps_low,
+        eps_high=eps_high,
+        importance_sampling_level=importance_sampling_level,
+    ).to(device)
+
     # Create inputs
     logits = torch.randn(B, T + 1, V, requires_grad=True, dtype=dtype, device=device)
     completion_ids = torch.randint(0, V, (B, T), dtype=torch.long, device=device)
     advantages = torch.randn(B, dtype=dtype, device=device)
     completion_mask = torch.ones(B, T, dtype=torch.bool, device=device)
     old_logp = None  # On-policy case
-    ref_logp = torch.randn(B, T, dtype=torch.float32, device=device) if input.extra_benchmark_config.get("beta",
-                                                                                                         0.0) > 0 else None
-
-    temperature = 1.0
-    beta = input.extra_benchmark_config.get("beta", 0.0)
-    eps_low = 0.2
-    eps_high = 0.2
-
-    def liger_fwd():
-        return GrpoLossFunction.apply(
-            logits,
-            old_logp,
-            ref_logp,
-            completion_ids,
-            advantages,
-            completion_mask,
-            temperature,
-            beta,
-            eps_low,
-            eps_high,
-            False,  # inplace
-            "grpo",  # loss_type
-            None,  # max_completion_length
-            True,  # reduce
-            importance_sampling_level,  # importance_sampling_level
-            1.0,  # sapo_temperature_pos
-            1.05,  # sapo_temperature_neg
-            None,  # vllm_is_ratio
-            None,  # delta
-            False,  # use_bias_correction_kl
-        )[0]
-
-    def torch_fwd():
-        return torch_grpo_loss_kernel(
-            logits,
-            old_logp,
-            ref_logp,
-            completion_ids,
-            advantages,
-            completion_mask,
-            temperature,
-            beta,
-            eps_low,
-            eps_high,
-        )
+    ref_logp = torch.randn(B, T, dtype=torch.float32, device=device) if beta > 0 else None
 
     def fwd():
         if provider == "liger":
-            return liger_fwd()
+            return liger_grpo(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask)
         elif provider == "torch":
-            return torch_fwd()
+            return torch_grpo(logits, old_logp, ref_logp, completion_ids, advantages, completion_mask)
 
     if mode == "forward":
         ms_50, ms_20, ms_80 = triton.testing.do_bench(
