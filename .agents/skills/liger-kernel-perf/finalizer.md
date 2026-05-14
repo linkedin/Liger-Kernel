@@ -276,11 +276,11 @@ Benchmark results ({gpu_name}):
 - Speed (backward): {delta}% {faster/slower}
 - Speed (full): {delta}% {faster/slower}
 - Memory: {delta}% {reduction/increase}
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
+
+If the host AI runtime has its own commit-attribution convention (e.g., a `Co-Authored-By` trailer), append it per that runtime's guidelines.
 
 #### Step 7c: Push and Create PR
 
@@ -351,11 +351,11 @@ Tested on {gpu_name}. Values are median ms (speed) or MB (memory).
 - [x] All existing unit tests pass
 - [x] Benchmarks show improvement across all input sizes
 - [x] No regression on non-target metrics (speed/memory balance maintained)
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 ```
+
+If the host AI runtime appends a "Generated with" footer (e.g., Claude Code, Cursor, Copilot), include it per that runtime's guidelines.
 
 **Important**: Do NOT include plots as image attachments in the PR. Plots are for local review only and live in the optimization workspace.
 
