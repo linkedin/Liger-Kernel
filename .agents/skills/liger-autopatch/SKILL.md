@@ -18,15 +18,15 @@ Keywords that suggest modify mode: update, fix, change, add [kernel] to [existin
 
 ### Stage 1: Analyze
 
-Spawn a **Model Analyzer** agent (read [model-analyzer.md](model-analyzer.md)).
+Follow the **Model Analyzer** workflow in [model-analyzer.md](model-analyzer.md). If the host runtime supports parallel subagents, this stage may be delegated to one; otherwise execute the workflow directly.
 
-The agent reads the HF `modeling_*.py` source and produces a **model profile** answering 12 architectural questions from [decision-matrix.md](decision-matrix.md).
+This stage reads the HF `modeling_*.py` source and produces a **model profile** answering 12 architectural questions from [decision-matrix.md](decision-matrix.md).
 
 **Human checkpoint:** Present the profile. Confirm before proceeding.
 
 ### Stage 2: Generate
 
-Spawn a **Code Generator** agent (read [code-generator.md](code-generator.md)).
+Follow the **Code Generator** workflow in [code-generator.md](code-generator.md).
 
 Generates/modifies up to 13 files:
 
@@ -48,7 +48,7 @@ Generates/modifies up to 13 files:
 
 ### Stage 3: Validate
 
-Spawn a **Validator** agent (read [validator.md](validator.md)).
+Follow the **Validator** workflow in [validator.md](validator.md).
 
 Runs instance patching test, convergence test, and lint check. Retries up to 3 times on failure.
 
@@ -69,13 +69,13 @@ Read the existing `apply_liger_kernel_to_{model_type}` function in `monkey_patch
 
 ### Stage 2: Apply Changes
 
-Spawn the **Code Generator** agent (read [code-generator.md](code-generator.md)) in **modify mode**.
+Follow the **Code Generator** workflow in [code-generator.md](code-generator.md) in **modify mode**.
 
 **Human checkpoint:** Present changes for review.
 
 ### Stage 3: Validate
 
-Spawn the **Validator** agent (read [validator.md](validator.md)). This stage is **mandatory** — do not skip it. At minimum, run:
+Follow the **Validator** workflow in [validator.md](validator.md). This stage is **mandatory** — do not skip it. At minimum, run:
 
 1. Instance patching test: `pytest test/transformers/test_monkey_patch.py -k "{model_type}" -xvs`
 2. All convergence tests for the model:
