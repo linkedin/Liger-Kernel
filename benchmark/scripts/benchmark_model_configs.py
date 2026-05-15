@@ -530,6 +530,7 @@ def build_token_length_sweep(
     model_keys: List[str],
     extra_configs: Optional[Dict] = None,
     scale_dim: Literal["T", "B", "BT"] = "T",
+    scaling_method: Literal["linear", "quadratic"] = "linear",
     forward_fn: Callable[..., torch.Tensor] = default_forward_fn,
     probe_provider: str = "huggingface",
     x_label: str = "sequence length",
@@ -601,12 +602,15 @@ def build_token_length_sweep(
         probe_fn=probe_fn,
         probe_seq_len=probe_seq_len,
         probe_batch_size=probe_batch_size,
+        scaling_method=scaling_method,
     )
     if x_values_fn is None:
         if scale_dim == "T":
             x_values_fn = lambda cfg: [2**i for i in range(10, int(math.log2(cfg.seq_len)) + 1)]
         elif scale_dim == "B":
-            x_values_fn = lambda cfg: [2**i for i in range(0, int(math.log2(cfg.batch_size)) + 1)]
+            x_values_fn = lambda cfg: [
+                2**i for i in range(0, int(math.log2(max(2, cfg.batch_size * cfg.seq_len // T))) + 1)
+            ]
         elif scale_dim == "BT":
             x_values_fn = lambda cfg: [2**i for i in range(10, int(math.log2(cfg.seq_len * cfg.batch_size)) + 1)]
 
@@ -616,11 +620,15 @@ def build_token_length_sweep(
         "x_label": x_label,
         "x_values": x_values_fn(config),
         "extra_benchmark_configs": [
-            build_extra_config(
-                model,
-                model_keys,
-                extra_configs=extra_configs,
-            )
+            {
+                **build_extra_config(
+                    model,
+                    model_keys,
+                    extra_configs=extra_configs,
+                ),
+                "bsz": config.batch_size,
+                "seq_len": config.seq_len,
+            }
         ],
         "overwrite": overwrite,
     }

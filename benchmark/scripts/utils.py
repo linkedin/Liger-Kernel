@@ -157,6 +157,17 @@ def run_speed_benchmark(
             rep=rep,
             quantiles=QUANTILES,
         )
+    elif mode == "no-grad-forward":
+
+        def no_grad_forward():
+            with torch.no_grad():
+                fwd_fn()
+
+        ms_50, ms_20, ms_80 = triton.testing.do_bench(
+            no_grad_forward,
+            rep=rep,
+            quantiles=QUANTILES,
+        )
     else:
         raise ValueError(f"Unsupported mode: {mode}. Use 'forward', 'backward', or 'full'.")
     return SingleBenchmarkRunOutput(y_20=ms_20, y_50=ms_50, y_80=ms_80)

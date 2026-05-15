@@ -68,7 +68,7 @@ if __name__ == "__main__":
                 "bsz": 1,
                 "hidden_act": "silu",
             },
-            probe_dim="BT",
+            probe_dim="T",
             bt=args.bt,
             overwrite=args.overwrite,
         )
@@ -82,17 +82,21 @@ if __name__ == "__main__":
             model=model,
             setup_fn=setup_swiglu,
             model_keys=["hidden_size", "intermediate_size", "dtype"],
-            extra_configs={"hidden_act": "silu", "bsz": 1},
-            scale_dim="BT",
+            extra_configs={
+                "bsz": 1,
+                "hidden_act": "silu",
+            },
+            scale_dim="T",
+            x_label="total tokens",
             probe_provider="huggingface",
             overwrite=args.overwrite,
         )
 
-    common_configs["kernel_providers"] = ["liger", "huggingface"]
+    common_configs["kernel_providers"] = ["huggingface", "liger"]
 
     run_benchmarks(
         bench_test_fn=build_speed_bench_fn(setup_swiglu),
-        kernel_operation_modes=["full", "forward", "backward"],
+        kernel_operation_modes=["forward", "backward", "full"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,

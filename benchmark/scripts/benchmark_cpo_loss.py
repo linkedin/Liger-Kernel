@@ -1,4 +1,3 @@
-import math
 import os
 import sys
 
@@ -80,10 +79,7 @@ if __name__ == "__main__":
             model_keys=["hidden_size", "vocab_size", "dtype"],
             extra_configs={"T": T},
             scale_dim="B",
-            probe_provider="huggingface",
-            x_values_fn=lambda config: [
-                2**i for i in range(1, int(math.log2(max(2, config.batch_size * config.seq_len // T))) + 1)
-            ],
+            x_label="batch size",
             overwrite=args.overwrite,
         )
 
