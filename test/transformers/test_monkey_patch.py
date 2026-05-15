@@ -1713,14 +1713,17 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
 
         dummy_model_instance = PaliGemmaForConditionalGeneration(config)
         assert isinstance(dummy_model_instance, PaliGemmaForConditionalGeneration)
+        siglip_vision_model = getattr(
+            dummy_model_instance.model.vision_tower, "vision_model", dummy_model_instance.model.vision_tower
+        )
 
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(paligemma_lce_forward)
-        assert inspect.getsource(
-            dummy_model_instance.model.vision_tower.vision_model.post_layernorm.forward
-        ) != inspect.getsource(LigerLayerNorm.forward)
+        assert inspect.getsource(siglip_vision_model.post_layernorm.forward) != inspect.getsource(
+            LigerLayerNorm.forward
+        )
 
-        for layer in dummy_model_instance.model.vision_tower.vision_model.encoder.layers:
+        for layer in siglip_vision_model.encoder.layers:
             assert inspect.getsource(layer.layer_norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(layer.layer_norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
 
@@ -1729,11 +1732,11 @@ def test_apply_liger_kernel_to_instance_for_paligemma():
 
         # Check that the model's instance variables were correctly patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(paligemma_lce_forward)
-        assert inspect.getsource(
-            dummy_model_instance.model.vision_tower.vision_model.post_layernorm.forward
-        ) == inspect.getsource(LigerLayerNorm.forward)
+        assert inspect.getsource(siglip_vision_model.post_layernorm.forward) == inspect.getsource(
+            LigerLayerNorm.forward
+        )
 
-        for layer in dummy_model_instance.model.vision_tower.vision_model.encoder.layers:
+        for layer in siglip_vision_model.encoder.layers:
             assert inspect.getsource(layer.layer_norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(layer.layer_norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
 
@@ -1818,18 +1821,23 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
             hidden_size=48,
             intermediate_size=64,
         )
-        config = transformers.models.gemma3.configuration_gemma3.Gemma3Config(text_config, vision_config)
+        config = transformers.models.gemma3.configuration_gemma3.Gemma3Config(
+            text_config=text_config, vision_config=vision_config
+        )
 
         dummy_model_instance = Gemma3ForConditionalGeneration._from_config(config)
         assert isinstance(dummy_model_instance, Gemma3ForConditionalGeneration)
+        siglip_vision_model = getattr(
+            dummy_model_instance.model.vision_tower, "vision_model", dummy_model_instance.model.vision_tower
+        )
 
         # Check that model instance variables are not yet patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(gemma3_multimodal_forward)
-        assert inspect.getsource(
-            dummy_model_instance.model.vision_tower.vision_model.post_layernorm.forward
-        ) != inspect.getsource(LigerLayerNorm.forward)
+        assert inspect.getsource(siglip_vision_model.post_layernorm.forward) != inspect.getsource(
+            LigerLayerNorm.forward
+        )
 
-        for layer in dummy_model_instance.model.vision_tower.vision_model.encoder.layers:
+        for layer in siglip_vision_model.encoder.layers:
             assert inspect.getsource(layer.layer_norm1.forward) != inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(layer.layer_norm2.forward) != inspect.getsource(LigerLayerNorm.forward)
 
@@ -1857,11 +1865,11 @@ def test_apply_liger_kernel_to_instance_for_gemma3_conditional_generation():
 
         # Check that the model's instance variables were correctly patched with Liger modules
         assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(gemma3_multimodal_forward)
-        assert inspect.getsource(
-            dummy_model_instance.model.vision_tower.vision_model.post_layernorm.forward
-        ) == inspect.getsource(LigerLayerNorm.forward)
+        assert inspect.getsource(siglip_vision_model.post_layernorm.forward) == inspect.getsource(
+            LigerLayerNorm.forward
+        )
 
-        for layer in dummy_model_instance.model.vision_tower.vision_model.encoder.layers:
+        for layer in siglip_vision_model.encoder.layers:
             assert inspect.getsource(layer.layer_norm1.forward) == inspect.getsource(LigerLayerNorm.forward)
             assert inspect.getsource(layer.layer_norm2.forward) == inspect.getsource(LigerLayerNorm.forward)
 
