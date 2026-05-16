@@ -10,6 +10,7 @@ this benchmark focuses on the kernel-level implementation without the linear lay
 Usage:
     python benchmark_grpo_loss_kernel.py [--overwrite]
 """
+
 import os
 import sys
 
@@ -274,7 +275,7 @@ if __name__ == "__main__":
         "kernel_name": "grpo_loss_kernel_token",
         "x_name": "B",
         "x_label": "Batch Size",
-        "x_values": [2 ** i for i in range(1, 5)],
+        "x_values": [2**i for i in range(1, 5)],
         "kernel_providers": ["liger", "torch"],
         "extra_benchmark_configs": [
             {
@@ -293,7 +294,7 @@ if __name__ == "__main__":
         "kernel_name": "grpo_loss_kernel_sequence",
         "x_name": "B",
         "x_label": "Batch Size",
-        "x_values": [2 ** i for i in range(1, 5)],
+        "x_values": [2**i for i in range(1, 5)],
         "kernel_providers": ["liger", "torch"],
         "extra_benchmark_configs": [
             {
