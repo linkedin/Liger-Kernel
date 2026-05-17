@@ -1,13 +1,17 @@
 import math
+import os
+import sys
 
 import torch
-import torch.nn as nn
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from benchmark_model_configs import MODEL_REGISTRY
 from benchmark_model_configs import compute_model_config_sweep_config
 from benchmark_model_configs import compute_seq_len_sweep_config
 from benchmark_model_configs import estimate_kernel_peak_memory
 from benchmark_model_configs import get_benchmark_model_config
+from test.transformers.test_modulated_rms_norm import ModulatedRMSNormReference
 from utils import SingleBenchmarkRunInput
 from utils import SingleBenchmarkRunOutput
 from utils import parse_benchmark_script_args
@@ -16,49 +20,9 @@ from utils import run_memory_benchmark
 from utils import run_speed_benchmark
 
 from liger_kernel.transformers.modulated_rms_norm import LigerModulatedRMSNorm
-from liger_kernel.transformers.rms_norm import LigerRMSNorm
 from liger_kernel.utils import infer_device
 
 device = infer_device()
-
-
-class NaiveModulatedRMSNorm(nn.Module):
-    def __init__(self, hidden_size, eps=1e-6):
-        """
-        Naive implementation of modulated RMSNorm: y = (1 + scale) * RMSNorm(x) + shift.
-        """
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
-        self.variance_epsilon = eps
-
-    def forward(self, hidden_states, scale, shift=None):
-        input_dtype = hidden_states.dtype
-        normed = hidden_states.to(torch.float32)
-        variance = normed.pow(2).mean(-1, keepdim=True)
-        normed = normed * torch.rsqrt(variance + self.variance_epsilon)
-        normed = self.weight * normed.to(input_dtype)
-        output = normed * (1 + scale)
-        if shift is not None:
-            output = output + shift
-        return output
-
-
-class LigerRMSNormWithNaiveModulation(nn.Module):
-    def __init__(self, hidden_size, eps=1e-6):
-        """
-        LigerRMSNormWithNaiveModulation is equivalent to NaiveModulatedRMSNorm above, but
-        uses the LigerRMSNorm kernel for the base normalization step (modulation is
-        applied in eager PyTorch). Useful to isolate the benefit of fusing modulation
-        into the norm kernel.
-        """
-        super().__init__()
-        self.rms_norm = LigerRMSNorm(hidden_size=hidden_size, eps=eps, in_place=False)
-
-    def forward(self, hidden_states, scale, shift=None):
-        output = self.rms_norm(hidden_states) * (1 + scale)
-        if shift is not None:
-            output = output + shift
-        return output
 
 
 def _setup_modulated_rms_norm(input: SingleBenchmarkRunInput):
@@ -79,10 +43,8 @@ def _setup_modulated_rms_norm(input: SingleBenchmarkRunInput):
 
     if input.kernel_provider == "liger":
         layer = LigerModulatedRMSNorm(hidden_size=hidden_size, eps=eps, in_place=False).to(device)
-    elif input.kernel_provider == "liger_rms_norm":
-        layer = LigerRMSNormWithNaiveModulation(hidden_size=hidden_size, eps=eps).to(device)
     elif input.kernel_provider == "huggingface":
-        layer = NaiveModulatedRMSNorm(hidden_size=hidden_size, eps=eps).to(device)
+        layer = ModulatedRMSNormReference(hidden_size=hidden_size, eps=eps).to(device)
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for ModulatedRMSNorm")
     return x, scale, shift, layer
@@ -174,7 +136,7 @@ if __name__ == "__main__":
             "x_name": "model_config",
             "x_label": "model configuration",
             "x_values": [cfg.name for cfg in sweep.model_configs],
-            "kernel_providers": ["liger", "liger_rms_norm", "huggingface"],
+            "kernel_providers": ["liger", "huggingface"],
             "extra_benchmark_configs": [
                 {
                     "model_configs": model_configs_info,
@@ -228,7 +190,7 @@ if __name__ == "__main__":
             "x_name": "BT",
             "x_label": "B * T",
             "x_values": [2**i for i in range(10, int(math.log2(config.batch_size * config.seq_len)) + 1)],
-            "kernel_providers": ["liger", "liger_rms_norm", "huggingface"],
+            "kernel_providers": ["liger", "huggingface"],
             "extra_benchmark_configs": [
                 {
                     "hidden_size": model.hidden_size,

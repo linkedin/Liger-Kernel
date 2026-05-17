@@ -28,19 +28,6 @@ if device == "cuda":
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
-def _broadcast_modulation(modulation, hidden_states):
-    if modulation.dim() == 1:
-        return modulation
-    if modulation.shape == hidden_states.shape:
-        return modulation
-    if hidden_states.dim() == 3 and modulation.dim() == 2 and modulation.shape[0] == hidden_states.shape[0]:
-        return modulation[:, None, :]
-    if hidden_states.dim() == 2 and modulation.dim() == 2 and hidden_states.shape[0] % modulation.shape[0] == 0:
-        rows_per_modulation = hidden_states.shape[0] // modulation.shape[0]
-        return modulation.repeat_interleave(rows_per_modulation, dim=0)
-    raise AssertionError("Unsupported modulation shape for reference implementation.")
-
-
 class ModulatedRMSNormReference(nn.Module):
     def __init__(self, hidden_size, eps=1e-6, offset=0.0, casting_mode="llama", elementwise_affine=True):
         super().__init__()
@@ -52,6 +39,19 @@ class ModulatedRMSNormReference(nn.Module):
         self.eps = eps
         self.offset = offset
         self.casting_mode = casting_mode
+
+    @staticmethod
+    def _broadcast_modulation(modulation, hidden_states):
+        if modulation.dim() == 1:
+            return modulation
+        if modulation.shape == hidden_states.shape:
+            return modulation
+        if hidden_states.dim() == 3 and modulation.dim() == 2 and modulation.shape[0] == hidden_states.shape[0]:
+            return modulation[:, None, :]
+        if hidden_states.dim() == 2 and modulation.dim() == 2 and hidden_states.shape[0] % modulation.shape[0] == 0:
+            rows_per_modulation = hidden_states.shape[0] // modulation.shape[0]
+            return modulation.repeat_interleave(rows_per_modulation, dim=0)
+        raise AssertionError("Unsupported modulation shape for reference implementation.")
 
     def _norm(self, hidden_states):
         input_dtype = hidden_states.dtype
@@ -81,10 +81,10 @@ class ModulatedRMSNormReference(nn.Module):
 
     def forward(self, hidden_states, scale, shift=None):
         normed = self._norm(hidden_states)
-        scale = _broadcast_modulation(scale, hidden_states)
+        scale = self._broadcast_modulation(scale, hidden_states)
         output = normed * (1 + scale)
         if shift is not None:
-            shift = _broadcast_modulation(shift, hidden_states)
+            shift = self._broadcast_modulation(shift, hidden_states)
             output = output + shift
         return output
 
@@ -108,8 +108,8 @@ def _make_modulation(shape, hd, scale_mode, dtype):
 @pytest.mark.parametrize(
     "bs, sl, hd",
     [
-        (2, 16, 512),
-        (5, 7, 123),
+        (2, 128, 512),
+        (5, 123, 123),
     ],
 )
 @pytest.mark.parametrize(
@@ -118,7 +118,7 @@ def _make_modulation(shape, hd, scale_mode, dtype):
         (torch.float32, 1e-4, 1e-6),
         pytest.param(
             torch.bfloat16,
-            2e-1,
+            1e-1,
             2e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
@@ -129,17 +129,17 @@ def _make_modulation(shape, hd, scale_mode, dtype):
     [
         (0.0, "llama"),
         (1.0, "gemma"),
-        pytest.param(
-            0.0,
-            "none",
-            marks=pytest.mark.skipif(device == "npu", reason="Ascend NPU does not support this test"),
-        ),
+        (0.0, "none"),
     ],
 )
 @pytest.mark.parametrize("scale_mode", ["global", "batch", "row"])
 @pytest.mark.parametrize("has_shift", [True, False])
 @pytest.mark.parametrize("elementwise_affine", [True, False])
+@pytest.mark.skipif(device == "npu", reason="Ascend NPU does not support this test")
 def test_correctness(bs, sl, hd, dtype, atol, rtol, offset, casting_mode, scale_mode, has_shift, elementwise_affine):
+    if dtype == torch.bfloat16 and casting_mode == "none":
+        atol = 2e-1
+
     shape = (bs, sl, hd)
     tensor = torch.randn(shape, device=device, dtype=dtype)
     scale, shift = _make_modulation(shape, hd, scale_mode, dtype)
@@ -239,11 +239,11 @@ def test_mixed_dtype_modulation(scale_mode, has_shift):
     ref_out_fp32 = ref(h_ref, scale_ref, shift_ref)
     ref_out_fp32.backward(grad.float())
 
-    assert_verbose_allclose(ref_out_fp32.bfloat16(), triton_out, atol=2e-1, rtol=2e-2)
-    assert_verbose_allclose(h_ref.grad.bfloat16(), h_triton.grad, atol=2e-1, rtol=2e-2)
-    assert_verbose_allclose(scale_ref.grad, scale_triton.grad, atol=2e-1, rtol=2e-2)
+    assert_verbose_allclose(ref_out_fp32.bfloat16(), triton_out, atol=1e-1, rtol=2e-2)
+    assert_verbose_allclose(h_ref.grad.bfloat16(), h_triton.grad, atol=1e-1, rtol=2e-2)
+    assert_verbose_allclose(scale_ref.grad, scale_triton.grad, atol=1e-1, rtol=2e-2)
     if has_shift:
-        assert_verbose_allclose(shift_ref.grad, shift_triton.grad, atol=2e-1, rtol=2e-2)
+        assert_verbose_allclose(shift_ref.grad, shift_triton.grad, atol=1e-1, rtol=2e-2)
 
 
 @pytest.mark.parametrize(
@@ -252,7 +252,7 @@ def test_mixed_dtype_modulation(scale_mode, has_shift):
         (torch.float32, 1e-4, 1e-6),
         pytest.param(
             torch.bfloat16,
-            2e-1,
+            1e-1,
             2e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
