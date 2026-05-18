@@ -143,9 +143,12 @@ def _replace_with_vendor_ops():
             globals()[name] = getattr(vendor_ops, name)
 
     except ImportError:
-        if vendor_info.required:
+        import os
+
+        backend = os.environ.get("LIGER_KERNEL_BACKEND", "").strip().lower()
+        if backend == "cutile":
             raise
-        # Vendor module not available, use default implementations
+        # Vendor module not available, use default implementations.
         pass
 
 

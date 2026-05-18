@@ -113,7 +113,7 @@ y = orpo_loss(lm_head.weight, x, target)
 - **Ease of use:** Simply patch your Hugging Face model with one line of code, or compose your own model using our Liger Kernel modules.
 - **Time and memory efficient:** In the same spirit as Flash-Attn, but for layers like **RMSNorm**, **RoPE**, **SwiGLU**, and **CrossEntropy**! Increases multi-GPU training throughput by 20% and reduces memory usage by 60% with **kernel fusion**, **in-place replacement**, and **chunking** techniques.
 - **Exact:** Computation is exact—no approximations! Both forward and backward passes are implemented with rigorous unit tests and undergo convergence testing against training runs without Liger Kernel to ensure accuracy.
-- **Lightweight:** Liger Kernel has minimal dependencies, requiring only Torch and Triton—no extra libraries needed! Say goodbye to dependency headaches!
+- **Lightweight:** Liger Kernel has minimal default dependencies, requiring only Torch and Triton. Optional backends such as cuTile can be installed explicitly when needed.
 - **Multi-GPU supported:** Compatible with multi-GPU setups (PyTorch FSDP, DeepSpeed, DDP, etc.).
 - **Trainer Framework Integration**: [Axolotl](https://github.com/axolotl-ai-cloud/axolotl), [LLaMa-Factory](https://github.com/hiyouga/LLaMA-Factory), [SFTTrainer](https://github.com/huggingface/trl/releases/tag/v0.10.1), [Hugging Face Trainer](https://github.com/huggingface/transformers/pull/32860), [SWIFT](https://github.com/modelscope/ms-swift), [oumi](https://github.com/oumi-ai/oumi/tree/main)
 
@@ -139,6 +139,8 @@ pip3 install --pre torch torchvision torchaudio --index-url https://download.pyt
 ### Optional Dependencies
 
 - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
+- `cuda-tile`: Required when enabling the optional cuTile backend on CUDA. Use this when your environment already provides CUDA Toolkit 13.1 or newer, or an existing tileiras compiler installation.
+- `cuda-tile[tileiras]`: Required when enabling the optional cuTile backend with the tileiras compiler installed directly into your Python environment.
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -168,9 +170,25 @@ pip install -e .
 # Setup Development Dependencies
 pip install -e ".[dev]"
 
+# Setup cuTile Dependencies
+pip install -e ".[cutile]"
+
+# Or install cuTile with the optional tileiras compiler
+pip install -e ".[cutile-tileiras]"
+
 # NOTE -> For AMD users only
 pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.3/
 ```
+
+### Enable cuTile Backend
+
+cuTile is an optional CUDA-only backend. After installing the `cutile` or `cutile-tileiras` extra, enable it explicitly:
+
+```bash
+LIGER_KERNEL_BACKEND=cutile python your_script.py
+```
+
+`LIGER_KERNEL_BACKEND` currently only supports `cutile`. Selecting it on a non-CUDA device, or without the required cuTile dependencies, raises an error.
 
 
 ## Getting Started

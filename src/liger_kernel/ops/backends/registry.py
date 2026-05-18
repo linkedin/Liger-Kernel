@@ -22,12 +22,10 @@ class VendorInfo:
     Attributes:
         vendor: Vendor name (e.g., "ascend", "intel", "nvidia")
         device: Device type this vendor supports (e.g., "npu", "xpu")
-        required: Whether failing to load this backend should raise an error.
     """
 
     vendor: str
     device: str
-    required: bool = False
 
     @property
     def module_path(self) -> str:
@@ -83,6 +81,6 @@ def select_backend_for_device(device: str) -> Optional[VendorInfo]:
     if backend == "cutile":
         if device != "cuda":
             raise RuntimeError("LIGER_KERNEL_BACKEND=cutile requires a CUDA/GPU device.")
-        return VendorInfo(vendor="cutile", device="cuda", required=True)
+        return VendorInfo(vendor="cutile", device="cuda")
 
-    raise RuntimeError(f"Unsupported LIGER_KERNEL_BACKEND: {backend}")
+    raise RuntimeError(f"Unsupported LIGER_KERNEL_BACKEND: {backend}. Only 'cutile' is currently supported.")
