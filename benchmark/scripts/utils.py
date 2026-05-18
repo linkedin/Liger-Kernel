@@ -250,6 +250,13 @@ def get_formatted_time():
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def get_display_kernel_provider(kernel_provider: str) -> str:
+    backend = os.environ.get("LIGER_KERNEL_BACKEND", "").strip().lower()
+    if kernel_provider == "liger" and backend:
+        return f"liger-{backend}"
+    return kernel_provider
+
+
 def get_gpu_name():
     """
     Returns the current GPU name, formatted to serve as a directory name
@@ -422,7 +429,7 @@ def run_benchmarks(
                 benchmark_run_data = BenchmarkData(
                     kernel_name=kernel_name,
                     kernel_operation_mode=kernel_operation_mode,
-                    kernel_provider=kernel_provider,
+                    kernel_provider=get_display_kernel_provider(kernel_provider),
                     metric_name=metric_name,
                     metric_unit=metric_unit,
                     gpu_name=gpu_name,

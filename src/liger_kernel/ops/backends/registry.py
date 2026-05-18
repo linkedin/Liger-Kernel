@@ -5,6 +5,8 @@ This module defines VendorInfo and the registry for vendor registration.
 Each vendor registers itself by calling register_vendor() in its __init__.py.
 """
 
+import os
+
 from dataclasses import dataclass
 from typing import Optional
 
@@ -20,10 +22,12 @@ class VendorInfo:
     Attributes:
         vendor: Vendor name (e.g., "ascend", "intel", "nvidia")
         device: Device type this vendor supports (e.g., "npu", "xpu")
+        required: Whether failing to load this backend should raise an error.
     """
 
     vendor: str
     device: str
+    required: bool = False
 
     @property
     def module_path(self) -> str:
@@ -59,3 +63,26 @@ def get_vendor_for_device(device: str) -> Optional[VendorInfo]:
         VendorInfo if found, None otherwise
     """
     return VENDOR_REGISTRY.get(device)
+
+
+def select_backend_for_device(device: str) -> Optional[VendorInfo]:
+    """
+    Select the backend implementation for a given device.
+
+    LIGER_KERNEL_BACKEND is an explicit override for optional backends that are
+    not the default vendor implementation for a device.
+    """
+    backend = os.environ.get("LIGER_KERNEL_BACKEND")
+    if backend is None:
+        return get_vendor_for_device(device)
+
+    backend = backend.strip().lower()
+    if backend == "":
+        return get_vendor_for_device(device)
+
+    if backend == "cutile":
+        if device != "cuda":
+            raise RuntimeError("LIGER_KERNEL_BACKEND=cutile requires a CUDA/GPU device.")
+        return VendorInfo(vendor="cutile", device="cuda", required=True)
+
+    raise RuntimeError(f"Unsupported LIGER_KERNEL_BACKEND: {backend}")

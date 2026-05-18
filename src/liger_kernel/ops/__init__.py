@@ -106,8 +106,8 @@ def _replace_with_vendor_ops():
 
     This function is called automatically on module load. It:
     1. Detects the current device (cuda, npu, xpu, etc.)
-    2. Looks up the vendor for that device via VENDOR_REGISTRY
-    3. Loads and applies vendor-specific implementations
+    2. Selects the backend for that device, including explicit backend overrides
+    3. Loads and applies backend-specific implementations
 
     Vendor implementations should be placed in:
         liger_kernel/ops/backends/_<vendor>/ops/
@@ -117,13 +117,12 @@ def _replace_with_vendor_ops():
 
     Note: Vendor can both override existing ops AND add new vendor-specific ops.
     """
-    from liger_kernel.ops.backends import get_vendor_for_device
+    from liger_kernel.ops.backends import select_backend_for_device
     from liger_kernel.utils import infer_device
 
     device = infer_device()
 
-    # Look up vendor info for this device
-    vendor_info = get_vendor_for_device(device)
+    vendor_info = select_backend_for_device(device)
     if vendor_info is None:
         return
 
@@ -144,6 +143,8 @@ def _replace_with_vendor_ops():
             globals()[name] = getattr(vendor_ops, name)
 
     except ImportError:
+        if vendor_info.required:
+            raise
         # Vendor module not available, use default implementations
         pass
 
