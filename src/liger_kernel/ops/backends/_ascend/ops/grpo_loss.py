@@ -11,6 +11,7 @@ from liger_kernel.ops.utils import get_npu_core_count
 _TYPE_GRPO: tl.constexpr = tl.constexpr(0)
 _TYPE_CISPO: tl.constexpr = tl.constexpr(1)
 _TYPE_SAPO: tl.constexpr = tl.constexpr(2)
+_TYPE_VESPO: tl.constexpr = tl.constexpr(3)
 
 _str_to_loss_type = {
     "grpo": _TYPE_GRPO.value,
@@ -20,6 +21,7 @@ _str_to_loss_type = {
     "luspo": _TYPE_GRPO.value,
     "cispo": _TYPE_CISPO.value,
     "sapo": _TYPE_SAPO.value,
+    "vespo": _TYPE_VESPO.value,
 }
 
 
@@ -147,6 +149,7 @@ def _grpo_loss_fwd_kernel(
     ADVANTAGES,
     VLLM_IS_RATIO,
     VLLM_IS_RATIO_STRIDE,
+    PHI_SEQ,  # VESPO gamma weight per sequence (B,) or None
     LOSS,
     LSE,
     KL,
@@ -242,7 +245,12 @@ def _grpo_loss_fwd_kernel(
                 per_token_loss = -sapo_coef * advantage
                 is_clipped = 0.0
 
-            if VLLM_IS_RATIO is not None:
+            elif LOSS_TYPE == 3:  # VESPO
+                phi_seq = tl.load(PHI_SEQ + off_b).to(tl.float32)
+                per_token_loss = -phi_seq * advantage * logp
+                is_clipped = 0.0
+
+            if VLLM_IS_RATIO is not None and LOSS_TYPE != 3:
                 vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
                     tl.float32
                 )
@@ -272,6 +280,7 @@ def _grpo_loss_fwd_kernel_seq(
     COMPLETION_MASK,
     ADVANTAGES,
     COEF_1,
+    COEF_1_RAW,
     COEF_2,
     IS_CLIPPED_SEQ,
     VLLM_IS_RATIO,
@@ -314,6 +323,7 @@ def _grpo_loss_fwd_kernel_seq(
             INPUT_IDS_local = INPUT_IDS + off_b * L + off_l
             ADVANTAGES_local = ADVANTAGES + off_b
             COEF_1_local = COEF_1 + off_b
+            COEF_1_RAW_local = COEF_1_RAW + off_b
             COEF_2_local = COEF_2 + off_b
             IS_CLIPPED_SEQ_local = IS_CLIPPED_SEQ + off_b
             LOSS_local = LOSS + token_idx
@@ -337,12 +347,13 @@ def _grpo_loss_fwd_kernel_seq(
             x = tl.load(LOGITS_local + idx).to(tl.float32) * inv_temp
             logp = x - lse
 
-            coef_1 = tl.load(COEF_1_local).to(tl.float32)
+            coef_1_for_loss = tl.load(COEF_1_local).to(tl.float32)
+            coef_1_raw = tl.load(COEF_1_RAW_local).to(tl.float32)
             coef_2 = tl.load(COEF_2_local).to(tl.float32)
             is_clipped_seq = tl.load(IS_CLIPPED_SEQ_local)
 
             advantage = tl.load(ADVANTAGES_local).to(tl.float32)
-            per_token_loss1 = coef_1 * advantage
+            per_token_loss1 = coef_1_for_loss * advantage
             per_token_loss2 = coef_2 * advantage
             per_token_loss = -tl.minimum(per_token_loss1, per_token_loss2)
 
@@ -358,11 +369,7 @@ def _grpo_loss_fwd_kernel_seq(
                 ref_logp = tl.load(REF_LOGP_local).to(tl.float32)
                 kl = tl.exp(ref_logp - logp) - (ref_logp - logp) - 1
                 if USE_BIAS_CORRECTION_KL:
-                    if OLD_LOGP is None:
-                        old_logp = logp
-                    else:
-                        old_logp = tl.load(OLD_LOGP + token_idx).to(tl.float32)
-                    kl = kl * tl.exp(logp - old_logp)
+                    kl = kl * coef_1_raw
                 per_token_loss += BETA * kl
                 tl.store(KL_local, kl)
 
@@ -463,12 +470,7 @@ def _grpo_loss_bwd_kernel_seq(
                 REF_LOGP_local = REF_LOGP + token_idx
                 ref_logp = tl.load(REF_LOGP_local).to(tl.float32)
                 if USE_BIAS_CORRECTION_KL:
-                    if OLD_LOGP is None:
-                        old_logp = logp
-                    else:
-                        old_logp = tl.load(OLD_LOGP + token_idx).to(tl.float32)
-                    token_coef_1 = tl.exp(logp - old_logp)
-                    dlogp += BETA * token_coef_1 * (logp - ref_logp) * dloss
+                    dlogp += BETA * coef_1 * (logp - ref_logp) * dloss
                 else:
                     dlogp += BETA * (1 - tl.exp(ref_logp - logp)) * dloss
 
@@ -497,6 +499,7 @@ def _grpo_loss_bwd_kernel(
     LSE,
     VLLM_IS_RATIO,
     VLLM_IS_RATIO_STRIDE,
+    PHI_SEQ,
     TEMPERATURE,
     BETA: tl.constexpr,
     EPS_LOW,
@@ -585,7 +588,11 @@ def _grpo_loss_bwd_kernel(
                 d_sapo_d_coef1 = 4.0 * sigmoid_val * (1.0 - sigmoid_val)
                 dlogp = -advantage * d_sapo_d_coef1 * coef_1
 
-            if VLLM_IS_RATIO is not None:
+            elif LOSS_TYPE == 3:  # VESPO
+                phi_seq = tl.load(PHI_SEQ + off_b).to(tl.float32)
+                dlogp = -phi_seq * advantage
+
+            if VLLM_IS_RATIO is not None and LOSS_TYPE != 3:
                 vllm_is_ratio = tl.load(VLLM_IS_RATIO + off_b * VLLM_IS_RATIO_STRIDE + off_l % VLLM_IS_RATIO_STRIDE).to(
                     tl.float32
                 )
@@ -639,19 +646,29 @@ def fused_selective_log_softmax(logits: torch.Tensor, input_ids: torch.Tensor, t
     return log_p
 
 
-def compute_distribution_normalizer(completion_mask):
-    """Calculate global active token count for distributed loss normalization."""
-    normalizer = completion_mask.to(torch.float32).sum()
+def _compute_dapo_normalizer(completion_mask, num_items_in_batch=None):
+    """Per-process normalizer for DAPO/CISPO/VESPO (matches default ``ops/grpo_loss``)."""
     world_size = 1
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        world_size = torch.distributed.get_world_size()
+
+    if num_items_in_batch is not None:
+        if isinstance(num_items_in_batch, torch.Tensor):
+            normalizer = num_items_in_batch.to(device=completion_mask.device, dtype=torch.float32)
+        else:
+            normalizer = torch.as_tensor(float(num_items_in_batch), device=completion_mask.device, dtype=torch.float32)
+        normalizer = normalizer / world_size
+        return torch.clamp(normalizer, min=1.0)
+
+    normalizer = completion_mask.to(torch.float32).sum()
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         normalizer = normalizer.clone()
         torch.distributed.all_reduce(normalizer, op=torch.distributed.ReduceOp.SUM)
-        world_size = torch.distributed.get_world_size()
     normalizer = normalizer / world_size
     return torch.clamp(normalizer, min=1.0)
 
 
-def reduce_loss(per_token_loss, mask, loss_type, max_completion_length, batch_size, seq_len):
+def reduce_loss(per_token_loss, mask, loss_type, max_completion_length, batch_size, seq_len, num_items_in_batch=None):
     """Apply reduction strategy based on specified loss type."""
     if loss_type == "grpo" or loss_type == "sapo":
         return ((per_token_loss * mask).sum(-1) / mask.sum(-1).clamp(min=1.0)).mean()
@@ -660,11 +677,13 @@ def reduce_loss(per_token_loss, mask, loss_type, max_completion_length, batch_si
     elif loss_type == "dr_grpo":
         max_len = max_completion_length if max_completion_length is not None else seq_len
         return (per_token_loss * mask).sum() / (batch_size * max_len)
-    elif loss_type == "dapo" or loss_type == "cispo":
-        return (per_token_loss * mask).sum() / compute_distribution_normalizer(mask)
+    elif loss_type == "dapo" or loss_type == "cispo" or loss_type == "vespo":
+        return (per_token_loss * mask).sum() / _compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
     elif loss_type == "luspo":
         return (per_token_loss * mask.sum(-1, keepdim=True)).mean()
-    raise ValueError(f"Unknown loss_type: {loss_type}. Expected one of: grpo, bnpo, dr_grpo, dapo, cispo, sapo, luspo")
+    raise ValueError(
+        f"Unknown loss_type: {loss_type}. Expected one of: grpo, bnpo, dr_grpo, dapo, cispo, sapo, luspo, vespo"
+    )
 
 
 def grpo_loss_forward_triton(
@@ -689,6 +708,8 @@ def grpo_loss_forward_triton(
     vllm_is_ratio=None,
     delta=None,
     use_bias_correction_kl=False,
+    num_items_in_batch=None,
+    phi_seq=None,
 ):
     """Forward pass computation for GRPO loss."""
     assert logits.is_contiguous() and completion_ids.is_contiguous()
@@ -701,12 +722,12 @@ def grpo_loss_forward_triton(
     if loss_type not in _str_to_loss_type:
         raise ValueError(f"Unknown loss_type '{loss_type}'. Supported types: {list(_str_to_loss_type.keys())}")
 
-    if delta is not None and loss_type in ("cispo", "sapo"):
+    if delta is not None and loss_type in ("cispo", "sapo", "vespo"):
         raise ValueError(f"delta (two-sided clipping) is not supported for loss_type='{loss_type}'.")
 
     delta_val = 0.0 if delta is None else float(delta)
 
-    if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo"):
+    if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo", "vespo"):
         raise ValueError(
             f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'. "
             f"Use importance_sampling_level='token' instead."
@@ -722,6 +743,14 @@ def grpo_loss_forward_triton(
 
     B, L_ADD_1, N = logits.shape
     L = L_ADD_1 - 1
+
+    if loss_type == "vespo":
+        if phi_seq is None:
+            raise ValueError("loss_type='vespo' requires phi_seq pre-computed (use the triton_grpo_loss wrapper).")
+        assert phi_seq.shape in ((B,), (B, 1)), f"phi_seq must be (B,) or (B, 1), got {tuple(phi_seq.shape)}"
+        phi_seq = phi_seq.reshape(-1).contiguous()
+    else:
+        phi_seq = None
 
     if completion_mask is not None:
         assert completion_mask.is_contiguous()
@@ -782,6 +811,7 @@ def grpo_loss_forward_triton(
             completion_mask,
             advantages,
             coef_1_for_loss.contiguous(),
+            coef_1.contiguous(),
             coef_2.contiguous(),
             is_clipped_seq.contiguous(),
             vllm_is_ratio_ptr,
@@ -821,6 +851,7 @@ def grpo_loss_forward_triton(
             advantages,
             vllm_is_ratio_ptr,
             vllm_is_ratio_stride,
+            phi_seq,
             loss,
             lse,
             kl,
@@ -839,7 +870,16 @@ def grpo_loss_forward_triton(
             BLOCK_N=block_n,
         )
         ctx.save_for_backward(
-            logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, vllm_is_ratio_ptr
+            logits,
+            old_logp,
+            ref_logp,
+            completion_ids,
+            advantages,
+            completion_mask,
+            lse,
+            mask,
+            vllm_is_ratio_ptr,
+            phi_seq,
         )
 
     ctx.infos = (
@@ -860,6 +900,7 @@ def grpo_loss_forward_triton(
         reduce,
         delta_val,
         use_bias_correction_kl,
+        num_items_in_batch,
     )
 
     mask_sum = mask.sum().clamp(min=1.0)
@@ -872,7 +913,9 @@ def grpo_loss_forward_triton(
         is_clipped_out = is_clipped * mask
         return loss_out, kl_out, is_clipped_out
 
-    reduced_loss = reduce_loss(loss, mask, loss_type, max_completion_length, B, L)
+    reduced_loss = reduce_loss(
+        loss, mask, loss_type, max_completion_length, B, L, num_items_in_batch=num_items_in_batch
+    )
     return reduced_loss, kl_mean, clip_ratio
 
 
@@ -898,6 +941,7 @@ def grpo_loss_backward_triton(ctx, *args):
         reduce,
         delta_val,
         use_bias_correction_kl,
+        num_items_in_batch,
     ) = ctx.infos
 
     if importance_sampling_level == "sequence":
@@ -914,10 +958,20 @@ def grpo_loss_backward_triton(ctx, *args):
             seq_lens,
             vllm_is_ratio,
         ) = saved_tensors
+        phi_seq = None
     else:
-        (logits, old_logp, ref_logp, completion_ids, advantages, completion_mask, lse, mask, vllm_is_ratio) = (
-            saved_tensors
-        )
+        (
+            logits,
+            old_logp,
+            ref_logp,
+            completion_ids,
+            advantages,
+            completion_mask,
+            lse,
+            mask,
+            vllm_is_ratio,
+            phi_seq,
+        ) = saved_tensors
 
     _, L_ADD_1, N = logits.shape
 
@@ -931,8 +985,8 @@ def grpo_loss_backward_triton(ctx, *args):
     elif loss_type == "dr_grpo":
         max_len = max_completion_length if max_completion_length is not None else L
         dloss = dloss_input * mask / (B * max_len)
-    elif loss_type == "dapo" or loss_type == "cispo":
-        dloss = dloss_input * mask / compute_distribution_normalizer(mask)
+    elif loss_type == "dapo" or loss_type == "cispo" or loss_type == "vespo":
+        dloss = dloss_input * mask / _compute_dapo_normalizer(mask, num_items_in_batch=num_items_in_batch)
     elif loss_type == "luspo":
         seq_lens_bwd = mask.sum(-1, keepdim=True).clamp(min=1.0)
         dloss = dloss_input * seq_lens_bwd / (B * L)
@@ -991,6 +1045,7 @@ def grpo_loss_backward_triton(ctx, *args):
             lse,
             vllm_is_ratio,
             vllm_is_ratio_stride,
+            phi_seq,
             temperature,
             beta,
             eps_low,
@@ -1009,6 +1064,8 @@ def grpo_loss_backward_triton(ctx, *args):
     dlogits[:, -1, :] = 0
     return (
         dlogits,
+        None,
+        None,
         None,
         None,
         None,

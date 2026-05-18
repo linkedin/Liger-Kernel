@@ -39,7 +39,7 @@ def setup_layer_norm(input: SingleBenchmarkRunInput):
     )
     if input.kernel_provider == "liger":
         layer = LigerLayerNorm(hidden_size=hidden_size, eps=eps).to(device).to(dtype)
-    elif input.kernel_provider == "huggingface":
+    elif input.kernel_provider == "torch":
         layer = torch.nn.LayerNorm(hidden_size, eps=eps).to(device).to(dtype)
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for LayerNorm")
@@ -57,8 +57,8 @@ if __name__ == "__main__":
             extra_configs={
                 "eps": 1e-6,
             },
-            probe_dim="BT",
-            probe_provider="huggingface",
+            probe_dim="T",
+            probe_provider="torch",
             bt=args.bt,
             overwrite=args.overwrite,
         )
@@ -76,23 +76,24 @@ if __name__ == "__main__":
             extra_configs={
                 "eps": 1e-6,
             },
-            scale_dim="BT",
-            probe_provider="huggingface",
+            scale_dim="T",
+            x_label="Sequence length",
+            probe_provider="torch",
             overwrite=args.overwrite,
         )
 
-    common_configs["kernel_providers"] = ["liger", "huggingface"]
+    common_configs["kernel_providers"] = ["liger", "torch"]
 
     run_benchmarks(
         bench_test_fn=build_speed_bench_fn(setup_layer_norm),
-        kernel_operation_modes=["full", "forward", "backward"],
+        kernel_operation_modes=["forward", "backward", "full"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,
     )
     run_benchmarks(
         bench_test_fn=build_memory_bench_fn(setup_layer_norm),
-        kernel_operation_modes=["full", "forward", "backward"],
+        kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
         **common_configs,

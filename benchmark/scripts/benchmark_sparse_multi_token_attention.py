@@ -8,7 +8,6 @@ import triton
 from benchmark_model_configs import MODEL_REGISTRY
 from benchmark_model_configs import compute_model_config_sweep_config
 from benchmark_model_configs import compute_seq_len_sweep_config
-from benchmark_model_configs import estimate_kernel_peak_memory
 from benchmark_model_configs import get_benchmark_model_config
 from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
@@ -329,10 +328,13 @@ if __name__ == "__main__":
             _, _, fwd_fn = _setup_sparse_multi_token_attention(probe_input)
             return fwd_fn()
 
-        peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
-        # Memory scales as O(L^2), so compute bytes per L^2
-        kernel_bpt = peak_bytes // (probe_L * probe_L)
-        config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
+        config = compute_seq_len_sweep_config(
+            model_cfg=model,
+            probe_fn=_probe,
+            probe_seq_len=probe_L,
+            probe_batch_size=B,
+            scaling_method="quadratic",
+        )
 
         common_configs = {
             "kernel_name": "sparse_multi_token_attention",
