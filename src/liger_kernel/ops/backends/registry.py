@@ -1,86 +1,109 @@
 """
-Vendor registry for Liger-Kernel multi-backend support.
+Backend registry for Liger-Kernel multi-backend support.
 
-This module defines VendorInfo and the registry for vendor registration.
-Each vendor registers itself by calling register_vendor() in its __init__.py.
+A "backend" here is a named implementation of Liger's operators. It may correspond
+to a different hardware device (e.g., Ascend on NPU) or a different DSL on the
+same device (e.g., cuTile on CUDA), and it may support one or more devices.
+
+Each backend declares:
+  - the set of devices it supports
+  - the subset of those devices on which it is the *default* (auto-applied on
+    import). On any other supported device the backend is opt-in only and must
+    be requested explicitly via the LIGER_KERNEL_BACKEND environment variable.
+
+Each backend registers itself by calling register_backend() in its __init__.py.
 """
 
-import os
-
 from dataclasses import dataclass
+from dataclasses import field
 from typing import Optional
+from typing import Tuple
 
 # Dynamically get backends package path to avoid hardcoding
 _BACKENDS_PACKAGE = __name__.rsplit(".", 1)[0]  # "liger_kernel.ops.backends"
 
+# Environment variable users set to explicitly select an opt-in backend.
+LIGER_KERNEL_BACKEND_ENV = "LIGER_KERNEL_BACKEND"
 
-@dataclass
-class VendorInfo:
+
+@dataclass(frozen=True)
+class BackendInfo:
     """
-    Information about a chip vendor and its supported device.
+    Information about a backend implementation.
 
     Attributes:
-        vendor: Vendor name (e.g., "ascend", "intel", "nvidia")
-        device: Device type this vendor supports (e.g., "npu", "xpu")
+        name: Backend identifier (e.g., "ascend", "cutile"). The on-disk
+            directory must be ``backends/_<name>/``.
+        devices: Tuple of device types this backend supports
+            (e.g., ``("npu",)``, ``("cuda",)``, ``("cuda", "xpu")``).
+        default_devices: Subset of ``devices`` on which this backend is
+            automatically applied at import time. On supported devices not
+            listed here, the backend is opt-in only via ``LIGER_KERNEL_BACKEND``.
+            Empty tuple (the default) means the backend is opt-in only on every
+            device it supports.
     """
 
-    vendor: str
-    device: str
+    name: str
+    devices: Tuple[str, ...]
+    default_devices: Tuple[str, ...] = field(default_factory=tuple)
+
+    def __post_init__(self):
+        if not self.devices:
+            raise ValueError(f"Backend {self.name!r} must declare at least one supported device.")
+        extra = set(self.default_devices) - set(self.devices)
+        if extra:
+            raise ValueError(
+                f"Backend {self.name!r}: default_devices {sorted(extra)} not in devices {list(self.devices)}."
+            )
 
     @property
     def module_path(self) -> str:
-        """Auto-generated module path based on vendor name."""
-        return f"{_BACKENDS_PACKAGE}._{self.vendor}.ops"
+        """Auto-generated module path based on backend name."""
+        return f"{_BACKENDS_PACKAGE}._{self.name}.ops"
 
 
-# Registry mapping device types to their vendor info
-# Vendors register themselves via register_vendor()
-VENDOR_REGISTRY: dict[str, VendorInfo] = {}
+# Registry mapping backend names to their info.
+BACKEND_REGISTRY: dict[str, BackendInfo] = {}
 
 
-def register_vendor(vendor_info: VendorInfo) -> None:
+def register_backend(info: BackendInfo) -> None:
+    """Register a backend's info in the global registry."""
+    BACKEND_REGISTRY[info.name] = info
+
+
+def select_backend(device: str, explicit: Optional[str] = None) -> Optional[BackendInfo]:
     """
-    Register a vendor's info in the global registry.
-
-    This should be called in each vendor's __init__.py to register itself.
+    Select the backend implementation for the current device.
 
     Args:
-        vendor_info: VendorInfo instance to register
-    """
-    VENDOR_REGISTRY[vendor_info.device] = vendor_info
-
-
-def get_vendor_for_device(device: str) -> Optional[VendorInfo]:
-    """
-    Get the VendorInfo for a given device type.
-
-    Args:
-        device: Device type (e.g., "npu", "xpu")
+        device: Device type from ``infer_device()`` (e.g., "cuda", "npu").
+        explicit: If set, force selection of this named backend. The backend's
+            supported devices are validated against the runtime.
 
     Returns:
-        VendorInfo if found, None otherwise
+        ``BackendInfo`` if a backend should replace the defaults, ``None`` to keep defaults.
+
+    Raises:
+        RuntimeError: If ``explicit`` names an unknown backend or is incompatible
+            with the current device.
     """
-    return VENDOR_REGISTRY.get(device)
+    if explicit:
+        info = BACKEND_REGISTRY.get(explicit)
+        if info is None:
+            known = ", ".join(sorted(BACKEND_REGISTRY)) or "<none registered>"
+            raise RuntimeError(
+                f"Unknown {LIGER_KERNEL_BACKEND_ENV}={explicit!r}. Registered backends: {known}."
+            )
+        if device not in info.devices:
+            supported = ", ".join(info.devices)
+            raise RuntimeError(
+                f"{LIGER_KERNEL_BACKEND_ENV}={info.name!r} supports devices ({supported}), "
+                f"but the current device is {device!r}."
+            )
+        return info
 
-
-def select_backend_for_device(device: str) -> Optional[VendorInfo]:
-    """
-    Select the backend implementation for a given device.
-
-    LIGER_KERNEL_BACKEND is an explicit override for optional backends that are
-    not the default vendor implementation for a device.
-    """
-    backend = os.environ.get("LIGER_KERNEL_BACKEND")
-    if backend is None:
-        return get_vendor_for_device(device)
-
-    backend = backend.strip().lower()
-    if backend == "":
-        return get_vendor_for_device(device)
-
-    if backend == "cutile":
-        if device != "cuda":
-            raise RuntimeError("LIGER_KERNEL_BACKEND=cutile requires a CUDA/GPU device.")
-        return VendorInfo(vendor="cutile", device="cuda")
-
-    raise RuntimeError(f"Unsupported LIGER_KERNEL_BACKEND: {backend}. Only 'cutile' is currently supported.")
+    # Auto-select: pick a backend that declares the current device as one of its defaults.
+    for info in BACKEND_REGISTRY.values():
+        if device in info.default_devices:
+            return info
+    return None

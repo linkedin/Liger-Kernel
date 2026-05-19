@@ -1,12 +1,12 @@
 """
-Liger-Kernel operators with automatic vendor-specific replacement.
+Liger-Kernel operators with automatic backend-specific replacement.
 
 This module provides two ways to import operators:
 
 1. Import from this package (recommended for Function classes):
        from liger_kernel.ops import LigerGELUMulFunction
 
-   This automatically uses vendor-specific implementation if available.
+   This automatically uses the active backend's implementation if any is selected.
 
 2. Import from submodules (for kernel functions or specific access):
        from liger_kernel.ops.geglu import geglu_forward, geglu_backward
@@ -15,10 +15,12 @@ This module provides two ways to import operators:
 
 The replacement mechanism:
 1. Default implementations are imported from individual modules (e.g., geglu.py)
-2. On module load, device is detected via infer_device()
-3. If running on a supported vendor device (npu, xpu, etc.), the default
-   implementations are replaced with vendor-specific ones
-4. All subsequent imports from this package get the replaced versions
+2. On module load, device is detected via infer_device() and the env var
+   LIGER_KERNEL_BACKEND is read
+3. select_backend() picks an active backend (auto-applied for the device, or
+   explicitly requested via env var)
+4. If a backend is selected, its implementations replace/extend the symbols here
+5. All subsequent imports from this package get the replaced versions
 
 Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import ...)
       are NOT affected by the replacement mechanism.
@@ -27,7 +29,7 @@ Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import .
 # =============================================================================
 # Import default implementations
 # Both Function classes and kernel functions are imported here.
-# All of these can be replaced by vendor-specific implementations.
+# All of these can be replaced by backend-specific implementations.
 # =============================================================================
 
 from liger_kernel.ops.attn_res import LigerAttnResFunction  # noqa: F401
@@ -94,65 +96,68 @@ from liger_kernel.ops.tiled_mlp import apply_tiled_mlp  # noqa: F401
 from liger_kernel.ops.tvd import LigerTVDLossFunction  # noqa: F401
 
 # NOTE: __all__ is intentionally NOT defined.
-# - Import from this package (liger_kernel.ops) -> subject to vendor replacement
+# - Import from this package (liger_kernel.ops) -> subject to backend replacement
 # - Import from submodules (liger_kernel.ops.geglu) -> always use default implementation
 
 
 # =============================================================================
-# Vendor-specific replacement logic
+# Backend-specific replacement logic
 # =============================================================================
 
 
-def _replace_with_vendor_ops():
+def _replace_with_backend_ops():
     """
-    Replace/add vendor-specific operator implementations.
+    Replace/add backend-specific operator implementations.
 
     This function is called automatically on module load. It:
     1. Detects the current device (cuda, npu, xpu, etc.)
-    2. Selects the backend for that device, including explicit backend overrides
+    2. Selects the active backend via ``select_backend()``, honoring any
+       explicit ``LIGER_KERNEL_BACKEND`` override
     3. Loads and applies backend-specific implementations
 
-    Vendor implementations should be placed in:
-        liger_kernel/ops/backends/_<vendor>/ops/
+    Backend implementations should be placed in:
+        liger_kernel/ops/backends/_<name>/ops/
 
-    If the vendor module defines __all__, only those symbols are exported.
+    If the backend module defines __all__, only those symbols are exported.
     Otherwise, all public symbols (not starting with _) are auto-discovered.
 
-    Note: Vendor can both override existing ops AND add new vendor-specific ops.
+    Note: Backends can both override existing ops AND add new backend-specific ops.
     """
-    from liger_kernel.ops.backends import select_backend_for_device
+    import os
+
+    from liger_kernel.ops.backends import LIGER_KERNEL_BACKEND_ENV
+    from liger_kernel.ops.backends import select_backend
     from liger_kernel.utils import infer_device
 
     device = infer_device()
-
-    vendor_info = select_backend_for_device(device)
-    if vendor_info is None:
+    explicit = os.environ.get(LIGER_KERNEL_BACKEND_ENV, "").strip().lower() or None
+    backend_info = select_backend(device, explicit=explicit)
+    if backend_info is None:
         return
 
     try:
         import importlib
 
-        vendor_ops = importlib.import_module(vendor_info.module_path)
+        backend_ops = importlib.import_module(backend_info.module_path)
 
         # Get names to export: use __all__ if defined, otherwise auto-discover
-        names_to_export = getattr(vendor_ops, "__all__", None)
+        names_to_export = getattr(backend_ops, "__all__", None)
 
         if names_to_export is None:
             # Auto-discover: find all public symbols (classes and functions)
-            names_to_export = [name for name in dir(vendor_ops) if not name.startswith("_")]
+            names_to_export = [name for name in dir(backend_ops) if not name.startswith("_")]
 
         # Replace or add to this module's globals
         for name in names_to_export:
-            globals()[name] = getattr(vendor_ops, name)
+            globals()[name] = getattr(backend_ops, name)
 
     except ImportError:
-        import os
-
-        backend = os.environ.get("LIGER_KERNEL_BACKEND", "").strip().lower()
-        if backend == "cutile":
+        # An auto-selected backend that fails to import (e.g., missing optional
+        # vendor SDK in the environment) silently falls back to defaults. An
+        # explicitly-requested backend, however, must succeed — re-raise so the
+        # user sees the underlying error.
+        if explicit:
             raise
-        # Vendor module not available, use default implementations.
-        pass
 
 
-_replace_with_vendor_ops()
+_replace_with_backend_ops()
