@@ -1392,6 +1392,7 @@ def apply_liger_kernel_to_gemma4(
     rope: bool = False,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
+    layer_norm: bool = False,
     rms_norm: bool = True,
     geglu: bool = True,
     model: PreTrainedModel = None,
