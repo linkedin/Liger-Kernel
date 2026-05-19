@@ -1400,10 +1400,8 @@ def apply_liger_kernel_to_gemma4(
     Apply Liger kernels to replace original implementation in HuggingFace Gemma4
     multimodal models (`Gemma4ForConditionalGeneration`).
 
-    Dispatches on class: text-only variants (`Gemma4ForCausalLM`,
-    `Gemma4TextForCausalLM`, `Gemma4TextModel`) are routed to
-    :func:`apply_liger_kernel_to_gemma4_text` for backwards compatibility, so the
-    same entry point works for both shapes when an instance is supplied.
+    For text-only Gemma 4 (`Gemma4ForCausalLM`, `Gemma4TextForCausalLM`,
+    `Gemma4TextModel`), use :func:`apply_liger_kernel_to_gemma4_text` instead.
 
     The primary win is the fused-linear-cross-entropy path on the multimodal
     class: with vocab=262,144, the (B, T, V) fp32 logits tensor is ~17 GB at
@@ -1440,40 +1438,12 @@ def apply_liger_kernel_to_gemma4(
     )
 
     from transformers.models.gemma4 import modeling_gemma4
-    from transformers.models.gemma4.modeling_gemma4 import Gemma4ForCausalLM
     from transformers.models.gemma4.modeling_gemma4 import Gemma4ForConditionalGeneration
-    from transformers.models.gemma4.modeling_gemma4 import Gemma4TextModel
 
     from liger_kernel.transformers.model.gemma4 import multimodal_forward
 
-    Gemma4TextForCausalLM = getattr(modeling_gemma4, "Gemma4TextForCausalLM", None)
-
-    # Dispatch: if the caller passed a text-only instance, route to the text
-    # path so this entry point works as a single user-facing API.
-    if model is not None:
-        # `isinstance(cls, type)` filter (rather than `cls is not None`) so we
-        # also drop the MagicMock the test harness substitutes for
-        # `Gemma4TextForCausalLM` under `with patch("...modeling_gemma4")` —
-        # an `isinstance` check against a non-class entry raises TypeError.
-        text_classes = tuple(
-            cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM, Gemma4TextModel) if isinstance(cls, type)
-        )
-        if isinstance(model, text_classes):
-            apply_liger_kernel_to_gemma4_text(
-                rope=rope,
-                cross_entropy=cross_entropy,
-                fused_linear_cross_entropy=fused_linear_cross_entropy,
-                rms_norm=rms_norm,
-                geglu=geglu,
-                model=model,
-            )
-            return
-        if not isinstance(model, Gemma4ForConditionalGeneration):
-            raise TypeError(
-                "The model must be Gemma4ForConditionalGeneration (or a Gemma 4 "
-                "text-only variant; those are routed to "
-                "apply_liger_kernel_to_gemma4_text)."
-            )
+    if model is not None and not isinstance(model, Gemma4ForConditionalGeneration):
+        raise TypeError("The model must be Gemma4ForConditionalGeneration.")
 
     # Class-level patches for the text decoder layers (RMSNorm, GeGLU MLP).
     # We disable FLCE here because the multimodal class needs its own forward
