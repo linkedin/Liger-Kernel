@@ -20,6 +20,11 @@ except Exception:
     _Gemma3CausalLMOutputWithPast = None
 
 try:
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4CausalLMOutputWithPast as _Gemma4CausalLMOutputWithPast
+except Exception:
+    _Gemma4CausalLMOutputWithPast = None
+
+try:
     from transformers.models.glm4v_moe.modeling_glm4v_moe import (
         Glm4vMoeCausalLMOutputWithPast as _Glm4vMoeCausalLMOutputWithPast,
     )
@@ -80,6 +85,13 @@ try:
 except Exception:
     _Qwen3_5CausalLMOutputWithPast = None
 
+try:
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
+        Qwen3_5MoeCausalLMOutputWithPast as _Qwen3_5MoeCausalLMOutputWithPast,
+    )
+except Exception:
+    _Qwen3_5MoeCausalLMOutputWithPast = None
+
 
 @dataclass
 class LigerCausalLMOutputWithPast(CausalLMOutputWithPast):
@@ -97,6 +109,14 @@ if _Gemma3CausalLMOutputWithPast is not None:
 
     @dataclass
     class LigerGemma3CausalLMOutputWithPast(_Gemma3CausalLMOutputWithPast):
+        token_accuracy: Optional[torch.FloatTensor] = None
+        predicted_tokens: Optional[torch.LongTensor] = None
+
+
+if _Gemma4CausalLMOutputWithPast is not None:
+
+    @dataclass
+    class LigerGemma4CausalLMOutputWithPast(_Gemma4CausalLMOutputWithPast):
         token_accuracy: Optional[torch.FloatTensor] = None
         predicted_tokens: Optional[torch.LongTensor] = None
 
@@ -169,5 +189,13 @@ if _Qwen3_5CausalLMOutputWithPast is not None:
 
     @dataclass
     class LigerQwen3_5CausalLMOutputWithPast(_Qwen3_5CausalLMOutputWithPast):
+        token_accuracy: Optional[torch.FloatTensor] = None
+        predicted_tokens: Optional[torch.LongTensor] = None
+
+
+if _Qwen3_5MoeCausalLMOutputWithPast is not None:
+
+    @dataclass
+    class LigerQwen3_5MoeCausalLMOutputWithPast(_Qwen3_5MoeCausalLMOutputWithPast):
         token_accuracy: Optional[torch.FloatTensor] = None
         predicted_tokens: Optional[torch.LongTensor] = None

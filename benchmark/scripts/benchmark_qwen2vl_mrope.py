@@ -1,13 +1,18 @@
-import torch
-import triton
+import os
+import sys
 
+import torch
+
+from benchmark_model_configs import MODEL_REGISTRY
+from benchmark_model_configs import build_model_config_sweep
+from benchmark_model_configs import build_token_length_sweep
+from benchmark_model_configs import get_benchmark_model_config
 from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLTextConfig
 from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLRotaryEmbedding
 from transformers.models.qwen2_vl.modeling_qwen2_vl import apply_multimodal_rotary_pos_emb
-from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
-from utils import SingleBenchmarkRunOutput
-from utils import _test_memory
+from utils import build_memory_bench_fn
+from utils import build_speed_bench_fn
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
@@ -16,21 +21,25 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-def bench_speed_qwen2vl_mrope(
-    input: SingleBenchmarkRunInput,
-) -> SingleBenchmarkRunOutput:
-    provider = input.kernel_provider
-    mode = input.kernel_operation_mode
 
-    extra_benchmark_config = input.extra_benchmark_config
-    num_q_heads = extra_benchmark_config["num_q_heads"]
-    num_kv_heads = extra_benchmark_config["num_kv_heads"]
-    dtype = extra_benchmark_config["dtype"]
-
-    # x can be either hidden_size or seq_len
-    hidden_size = extra_benchmark_config["hidden_size"] if "hidden_size" in extra_benchmark_config else input.x
-    seq_len = extra_benchmark_config["seq_len"] if "seq_len" in extra_benchmark_config else input.x
+def setup_qwen2vl_mrope(input: SingleBenchmarkRunInput):
+    """Create input tensors and Qwen2VL M-RoPE embedding from benchmark config."""
+    cfg = input.extra_benchmark_config
+    if isinstance(input.x, str):
+        model_cfg = MODEL_REGISTRY[input.x]
+        seq_len = cfg["seq_len"]
+        hidden_size = model_cfg.hidden_size
+        num_q_heads = model_cfg.num_attention_heads
+        num_kv_heads = model_cfg.num_key_value_heads
+        dtype = model_cfg.dtype
+    else:
+        seq_len = input.x
+        hidden_size = cfg["hidden_size"]
+        num_q_heads = cfg["num_attention_heads"]
+        num_kv_heads = cfg["num_key_value_heads"]
+        dtype = cfg["dtype"]
 
     head_dim = hidden_size // num_q_heads
     mrope_section_hw = head_dim * 3 // 16
@@ -59,183 +68,62 @@ def bench_speed_qwen2vl_mrope(
         requires_grad=True,
         dtype=dtype,
     ).transpose(1, 2)
-    dq, dk = (
-        torch.randn_like(q, device=device, dtype=dtype),
-        torch.randn_like(k, device=device, dtype=dtype),
-    )
+
     pos_ids = torch.arange(seq_len * 3, device=device, dtype=torch.long).view(3, 1, -1)
     cos, sin = rotary_emb(k, pos_ids)
 
-    def fwd():
-        if provider == "liger":
-            return liger_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section)
-        elif provider == "huggingface":
-            return apply_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section)
-        else:
-            raise ValueError(f"Invalid provider: {provider} for M-RoPE embedding")
+    if input.kernel_provider == "liger":
+        fwd_fn = lambda: liger_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section)
+    elif input.kernel_provider == "huggingface":
+        fwd_fn = lambda: apply_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section)
+    else:
+        raise ValueError(f"Invalid provider: {input.kernel_provider} for M-RoPE embedding")
 
-    if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            fwd,
-            grad_to_none=[q, k],
-            rep=400,
-            quantiles=QUANTILES,
-        )
-    elif mode == "backward":
-        q_out, k_out = fwd()
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: torch.autograd.grad((q_out, k_out), (q, k), (dq, dk), allow_unused=True, retain_graph=True),
-            grad_to_none=[q, k],
-            rep=400,
-            quantiles=QUANTILES,
-        )
-    elif mode == "full":
-
-        def full():
-            q_out, k_out = fwd()
-            torch.autograd.grad((q_out, k_out), (q, k), (dq, dk), allow_unused=True)
-
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            full,
-            grad_to_none=[q, k],
-            rep=400,
-            quantiles=QUANTILES,
-        )
-    return SingleBenchmarkRunOutput(
-        y_20=ms_20,
-        y_50=ms_50,
-        y_80=ms_80,
-    )
-
-
-def bench_memory_qwen2vl_mrope(
-    input: SingleBenchmarkRunInput,
-) -> SingleBenchmarkRunOutput:
-    provider = input.kernel_provider
-
-    extra_benchmark_config = input.extra_benchmark_config
-    num_q_heads = extra_benchmark_config["num_q_heads"]
-    num_kv_heads = extra_benchmark_config["num_kv_heads"]
-    dtype = extra_benchmark_config["dtype"]
-
-    # x can be either hidden_size or seq_len
-    hidden_size = extra_benchmark_config["hidden_size"] if "hidden_size" in extra_benchmark_config else input.x
-    seq_len = extra_benchmark_config["seq_len"] if "seq_len" in extra_benchmark_config else input.x
-
-    head_dim = hidden_size // num_q_heads
-
-    mrope_section_hw = head_dim * 3 // 16
-    mrope_section = [
-        head_dim // 2 - 2 * mrope_section_hw,
-        mrope_section_hw,
-        mrope_section_hw,
-    ]
-    config = Qwen2VLTextConfig(
-        hidden_size=hidden_size,
-        num_attention_heads=num_q_heads,
-        num_key_value_heads=num_kv_heads,
-        rope_theta=1000000.0,
-        mrope_section=mrope_section,
-    )
-    rotary_emb = Qwen2VLRotaryEmbedding(config, device=device)
-    q = torch.randn(
-        (1, seq_len, num_q_heads, head_dim),
-        device=device,
-        requires_grad=True,
-        dtype=dtype,
-    ).transpose(1, 2)
-    k = torch.randn(
-        (1, seq_len, num_kv_heads, head_dim),
-        device=device,
-        requires_grad=True,
-        dtype=dtype,
-    ).transpose(1, 2)
-    dq, dk = (
-        torch.randn_like(q, device=device, dtype=dtype),
-        torch.randn_like(k, device=device, dtype=dtype),
-    )
-    pos_ids = torch.arange(seq_len * 3, device=device, dtype=torch.long).view(3, 1, -1)
-    cos, sin = rotary_emb(k, pos_ids)
-
-    def full():
-        if provider == "liger":
-            q_out, k_out = liger_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section)
-        else:
-            q_out, k_out = apply_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section)
-        torch.autograd.grad((q_out, k_out), (q, k), (dq, dk), allow_unused=True, retain_graph=True)
-
-    mem_50, mem_20, mem_80 = _test_memory(
-        full,
-        quantiles=QUANTILES,
-    )
-    return SingleBenchmarkRunOutput(
-        y_20=mem_20,
-        y_50=mem_50,
-        y_80=mem_80,
-    )
+    return q, lambda _: fwd_fn()[0]
 
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    common_configs_varying_hidden_size = {
-        "kernel_name": "qwen2vl_mrope",
-        "x_name": "H",
-        "x_label": "hidden size",
-        "x_values": [32 * (2**i) for i in range(4, 10, 2)],
-        "kernel_providers": ["liger", "huggingface"],
-        "extra_benchmark_configs": [
-            {
-                "dtype": torch.bfloat16,
-                "seq_len": 2048,
-                "num_q_heads": 32,
-                "num_kv_heads": 8,
-            }
-        ],
-        "overwrite": args.overwrite,
-    }
-    run_benchmarks(
-        bench_test_fn=bench_speed_qwen2vl_mrope,
-        kernel_operation_modes=["forward", "backward", "full"],
-        metric_name="speed",
-        metric_unit="ms",
-        **common_configs_varying_hidden_size,
-    )
-    run_benchmarks(
-        bench_test_fn=bench_memory_qwen2vl_mrope,
-        kernel_operation_modes=["full"],
-        metric_name="memory",
-        metric_unit="MB",
-        **common_configs_varying_hidden_size,
-    )
+    if args.sweep_mode == "model_config":
+        common_configs = build_model_config_sweep(
+            kernel_name="qwen2vl_mrope",
+            setup_fn=setup_qwen2vl_mrope,
+            model_keys=["hidden_size", "num_attention_heads", "num_key_value_heads", "dtype"],
+            probe_provider="huggingface",
+            probe_dim="T",
+            bt=args.bt,
+            overwrite=args.overwrite,
+        )
+    else:
+        model = get_benchmark_model_config(args.model)
+        probe_seq_len = 2048
 
-    common_configs_varying_seq_len = {
-        "kernel_name": "qwen2vl_mrope",
-        "x_name": "T",
-        "x_label": "sequence length",
-        "x_values": [2**i for i in range(10, 15)],
-        "kernel_providers": ["liger", "huggingface"],
-        "extra_benchmark_configs": [
-            {
-                "dtype": torch.bfloat16,
-                "hidden_size": 8192,
-                "num_q_heads": 32,
-                "num_kv_heads": 8,
-            }
-        ],
-        "overwrite": args.overwrite,
-    }
+        common_configs = build_token_length_sweep(
+            kernel_name="qwen2vl_mrope",
+            probe_x=probe_seq_len,
+            model=model,
+            setup_fn=setup_qwen2vl_mrope,
+            model_keys=["hidden_size", "num_attention_heads", "num_key_value_heads", "dtype"],
+            scale_dim="T",
+            x_label="sequence length",
+            probe_provider="huggingface",
+            overwrite=args.overwrite,
+        )
+
+    common_configs["kernel_providers"] = ["huggingface", "liger"]
+
     run_benchmarks(
-        bench_test_fn=bench_speed_qwen2vl_mrope,
+        bench_test_fn=build_speed_bench_fn(setup_qwen2vl_mrope),
         kernel_operation_modes=["forward", "backward", "full"],
         metric_name="speed",
         metric_unit="ms",
-        **common_configs_varying_seq_len,
+        **common_configs,
     )
     run_benchmarks(
-        bench_test_fn=bench_memory_qwen2vl_mrope,
+        bench_test_fn=build_memory_bench_fn(setup_qwen2vl_mrope),
         kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
-        **common_configs_varying_seq_len,
+        **common_configs,
     )

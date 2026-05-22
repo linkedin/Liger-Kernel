@@ -18,6 +18,7 @@ from liger_kernel.ops import LigerLayerNormFunction
 from liger_kernel.ops import LigerMHCCoeffsFunction
 from liger_kernel.ops import LigerMHCPostResFunction
 from liger_kernel.ops import LigerMHCPreFunction
+from liger_kernel.ops import LigerModulatedRMSNormFunction
 from liger_kernel.ops import LigerMultiTokenAttentionFunction
 from liger_kernel.ops import LigerPolyNormFunction
 from liger_kernel.ops import LigerQwen2VLMRopeFunction
@@ -293,6 +294,19 @@ def liger_relu_squared(x):
 
 def liger_rms_norm(X, W, eps, offset: float = 0.0, casting_mode: str = "llama", in_place: bool = True):
     return LigerRMSNormFunction.apply(X, W, eps, offset, casting_mode, in_place)
+
+
+def liger_modulated_rms_norm(
+    X,
+    W,
+    scale,
+    shift=None,
+    eps: float = 1e-6,
+    offset: float = 0.0,
+    casting_mode: str = "llama",
+    in_place: bool = True,
+):
+    return LigerModulatedRMSNormFunction.apply(X, W, scale, shift, eps, offset, casting_mode, in_place)
 
 
 def liger_poly_norm(X, W, B, eps=1e-6, in_place=True):

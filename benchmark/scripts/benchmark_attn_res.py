@@ -4,7 +4,6 @@ AttnRes Benchmark: Liger (Triton) vs PyTorch
 Kimi Attention Residuals: softmax attention over depth blocks.
 """
 
-import math
 import os
 import sys
 
@@ -12,39 +11,47 @@ import torch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from benchmark_model_configs import compute_seq_len_sweep_config
-from benchmark_model_configs import estimate_kernel_peak_memory
+from benchmark_model_configs import MODEL_REGISTRY
+from benchmark_model_configs import build_model_config_sweep
+from benchmark_model_configs import build_token_length_sweep
 from benchmark_model_configs import get_benchmark_model_config
 from utils import SingleBenchmarkRunInput
-from utils import SingleBenchmarkRunOutput
+from utils import build_memory_bench_fn
+from utils import build_speed_bench_fn
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
-from utils import run_memory_benchmark
-from utils import run_speed_benchmark
 
-from liger_kernel.ops.attn_res import LigerAttnResFunction
+from liger_kernel.ops import LigerAttnResFunction
 from liger_kernel.utils import infer_device
 
 device = infer_device()
 
 
-def _setup_attn_res(input: SingleBenchmarkRunInput):
+def setup_attn_res(input: SingleBenchmarkRunInput):
     """Create input tensors for AttnRes from benchmark config."""
     cfg = input.extra_benchmark_config
-    seq_len = input.x
+    if isinstance(input.x, str):
+        model_cfg = MODEL_REGISTRY[input.x]
+        seq_len = cfg["seq_len"]
+        hidden_size = model_cfg.hidden_size
+        dtype = model_cfg.dtype
+    else:
+        seq_len = input.x
+        hidden_size = cfg["hidden_size"]
+        dtype = cfg["dtype"]
 
     # V: [N, B, T, D]
     V = torch.randn(
         cfg["N"],
         cfg["bsz"],
         seq_len,
-        cfg["hidden_size"],
+        hidden_size,
         device=device,
-        dtype=cfg["dtype"],
+        dtype=dtype,
         requires_grad=True,
     )
-    w_query = torch.randn(cfg["hidden_size"], device=device, dtype=cfg["dtype"]) * 0.02
-    w_norm = torch.ones(cfg["hidden_size"], device=device, dtype=cfg["dtype"])
+    w_query = torch.randn(hidden_size, device=device, dtype=dtype) * 0.02
+    w_norm = torch.ones(hidden_size, device=device, dtype=dtype)
     eps = cfg.get("eps", 1e-6)
 
     if input.kernel_provider == "liger":
@@ -56,73 +63,57 @@ def _setup_attn_res(input: SingleBenchmarkRunInput):
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider}")
 
-    return V, fn
-
-
-def bench_speed_attn_res(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    V, fn = _setup_attn_res(input)
-    return run_speed_benchmark(fn, input.kernel_operation_mode, [V])
-
-
-def bench_memory_attn_res(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    V, fn = _setup_attn_res(input)
-    return run_memory_benchmark(fn, input.kernel_operation_mode)
+    return V, lambda _: fn()
 
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    model = get_benchmark_model_config(args.model)
-    probe_seq_len = 1024
-
-    def _probe():
-        probe_input = SingleBenchmarkRunInput(
-            x=probe_seq_len,
-            kernel_provider="pytorch",
-            extra_benchmark_config={
+    if args.sweep_mode == "model_config":
+        common_configs = build_model_config_sweep(
+            kernel_name="attn_res",
+            setup_fn=setup_attn_res,
+            model_keys=["hidden_size", "dtype"],
+            extra_configs={
                 "N": 8,
                 "bsz": 1,
-                "hidden_size": model.hidden_size,
-                "dtype": model.dtype,
                 "eps": 1e-6,
             },
+            probe_provider="pytorch",
+            bt=args.bt,
+            overwrite=args.overwrite,
         )
-        V, fn = _setup_attn_res(probe_input)
-        return fn()
+    else:
+        model = get_benchmark_model_config(args.model)
+        probe_seq_len = 1024
 
-    peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
-    kernel_bpt = peak_bytes // probe_seq_len
-
-    config = compute_seq_len_sweep_config(model, kernel_bytes_per_token=kernel_bpt)
-
-    common_configs = {
-        "kernel_name": "attn_res",
-        "x_name": "T",
-        "x_label": "sequence length",
-        "x_values": [2**i for i in range(10, int(math.log2(config.seq_len)) + 1)],
-        "kernel_providers": ["liger", "pytorch"],
-        "extra_benchmark_configs": [
-            {
+        common_configs = build_token_length_sweep(
+            kernel_name="attn_res",
+            probe_x=probe_seq_len,
+            model=model,
+            setup_fn=setup_attn_res,
+            model_keys=["hidden_size", "dtype"],
+            extra_configs={
                 "N": 8,
-                "bsz": config.batch_size,
-                "hidden_size": model.hidden_size,
-                "dtype": model.dtype,
+                "bsz": 1,
                 "eps": 1e-6,
-            }
-        ],
-        "overwrite": args.overwrite,
-    }
+            },
+            probe_provider="pytorch",
+            overwrite=args.overwrite,
+        )
+
+    common_configs["kernel_providers"] = ["pytorch", "liger"]
 
     run_benchmarks(
-        bench_test_fn=bench_speed_attn_res,
-        kernel_operation_modes=["full", "forward", "backward"],
+        bench_test_fn=build_speed_bench_fn(setup_attn_res),
+        kernel_operation_modes=["forward", "backward", "full"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,
     )
     run_benchmarks(
-        bench_test_fn=bench_memory_attn_res,
-        kernel_operation_modes=["full", "forward", "backward"],
+        bench_test_fn=build_memory_bench_fn(setup_attn_res),
+        kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
         **common_configs,

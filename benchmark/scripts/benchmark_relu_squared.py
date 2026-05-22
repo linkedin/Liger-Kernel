@@ -1,10 +1,15 @@
-import torch
-import triton
+import os
+import sys
 
-from utils import QUANTILES
+import torch
+
+from benchmark_model_configs import MODEL_REGISTRY
+from benchmark_model_configs import build_model_config_sweep
+from benchmark_model_configs import build_token_length_sweep
+from benchmark_model_configs import get_benchmark_model_config
 from utils import SingleBenchmarkRunInput
-from utils import SingleBenchmarkRunOutput
-from utils import _test_memory
+from utils import build_memory_bench_fn
+from utils import build_speed_bench_fn
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
@@ -13,6 +18,8 @@ from liger_kernel.utils import infer_device
 
 device = infer_device()
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
 
 class TorchReLUSquared(torch.nn.Module):
     def forward(self, x):
@@ -20,126 +27,72 @@ class TorchReLUSquared(torch.nn.Module):
         return torch.square(relu_applied)
 
 
-def bench_speed_relu_squared(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    N = input.x
-    provider = input.kernel_provider
-    mode = input.kernel_operation_mode
-    extra_benchmark_config = input.extra_benchmark_config
-    M = extra_benchmark_config["M"]
-    dtype = extra_benchmark_config["dtype"]
-
-    x_shape = (M, N)
-    liger_relu_squared = LigerReLUSquared().to(device)
-    torch_relu_squared = TorchReLUSquared().to(device)
-
-    x = torch.randn(x_shape, dtype=dtype, device=device)
-    dy = torch.randn_like(x)
-    x.requires_grad_(True)
-
-    def y_fwd():
-        if provider == "liger":
-            return liger_relu_squared(x)
-        if provider == "torch":
-            return torch_relu_squared(x)
-
-    if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(y_fwd, quantiles=QUANTILES, grad_to_none=[x], rep=500)
-    elif mode == "backward":
-        y = y_fwd()
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(dy, retain_graph=True),
-            quantiles=QUANTILES,
-            grad_to_none=[x],
-            rep=500,
-        )
-    elif mode == "full":
-
-        def full():
-            y = y_fwd()
-            y.backward(dy, retain_graph=True)
-
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, quantiles=QUANTILES, grad_to_none=[x], rep=500)
-
-    if any(val is None for val in (ms_20, ms_50, ms_80)):
-        raise RuntimeError(f"Benchmark speed result is None: ms_20={ms_20}, ms_50={ms_50}, ms_80={ms_80}")
-
-    return SingleBenchmarkRunOutput(
-        y_20=ms_20,
-        y_50=ms_50,
-        y_80=ms_80,
-    )
-
-
-def bench_memory_relu_squared(input: SingleBenchmarkRunInput) -> SingleBenchmarkRunOutput:
-    shape = input.x
-    provider = input.kernel_provider
-    mode = input.kernel_operation_mode
-    extra_benchmark_config = input.extra_benchmark_config
-    dtype = extra_benchmark_config.get("dtype", torch.float32)
-
-    torch_relu_squared = TorchReLUSquared()
-    liger_relu_squared = LigerReLUSquared().to(device)
-
-    x = torch.randn(shape, device=device, dtype=dtype, requires_grad=True)
-
-    def fwd():
-        if provider == "liger":
-            return liger_relu_squared(x)
-        elif provider == "torch":
-            return torch_relu_squared(x)
-        else:
-            raise ValueError(f"Invalid provider: {provider} for relu_squared")
-
-    def full():
-        y = fwd()
-        y.backward(torch.ones_like(y), retain_graph=True)
-
-    if mode == "forward":
-        mem_50, mem_20, mem_80 = _test_memory(fwd, quantiles=QUANTILES)
-    elif mode == "backward":
-        do = torch.ones_like(x)
-        y = fwd()
-        mem_50, mem_20, mem_80 = _test_memory(lambda: y.backward(do, retain_graph=True), quantiles=QUANTILES)
+def setup_relu_squared(input: SingleBenchmarkRunInput):
+    """Create input tensor and relu_squared module from benchmark config."""
+    cfg = input.extra_benchmark_config
+    if isinstance(input.x, str):
+        model_cfg = MODEL_REGISTRY[input.x]
+        bt = cfg["seq_len"] * cfg["bsz"]
+        hidden_size = model_cfg.hidden_size
+        dtype = model_cfg.dtype
     else:
-        mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
+        bt = input.x
+        hidden_size = cfg["hidden_size"]
+        dtype = cfg["dtype"]
 
-    if any(val is None for val in (mem_20, mem_50, mem_80)):
-        raise RuntimeError(f"Benchmark memory result is None: mem_20={mem_20}, mem_50={mem_50}, mem_80={mem_80}")
+    x = torch.randn(bt, hidden_size, dtype=dtype, device=device, requires_grad=True)
 
-    return SingleBenchmarkRunOutput(
-        y_20=mem_20,
-        y_50=mem_50,
-        y_80=mem_80,
-    )
+    if input.kernel_provider == "liger":
+        relu_sq = LigerReLUSquared().to(device)
+    elif input.kernel_provider == "torch":
+        relu_sq = TorchReLUSquared().to(device)
+    else:
+        raise ValueError(f"Invalid provider: {input.kernel_provider} for relu_squared")
+
+    return x, relu_sq
 
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    common_configs = dict(
-        kernel_name="relu_squared",
-        x_name="N",
-        x_label="hidden size",
-        x_values=[128, 256, 512, 1024, 2048, 4096, 8192, 16384],
-        kernel_providers=["liger", "torch"],
-        extra_benchmark_configs=[
-            {"M": 4096, "dtype": torch.bfloat16},
-        ],
-    )
+    if args.sweep_mode == "model_config":
+        common_configs = build_model_config_sweep(
+            kernel_name="relu_squared",
+            setup_fn=setup_relu_squared,
+            model_keys=["hidden_size", "dtype"],
+            probe_provider="torch",
+            probe_dim="BT",
+            bt=args.bt,
+            overwrite=args.overwrite,
+        )
+    else:
+        model = get_benchmark_model_config(args.model)
+        probe_seq_len = 1024
 
+        common_configs = build_token_length_sweep(
+            kernel_name="relu_squared",
+            probe_x=probe_seq_len,
+            model=model,
+            setup_fn=setup_relu_squared,
+            model_keys=["hidden_size", "dtype"],
+            scale_dim="BT",
+            x_label="total tokens",
+            probe_provider="torch",
+            overwrite=args.overwrite,
+        )
+
+    common_configs["kernel_providers"] = ["liger", "torch"]
     run_benchmarks(
-        bench_test_fn=bench_speed_relu_squared,
-        kernel_operation_modes=["forward", "full", "backward"],
+        bench_test_fn=build_speed_bench_fn(setup_relu_squared),
+        kernel_operation_modes=["forward", "backward", "full"],
         metric_name="speed",
         metric_unit="ms",
-        overwrite=args.overwrite,
         **common_configs,
     )
     run_benchmarks(
-        bench_test_fn=bench_memory_relu_squared,
+        bench_test_fn=build_memory_bench_fn(setup_relu_squared),
         kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
-        overwrite=args.overwrite,
         **common_configs,
     )

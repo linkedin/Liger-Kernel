@@ -1,11 +1,18 @@
-import torch
-import triton
+import os
+import sys
 
+import torch
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
+from benchmark_model_configs import MODEL_REGISTRY
+from benchmark_model_configs import build_model_config_sweep
+from benchmark_model_configs import build_token_length_sweep
+from benchmark_model_configs import get_benchmark_model_config
 from torch.nn import CrossEntropyLoss
-from utils import QUANTILES
 from utils import SingleBenchmarkRunInput
-from utils import SingleBenchmarkRunOutput
-from utils import _test_memory
+from utils import build_memory_bench_fn
+from utils import build_speed_bench_fn
 from utils import parse_benchmark_script_args
 from utils import run_benchmarks
 
@@ -15,110 +22,71 @@ from liger_kernel.utils import infer_device
 device = infer_device()
 
 
-def bench_memory_cross_entropy(
-    input: SingleBenchmarkRunInput,
-) -> SingleBenchmarkRunOutput:
-    torch_ce = CrossEntropyLoss()
-    liger_ce = LigerCrossEntropyLoss()
+def setup_cross_entropy(input: SingleBenchmarkRunInput):
+    """Create input tensor, target, and CE loss from benchmark config."""
+    cfg = input.extra_benchmark_config
+    if isinstance(input.x, str):
+        model_cfg = MODEL_REGISTRY[input.x]
+        V = model_cfg.vocab_size
+        BT = cfg["bsz"] * cfg["seq_len"]
+    else:
+        BT = input.x
+        V = cfg["vocab_size"]
 
-    V = input.x
-    provider = input.kernel_provider
-    B = input.extra_benchmark_config["B"]
-    T = input.extra_benchmark_config["T"]
+    _input = torch.randn(BT, V, requires_grad=True, device=device)
+    target = torch.randint(V, (BT,), device=device)
 
-    _input = torch.randn(B * T, V, requires_grad=True, device=device)
-    target = torch.randint(V, (B * T, 1), device=device).squeeze(1)
+    if input.kernel_provider == "liger":
+        loss_fn = LigerCrossEntropyLoss()
+    elif input.kernel_provider == "torch":
+        loss_fn = CrossEntropyLoss()
+    else:
+        raise ValueError(f"Invalid provider: {input.kernel_provider} for CrossEntropy")
 
-    def fwd():
-        if provider == "liger":
-            return liger_ce(_input, target)
-        else:
-            return torch_ce(_input, target)
-
-    def full():
-        y = fwd()
-        y.backward()
-
-    mem_50, mem_20, mem_80 = _test_memory(full, quantiles=QUANTILES)
-    return SingleBenchmarkRunOutput(
-        y_20=mem_20,
-        y_50=mem_50,
-        y_80=mem_80,
-    )
-
-
-def bench_speed_cross_entropy(
-    input: SingleBenchmarkRunInput,
-) -> SingleBenchmarkRunOutput:
-    torch_ce = CrossEntropyLoss()
-    liger_ce = LigerCrossEntropyLoss()
-
-    V = input.x
-    provider = input.kernel_provider
-    mode = input.kernel_operation_mode
-    B = input.extra_benchmark_config["B"]
-    T = input.extra_benchmark_config["T"]
-
-    _input = torch.randn(B * T, V, requires_grad=True, device=device)
-    target = torch.randint(V, (B * T, 1), device=device).squeeze(1)
-
-    def fwd():
-        if provider == "liger":
-            return liger_ce(_input, target)
-        else:
-            return torch_ce(_input, target)
-
-    if mode == "forward":
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
-    elif mode == "no-grad-forward":
-        with torch.no_grad():
-            ms_50, ms_20, ms_80 = triton.testing.do_bench(fwd, rep=100, quantiles=QUANTILES)
-    elif mode == "backward":
-        y = fwd()
-
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(
-            lambda: y.backward(retain_graph=True),
-            grad_to_none=[_input],
-            rep=100,
-            quantiles=QUANTILES,
-        )
-    elif mode == "full":
-
-        def full():
-            y = fwd()
-            y.backward()
-
-        ms_50, ms_20, ms_80 = triton.testing.do_bench(full, rep=100, quantiles=QUANTILES)
-
-    return SingleBenchmarkRunOutput(
-        y_20=ms_20,
-        y_50=ms_50,
-        y_80=ms_80,
-    )
+    return _input, lambda x: loss_fn(x, target)
 
 
 if __name__ == "__main__":
     args = parse_benchmark_script_args()
 
-    common_configs = {
-        "kernel_name": "cross_entropy",
-        "x_name": "V",
-        "x_label": "vocab size",
-        "x_values": [2**i for i in range(12, 18)],
-        "kernel_providers": ["liger", "huggingface"],
-        "extra_benchmark_configs": [{"B": 8, "T": 2048}],
-        "overwrite": args.overwrite,
-    }
+    if args.sweep_mode == "model_config":
+        common_configs = build_model_config_sweep(
+            kernel_name="cross_entropy",
+            setup_fn=setup_cross_entropy,
+            model_keys=["vocab_size"],
+            extra_configs={},
+            probe_dim="BT",
+            probe_provider="torch",
+            bt=args.bt,
+            overwrite=args.overwrite,
+        )
+    else:
+        model = get_benchmark_model_config(args.model)
+
+        common_configs = build_token_length_sweep(
+            kernel_name="cross_entropy",
+            probe_x=1024,
+            model=model,
+            setup_fn=setup_cross_entropy,
+            model_keys=["vocab_size"],
+            extra_configs={},
+            scale_dim="BT",
+            probe_provider="torch",
+            x_label="B * T",
+            overwrite=args.overwrite,
+        )
+
+    common_configs["kernel_providers"] = ["liger", "torch"]
 
     run_benchmarks(
-        bench_test_fn=bench_speed_cross_entropy,
+        bench_test_fn=build_speed_bench_fn(setup_cross_entropy),
         kernel_operation_modes=["forward", "backward", "full", "no-grad-forward"],
         metric_name="speed",
         metric_unit="ms",
         **common_configs,
     )
     run_benchmarks(
-        bench_test_fn=bench_memory_cross_entropy,
+        bench_test_fn=build_memory_bench_fn(setup_cross_entropy),
         kernel_operation_modes=["full"],
         metric_name="memory",
         metric_unit="MB",
