@@ -644,7 +644,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
         ref_weight1,
         ref_bias1,
         -100,  # ignore_index
-        0.1,   # beta
+        0.1,  # beta
         compute_nll_loss,
     )
     loss2, aggregated_aux_outputs2 = liger_fused_linear_dpo(
@@ -656,7 +656,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
         ref_weight2,
         ref_bias2,
         -100,  # ignore_index
-        0.1,   # beta
+        0.1,  # beta
         compute_nll_loss,
     )
 
@@ -886,13 +886,13 @@ def test_correctness_functional_apo_loss_types(
         ref_input,
         ref_weight1,
         ref_bias1,
-        -100,   # ignore_index
-        0.1,    # beta
+        -100,  # ignore_index
+        0.1,  # beta
         compute_nll_loss,
-        True,   # compiled
-        True,   # use_ref_model
+        True,  # compiled
+        True,  # use_ref_model
         False,  # average_log_prob
-        1,      # chunk_size
+        1,  # chunk_size
         loss_type,
     )
 
@@ -1000,17 +1000,17 @@ def test_functional_positional_arg_contract():
         _input.detach().clone().requires_grad_(True),
         _weight.detach().clone().requires_grad_(True),
         target,
-        None,       # bias
+        None,  # bias
         ref_input,
         _ref_weight.detach().clone().requires_grad_(True),
-        None,       # ref_bias
-        -100,       # ignore_index
-        0.1,        # beta
-        True,       # compute_nll_loss
-        True,       # compiled
-        True,       # use_ref_model
-        False,      # average_log_prob
-        1,          # chunk_size
+        None,  # ref_bias
+        -100,  # ignore_index
+        0.1,  # beta
+        True,  # compute_nll_loss
+        True,  # compiled
+        True,  # use_ref_model
+        False,  # average_log_prob
+        1,  # chunk_size
         "sigmoid",  # loss_type
     )
 
@@ -1028,10 +1028,10 @@ def test_functional_positional_arg_contract():
         _weight.detach().clone().requires_grad_(True),
         _input.detach().clone().requires_grad_(True),
         target,
-        None,       # bias
+        None,  # bias
         ref_input,
         _ref_weight.detach().clone().requires_grad_(True),
-        None,       # ref_bias
+        None,  # ref_bias
     )
 
     assert_verbose_allclose(loss_positional, loss_module, atol=1e-5, rtol=1e-4)
