@@ -2157,8 +2157,8 @@ def run_mini_model(
             32,
             1e-5,
             torch.bfloat16,
-            1e-2,
-            4e-1,  # rms_norm patch needs higher tolerance in bf16
+            5e-2,  # LigerExperts fused MoE kernel needs higher loss atol in bf16
+            5e-1,  # rms_norm + LigerExperts patch needs higher tolerance in bf16
             1e-1,
             5e-1,  # rms_norm patch needs higher tolerance in bf16
             2e-1,

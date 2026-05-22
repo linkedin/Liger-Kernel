@@ -16,7 +16,7 @@ Develops Triton kernels for Liger Kernel through a 3-stage pipeline with human r
 
 ### Stage 1: Analyze
 
-Spawn an **Analyzer** agent (read [analyzer.md](analyzer.md)).
+Follow the **Analyzer** workflow in [analyzer.md](analyzer.md). If the host runtime supports parallel subagents, this stage may be delegated to one; otherwise execute the workflow directly.
 
 Accepts any input: local file, URL, code snippet, natural language description, or model component reference. Produces a standalone PyTorch reference implementation and a kernel profile.
 
@@ -24,7 +24,7 @@ Accepts any input: local file, URL, code snippet, natural language description, 
 
 ### Stage 2: Generate
 
-Spawn a **Generator** agent (read [generator.md](generator.md)).
+Follow the **Generator** workflow in [generator.md](generator.md).
 
 Generates/modifies up to 8 files:
 
@@ -41,7 +41,7 @@ Generates/modifies up to 8 files:
 
 ### Stage 3: Validate
 
-Spawn a **Validator** agent (read [validator.md](validator.md)).
+Follow the **Validator** workflow in [validator.md](validator.md).
 
 Runs checkstyle, unit tests (hard gate — stops on persistent failure), benchmarks, and generates plots. Optionally runs ncu profiling.
 

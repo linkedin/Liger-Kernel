@@ -200,6 +200,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         vespo_lambda_pos=3.0,
         vespo_k_neg=3.0,
         vespo_lambda_neg=2.0,
+        num_items_in_batch=None,
     ):
         """Chunked forward pass for PPO loss computation.
 
@@ -254,6 +255,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             vespo_lambda_pos=vespo_lambda_pos,
             vespo_k_neg=vespo_k_neg,
             vespo_lambda_neg=vespo_lambda_neg,
+            num_items_in_batch=num_items_in_batch,
         )
         compiled_compute_loss = torch.compile(compute_loss) if compiled else compute_loss
 
@@ -433,16 +435,38 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         return loss_acc, tuple(final_metrics)
 
     @staticmethod
-    def _compute_dapo_normalizer(attention_mask):
-        """Global active tokens averaged per process."""
-        normalizer = attention_mask.to(torch.float32).sum()
+    def _compute_dapo_normalizer(attention_mask, num_items_in_batch=None):
+        """Per-process normalizer for DAPO/CISPO/VESPO.
+
+        When ``num_items_in_batch`` is provided it is used directly, matching
+        TRL's ``num_items_in_batch / num_processes`` — the total active tokens
+        across the entire generation batch (all grad-accum micro-batches × all
+        processes). Falling back to the current micro-batch's mask biases the
+        per-token weight by micro-batch size when grad-accum steps have
+        unequal completion lengths.
+        """
         world_size = 1
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            import torch.distributed as dist
+
+            world_size = dist.get_world_size()
+
+        if num_items_in_batch is not None:
+            if isinstance(num_items_in_batch, torch.Tensor):
+                normalizer = num_items_in_batch.to(device=attention_mask.device, dtype=torch.float32)
+            else:
+                normalizer = torch.as_tensor(
+                    float(num_items_in_batch), device=attention_mask.device, dtype=torch.float32
+                )
+            normalizer = normalizer / world_size
+            return torch.clamp(normalizer, min=1.0)
+
+        normalizer = attention_mask.to(torch.float32).sum()
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             import torch.distributed as dist
 
             normalizer = normalizer.clone()
             dist.all_reduce(normalizer, op=dist.ReduceOp.SUM)
-            world_size = dist.get_world_size()
 
         normalizer = normalizer / world_size
         return torch.clamp(normalizer, min=1.0)
@@ -471,6 +495,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         vespo_lambda_pos=3.0,
         vespo_k_neg=3.0,
         vespo_lambda_neg=2.0,
+        num_items_in_batch=None,
     ):
         """Compute loss from pre-computed logprobs. This is the torch.compile-friendly part."""
         chunk_loss, chunk_metrics = ppo_loss_fn(
@@ -495,6 +520,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             vespo_lambda_pos=vespo_lambda_pos,
             vespo_k_neg=vespo_k_neg,
             vespo_lambda_neg=vespo_lambda_neg,
+            num_items_in_batch=num_items_in_batch,
         )
         return chunk_loss, chunk_metrics
 
@@ -556,4 +582,5 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             None,  # grad_vllm_is_ratio
             None,  # grad_delta
             None,  # grad_use_bias_correction_kl
+            None,  # grad_num_items_in_batch
         )

@@ -1212,10 +1212,11 @@ def apply_liger_kernel_to_gemma3(
         if isinstance(model, Gemma3ForConditionalGeneration):
             if isinstance(model.model.vision_tower, SiglipVisionModel):
                 vision_tower = model.model.vision_tower
+                siglip_vision_model = getattr(vision_tower, "vision_model", vision_tower)
 
-                _patch_layer_norm_module(vision_tower.vision_model.post_layernorm)
+                _patch_layer_norm_module(siglip_vision_model.post_layernorm)
 
-                for layer in vision_tower.vision_model.encoder.layers:
+                for layer in siglip_vision_model.encoder.layers:
                     layer: SiglipEncoderLayer
                     if layer_norm:
                         _patch_layer_norm_module(layer.layer_norm1)
@@ -1355,7 +1356,11 @@ def apply_liger_kernel_to_gemma4_text(
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
 
-        causal_lm_types = tuple(cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM) if cls is not None)
+        # `isinstance(cls, type)` filter (rather than `cls is not None`) so we
+        # also drop the MagicMock the test harness substitutes for
+        # `Gemma4TextForCausalLM` under `with patch("...modeling_gemma4")` —
+        # an `isinstance` check against a non-class entry raises TypeError.
+        causal_lm_types = tuple(cls for cls in (Gemma4ForCausalLM, Gemma4TextForCausalLM) if isinstance(cls, type))
         if isinstance(model, causal_lm_types) or isinstance(model, Gemma4TextModel):
             # get the base model from the model instance
             base_model = model.model if isinstance(model, causal_lm_types) else model
@@ -1382,6 +1387,101 @@ def apply_liger_kernel_to_gemma4_text(
                     _maybe_patch_scaled_norm(getattr(decoder_layer.self_attn, "v_norm", None))
         else:
             raise TypeError("The model must be Gemma4ForCausalLM, Gemma4TextForCausalLM, or Gemma4TextModel.")
+
+
+def apply_liger_kernel_to_gemma4(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    layer_norm: bool = False,
+    rms_norm: bool = True,
+    geglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma4
+    multimodal models (`Gemma4ForConditionalGeneration`).
+
+    For text-only Gemma 4 (`Gemma4ForCausalLM`, `Gemma4TextForCausalLM`,
+    `Gemma4TextModel`), use :func:`apply_liger_kernel_to_gemma4_text` instead.
+
+    The primary win is the fused-linear-cross-entropy path on the multimodal
+    class: with vocab=262,144, the (B, T, V) fp32 logits tensor is ~17 GB at
+    T=8192 in bf16 (and ~34 GB once the loss path upcasts), OOMing 96 GB cards.
+    Fused CE materializes only the loss scalar.
+
+    Out of scope (deferred to future PRs):
+    - Vision and audio tower kernel swaps. Gemma 4's vision and audio towers
+      are loaded via `AutoModel.from_config(config.vision_config)` and
+      `AutoModel.from_config(config.audio_config)` respectively, so their
+      module classes are polymorphic. A safe class-level swap would need to
+      enumerate supported tower types — out of scope here; FLCE on the LM head
+      is what unblocks training OOM.
+    - PLE (Per-Layer Embeddings) kernels. PLE state passes through the inner
+      forward unchanged; verified end-to-end on E4B-it without explicit
+      handling.
+    - Gemma 4 MoE expert kernels (`Gemma4TextExperts`); guarded out via the
+      same `enable_moe_block` check used in the text path.
+
+    Args:
+        rope (bool): Currently a no-op (HF's apply_rotary_pos_emb signature is
+            incompatible with Liger's fused variant). Default False.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss.
+            Default False. Mutually exclusive with `fused_linear_cross_entropy`.
+        fused_linear_cross_entropy (bool): Fused linear CE for memory
+            efficiency. Default True.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default True.
+        model (PreTrainedModel): An already-instantiated model to patch
+            in-place. Default None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.gemma4 import modeling_gemma4
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4ForConditionalGeneration
+
+    from liger_kernel.transformers.model.gemma4 import multimodal_forward
+
+    if model is not None and not isinstance(model, Gemma4ForConditionalGeneration):
+        raise TypeError("The model must be Gemma4ForConditionalGeneration.")
+
+    # Class-level patches for the text decoder layers (RMSNorm, GeGLU MLP).
+    # We disable FLCE here because the multimodal class needs its own forward
+    # (handles pixel_values / input_features / mm_token_type_ids / etc.) — we
+    # install that below.
+    apply_liger_kernel_to_gemma4_text(
+        rope=rope,
+        cross_entropy=False,
+        fused_linear_cross_entropy=False,
+        rms_norm=rms_norm,
+        geglu=geglu,
+    )
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(multimodal_forward, model)
+        else:
+            modeling_gemma4.Gemma4ForConditionalGeneration.forward = multimodal_forward
+
+    if model is not None:
+        # Recurse into the language model for instance-level RMSNorm / GeGLU
+        # patching. (The class-level swap above already covers freshly
+        # instantiated modules; this catches the already-built ones.)
+        apply_liger_kernel_to_gemma4_text(
+            rope=rope,
+            cross_entropy=False,
+            fused_linear_cross_entropy=False,
+            rms_norm=rms_norm,
+            geglu=geglu,
+            model=model.model.language_model,
+        )
 
 
 def apply_liger_kernel_to_paligemma(
@@ -1458,10 +1558,11 @@ def apply_liger_kernel_to_paligemma(
             raise TypeError("model have to be of type PaliGemmaForConditionalGeneration")
 
         vision_tower: SiglipVisionModel = model.model.vision_tower
+        siglip_vision_model = getattr(vision_tower, "vision_model", vision_tower)
 
-        _patch_layer_norm_module(vision_tower.vision_model.post_layernorm)
+        _patch_layer_norm_module(siglip_vision_model.post_layernorm)
 
-        for layer in vision_tower.vision_model.encoder.layers:
+        for layer in siglip_vision_model.encoder.layers:
             layer: SiglipEncoderLayer
             if layer_norm:
                 _patch_layer_norm_module(layer.layer_norm1)
@@ -2024,7 +2125,7 @@ def apply_liger_kernel_to_qwen3_vl_moe(
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
-    swiglu: bool = False,
+    swiglu: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -2035,7 +2136,7 @@ def apply_liger_kernel_to_qwen3_vl_moe(
         fused_linear_cross_entropy (bool):
             Whether to apply Liger's fused linear cross entropy loss. Default is False.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
-        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is False.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -2069,7 +2170,11 @@ def apply_liger_kernel_to_qwen3_vl_moe(
         else:
             modeling_qwen3_vl_moe.Qwen3VLMoeForConditionalGeneration.forward = qwen3_vl_moe_lce_forward
 
-    if model is not None and rms_norm:
+    if swiglu:
+        if IS_TRANSFORMERS_V5_OR_LATER:
+            modeling_qwen3_vl_moe.Qwen3VLMoeTextExperts = LigerExperts
+
+    if model is not None:
         if isinstance(model, Qwen3VLMoeForConditionalGeneration):
             text_model: Qwen3VLMoeTextModel = model.model.language_model
         elif isinstance(model, Qwen3VLMoeModel):
@@ -2084,16 +2189,23 @@ def apply_liger_kernel_to_qwen3_vl_moe(
         _patch_qwen3_vl_moe_rms_norm = partial(_patch_rms_norm_module, offset=0.0, casting_mode="llama")
 
         if text_model is not None:
-            _patch_qwen3_vl_moe_rms_norm(text_model.norm)
+            if rms_norm:
+                _patch_qwen3_vl_moe_rms_norm(text_model.norm)
             for decoder_layer in text_model.layers:
-                _patch_qwen3_vl_moe_rms_norm(decoder_layer.input_layernorm)
-                _patch_qwen3_vl_moe_rms_norm(decoder_layer.post_attention_layernorm)
-                self_attn = getattr(decoder_layer, "self_attn", None)
-                if self_attn is not None:
-                    if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
-                        _patch_qwen3_vl_moe_rms_norm(self_attn.q_norm)
-                    if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
-                        _patch_qwen3_vl_moe_rms_norm(self_attn.k_norm)
+                if rms_norm:
+                    _patch_qwen3_vl_moe_rms_norm(decoder_layer.input_layernorm)
+                    _patch_qwen3_vl_moe_rms_norm(decoder_layer.post_attention_layernorm)
+                    self_attn = getattr(decoder_layer, "self_attn", None)
+                    if self_attn is not None:
+                        if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                            _patch_qwen3_vl_moe_rms_norm(self_attn.q_norm)
+                        if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                            _patch_qwen3_vl_moe_rms_norm(self_attn.k_norm)
+                if swiglu:
+                    experts = getattr(decoder_layer.mlp, "experts", None)
+                    if experts is not None:
+                        if IS_TRANSFORMERS_V5_OR_LATER:
+                            _patch_swiglu_module(experts, LigerExperts)
 
 
 def apply_liger_kernel_to_phi3(
@@ -2503,6 +2615,9 @@ def apply_liger_kernel_to_glm4v_moe(
             model.forward = MethodType(glm4v_moe_lce_forward, model)
         else:
             modeling_glm4v_moe.Glm4vMoeForConditionalGeneration.forward = glm4v_moe_lce_forward
+    if swiglu:
+        if IS_TRANSFORMERS_V5_OR_LATER:
+            modeling_glm4v_moe.Glm4vMoeTextNaiveMoe = LigerExperts
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
@@ -2510,11 +2625,9 @@ def apply_liger_kernel_to_glm4v_moe(
         if isinstance(model, Glm4vMoeForConditionalGeneration):
             text_model: Glm4vMoeTextModel = model.model.language_model
             vision_model: Glm4vMoeVisionModel = model.model.visual
-            Glm4vMoeTextMoE = modeling_glm4v_moe.Glm4vMoeTextMoE
         elif isinstance(model, Glm4vMoeModel):
             text_model: Glm4vMoeTextModel = model.language_model
             vision_model: Glm4vMoeVisionModel = model.visual
-            Glm4vMoeTextMoE = modeling_glm4v_moe.Glm4vMoeTextMoE
         elif isinstance(model, Glm4vMoeTextModel):
             text_model: Glm4vMoeTextModel = model
             vision_model = None
@@ -2538,22 +2651,22 @@ def apply_liger_kernel_to_glm4v_moe(
             if rms_norm:
                 _patch_rms_norm_module(text_model.norm)
             for decoder_layer in text_model.layers:
+                if rms_norm:
+                    _patch_rms_norm_module(decoder_layer.input_layernorm)
+                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
                 if swiglu:
-                    decoder_layer.mlp = _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
-                if rms_norm:
-                    _patch_rms_norm_module(decoder_layer.input_layernorm)
-                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-        if isinstance(Glm4vMoeTextMoE, type) and isinstance(decoder_layer.mlp, Glm4vMoeTextMoE):
-            experts = getattr(decoder_layer.mlp, "experts", None)
-            if experts is not None:
-                for expert in experts:
-                    _patch_swiglu_module(expert, LigerSwiGLUMLP)
-            if decoder_layer.mlp.shared_experts is not None:
-                _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
-            for decoder_layer in text_model.layers:
-                if rms_norm:
-                    _patch_rms_norm_module(decoder_layer.input_layernorm)
-                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+                    experts = getattr(decoder_layer.mlp, "experts", None)
+                    if experts is not None:
+                        if IS_TRANSFORMERS_V5_OR_LATER:
+                            _patch_swiglu_module(experts, LigerExperts)
+                        else:
+                            for expert in experts:
+                                _patch_swiglu_module(expert, LigerSwiGLUMLP)
+                        shared_experts = getattr(decoder_layer.mlp, "shared_experts", None)
+                        if shared_experts is not None:
+                            _patch_swiglu_module(shared_experts, LigerSwiGLUMLP)
+                    else:
+                        _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
 
 
 def apply_liger_kernel_to_internvl(
@@ -3051,6 +3164,10 @@ def apply_liger_kernel_to_qwen3_5_moe(
     """
     Apply Liger kernels to replace original implementation in HuggingFace Qwen3.5 MoE models.
 
+    Supports both the text-only (`Qwen3_5MoeForCausalLM`, `Qwen3_5MoeTextModel`) and the
+    multimodal (`Qwen3_5MoeForConditionalGeneration`, `Qwen3_5MoeModel`) classes. The vision
+    tower itself is not patched.
+
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
@@ -3069,9 +3186,14 @@ def apply_liger_kernel_to_qwen3_5_moe(
 
     from transformers.models.qwen3_5_moe import modeling_qwen3_5_moe
     from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForCausalLM
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForConditionalGeneration
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeModel
     from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeTextModel
 
     from liger_kernel.transformers.model.qwen3_5_moe import lce_forward as qwen3_5_moe_lce_forward
+    from liger_kernel.transformers.model.qwen3_5_moe import (
+        lce_forward_conditional_generation as qwen3_5_moe_conditional_generation_lce_forward,
+    )
     from liger_kernel.transformers.rms_norm import LigerRMSNormForQwen3Next
     from liger_kernel.transformers.swiglu import LigerQwen3MoeSwiGLUMLP
 
@@ -3087,23 +3209,32 @@ def apply_liger_kernel_to_qwen3_5_moe(
         if model is not None:
             if isinstance(model, Qwen3_5MoeForCausalLM):
                 model.forward = MethodType(qwen3_5_moe_lce_forward, model)
-            else:
-                raise TypeError(
-                    f" fused_linear_cross_entropy is only applicable on Qwen3_5MoeForCausalLM. Got: {type(model)}"
-                )
+            elif isinstance(model, Qwen3_5MoeForConditionalGeneration):
+                model.forward = MethodType(qwen3_5_moe_conditional_generation_lce_forward, model)
+            # Qwen3_5MoeModel / Qwen3_5MoeTextModel have no LM head — RMSNorm / SwiGLU
+            # patches below still apply, but FLCE is a no-op.
         else:
             modeling_qwen3_5_moe.Qwen3_5MoeForCausalLM.forward = qwen3_5_moe_lce_forward
+            modeling_qwen3_5_moe.Qwen3_5MoeForConditionalGeneration.forward = (
+                qwen3_5_moe_conditional_generation_lce_forward
+            )
     if swiglu:
         modeling_qwen3_5_moe.Qwen3_5MoeExperts = LigerExperts
 
     if model is not None:
         # The model instance already exists, so we need to additionally patch the
         # instance variables that reference already-instantiated modules
-        if isinstance(model, (Qwen3_5MoeForCausalLM, Qwen3_5MoeTextModel)):
+        if isinstance(model, Qwen3_5MoeForConditionalGeneration):
+            base_model: Qwen3_5MoeTextModel = model.model.language_model
+        elif isinstance(model, Qwen3_5MoeModel):
+            base_model: Qwen3_5MoeTextModel = model.language_model
+        elif isinstance(model, (Qwen3_5MoeForCausalLM, Qwen3_5MoeTextModel)):
             base_model: Qwen3_5MoeTextModel = getattr(model, model.base_model_prefix, model)
         else:
             raise TypeError(
-                f"Unsupported qwen3_5_moe model type. `model` must be `Qwen3_5MoeForCausalLM`, `Qwen3_5MoeTextModel`. Got: {type(model)}"
+                "Unsupported qwen3_5_moe model type. `model` must be `Qwen3_5MoeForConditionalGeneration`, "
+                "`Qwen3_5MoeModel`, `Qwen3_5MoeForCausalLM` or `Qwen3_5MoeTextModel`. "
+                f"Got: {type(model)}"
             )
 
         _patch_rms_norm_module_for_qwen3_5_moe = partial(
@@ -3332,6 +3463,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma3_text": apply_liger_kernel_to_gemma3_text,
     "gemma3": apply_liger_kernel_to_gemma3,
     "gemma4_text": apply_liger_kernel_to_gemma4_text,
+    "gemma4": apply_liger_kernel_to_gemma4,
     "glm4": apply_liger_kernel_to_glm4,
     "glm4v": apply_liger_kernel_to_glm4v,
     "glm4v_moe": apply_liger_kernel_to_glm4v_moe,

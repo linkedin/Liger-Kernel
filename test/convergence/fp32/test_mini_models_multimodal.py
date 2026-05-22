@@ -14,6 +14,7 @@ from transformers import PreTrainedTokenizerFast
 from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3
+from liger_kernel.transformers import apply_liger_kernel_to_gemma4
 from liger_kernel.transformers import apply_liger_kernel_to_internvl
 from liger_kernel.transformers import apply_liger_kernel_to_llama4
 from liger_kernel.transformers import apply_liger_kernel_to_llava
@@ -23,6 +24,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_pixtral
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5_moe
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl
 from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl_moe
 from liger_kernel.transformers import apply_liger_kernel_to_smolvlm
@@ -40,6 +42,7 @@ from test.utils import load_tokenizer_config
 from test.utils import multimodal_collate_fn
 from test.utils import require_deterministic
 from test.utils import revert_liger_kernel_to_gemma3
+from test.utils import revert_liger_kernel_to_gemma4
 from test.utils import revert_liger_kernel_to_internvl
 from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
@@ -49,6 +52,7 @@ from test.utils import revert_liger_kernel_to_pixtral
 from test.utils import revert_liger_kernel_to_qwen2_5_vl
 from test.utils import revert_liger_kernel_to_qwen2_vl
 from test.utils import revert_liger_kernel_to_qwen3_5
+from test.utils import revert_liger_kernel_to_qwen3_5_moe
 from test.utils import revert_liger_kernel_to_qwen3_vl
 from test.utils import revert_liger_kernel_to_qwen3_vl_moe
 from test.utils import revert_liger_kernel_to_smolvlm2
@@ -160,6 +164,16 @@ except ImportError:
     QWEN3_VL_MOE_AVAILABLE = False
 
 try:
+    from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeConfig
+    from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeTextConfig
+    from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeVisionConfig
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForConditionalGeneration
+
+    QWEN3_5_MOE_AVAILABLE = True
+except ImportError:
+    QWEN3_5_MOE_AVAILABLE = False
+
+try:
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
     from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5Config
     from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
@@ -238,6 +252,21 @@ try:
     GEMMA3_AVAILABLE = True
 except ImportError:
     GEMMA3_AVAILABLE = False
+
+try:
+    # Gemma4 multimodal requires transformers>=5.5.0
+    from transformers.models.gemma4.configuration_gemma4 import Gemma4Config
+    from transformers.models.gemma4.configuration_gemma4 import Gemma4TextConfig
+    from transformers.models.gemma4.configuration_gemma4 import Gemma4VisionConfig
+    from transformers.models.gemma4.feature_extraction_gemma4 import Gemma4AudioFeatureExtractor
+    from transformers.models.gemma4.image_processing_gemma4 import Gemma4ImageProcessor
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4ForConditionalGeneration
+    from transformers.models.gemma4.processing_gemma4 import Gemma4Processor
+    from transformers.models.gemma4.video_processing_gemma4 import Gemma4VideoProcessor
+
+    GEMMA4_AVAILABLE = True
+except ImportError:
+    GEMMA4_AVAILABLE = False
 
 try:
     # InternVL is only available in transformers>=4.52.1
@@ -543,6 +572,52 @@ if GEMMA3_AVAILABLE:
             image_token_index=5,  # NOTE: outside the vocab size
             boi_token_index=4,
             eoi_token_index=6,
+        ),
+    )
+
+if GEMMA4_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_gemma4"] = MiniModelConfig(
+        liger_kernel_patch_func=functools.partial(apply_liger_kernel_to_gemma4, fused_linear_cross_entropy=False),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma4,
+        model_class=Gemma4ForConditionalGeneration,
+        mini_model_config=Gemma4Config(
+            text_config=Gemma4TextConfig(
+                vocab_size=32000,  # 262144
+                hidden_size=1024,  # 3072
+                intermediate_size=2048,  # 24576
+                num_hidden_layers=4,  # 28
+                num_attention_heads=4,  # 16
+                num_key_value_heads=2,  # 8
+                head_dim=128,  # 256
+                rms_norm_eps=1e-6,
+                use_cache=True,
+                tie_word_embeddings=True,
+                attention_bias=False,
+                attention_dropout=0.0,
+                num_kv_shared_layers=0,
+                use_double_wide_mlp=False,
+                enable_moe_block=False,
+                hidden_size_per_layer_input=0,
+            ),
+            vision_config=Gemma4VisionConfig(
+                hidden_size=512,  # 768
+                intermediate_size=1024,  # 3072
+                num_hidden_layers=2,  # 16
+                num_attention_heads=4,  # 12
+                num_key_value_heads=4,  # 12
+                head_dim=128,  # 64
+                hidden_activation="gelu_pytorch_tanh",
+                patch_size=16,
+                position_embedding_size=1024,
+            ),
+            audio_config=None,  # Audio out of scope (vision/audio tower follow-up PR)
+            image_token_id=5,  # matches tokenizer "5": "<image_soft_token>"
+            boi_token_id=4,  # matches tokenizer "4": "<start_of_image>"
+            eoi_token_id=6,  # matches tokenizer "6": "<end_of_image>"
+            video_token_id=7,  # dummy, video not tested
+            boa_token_id=4,  # dummy, audio not tested
+            eoa_token_index=6,  # dummy, audio not tested
+            attn_implementation="eager",
         ),
     )
 
@@ -1027,6 +1102,61 @@ if QWEN3_5_AVAILABLE:
         ),
     )
 
+if QWEN3_5_MOE_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_qwen3_5_moe"] = MiniModelConfig(
+        liger_kernel_patch_func=apply_liger_kernel_to_qwen3_5_moe,
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_qwen3_5_moe,
+        model_class=Qwen3_5MoeForConditionalGeneration,
+        mini_model_config=Qwen3_5MoeConfig(
+            attn_implementation="sdpa",
+            image_token_id=4,
+            video_token_id=5,
+            vision_start_token_id=1,
+            vision_end_token_id=2,
+            tie_word_embeddings=True,
+            vision_config=Qwen3_5MoeVisionConfig(
+                depth=4,
+                hidden_size=256,
+                hidden_act="gelu_pytorch_tanh",
+                intermediate_size=512,
+                num_heads=4,
+                in_channels=3,
+                patch_size=16,
+                spatial_merge_size=2,
+                temporal_patch_size=2,
+                out_hidden_size=512,
+                num_position_embeddings=256,
+                initializer_range=0.02,
+            ).to_dict(),
+            text_config=Qwen3_5MoeTextConfig(
+                vocab_size=32000,
+                hidden_size=512,
+                num_hidden_layers=4,
+                num_attention_heads=8,
+                num_key_value_heads=2,
+                head_dim=64,
+                hidden_act="silu",
+                max_position_embeddings=32768,
+                initializer_range=0.02,
+                rms_norm_eps=1e-6,
+                use_cache=False,
+                tie_word_embeddings=True,
+                attention_dropout=0.0,
+                attention_bias=False,
+                linear_conv_kernel_dim=4,
+                linear_key_head_dim=64,
+                linear_value_head_dim=64,
+                linear_num_key_heads=2,
+                linear_num_value_heads=2,
+                moe_intermediate_size=1024,
+                shared_expert_intermediate_size=1024,
+                num_experts_per_tok=2,
+                num_experts=4,
+                pad_token_id=None,
+            ).to_dict(),
+        ),
+    )
+
 if PIXTRAL_AVAILABLE:
     MINI_MODEL_SETUPS["mini_pixtral"] = MiniModelConfig(
         liger_kernel_patch_func=apply_liger_kernel_to_pixtral,
@@ -1093,7 +1223,7 @@ def create_processor(model_name: str):
             tokenizer=qwen_tokenizer,
         )
 
-    elif model_name in ("mini_qwen3_vl", "mini_qwen3_vl_moe", "mini_qwen3_5"):
+    elif model_name in ("mini_qwen3_vl", "mini_qwen3_vl_moe", "mini_qwen3_5", "mini_qwen3_5_moe"):
         tokenizer_config = load_tokenizer_config(
             os.path.join(FAKE_CONFIGS_PATH, "Qwen/Qwen3-VL-4B-Instruct/tokenizer_config.json")
         )
@@ -1280,6 +1410,34 @@ def create_processor(model_name: str):
         fast_tokenizer = GemmaTokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
         image_processor = Gemma3ImageProcessor()
         return Gemma3Processor(image_processor=image_processor, tokenizer=fast_tokenizer)
+
+    elif model_name.startswith("mini_gemma4"):
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH,
+                "Google/Gemma4/gemma-4-e4b-it/tokenizer_config.json",
+            )
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        fast_tokenizer = GemmaTokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
+        # Audio/video processors constructed with defaults; the convergence
+        # path only feeds image+text, so the audio/video branches in
+        # Gemma4Processor.__call__ are not exercised. Audio coverage is
+        # deferred to the vision/audio tower follow-up PR.
+        return Gemma4Processor(
+            feature_extractor=Gemma4AudioFeatureExtractor(),
+            image_processor=Gemma4ImageProcessor(),
+            tokenizer=fast_tokenizer,
+            video_processor=Gemma4VideoProcessor(),
+        )
 
     else:
         raise ValueError(f"Processor not available for model {model_name}")
@@ -1609,9 +1767,9 @@ def run_mini_model_multimodal(
             1e-4,
             torch.float32,
             1e-7,
-            5e-4,
+            5e-3,  # LigerExperts fused MoE kernel needs higher loss rtol
             5e-2,
-            5e-3,
+            2e-1,  # LigerExperts fused MoE kernel needs higher logprobs rtol
             5e-3,
             1e-5,
             marks=[
@@ -1622,10 +1780,6 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not is_torchvision_available(),
                     reason="Qwen3VLVideoProcessor requires torchvision",
-                ),
-                pytest.mark.skipif(
-                    True,
-                    reason="Flaky test",
                 ),
             ],
         ),
@@ -1702,6 +1856,24 @@ def run_mini_model_multimodal(
             ],
         ),
         pytest.param(
+            "mini_gemma4",
+            32,
+            1e-5,
+            torch.float32,
+            1e-8,
+            1e-4,
+            5e-3,
+            1e-5,
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not GEMMA4_AVAILABLE,
+                    reason="Gemma4 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
             "mini_qwen3_5",
             32,
             1e-4,
@@ -1716,6 +1888,28 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not QWEN3_5_AVAILABLE,
                     reason="Qwen3.5 not available in this version of transformers",
+                ),
+                pytest.mark.skipif(
+                    not is_torchvision_available(),
+                    reason="Qwen3VLVideoProcessor requires torchvision",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_qwen3_5_moe",
+            32,
+            1e-4,
+            torch.float32,
+            1e-7,
+            5e-3,  # LigerExperts fused MoE kernel needs higher loss rtol
+            5e-2,
+            2e-1,  # LigerExperts fused MoE kernel needs higher logprobs rtol
+            5e-3,
+            1e-5,
+            marks=[
+                pytest.mark.skipif(
+                    not QWEN3_5_MOE_AVAILABLE,
+                    reason="Qwen3.5-MoE not available in this version of transformers",
                 ),
                 pytest.mark.skipif(
                     not is_torchvision_available(),

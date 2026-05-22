@@ -15,6 +15,7 @@ from liger_kernel.transformers.layer_norm import LigerLayerNorm  # noqa: F401
 from liger_kernel.transformers.llama4_rope import liger_llama4_text_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.llama4_rope import liger_llama4_vision_rotary_pos_emb  # noqa: F401
 from liger_kernel.transformers.mhc import LigerMHC  # noqa: F401
+from liger_kernel.transformers.modulated_rms_norm import LigerModulatedRMSNorm  # noqa: F401
 from liger_kernel.transformers.multi_token_attention import LigerMultiTokenAttention  # noqa: F401
 from liger_kernel.transformers.poly_norm import LigerPolyNorm  # noqa: F401
 from liger_kernel.transformers.relu_squared import LigerReLUSquared  # noqa: F401
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma2  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma3_text  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_gemma4_text  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_glm4v  # noqa: F401
@@ -119,6 +121,7 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_gemma2",
         "apply_liger_kernel_to_gemma3",
         "apply_liger_kernel_to_gemma3_text",
+        "apply_liger_kernel_to_gemma4",
         "apply_liger_kernel_to_gemma4_text",
         "apply_liger_kernel_to_glm4",
         "apply_liger_kernel_to_glm4v",
@@ -174,6 +177,7 @@ __all__ = [
     "LigerJSD",
     "LigerLayerNorm",
     "LigerFusedAddRMSNorm",
+    "LigerModulatedRMSNorm",
     "LigerPolyNorm",
     "LigerReLUSquared",
     "LigerRMSNorm",
@@ -207,6 +211,7 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_gemma2",
             "apply_liger_kernel_to_gemma3",
             "apply_liger_kernel_to_gemma3_text",
+            "apply_liger_kernel_to_gemma4",
             "apply_liger_kernel_to_gemma4_text",
             "apply_liger_kernel_to_glm4",
             "apply_liger_kernel_to_glm4v",

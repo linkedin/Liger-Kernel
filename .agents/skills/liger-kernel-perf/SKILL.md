@@ -42,9 +42,9 @@ If any validation fails, report clearly and stop.
 
 ### Stage 1: Profile
 
-Spawn a **Profiler** agent (read [profiler.md](profiler.md)).
+Follow the **Profiler** workflow in [profiler.md](profiler.md). If the host runtime supports parallel subagents, this stage may be delegated to one; otherwise execute the workflow directly.
 
-The agent:
+This stage:
 1. Creates the workspace directory `optimization/{kernel}/`
 2. Copies the original kernel as a snapshot
 3. Runs baseline benchmarks using the existing benchmark script
@@ -59,9 +59,9 @@ The agent:
 
 ### Stage 2: Optimize
 
-Spawn an **Optimizer** agent (read [optimizer.md](optimizer.md)).
+Follow the **Optimizer** workflow in [optimizer.md](optimizer.md).
 
-The agent runs an autonomous optimization loop:
+This stage runs an autonomous optimization loop:
 
 1. Read the optimization profile and original kernel
 2. **Always try parameter tuning first** (BLOCK_SIZE, num_warps, num_stages manual sweep -- NOT @triton.autotune)
@@ -81,9 +81,9 @@ The agent runs an autonomous optimization loop:
 
 ### Stage 3: Finalize
 
-Spawn a **Finalizer** agent (read [finalizer.md](finalizer.md)).
+Follow the **Finalizer** workflow in [finalizer.md](finalizer.md).
 
-The agent:
+This stage:
 1. Applies the winning variant in-place to `src/liger_kernel/ops/{kernel}.py`
 2. Runs the full test suite: `python -m pytest test/transformers/test_{kernel}.py -xvs` (hard gate)
 3. Runs checkstyle: `make checkstyle` (auto-fix with `ruff check . --fix && ruff format .`)

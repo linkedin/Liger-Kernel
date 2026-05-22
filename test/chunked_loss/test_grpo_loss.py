@@ -187,8 +187,8 @@ class TorchLMHeadGRPO(torch.nn.Module):
             ref_per_token_logps = ref_per_token_logps.float()
             kl_div = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1.0
             if use_bias_correction_kl:
-                token_coef_1 = torch.exp(per_token_logps - old_per_token_logps)
-                kl_div = kl_div * token_coef_1
+                # TRL: per_token_kl *= coef_1 with coef_1 reflecting importance_sampling_level.
+                kl_div = kl_div * torch.exp(log_importance_weights)
             per_token_loss = per_token_loss + beta * kl_div
 
         # Adjust clipping metric calculation based on importance sampling level
@@ -347,6 +347,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
         old_per_token_logps=None,
         ref_input=None,
         vllm_is_ratio=None,
+        num_items_in_batch=None,
     ):
         return self.grpo_loss(
             x,  # _input
@@ -361,6 +362,7 @@ class LigerLMHeadGRPO(torch.nn.Module):
             self.ref_lin.weight,  # ref_weight
             self.ref_lin.bias,  # ref_bias
             vllm_is_ratio=vllm_is_ratio,
+            num_items_in_batch=num_items_in_batch,
         )
 
 
@@ -646,14 +648,23 @@ def test_correctness(
 
 
 @pytest.mark.parametrize("loss_type", ["grpo", "dapo"])
+@pytest.mark.parametrize("importance_sampling_level", ["token", "sequence"])
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
         (torch.float32, 1e-5, 5e-4),
     ],
 )
-def test_correctness_with_bias_correction_kl(loss_type, dtype, atol, rtol):
-    """Test use_bias_correction_kl (importance-sampling-corrected KL from DeepSeek-V3.2)."""
+def test_correctness_with_bias_correction_kl(loss_type, importance_sampling_level, dtype, atol, rtol):
+    """Test use_bias_correction_kl (importance-sampling-corrected KL from DeepSeek-V3.2).
+
+    Covers both ``importance_sampling_level`` values: TRL multiplies ``per_token_kl``
+    by ``coef_1`` whose shape mirrors the importance-sampling level (token: (B, T);
+    sequence: (B, 1)). Liger must do the same — historically it always recomputed a
+    token-level ratio, which silently miscomputed the bias-corrected KL when
+    sequence-level importance sampling was selected.
+    """
+    set_seed()
     B, T, H, V = 3, 47, 31, 123
     beta = 0.1  # Must be non-zero for KL to matter
     torch.compiler.reset()
@@ -664,6 +675,7 @@ def test_correctness_with_bias_correction_kl(loss_type, dtype, atol, rtol):
         dtype=dtype,
         beta=beta,
         loss_type=loss_type,
+        importance_sampling_level=importance_sampling_level,
         use_bias_correction_kl=True,
     )
     liger_lm_head_grpo = LigerLMHeadGRPO(
@@ -672,6 +684,7 @@ def test_correctness_with_bias_correction_kl(loss_type, dtype, atol, rtol):
         dtype=dtype,
         beta=beta,
         loss_type=loss_type,
+        importance_sampling_level=importance_sampling_level,
         use_bias_correction_kl=True,
     )
 
@@ -789,6 +802,128 @@ def test_correctness_with_vllm_is_ratio(loss_type, beta):
     loss3.backward()
     loss4.backward()
     assert_verbose_allclose(input3.grad, input4.grad, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("loss_type", ["dapo", "cispo", "vespo"])
+def test_num_items_in_batch_normalizer(loss_type):
+    """``num_items_in_batch`` overrides the dapo/cispo/vespo normalizer.
+
+    TRL's ``compute_loss`` for these loss types divides by ``num_items_in_batch /
+    num_processes`` — the total active tokens across the entire generation batch
+    (all gradient-accumulation micro-batches × all processes). The Liger default
+    falls back to the current micro-batch's mask, which biases per-token weights
+    by micro-batch size when grad-accum micro-batches have unequal lengths.
+
+    This test verifies, in single-process world:
+    1. Passing ``num_items_in_batch=mask.sum()`` matches the default normalizer.
+    2. Doubling ``num_items_in_batch`` halves both loss and input gradients
+       (linear in the normalizer, no other dependence).
+    """
+    set_seed()
+    torch.compiler.reset()
+    B, T, H, V = 3, 47, 31, 123
+    dtype = torch.float32
+
+    _weight = torch.randn(V, H, device=device, dtype=dtype)
+    _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    attention_mask[:, -5:] = 0
+    advantages = torch.randn(B, device=device, dtype=dtype)
+    advantages[0] = -advantages[0].abs()
+    advantages[1] = advantages[1].abs()
+
+    mask_sum = attention_mask.sum().item()
+
+    def _run(num_items_in_batch):
+        liger = LigerLMHeadGRPO(H=H, V=V, dtype=dtype, beta=0.0, loss_type=loss_type, use_ref_model=False)
+        liger.lin.weight.data = _weight.clone()
+        inp = _input.detach().clone().requires_grad_(True)
+        loss, _ = liger(
+            inp,
+            selected_token_ids,
+            attention_mask,
+            advantages,
+            num_items_in_batch=num_items_in_batch,
+        )
+        loss.backward()
+        return loss.detach(), inp.grad.detach().clone()
+
+    loss_default, grad_default = _run(num_items_in_batch=None)
+    loss_match, grad_match = _run(num_items_in_batch=mask_sum)
+    loss_double, grad_double = _run(num_items_in_batch=mask_sum * 2)
+
+    assert_verbose_allclose(loss_default, loss_match, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(grad_default, grad_match, atol=1e-5, rtol=1e-5)
+
+    assert_verbose_allclose(loss_double * 2, loss_default, atol=1e-5, rtol=1e-5)
+    assert_verbose_allclose(grad_double * 2, grad_default, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("loss_type", ["dapo", "cispo", "vespo"])
+def test_num_items_in_batch_matches_trl_formula(loss_type):
+    """Liger with ``num_items_in_batch=N`` matches TRL's ``sum / (N / num_processes)``.
+
+    Reproduces TRL's exact formula in single-process world (num_processes=1):
+    ``loss = (per_token_loss * mask).sum() / num_items_in_batch``.
+    """
+    set_seed()
+    torch.compiler.reset()
+    B, T, H, V = 3, 47, 31, 123
+    dtype = torch.float32
+
+    _weight = torch.randn(V, H, device=device, dtype=dtype)
+    _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    selected_token_ids = torch.randint(0, V, (B, T), device=device)
+    attention_mask = torch.ones(B, T, device=device)
+    attention_mask[:, -5:] = 0
+    advantages = torch.randn(B, device=device, dtype=dtype)
+    advantages[0] = -advantages[0].abs()
+    advantages[1] = advantages[1].abs()
+
+    # Pick num_items_in_batch != mask.sum() to exercise the new path.
+    num_items_in_batch = float(attention_mask.sum().item()) * 1.7
+
+    # Liger: pass num_items_in_batch through the new param.
+    liger = LigerLMHeadGRPO(H=H, V=V, dtype=dtype, beta=0.0, loss_type=loss_type, use_ref_model=False)
+    liger.lin.weight.data = _weight.clone()
+    input1 = _input.detach().clone().requires_grad_(True)
+    loss_liger, _ = liger(
+        input1,
+        selected_token_ids,
+        attention_mask,
+        advantages,
+        num_items_in_batch=num_items_in_batch,
+    )
+
+    # Torch reference: use num_items_in_batch directly as the normalizer.
+    # We monkey-patch TorchLMHeadGRPO's branch by overriding the loss with TRL's exact formula.
+    torch_lm = TorchLMHeadGRPO(H=H, V=V, dtype=dtype, beta=0.0, loss_type=loss_type, use_ref_model=False)
+    torch_lm.lin.weight.data = _weight.clone()
+    input2 = _input.detach().clone().requires_grad_(True)
+
+    logits = input2 @ torch_lm.lin.weight.t()
+    log_probs = F.log_softmax(logits.float(), dim=-1)
+    per_token_logps = log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
+    per_token_loss, _, _ = TorchLMHeadGRPO.compute_per_token_components(
+        per_token_logps,
+        attention_mask,
+        advantages,
+        old_per_token_logps=None,
+        ref_per_token_logps=None,
+        epsilon_low=0.2,
+        epsilon_high=0.2,
+        beta=0.0,
+        importance_sampling_level="token",
+        loss_type=loss_type,
+    )
+    loss_ref = (per_token_loss * attention_mask).sum() / num_items_in_batch
+
+    assert_verbose_allclose(loss_liger, loss_ref, atol=1e-5, rtol=1e-4)
+
+    loss_liger.backward()
+    loss_ref.backward()
+    assert_verbose_allclose(input1.grad, input2.grad, atol=1e-5, rtol=1e-4)
 
 
 @pytest.mark.parametrize(
