@@ -645,7 +645,6 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
         ref_bias1,
         -100,  # ignore_index
         0.1,   # beta
-        1.0,   # alpha
         compute_nll_loss,
     )
     loss2, aggregated_aux_outputs2 = liger_fused_linear_dpo(
@@ -658,7 +657,6 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, atol, rtol, bias, ref
         ref_bias2,
         -100,  # ignore_index
         0.1,   # beta
-        1.0,   # alpha
         compute_nll_loss,
     )
 
@@ -890,7 +888,6 @@ def test_correctness_functional_apo_loss_types(
         ref_bias1,
         -100,   # ignore_index
         0.1,    # beta
-        1.0,    # alpha
         compute_nll_loss,
         True,   # compiled
         True,   # use_ref_model
@@ -975,3 +972,66 @@ def test_alpha_scales_nll_loss(dtype):
     assert not torch.allclose(loss_alpha1, loss_alpha2, atol=atol), (
         f"Expected losses to differ when alpha changes, but got {loss_alpha1} vs {loss_alpha2}"
     )
+
+
+def test_functional_positional_arg_contract():
+    """
+    Pin the positional-argument contract of the public functional alias.
+
+    `alpha` is appended at the *end* of `LigerFusedLinearDPOFunction.forward` (not
+    inserted mid-list) precisely so that existing positional `.apply()` /
+    `liger_fused_linear_dpo` callers don't silently shift every later argument by
+    one slot. This test exercises the pre-PR positional list (no `alpha`) and
+    asserts it produces the same result as the keyword-driven `nn.Module` wrapper.
+    If a future param insertion shifts the positional slots, this diverges.
+    """
+    B, T, H, V = 4, 8, 16, 32
+    dtype = torch.float32
+
+    _input = torch.randn(B, T, H, device=device, dtype=dtype)
+    target = torch.randint(0, V, (B, T), device=device, dtype=torch.long)
+    _weight = torch.randn(V, H, device=device, dtype=dtype)
+    _ref_weight = torch.randn(V, H, device=device, dtype=dtype)
+    ref_input = torch.randn(B, T, H, device=device, dtype=dtype)
+
+    # Pre-PR positional list: the args after `beta` are
+    # compute_nll_loss, compiled, use_ref_model, average_log_prob, chunk_size, loss_type.
+    loss_positional, _ = liger_fused_linear_dpo(
+        _input.detach().clone().requires_grad_(True),
+        _weight.detach().clone().requires_grad_(True),
+        target,
+        None,       # bias
+        ref_input,
+        _ref_weight.detach().clone().requires_grad_(True),
+        None,       # ref_bias
+        -100,       # ignore_index
+        0.1,        # beta
+        True,       # compute_nll_loss
+        True,       # compiled
+        True,       # use_ref_model
+        False,      # average_log_prob
+        1,          # chunk_size
+        "sigmoid",  # loss_type
+    )
+
+    loss_module, _ = LigerFusedLinearDPOLoss(
+        ignore_index=-100,
+        beta=0.1,
+        alpha=1.0,
+        compute_nll_loss=True,
+        compiled=True,
+        use_ref_model=True,
+        average_log_prob=False,
+        chunk_size=1,
+        loss_type="sigmoid",
+    )(
+        _weight.detach().clone().requires_grad_(True),
+        _input.detach().clone().requires_grad_(True),
+        target,
+        None,       # bias
+        ref_input,
+        _ref_weight.detach().clone().requires_grad_(True),
+        None,       # ref_bias
+    )
+
+    assert_verbose_allclose(loss_positional, loss_module, atol=1e-5, rtol=1e-4)

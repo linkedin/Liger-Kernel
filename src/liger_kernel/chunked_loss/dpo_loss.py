@@ -108,13 +108,13 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         ref_bias=None,
         ignore_index=-100,
         beta=0.1,
-        alpha=1.0,
         compute_nll_loss=False,
         compiled=True,
         use_ref_model=True,
         average_log_prob=False,
         chunk_size=1,
         loss_type="sigmoid",
+        alpha=1.0,
     ):
         """
         Fused linear layer with DPO loss.
@@ -128,12 +128,12 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             ref_bias (torch.Tensor, optional): Reference model bias tensor. Shape: (vocab_size,)
             ignore_index (int): Index to ignore in loss computation
             beta (float): Weight for the direct preference loss
-            alpha (float): Weight for the NLL loss component
             compute_nll_loss (bool): Whether to compute the NLL loss
             compiled (bool): Whether to use torch compile
             use_ref_model (bool): Whether to use a reference model
             average_log_prob (bool): Whether to average the log probability per non-masked token
             chunk_size (int): Size of chunks for processing.
+            alpha (float): Weight for the NLL loss component
         Returns:
             torch.Tensor: Computed loss
         """
@@ -226,11 +226,11 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             ref_bias,
             self.ignore_index,
             self.beta,
-            self.alpha,
             self.compute_nll_loss,
             self.compiled,
             self.use_ref_model,
             self.average_log_prob,
             self.chunk_size,
             self.loss_type,
+            self.alpha,
         )
