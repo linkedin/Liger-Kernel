@@ -185,7 +185,6 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
     assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol, max_print=20)
 
 
-@pytest.mark.skipif(device != "cuda", reason="block-row dispatch is a CUDA-only path")
 @pytest.mark.flaky(reruns=3, reruns_delay=2)
 # These shapes have bs*sl >= _BLOCK_ROW_MIN_ROWS with a hidden size whose BLOCK_SIZE
 # is <= _BLOCK_ROW_MAX_BLOCK_SIZE, which is what routes RMSNorm to the block-row
@@ -197,6 +196,9 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
         (16, 512, 512),  # hidden=512, BLOCK_SIZE=512 (upper edge of the path)
         (32, 256, 256),
         (16, 512, 128),  # small hidden
+        # non-power-of-2 hidden (BLOCK_SIZE=512 -> exercises col_mask) and n_rows
+        # not divisible by BLOCK_ROW=16 (4097 -> exercises the row-tail mask)
+        (1, 4097, 384),
     ],
 )
 # casting_mode="none" keeps the whole reduction in the input dtype; in bf16 over
