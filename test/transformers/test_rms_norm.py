@@ -230,8 +230,11 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
         ),
     ],
 )
+@pytest.mark.parametrize("in_place", [True, False])
 @pytest.mark.parametrize("elementwise_affine", [True, False])
-def test_correctness_block_row(bs, sl, hd, reference, offset, casting_mode, dtype, atol, rtol, elementwise_affine):
+def test_correctness_block_row(
+    bs, sl, hd, reference, offset, casting_mode, dtype, atol, rtol, in_place, elementwise_affine
+):
     from liger_kernel.ops import rms_norm as rms_norm_ops
 
     # Guard so this test stays meaningful if the dispatch thresholds are ever retuned.
@@ -253,6 +256,7 @@ def test_correctness_block_row(bs, sl, hd, reference, offset, casting_mode, dtyp
             hidden_size=hd,
             offset=offset,
             casting_mode=casting_mode,
+            in_place=in_place,
             elementwise_affine=elementwise_affine,
         )
         .to(device)
