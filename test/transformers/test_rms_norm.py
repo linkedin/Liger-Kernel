@@ -5,6 +5,7 @@ import pytest
 import torch
 import torch.multiprocessing as mp
 import torch.nn as nn
+import triton
 
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
@@ -182,6 +183,86 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
     print(f"{h1.grad=}")
     print(f"{h2.grad=}")
     assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol, max_print=20)
+
+
+@pytest.mark.skipif(device != "cuda", reason="block-row dispatch is a CUDA-only path")
+@pytest.mark.flaky(reruns=3, reruns_delay=2)
+# These shapes have bs*sl >= _BLOCK_ROW_MIN_ROWS with a hidden size whose BLOCK_SIZE
+# is <= _BLOCK_ROW_MAX_BLOCK_SIZE, which is what routes RMSNorm to the block-row
+# forward/backward kernels. The standard test_correctness shapes never reach that
+# row count, so without this the block-row kernels have no CI coverage.
+@pytest.mark.parametrize(
+    "bs, sl, hd",
+    [
+        (16, 512, 512),  # hidden=512, BLOCK_SIZE=512 (upper edge of the path)
+        (32, 256, 256),
+        (16, 512, 128),  # small hidden
+    ],
+)
+# casting_mode="none" keeps the whole reduction in the input dtype; in bf16 over
+# this many rows it loses too much precision on BOTH dispatch paths, so it is only
+# exercised in fp32 here.
+@pytest.mark.parametrize(
+    "reference, offset, casting_mode, dtype, atol, rtol",
+    [
+        (LlamaRMSNorm, 0.0, "llama", torch.float32, 1e-4, 1e-6),
+        (GemmaRMSNorm, 1.0, "gemma", torch.float32, 1e-4, 1e-6),
+        (BaseRMSNorm, 0.0, "none", torch.float32, 1e-4, 1e-6),
+        pytest.param(
+            LlamaRMSNorm,
+            0.0,
+            "llama",
+            torch.bfloat16,
+            2e-1,
+            2e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        pytest.param(
+            GemmaRMSNorm,
+            1.0,
+            "gemma",
+            torch.bfloat16,
+            2e-1,
+            2e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+@pytest.mark.parametrize("elementwise_affine", [True, False])
+def test_correctness_block_row(bs, sl, hd, reference, offset, casting_mode, dtype, atol, rtol, elementwise_affine):
+    from liger_kernel.ops import rms_norm as rms_norm_ops
+
+    # Guard so this test stays meaningful if the dispatch thresholds are ever retuned.
+    block_size = triton.next_power_of_2(hd)
+    assert bs * sl >= rms_norm_ops._BLOCK_ROW_MIN_ROWS, "shape no longer triggers the block-row path"
+    assert block_size <= rms_norm_ops._BLOCK_ROW_MAX_BLOCK_SIZE, "hidden size no longer uses the block-row path"
+
+    _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
+    h1 = _tensor.clone().requires_grad_(True)
+    h2 = _tensor.clone().requires_grad_(True)
+    do = torch.randn(bs, sl, hd, device=device, dtype=dtype)
+
+    ref_rms = reference(hidden_size=hd, elementwise_affine=elementwise_affine).to(device).to(dtype)
+    ref_o = ref_rms(h1)
+    ref_o.backward(do, retain_graph=True)
+
+    triton_rms = (
+        LigerRMSNorm(
+            hidden_size=hd,
+            offset=offset,
+            casting_mode=casting_mode,
+            elementwise_affine=elementwise_affine,
+        )
+        .to(device)
+        .to(dtype)
+    )
+    triton_o = triton_rms(h2)
+    triton_o.backward(do, retain_graph=True)
+
+    assert_verbose_allclose(ref_o, triton_o, atol=atol, rtol=rtol)
+    assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol, max_print=20)
+    if elementwise_affine:
+        assert_verbose_allclose(ref_rms.weight.grad, triton_rms.weight.grad, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize(
