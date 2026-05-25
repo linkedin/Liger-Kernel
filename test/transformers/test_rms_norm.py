@@ -209,7 +209,15 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
     [
         (LlamaRMSNorm, 0.0, "llama", torch.float32, 1e-4, 1e-6),
         (GemmaRMSNorm, 1.0, "gemma", torch.float32, 1e-4, 1e-6),
-        (BaseRMSNorm, 0.0, "none", torch.float32, 1e-4, 1e-6),
+        pytest.param(
+            BaseRMSNorm,
+            0.0,
+            "none",
+            torch.float32,
+            1e-4,
+            1e-6,
+            marks=pytest.mark.skipif(device == "npu", reason="Ascend NPU does not support this test"),
+        ),
         pytest.param(
             LlamaRMSNorm,
             0.0,
