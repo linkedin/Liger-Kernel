@@ -155,8 +155,11 @@ def _moe_router_scatter_kernel(
 
 
 def _get_gemm_autotune_configs():
+    # Ascend UB is much smaller than CUDA shared memory; BLOCK_N=192 overflows UB and
+    # faults AICore. Keep tiles within the CUDA autotune range (64/128).
     return [
-        triton.Config({"BLOCK_N": 192, "BLOCK_K": 64}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_N": 64, "BLOCK_K": 32}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_N": 128, "BLOCK_K": 64}, num_warps=4, num_stages=2),
     ]
 
 
@@ -189,75 +192,79 @@ def _fused_up_proj_swiglu_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
-    """Grid: (num_m_tiles, ceil(I/BLOCK_N)).
-    pid_m selects M-tile via tile_row_start/tile_expert; pid_n selects N-tile."""
+    """Grid: (num_m_tiles,).
+    pid_m selects M-tile via tile_row_start/tile_expert; N-tiles run in-kernel.
+
+    Ascend: 2D grid (num_m_tiles, ceil(I/BLOCK_N)) can exceed the 65536 launch limit
+    and large BLOCK_N tiles overflow UB — mirror _fused_down_proj_kernel's 1D layout.
+    """
     pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
     expert_idx = tl.load(tile_expert_ptr + pid_m)
-    n_start = pid_n * BLOCK_N
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
     m_offs = tl.arange(0, BLOCK_M)
-    n_offs = tl.arange(0, BLOCK_N)
     k_offs = tl.arange(0, BLOCK_K)
 
     row_offs = row_start + m_offs
     row_mask = row_offs < expert_end
-
-    acc_gate = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    acc_up = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-
-    n_idx = n_start + n_offs
-    n_mask = n_idx < I_dim
     token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0)
-    for k in tl.range(0, H_dim, BLOCK_K):
-        k_idx = k + k_offs
-        k_mask = k_idx < H_dim
 
-        x_ptrs = x_ptr + token_idx[:, None] * stride_x_T + k_idx[None, :] * stride_x_H
-        # Keep bf16 for dot operands → tensor cores. acc stays fp32 for precision.
-        x_tile = tl.load(
-            x_ptrs,
-            mask=row_mask[:, None] & k_mask[None, :],
-            other=0.0,
-            eviction_policy="evict_first",  # token rows not reused; free L2 for weights
-        )
+    for n_start in tl.range(0, I_dim, BLOCK_N):
+        n_offs = tl.arange(0, BLOCK_N)
+        n_idx = n_start + n_offs
+        n_mask = n_idx < I_dim
 
-        w_mask = n_mask[:, None] & k_mask[None, :]
-        w_gate_ptrs = (
-            gate_up_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_N + k_idx[None, :] * stride_w_K
-        )
-        w_gate = tl.load(
-            w_gate_ptrs,
-            mask=w_mask,
-            other=0.0,
-        )
-        acc_gate += tl.dot(x_tile, tl.trans(w_gate))
+        acc_gate = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+        acc_up = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
-        w_up_ptrs = w_gate_ptrs + I_dim * stride_w_N
-        w_up = tl.load(
-            w_up_ptrs,
-            mask=w_mask,
-            other=0.0,
-        )
+        for k in tl.range(0, H_dim, BLOCK_K):
+            k_idx = k + k_offs
+            k_mask = k_idx < H_dim
 
-        acc_up += tl.dot(x_tile, tl.trans(w_up))
+            x_ptrs = x_ptr + token_idx[:, None] * stride_x_T + k_idx[None, :] * stride_x_H
+            # Keep bf16 for dot operands → tensor cores. acc stays fp32 for precision.
+            x_tile = tl.load(
+                x_ptrs,
+                mask=row_mask[:, None] & k_mask[None, :],
+                other=0.0,
+                eviction_policy="evict_first",  # token rows not reused; free L2 for weights
+            )
 
-    out_mask = row_mask[:, None] & n_mask[None, :]
+            w_mask = n_mask[:, None] & k_mask[None, :]
+            w_gate_ptrs = (
+                gate_up_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_N + k_idx[None, :] * stride_w_K
+            )
+            w_gate = tl.load(
+                w_gate_ptrs,
+                mask=w_mask,
+                other=0.0,
+            )
+            acc_gate += tl.dot(x_tile, tl.trans(w_gate))
 
-    pre_gate_ptrs = pre_act_ptr + row_offs[:, None] * stride_pre_TK + n_idx[None, :] * stride_pre_N
-    pre_up_ptrs = pre_gate_ptrs + I_dim * stride_pre_N
-    tl.store(pre_gate_ptrs, acc_gate.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
-    tl.store(pre_up_ptrs, acc_up.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
+            w_up_ptrs = w_gate_ptrs + I_dim * stride_w_N
+            w_up = tl.load(
+                w_up_ptrs,
+                mask=w_mask,
+                other=0.0,
+            )
 
-    sig_gate = tl.sigmoid(acc_gate)
-    silu_gate = acc_gate * sig_gate
-    a_out = silu_gate * acc_up
+            acc_up += tl.dot(x_tile, tl.trans(w_up))
 
-    post_ptrs = post_act_ptr + row_offs[:, None] * stride_post_TK + n_idx[None, :] * stride_post_N
-    tl.store(post_ptrs, a_out.to(post_act_ptr.dtype.element_ty), mask=out_mask)
+        out_mask = row_mask[:, None] & n_mask[None, :]
+
+        pre_gate_ptrs = pre_act_ptr + row_offs[:, None] * stride_pre_TK + n_idx[None, :] * stride_pre_N
+        pre_up_ptrs = pre_gate_ptrs + I_dim * stride_pre_N
+        tl.store(pre_gate_ptrs, acc_gate.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
+        tl.store(pre_up_ptrs, acc_up.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
+
+        sig_gate = tl.sigmoid(acc_gate)
+        silu_gate = acc_gate * sig_gate
+        a_out = silu_gate * acc_up
+
+        post_ptrs = post_act_ptr + row_offs[:, None] * stride_post_TK + n_idx[None, :] * stride_post_N
+        tl.store(post_ptrs, a_out.to(post_act_ptr.dtype.element_ty), mask=out_mask)
 
 
 @triton.autotune(
@@ -427,76 +434,71 @@ def _moe_bwd_down_proj_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
-    """Grid: (num_m_tiles, ceil(I/BLOCK_N)).
+    """Grid: (num_m_tiles,).
     Accumulates dA' = dO @ W2^T (dO stays in registers), recomputes y1 from
-    pre_act, applies SwiGLU backward, writes d_pre_act, weighted_act, and dS."""
+    pre_act, applies SwiGLU backward, writes d_pre_act, weighted_act, and dS.
+
+    Ascend: 1D grid + in-kernel N loop (same rationale as _fused_up_proj_swiglu_kernel).
+    dS is summed across I-chunks in-register, then one atomic_add per row.
+    """
     pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
     expert_idx = tl.load(tile_expert_ptr + pid_m)
-    n_start = pid_n * BLOCK_N
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
     m_offs = tl.arange(0, BLOCK_M)
-    n_offs = tl.arange(0, BLOCK_N)
     k_offs = tl.arange(0, BLOCK_K)
 
     row_offs = row_start + m_offs
     row_mask = row_offs < expert_end
-    n_idx = n_start + n_offs
-    n_mask = n_idx < I_dim
-    out_mask = row_mask[:, None] & n_mask[None, :]
 
-    # Hoist per-row routing metadata (constant across H K-loop).
+    # Hoist per-row routing metadata (constant across H/I loops).
     token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0)
     flat_tk_idx = tl.load(s_scatter_idx_ptr + row_offs, mask=row_mask, other=0)
     weights = tl.load(topk_weights_ptr + flat_tk_idx, mask=row_mask, other=0.0).to(tl.float32)
+    dS_acc = tl.zeros((BLOCK_M,), dtype=tl.float32)
 
-    # K-loop: accumulate dA' = dO @ W2^T (unscaled; scale once after loop).
-    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    for k in tl.range(0, H_dim, BLOCK_K):
-        k_idx = k + k_offs
-        k_mask = k_idx < H_dim
+    for n_start in tl.range(0, I_dim, BLOCK_N):
+        n_offs = tl.arange(0, BLOCK_N)
+        n_idx = n_start + n_offs
+        n_mask = n_idx < I_dim
+        out_mask = row_mask[:, None] & n_mask[None, :]
 
-        dO_ptrs = dO_ptr + token_idx[:, None] * stride_dO_T + k_idx[None, :] * stride_dO_H
-        dO_tile = tl.load(dO_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
+        acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+        for k in tl.range(0, H_dim, BLOCK_K):
+            k_idx = k + k_offs
+            k_mask = k_idx < H_dim
 
-        w_ptrs = down_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_H + n_idx[None, :] * stride_w_I
-        w_tile = tl.load(w_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
-        acc += tl.dot(dO_tile, w_tile)
+            dO_ptrs = dO_ptr + token_idx[:, None] * stride_dO_T + k_idx[None, :] * stride_dO_H
+            dO_tile = tl.load(dO_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
-    # Epilogue: recompute y1 = silu(gate) * up from saved pre_act.
-    # These loads need fp32 for the sigmoid/silu computation.
-    gate_ptrs = pre_act_ptr + row_offs[:, None] * stride_pre_TK + n_idx[None, :] * stride_pre_N
-    up_ptrs = gate_ptrs + I_dim * stride_pre_N
-    gate = tl.load(gate_ptrs, mask=out_mask, other=0.0).to(tl.float32)
-    up = tl.load(up_ptrs, mask=out_mask, other=0.0).to(tl.float32)
-    sig_gate = tl.sigmoid(gate)
-    silu_gate = gate * sig_gate
-    y1 = silu_gate * up  # (BLOCK_M, BLOCK_N)
+            w_ptrs = down_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_H + n_idx[None, :] * stride_w_I
+            w_tile = tl.load(w_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
+            acc += tl.dot(dO_tile, w_tile)
 
-    # Write weighted_act = s_k * y1 for dW2.
-    wact_ptrs = weighted_act_ptr + row_offs[:, None] * stride_wact_TK + n_idx[None, :] * stride_wact_I
-    tl.store(wact_ptrs, (weights[:, None] * y1).to(weighted_act_ptr.dtype.element_ty), mask=out_mask)
+        gate_ptrs = pre_act_ptr + row_offs[:, None] * stride_pre_TK + n_idx[None, :] * stride_pre_N
+        up_ptrs = gate_ptrs + I_dim * stride_pre_N
+        gate = tl.load(gate_ptrs, mask=out_mask, other=0.0).to(tl.float32)
+        up = tl.load(up_ptrs, mask=out_mask, other=0.0).to(tl.float32)
+        sig_gate = tl.sigmoid(gate)
+        silu_gate = gate * sig_gate
+        y1 = silu_gate * up
 
-    # dS: ∂L/∂s_k = sum_I((dO @ W2^T) * y1) — accumulate across all N-tiles.
-    # IMPORTANT: use atomic_add, not store — the grid has ceil(I/BLOCK_N) N-tiles per
-    # M-tile, each contributing a partial sum over its I-chunk.  tl.store would
-    # overwrite previous tiles, leaving only the last chunk's contribution.
-    dS_partial = tl.sum(acc * y1, axis=1)
-    tl.atomic_add(dS_ptr + flat_tk_idx, dS_partial, mask=row_mask)
+        wact_ptrs = weighted_act_ptr + row_offs[:, None] * stride_wact_TK + n_idx[None, :] * stride_wact_I
+        tl.store(wact_ptrs, (weights[:, None] * y1).to(weighted_act_ptr.dtype.element_ty), mask=out_mask)
 
-    # Scale once: dA' = s_k * (dO @ W2^T)
-    acc = acc * weights[:, None]
+        dS_acc += tl.sum(acc * y1, axis=1)
 
-    # SwiGLU backward: dgate = d_silu(gate) * up * dA', dup = silu(gate) * dA'.
-    dgate = acc * (silu_gate * (1.0 - sig_gate) + sig_gate) * up
-    dup = acc * silu_gate
-    dgate_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + n_idx[None, :] * stride_d_pre_N
-    dup_ptrs = dgate_ptrs + I_dim * stride_d_pre_N
-    tl.store(dgate_ptrs, dgate.to(d_pre_act_ptr.dtype.element_ty), mask=out_mask)
-    tl.store(dup_ptrs, dup.to(d_pre_act_ptr.dtype.element_ty), mask=out_mask)
+        acc = acc * weights[:, None]
+        dgate = acc * (silu_gate * (1.0 - sig_gate) + sig_gate) * up
+        dup = acc * silu_gate
+        dgate_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + n_idx[None, :] * stride_d_pre_N
+        dup_ptrs = dgate_ptrs + I_dim * stride_d_pre_N
+        tl.store(dgate_ptrs, dgate.to(d_pre_act_ptr.dtype.element_ty), mask=out_mask)
+        tl.store(dup_ptrs, dup.to(d_pre_act_ptr.dtype.element_ty), mask=out_mask)
+
+    tl.atomic_add(dS_ptr + flat_tk_idx, dS_acc, mask=row_mask)
 
 
 @triton.autotune(

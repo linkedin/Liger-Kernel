@@ -189,7 +189,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         post_act = torch.empty(TK, intermediate_dim, dtype=x.dtype, device=x.device)
 
         if num_m_tiles > 0:
-            _fused_up_proj_swiglu_kernel[lambda meta: (num_m_tiles, triton.cdiv(intermediate_dim, meta["BLOCK_N"]))](
+            _fused_up_proj_swiglu_kernel[(num_m_tiles,)](
                 x,
                 gate_up_proj,
                 x_gather_idx,
@@ -295,7 +295,7 @@ class LigerFusedMoEFunction(torch.autograd.Function):
         dS = torch.zeros(TK, dtype=dO.dtype, device=dO.device)  # atomic_add accumulates across N-tiles
 
         if num_m_tiles > 0:
-            _moe_bwd_down_proj_kernel[lambda meta: (num_m_tiles, triton.cdiv(intermediate_dim, meta["BLOCK_N"]))](
+            _moe_bwd_down_proj_kernel[(num_m_tiles,)](
                 dO,
                 x_gather_idx,
                 s_scatter_idx,
