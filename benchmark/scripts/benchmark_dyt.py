@@ -20,6 +20,13 @@ device = infer_device()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 
+def get_kernel_providers():
+    providers = ["liger", "torch"]
+    if device != "npu":
+        providers.append("torch_compile")
+    return providers
+
+
 def setup_dyt(input: SingleBenchmarkRunInput):
     """Create input tensor and DyT layer from benchmark config."""
     from test.transformers.test_dyt import LigerDyT
@@ -85,7 +92,7 @@ if __name__ == "__main__":
                 overwrite=args.overwrite,
             )
 
-        common_configs["kernel_providers"] = ["liger", "torch", "torch_compile"]
+        common_configs["kernel_providers"] = get_kernel_providers()
         run_benchmarks(
             bench_test_fn=build_speed_bench_fn(setup_dyt),
             kernel_operation_modes=["forward", "backward", "full"],

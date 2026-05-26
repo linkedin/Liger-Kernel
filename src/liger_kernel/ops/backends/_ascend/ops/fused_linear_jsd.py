@@ -2,14 +2,36 @@ from typing import Optional
 
 import torch
 import triton
+import triton.language as tl
 
 from liger_kernel.ops.backends._ascend.ops.jsd import _jsd_kernel
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
-from liger_kernel.ops.utils import element_mul_kernel
 from liger_kernel.ops.utils import get_npu_core_count
 
 MAX_FUSED_SIZE = 4096
+
+
+@triton.jit
+def _element_mul_kernel(
+    X_ptr,
+    X_stride,
+    grad_output_ptr,
+    n_rows: tl.constexpr,
+    n_cols: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    num_progs = tl.num_programs(0)
+    grad_output = tl.load(grad_output_ptr)
+
+    for row_idx in range(pid, n_rows, num_progs):
+        row_ptr = X_ptr + row_idx * X_stride
+        for col_start in range(0, n_cols, BLOCK_SIZE):
+            offsets = col_start + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < n_cols
+            values = tl.load(row_ptr + offsets, mask=mask)
+            tl.store(row_ptr + offsets, values * grad_output, mask=mask)
 
 
 def fused_linear_jsd_forward(
@@ -131,11 +153,13 @@ def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
         BT, H = grad_input.shape
         n_rows = BT
         BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
+        num_cores = get_npu_core_count()
 
-        element_mul_kernel[(n_rows,)](
+        _element_mul_kernel[(min(num_cores, n_rows),)](
             grad_input,
             grad_input.stride(-2),
             grad_output,
+            n_rows,
             H,
             BLOCK_SIZE=BLOCK_SIZE,
         )
@@ -145,10 +169,11 @@ def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
             V, H = grad_weight.shape
             n_rows = V
 
-            element_mul_kernel[(n_rows,)](
+            _element_mul_kernel[(min(num_cores, n_rows),)](
                 grad_weight,
                 grad_weight.stride(-2),
                 grad_output,
+                n_rows,
                 H,
                 BLOCK_SIZE=BLOCK_SIZE,
             )
