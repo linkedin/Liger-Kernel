@@ -1,6 +1,8 @@
 import torch
 import triton
 
+from packaging.version import Version
+
 from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
@@ -92,7 +94,7 @@ def fused_linear_cross_entropy_forward(
         ce_weight_sum = ce_weight.sum().item()
         if ce_weight.stride(-1) != 1:
             ce_weight = ce_weight.contiguous()
-
+    IS_TORCH2P12 = Version(torch.__version__.split("+")[0]) >= Version("2.12.0")
     for chunk_id in range(num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = min((chunk_id + 1) * chunk_size, BT)
@@ -209,7 +211,26 @@ def fused_linear_cross_entropy_forward(
             grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
         if grad_weight is not None and input_requires_grad:
-            grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
+            if (
+                IS_TORCH2P12
+                and grad_weight.device.type == "cuda"
+                and grad_weight.dtype == torch.float32
+                and grad_logits_chunk.t().dtype in (torch.float16, torch.bfloat16)
+            ):
+                torch.addmm(
+                    grad_weight,
+                    grad_logits_chunk.t(),
+                    _input_chunk.to(dtype=grad_logits_chunk.t().dtype),
+                    out_dtype=torch.float32,
+                    out=grad_weight,
+                )
+            else:
+                torch.addmm(
+                    grad_weight,
+                    grad_logits_chunk.t().to(grad_weight.dtype),
+                    _input_chunk.to(grad_weight.dtype),
+                    out=grad_weight,
+                )
 
         if bias is not None and input_requires_grad:
             torch.add(
