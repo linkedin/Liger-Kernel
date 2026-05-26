@@ -1,12 +1,12 @@
 """
-Liger-Kernel operators with automatic backend-specific replacement.
+Liger-Kernel operators with automatic implementation-specific replacement.
 
 This module provides two ways to import operators:
 
 1. Import from this package (recommended for Function classes):
        from liger_kernel.ops import LigerGELUMulFunction
 
-   This automatically uses the active backend's implementation if any is selected.
+   This automatically uses the active implementation if any is selected.
 
 2. Import from submodules (for kernel functions or specific access):
        from liger_kernel.ops.geglu import geglu_forward, geglu_backward
@@ -16,10 +16,10 @@ This module provides two ways to import operators:
 The replacement mechanism:
 1. Default implementations are imported from individual modules (e.g., geglu.py)
 2. On module load, device is detected via infer_device() and the env var
-   LIGER_KERNEL_BACKEND is read
-3. select_backend() picks an active backend (auto-applied for the device, or
-   explicitly requested via env var)
-4. If a backend is selected, its implementations replace/extend the symbols here
+   LIGER_KERNEL_IMPL is read
+3. select_impl() picks an active implementation (auto-applied for the device,
+   or explicitly requested via env var)
+4. If one is selected, its operators replace/extend the symbols here
 5. All subsequent imports from this package get the replaced versions
 
 Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import ...)
@@ -101,63 +101,89 @@ from liger_kernel.ops.tvd import LigerTVDLossFunction  # noqa: F401
 
 
 # =============================================================================
-# Backend-specific replacement logic
+# Implementation discovery + dispatch
 # =============================================================================
 
 
-def _replace_with_backend_ops():
+def _discover_impls():
     """
-    Replace/add backend-specific operator implementations.
+    Trigger self-registration of all implementations.
+
+    Two sources of implementations:
+      - Hardware backends in ``backends/_<name>/`` (loaded by
+        ``backends/__init__.py``'s own auto-import loop).
+      - DSL alternatives at the top level of ``ops/`` (e.g., ``cutile/``).
+        Each DSL subpackage's ``__init__.py`` calls ``register_impl()``
+        when imported.
+    """
+    import importlib
+    import pkgutil
+
+    # Hardware backends self-register when `backends` is imported.
+    importlib.import_module("liger_kernel.ops.backends")
+
+    # DSL alternatives — non-private subpackages of `ops/`, minus reserved
+    # directories that aren't implementation containers.
+    reserved = {"backends", "experimental"}
+    for _, modname, ispkg in pkgutil.iter_modules(__path__):
+        if ispkg and not modname.startswith("_") and modname not in reserved:
+            importlib.import_module(f"{__name__}.{modname}")
+
+
+def _replace_with_impl_ops():
+    """
+    Replace/add implementation-specific operators on top of the defaults.
 
     This function is called automatically on module load. It:
-    1. Detects the current device (cuda, npu, xpu, etc.)
-    2. Selects the active backend via ``select_backend()``, honoring any
-       explicit ``LIGER_KERNEL_BACKEND`` override
-    3. Loads and applies backend-specific implementations
+    1. Detects the current device (cuda, npu, xpu, etc.).
+    2. Selects the active implementation via ``select_impl()``, honoring any
+       explicit ``LIGER_KERNEL_IMPL`` override.
+    3. Loads and applies the implementation's operators.
 
-    Backend implementations should be placed in:
-        liger_kernel/ops/backends/_<name>/ops/
+    Implementations live either at:
+        liger_kernel/ops/<name>/ops/                     (DSL alternatives)
+        liger_kernel/ops/backends/_<name>/ops/           (hardware backends)
 
-    If the backend module defines __all__, only those symbols are exported.
-    Otherwise, all public symbols (not starting with _) are auto-discovered.
+    If the implementation module defines ``__all__``, only those symbols are
+    exported. Otherwise, all public symbols (not starting with ``_``) are
+    auto-discovered.
 
-    Note: Backends can both override existing ops AND add new backend-specific ops.
+    Note: Implementations can both override existing ops AND add new ones.
     """
     import os
 
-    from liger_kernel.ops.backends import LIGER_KERNEL_BACKEND_ENV
-    from liger_kernel.ops.backends import select_backend
+    from liger_kernel.ops.backends import LIGER_KERNEL_IMPL_ENV
+    from liger_kernel.ops.backends import select_impl
     from liger_kernel.utils import infer_device
 
     device = infer_device()
-    explicit = os.environ.get(LIGER_KERNEL_BACKEND_ENV, "").strip().lower() or None
-    backend_info = select_backend(device, explicit=explicit)
-    if backend_info is None:
+    explicit = os.environ.get(LIGER_KERNEL_IMPL_ENV, "").strip().lower() or None
+    impl_info = select_impl(device, explicit=explicit)
+    if impl_info is None:
         return
 
     try:
         import importlib
 
-        backend_ops = importlib.import_module(backend_info.module_path)
+        impl_ops = importlib.import_module(impl_info.module_path)
 
-        # Get names to export: use __all__ if defined, otherwise auto-discover
-        names_to_export = getattr(backend_ops, "__all__", None)
-
+        # Get names to export: use __all__ if defined, otherwise auto-discover.
+        names_to_export = getattr(impl_ops, "__all__", None)
         if names_to_export is None:
-            # Auto-discover: find all public symbols (classes and functions)
-            names_to_export = [name for name in dir(backend_ops) if not name.startswith("_")]
+            names_to_export = [name for name in dir(impl_ops) if not name.startswith("_")]
 
-        # Replace or add to this module's globals
+        # Replace or add to this module's globals.
         for name in names_to_export:
-            globals()[name] = getattr(backend_ops, name)
+            globals()[name] = getattr(impl_ops, name)
 
     except ImportError:
-        # An auto-selected backend that fails to import (e.g., missing optional
-        # vendor SDK in the environment) silently falls back to defaults. An
-        # explicitly-requested backend, however, must succeed — re-raise so the
+        # An auto-selected implementation that fails to import (e.g., missing
+        # optional vendor SDK) silently falls back to defaults. An explicitly
+        # requested implementation, however, must succeed — re-raise so the
         # user sees the underlying error.
         if explicit:
             raise
 
 
-_replace_with_backend_ops()
+_discover_impls()
+_replace_with_impl_ops()

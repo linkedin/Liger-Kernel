@@ -182,13 +182,13 @@ pip3 install --pre torch torchvision torchaudio --index-url https://download.pyt
 
 ### Enable cuTile Backend
 
-cuTile is an optional CUDA-only backend. After installing the `cutile` or `cutile-tileiras` extra, enable it explicitly:
+cuTile is an optional CUDA-only DSL implementation. After installing the `cutile` or `cutile-tileiras` extra, enable it explicitly:
 
 ```bash
-LIGER_KERNEL_BACKEND=cutile python your_script.py
+LIGER_KERNEL_IMPL=cutile python your_script.py
 ```
 
-`LIGER_KERNEL_BACKEND` currently only supports `cutile`. Selecting it on a non-CUDA device, or without the required cuTile dependencies, raises an error.
+`LIGER_KERNEL_IMPL` selects an opt-in implementation registered with Liger (currently `cutile`). Selecting one on an unsupported device, or without the required dependencies installed, raises an error.
 
 
 ## Getting Started

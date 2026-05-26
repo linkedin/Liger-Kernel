@@ -9,7 +9,7 @@ from typing import Optional
 import cuda.tile as ct
 import torch
 
-from liger_kernel.ops.backends._cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 from liger_kernel.ops.utils import ensure_contiguous
 
 ConstFloat = ct.Constant[float]

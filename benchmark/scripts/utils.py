@@ -262,9 +262,9 @@ def get_formatted_time():
 
 
 def get_display_kernel_provider(kernel_provider: str) -> str:
-    backend = os.environ.get("LIGER_KERNEL_BACKEND", "").strip().lower()
-    if kernel_provider == "liger" and backend:
-        return f"liger-{backend}"
+    impl = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower()
+    if kernel_provider == "liger" and impl:
+        return f"liger-{impl}"
     return kernel_provider
 
 

@@ -12,9 +12,9 @@ except ImportError as exc:
         "or `pip install 'liger-kernel[cutile-tileiras]'`."
     ) from exc
 
-from liger_kernel.ops.backends._cutile.ops.jsd import LigerJSDFunction
-from liger_kernel.ops.backends._cutile.ops.jsd import jsd_backward
-from liger_kernel.ops.backends._cutile.ops.jsd import jsd_forward
+from liger_kernel.ops.cutile.ops.jsd import LigerJSDFunction
+from liger_kernel.ops.cutile.ops.jsd import jsd_backward
+from liger_kernel.ops.cutile.ops.jsd import jsd_forward
 
 __all__ = [
     "LigerJSDFunction",

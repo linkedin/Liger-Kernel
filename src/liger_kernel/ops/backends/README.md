@@ -1,86 +1,93 @@
-# Adding a New Backend
+# Adding a New Hardware Backend
 
-This directory contains backend-specific operator implementations that can replace the default Liger implementations.
+This directory holds **alternative hardware backends** — operator implementations for devices other than the default (CUDA). Examples: Ascend NPU, future ROCm, future XPU.
 
-A **backend** here is a named alternative implementation of Liger's operators. It may target a different hardware device (e.g., Ascend NPU vs. NVIDIA CUDA) or a different DSL on the same device (e.g., cuTile vs. Triton on CUDA), and may support one or more devices.
-
-Each backend declares two device sets:
-
-- **`devices`** — every device the backend supports.
-- **`default_devices`** — the subset on which the backend is auto-applied at import time. On supported devices not listed here, the backend is opt-in only and must be requested explicitly via the `LIGER_KERNEL_BACKEND` environment variable.
+DSL alternatives for the *default* hardware (CUDA) — cuTile, future CUTLASS / CuteDSL / TileLang — live at the top level of `src/liger_kernel/ops/` (peers of this `backends/` directory), not inside it. The contract for registering them is the same; only the on-disk location differs.
 
 ## Concepts
 
-- **Device**: PyTorch device type returned by `infer_device()` (e.g., `cuda`, `npu`, `xpu`)
-- **BackendInfo**: Declarative description of a backend (name, supported devices, default devices)
-- **Auto-applied backend**: A backend whose `default_devices` includes the current device — applied automatically (e.g., Ascend on NPU)
-- **Opt-in backend**: A backend whose `default_devices` is empty (or excludes the current device) — applied only when `LIGER_KERNEL_BACKEND=<name>` is set (e.g., cuTile on CUDA)
+An **implementation** is a named alternative kernel set. Each implementation declares:
 
-## Directory Structure
+- **`name`** — identifier (e.g., `ascend`, `cutile`). Users select it via `LIGER_KERNEL_IMPL=<name>`.
+- **`devices`** — every device the implementation supports.
+- **`default_devices`** — the subset where it is auto-applied at import time. On supported devices not in this set, the implementation is opt-in only (requires `LIGER_KERNEL_IMPL=<name>`). Empty means opt-in only on every supported device.
+- **`module_path`** — the Python module path where the kernels live (e.g., `liger_kernel.ops.cutile.ops`, `liger_kernel.ops.backends._ascend.ops`).
+
+Two flavors fall out of the data:
+
+- **Auto-applied** — `default_devices` includes the current device. Replaces defaults automatically (e.g., Ascend on NPU).
+- **Opt-in** — only selected when the user sets `LIGER_KERNEL_IMPL=<name>` (e.g., cuTile on CUDA).
+
+## Directory layout (full tree)
 
 ```
-backends/
-├── README.md
-├── __init__.py
-├── registry.py          # BackendInfo, register_backend(), BACKEND_REGISTRY, select_backend()
-├── _ascend/             # Ascend backend — auto-applied on NPU
-│   ├── __init__.py      # register_backend(BackendInfo(name="ascend", devices=("npu",), default_devices=("npu",)))
+src/liger_kernel/ops/
+├── jsd.py, rms_norm.py, ...            # default Triton-on-CUDA — the canonical kernels
+├── cutile/                              # opt-in DSL on CUDA
+│   ├── __init__.py                      # register_impl(ImplInfo(name="cutile", devices=("cuda",), module_path=...))
 │   └── ops/
-│       ├── __init__.py  # Exports backend-specific implementations
-│       └── geglu.py     # NPU-specific GEGLU implementation
-├── _cutile/             # cuTile backend — opt-in on CUDA
-│   ├── __init__.py      # register_backend(BackendInfo(name="cutile", devices=("cuda",)))
-│   └── ops/
-│       └── ...
-└── _<name>/             # Your new backend
-    └── ...
+│       ├── __init__.py
+│       └── jsd.py
+├── backends/                            # alternative hardware backends (this directory)
+│   ├── README.md
+│   ├── __init__.py                      # auto-imports _<name>/ subpackages
+│   ├── registry.py                      # ImplInfo, register_impl(), select_impl(), IMPL_REGISTRY
+│   └── _ascend/                         # Ascend NPU — auto-applied on NPU
+│       ├── __init__.py                  # register_impl(ImplInfo(name="ascend", ...))
+│       └── ops/
+│           ├── __init__.py
+│           └── jsd.py, ...
+└── __init__.py                          # imports defaults, runs _replace_with_impl_ops()
 ```
 
-## How It Works
+## How dispatch works
 
-1. When `liger_kernel.ops.backends` is imported, every `_<name>/` subpackage is auto-imported.
-2. Each backend's `__init__.py` calls `register_backend()` to register itself.
-3. When `liger_kernel.ops` is imported, `_replace_with_backend_ops()` is called.
-4. It detects the current device via `infer_device()` and reads `LIGER_KERNEL_BACKEND` from the environment.
-5. It calls `select_backend(device, explicit=...)`:
-   - If `LIGER_KERNEL_BACKEND` is **set**, the named backend is selected (validated against the current device).
-   - If `LIGER_KERNEL_BACKEND` is **unset**, the first registered backend that lists the current device in its `default_devices` is selected; otherwise the defaults are kept.
-6. The selected backend's operators replace/extend the symbols in the `liger_kernel.ops` namespace.
+1. `liger_kernel.ops` is imported. Default top-level kernels (`ops/jsd.py`, etc.) load first.
+2. `_discover_impls()` runs:
+   - Imports `liger_kernel.ops.backends`, which auto-imports each `_<name>/` subpackage. Each subpackage's `__init__.py` calls `register_impl()`.
+   - Iterates the top-level non-private subpackages of `ops/` (e.g., `cutile/`), excluding reserved dirs (`backends`, `experimental`), and imports each. Same self-registration pattern.
+3. `_replace_with_impl_ops()` runs:
+   - Detects the current device via `infer_device()`.
+   - Reads `LIGER_KERNEL_IMPL` from the environment.
+   - Calls `select_impl(device, explicit=<env var or None>)`:
+     - If the env var is set, the named implementation is looked up and validated (device must be in `devices`).
+     - If unset, the first registered implementation listing the current device in its `default_devices` is returned; otherwise no replacement happens.
+   - If an implementation was selected, its operators replace/extend the `liger_kernel.ops` namespace.
 
-If an auto-selected backend fails to import (e.g., the vendor SDK isn't installed), the dispatcher silently falls back to defaults. An explicitly-requested backend that fails to import re-raises so the user sees the underlying error.
+If an auto-selected implementation fails to import (e.g., the vendor SDK isn't installed), the dispatcher silently falls back to defaults. An explicitly-requested implementation that fails to import re-raises so the user sees the underlying error.
 
-## Adding a New Backend
+## Adding a new hardware backend (lives in `backends/_<name>/`)
 
-### Step 1: Create the directory structure
+### Step 1: Create the directory
 
 ```bash
-mkdir -p backends/_<name>/ops
-touch backends/_<name>/__init__.py
-touch backends/_<name>/ops/__init__.py
+mkdir -p src/liger_kernel/ops/backends/_<name>/ops
+touch src/liger_kernel/ops/backends/_<name>/__init__.py
+touch src/liger_kernel/ops/backends/_<name>/ops/__init__.py
 ```
 
-### Step 2: Register your backend
+### Step 2: Register the implementation
 
 In `backends/_<name>/__init__.py`:
 
 ```python
-"""
-<Name> backend for Liger-Kernel.
-"""
+"""<Name> hardware backend for Liger-Kernel."""
 
-from liger_kernel.ops.backends.registry import BackendInfo
-from liger_kernel.ops.backends.registry import register_backend
+from liger_kernel.ops.backends.registry import ImplInfo
+from liger_kernel.ops.backends.registry import register_impl
 
 # Auto-applied on the listed devices:
-register_backend(BackendInfo(name="<name>", devices=("<device>",), default_devices=("<device>",)))
-
-# Or, opt-in only (selected via LIGER_KERNEL_BACKEND=<name>):
-# register_backend(BackendInfo(name="<name>", devices=("<device>",)))
+register_impl(ImplInfo(
+    name="<name>",
+    devices=("<device>",),
+    default_devices=("<device>",),
+    module_path=f"{__name__}.ops",
+))
 ```
 
 ### Step 3: Ensure device detection works
 
-Make sure `infer_device()` in `liger_kernel/utils.py` recognizes your device:
+Make sure `infer_device()` in `liger_kernel/utils.py` recognizes the device. Example:
 
 ```python
 def infer_device():
@@ -88,13 +95,12 @@ def infer_device():
         return "cuda"
     if is_npu_available():
         return "npu"
-    # Add your device detection here
     if is_<device>_available():
         return "<device>"
     return "cpu"
 ```
 
-### Step 4: Implement backend-specific operators
+### Step 4: Implement the operators
 
 Create operator files in `backends/_<name>/ops/`. For example, `geglu.py`:
 
@@ -102,7 +108,7 @@ Create operator files in `backends/_<name>/ops/`. For example, `geglu.py`:
 import torch
 
 class LigerGELUMulFunction(torch.autograd.Function):
-    """Backend-specific LigerGELUMulFunction implementation."""
+    """Backend-specific LigerGELUMulFunction."""
 
     @staticmethod
     def forward(ctx, a, b):
@@ -111,28 +117,19 @@ class LigerGELUMulFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dc):
         ...
-
-def geglu_forward_backend(a, b):
-    ...
-
-def geglu_backward_backend(a, b, dc):
-    ...
 ```
 
-### Step 5: Export in `ops/__init__.py`
+### Step 5: Export from `ops/__init__.py`
 
 In `backends/_<name>/ops/__init__.py`:
 
 ```python
 """<Name>-specific operator implementations."""
 
-from .<module> import (
-    LigerGELUMulFunction,
-    geglu_forward_backend as geglu_forward,   # Rename to match default API
-    geglu_backward_backend as geglu_backward,
-)
+from .geglu import LigerGELUMulFunction
+from .geglu import geglu_backward
+from .geglu import geglu_forward
 
-# Explicitly declare what to export (recommended)
 __all__ = [
     "LigerGELUMulFunction",
     "geglu_forward",
@@ -140,46 +137,74 @@ __all__ = [
 ]
 ```
 
-## Key Points
+## Adding a new DSL implementation (lives at top level of `ops/`)
 
-### Incremental Override
+The pattern is the same — only the on-disk location and the `module_path` differ:
 
-You **don't need to implement all operators**. Only implement the ones that require backend-specific adaptations. Unimplemented operators automatically fall back to the default implementation.
+```
+src/liger_kernel/ops/<name>/
+├── __init__.py                          # register_impl(...)
+└── ops/
+    ├── __init__.py                      # exports symbols
+    └── jsd.py, ...                      # kernel files
+```
 
-### Backend-Specific Additions
+```python
+# ops/<name>/__init__.py
 
-Backends can also **add new operators** that don't exist in the default implementation. These will be exported to the `liger_kernel.ops` namespace for users to import.
+from liger_kernel.ops.backends.registry import ImplInfo
+from liger_kernel.ops.backends.registry import register_impl
 
-### Naming Convention
+# Opt-in only (no `default_devices`):
+register_impl(ImplInfo(
+    name="<name>",
+    devices=("cuda",),
+    module_path=f"{__name__}.ops",  # liger_kernel.ops.<name>.ops
+))
+```
 
-- Use the **same class/function names** as the default implementations for overrides
-- This allows seamless replacement without changing user code
-- Use `as` imports to rename if your internal naming differs
+## Key points
 
-### Multi-Device Backends
+### Incremental override
 
-A backend can support multiple devices by listing them all in `devices`. It can be the default on a subset (or none) of them. Examples:
+You **don't need to implement all operators**. Only implement the ones that need a different version. Unimplemented operators fall back to the defaults.
+
+### Adding new operators
+
+An implementation can also **add new operators** that don't exist in the defaults. They are exported to `liger_kernel.ops` for users to import.
+
+### Naming convention
+
+- Use the **same class/function names** as the defaults when overriding — lets user code stay unchanged.
+- Use `as` imports to rename if your internal naming differs.
+
+### Multi-device implementations
+
+An implementation can support multiple devices by listing them all in `devices`. It can be the default on a subset (or none) of them.
 
 ```python
 # Supports CUDA and XPU; default on neither (opt-in everywhere):
-register_backend(BackendInfo(name="inductor", devices=("cuda", "xpu")))
+register_impl(ImplInfo(
+    name="inductor",
+    devices=("cuda", "xpu"),
+    module_path="liger_kernel.ops.inductor.ops",
+))
 
 # Supports CUDA and XPU; auto-applied on XPU only:
-register_backend(BackendInfo(name="example", devices=("cuda", "xpu"), default_devices=("xpu",)))
+register_impl(ImplInfo(
+    name="example",
+    devices=("cuda", "xpu"),
+    default_devices=("xpu",),
+    module_path="liger_kernel.ops.example.ops",
+))
 ```
 
-## Example: Ascend NPU Backend
+## Examples in this repo
 
-See `_ascend/` for a complete example of an auto-applied backend.
+- `backends/_ascend/` — auto-applied hardware backend (Ascend NPU).
+- `../cutile/` — opt-in DSL implementation on CUDA. Enable with:
+  ```bash
+  LIGER_KERNEL_IMPL=cutile python your_script.py
+  ```
 
-## Example: cuTile Backend
-
-See `_cutile/` for a complete example of an opt-in backend.
-
-Enable it on a CUDA device with:
-
-```bash
-LIGER_KERNEL_BACKEND=cutile python your_script.py
-```
-
-`select_backend()` validates the request: if the current device isn't in the backend's `devices`, or if `cuda-tile` isn't installed, the user gets a clear error instead of a silent fallback.
+`select_impl()` validates the request: if the current device isn't in the implementation's `devices`, or its module fails to import, the user gets a clear error instead of a silent fallback.
