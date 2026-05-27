@@ -92,9 +92,7 @@ def select_impl(device: str, explicit: Optional[str] = None) -> Optional[ImplInf
         info = IMPL_REGISTRY.get(explicit)
         if info is None:
             known = ", ".join(sorted(IMPL_REGISTRY)) or "<none registered>"
-            raise RuntimeError(
-                f"Unknown {LIGER_KERNEL_IMPL_ENV}={explicit!r}. Registered implementations: {known}."
-            )
+            raise RuntimeError(f"Unknown {LIGER_KERNEL_IMPL_ENV}={explicit!r}. Registered implementations: {known}.")
         if device not in info.devices:
             supported = ", ".join(info.devices)
             raise RuntimeError(
