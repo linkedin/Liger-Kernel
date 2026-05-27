@@ -261,13 +261,6 @@ def get_formatted_time():
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def get_display_kernel_provider(kernel_provider: str) -> str:
-    impl = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower()
-    if kernel_provider == "liger" and impl:
-        return f"liger-{impl}"
-    return kernel_provider
-
-
 def get_gpu_name():
     """
     Returns the current GPU name, formatted to serve as a directory name
@@ -440,7 +433,7 @@ def run_benchmarks(
                 benchmark_run_data = BenchmarkData(
                     kernel_name=kernel_name,
                     kernel_operation_mode=kernel_operation_mode,
-                    kernel_provider=get_display_kernel_provider(kernel_provider),
+                    kernel_provider=kernel_provider,
                     metric_name=metric_name,
                     metric_unit=metric_unit,
                     gpu_name=gpu_name,
@@ -459,7 +452,9 @@ def run_benchmarks(
 
     print_benchmark_data(benchmark_data_list)
 
-    update_benchmark_data_csv(benchmark_data_list=benchmark_data_list, overwrite=overwrite)
+    impl_name = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower()
+    file_name = "all_benchmark_data.csv" if impl_name == "" else f"all_benchmark_data_{impl_name}.csv"
+    update_benchmark_data_csv(benchmark_data_list=benchmark_data_list, filename=file_name, overwrite=overwrite)
 
 
 def parse_benchmark_script_args():
