@@ -33,7 +33,16 @@ def get_default_dependencies():
 
 def get_optional_dependencies():
     """Get optional dependency groups."""
+    cutile_deps = [
+        "cuda-tile",
+    ]
+    cutile_tileiras_deps = [
+        "cuda-tile[tileiras]",
+    ]
+
     return {
+        "cutile": cutile_deps,
+        "cutile-tileiras": cutile_tileiras_deps,
         "dev": [
             "transformers>=4.52.0",
             "matplotlib>=3.7.2",
@@ -48,7 +57,7 @@ def get_optional_dependencies():
             "mkdocs-material",
             "torchvision>=0.20",
             "prek>=0.2.28",
-        ]
+        ],
     }
 
 
