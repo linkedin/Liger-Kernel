@@ -14,6 +14,8 @@ from liger_kernel.utils import infer_device
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
 MAX_FUSED_SIZE = 2048 if infer_device() == "npu" else 65536 // 2
+_TORCH_VERSION = Version(torch.__version__.split("+")[0])
+_SUPPORTS_ADDM_MIXED_PRECISION_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
 
 def fused_linear_cross_entropy_forward(
@@ -41,7 +43,6 @@ def fused_linear_cross_entropy_forward(
         f"return_predicted_tokens must be True or False. Got: {return_predicted_tokens}"
     )
     device = _input.device
-
     input_requires_grad = _input.requires_grad
 
     # inputs have shape: BT x H
@@ -94,7 +95,7 @@ def fused_linear_cross_entropy_forward(
         ce_weight_sum = ce_weight.sum().item()
         if ce_weight.stride(-1) != 1:
             ce_weight = ce_weight.contiguous()
-    IS_TORCH2P12 = Version(torch.__version__.split("+")[0]) >= Version("2.12.0")
+
     for chunk_id in range(num_chunks):
         start_idx = chunk_id * chunk_size
         end_idx = min((chunk_id + 1) * chunk_size, BT)
@@ -212,7 +213,7 @@ def fused_linear_cross_entropy_forward(
 
         if grad_weight is not None and input_requires_grad:
             if (
-                IS_TORCH2P12
+                _SUPPORTS_ADDM_MIXED_PRECISION_OUT_DTYPE
                 and grad_weight.device.type == "cuda"
                 and grad_weight.dtype == torch.float32
                 and grad_logits_chunk.t().dtype in (torch.float16, torch.bfloat16)
@@ -225,12 +226,7 @@ def fused_linear_cross_entropy_forward(
                     out=grad_weight,
                 )
             else:
-                torch.addmm(
-                    grad_weight,
-                    grad_logits_chunk.t().to(grad_weight.dtype),
-                    _input_chunk.to(grad_weight.dtype),
-                    out=grad_weight,
-                )
+                grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
 
         if bias is not None and input_requires_grad:
             torch.add(
