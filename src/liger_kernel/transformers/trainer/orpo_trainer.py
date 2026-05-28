@@ -74,16 +74,28 @@ class LigerORPOTrainer(ORPOTrainer):
                 lm_head.weight, last_hidden_state, concatenated_labels, lm_head.bias, nll_target=nll_target
             )
 
-        orpo_loss, aux_outputs = _FSDPForwardRedirection()(
-            model,
-            orpo_partial,
-            model.lm_head,
-            outputs.last_hidden_state[:, :-1] if not self.is_encoder_decoder else outputs.last_hidden_state,
+        last_hidden_state = (
+            outputs.last_hidden_state[:, :-1] if not self.is_encoder_decoder else outputs.last_hidden_state
+        )
+        concatenated_labels = (
             concatenated_batch["concatenated_labels"][:, 1:]
             if not self.is_encoder_decoder
-            else concatenated_batch["concatenated_labels"],
-            labels[:, 1:] if not self.is_encoder_decoder else labels,
+            else concatenated_batch["concatenated_labels"]
         )
+        nll_target = labels[:, 1:] if not self.is_encoder_decoder else labels
+
+        if isinstance(model, FullyShardedDataParallel):
+            orpo_loss, aux_outputs = _FSDPForwardRedirection()(
+                model,
+                orpo_partial,
+                model.lm_head,
+                last_hidden_state,
+                concatenated_labels,
+                nll_target,
+            )
+        else:
+            orpo_loss, aux_outputs = orpo_partial(model.lm_head, last_hidden_state, concatenated_labels, nll_target)
+
         # if aux_loss_enabled, add the aux_loss to the orpo_loss
         if self.aux_loss_enabled:
             orpo_loss += self.aux_loss_coef * outputs.aux_loss
