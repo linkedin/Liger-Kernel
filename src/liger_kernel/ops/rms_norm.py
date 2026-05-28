@@ -17,6 +17,14 @@ import torch
 import triton
 import triton.language as tl
 
+try:
+    from torch.distributed.tensor import Shard
+
+    _DTENSOR_AVAILABLE = True
+except ImportError:
+    _DTENSOR_AVAILABLE = False
+    Shard = None
+
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
@@ -24,6 +32,30 @@ from liger_kernel.ops.utils import get_npu_core_count
 from liger_kernel.ops.utils import set_large_grf_mode
 from liger_kernel.ops.utils import torch_to_triton_dtype
 from liger_kernel.utils import is_npu_available
+
+
+def _is_hidden_dim_sharded(dtensor: "torch.distributed.tensor.DTensor") -> bool:
+    """
+    Check if the DTensor is sharded on the hidden dimension (last dimension).
+
+    This is used to determine whether we need to gather the full tensor for RMSNorm
+    computation (Tensor Parallel case) or can compute locally (Context Parallel case).
+
+    Args:
+        dtensor: A DTensor instance to check.
+
+    Returns:
+        True if the tensor is sharded on the hidden (last) dimension (TP case),
+        False otherwise (CP case - can compute locally).
+    """
+    if not _DTENSOR_AVAILABLE or Shard is None:
+        return False
+    hidden_dim = dtensor.ndim - 1  # Last dimension is the hidden dimension
+    for placement in dtensor.placements:
+        if isinstance(placement, Shard) and placement.dim == hidden_dim:
+            return True
+    return False
+
 
 if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
     try:
@@ -609,12 +641,25 @@ class LigerRMSNormFunction(torch.autograd.Function):
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
+        # Track DTensor metadata for potential reconstruction in backward
+        ctx.is_dtensor_input = False
+        ctx.dtensor_device_mesh = None
+        ctx.dtensor_placements = None
+
         if isinstance(X, torch.distributed.tensor.DTensor):
-            # Input tensor is output of a tensor parallel module and
-            # needs to be gathered to a local tensor to compute
-            # RMSE layer norm on each TP worker.
-            # TODO: support CP.
-            X = X.full_tensor()
+            if _is_hidden_dim_sharded(X):
+                # Tensor Parallel (TP): hidden dimension is sharded across devices.
+                # RMSNorm requires the full hidden dimension to compute the RMS,
+                # so we need to gather the full tensor.
+                X = X.full_tensor()
+            else:
+                # Context Parallel (CP): sequence dimension is sharded.
+                # RMSNorm computes independently for each sequence position,
+                # so we can compute locally without gathering.
+                ctx.is_dtensor_input = True
+                ctx.dtensor_device_mesh = X.device_mesh
+                ctx.dtensor_placements = X.placements
+                X = X.to_local()
 
         Y, X, RSTD, BLOCK_SIZE, num_warps, casting_mode = rms_norm_forward(X, W, eps, offset, casting_mode, row_mode)
         ctx.offset = offset
@@ -628,6 +673,15 @@ class LigerRMSNormFunction(torch.autograd.Function):
             ctx.save_for_backward(X, W, RSTD)
         else:
             ctx.save_for_backward(X, RSTD)
+
+        # If input was a CP DTensor, wrap output back into DTensor
+        if ctx.is_dtensor_input:
+            Y = torch.distributed.tensor.DTensor.from_local(
+                Y,
+                device_mesh=ctx.dtensor_device_mesh,
+                placements=ctx.dtensor_placements,
+            )
+
         return Y
 
     @staticmethod
@@ -643,12 +697,36 @@ class LigerRMSNormFunction(torch.autograd.Function):
             W = None
 
         if isinstance(dY, torch.distributed.tensor.DTensor):
-            # Gradients are output of a tensor parallel module and
-            # needs to be gathered to a local tensor for computing RMSE layer.
-            # TODO: support CP.
-            dY = dY.full_tensor()
+            if ctx.is_dtensor_input:
+                # Context Parallel (CP): sequence dimension is sharded.
+                # We can compute gradients locally for each sequence position.
+                dY = dY.to_local()
+            else:
+                # Tensor Parallel (TP): hidden dimension is sharded.
+                # Need to gather the full gradient tensor.
+                dY = dY.full_tensor()
 
         dX, dW = rms_norm_backward(
             dY, X, W, RSTD, ctx.offset, ctx.casting_mode, ctx.BLOCK_SIZE, ctx.num_warps, ctx.in_place, ctx.row_mode
         )
+
+        # If input was a CP DTensor, handle output accordingly
+        if ctx.is_dtensor_input:
+            # Wrap dX back into DTensor with the same placements
+            dX = torch.distributed.tensor.DTensor.from_local(
+                dX,
+                device_mesh=ctx.dtensor_device_mesh,
+                placements=ctx.dtensor_placements,
+            )
+
+            # For dW, we need to all-reduce across all sharded mesh dimensions
+            # since each device only computed gradients for its local sequence positions,
+            # but the weight is shared across all positions. For multi-dimensional meshes
+            # (e.g., batch + sequence sharding), we must reduce across each sharded dim.
+            if dW is not None and _DTENSOR_AVAILABLE and Shard is not None:
+                for i, placement in enumerate(ctx.dtensor_placements):
+                    if isinstance(placement, Shard):
+                        pg = ctx.dtensor_device_mesh.get_group(mesh_dim=i)
+                        torch.distributed.all_reduce(dW, group=pg)
+
         return dX, dW, None, None, None, None, None
