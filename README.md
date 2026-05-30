@@ -132,8 +132,7 @@ y = orpo_loss(lm_head.weight, x, target)
 - `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
 
 ```bash
-pip install -e .[dev]
-pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.3/
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
 ```
 
 ### Optional Dependencies
@@ -164,10 +163,17 @@ git clone https://github.com/linkedin/Liger-Kernel.git
 cd Liger-Kernel
 
 # Install Default Dependencies
-# Setup.py will detect whether you are using AMD or NVIDIA
+# Setup.py will detect the local backend and select default dependencies.
+# On ROCm, install ROCm PyTorch first from the PyTorch ROCm index.
 pip install -e .
 
 # Setup Development Dependencies
+pip install -e ".[dev]"
+
+# ROCm source installs
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
+# Then choose one:
+pip install -e .
 pip install -e ".[dev]"
 
 # Setup cuTile Dependencies
@@ -176,8 +182,6 @@ pip install -e ".[cutile]"
 # Or install cuTile with the optional tileiras compiler
 pip install -e ".[cutile-tileiras]"
 
-# NOTE -> For AMD users only
-pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.3/
 ```
 
 ### Enable cuTile Backend

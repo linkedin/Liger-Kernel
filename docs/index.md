@@ -117,10 +117,17 @@ git clone https://github.com/linkedin/Liger-Kernel.git
 cd Liger-Kernel
 
 # Install Default Dependencies
-# Setup.py will detect whether you are using AMD or NVIDIA
+# Setup.py will detect the local backend and select default dependencies.
+# On ROCm, install ROCm PyTorch first from the PyTorch ROCm index.
 pip install -e .
 
 # Setup Development Dependencies
+pip install -e ".[dev]"
+
+# ROCm source installs
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
+# Then choose one:
+pip install -e .
 pip install -e ".[dev]"
 ```
 
@@ -135,6 +142,8 @@ pip install -e ".[dev]"
 
     - `torch >= 2.5.0` Install according to the instruction in Pytorch official webpage.
     - `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
+    - For ROCm source installs, install ROCm PyTorch first and then use `pip install -e .`.
+    - For ROCm source development, install ROCm PyTorch first and then use `pip install -e ".[dev]"`.
 
 !!!Tip "Optional Dependencies "
 
