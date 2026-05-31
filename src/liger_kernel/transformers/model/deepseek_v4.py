@@ -1,7 +1,6 @@
 import torch
 
 from transformers.modeling_outputs import MoeModelOutputWithPast
-from transformers.models.deepseek_v4.modeling_deepseek_v4 import load_balancing_loss_func
 
 from liger_kernel.transformers.model.loss_utils import LigerForCausalLMLoss
 from liger_kernel.transformers.model.loss_utils import unpack_cross_entropy_result
@@ -73,6 +72,8 @@ def lce_forward(
 
     aux_loss = None
     if output_router_logits:
+        from transformers.models.deepseek_v4.modeling_deepseek_v4 import load_balancing_loss_func
+
         aux_loss = load_balancing_loss_func(
             outputs.router_logits,
             self.num_experts,

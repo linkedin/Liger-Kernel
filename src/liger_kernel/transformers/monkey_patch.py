@@ -16,7 +16,6 @@ from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.geglu import LigerGEGLUMLPForGemma4
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
-from liger_kernel.transformers.model.deepseek_v4 import lce_forward as deepseek_v4_lce_forward
 from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
@@ -3415,6 +3414,8 @@ def apply_liger_kernel_to_deepseek_v4(
 
     from transformers.models.deepseek_v4 import modeling_deepseek_v4
     from transformers.models.deepseek_v4.modeling_deepseek_v4 import DeepseekV4Model
+
+    from liger_kernel.transformers.model.deepseek_v4 import lce_forward as deepseek_v4_lce_forward
 
     if rope:
         modeling_deepseek_v4.apply_rotary_pos_emb = liger_rotary_pos_emb
