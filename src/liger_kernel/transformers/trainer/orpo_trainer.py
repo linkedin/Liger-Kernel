@@ -8,7 +8,12 @@ import torch
 import torch.nn as nn
 
 from torch.distributed.fsdp import FullyShardedDataParallel
-from trl.trainer import ORPOTrainer
+
+try:
+    # TRL moved ORPO into trl.experimental; fall back to the old location for older TRL.
+    from trl.experimental.orpo import ORPOTrainer
+except ImportError:
+    from trl.trainer import ORPOTrainer
 
 from liger_kernel.chunked_loss import LigerFusedLinearORPOLoss
 from liger_kernel.transformers.fsdp import _FSDPForwardRedirection
