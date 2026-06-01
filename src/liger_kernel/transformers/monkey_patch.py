@@ -3379,6 +3379,77 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
 
 
+def apply_liger_kernel_to_deepseek_v4(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = False,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace DeepSeek-V4 models.
+
+    NOTE: RoPE patching is disabled by default because DeepSeek-V4 uses interleaved partial RoPE
+    that is incompatible with the standard ``liger_rotary_pos_emb``.
+    NOTE: SwiGLU patching is disabled by default because routed experts apply ``swiglu_limit``
+    clamping that differs from the standard Liger fused MoE path. When enabled, only shared
+    experts (:class:`DeepseekV4MLP`) are patched.
+
+    Args:
+        rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
+        fused_linear_cross_entropy (bool):
+            Whether to apply Liger's fused linear cross entropy loss. Default is True.
+            `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
+            If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP to shared experts. Default is False.
+        model (PreTrainedModel): The model instance to apply Liger kernels to, if already loaded.
+            Default is None.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.deepseek_v4 import modeling_deepseek_v4
+    from transformers.models.deepseek_v4.modeling_deepseek_v4 import DeepseekV4Model
+
+    from liger_kernel.transformers.model.deepseek_v4 import lce_forward as deepseek_v4_lce_forward
+
+    if rope:
+        modeling_deepseek_v4.apply_rotary_pos_emb = liger_rotary_pos_emb
+
+    if rms_norm:
+        modeling_deepseek_v4.DeepseekV4RMSNorm = LigerRMSNorm
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(deepseek_v4_lce_forward, model)
+        else:
+            modeling_deepseek_v4.DeepseekV4ForCausalLM.forward = deepseek_v4_lce_forward
+
+    if swiglu:
+        modeling_deepseek_v4.DeepseekV4MLP = LigerSwiGLUMLP
+
+    if model is not None:
+        base_model: DeepseekV4Model = getattr(model, model.base_model_prefix, model)
+
+        if rms_norm:
+            _patch_rms_norm_module(base_model.norm)
+        for decoder_layer in base_model.layers:
+            if swiglu:
+                _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
+            if rms_norm:
+                _patch_rms_norm_module(decoder_layer.input_layernorm)
+                _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
+
+
 def apply_liger_kernel_to_exaone4(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -3458,6 +3529,7 @@ def apply_liger_kernel_to_exaone4(
 
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
+    "deepseek_v4": apply_liger_kernel_to_deepseek_v4,
     "gemma": apply_liger_kernel_to_gemma,
     "gemma2": apply_liger_kernel_to_gemma2,
     "gemma3_text": apply_liger_kernel_to_gemma3_text,

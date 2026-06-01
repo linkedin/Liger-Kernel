@@ -210,6 +210,15 @@ def is_paligemma_available():
         return False
 
 
+def is_deepseek_v4_available():
+    try:
+        import transformers.models.deepseek_v4  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_falcon_h1_available():
     try:
         import transformers.models.falcon_h1  # noqa: F401
@@ -1592,6 +1601,55 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
             else:
                 for expert in layer.block_sparse_moe.experts:
                     assert inspect.getsource(expert.forward) == inspect.getsource(LigerBlockSparseTop2MLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_deepseek_v4_available(), reason="deepseek_v4 module not available")
+def test_apply_liger_kernel_to_instance_for_deepseek_v4():
+    with patch("transformers.models.deepseek_v4.modeling_deepseek_v4"):
+        from liger_kernel.transformers.model.deepseek_v4 import lce_forward as deepseek_v4_lce_forward
+
+        config = transformers.models.deepseek_v4.configuration_deepseek_v4.DeepseekV4Config(
+            vocab_size=1024,
+            hidden_size=32,
+            moe_intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=16,
+            q_lora_rank=8,
+            num_experts_per_tok=2,
+            n_routed_experts=4,
+            hc_mult=2,
+            sliding_window=8,
+            o_groups=2,
+            o_lora_rank=8,
+            index_n_heads=2,
+            index_head_dim=8,
+            index_topk=4,
+            layer_types=["sliding_attention", "sliding_attention"],
+            mlp_layer_types=["moe", "moe"],
+            max_position_embeddings=128,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(deepseek_v4_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(deepseek_v4_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
