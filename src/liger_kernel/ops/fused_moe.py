@@ -162,6 +162,13 @@ class LigerFusedMoEFunction(torch.autograd.Function):
 
     Forward: routing metadata → fused gather+GEMM+SwiGLU → down-proj → token aggregation
     Backward: avoids caching Y (TK×H) by recomputing dA' = dO@W2^T in backward
+
+    Troubleshooting:
+        If you hit ``CUDA error: an illegal memory access was encountered``
+        during Triton autotune ``do_bench`` (typically on newer hardware like
+        B300 — see issue #1246), set ``LIGER_FUSED_MOE_AUTOTUNE=0`` BEFORE
+        importing liger_kernel. This pins every fused MoE kernel to a single
+        conservative config and skips the autotune benchmark loop entirely.
     """
 
     @staticmethod

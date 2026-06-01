@@ -8,8 +8,18 @@
 # inspired by the SonicMoE paper (arXiv:2512.14080), ported to portable Triton
 # (no Hopper-specific WGMMA/TMA) for general GPU support.
 
+import os
+
 import triton
 import triton.language as tl
+
+# Setting LIGER_FUSED_MOE_AUTOTUNE=0 pins every fused MoE Triton kernel to a
+# single conservative config and skips Triton's `do_bench` benchmark loop
+# entirely (autotuner short-circuits past benchmarking when len(configs) == 1).
+# Useful on hardware / Triton-version combinations where autotune benchmarking
+# itself raises CUDA illegal memory access (see issue #1246). Must be set
+# BEFORE importing liger_kernel — autotune decorators bind at import time.
+_AUTOTUNE_DISABLED = os.environ.get("LIGER_FUSED_MOE_AUTOTUNE", "1").lower() in ("0", "false", "no")
 
 # ---------------------------------------------------------------------------
 # Routing metadata overview
@@ -305,6 +315,8 @@ def _moe_router_scatter_kernel(
 
 
 def _get_gemm_autotune_configs():
+    if _AUTOTUNE_DISABLED:
+        return [triton.Config({"BLOCK_N": 128, "BLOCK_K": 64}, num_warps=8, num_stages=2)]
     configs = []
     for bn in [64, 128]:
         for bk in [32, 64]:
@@ -318,6 +330,19 @@ def _get_gemm_autotune_configs():
                         )
                     )
     return configs
+
+
+def _get_dW_autotune_configs():
+    """Configs for backward weight-grad kernels (dW1, dW2): include BLOCK_M sweep."""
+    if _AUTOTUNE_DISABLED:
+        return [triton.Config({"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 32}, num_warps=8, num_stages=2)]
+    return [
+        triton.Config({"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk}, num_warps=nw, num_stages=2)
+        for bm in [64, 128]
+        for bn in [64, 128]
+        for bk in [16, 32]
+        for nw in [4, 8]
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +531,8 @@ def _fused_down_proj_kernel(
 
 
 def _get_token_gather_autotune_configs():
+    if _AUTOTUNE_DISABLED:
+        return [triton.Config({"BLOCK_H": 128, "BLOCK_K": 4}, num_warps=4, num_stages=4)]
     configs = []
     for bh in [64, 128, 256, 512]:
         for bk in [1, 2, 4, 8, 16]:
@@ -685,13 +712,7 @@ def _moe_bwd_down_proj_kernel(
 
 
 @triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk}, num_warps=nw, num_stages=2)
-        for bm in [64, 128]
-        for bn in [64, 128]
-        for bk in [16, 32]
-        for nw in [4, 8]
-    ],
+    configs=_get_dW_autotune_configs(),
     key=["H_dim", "I_dim"],
     reset_to_zero=["dW2_ptr"],
 )
@@ -852,13 +873,7 @@ def _moe_bwd_dX_expanded_kernel(
 
 
 @triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk}, num_warps=nw, num_stages=2)
-        for bm in [64, 128]
-        for bn in [64, 128]
-        for bk in [16, 32]
-        for nw in [4, 8]
-    ],
+    configs=_get_dW_autotune_configs(),
     key=["H_dim", "I_dim"],
     reset_to_zero=["dW1_ptr"],
 )
