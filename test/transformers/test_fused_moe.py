@@ -208,3 +208,48 @@ def test_K_equals_E():
     out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     ref = _reference_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-4)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available()
+    or torch.cuda.get_device_properties(0).total_memory < 16 * 1024**3,
+    reason="Regression needs >= 16 GB GPU memory: pre_act tensor must exceed 2^31 bytes to trigger int32 stride overflow.",
+)
+def test_large_tk_pointer_overflow_regression():
+    """Regression for #1246: int32 overflow in pre_act / post_act / Y pointer arithmetic.
+
+    When TK * stride > 2^31, the int32 offset wraps and the kernel writes to
+    garbage addresses (corruption → NaN/Inf, or unmapped → IMA depending on
+    allocator state). Bug is shape-dependent, not hardware-dependent, but
+    surfaces at the Qwen3.5-MoE scale reported in #1246
+    (T~135k, K=8 → TK ~ 1M; intermediate_dim=1024 → stride_pre_TK=2048 →
+    TK*stride ~ 2.21 G > 2^31).
+
+    Minimal repro shape: TK * 2*intermediate_dim must exceed 2^31 = 2,147,483,648.
+    Other dims kept small so total GPU memory stays around ~9 GB.
+    """
+    # Shape sized to overflow with the smallest activation footprint possible.
+    # TK = 131088 * 8 = 1,048,704 → 1,048,704 * 2048 = 2,147,745,792 > 2^31.
+    T, K = 131088, 8
+    E, H, intermediate_dim = 4, 128, 1024
+    dtype = torch.bfloat16
+
+    TK = T * K
+    stride_pre_TK = 2 * intermediate_dim
+    assert TK * stride_pre_TK > 2**31, (
+        f"Test shape doesn't actually trigger overflow: TK*stride={TK * stride_pre_TK:,} vs 2^31={2**31:,}"
+    )
+
+    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(
+        T, E, H, intermediate_dim, K, dtype, device
+    )
+
+    out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
+
+    # Before the fix: stores to the last rows of pre_act/post_act/Y land at
+    # wrapped int32 addresses → final output has NaN/Inf in those token rows.
+    assert torch.isfinite(out).all(), (
+        "Output contains NaN/Inf — int32 overflow in pre_act/post_act/Y pointer arithmetic. "
+        f"TK={TK:,}, stride_pre_TK={stride_pre_TK:,}, "
+        f"TK*stride={TK * stride_pre_TK:,} (int32 max={2**31 - 1:,})"
+    )
