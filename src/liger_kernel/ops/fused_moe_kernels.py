@@ -386,7 +386,8 @@ def _fused_up_proj_swiglu_kernel(
     pid_n = tl.program_id(1)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
-    expert_idx = tl.load(tile_expert_ptr + pid_m)
+    # int64 prevents expert_idx * stride_w_E overflow at large E*I*H (see #1246).
+    expert_idx = tl.load(tile_expert_ptr + pid_m).to(tl.int64)
     n_start = pid_n * BLOCK_N
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
@@ -403,7 +404,8 @@ def _fused_up_proj_swiglu_kernel(
 
     n_idx = n_start + n_offs
     n_mask = n_idx < I_dim
-    token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0)
+    # int64 prevents token_idx * stride_T overflow at large T*H (see #1246).
+    token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0).to(tl.int64)
     for k in tl.range(0, H_dim, BLOCK_K):
         k_idx = k + k_offs
         k_mask = k_idx < H_dim
@@ -489,7 +491,8 @@ def _fused_down_proj_kernel(
     pid_n = tl.program_id(1)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
-    expert_idx = tl.load(tile_expert_ptr + pid_m)
+    # int64 prevents expert_idx * stride_w_E overflow at large E*I*H (see #1246).
+    expert_idx = tl.load(tile_expert_ptr + pid_m).to(tl.int64)
     n_start = pid_n * BLOCK_N
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
@@ -566,7 +569,8 @@ def _token_gather_weighted_sum_kernel(
 ):
     """One CTA per token. Gathers K expert outputs, reduces with routing weights
     (forward) or without weights (backward dx via _token_broadcast_backward)."""
-    t = tl.program_id(0).to(tl.uint32)
+    # int64 prevents t * stride_out_T overflow at large T*H (see #1246).
+    t = tl.program_id(0).to(tl.int64)
 
     for h_tile in tl.static_range(triton.cdiv(H_dim, BLOCK_H)):
         h_idx = (h_tile * BLOCK_H + tl.arange(0, BLOCK_H)).to(tl.uint32)
@@ -643,7 +647,8 @@ def _moe_bwd_down_proj_kernel(
     pid_n = tl.program_id(1)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
-    expert_idx = tl.load(tile_expert_ptr + pid_m)
+    # int64 prevents expert_idx * stride_w_E overflow at large E*I*H (see #1246).
+    expert_idx = tl.load(tile_expert_ptr + pid_m).to(tl.int64)
     n_start = pid_n * BLOCK_N
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
@@ -659,7 +664,8 @@ def _moe_bwd_down_proj_kernel(
     out_mask = row_mask[:, None] & n_mask[None, :]
 
     # Hoist per-row routing metadata (constant across H K-loop).
-    token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0)
+    # int64 prevents token_idx * stride_T overflow at large T*H (see #1246).
+    token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0).to(tl.int64)
     flat_tk_idx = tl.load(s_scatter_idx_ptr + row_offs, mask=row_mask, other=0)
     weights = tl.load(topk_weights_ptr + flat_tk_idx, mask=row_mask, other=0.0).to(tl.float32)
 
@@ -746,7 +752,8 @@ def _moe_bwd_dW2_kernel(
     pid1 = tl.program_id(1)
 
     N_M_TILES: tl.constexpr = (I_dim + BLOCK_M - 1) // BLOCK_M
-    expert_idx = pid0 // N_M_TILES
+    # int64 prevents expert_idx * stride_dW_E overflow at large E*I*H (see #1246).
+    expert_idx = (pid0 // N_M_TILES).to(tl.int64)
     m_tile = pid0 % N_M_TILES
 
     expert_start = tl.load(expert_start_ptr + expert_idx)
@@ -777,7 +784,8 @@ def _moe_bwd_dW2_kernel(
         wact_ptrs = weighted_act_ptr + row_offs[None, :] * stride_wact_TK + i_idx[:, None] * stride_wact_I
         wact_tile = tl.load(wact_ptrs, mask=k_mask[None, :] & i_mask[:, None], other=0.0)
 
-        token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0)
+        # int64 prevents token_idx * stride_T overflow at large T*H (see #1246).
+        token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0).to(tl.int64)
         dout_ptrs = dout_ptr + token_idx[:, None] * stride_dout_T + h_idx[None, :] * stride_dout_H
         dout_tile = tl.load(dout_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
 
@@ -825,7 +833,8 @@ def _moe_bwd_dX_expanded_kernel(
     pid_n = tl.program_id(1)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
-    expert_idx = tl.load(tile_expert_ptr + pid_m)
+    # int64 prevents expert_idx * stride_w_E overflow at large E*I*H (see #1246).
+    expert_idx = tl.load(tile_expert_ptr + pid_m).to(tl.int64)
     n_start = pid_n * BLOCK_N
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
@@ -908,7 +917,8 @@ def _moe_bwd_dW1_kernel(
     pid1 = tl.program_id(1)
 
     N_M_TILES: tl.constexpr = (H_dim + BLOCK_M - 1) // BLOCK_M
-    expert_idx = pid0 // N_M_TILES
+    # int64 prevents expert_idx * stride_dW_E overflow at large E*I*H (see #1246).
+    expert_idx = (pid0 // N_M_TILES).to(tl.int64)
     m_tile = pid0 % N_M_TILES
 
     expert_start = tl.load(expert_start_ptr + expert_idx)
@@ -936,7 +946,8 @@ def _moe_bwd_dW1_kernel(
         k_mask = k_idx < M_e
         row_offs = (expert_start + k_idx).to(tl.int64)
 
-        token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0)
+        # int64 prevents token_idx * stride_T overflow at large T*H (see #1246).
+        token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0).to(tl.int64)
         x_ptrs = x_ptr + token_idx[:, None] * stride_x_T + h_idx[None, :] * stride_x_H
         x_tile = tl.load(x_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
 
