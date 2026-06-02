@@ -108,9 +108,12 @@ def fused_linear_jsd_forward(
 
 def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
     if torch.ne(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        grad_input.mul_(grad_output)
+        # Use out-of-place mul to avoid PyTorch version-tracking issues when
+        # backward is called with retain_graph=True (unlike Triton kernels,
+        # Python-level in-place ops bump the version counter on saved tensors).
+        grad_input = grad_input * grad_output
         if grad_weight is not None:
-            grad_weight.mul_(grad_output)
+            grad_weight = grad_weight * grad_output
     return grad_input, grad_weight
 
 
