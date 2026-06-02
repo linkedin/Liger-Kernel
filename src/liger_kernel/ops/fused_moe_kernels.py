@@ -394,7 +394,8 @@ def _fused_up_proj_swiglu_kernel(
     n_offs = tl.arange(0, BLOCK_N)
     k_offs = tl.arange(0, BLOCK_K)
 
-    row_offs = row_start + m_offs
+    # int64 prevents row_offs * stride overflow when TK is large (see #1246).
+    row_offs = (row_start + m_offs).to(tl.int64)
     row_mask = row_offs < expert_end
 
     acc_gate = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
@@ -496,7 +497,8 @@ def _fused_down_proj_kernel(
     n_offs = tl.arange(0, BLOCK_N)
     k_offs = tl.arange(0, BLOCK_K)
 
-    row_offs = row_start + m_offs
+    # int64 prevents row_offs * stride overflow when TK is large (see #1246).
+    row_offs = (row_start + m_offs).to(tl.int64)
     row_mask = row_offs < expert_end
     n_idx = n_start + n_offs
     n_mask = n_idx < H_dim
@@ -576,7 +578,8 @@ def _token_gather_weighted_sum_kernel(
             k_mask = k_offs < K_dim
 
             flat_idx = t * K_dim + k_offs
-            perm_idx = tl.load(s_rev_ptr + flat_idx, mask=k_mask, other=0).to(tl.uint32)
+            # int64 prevents perm_idx * stride overflow when TK is large (see #1246).
+            perm_idx = tl.load(s_rev_ptr + flat_idx, mask=k_mask, other=0).to(tl.int64)
 
             y_ptrs = Y_ptr + perm_idx[:, None] * stride_Y_TK + h_idx[None, :] * stride_Y_H
             y_vals = tl.load(y_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0).to(tl.float32)
@@ -648,7 +651,8 @@ def _moe_bwd_down_proj_kernel(
     n_offs = tl.arange(0, BLOCK_N)
     k_offs = tl.arange(0, BLOCK_K)
 
-    row_offs = row_start + m_offs
+    # int64 prevents row_offs * stride overflow when TK is large (see #1246).
+    row_offs = (row_start + m_offs).to(tl.int64)
     row_mask = row_offs < expert_end
     n_idx = n_start + n_offs
     n_mask = n_idx < I_dim
@@ -768,7 +772,7 @@ def _moe_bwd_dW2_kernel(
     for k in tl.range(0, M_e, BLOCK_K):
         k_idx = k + k_offs
         k_mask = k_idx < M_e
-        row_offs = expert_start + k_idx
+        row_offs = (expert_start + k_idx).to(tl.int64)
 
         wact_ptrs = weighted_act_ptr + row_offs[None, :] * stride_wact_TK + i_idx[:, None] * stride_wact_I
         wact_tile = tl.load(wact_ptrs, mask=k_mask[None, :] & i_mask[:, None], other=0.0)
@@ -829,7 +833,8 @@ def _moe_bwd_dX_expanded_kernel(
     n_offs = tl.arange(0, BLOCK_N)
     k_offs = tl.arange(0, BLOCK_K)
 
-    row_offs = row_start + m_offs
+    # int64 prevents row_offs * stride overflow when TK is large (see #1246).
+    row_offs = (row_start + m_offs).to(tl.int64)
     row_mask = row_offs < expert_end
     h_idx = n_start + n_offs
     h_mask = h_idx < H_dim
@@ -929,7 +934,7 @@ def _moe_bwd_dW1_kernel(
     for k in tl.range(0, M_e, BLOCK_K):
         k_idx = k + k_offs
         k_mask = k_idx < M_e
-        row_offs = expert_start + k_idx
+        row_offs = (expert_start + k_idx).to(tl.int64)
 
         token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0)
         x_ptrs = x_ptr + token_idx[:, None] * stride_x_T + h_idx[None, :] * stride_x_H
