@@ -225,13 +225,17 @@ def test_large_tk_pointer_overflow_regression():
     (T~135k, K=8 → TK ~ 1M; intermediate_dim=1024 → stride_pre_TK=2048 →
     TK*stride ~ 2.21 G > 2^31).
 
-    Minimal repro shape: TK * 2*intermediate_dim must exceed 2^31 = 2,147,483,648.
-    Other dims kept small so total GPU memory stays around ~9 GB.
+    Repro shape: TK * 2*intermediate_dim must exceed 2^31 = 2,147,483,648 with
+    enough margin that many rows of pre_act are corrupted (a tiny overflow can
+    false-negative if the allocator happens to hand back zeroed memory for the
+    rows the kernel was supposed to write but skipped). Other dims kept small
+    so total GPU memory stays around ~8 GB.
     """
-    # Shape sized to overflow with the smallest activation footprint possible.
-    # TK = 131088 * 8 = 1,048,704 → 1,048,704 * 2048 = 2,147,745,792 > 2^31.
-    T, K = 131088, 8
-    E, H, intermediate_dim = 4, 128, 1024
+    # TK = 140000 * 8 = 1,120,000 → 1,120,000 * 2048 = 2,293,760,000.
+    # Overflows int32 max (2,147,483,647) by ~146 M elements → corrupts last
+    # ~72k rows of pre_act / post_act stores. E ≥ K required for topk routing.
+    T, K = 140000, 8
+    E, H, intermediate_dim = 16, 512, 1024
     dtype = torch.bfloat16
 
     TK = T * K
