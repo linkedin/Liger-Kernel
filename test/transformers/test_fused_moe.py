@@ -211,8 +211,7 @@ def test_K_equals_E():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available()
-    or torch.cuda.get_device_properties(0).total_memory < 16 * 1024**3,
+    not torch.cuda.is_available() or torch.cuda.get_device_properties(0).total_memory < 16 * 1024**3,
     reason="Regression needs >= 16 GB GPU memory: pre_act tensor must exceed 2^31 bytes to trigger int32 stride overflow.",
 )
 def test_large_tk_pointer_overflow_regression():
@@ -244,9 +243,7 @@ def test_large_tk_pointer_overflow_regression():
         f"Test shape doesn't actually trigger overflow: TK*stride={TK * stride_pre_TK:,} vs 2^31={2**31:,}"
     )
 
-    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(
-        T, E, H, intermediate_dim, K, dtype, device
-    )
+    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
 
     out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
 
