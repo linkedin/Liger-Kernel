@@ -254,3 +254,63 @@ def test_large_tk_pointer_overflow_regression():
         f"TK={TK:,}, stride_pre_TK={stride_pre_TK:,}, "
         f"TK*stride={TK * stride_pre_TK:,} (int32 max={2**31 - 1:,})"
     )
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_properties(0).total_memory < 24 * 1024**3,
+    reason="Regression needs >= 24 GB GPU memory: gate_up_proj must exceed 2^31 elements to surface expert_idx overflow.",
+)
+def test_large_E_expert_idx_overflow_regression():
+    """Regression for #1246: expert_idx * stride_w_E overflows int32 when
+    (E-1) * 2 * I * H > 2^31. Distinct from the TK-overflow path — this one
+    surfaces on frontier MoE weight shapes (DeepSeek-V3 class) regardless of
+    routed-token count.
+    """
+    # E=64, I=4096, H=8192 → (E-1)*2*I*H = 4.23 G > 2^31 with ~2x margin.
+    # T*K kept tiny so TK-scale overflow is OFF (isolates expert_idx path).
+    T, K = 512, 8
+    E, H, intermediate_dim = 64, 8192, 4096
+    dtype = torch.bfloat16
+
+    assert (E - 1) * 2 * intermediate_dim * H > 2**31, (
+        f"Shape doesn't trigger expert_idx overflow: (E-1)*2*I*H="
+        f"{(E - 1) * 2 * intermediate_dim * H:,} vs 2^31={2**31:,}"
+    )
+
+    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
+    out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
+
+    assert torch.isfinite(out).all(), (
+        "Output contains NaN/Inf — int32 overflow in expert_idx * stride_w_E. "
+        f"E={E}, 2*I*H={2 * intermediate_dim * H:,}, "
+        f"(E-1)*stride={(E - 1) * 2 * intermediate_dim * H:,} (int32 max={2**31 - 1:,})"
+    )
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_properties(0).total_memory < 32 * 1024**3,
+    reason="Regression needs >= 32 GB GPU memory: input x and Y must exceed 2^31 bytes each to surface token_idx / t overflow.",
+)
+def test_large_TH_token_overflow_regression():
+    """Regression for #1246: token_idx * stride_x_T (in fused up-proj and dW1)
+    and t * stride_out_T (in token-gather) both overflow int32 when T * H > 2^31.
+
+    Distinct from the TK-overflow path — this one surfaces at very long-context
+    or very-wide-hidden workloads even when K=1 keeps TK modest.
+    """
+    # T = 2^20, H = 2048 → T*H = 2^31 + 0; nudge T up to overflow with margin.
+    # K=1 keeps TK = T = 1 M so TK-overflow path is mostly OFF (Y still grazes it,
+    # but the new path under test is token_idx / t × stride_T = T × H).
+    T, K = 1100000, 1
+    E, H, intermediate_dim = 4, 2048, 128
+    dtype = torch.bfloat16
+
+    assert T * H > 2**31, f"Shape doesn't trigger T*H overflow: T*H={T * H:,} vs 2^31={2**31:,}"
+
+    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
+    out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
+
+    assert torch.isfinite(out).all(), (
+        "Output contains NaN/Inf — int32 overflow in token_idx*stride_x_T or t*stride_out_T. "
+        f"T={T:,}, H={H:,}, T*H={T * H:,} (int32 max={2**31 - 1:,})"
+    )
