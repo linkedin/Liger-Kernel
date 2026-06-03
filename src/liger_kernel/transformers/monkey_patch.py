@@ -3380,31 +3380,32 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
 
 
 def apply_liger_kernel_to_deepseek_v4(
-    rope: bool = False,
+    rope: bool = True,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
-    swiglu: bool = False,
+    swiglu: bool = True,
     model: PreTrainedModel = None,
 ) -> None:
     """
     Apply Liger kernels to replace original implementation in HuggingFace DeepSeek-V4 models.
 
-    NOTE: RoPE patching is disabled by default because DeepSeek-V4 uses interleaved partial RoPE
-    that is incompatible with the standard ``liger_rotary_pos_emb``.
-    NOTE: SwiGLU patching is disabled by default because routed experts apply ``swiglu_limit``
-    clamping that differs from the standard Liger fused MoE path. When enabled, only shared
-    experts (:class:`DeepseekV4MLP`) are patched.
+    NOTE: RoPE and SwiGLU are not supported for DeepSeek-V4. DeepSeek-V4 uses interleaved
+    partial RoPE that is incompatible with ``liger_rotary_pos_emb``, and routed experts
+    apply ``swiglu_limit`` clamping that differs from the standard Liger fused MoE path.
+    Passing ``rope=True`` or ``swiglu=True`` emits a warning and skips the kernel swap.
 
     Args:
         rope (bool): Whether to apply Liger's rotary position embedding. Default is False.
+            Currently unsupported; emits a warning and is a no-op.
         cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default is False.
         fused_linear_cross_entropy (bool):
             Whether to apply Liger's fused linear cross entropy loss. Default is True.
             `cross_entropy` and `fused_linear_cross_entropy` cannot both be True.
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
-        swiglu (bool): Whether to apply Liger's SwiGLU MLP to shared experts. Default is False.
+        swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is False.
+            Currently unsupported; emits a warning and is a no-op.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if already loaded.
             Default is None.
     """
@@ -3418,7 +3419,10 @@ def apply_liger_kernel_to_deepseek_v4(
     from liger_kernel.transformers.model.deepseek_v4 import lce_forward as deepseek_v4_lce_forward
 
     if rope:
-        modeling_deepseek_v4.apply_rotary_pos_emb = liger_rotary_pos_emb
+        logger.warning_once(
+            "rope=True is not supported for DeepSeek-V4: interleaved partial RoPE is "
+            "incompatible with liger_rotary_pos_emb. Skipping rope kernel swap."
+        )
 
     if rms_norm:
         modeling_deepseek_v4.DeepseekV4RMSNorm = LigerRMSNorm
@@ -3435,7 +3439,10 @@ def apply_liger_kernel_to_deepseek_v4(
             modeling_deepseek_v4.DeepseekV4ForCausalLM.forward = deepseek_v4_lce_forward
 
     if swiglu:
-        modeling_deepseek_v4.DeepseekV4MLP = LigerSwiGLUMLP
+        logger.warning_once(
+            "swiglu=True is not supported for DeepSeek-V4: routed experts apply swiglu_limit "
+            "clamping that differs from the standard Liger fused MoE path. Skipping SwiGLU kernel swap."
+        )
 
     if model is not None:
         base_model: DeepseekV4Model = getattr(model, model.base_model_prefix, model)
@@ -3443,8 +3450,6 @@ def apply_liger_kernel_to_deepseek_v4(
         if rms_norm:
             _patch_rms_norm_module(base_model.norm)
         for decoder_layer in base_model.layers:
-            if swiglu:
-                _patch_swiglu_module(decoder_layer.mlp.shared_experts, LigerSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
                 _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
