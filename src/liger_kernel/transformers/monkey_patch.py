@@ -3380,11 +3380,11 @@ def apply_liger_kernel_to_hunyuan_v1_moe(
 
 
 def apply_liger_kernel_to_deepseek_v4(
-    rope: bool = True,
+    rope: bool = False,
     cross_entropy: bool = False,
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
-    swiglu: bool = True,
+    swiglu: bool = False,
     model: PreTrainedModel = None,
 ) -> None:
     """
