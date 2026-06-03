@@ -13,12 +13,10 @@ import os
 import triton
 import triton.language as tl
 
-# Setting LIGER_FUSED_MOE_AUTOTUNE=0 pins every fused MoE Triton kernel to a
-# single conservative config and skips Triton's `do_bench` benchmark loop
-# entirely (autotuner short-circuits past benchmarking when len(configs) == 1).
-# Useful on hardware / Triton-version combinations where autotune benchmarking
-# itself raises CUDA illegal memory access (see issue #1246). Must be set
-# BEFORE importing liger_kernel — autotune decorators bind at import time.
+# LIGER_FUSED_MOE_AUTOTUNE=0 pins each kernel to one config, skipping Triton's
+# `do_bench` loop whose per-config working sets can OOM (see issue #1246). Must
+# be set before importing liger_kernel. Temporary escape hatch until triton's
+# autotuner handles such errors itself.
 _AUTOTUNE_DISABLED = os.environ.get("LIGER_FUSED_MOE_AUTOTUNE", "1").lower() in ("0", "false", "no")
 
 # ---------------------------------------------------------------------------
