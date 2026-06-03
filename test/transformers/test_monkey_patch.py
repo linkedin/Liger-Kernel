@@ -1619,7 +1619,7 @@ def test_apply_liger_kernel_to_instance_for_deepseek_v4():
             vocab_size=1024,
             hidden_size=32,
             moe_intermediate_size=64,
-            num_hidden_layers=2,
+            num_hidden_layers=4,
             num_attention_heads=2,
             num_key_value_heads=1,
             head_dim=16,
@@ -1633,8 +1633,13 @@ def test_apply_liger_kernel_to_instance_for_deepseek_v4():
             index_n_heads=2,
             index_head_dim=8,
             index_topk=4,
-            layer_types=["sliding_attention", "sliding_attention"],
-            mlp_layer_types=["moe", "moe"],
+            layer_types=[
+                "heavily_compressed_attention",
+                "compressed_sparse_attention",
+                "sliding_attention",
+                "sliding_attention",
+            ],
+            mlp_layer_types=["hash_moe", "hash_moe", "moe", "moe"],
             max_position_embeddings=128,
         )
         dummy_model_instance = AutoModelForCausalLM.from_config(config)
