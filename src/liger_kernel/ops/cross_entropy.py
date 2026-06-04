@@ -323,6 +323,7 @@ def cross_entropy_forward(
     return_z_loss,
     return_token_accuracy=False,
     return_predicted_tokens=False,
+    inplace=True,
 ):
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     assert isinstance(return_token_accuracy, bool), (
@@ -371,6 +372,17 @@ def cross_entropy_forward(
         _input = _input.contiguous()
     if target.stride(-1) != 1:
         target = target.contiguous()
+
+    # The kernel below stores the gradient back into its input buffer to save
+    # memory. When `inplace=False`, operate on a copy so the caller's tensor is
+    # not silently overwritten. This matters when an upstream op (e.g. softmax)
+    # saved this exact tensor for its own backward: because the gradient is
+    # written by a Triton kernel, PyTorch's version counter is not bumped and the
+    # in-place-correctness check never fires, so the upstream op would otherwise
+    # compute wrong gradients with no error. See
+    # https://github.com/linkedin/Liger-Kernel/issues/272
+    if not inplace:
+        _input = _input.clone()
 
     # Here we use a trick to store X_ptr gradient in X_ptr so we can save memory
     liger_cross_entropy_kernel[(n_rows,)](
@@ -473,6 +485,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         return_z_loss: bool = False,
         return_token_accuracy: bool = False,
         return_predicted_tokens: bool = False,
+        inplace: bool = True,
     ):
         """
         The forward pass of the Liger Cross Entropy loss.
@@ -490,6 +503,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
         return_z_loss (bool): When `return_z_loss` is `True`, returns (loss, z_loss, token_accuracy, predicted_tokens) instead of (loss, None, None, None). Default: `False`
         return_token_accuracy (bool): When `return_token_accuracy` is `True`, computes and returns per-token accuracy without materializing logits. Default: `False`
         return_predicted_tokens (bool): When `return_predicted_tokens` is `True`, returns per-token predicted class indices (argmax) without materializing logits. Default: `False`
+        inplace (bool): When `True` (default), the gradient is stored in-place in `_input` to save memory. Set to `False` when `_input` is reused by an upstream op (e.g. the output of a softmax), so its values are not corrupted by the in-place gradient write. See https://github.com/linkedin/Liger-Kernel/issues/272. Default: `True`
 
         Returns:
         tuple: A tuple with the computed losses, accuracy, and predicted tokens: (loss, z_loss, token_accuracy, predicted_tokens). z_loss, token_accuracy, and predicted_tokens are None if not requested.
@@ -508,6 +522,7 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             return_z_loss,
             return_token_accuracy,
             return_predicted_tokens,
+            inplace,
         )
         # TODO: investigation
         # If we don't detach the _input tensor, the memory will double
@@ -555,4 +570,5 @@ class LigerCrossEntropyFunction(torch.autograd.Function):
             None,
             None,
             None,
+            None,  # inplace
         )
