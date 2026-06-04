@@ -336,6 +336,11 @@ def cross_entropy_forward(
     BT, V = _input.shape
     n_rows = BT
 
+    # Capture requires_grad before any clone/contiguous below. Those run inside
+    # the autograd Function (grad disabled), so the resulting tensor would report
+    # requires_grad=False and the kernel would skip writing the gradient.
+    requires_grad = _input.requires_grad
+
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
     # unreduced loss
@@ -417,7 +422,7 @@ def cross_entropy_forward(
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_WEIGHT=True if weight is not None else False,
         HAS_SOFTCAPPING=True if softcap is not None else False,
-        HAS_GRADIENTS=_input.requires_grad,
+        HAS_GRADIENTS=requires_grad,
         # TODO: 32 seems to give the best performance
         # Performance is quite sensitive to num_warps
         num_warps=32 if not is_hip() else 16,

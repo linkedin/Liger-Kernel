@@ -1265,3 +1265,40 @@ def test_correctness_with_predicted_tokens(B, T, V, ignore_index, dtype):
     # Verify backward still works
     result.loss.backward()
     assert _input.grad is not None
+
+
+def _grad_through_softmax(cross_entropy_fn, logits_p, target, **kwargs):
+    # softmax -> cross_entropy -> backward; return grad w.r.t. the pre-softmax input
+    _p = logits_p.clone().detach().requires_grad_(True)
+    p = torch.nn.functional.softmax(_p, dim=-1)
+    loss = cross_entropy_fn(p, target, **kwargs)
+    loss.backward()
+    return _p.grad.clone(), loss.detach()
+
+
+def test_cross_entropy_inplace_does_not_corrupt_upstream_grad():
+    """Regression test for #272.
+
+    liger_cross_entropy stores its gradient in-place into its input via a Triton
+    kernel, which does not bump PyTorch's version counter. When the input is the
+    output of an upstream op (softmax here), the default in-place path corrupts
+    that op's saved tensor and yields a wrong gradient. inplace=False must match
+    the torch.nn.functional.cross_entropy reference.
+    """
+    set_seed(42)
+    logits_p = torch.randn(8, 8, device=device)
+    target = torch.randint(0, 8, (8,), device=device, dtype=torch.long)
+
+    ref_grad, ref_loss = _grad_through_softmax(F.cross_entropy, logits_p, target)
+
+    # default (in-place) path: same loss, but the upstream gradient is corrupted
+    inplace_grad, inplace_loss = _grad_through_softmax(liger_cross_entropy, logits_p, target)
+    assert torch.allclose(inplace_loss, ref_loss, atol=1e-4, rtol=1e-4)
+    assert not torch.allclose(inplace_grad, ref_grad, atol=1e-4, rtol=1e-4), (
+        "expected the in-place path to corrupt the upstream gradient (the bug in #272)"
+    )
+
+    # inplace=False must preserve the input and produce the correct upstream gradient
+    safe_grad, safe_loss = _grad_through_softmax(liger_cross_entropy, logits_p, target, inplace=False)
+    assert torch.allclose(safe_loss, ref_loss, atol=1e-4, rtol=1e-4)
+    assert torch.allclose(safe_grad, ref_grad, atol=1e-4, rtol=1e-4)
