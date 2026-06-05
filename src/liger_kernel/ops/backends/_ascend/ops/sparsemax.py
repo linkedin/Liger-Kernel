@@ -47,7 +47,6 @@ def _sparsemax_forward_kernel(
             ptr_sorted_x_data_row + offs,
             mask=mask,
             other=-float("inf"),
-            cache_modifier=".cg",
         ).to(tl.float32)
 
         z_valid = tl.where(mask, z_sorted_block, 0.0)
@@ -68,7 +67,6 @@ def _sparsemax_forward_kernel(
             ptr_x_data_row + offs,
             mask=mask,
             other=0.0,
-            cache_modifier=".cg",
         ).to(tl.float32)
 
         y = tl.maximum(x_block - tau, 0.0)
@@ -77,7 +75,6 @@ def _sparsemax_forward_kernel(
             ptr_output_row + offs,
             y.to(ptr_output_row.dtype.element_ty),
             mask=mask,
-            cache_modifier=".cs",
         )
 
 
@@ -128,7 +125,7 @@ def _sparsemax_forward_tiled_kernel(
             idx = tile * BLOCK_SIZE + offs
             mask = idx < n_cols
 
-            z = tl.load(sorted_row_ptr + idx, mask=mask, other=0.0, cache_modifier=".ca").to(tl.float32)
+            z = tl.load(sorted_row_ptr + idx, mask=mask, other=0.0).to(tl.float32)
 
             cssv = tl.cumsum(z, axis=0) + running_sum
             r = (idx + 1).to(tl.float32)
@@ -148,10 +145,10 @@ def _sparsemax_forward_tiled_kernel(
             idx = tile * BLOCK_SIZE + offs
             mask = idx < n_cols
 
-            x = tl.load(x_row_ptr + idx, mask=mask, other=0.0, cache_modifier=".ca").to(tl.float32)
+            x = tl.load(x_row_ptr + idx, mask=mask, other=0.0).to(tl.float32)
             y = tl.maximum(x - tau, 0.0)
 
-            tl.store(out_row_ptr + idx, y.to(out_row_ptr.dtype.element_ty), mask=mask, cache_modifier=".cs")
+            tl.store(out_row_ptr + idx, y.to(out_row_ptr.dtype.element_ty), mask=mask)
 
 
 @triton.jit
@@ -230,7 +227,7 @@ def _sparsemax_backward_tiled_kernel(
         for i in tl.range(0, tl.cdiv(n_cols, BLOCK_SIZE)):
             offs_iter = i * BLOCK_SIZE + offs
             mask_iter = offs_iter < n_cols
-            o_val = tl.load(o_row + offs_iter, mask=mask_iter, other=0.0, cache_modifier=".ca").to(tl.float32)
+            o_val = tl.load(o_row + offs_iter, mask=mask_iter, other=0.0).to(tl.float32)
             go_val = tl.load(go_row + offs_iter, mask=mask_iter, other=0.0).to(tl.float32)
             supp = o_val > 0
             go_sum += tl.sum(tl.where(supp, go_val, 0.0))
@@ -239,7 +236,7 @@ def _sparsemax_backward_tiled_kernel(
         for i in tl.range(0, tl.cdiv(n_cols, BLOCK_SIZE)):
             offs_iter = i * BLOCK_SIZE + offs
             mask_iter = offs_iter < n_cols
-            o_val = tl.load(o_row + offs_iter, mask=mask_iter, other=0.0, cache_modifier=".ca").to(tl.float32)
+            o_val = tl.load(o_row + offs_iter, mask=mask_iter, other=0.0).to(tl.float32)
             go_val = tl.load(go_row + offs_iter, mask=mask_iter, other=0.0).to(tl.float32)
 
             supp = o_val > 0
@@ -248,7 +245,7 @@ def _sparsemax_backward_tiled_kernel(
                 go_val - tl.cast(go_sum / tl.maximum(supp_cnt, 1e-6), gi_row.dtype.element_ty).to(tl.float32),
                 0.0,
             )
-            tl.store(gi_row + offs_iter, gi_val.to(gi_row.dtype.element_ty), mask=mask_iter, cache_modifier=".cs")
+            tl.store(gi_row + offs_iter, gi_val.to(gi_row.dtype.element_ty), mask=mask_iter)
 
 
 def sparsemax_forward(x, dim):

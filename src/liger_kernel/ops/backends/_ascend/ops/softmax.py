@@ -99,9 +99,7 @@ def _softmax_multi_block_forward_kernel(
         for start in tl.range(0, n_cols, BLOCK_SIZE):
             idx = start + col_offsets
             mask = idx < n_cols
-            xblk = tl.load(
-                row_start_ptr + idx, mask=mask, other=float("-inf"), eviction_policy="evict_first", cache_modifier=".ca"
-            )
+            xblk = tl.load(row_start_ptr + idx, mask=mask, other=float("-inf"))
             blk_max = tl.max(xblk, axis=0)
             new_m = tl.maximum(m, blk_max)
             d = d * tl.exp(m - new_m) + tl.sum(tl.exp(xblk - new_m), axis=0)
@@ -110,11 +108,9 @@ def _softmax_multi_block_forward_kernel(
         for start in tl.range(0, n_cols, BLOCK_SIZE):
             idx = start + col_offsets
             mask = idx < n_cols
-            xblk = tl.load(
-                row_start_ptr + idx, mask=mask, other=float("-inf"), eviction_policy="evict_first", cache_modifier=".ca"
-            )
+            xblk = tl.load(row_start_ptr + idx, mask=mask, other=float("-inf"))
             yblk = tl.exp(xblk - m) / d
-            tl.store(Y_ptr + row_idx * Y_row_stride + idx, yblk, mask=mask, cache_modifier=".cs")
+            tl.store(Y_ptr + row_idx * Y_row_stride + idx, yblk, mask=mask)
 
 
 @triton.jit
@@ -218,19 +214,17 @@ def _softmax_multi_block_backward_kernel(
         for start in tl.range(0, n_cols, BLOCK_SIZE):
             idx = start + col_offsets
             mask = idx < n_cols
-            dy_blk = tl.load(dy_start_ptr + idx, mask=mask, other=0.0, eviction_policy="evict_first")
-            y_blk = tl.load(
-                y_start_ptr + idx, mask=mask, other=0.0, eviction_policy="evict_first", cache_modifier=".ca"
-            )
+            dy_blk = tl.load(dy_start_ptr + idx, mask=mask, other=0.0)
+            y_blk = tl.load(y_start_ptr + idx, mask=mask, other=0.0)
             acc += tl.sum(dy_blk * y_blk, axis=0)
 
         for start in tl.range(0, n_cols, BLOCK_SIZE):
             idx = start + col_offsets
             mask = idx < n_cols
             dy_blk = tl.load(dy_start_ptr + idx, mask=mask, other=0.0)
-            y_blk = tl.load(y_start_ptr + idx, mask=mask, other=0.0, cache_modifier=".ca")
+            y_blk = tl.load(y_start_ptr + idx, mask=mask, other=0.0)
             dx_blk = y_blk * (dy_blk - acc)
-            tl.store(dx_ptr + row_idx * dx_stride + idx, dx_blk, mask=mask, cache_modifier=".wb")
+            tl.store(dx_ptr + row_idx * dx_stride + idx, dx_blk, mask=mask)
 
 
 def _softmax_forward(x):

@@ -133,7 +133,6 @@ def liger_cross_entropy_forward_kernel(
                     logits_row_ptr + X_offsets,
                     mask=X_offsets < n_cols,
                     other=float("-inf"),
-                    eviction_policy="evict_first",
                 ).cast(tl.float32)
                 if HAS_SOFTCAPPING:
                     X_block = softcap * tanh(X_block / softcap)
@@ -248,7 +247,6 @@ def liger_cross_entropy_forward_kernel_plain(
             logits_row_ptr + offs,
             mask=offs < n_cols,
             other=float("-inf"),
-            eviction_policy="evict_first",
         ).cast(tl.float32)
         block_max = tl.max(x)
         m_new = tl.maximum(m, block_max)
@@ -356,7 +354,6 @@ def liger_cross_entropy_backward_kernel_no_weight(
                     X_ptr + X_ptr_offset + X_offsets,
                     mask=X_offsets < n_cols,
                     other=float("-inf"),
-                    eviction_policy="evict_first",
                 ).cast(tl.float32)
                 grad = tl.exp(X_block - lse) * final_scale
                 tl.store(dX_ptr + dX_ptr_offset + X_offsets, grad, mask=X_offsets < n_cols)
@@ -461,7 +458,6 @@ def liger_cross_entropy_backward_kernel(
                     X_ptr + X_ptr_offset + X_offsets,
                     mask=X_offsets < n_cols,
                     other=float("-inf"),
-                    eviction_policy="evict_first",
                 ).cast(tl.float32)
                 if HAS_SOFTCAPPING:
                     intermediate = tanh(X_block / softcap)
