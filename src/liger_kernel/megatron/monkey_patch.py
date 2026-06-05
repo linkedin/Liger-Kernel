@@ -56,9 +56,7 @@ def _patch_local_spec_provider_layer_norm() -> None:
     ):
         if rms_norm:
             return LigerMegatronRMSNorm
-        return original_layer_norm(
-            self, rms_norm=rms_norm, for_qk=for_qk, has_residual=has_residual
-        )
+        return original_layer_norm(self, rms_norm=rms_norm, for_qk=for_qk, has_residual=has_residual)
 
     setattr(patched_layer_norm, _PATCH_MARKER, True)
     setattr(patched_layer_norm, "__wrapped__", original_layer_norm)
@@ -111,12 +109,8 @@ def _patch_transformer_block_layernorm_impl() -> None:
 
         def __new__(cls, config, hidden_size, eps=1e-5, **kwargs):
             if getattr(config, "normalization", None) == "RMSNorm":
-                return LigerMegatronRMSNorm(
-                    config=config, hidden_size=hidden_size, eps=eps, **kwargs
-                )
-            return original(
-                config=config, hidden_size=hidden_size, eps=eps, **kwargs
-            )
+                return LigerMegatronRMSNorm(config=config, hidden_size=hidden_size, eps=eps, **kwargs)
+            return original(config=config, hidden_size=hidden_size, eps=eps, **kwargs)
 
     setattr(_LigerOrTorchNorm, _PATCH_MARKER, True)
     setattr(_LigerOrTorchNorm, "__wrapped__", original)

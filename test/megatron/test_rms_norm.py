@@ -6,18 +6,18 @@ parametrization style mirrors ``test/transformers/test_rms_norm.py``.
 """
 
 import os
+
 from types import SimpleNamespace
 
 import pytest
 import torch
 import torch.nn as nn
 
+from liger_kernel.megatron.rms_norm import LigerMegatronRMSNorm
+from liger_kernel.utils import infer_device
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 from test.utils import supports_bfloat16
-
-from liger_kernel.megatron.rms_norm import LigerMegatronRMSNorm
-from liger_kernel.utils import infer_device
 
 device = infer_device()
 
@@ -101,9 +101,7 @@ class _ZeroCenteredRMSNorm(nn.Module):
             torch.bfloat16,
             2e-1,
             2e-2,
-            marks=pytest.mark.skipif(
-                not supports_bfloat16(), reason="bfloat16 not supported on this GPU"
-            ),
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
 )
@@ -137,9 +135,7 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference_cls, zero_centered
     liger_o.backward(do, retain_graph=True)
 
     assert_verbose_allclose(ref_o, liger_o, atol=atol, rtol=rtol)
-    assert_verbose_allclose(
-        ref_rms.weight.grad, liger_rms.weight.grad, atol=atol, rtol=rtol
-    )
+    assert_verbose_allclose(ref_rms.weight.grad, liger_rms.weight.grad, atol=atol, rtol=rtol)
     assert_verbose_allclose(h1.grad, h2.grad, atol=atol, rtol=rtol, max_print=20)
 
 
@@ -150,15 +146,11 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference_cls, zero_centered
 
 def test_zero_centered_init_and_offset():
     """zero_centered_gamma flips both the weight init and the kernel offset."""
-    m = LigerMegatronRMSNorm(
-        config=_config(layernorm_zero_centered_gamma=True), hidden_size=64
-    )
+    m = LigerMegatronRMSNorm(config=_config(layernorm_zero_centered_gamma=True), hidden_size=64)
     assert torch.equal(m.weight.detach(), torch.zeros(64))
     assert m._offset == 1.0
 
-    m = LigerMegatronRMSNorm(
-        config=_config(layernorm_zero_centered_gamma=False), hidden_size=64
-    )
+    m = LigerMegatronRMSNorm(config=_config(layernorm_zero_centered_gamma=False), hidden_size=64)
     assert torch.equal(m.weight.detach(), torch.ones(64))
     assert m._offset == 0.0
 
@@ -174,9 +166,7 @@ def test_sequence_parallel_attribute_propagates(sp):
 def test_rejects_non_rmsnorm_config():
     """The wrapper only supports RMSNorm; surface a clear error otherwise."""
     with pytest.raises(ValueError, match="RMSNorm"):
-        LigerMegatronRMSNorm(
-            config=_config(normalization="LayerNorm"), hidden_size=64
-        )
+        LigerMegatronRMSNorm(config=_config(normalization="LayerNorm"), hidden_size=64)
 
 
 def test_forward_does_not_modify_input():

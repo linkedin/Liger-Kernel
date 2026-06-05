@@ -26,49 +26,43 @@ Run with:
 from __future__ import annotations
 
 import os
+
 from functools import partial
 from pathlib import Path
-from typing import Callable, Dict, Iterator, Tuple
+from typing import Iterator
 
 import torch
-from torch.optim import Adam
-from torch.utils.data import DataLoader
 
-from megatron.core import dist_checkpointing, parallel_state
-from megatron.core.datasets.blended_megatron_dataset_builder import (
-    BlendedMegatronDatasetBuilder,
-)
-from megatron.core.datasets.gpt_dataset import GPTDatasetConfig, MockGPTDataset
+from megatron.core import dist_checkpointing
+from megatron.core import parallel_state
+from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
+from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
+from megatron.core.datasets.gpt_dataset import MockGPTDataset
 from megatron.core.datasets.utils import compile_helpers
-from megatron.core.distributed import (
-    DistributedDataParallel,
-    DistributedDataParallelConfig,
-)
+from megatron.core.distributed import DistributedDataParallel
+from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.distributed.finalize_model_grads import finalize_model_grads
 from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
 from megatron.core.models.gpt.gpt_model import GPTModel
 from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
-from megatron.core.tensor_parallel.layers import (
-    ColumnParallelLinear,
-    RowParallelLinear,
-)
+from megatron.core.tensor_parallel.layers import ColumnParallelLinear
+from megatron.core.tensor_parallel.layers import RowParallelLinear
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.tokenizers import MegatronTokenizer
-from megatron.core.transformer.attention import (
-    SelfAttention,
-    SelfAttentionSubmodules,
-)
+from megatron.core.transformer.attention import SelfAttention
+from megatron.core.transformer.attention import SelfAttentionSubmodules
 from megatron.core.transformer.dot_product_attention import DotProductAttention
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
-from megatron.core.transformer.mlp import MLP, MLPSubmodules
+from megatron.core.transformer.mlp import MLP
+from megatron.core.transformer.mlp import MLPSubmodules
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import TransformerBlockSubmodules
 from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.transformer.transformer_layer import (
-    TransformerLayer,
-    TransformerLayerSubmodules,
-)
+from megatron.core.transformer.transformer_layer import TransformerLayer
+from megatron.core.transformer.transformer_layer import TransformerLayerSubmodules
+from torch.optim import Adam
+from torch.utils.data import DataLoader
 
 # --- Liger integration: Mode 2 ---------------------------------------------
 from liger_kernel.megatron import LigerMegatronRMSNorm
@@ -86,9 +80,7 @@ def initialize_distributed(tp: int = 2, pp: int = 1) -> None:
     world_size = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
-    torch.distributed.init_process_group(
-        backend="nccl", rank=rank, world_size=world_size
-    )
+    torch.distributed.init_process_group(backend="nccl", rank=rank, world_size=world_size)
     parallel_state.initialize_model_parallel(tp, pp)
 
 
@@ -165,9 +157,7 @@ def get_train_data_iterator() -> Iterator:
         ),
         mid_level_dataset_surplus=0.005,
     )
-    datasets = BlendedMegatronDatasetBuilder(
-        MockGPTDataset, [1000, None, None], lambda: True, cfg
-    ).build()
+    datasets = BlendedMegatronDatasetBuilder(MockGPTDataset, [1000, None, None], lambda: True, cfg).build()
     return iter(DataLoader(datasets[0], batch_size=8, shuffle=True))
 
 
@@ -221,9 +211,7 @@ def main() -> None:
         overlap_grad_reduce=False,
         use_distributed_optimizer=False,
     )
-    model = DistributedDataParallel(
-        config=gpt_model.config, ddp_config=ddp_cfg, module=gpt_model
-    )
+    model = DistributedDataParallel(config=gpt_model.config, ddp_config=ddp_cfg, module=gpt_model)
 
     optim = Adam(model.parameters())
     data_iter = get_train_data_iterator()
@@ -255,9 +243,7 @@ def main() -> None:
         checkpoint_dir=str(ckpt_path),
     )
     sd = underlying.sharded_state_dict(prefix="")
-    underlying.load_state_dict(
-        dist_checkpointing.load(sharded_state_dict=sd, checkpoint_dir=str(ckpt_path))
-    )
+    underlying.load_state_dict(dist_checkpointing.load(sharded_state_dict=sd, checkpoint_dir=str(ckpt_path)))
     if torch.distributed.get_rank() == 0:
         print("Successfully loaded the model")
 

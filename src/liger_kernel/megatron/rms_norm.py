@@ -5,13 +5,14 @@ from __future__ import annotations
 import numbers
 
 import torch
-from torch.nn import Parameter
-from torch.nn import init
 
 # Force-import the submodule so liger_kernel.ops.rms_norm can resolve
 # torch.distributed.tensor.DTensor on torch 2.11+, where the subpackage is no
 # longer auto-loaded as an attribute of torch.distributed.
 import torch.distributed.tensor  # noqa: F401
+
+from torch.nn import Parameter
+from torch.nn import init
 
 from liger_kernel.ops import LigerRMSNormFunction
 
@@ -51,16 +52,10 @@ class LigerMegatronRMSNorm(torch.nn.Module):
         super().__init__()
         cfg_norm = getattr(config, "normalization", "RMSNorm")
         if cfg_norm != "RMSNorm":
-            raise ValueError(
-                f"LigerMegatronRMSNorm requires config.normalization='RMSNorm'; "
-                f"got {cfg_norm!r}."
-            )
+            raise ValueError(f"LigerMegatronRMSNorm requires config.normalization='RMSNorm'; got {cfg_norm!r}.")
 
         self.config = config
-        self.zero_centered_gamma = bool(
-            zero_centered_gamma
-            or getattr(config, "layernorm_zero_centered_gamma", False)
-        )
+        self.zero_centered_gamma = bool(zero_centered_gamma or getattr(config, "layernorm_zero_centered_gamma", False))
 
         if isinstance(hidden_size, numbers.Integral):
             hidden_size = (hidden_size,)
@@ -97,12 +92,9 @@ class LigerMegatronRMSNorm(torch.nn.Module):
             self.eps,
             self._offset,
             "llama",  # casting_mode
-            False,    # in_place
-            None,     # row_mode
+            False,  # in_place
+            None,  # row_mode
         )
 
     def extra_repr(self) -> str:
-        return (
-            f"hidden_size={tuple(self.hidden_size)}, eps={self.eps}, "
-            f"zero_centered_gamma={self.zero_centered_gamma}"
-        )
+        return f"hidden_size={tuple(self.hidden_size)}, eps={self.eps}, zero_centered_gamma={self.zero_centered_gamma}"
