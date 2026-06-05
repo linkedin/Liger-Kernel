@@ -124,6 +124,7 @@ class GemmaAddRMSNorm(nn.Module):
     ],
 )
 def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_mode, in_place):
+    set_seed(42)
     _tensor = torch.randn(bs, sl, hd, device=device, dtype=dtype)
     _residual = torch.randn(bs, sl, hd, device=device, dtype=dtype)
 
