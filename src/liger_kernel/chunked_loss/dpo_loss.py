@@ -173,6 +173,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
         loss_type="sigmoid",
         label_smoothing=0.0,
         discopop_tau=0.05,
+        alpha=1.0,
     ):
         """
         Fused linear layer with DPO loss.
@@ -185,7 +186,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             ref_weight (torch.Tensor, optional): Reference model weight tensor. Shape: (vocab_size, hidden_size)
             ref_bias (torch.Tensor, optional): Reference model bias tensor. Shape: (vocab_size,)
             ignore_index (int): Index to ignore in loss computation
-            beta (float): Weight for the odds ratio loss
+            beta (float): Weight for the direct preference loss
             compute_nll_loss (bool): Whether to compute the NLL loss
             compiled (bool): Whether to use torch compile
             use_ref_model (bool): Whether to use a reference model
@@ -194,6 +195,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             loss_type (str): Variant of DPO loss to compute.
             label_smoothing (float): Label smoothing for "robust" / "exo_pair" / cDPO.
             discopop_tau (float): Temperature for the DiscoPOP modulation term.
+            alpha (float): Weight for the NLL loss component
         Returns:
             torch.Tensor: Computed loss
         """
@@ -206,6 +208,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
             bias=bias,
             ignore_index=ignore_index,
             beta=beta,
+            alpha=alpha,
             compute_nll_loss=compute_nll_loss,
             compiled=compiled,
             use_ref_model=use_ref_model,
@@ -222,7 +225,7 @@ class LigerFusedLinearDPOFunction(LigerFusedLinearPreferenceBase):
     @staticmethod
     def backward(ctx, *grad_output):
         grads = LigerFusedLinearPreferenceBase.backward(ctx, grad_output)[:4]
-        return *grads, None, None, None, None, None, None, None, None, None, None, None, None, None
+        return *grads, None, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 
 class LigerFusedLinearDPOLoss(torch.nn.Module):
@@ -247,6 +250,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         self,
         ignore_index: int = -100,
         beta: float = 0.1,
+        alpha: float = 1.0,
         compute_nll_loss: bool = False,
         compiled: bool = True,
         use_ref_model: bool = True,
@@ -259,7 +263,8 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         """
         Args:
             ignore_index (int): Index to ignore in the loss.
-            beta (float): Weight for the odds ratio loss.
+            beta (float): Weight for the direct preference loss.
+            alpha (float): Weight for the NLL loss component.
             compute_nll_loss (bool): Whether to compute the NLL loss.
             compiled (bool): Whether to use the torch compiled kernel.
             use_ref_model (bool): Whether to use a reference model for the DPO loss.
@@ -274,6 +279,7 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
         super().__init__()
         self.ignore_index = ignore_index
         self.beta = beta
+        self.alpha = alpha
         self.compute_nll_loss = compute_nll_loss
         self.compiled = compiled
         self.use_ref_model = use_ref_model
@@ -321,4 +327,5 @@ class LigerFusedLinearDPOLoss(torch.nn.Module):
             self.loss_type,
             self.label_smoothing,
             self.discopop_tau,
+            self.alpha,
         )

@@ -222,7 +222,6 @@ def _fused_up_proj_swiglu_kernel(
             x_ptrs,
             mask=row_mask[:, None] & k_mask[None, :],
             other=0.0,
-            eviction_policy="evict_first",  # token rows not reused; free L2 for weights
         )
 
         w_mask = n_mask[:, None] & k_mask[None, :]

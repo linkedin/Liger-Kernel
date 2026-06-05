@@ -1,12 +1,12 @@
 """
-Liger-Kernel operators with automatic vendor-specific replacement.
+Liger-Kernel operators with automatic implementation-specific replacement.
 
 This module provides two ways to import operators:
 
 1. Import from this package (recommended for Function classes):
        from liger_kernel.ops import LigerGELUMulFunction
 
-   This automatically uses vendor-specific implementation if available.
+   This automatically uses the active implementation if any is selected.
 
 2. Import from submodules (for kernel functions or specific access):
        from liger_kernel.ops.geglu import geglu_forward, geglu_backward
@@ -15,10 +15,12 @@ This module provides two ways to import operators:
 
 The replacement mechanism:
 1. Default implementations are imported from individual modules (e.g., geglu.py)
-2. On module load, device is detected via infer_device()
-3. If running on a supported vendor device (npu, xpu, etc.), the default
-   implementations are replaced with vendor-specific ones
-4. All subsequent imports from this package get the replaced versions
+2. On module load, device is detected via infer_device() and the env var
+   LIGER_KERNEL_IMPL is read
+3. select_impl() picks an active implementation (auto-applied for the device,
+   or explicitly requested via env var)
+4. If one is selected, its operators replace/extend the symbols here
+5. All subsequent imports from this package get the replaced versions
 
 Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import ...)
       are NOT affected by the replacement mechanism.
@@ -27,7 +29,7 @@ Note: Direct imports from submodules (e.g., from liger_kernel.ops.geglu import .
 # =============================================================================
 # Import default implementations
 # Both Function classes and kernel functions are imported here.
-# All of these can be replaced by vendor-specific implementations.
+# All of these can be replaced by backend-specific implementations.
 # =============================================================================
 
 from liger_kernel.ops.attn_res import LigerAttnResFunction  # noqa: F401
@@ -94,61 +96,94 @@ from liger_kernel.ops.tiled_mlp import apply_tiled_mlp  # noqa: F401
 from liger_kernel.ops.tvd import LigerTVDLossFunction  # noqa: F401
 
 # NOTE: __all__ is intentionally NOT defined.
-# - Import from this package (liger_kernel.ops) -> subject to vendor replacement
+# - Import from this package (liger_kernel.ops) -> subject to backend replacement
 # - Import from submodules (liger_kernel.ops.geglu) -> always use default implementation
 
 
 # =============================================================================
-# Vendor-specific replacement logic
+# Implementation discovery + dispatch
 # =============================================================================
 
 
-def _replace_with_vendor_ops():
+def _discover_impls():
     """
-    Replace/add vendor-specific operator implementations.
+    Trigger self-registration of all implementations.
+
+    Two sources of implementations:
+      - Hardware backends in ``backends/_<name>/`` (loaded by
+        ``backends/__init__.py``'s own auto-import loop).
+      - DSL alternatives at the top level of ``ops/`` (e.g., ``cutile/``).
+        Each DSL subpackage's ``__init__.py`` calls ``register_impl()``
+        when imported.
+    """
+    import importlib
+    import pkgutil
+
+    # Hardware backends self-register when `backends` is imported.
+    importlib.import_module("liger_kernel.ops.backends")
+
+    # DSL alternatives — non-private subpackages of `ops/`, minus reserved
+    # directories that aren't implementation containers.
+    reserved = {"backends", "experimental"}
+    for _, modname, ispkg in pkgutil.iter_modules(__path__):
+        if ispkg and not modname.startswith("_") and modname not in reserved:
+            importlib.import_module(f"{__name__}.{modname}")
+
+
+def _replace_with_impl_ops():
+    """
+    Replace/add implementation-specific operators on top of the defaults.
 
     This function is called automatically on module load. It:
-    1. Detects the current device (cuda, npu, xpu, etc.)
-    2. Looks up the vendor for that device via VENDOR_REGISTRY
-    3. Loads and applies vendor-specific implementations
+    1. Detects the current device (cuda, npu, xpu, etc.).
+    2. Selects the active implementation via ``select_impl()``, honoring any
+       explicit ``LIGER_KERNEL_IMPL`` override.
+    3. Loads and applies the implementation's operators.
 
-    Vendor implementations should be placed in:
-        liger_kernel/ops/backends/_<vendor>/ops/
+    Implementations live either at:
+        liger_kernel/ops/<name>/ops/                     (DSL alternatives)
+        liger_kernel/ops/backends/_<name>/ops/           (hardware backends)
 
-    If the vendor module defines __all__, only those symbols are exported.
-    Otherwise, all public symbols (not starting with _) are auto-discovered.
+    If the implementation module defines ``__all__``, only those symbols are
+    exported. Otherwise, all public symbols (not starting with ``_``) are
+    auto-discovered.
 
-    Note: Vendor can both override existing ops AND add new vendor-specific ops.
+    Note: Implementations can both override existing ops AND add new ones.
     """
-    from liger_kernel.ops.backends import get_vendor_for_device
+    import os
+
+    from liger_kernel.ops.backends import LIGER_KERNEL_IMPL_ENV
+    from liger_kernel.ops.backends import select_impl
     from liger_kernel.utils import infer_device
 
     device = infer_device()
-
-    # Look up vendor info for this device
-    vendor_info = get_vendor_for_device(device)
-    if vendor_info is None:
+    explicit = os.environ.get(LIGER_KERNEL_IMPL_ENV, "").strip().lower() or None
+    impl_info = select_impl(device, explicit=explicit)
+    if impl_info is None:
         return
 
     try:
         import importlib
 
-        vendor_ops = importlib.import_module(vendor_info.module_path)
+        impl_ops = importlib.import_module(impl_info.module_path)
 
-        # Get names to export: use __all__ if defined, otherwise auto-discover
-        names_to_export = getattr(vendor_ops, "__all__", None)
-
+        # Get names to export: use __all__ if defined, otherwise auto-discover.
+        names_to_export = getattr(impl_ops, "__all__", None)
         if names_to_export is None:
-            # Auto-discover: find all public symbols (classes and functions)
-            names_to_export = [name for name in dir(vendor_ops) if not name.startswith("_")]
+            names_to_export = [name for name in dir(impl_ops) if not name.startswith("_")]
 
-        # Replace or add to this module's globals
+        # Replace or add to this module's globals.
         for name in names_to_export:
-            globals()[name] = getattr(vendor_ops, name)
+            globals()[name] = getattr(impl_ops, name)
 
     except ImportError:
-        # Vendor module not available, use default implementations
-        pass
+        # An auto-selected implementation that fails to import (e.g., missing
+        # optional vendor SDK) silently falls back to defaults. An explicitly
+        # requested implementation, however, must succeed — re-raise so the
+        # user sees the underlying error.
+        if explicit:
+            raise
 
 
-_replace_with_vendor_ops()
+_discover_impls()
+_replace_with_impl_ops()

@@ -8,8 +8,16 @@
 # inspired by the SonicMoE paper (arXiv:2512.14080), ported to portable Triton
 # (no Hopper-specific WGMMA/TMA) for general GPU support.
 
+import os
+
 import triton
 import triton.language as tl
+
+# LIGER_FUSED_MOE_AUTOTUNE=0 pins each kernel to one config, skipping Triton's
+# `do_bench` loop whose per-config working sets can OOM (see issue #1246). Must
+# be set before importing liger_kernel. Temporary escape hatch until triton's
+# autotuner handles such errors itself.
+_AUTOTUNE_DISABLED = os.environ.get("LIGER_FUSED_MOE_AUTOTUNE", "1").lower() in ("0", "false", "no")
 
 # ---------------------------------------------------------------------------
 # Routing metadata overview
@@ -305,6 +313,8 @@ def _moe_router_scatter_kernel(
 
 
 def _get_gemm_autotune_configs():
+    if _AUTOTUNE_DISABLED:
+        return [triton.Config({"BLOCK_N": 128, "BLOCK_K": 64}, num_warps=8, num_stages=2)]
     configs = []
     for bn in [64, 128]:
         for bk in [32, 64]:
@@ -318,6 +328,19 @@ def _get_gemm_autotune_configs():
                         )
                     )
     return configs
+
+
+def _get_dW_autotune_configs():
+    """Configs for backward weight-grad kernels (dW1, dW2): include BLOCK_M sweep."""
+    if _AUTOTUNE_DISABLED:
+        return [triton.Config({"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 32}, num_warps=8, num_stages=2)]
+    return [
+        triton.Config({"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk}, num_warps=nw, num_stages=2)
+        for bm in [64, 128]
+        for bn in [64, 128]
+        for bk in [16, 32]
+        for nw in [4, 8]
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +384,8 @@ def _fused_up_proj_swiglu_kernel(
     pid_n = tl.program_id(1)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
-    expert_idx = tl.load(tile_expert_ptr + pid_m)
+    # int64 prevents expert_idx * stride_w_E overflow at large E*I*H (see #1246).
+    expert_idx = tl.load(tile_expert_ptr + pid_m).to(tl.int64)
     n_start = pid_n * BLOCK_N
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
@@ -369,7 +393,8 @@ def _fused_up_proj_swiglu_kernel(
     n_offs = tl.arange(0, BLOCK_N)
     k_offs = tl.arange(0, BLOCK_K)
 
-    row_offs = row_start + m_offs
+    # int64 prevents row_offs * stride overflow when TK is large (see #1246).
+    row_offs = (row_start + m_offs).to(tl.int64)
     row_mask = row_offs < expert_end
 
     acc_gate = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
@@ -377,7 +402,8 @@ def _fused_up_proj_swiglu_kernel(
 
     n_idx = n_start + n_offs
     n_mask = n_idx < I_dim
-    token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0)
+    # int64 prevents token_idx * stride_T overflow at large T*H (see #1246).
+    token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0).to(tl.int64)
     for k in tl.range(0, H_dim, BLOCK_K):
         k_idx = k + k_offs
         k_mask = k_idx < H_dim
@@ -463,7 +489,8 @@ def _fused_down_proj_kernel(
     pid_n = tl.program_id(1)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
-    expert_idx = tl.load(tile_expert_ptr + pid_m)
+    # int64 prevents expert_idx * stride_w_E overflow at large E*I*H (see #1246).
+    expert_idx = tl.load(tile_expert_ptr + pid_m).to(tl.int64)
     n_start = pid_n * BLOCK_N
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
@@ -471,7 +498,8 @@ def _fused_down_proj_kernel(
     n_offs = tl.arange(0, BLOCK_N)
     k_offs = tl.arange(0, BLOCK_K)
 
-    row_offs = row_start + m_offs
+    # int64 prevents row_offs * stride overflow when TK is large (see #1246).
+    row_offs = (row_start + m_offs).to(tl.int64)
     row_mask = row_offs < expert_end
     n_idx = n_start + n_offs
     n_mask = n_idx < H_dim
@@ -506,6 +534,8 @@ def _fused_down_proj_kernel(
 
 
 def _get_token_gather_autotune_configs():
+    if _AUTOTUNE_DISABLED:
+        return [triton.Config({"BLOCK_H": 128, "BLOCK_K": 4}, num_warps=4, num_stages=4)]
     configs = []
     for bh in [64, 128, 256, 512]:
         for bk in [1, 2, 4, 8, 16]:
@@ -537,7 +567,8 @@ def _token_gather_weighted_sum_kernel(
 ):
     """One CTA per token. Gathers K expert outputs, reduces with routing weights
     (forward) or without weights (backward dx via _token_broadcast_backward)."""
-    t = tl.program_id(0).to(tl.uint32)
+    # int64 prevents t * stride_out_T overflow at large T*H (see #1246).
+    t = tl.program_id(0).to(tl.int64)
 
     for h_tile in tl.static_range(triton.cdiv(H_dim, BLOCK_H)):
         h_idx = (h_tile * BLOCK_H + tl.arange(0, BLOCK_H)).to(tl.uint32)
@@ -549,7 +580,8 @@ def _token_gather_weighted_sum_kernel(
             k_mask = k_offs < K_dim
 
             flat_idx = t * K_dim + k_offs
-            perm_idx = tl.load(s_rev_ptr + flat_idx, mask=k_mask, other=0).to(tl.uint32)
+            # int64 prevents perm_idx * stride overflow when TK is large (see #1246).
+            perm_idx = tl.load(s_rev_ptr + flat_idx, mask=k_mask, other=0).to(tl.int64)
 
             y_ptrs = Y_ptr + perm_idx[:, None] * stride_Y_TK + h_idx[None, :] * stride_Y_H
             y_vals = tl.load(y_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0).to(tl.float32)
@@ -613,7 +645,8 @@ def _moe_bwd_down_proj_kernel(
     pid_n = tl.program_id(1)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
-    expert_idx = tl.load(tile_expert_ptr + pid_m)
+    # int64 prevents expert_idx * stride_w_E overflow at large E*I*H (see #1246).
+    expert_idx = tl.load(tile_expert_ptr + pid_m).to(tl.int64)
     n_start = pid_n * BLOCK_N
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
@@ -621,14 +654,16 @@ def _moe_bwd_down_proj_kernel(
     n_offs = tl.arange(0, BLOCK_N)
     k_offs = tl.arange(0, BLOCK_K)
 
-    row_offs = row_start + m_offs
+    # int64 prevents row_offs * stride overflow when TK is large (see #1246).
+    row_offs = (row_start + m_offs).to(tl.int64)
     row_mask = row_offs < expert_end
     n_idx = n_start + n_offs
     n_mask = n_idx < I_dim
     out_mask = row_mask[:, None] & n_mask[None, :]
 
     # Hoist per-row routing metadata (constant across H K-loop).
-    token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0)
+    # int64 prevents token_idx * stride_T overflow at large T*H (see #1246).
+    token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0).to(tl.int64)
     flat_tk_idx = tl.load(s_scatter_idx_ptr + row_offs, mask=row_mask, other=0)
     weights = tl.load(topk_weights_ptr + flat_tk_idx, mask=row_mask, other=0.0).to(tl.float32)
 
@@ -685,13 +720,7 @@ def _moe_bwd_down_proj_kernel(
 
 
 @triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk}, num_warps=nw, num_stages=2)
-        for bm in [64, 128]
-        for bn in [64, 128]
-        for bk in [16, 32]
-        for nw in [4, 8]
-    ],
+    configs=_get_dW_autotune_configs(),
     key=["H_dim", "I_dim"],
     reset_to_zero=["dW2_ptr"],
 )
@@ -721,7 +750,8 @@ def _moe_bwd_dW2_kernel(
     pid1 = tl.program_id(1)
 
     N_M_TILES: tl.constexpr = (I_dim + BLOCK_M - 1) // BLOCK_M
-    expert_idx = pid0 // N_M_TILES
+    # int64 prevents expert_idx * stride_dW_E overflow at large E*I*H (see #1246).
+    expert_idx = (pid0 // N_M_TILES).to(tl.int64)
     m_tile = pid0 % N_M_TILES
 
     expert_start = tl.load(expert_start_ptr + expert_idx)
@@ -747,12 +777,13 @@ def _moe_bwd_dW2_kernel(
     for k in tl.range(0, M_e, BLOCK_K):
         k_idx = k + k_offs
         k_mask = k_idx < M_e
-        row_offs = expert_start + k_idx
+        row_offs = (expert_start + k_idx).to(tl.int64)
 
         wact_ptrs = weighted_act_ptr + row_offs[None, :] * stride_wact_TK + i_idx[:, None] * stride_wact_I
         wact_tile = tl.load(wact_ptrs, mask=k_mask[None, :] & i_mask[:, None], other=0.0)
 
-        token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0)
+        # int64 prevents token_idx * stride_T overflow at large T*H (see #1246).
+        token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0).to(tl.int64)
         dout_ptrs = dout_ptr + token_idx[:, None] * stride_dout_T + h_idx[None, :] * stride_dout_H
         dout_tile = tl.load(dout_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
 
@@ -800,7 +831,8 @@ def _moe_bwd_dX_expanded_kernel(
     pid_n = tl.program_id(1)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
-    expert_idx = tl.load(tile_expert_ptr + pid_m)
+    # int64 prevents expert_idx * stride_w_E overflow at large E*I*H (see #1246).
+    expert_idx = tl.load(tile_expert_ptr + pid_m).to(tl.int64)
     n_start = pid_n * BLOCK_N
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
@@ -808,7 +840,8 @@ def _moe_bwd_dX_expanded_kernel(
     n_offs = tl.arange(0, BLOCK_N)
     k_offs = tl.arange(0, BLOCK_K)
 
-    row_offs = row_start + m_offs
+    # int64 prevents row_offs * stride overflow when TK is large (see #1246).
+    row_offs = (row_start + m_offs).to(tl.int64)
     row_mask = row_offs < expert_end
     h_idx = n_start + n_offs
     h_mask = h_idx < H_dim
@@ -852,13 +885,7 @@ def _moe_bwd_dX_expanded_kernel(
 
 
 @triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk}, num_warps=nw, num_stages=2)
-        for bm in [64, 128]
-        for bn in [64, 128]
-        for bk in [16, 32]
-        for nw in [4, 8]
-    ],
+    configs=_get_dW_autotune_configs(),
     key=["H_dim", "I_dim"],
     reset_to_zero=["dW1_ptr"],
 )
@@ -888,7 +915,8 @@ def _moe_bwd_dW1_kernel(
     pid1 = tl.program_id(1)
 
     N_M_TILES: tl.constexpr = (H_dim + BLOCK_M - 1) // BLOCK_M
-    expert_idx = pid0 // N_M_TILES
+    # int64 prevents expert_idx * stride_dW_E overflow at large E*I*H (see #1246).
+    expert_idx = (pid0 // N_M_TILES).to(tl.int64)
     m_tile = pid0 % N_M_TILES
 
     expert_start = tl.load(expert_start_ptr + expert_idx)
@@ -914,9 +942,10 @@ def _moe_bwd_dW1_kernel(
     for k in tl.range(0, M_e, BLOCK_K):
         k_idx = k + k_offs
         k_mask = k_idx < M_e
-        row_offs = expert_start + k_idx
+        row_offs = (expert_start + k_idx).to(tl.int64)
 
-        token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0)
+        # int64 prevents token_idx * stride_T overflow at large T*H (see #1246).
+        token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0).to(tl.int64)
         x_ptrs = x_ptr + token_idx[:, None] * stride_x_T + h_idx[None, :] * stride_x_H
         x_tile = tl.load(x_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
 
