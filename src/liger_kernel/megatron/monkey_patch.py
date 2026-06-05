@@ -9,20 +9,19 @@ logger = logging.getLogger(__name__)
 _PATCH_MARKER = "__liger_patched__"
 
 
-def apply_liger_kernel_to_megatron(rms_norm: bool = True, force: bool = False) -> None:
+def apply_liger_kernel_to_megatron(rms_norm: bool = True) -> None:
     """Patch Megatron-Core to use Liger Triton kernels.
 
-    Idempotent. A no-op when Megatron-Core has native Liger support (the
-    upstream ``LigerSpecProvider``) unless ``force=True``. Targets Megatron's
-    ``BackendSpecProvider`` classes so every model that routes through the
-    standard spec system benefits without per-model code.
+    Idempotent. Targets Megatron's ``BackendSpecProvider`` and
+    ``transformer_block.LayerNormImpl`` so every model that routes through
+    the standard spec system benefits without per-model code.
 
     Args:
-        rms_norm: Replace ``LocalSpecProvider.layer_norm`` so it returns
-            ``LigerMegatronRMSNorm`` when ``rms_norm=True``. Default ``True``.
-        force: Apply the monkey-patch even if native Liger support is
-            detected. Useful for testing or to override Megatron's wired
-            integration. Default ``False``.
+        rms_norm: When ``True`` (default) replace both
+            ``LocalSpecProvider.layer_norm`` (per-layer norm slots) and
+            ``transformer_block.LayerNormImpl`` (the block-level
+            ``final_layernorm`` slot) so all RMSNorm modules in the model
+            become ``LigerMegatronRMSNorm``.
 
     Notes:
         Call this BEFORE building your model. Patching after instantiation
@@ -34,26 +33,9 @@ def apply_liger_kernel_to_megatron(rms_norm: bool = True, force: bool = False) -
         the QKV linear; naive substitution would either double-norm or skip
         the norm. See the project README for the mixing recipe.
     """
-    if not force and _native_liger_support_available():
-        logger.info(
-            "Megatron-Core has native LigerSpecProvider; skipping monkey-patch. "
-            "Pass force=True to override."
-        )
-        return
-
     if rms_norm:
         _patch_local_spec_provider_layer_norm()
         _patch_transformer_block_layernorm_impl()
-
-
-def _native_liger_support_available() -> bool:
-    try:
-        from megatron.core.extensions.liger_kernel_spec_provider import (  # noqa: F401
-            LigerSpecProvider,
-        )
-        return True
-    except ImportError:
-        return False
 
 
 def _patch_local_spec_provider_layer_norm() -> None:
