@@ -1,0 +1,35 @@
+// liger_cute.h — public ABI of liger_cute_kernels.so.
+//
+// This is the ONLY surface the torch/pybind binding sees. It is intentionally a
+// flat `extern "C"` interface: raw pointers, fixed-width ints, enums, POD
+// structs, and a cudaStream_t. No std:: types, no C++ classes, no exceptions
+// cross this boundary, which is what makes the .so ABI-agnostic across torch
+// wheels (see export.h). CUTLASS/CuTe usage lives entirely behind it in the
+// .cu/.cpp translation units.
+//
+// NOTE: harness stage — only the status type is wired up so far. The real MoE /
+// NVSHMEM entry points get ported in behind this boundary later.
+#pragma once
+
+#include "liger_cute/export.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// ── Status / error reporting (no exceptions across the ABI) ──────────────────
+typedef enum liger_cute_status_t {
+  LIGER_CUTE_OK = 0,
+  LIGER_CUTE_ERR_INVALID_ARGUMENT = 1,
+  LIGER_CUTE_ERR_UNSUPPORTED = 2,
+  LIGER_CUTE_ERR_CUDA = 3,
+  LIGER_CUTE_ERR_NVSHMEM = 4,
+  LIGER_CUTE_ERR_INTERNAL = 5,
+} liger_cute_status_t;
+
+// Translate a status code to a static, human-readable string.
+LIGER_CUTE_API const char* liger_cute_status_string(liger_cute_status_t status);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif
