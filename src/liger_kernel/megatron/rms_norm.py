@@ -81,7 +81,7 @@ class LigerMegatronRMSNorm(torch.nn.Module):
         # already sharded as ``[s/tp, b, h]`` and the per-token RMSNorm
         # runs at 1/tp the cost. This wrapper does not block SP (we set
         # the gradient-reduction marker below), but the SP path has not
-        # been E2E verified yet. Tracked in PLAN.md.
+        # been E2E verified yet.
         sp = bool(getattr(config, "sequence_parallel", False))
         setattr(self.weight, "sequence_parallel", sp)
 
