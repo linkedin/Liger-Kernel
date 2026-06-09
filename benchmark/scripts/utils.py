@@ -452,7 +452,9 @@ def run_benchmarks(
 
     print_benchmark_data(benchmark_data_list)
 
-    update_benchmark_data_csv(benchmark_data_list=benchmark_data_list, overwrite=overwrite)
+    impl_name = os.environ.get("LIGER_KERNEL_IMPL", "").strip().lower()
+    file_name = "all_benchmark_data.csv" if impl_name == "" else f"all_benchmark_data_{impl_name}.csv"
+    update_benchmark_data_csv(benchmark_data_list=benchmark_data_list, filename=file_name, overwrite=overwrite)
 
 
 def parse_benchmark_script_args():

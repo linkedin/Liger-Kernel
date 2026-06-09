@@ -25,28 +25,39 @@ def get_default_dependencies():
             "torch>=2.6.0",
         ]
     # TODO: Currently, triton-ascend is not compatible with torch 2.7.1. We will upgrade it later.
+    # TODO: triton-ascend v3.2.1 is expected to release soon with some incompatible API changes.
+    # Until we adapt to those changes, pin triton-ascend to v3.2.0.
     elif platform == "npu":
-        return ["torch==2.6.0", "torch_npu==2.6.0", "triton-ascend"]
+        return ["torch==2.6.0", "torch_npu==2.6.0", "triton-ascend==3.2.0"]
 
 
 def get_optional_dependencies():
     """Get optional dependency groups."""
+    cutile_deps = [
+        "cuda-tile",
+    ]
+    cutile_tileiras_deps = [
+        "cuda-tile[tileiras]",
+    ]
+    dev_deps = [
+        "transformers>=4.52.0",
+        "matplotlib>=3.7.2",
+        "ruff>=0.12.0",
+        "pytest>=7.1.2",
+        "pytest-xdist",
+        "pytest-cov",
+        "pytest-asyncio",
+        "pytest-rerunfailures",
+        "datasets>=2.19.2",
+        "seaborn",
+        "mkdocs-material",
+        "torchvision>=0.20",
+        "prek>=0.2.28",
+    ]
     return {
-        "dev": [
-            "transformers>=4.52.0",
-            "matplotlib>=3.7.2",
-            "ruff>=0.12.0",
-            "pytest>=7.1.2",
-            "pytest-xdist",
-            "pytest-cov",
-            "pytest-asyncio",
-            "pytest-rerunfailures",
-            "datasets>=2.19.2",
-            "seaborn",
-            "mkdocs-material",
-            "torchvision>=0.20",
-            "prek>=0.2.28",
-        ]
+        "cutile": cutile_deps,
+        "cutile-tileiras": cutile_tileiras_deps,
+        "dev": dev_deps,
     }
 
 

@@ -75,7 +75,7 @@ def test_patch_replaces_fused_symbol(fake_megatron):
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
     original = fake_megatron.fused_vocab_parallel_cross_entropy
-    apply_liger_kernel_to_megatron()
+    apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
     patched = fake_megatron.fused_vocab_parallel_cross_entropy
 
     assert patched is not original
@@ -86,7 +86,7 @@ def test_patch_rejects_non_none_reduction(fake_megatron):
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
     with pytest.raises(AssertionError, match="reduction must be 'none'"):
-        apply_liger_kernel_to_megatron(reduction="mean")
+        apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True, reduction="mean")
 
 
 def test_patch_raises_on_tp_greater_than_one():
@@ -95,7 +95,7 @@ def test_patch_raises_on_tp_greater_than_one():
         from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
         with pytest.raises(RuntimeError, match="tensor_model_parallel_size=1"):
-            apply_liger_kernel_to_megatron()
+            apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
     finally:
         _uninstall_fake_megatron()
 
@@ -112,7 +112,7 @@ def test_patch_defers_tp_check_when_parallel_state_not_initialized():
     try:
         from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
-        apply_liger_kernel_to_megatron()
+        apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
         assert fused_ce.fused_vocab_parallel_cross_entropy.__name__ == "liger_fused_vocab_parallel_cross_entropy"
     finally:
         _uninstall_fake_megatron()
@@ -132,7 +132,7 @@ def test_patch_raises_when_megatron_not_installed():
         from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
         with pytest.raises(ImportError, match="requires megatron-core"):
-            apply_liger_kernel_to_megatron()
+            apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
 
 
 def test_patch_raises_when_fused_symbol_missing():
@@ -141,7 +141,7 @@ def test_patch_raises_when_fused_symbol_missing():
         from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
         with pytest.raises(ImportError, match="symbol path may have changed"):
-            apply_liger_kernel_to_megatron()
+            apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
     finally:
         _uninstall_fake_megatron()
 
@@ -162,6 +162,8 @@ def test_patch_forwards_ignore_index_and_label_smoothing(fake_megatron):
             raise AssertionError("not expected to be called in this test")
 
     with patch.object(ce_mod, "LigerCrossEntropyLoss", FakeLoss):
-        apply_liger_kernel_to_megatron(ignore_index=42, label_smoothing=0.25)
+        apply_liger_kernel_to_megatron(
+            rms_norm=False, cross_entropy=True, ignore_index=42, label_smoothing=0.25
+        )
 
     assert captured == {"ignore_index": 42, "label_smoothing": 0.25, "reduction": "none"}

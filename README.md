@@ -132,13 +132,14 @@ y = orpo_loss(lm_head.weight, x, target)
 - `triton >= 3.0.0` Install from pypi. (e.g. `pip install triton==3.0.0`)
 
 ```bash
-pip install -e .[dev]
-pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.3/
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
 ```
 
 ### Optional Dependencies
 
 - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
+- `cuda-tile`: Required when enabling the optional cuTile backend on CUDA. Use this when your environment already provides CUDA Toolkit 13.1 or newer, or an existing tileiras compiler installation.
+- `cuda-tile[tileiras]`: Required when enabling the optional cuTile backend with the tileiras compiler installed directly into your Python environment.
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -162,15 +163,36 @@ git clone https://github.com/linkedin/Liger-Kernel.git
 cd Liger-Kernel
 
 # Install Default Dependencies
-# Setup.py will detect whether you are using AMD or NVIDIA
+# Setup.py will detect the local backend and select default dependencies.
+# On ROCm, install ROCm PyTorch first from the PyTorch ROCm index.
 pip install -e .
 
 # Setup Development Dependencies
 pip install -e ".[dev]"
 
-# NOTE -> For AMD users only
-pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.3/
+# ROCm source installs
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
+# Then choose one:
+pip install -e .
+pip install -e ".[dev]"
+
+# Setup cuTile Dependencies
+pip install -e ".[cutile]"
+
+# Or install cuTile with the optional tileiras compiler
+pip install -e ".[cutile-tileiras]"
+
 ```
+
+### Enable cuTile Backend
+
+cuTile is an optional CUDA-only DSL implementation. After installing the `cutile` or `cutile-tileiras` extra, enable it explicitly:
+
+```bash
+LIGER_KERNEL_IMPL=cutile python your_script.py
+```
+
+`LIGER_KERNEL_IMPL` selects an opt-in implementation registered with Liger (currently `cutile`). Selecting one on an unsupported device, or without the required dependencies installed, raises an error.
 
 
 ## Getting Started
@@ -274,6 +296,7 @@ loss.backward()
 | OLMo2   | `liger_kernel.transformers.apply_liger_kernel_to_olmo2`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | Olmo3   | `liger_kernel.transformers.apply_liger_kernel_to_olmo3`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | GLM-4   | `liger_kernel.transformers.apply_liger_kernel_to_glm4`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
+| DeepSeek-V4   | `liger_kernel.transformers.apply_liger_kernel_to_deepseek_v4`     | RMSNorm, CrossEntropyLoss, FusedLinearCrossEntropy |
 | GPT-OSS   | `liger_kernel.transformers.apply_liger_kernel_to_gpt_oss`     | RoPE, RMSNorm, CrossEntropyLoss, FusedLinearCrossEntropy |
 | InternVL3   | `liger_kernel.transformers.apply_liger_kernel_to_internvl`     | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy |
 | HunyuanV1   | `liger_kernel.transformers.apply_liger_kernel_to_hunyuan_v1_dense`    |  RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy       |
