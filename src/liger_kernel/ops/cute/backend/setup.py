@@ -25,11 +25,10 @@ Reuse a core built once across the torch matrix by pointing at its dir:
         pip wheel . --no-deps --no-build-isolation -w dist
 """
 
-from setuptools import setup
-
 from cute_build import CMakeExtension
 from cute_build import LckBuildExt
 from cute_build import lck_local_version
+from setuptools import setup
 
 BASE_VERSION = "0.1.0"
 

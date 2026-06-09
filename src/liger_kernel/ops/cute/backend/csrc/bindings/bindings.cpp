@@ -4,6 +4,10 @@
 // handed to the ABI-agnostic core. It is the ONLY place <torch/...> is
 // included; the core never sees it. Recompiled once per torch version.
 //
+// The torch::Tensor <-> liger_cute::TensorView<N> marshalling helpers live in
+// tensor_view_conversion.h; they are C++-only glue used when binding ops and
+// are intentionally NOT exposed to Python.
+//
 // NOTE: harness stage — the module is intentionally empty. The real MoE /
 // NVSHMEM ops get bound here as they are ported.
 #include <pybind11/pybind11.h>
