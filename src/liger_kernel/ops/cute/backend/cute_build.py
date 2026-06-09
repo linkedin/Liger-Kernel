@@ -60,8 +60,10 @@ def _stage_nvshmem(out_dir: Path) -> None:
     if nvshmem is not None:
         shutil.copy2(nvshmem, out_dir / NVSHMEM_SO)
     else:
-        print(f"WARNING: {NVSHMEM_SO} not found under NVSHMEM_HOME; the lck wheel "
-              f"will not bundle nvshmem", file=sys.stderr)
+        print(
+            f"WARNING: {NVSHMEM_SO} not found under NVSHMEM_HOME; the lck wheel will not bundle nvshmem",
+            file=sys.stderr,
+        )
 
 
 def build_core(out_dir: Path | str, build_temp: Path | str | None = None) -> Path:
@@ -77,12 +79,10 @@ def build_core(out_dir: Path | str, build_temp: Path | str | None = None) -> Pat
     build_temp.mkdir(parents=True, exist_ok=True)
 
     subprocess.check_call(
-        ["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp),
-         *_cmake_base_args(), "-DLIGER_CUTE_BUILD_BINDINGS=OFF"]
+        ["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp), *_cmake_base_args(), "-DLIGER_CUTE_BUILD_BINDINGS=OFF"]
     )
     subprocess.check_call(
-        ["cmake", "--build", str(build_temp), "--config", "Release", "-j",
-         "--target", "liger_cute_kernels"]
+        ["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", "liger_cute_kernels"]
     )
 
     shutil.copy2(next(build_temp.rglob(CORE_SO)), out_dir / CORE_SO)
@@ -118,14 +118,9 @@ class LckBuildExt(build_ext):
         cmake_args = [*_cmake_base_args(), "-DLIGER_CUTE_BUILD_BINDINGS=ON"]
         if use_prebuilt:
             cmake_args.append(f"-DLIGER_CUTE_CORE_IMPORTED_DIR={core_dir}")
-        subprocess.check_call(
-            ["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp), *cmake_args]
-        )
+        subprocess.check_call(["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp), *cmake_args])
         targets = ["_C"] if use_prebuilt else ["liger_cute_kernels", "_C"]
-        subprocess.check_call(
-            ["cmake", "--build", str(build_temp), "--config", "Release", "-j",
-             "--target", *targets]
-        )
+        subprocess.check_call(["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", *targets])
 
         # Place the three .so into the lck wheel's own liger_cute_kernel package
         # (its __init__.py comes from build_py). build_ext expects _C at

@@ -52,11 +52,12 @@ ops/cute/
     │   └── FindCUTLASS.cmake    # locates main + tools/util/include
     └── csrc/
         ├── core/               # → libliger_cute_kernels.so (torch-free)
-        │   ├── include/liger_cute/{liger_cute.h, export.h}
-        │   ├── src/*.cu
+        │   ├── include/liger_cute/{liger_cute.h, export.h, tensor_view.h}
+        │   ├── src/*.{cu,cpp}
         │   └── liger_cute.version   # exports only liger_cute_*
         └── bindings/           # → _C (torch + pybind11)
-            └── bindings.cpp
+            ├── bindings.cpp
+            └── tensor_view_conversion.h   # torch::Tensor <-> TensorView<N>
 ```
 
 ## Prerequisites

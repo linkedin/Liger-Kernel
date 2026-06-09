@@ -32,6 +32,7 @@ def _load_extension():
     # _C links libtorch, so torch must be imported first to load libtorch.so
     # into the process before the extension's NEEDED entry is resolved.
     import torch  # noqa: F401
+
     try:
         _ext = importlib.import_module("liger_cute_kernel._C")
     except ImportError as exc:  # pragma: no cover - depends on a CUDA build
