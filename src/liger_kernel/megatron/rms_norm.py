@@ -70,9 +70,18 @@ class LigerMegatronRMSNorm(torch.nn.Module):
         self.reset_parameters()
 
         # Megatron's distributed optimizer inspects this attribute to decide
-        # whether to reduce the parameter's gradient across TP ranks under
-        # sequence parallelism. Match the flag-on-weight convention used by
-        # FusedLayerNorm.
+        # whether to all-reduce the parameter's gradient across TP ranks
+        # under sequence parallelism. Match the flag-on-weight convention
+        # used by FusedLayerNorm.
+        #
+        # TODO(sp): under pure TP (no SP) every TP rank holds the full
+        # ``[s, b, h]`` activation and runs the same RMSNorm — wasting
+        # `tp_world_size`x of compute and activation memory. The fix is for
+        # the user to enable SP, in which case the activation arrives
+        # already sharded as ``[s/tp, b, h]`` and the per-token RMSNorm
+        # runs at 1/tp the cost. This wrapper does not block SP (we set
+        # the gradient-reduction marker below), but the SP path has not
+        # been E2E verified yet. Tracked in PLAN.md.
         sp = bool(getattr(config, "sequence_parallel", False))
         setattr(self.weight, "sequence_parallel", sp)
 
