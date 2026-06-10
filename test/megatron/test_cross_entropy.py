@@ -188,3 +188,253 @@ def test_class_extra_repr():
     assert "ignore_index=42" in rep
     assert "label_smoothing=0.07" in rep
     assert "reduction='none'" in rep
+
+
+# ---------------------------------------------------------------------------
+# Beefier sweeps adapted from test/transformers/test_cross_entropy.py.
+#
+# LigerMegatronCrossEntropy is a [s, b, v] -> [s, b] reshape around Liger's
+# CE op (reduction='none'). Numerical behavior should match the kernel itself,
+# so the same parametrization patterns the kernel suite uses are the right
+# coverage shape here — just adapted to the 3-D contract.
+# ---------------------------------------------------------------------------
+
+
+def _assign_ignore_index(target: torch.Tensor, ignore_index: int, frac: float = 0.25) -> None:
+    """In-place: replace ~frac of target positions with ignore_index.
+
+    Matches the transformers-side helpers that randomize the masked-out indices
+    so the test isn't degenerate on a particular row layout.
+    """
+    flat = target.view(-1)
+    n = max(1, int(flat.numel() * frac))
+    idx = torch.randperm(flat.numel(), device=flat.device)[:n]
+    flat[idx] = ignore_index
+
+
+@pytest.mark.parametrize(
+    "s, b, v",
+    [
+        (16, 1, 4096),
+        (32, 2, 32000),  # llama-ish vocab
+        (5, 3, 123),     # weird shape
+    ],
+)
+@pytest.mark.parametrize("scalar", [0.5, 1.0, 5.0])
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-7, 1e-6),
+        pytest.param(
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported"),
+        ),
+    ],
+)
+def test_class_correctness_scalar_sweep(s, b, v, scalar, dtype, atol, rtol):
+    """Vary input magnitude — guards against numerical drift at large logit scales
+    (mirrors the ``scalar`` parametrize in ``test/transformers/test_cross_entropy.py``)."""
+    ce = LigerMegatronCrossEntropy()
+
+    base = torch.randn(s, b, v, device=device, dtype=dtype) * scalar
+    target = torch.randint(0, v, (s, b), device=device, dtype=torch.long)
+
+    # Backward parity: feed the same starting tensor through both paths.
+    h_ref = base.detach().clone().requires_grad_(True)
+    h_got = base.detach().clone().requires_grad_(True)
+
+    ref = _reference_loss(h_ref, target, ignore_index=-100, label_smoothing=0.0)
+    got = ce(h_got, target)
+
+    assert got.shape == (s, b)
+    assert_verbose_allclose(got.float(), ref.float(), atol=atol, rtol=rtol)
+
+    ref.sum().backward()
+    got.sum().backward()
+    assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "s, b, v, ignore_index",
+    [
+        (16, 1, 4096, -100),  # standard hf sentinel
+        (32, 2, 32000, 2),    # positive id (valid vocab slot used as ignore)
+        (5, 3, 123, -123),    # weird negative
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-7, 1e-6),
+        pytest.param(
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported"),
+        ),
+    ],
+)
+def test_class_correctness_with_ignore_index_sweep(s, b, v, ignore_index, dtype, atol, rtol):
+    """Broader ignore_index sweep including positive/negative sentinels and forward+backward
+    correctness vs. PyTorch's reference. Mirrors transformers-side ``test_correctness_with_ignore_index``."""
+    ce = LigerMegatronCrossEntropy(ignore_index=ignore_index)
+
+    base = torch.randn(s, b, v, device=device, dtype=dtype)
+    target = torch.randint(0, v, (s, b), device=device, dtype=torch.long)
+    _assign_ignore_index(target, ignore_index, frac=0.3)
+
+    h_ref = base.detach().clone().requires_grad_(True)
+    h_got = base.detach().clone().requires_grad_(True)
+
+    ref = _reference_loss(h_ref, target, ignore_index=ignore_index, label_smoothing=0.0)
+    got = ce(h_got, target)
+    assert_verbose_allclose(got.float(), ref.float(), atol=atol, rtol=rtol)
+
+    ref.sum().backward()
+    got.sum().backward()
+    assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "s, b, v, ignore_index, label_smoothing",
+    [
+        (16, 1, 4096, 1, 0.1),
+        (32, 2, 32000, -100, 0.2),
+        (5, 3, 123, -300, 0.05),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-6, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported"),
+        ),
+    ],
+)
+def test_class_correctness_with_label_smoothing_and_ignore_index(
+    s, b, v, ignore_index, label_smoothing, dtype, atol, rtol,
+):
+    """Combined ignore_index × label_smoothing sweep — the two are independent in Liger's CE
+    kernel but mixing them historically surfaced bugs in the smoothing math. Mirrors
+    ``test_correctness_with_label_smoothing_with_ignore_index_once`` from the kernel suite."""
+    ce = LigerMegatronCrossEntropy(ignore_index=ignore_index, label_smoothing=label_smoothing)
+
+    base = torch.randn(s, b, v, device=device, dtype=dtype)
+    target = torch.randint(0, v, (s, b), device=device, dtype=torch.long)
+    _assign_ignore_index(target, ignore_index, frac=0.25)
+
+    h_ref = base.detach().clone().requires_grad_(True)
+    h_got = base.detach().clone().requires_grad_(True)
+
+    ref = _reference_loss(h_ref, target, ignore_index=ignore_index, label_smoothing=label_smoothing)
+    got = ce(h_got, target)
+    assert_verbose_allclose(got.float(), ref.float(), atol=atol, rtol=rtol)
+
+    ref.sum().backward()
+    got.sum().backward()
+    assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "s, b, v",
+    [
+        (16, 1, 4096),
+        (5, 3, 123),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-6, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported"),
+        ),
+    ],
+)
+def test_class_correctness_not_last_layer(s, b, v, dtype, atol, rtol):
+    """Loss is multiplied by a downstream factor before ``.backward(grad_output)`` — verifies
+    that Liger's in-place gradient write through the wrapper survives non-trivial chained
+    autograd (i.e. CE isn't the last op in the graph). Mirrors transformers-side
+    ``test_correctness_not_last_layer``."""
+    ce = LigerMegatronCrossEntropy()
+
+    base = torch.randn(s, b, v, device=device, dtype=dtype)
+    target = torch.randint(0, v, (s, b), device=device, dtype=torch.long)
+
+    h_ref = base.detach().clone().requires_grad_(True)
+    h_got = base.detach().clone().requires_grad_(True)
+
+    ref = _reference_loss(h_ref, target, ignore_index=-100, label_smoothing=0.0)
+    got = ce(h_got, target)
+    assert_verbose_allclose(got.float(), ref.float(), atol=atol, rtol=rtol)
+
+    # Chain: loss = ref * 3 then backward with arbitrary grad_output.
+    loss_ref = ref * 3.0
+    loss_got = got * 3.0
+    grad_out = torch.rand_like(ref)
+    loss_ref.backward(gradient=grad_out)
+    loss_got.backward(gradient=grad_out)
+    assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("ignore_index", [-100, 2])
+def test_class_rejects_out_of_bounds_target(ignore_index):
+    """Liger's CE kernel asserts target ∈ [0, V); a stray out-of-bounds target should
+    raise rather than silently produce garbage. Mirrors transformers-side
+    ``test_correctness_with_out_of_bounds_target_once``."""
+    s, b, v = 8, 2, 64
+    ce = LigerMegatronCrossEntropy(ignore_index=ignore_index)
+
+    logits = torch.randn(s, b, v, device=device, dtype=torch.float32)
+    target = torch.randint(0, v, (s, b), device=device, dtype=torch.long)
+    # Plant a couple of out-of-bounds values; ignore_index is permitted but the
+    # >=V poisoned slots are not.
+    flat = target.view(-1)
+    poison = torch.randperm(flat.numel(), device=flat.device)[:2]
+    flat[poison] = v + 5  # >= V; the kernel-level assert should fire.
+
+    with pytest.raises(AssertionError, match="out of bounds"):
+        ce(logits, target)
+
+
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-7, 1e-6),
+        pytest.param(
+            torch.bfloat16,
+            1e-2,
+            5e-2,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported"),
+        ),
+    ],
+)
+def test_class_correctness_forward_only(dtype, atol, rtol):
+    """Forward-only path (under ``torch.no_grad()``) — verifies the wrapper still returns the
+    right loss when autograd is disabled, AND that a subsequent ``.backward()`` raises the
+    expected "does not require grad" error. Mirrors transformers-side ``test_correctness_with_forward_only``."""
+    s, b, v = 16, 2, 1024
+    ce = LigerMegatronCrossEntropy()
+
+    logits_input = torch.randn(s, b, v, device=device, dtype=dtype)
+    target = torch.randint(0, v, (s, b), device=device, dtype=torch.long)
+
+    with torch.no_grad():
+        # Clone the input separately for each path because Liger writes gradient
+        # state in-place; sharing a buffer would corrupt the reference.
+        ref = _reference_loss(logits_input.clone(), target, ignore_index=-100, label_smoothing=0.0)
+        got = ce(logits_input.clone(), target)
+        assert_verbose_allclose(got.float(), ref.float(), atol=atol, rtol=rtol)
+
+    # Attempting backward on a forward-only output should raise.
+    with pytest.raises(RuntimeError, match="does not require grad"):
+        got.sum().backward()

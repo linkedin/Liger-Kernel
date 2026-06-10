@@ -435,3 +435,244 @@ def test_unfused_wrapper_honors_explicit_zero_label_smoothing(fake_megatron):
         f"explicit label_smoothing=0.0 at call time must be honored verbatim; "
         f"got: {constructed}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Public-API surface checks (mirrors transformers-side ``test_import_from_root``
+# and ``test_apply_liger_kernel_only_passes_valid_kwargs`` patterns).
+# ---------------------------------------------------------------------------
+
+
+def test_import_from_root():
+    """All public Megatron symbols must be reachable from ``liger_kernel.megatron``.
+
+    Mirrors the import-smoke pattern from ``test/transformers/test_monkey_patch.py``: catches
+    accidental __init__.py removals so the docs' import snippets keep working."""
+    try:
+        from liger_kernel.megatron import LigerMegatronCrossEntropy  # noqa: F401
+        from liger_kernel.megatron import LigerMegatronRMSNorm  # noqa: F401
+        from liger_kernel.megatron import apply_liger_kernel_to_megatron  # noqa: F401
+    except Exception:
+        pytest.fail("Importing public Megatron symbols from liger_kernel.megatron failed.")
+
+
+def test_public_apply_function_has_no_ce_specific_kwargs():
+    """The framework-level patch entry point intentionally hides CE-specific knobs
+    (ignore_index, label_smoothing, reduction). Catch accidental re-introduction —
+    Mode-2 callers use ``LigerMegatronCrossEntropy`` directly for that config surface."""
+    import inspect
+
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    sig = inspect.signature(apply_liger_kernel_to_megatron)
+    leaked = {"ignore_index", "label_smoothing", "reduction"} & set(sig.parameters)
+    assert not leaked, (
+        f"apply_liger_kernel_to_megatron has re-grown CE-specific kwargs: {sorted(leaked)}. "
+        f"Those belong on LigerMegatronCrossEntropy, not on the framework patch entry point."
+    )
+
+
+# ---------------------------------------------------------------------------
+# End-to-end integration through the patched symbols.
+#
+# Earlier tests verify symbol identity + stub plumbing; the suite was missing
+# the "patch + call with real tensors + check the numbers" coverage. These
+# tests install the fake megatron, apply the patch, then invoke the resulting
+# wrapper with live torch tensors and compare against ``F.cross_entropy``.
+# That's the only way to catch wrapper-math bugs that pass the identity tests.
+# ---------------------------------------------------------------------------
+
+
+import torch  # noqa: E402  (deferred so the no-torch import-smoke tests above are unaffected)
+import torch.nn.functional as F  # noqa: E402
+
+from liger_kernel.utils import infer_device  # noqa: E402
+from test.utils import assert_verbose_allclose  # noqa: E402
+
+_device = infer_device()
+
+
+def _ref_loss_sbv(logits_sbv: torch.Tensor, target_sb: torch.Tensor,
+                  ignore_index: int = -100, label_smoothing: float = 0.0) -> torch.Tensor:
+    """Reference CE for [s, b, v] logits / [s, b] target, returning [s, b]."""
+    s, b, v = logits_sbv.shape
+    loss_flat = F.cross_entropy(
+        logits_sbv.reshape(-1, v).float(),
+        target_sb.reshape(-1),
+        reduction="none",
+        ignore_index=ignore_index,
+        label_smoothing=label_smoothing,
+    )
+    return loss_flat.reshape(s, b)
+
+
+def test_patched_fused_symbol_computes_correct_loss(fake_megatron):
+    """End-to-end: install stub megatron, patch, invoke the resulting fused symbol with real
+    [s, b, v] logits, verify the loss matches ``F.cross_entropy``. Closes the gap between
+    "patch wired correctly" (existing tests) and "patched function does the right math"."""
+    fused_ce, _ = fake_megatron
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
+
+    s, b, v = 16, 2, 1024
+    torch.manual_seed(0)
+    logits = torch.randn(s, b, v, device=_device, dtype=torch.float32)
+    target = torch.randint(0, v, (s, b), device=_device, dtype=torch.long)
+
+    ref = _ref_loss_sbv(logits.clone(), target)
+    # Call through the patched symbol. tp_group=None is what Megatron's
+    # LanguageModule passes when TP is uninitialized.
+    got = fused_ce.fused_vocab_parallel_cross_entropy(logits.clone(), target, None)
+
+    assert got.shape == (s, b)
+    assert_verbose_allclose(got.float(), ref.float(), atol=1e-6, rtol=1e-5)
+
+
+def test_patched_unfused_symbol_computes_correct_loss(fake_megatron):
+    """Same as the fused case, but through the unfused symbol — verifies both wrappers
+    are exercised and exercises the no-label_smoothing default branch (caller doesn't pass)."""
+    _, unfused_ce = fake_megatron
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
+
+    s, b, v = 8, 4, 512
+    torch.manual_seed(1)
+    logits = torch.randn(s, b, v, device=_device, dtype=torch.float32)
+    target = torch.randint(0, v, (s, b), device=_device, dtype=torch.long)
+
+    ref = _ref_loss_sbv(logits.clone(), target)
+    # Native unfused signature: (logits, target, label_smoothing=0.0, tp_group=None).
+    # Pass only positional args the caller normally would.
+    got = unfused_ce.vocab_parallel_cross_entropy(logits.clone(), target)
+
+    assert got.shape == (s, b)
+    assert_verbose_allclose(got.float(), ref.float(), atol=1e-6, rtol=1e-5)
+
+
+@pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
+def test_patched_unfused_symbol_runtime_label_smoothing_matches_pytorch(fake_megatron, label_smoothing):
+    """The unfused wrapper's main feature beyond the fused path is honoring a runtime
+    label_smoothing arg. Verify the resulting loss actually matches
+    ``F.cross_entropy(..., label_smoothing=...)``, not just that a fresh CE instance is built."""
+    _, unfused_ce = fake_megatron
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
+
+    s, b, v = 8, 2, 256
+    torch.manual_seed(2)
+    logits = torch.randn(s, b, v, device=_device, dtype=torch.float32)
+    target = torch.randint(0, v, (s, b), device=_device, dtype=torch.long)
+
+    ref = _ref_loss_sbv(logits.clone(), target, label_smoothing=label_smoothing)
+    got = unfused_ce.vocab_parallel_cross_entropy(
+        logits.clone(), target, label_smoothing=label_smoothing,
+    )
+    assert_verbose_allclose(got.float(), ref.float(), atol=1e-5, rtol=1e-4)
+
+
+def test_patched_fused_symbol_preserves_gradients(fake_megatron):
+    """Backward through the patched fused symbol: gradient shape + parity vs.
+    PyTorch's reference. Liger writes the gradient back into the input buffer,
+    so verifying ``.grad`` after backward exercises both the reshape contract
+    and the in-place write."""
+    fused_ce, _ = fake_megatron
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
+
+    s, b, v = 8, 2, 256
+    torch.manual_seed(3)
+    base = torch.randn(s, b, v, device=_device, dtype=torch.float32)
+    target = torch.randint(0, v, (s, b), device=_device, dtype=torch.long)
+
+    h_ref = base.detach().clone().requires_grad_(True)
+    h_got = base.detach().clone().requires_grad_(True)
+    ref = _ref_loss_sbv(h_ref, target)
+    got = fused_ce.fused_vocab_parallel_cross_entropy(h_got, target, None)
+
+    ref.sum().backward()
+    got.sum().backward()
+
+    assert h_got.grad is not None
+    assert h_got.grad.shape == h_got.shape
+    assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=1e-6, rtol=1e-5)
+
+
+def test_patched_unfused_symbol_preserves_gradients(fake_megatron):
+    """Symmetric to the fused-gradient test; ensures the closure in
+    ``_patch_vocab_parallel_cross_entropy`` doesn't break autograd."""
+    _, unfused_ce = fake_megatron
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
+
+    s, b, v = 8, 2, 256
+    torch.manual_seed(4)
+    base = torch.randn(s, b, v, device=_device, dtype=torch.float32)
+    target = torch.randint(0, v, (s, b), device=_device, dtype=torch.long)
+
+    h_ref = base.detach().clone().requires_grad_(True)
+    h_got = base.detach().clone().requires_grad_(True)
+    ref = _ref_loss_sbv(h_ref, target)
+    got = unfused_ce.vocab_parallel_cross_entropy(h_got, target)
+
+    ref.sum().backward()
+    got.sum().backward()
+    assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=1e-6, rtol=1e-5)
+
+
+def test_patched_fused_symbol_default_ignore_index_minus_100(fake_megatron):
+    """Patch-time defaults: targets containing -100 should be treated as ignored — Liger's
+    kernel zeros those loss positions, matching ``F.cross_entropy(ignore_index=-100)``.
+
+    Native Megatron's fused CE has no ignore_index concept and would silently produce
+    garbage on -100; this is one place where Liger is strictly better than the symbol
+    it replaces, and the test pins that behavior."""
+    fused_ce, _ = fake_megatron
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
+
+    s, b, v = 8, 2, 128
+    torch.manual_seed(5)
+    logits = torch.randn(s, b, v, device=_device, dtype=torch.float32)
+    target = torch.randint(0, v, (s, b), device=_device, dtype=torch.long)
+    # Plant some -100 sentinel positions.
+    flat = target.view(-1)
+    flat[: flat.numel() // 4] = -100
+
+    ref = _ref_loss_sbv(logits.clone(), target, ignore_index=-100)
+    got = fused_ce.fused_vocab_parallel_cross_entropy(logits.clone(), target, None)
+
+    # Per-token loss at masked positions should be exactly 0.
+    mask = (target != -100).float()
+    assert torch.all(got * (1 - mask) == 0)
+    assert_verbose_allclose(got.float(), ref.float(), atol=1e-6, rtol=1e-5)
+
+
+def test_rms_norm_only_patch_does_not_touch_ce_symbols(fake_megatron):
+    """Symmetric to ``test_patch_with_cross_entropy_false_leaves_ce_symbols_untouched``,
+    but for the opposite split. With ``rms_norm=True, cross_entropy=False`` (RMSNorm
+    helpers require real megatron and will ImportError on the stub — that's fine, we
+    only need to confirm the CE symbols are not pre-emptively touched before the RMSNorm
+    helpers run). Documenting this protects against future apply_… reorderings that would
+    silently couple the two."""
+    fused_ce, unfused_ce = fake_megatron
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    fused_before = fused_ce.fused_vocab_parallel_cross_entropy
+    unfused_before = unfused_ce.vocab_parallel_cross_entropy
+
+    # RMSNorm helpers do their own megatron import; on the stub they'll raise. Catch
+    # any exception so the assertion at the end runs regardless — we only care that the
+    # CE symbols weren't touched.
+    try:
+        apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=False)
+    except Exception:
+        pass
+
+    assert fused_ce.fused_vocab_parallel_cross_entropy is fused_before
+    assert unfused_ce.vocab_parallel_cross_entropy is unfused_before
