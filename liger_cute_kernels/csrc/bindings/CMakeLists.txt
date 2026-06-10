@@ -67,9 +67,16 @@ if(DEFINED _liger_cute_abi)
     target_compile_definitions(_C PRIVATE _GLIBCXX_USE_CXX11_ABI=${_liger_cute_abi})
 endif()
 
+# torch_python carries the pybind11 type_caster for at::Tensor; without it,
+# bindings that accept/return torch::Tensor fail to resolve
+# pybind11::detail::type_caster<at::Tensor>::load at import time. ${TORCH_LIBRARIES}
+# alone does not pull it in.
+find_library(TORCH_PYTHON_LIBRARY torch_python PATHS "${TORCH_INSTALL_PREFIX}/lib" REQUIRED)
+
 target_link_libraries(_C PRIVATE
     liger_cute_kernels
     ${TORCH_LIBRARIES}
+    ${TORCH_PYTHON_LIBRARY}
 )
 
 # Find the sibling libliger_cute_kernels.so (and bundled nvshmem) next to _C.so

@@ -1,11 +1,11 @@
 """LigerCute — fused MoE + NVSHMEM kernels (ported from LigerCommKernels).
 
-The native kernels live in a SEPARATE top-level package ``liger_cute_kernel``,
+The native kernels live in a SEPARATE top-level package ``liger_cute_kernels``,
 shipped by its own CUDA/torch-version prefixed **lck wheel** — not by the
 top-level ``liger_kernel`` wheel, which stays pure Python/Triton. This module is
-just the entry point that loads ``liger_cute_kernel._C`` when it is installed::
+just the entry point that loads ``liger_cute_kernels._C`` when it is installed::
 
-    liger_cute_kernel/            # the lck wheel (optional, separate package)
+    liger_cute_kernels/           # the lck wheel (optional, separate package)
       __init__.py
       _C.*.so                     # pybind shim
       libliger_cute_kernels.so    # torch-free CUTLASS + NVSHMEM core
@@ -19,13 +19,13 @@ from __future__ import annotations
 
 import importlib
 
-# Cached handle to the compiled extension (from the separate liger_cute_kernel
+# Cached handle to the compiled extension (from the separate liger_cute_kernels
 # package). None until first loaded.
 _ext = None
 
 
 def _load_extension():
-    """Import the ``liger_cute_kernel._C`` extension, or raise a helpful error."""
+    """Import the ``liger_cute_kernels._C`` extension, or raise a helpful error."""
     global _ext
     if _ext is not None:
         return _ext
@@ -34,12 +34,12 @@ def _load_extension():
     import torch  # noqa: F401
 
     try:
-        _ext = importlib.import_module("liger_cute_kernel._C")
+        _ext = importlib.import_module("liger_cute_kernels._C")
     except ImportError as exc:  # pragma: no cover - depends on a CUDA build
         raise ImportError(
-            "liger_cute_kernel is not installed. Install the matching lck wheel "
-            "for your CUDA/torch environment, or build it locally (see "
-            "liger_kernel/ops/cute/backend/README.md)."
+            "liger_cute_kernels is not installed. Install the matching lck wheel "
+            "for your CUDA/torch environment, or build it locally (see the "
+            "liger_cute_kernels/ module at the repo root)."
         ) from exc
     return _ext
 
