@@ -3,9 +3,8 @@
 Adapted from Megatron's ``examples/run_simple_mcore_train_loop.py``. The
 relevant additions (vs. that file) are:
 
-  1. ``apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True,
-     label_smoothing=0.1)`` called once at the top of ``model_provider()``.
-     This patches:
+  1. ``apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True)``
+     called once at the top of ``model_provider()``. This patches:
        - ``LocalSpecProvider.layer_norm`` (per-layer norm slots)
        - ``transformer_block.LayerNormImpl`` (block-level ``final_layernorm``)
        - ``fused_cross_entropy.fused_vocab_parallel_cross_entropy``
@@ -75,11 +74,7 @@ def initialize_distributed(tp: int = 2, pp: int = 1) -> None:
 
 def model_provider() -> GPTModel:
     # ↓↓ Mode 1 — patch once, everything below picks up Liger ↓↓
-    apply_liger_kernel_to_megatron(
-        rms_norm=True,
-        cross_entropy=True,
-        label_smoothing=0.1,
-    )
+    apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True)
     # ↑↑ ------------------------------------------------------ ↑↑
 
     cfg = TransformerConfig(

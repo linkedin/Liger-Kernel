@@ -12,17 +12,13 @@ _PATCH_MARKER = "__liger_patched__"
 def apply_liger_kernel_to_megatron(
     rms_norm: bool = True,
     cross_entropy: bool = False,
-    *,
-    ignore_index: int = -100,
-    label_smoothing: float = 0.0,
-    reduction: str = "none",
 ) -> None:
     """Patch Megatron-Core to use Liger Triton kernels.
 
     Idempotent. Targets Megatron's ``BackendSpecProvider``,
-    ``transformer_block.LayerNormImpl``, and (optionally)
-    ``fused_vocab_parallel_cross_entropy`` so models that route through the
-    standard spec system pick up Liger without per-model code.
+    ``transformer_block.LayerNormImpl``, and (optionally) both of Megatron's
+    vocab-parallel cross-entropy entry points so models that route through
+    the standard spec system pick up Liger without per-model code.
 
     Args:
         rms_norm: When ``True`` (default) replace both
@@ -30,22 +26,17 @@ def apply_liger_kernel_to_megatron(
             ``transformer_block.LayerNormImpl`` (the block-level
             ``final_layernorm`` slot) so all RMSNorm modules in the model
             become ``LigerMegatronRMSNorm``.
-        cross_entropy: When ``True`` replace
+        cross_entropy: When ``True`` replace both
             ``megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy``
-            with Liger's Triton cross-entropy (online softmax, in-place
-            gradients, no full-softmax materialization). Default ``False``
-            because this path currently supports
-            ``tensor_model_parallel_size=1`` only.
-        ignore_index: Cross-entropy ignore index. Only used when
-            ``cross_entropy=True``.
-        label_smoothing: Cross-entropy label smoothing factor. Liger does not
-            auto-detect this — pass ``cfg.label_smoothing_factor`` (or
-            equivalent) from your Megatron ``TransformerConfig`` if label
-            smoothing is enabled, to preserve native behavior. Only used when
-            ``cross_entropy=True``.
-        reduction: Must be ``"none"`` when ``cross_entropy=True``; Megatron's
-            fused-CE contract returns per-token loss shaped ``[seq, batch]``
-            and handles reduction itself downstream.
+            (fused path) and
+            ``megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy``
+            (unfused path) with Liger's Triton cross-entropy. Default
+            ``False`` because this path currently supports
+            ``tensor_model_parallel_size=1`` only. The fused wrapper matches
+            native's ``(logits, target, tp_group)`` signature exactly; the
+            unfused wrapper additionally honors a runtime ``label_smoothing``
+            argument, matching native's
+            ``(logits, target, label_smoothing=0.0, tp_group=None)``.
 
     Notes:
         Call this BEFORE building your model. Patching after instantiation
@@ -57,6 +48,12 @@ def apply_liger_kernel_to_megatron(
         ``TELayerNormColumnParallelLinear`` folds the norm into the QKV
         linear; naive substitution would either double-norm or skip the norm.
 
+        For explicit kernel configuration (custom ``ignore_index``,
+        ``label_smoothing``, etc.) instantiate ``LigerMegatronCrossEntropy``
+        directly and wire it into your model (Mode 2). The monkey-patch path
+        is intentionally a transparent drop-in: it matches Megatron's native
+        defaults so callers can flip Liger on without touching loss config.
+
     Raises:
         RuntimeError: When ``cross_entropy=True`` and Megatron's parallel
             state already reports ``tensor_model_parallel_size > 1``.
@@ -66,16 +63,8 @@ def apply_liger_kernel_to_megatron(
         _patch_transformer_block_layernorm_impl()
     if cross_entropy:
         _check_tensor_parallel_size_at_patch_time()
-        _patch_fused_vocab_parallel_cross_entropy(
-            reduction=reduction,
-            ignore_index=ignore_index,
-            label_smoothing=label_smoothing,
-        )
-        _patch_vocab_parallel_cross_entropy(
-            reduction=reduction,
-            ignore_index=ignore_index,
-            label_smoothing=label_smoothing,
-        )
+        _patch_fused_vocab_parallel_cross_entropy()
+        _patch_vocab_parallel_cross_entropy()
 
 
 def _check_tensor_parallel_size_at_patch_time() -> None:
@@ -193,23 +182,14 @@ def _patch_transformer_block_layernorm_impl() -> None:
 _LABEL_SMOOTHING_UNSET = object()
 
 
-def _patch_fused_vocab_parallel_cross_entropy(
-    reduction: str = "none",
-    ignore_index: int = -100,
-    label_smoothing: float = 0.0,
-) -> None:
+def _patch_fused_vocab_parallel_cross_entropy() -> None:
     """Replace ``megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy``.
 
-    Wraps a single ``LigerMegatronCrossEntropy`` instance (configured at patch time) in
-    a closure matching Megatron's fused-CE signature ``(logits, target, tp_group)``.
-    Idempotent: a sentinel attribute on the replacement prevents wrappers from stacking.
+    Wraps a single ``LigerMegatronCrossEntropy`` instance (constructed with class defaults
+    that match Megatron's native fused-CE behavior) in a closure matching Megatron's fused-CE
+    signature ``(logits, target, tp_group)``. Idempotent: a sentinel attribute on the
+    replacement prevents wrappers from stacking.
     """
-    if reduction != "none":
-        raise ValueError(
-            f"Megatron's fused_vocab_parallel_cross_entropy contract requires per-token loss; "
-            f"reduction must be 'none', got {reduction!r}."
-        )
-
     try:
         import megatron.core.fusions.fused_cross_entropy as fused_ce
     except ImportError as exc:
@@ -233,11 +213,7 @@ def _patch_fused_vocab_parallel_cross_entropy(
 
     from liger_kernel.megatron.cross_entropy import LigerMegatronCrossEntropy
 
-    ce = LigerMegatronCrossEntropy(
-        ignore_index=ignore_index,
-        label_smoothing=label_smoothing,
-        reduction=reduction,
-    )
+    ce = LigerMegatronCrossEntropy()
 
     def liger_fused_vocab_parallel_cross_entropy(vocab_parallel_logits, target, tp_group=None):
         return ce(vocab_parallel_logits, target, tp_group=tp_group)
@@ -252,25 +228,15 @@ def _patch_fused_vocab_parallel_cross_entropy(
     )
 
 
-def _patch_vocab_parallel_cross_entropy(
-    reduction: str = "none",
-    ignore_index: int = -100,
-    label_smoothing: float = 0.0,
-) -> None:
+def _patch_vocab_parallel_cross_entropy() -> None:
     """Replace ``megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy``.
 
     This is Megatron's *unfused* eager-Python vocab-parallel CE path, dispatched to when
     ``config.cross_entropy_loss_fusion=False``. Its signature accepts ``label_smoothing``
     at call time, so the wrapper honors a runtime value when the caller actually passed
     one. A sentinel disambiguates "caller passed 0.0" (use 0.0) from "caller didn't pass"
-    (use patch-time default).
+    (use class default).
     """
-    if reduction != "none":
-        raise ValueError(
-            f"vocab_parallel_cross_entropy returns per-token loss; "
-            f"reduction must be 'none', got {reduction!r}."
-        )
-
     try:
         import megatron.core.tensor_parallel.cross_entropy as unfused_ce
     except ImportError as exc:
@@ -294,13 +260,11 @@ def _patch_vocab_parallel_cross_entropy(
 
     from liger_kernel.megatron.cross_entropy import LigerMegatronCrossEntropy
 
-    # Patch-time default; reused for every call where the caller doesn't pass label_smoothing.
-    # Avoids allocating a fresh module per CE call in the common case.
-    default_ce = LigerMegatronCrossEntropy(
-        ignore_index=ignore_index,
-        label_smoothing=label_smoothing,
-        reduction=reduction,
-    )
+    # Class-default instance; reused for every call where the caller doesn't pass
+    # label_smoothing. Avoids allocating a fresh module per CE call in the common case
+    # (Megatron's own LanguageModule.compute_language_model_loss dispatch does not pass
+    # label_smoothing — it always lands here).
+    default_ce = LigerMegatronCrossEntropy()
 
     def liger_vocab_parallel_cross_entropy(
         vocab_parallel_logits,
@@ -315,11 +279,7 @@ def _patch_vocab_parallel_cross_entropy(
         # construction is microseconds vs. CE-kernel milliseconds.
         if label_smoothing is _LABEL_SMOOTHING_UNSET:
             return default_ce(vocab_parallel_logits, target, tp_group=tp_group)
-        ce = LigerMegatronCrossEntropy(
-            ignore_index=ignore_index,
-            label_smoothing=label_smoothing,
-            reduction=reduction,
-        )
+        ce = LigerMegatronCrossEntropy(label_smoothing=label_smoothing)
         return ce(vocab_parallel_logits, target, tp_group=tp_group)
 
     setattr(liger_vocab_parallel_cross_entropy, _PATCH_MARKER, True)

@@ -7,10 +7,11 @@ patch helpers can run entirely on CPU without a real megatron-core install. Test
   (``megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy``)
   AND the unfused symbol
   (``megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy``)
-- ``reduction != "none"`` is rejected
 - TP>1 at patch time raises ``RuntimeError``
 - missing megatron-core / missing symbol path raise helpful ``ImportError``\\s
-- the constructed ``LigerMegatronCrossEntropy`` receives the user-supplied kwargs
+- the patch constructs ``LigerMegatronCrossEntropy`` with class defaults (matches Megatron
+  native behavior — no CE-specific kwargs on the public ``apply_liger_kernel_to_megatron``
+  API)
 - the unfused wrapper honors a runtime ``label_smoothing`` override (Megatron's unfused
   signature is ``(logits, target, label_smoothing=0.0, tp_group=None)``)
 """
@@ -208,15 +209,8 @@ def test_patch_fused_wrapper_passes_tp_group_through(fake_megatron):
 
 
 # ---------------------------------------------------------------------------
-# Argument validation + TP-1 guard.
+# TP-1 guard.
 # ---------------------------------------------------------------------------
-
-
-def test_patch_rejects_non_none_reduction(fake_megatron):
-    from liger_kernel.megatron import apply_liger_kernel_to_megatron
-
-    with pytest.raises(ValueError, match="reduction must be 'none'"):
-        apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True, reduction="mean")
 
 
 def test_patch_raises_on_tp_greater_than_one():
@@ -294,20 +288,21 @@ def test_patch_raises_when_unfused_symbol_missing():
 
 
 # ---------------------------------------------------------------------------
-# Kwarg propagation + runtime label_smoothing override on the unfused path.
+# Class-default construction + runtime label_smoothing override on the unfused path.
 # ---------------------------------------------------------------------------
 
 
-def test_patch_forwards_ignore_index_and_label_smoothing(fake_megatron):
-    """Patch-time ignore_index + label_smoothing reach the underlying LigerMegatronCrossEntropy.
+def test_patch_constructs_ce_with_class_defaults(fake_megatron):
+    """The public ``apply_liger_kernel_to_megatron`` API exposes no CE-specific kwargs;
+    the patch must therefore construct ``LigerMegatronCrossEntropy`` with class defaults.
 
-    Both the fused and unfused wrappers create an instance configured with these kwargs.
-    """
+    This intentionally matches Megatron's native fused-CE behavior (no ignore_index, no
+    label_smoothing). Callers needing custom config use ``LigerMegatronCrossEntropy``
+    directly (Mode 2)."""
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
     from liger_kernel.megatron import cross_entropy as ce_mod
 
     captured = []
-
     real_ctor = ce_mod.LigerMegatronCrossEntropy.__init__
 
     def recording_init(self, ignore_index=-100, label_smoothing=0.0, reduction="none"):
@@ -319,15 +314,12 @@ def test_patch_forwards_ignore_index_and_label_smoothing(fake_megatron):
         real_ctor(self, ignore_index=ignore_index, label_smoothing=label_smoothing, reduction=reduction)
 
     with patch.object(ce_mod.LigerMegatronCrossEntropy, "__init__", recording_init):
-        apply_liger_kernel_to_megatron(
-            rms_norm=False, cross_entropy=True, ignore_index=42, label_smoothing=0.25,
-        )
+        apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
 
-    # The fused wrapper builds 1 instance; the unfused wrapper builds 1 default instance.
-    # Both should carry the user-supplied kwargs.
+    # Fused wrapper builds 1 instance; unfused wrapper builds 1 default instance.
     assert len(captured) >= 2
     for entry in captured:
-        assert entry == {"ignore_index": 42, "label_smoothing": 0.25, "reduction": "none"}
+        assert entry == {"ignore_index": -100, "label_smoothing": 0.0, "reduction": "none"}
 
 
 def test_unfused_wrapper_honors_runtime_label_smoothing(fake_megatron):
@@ -360,9 +352,7 @@ def test_unfused_wrapper_honors_runtime_label_smoothing(fake_megatron):
             return torch.zeros(logits.shape[:2])
 
     with patch.object(ce_mod, "LigerMegatronCrossEntropy", _FakeCE):
-        apply_liger_kernel_to_megatron(
-            rms_norm=False, cross_entropy=True, ignore_index=-100, label_smoothing=0.05,
-        )
+        apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
 
         # Reset the recorder to focus on calls triggered by the next line.
         constructed.clear()
@@ -395,9 +385,7 @@ def test_unfused_wrapper_uses_default_when_caller_does_not_pass_label_smoothing(
             return torch.zeros(logits.shape[:2])
 
     with patch.object(ce_mod, "LigerMegatronCrossEntropy", _FakeCE):
-        apply_liger_kernel_to_megatron(
-            rms_norm=False, cross_entropy=True, ignore_index=-100, label_smoothing=0.05,
-        )
+        apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
         constructed.clear()
         logits = torch.zeros(2, 1, 4)
         target = torch.zeros(2, 1, dtype=torch.long)
@@ -435,9 +423,7 @@ def test_unfused_wrapper_honors_explicit_zero_label_smoothing(fake_megatron):
             return torch.zeros(logits.shape[:2])
 
     with patch.object(ce_mod, "LigerMegatronCrossEntropy", _FakeCE):
-        apply_liger_kernel_to_megatron(
-            rms_norm=False, cross_entropy=True, ignore_index=-100, label_smoothing=0.05,
-        )
+        apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
         constructed.clear()
         logits = torch.zeros(2, 1, 4)
         target = torch.zeros(2, 1, dtype=torch.long)
