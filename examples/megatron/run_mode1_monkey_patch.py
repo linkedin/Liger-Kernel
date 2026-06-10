@@ -1,20 +1,25 @@
-"""Mode 1 — monkey-patch Megatron-Core to use Liger RMSNorm.
+"""Mode 1 — monkey-patch Megatron-Core to use Liger RMSNorm + cross-entropy.
 
 Adapted from Megatron's ``examples/run_simple_mcore_train_loop.py``. The
 relevant additions (vs. that file) are:
 
-  1. ``apply_liger_kernel_to_megatron(rms_norm=True)`` called once at the
-     top of ``model_provider()``. This patches both
-     ``LocalSpecProvider.layer_norm`` (per-layer norm slots) and
-     ``transformer_block.LayerNormImpl`` (block-level ``final_layernorm``).
+  1. ``apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True,
+     label_smoothing=0.1)`` called once at the top of ``model_provider()``.
+     This patches:
+       - ``LocalSpecProvider.layer_norm`` (per-layer norm slots)
+       - ``transformer_block.LayerNormImpl`` (block-level ``final_layernorm``)
+       - ``fused_cross_entropy.fused_vocab_parallel_cross_entropy``
+         (the fused CE path)
+       - ``tensor_parallel.cross_entropy.vocab_parallel_cross_entropy``
+         (the unfused CE path)
 
   2. ``normalization="RMSNorm"`` added to ``TransformerConfig`` so the
      model actually has RMSNorm slots to patch (Megatron defaults to
      ``LayerNorm``).
 
-  3. ``_print_norm_classes`` after model construction — prints the
-     resolved class for every norm slot so you can verify Liger took
-     over.
+  3. ``_print_norm_classes`` + ``_print_ce_symbols`` after model construction
+     — print the resolved class/function bindings so you can verify Liger
+     took over for every slot.
 
 Run with:
     torchrun --nproc_per_node=2 --master_addr=127.0.0.1 --master_port=29500 \\
@@ -70,7 +75,11 @@ def initialize_distributed(tp: int = 2, pp: int = 1) -> None:
 
 def model_provider() -> GPTModel:
     # ↓↓ Mode 1 — patch once, everything below picks up Liger ↓↓
-    apply_liger_kernel_to_megatron(rms_norm=True)
+    apply_liger_kernel_to_megatron(
+        rms_norm=True,
+        cross_entropy=True,
+        label_smoothing=0.1,
+    )
     # ↑↑ ------------------------------------------------------ ↑↑
 
     cfg = TransformerConfig(
@@ -84,7 +93,7 @@ def model_provider() -> GPTModel:
     return GPTModel(
         config=cfg,
         transformer_layer_spec=get_gpt_layer_local_spec(normalization="RMSNorm"),
-        vocab_size=100,
+        vocab_size=128,
         max_sequence_length=_SEQUENCE_LENGTH,
     )
 
@@ -142,8 +151,27 @@ def _print_norm_classes(model: torch.nn.Module) -> None:
     print()
 
 
+def _print_ce_symbols() -> None:
+    """Show the current bindings of Megatron's two CE entry points."""
+    import megatron.core.fusions.fused_cross_entropy as fused
+    import megatron.core.tensor_parallel.cross_entropy as unfused
+
+    print("\n=== Resolved CE symbols ===")
+    print(
+        f"  fused.fused_vocab_parallel_cross_entropy   →  "
+        f"{fused.fused_vocab_parallel_cross_entropy.__name__}"
+    )
+    print(
+        f"  unfused.vocab_parallel_cross_entropy       →  "
+        f"{unfused.vocab_parallel_cross_entropy.__name__}"
+    )
+    print()
+
+
 def main() -> None:
-    initialize_distributed(tp=2, pp=1)
+    # TP=1, DP=2 — CE patch (TP=1 only). Norms are correct under any TP value, so
+    # demonstrating both Liger features in one script means running data-parallel.
+    initialize_distributed(tp=1, pp=1)
     model_parallel_cuda_manual_seed(123)
     torch.manual_seed(123)
 
@@ -153,6 +181,7 @@ def main() -> None:
         print("\n=== Full model tree (mode 1: monkey-patch) ===")
         print(gpt_model)
         _print_norm_classes(gpt_model)
+        _print_ce_symbols()
 
     ddp_cfg = DistributedDataParallelConfig(
         grad_reduce_in_fp32=False,
