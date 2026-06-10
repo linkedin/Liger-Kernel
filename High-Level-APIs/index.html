@@ -559,6 +559,34 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#megatron-lm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Megatron-LM
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Megatron-LM">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#liger_kernel.megatron.apply_liger_kernel_to_megatron" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        apply_liger_kernel_to_megatron
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -845,6 +873,34 @@
     <span class="md-ellipsis">
       
         apply_liger_kernel_to_phi3
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#megatron-lm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Megatron-LM
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Megatron-LM">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#liger_kernel.megatron.apply_liger_kernel_to_megatron" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        apply_liger_kernel_to_megatron
       
     </span>
   </a>
@@ -3647,6 +3703,287 @@ If <code>fused_linear_cross_entropy</code> is True, the logits will not be mater
 </span><span id="__span-0-2270"><a id="__codelineno-0-2270" name="__codelineno-0-2270"></a>            <span class="k">if</span> <span class="n">rms_norm</span><span class="p">:</span>
 </span><span id="__span-0-2271"><a id="__codelineno-0-2271" name="__codelineno-0-2271"></a>                <span class="n">_patch_rms_norm_module</span><span class="p">(</span><span class="n">decoder_layer</span><span class="o">.</span><span class="n">input_layernorm</span><span class="p">)</span>
 </span><span id="__span-0-2272"><a id="__codelineno-0-2272" name="__codelineno-0-2272"></a>                <span class="n">_patch_rms_norm_module</span><span class="p">(</span><span class="n">decoder_layer</span><span class="o">.</span><span class="n">post_attention_layernorm</span><span class="p">)</span>
+</span></code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div><hr />
+<h2 id="megatron-lm">Megatron-LM<a class="headerlink" href="#megatron-lm" title="Permanent link">&para;</a></h2>
+<p>Liger also exposes a patch for the <a href="https://github.com/NVIDIA/Megatron-LM">Megatron-LM</a>
+training framework, replacing Megatron's native RMSNorm and both vocab-parallel
+cross-entropy paths (fused and unfused) with Liger's Triton kernels.</p>
+<table>
+<thead>
+<tr>
+<th><strong>Framework</strong></th>
+<th><strong>API</strong></th>
+<th><strong>Supported Operations</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Megatron-LM</td>
+<td><code>liger_kernel.megatron.apply_liger_kernel_to_megatron</code></td>
+<td>RMSNorm, CrossEntropyLoss</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Scope</strong>: Initial release supports <code>tensor_model_parallel_size=1</code> only for
+cross-entropy. Vocab-parallel cross-entropy (TP&gt;1) is follow-up work — with
+TP&gt;1, each rank holds a sharded <code>[N, V/tp]</code> logits slice and cross-entropy
+requires cross-rank all-reduces that Liger's kernel does not perform. The
+patch raises a <code>RuntimeError</code> at patch time or call time if TP&gt;1 is detected.</p>
+<p><strong>Usage</strong>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">liger_kernel.megatron</span><span class="w"> </span><span class="kn">import</span> <span class="n">apply_liger_kernel_to_megatron</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># Call before Megatron&#39;s forward pass reaches compute_language_model_loss.</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Defaults match Megatron&#39;s native CE behavior; no CE-specific config needed.</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">apply_liger_kernel_to_megatron</span><span class="p">(</span><span class="n">rms_norm</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">cross_entropy</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Both the fused (<code>config.cross_entropy_loss_fusion=True</code>,
+<code>cross_entropy_fusion_impl='native'</code>) and unfused
+(<code>config.cross_entropy_loss_fusion=False</code>) CE paths are patched in a single
+call, so Megatron picks up Liger regardless of which path your config selects.</p>
+<p>For training setups that need explicit kernel configuration (custom
+<code>ignore_index</code>, <code>label_smoothing</code>, etc.), instantiate
+<code>LigerMegatronCrossEntropy</code> directly and wire it into your model — see
+<code>examples/megatron/run_mode2_hand_spec.py</code>.</p>
+
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="liger_kernel.megatron.apply_liger_kernel_to_megatron" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">liger_kernel.megatron.apply_liger_kernel_to_megatron</span>
+
+
+<a href="#liger_kernel.megatron.apply_liger_kernel_to_megatron" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">apply_liger_kernel_to_megatron</span><span class="p">(</span><span class="n">rms_norm</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">cross_entropy</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents first">
+
+        <p>Patch Megatron-Core to use Liger Triton kernels.</p>
+<p>Idempotent. Targets Megatron's <code>BackendSpecProvider</code>,
+<code>transformer_block.LayerNormImpl</code>, and (optionally) both of Megatron's
+vocab-parallel cross-entropy entry points so models that route through
+the standard spec system pick up Liger without per-model code.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>rms_norm</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>When <code>True</code> (default) replace both
+<code>LocalSpecProvider.layer_norm</code> (per-layer norm slots) and
+<code>transformer_block.LayerNormImpl</code> (the block-level
+<code>final_layernorm</code> slot) so all RMSNorm modules in the model
+become <code>LigerMegatronRMSNorm</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>True</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>cross_entropy</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>When <code>True</code> replace both
+<code>megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy</code>
+(fused path) and
+<code>megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy</code>
+(unfused path) with Liger's Triton cross-entropy. Default
+<code>False</code> because this path currently supports
+<code>tensor_model_parallel_size=1</code> only. The fused wrapper matches
+native's <code>(logits, target, tp_group)</code> signature exactly; the
+unfused wrapper additionally honors a runtime <code>label_smoothing</code>
+argument, matching native's
+<code>(logits, target, label_smoothing=0.0, tp_group=None)</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="notes" open>
+  <summary>Notes</summary>
+  <p>Call this BEFORE building your model. Patching after instantiation
+will not retroactively swap modules already created.</p>
+<p>The RMSNorm patches only affect the local (non-TE) backend. Mixing
+Liger norms with <code>TESpecProvider</code> requires a custom
+<code>BackendSpecProvider</code> subclass because TE's
+<code>TELayerNormColumnParallelLinear</code> folds the norm into the QKV
+linear; naive substitution would either double-norm or skip the norm.</p>
+<p>For explicit kernel configuration (custom <code>ignore_index</code>,
+<code>label_smoothing</code>, etc.) instantiate <code>LigerMegatronCrossEntropy</code>
+directly and wire it into your model (Mode 2). The monkey-patch path
+is intentionally a transparent drop-in: it matches Megatron's native
+defaults so callers can flip Liger on without touching loss config.</p>
+</details>
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="RuntimeError">RuntimeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>When <code>cross_entropy=True</code> and Megatron's parallel
+state already reports <code>tensor_model_parallel_size &gt; 1</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/liger_kernel/megatron/monkey_patch.py</code></summary>
+              <div class="language-python highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-12">12</a></span>
+<span class="normal"><a href="#__codelineno-0-13">13</a></span>
+<span class="normal"><a href="#__codelineno-0-14">14</a></span>
+<span class="normal"><a href="#__codelineno-0-15">15</a></span>
+<span class="normal"><a href="#__codelineno-0-16">16</a></span>
+<span class="normal"><a href="#__codelineno-0-17">17</a></span>
+<span class="normal"><a href="#__codelineno-0-18">18</a></span>
+<span class="normal"><a href="#__codelineno-0-19">19</a></span>
+<span class="normal"><a href="#__codelineno-0-20">20</a></span>
+<span class="normal"><a href="#__codelineno-0-21">21</a></span>
+<span class="normal"><a href="#__codelineno-0-22">22</a></span>
+<span class="normal"><a href="#__codelineno-0-23">23</a></span>
+<span class="normal"><a href="#__codelineno-0-24">24</a></span>
+<span class="normal"><a href="#__codelineno-0-25">25</a></span>
+<span class="normal"><a href="#__codelineno-0-26">26</a></span>
+<span class="normal"><a href="#__codelineno-0-27">27</a></span>
+<span class="normal"><a href="#__codelineno-0-28">28</a></span>
+<span class="normal"><a href="#__codelineno-0-29">29</a></span>
+<span class="normal"><a href="#__codelineno-0-30">30</a></span>
+<span class="normal"><a href="#__codelineno-0-31">31</a></span>
+<span class="normal"><a href="#__codelineno-0-32">32</a></span>
+<span class="normal"><a href="#__codelineno-0-33">33</a></span>
+<span class="normal"><a href="#__codelineno-0-34">34</a></span>
+<span class="normal"><a href="#__codelineno-0-35">35</a></span>
+<span class="normal"><a href="#__codelineno-0-36">36</a></span>
+<span class="normal"><a href="#__codelineno-0-37">37</a></span>
+<span class="normal"><a href="#__codelineno-0-38">38</a></span>
+<span class="normal"><a href="#__codelineno-0-39">39</a></span>
+<span class="normal"><a href="#__codelineno-0-40">40</a></span>
+<span class="normal"><a href="#__codelineno-0-41">41</a></span>
+<span class="normal"><a href="#__codelineno-0-42">42</a></span>
+<span class="normal"><a href="#__codelineno-0-43">43</a></span>
+<span class="normal"><a href="#__codelineno-0-44">44</a></span>
+<span class="normal"><a href="#__codelineno-0-45">45</a></span>
+<span class="normal"><a href="#__codelineno-0-46">46</a></span>
+<span class="normal"><a href="#__codelineno-0-47">47</a></span>
+<span class="normal"><a href="#__codelineno-0-48">48</a></span>
+<span class="normal"><a href="#__codelineno-0-49">49</a></span>
+<span class="normal"><a href="#__codelineno-0-50">50</a></span>
+<span class="normal"><a href="#__codelineno-0-51">51</a></span>
+<span class="normal"><a href="#__codelineno-0-52">52</a></span>
+<span class="normal"><a href="#__codelineno-0-53">53</a></span>
+<span class="normal"><a href="#__codelineno-0-54">54</a></span>
+<span class="normal"><a href="#__codelineno-0-55">55</a></span>
+<span class="normal"><a href="#__codelineno-0-56">56</a></span>
+<span class="normal"><a href="#__codelineno-0-57">57</a></span>
+<span class="normal"><a href="#__codelineno-0-58">58</a></span>
+<span class="normal"><a href="#__codelineno-0-59">59</a></span>
+<span class="normal"><a href="#__codelineno-0-60">60</a></span>
+<span class="normal"><a href="#__codelineno-0-61">61</a></span>
+<span class="normal"><a href="#__codelineno-0-62">62</a></span>
+<span class="normal"><a href="#__codelineno-0-63">63</a></span>
+<span class="normal"><a href="#__codelineno-0-64">64</a></span>
+<span class="normal"><a href="#__codelineno-0-65">65</a></span>
+<span class="normal"><a href="#__codelineno-0-66">66</a></span>
+<span class="normal"><a href="#__codelineno-0-67">67</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12"></a><span class="k">def</span><span class="w"> </span><span class="nf">apply_liger_kernel_to_megatron</span><span class="p">(</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13"></a>    <span class="n">rms_norm</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14"></a>    <span class="n">cross_entropy</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Patch Megatron-Core to use Liger Triton kernels.</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17"></a>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18"></a><span class="sd">    Idempotent. Targets Megatron&#39;s ``BackendSpecProvider``,</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19"></a><span class="sd">    ``transformer_block.LayerNormImpl``, and (optionally) both of Megatron&#39;s</span>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20"></a><span class="sd">    vocab-parallel cross-entropy entry points so models that route through</span>
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21"></a><span class="sd">    the standard spec system pick up Liger without per-model code.</span>
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22"></a>
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23"></a><span class="sd">    Args:</span>
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24"></a><span class="sd">        rms_norm: When ``True`` (default) replace both</span>
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25"></a><span class="sd">            ``LocalSpecProvider.layer_norm`` (per-layer norm slots) and</span>
+</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26"></a><span class="sd">            ``transformer_block.LayerNormImpl`` (the block-level</span>
+</span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27"></a><span class="sd">            ``final_layernorm`` slot) so all RMSNorm modules in the model</span>
+</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28"></a><span class="sd">            become ``LigerMegatronRMSNorm``.</span>
+</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29"></a><span class="sd">        cross_entropy: When ``True`` replace both</span>
+</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30"></a><span class="sd">            ``megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy``</span>
+</span><span id="__span-0-31"><a id="__codelineno-0-31" name="__codelineno-0-31"></a><span class="sd">            (fused path) and</span>
+</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32"></a><span class="sd">            ``megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy``</span>
+</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33"></a><span class="sd">            (unfused path) with Liger&#39;s Triton cross-entropy. Default</span>
+</span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34"></a><span class="sd">            ``False`` because this path currently supports</span>
+</span><span id="__span-0-35"><a id="__codelineno-0-35" name="__codelineno-0-35"></a><span class="sd">            ``tensor_model_parallel_size=1`` only. The fused wrapper matches</span>
+</span><span id="__span-0-36"><a id="__codelineno-0-36" name="__codelineno-0-36"></a><span class="sd">            native&#39;s ``(logits, target, tp_group)`` signature exactly; the</span>
+</span><span id="__span-0-37"><a id="__codelineno-0-37" name="__codelineno-0-37"></a><span class="sd">            unfused wrapper additionally honors a runtime ``label_smoothing``</span>
+</span><span id="__span-0-38"><a id="__codelineno-0-38" name="__codelineno-0-38"></a><span class="sd">            argument, matching native&#39;s</span>
+</span><span id="__span-0-39"><a id="__codelineno-0-39" name="__codelineno-0-39"></a><span class="sd">            ``(logits, target, label_smoothing=0.0, tp_group=None)``.</span>
+</span><span id="__span-0-40"><a id="__codelineno-0-40" name="__codelineno-0-40"></a>
+</span><span id="__span-0-41"><a id="__codelineno-0-41" name="__codelineno-0-41"></a><span class="sd">    Notes:</span>
+</span><span id="__span-0-42"><a id="__codelineno-0-42" name="__codelineno-0-42"></a><span class="sd">        Call this BEFORE building your model. Patching after instantiation</span>
+</span><span id="__span-0-43"><a id="__codelineno-0-43" name="__codelineno-0-43"></a><span class="sd">        will not retroactively swap modules already created.</span>
+</span><span id="__span-0-44"><a id="__codelineno-0-44" name="__codelineno-0-44"></a>
+</span><span id="__span-0-45"><a id="__codelineno-0-45" name="__codelineno-0-45"></a><span class="sd">        The RMSNorm patches only affect the local (non-TE) backend. Mixing</span>
+</span><span id="__span-0-46"><a id="__codelineno-0-46" name="__codelineno-0-46"></a><span class="sd">        Liger norms with ``TESpecProvider`` requires a custom</span>
+</span><span id="__span-0-47"><a id="__codelineno-0-47" name="__codelineno-0-47"></a><span class="sd">        ``BackendSpecProvider`` subclass because TE&#39;s</span>
+</span><span id="__span-0-48"><a id="__codelineno-0-48" name="__codelineno-0-48"></a><span class="sd">        ``TELayerNormColumnParallelLinear`` folds the norm into the QKV</span>
+</span><span id="__span-0-49"><a id="__codelineno-0-49" name="__codelineno-0-49"></a><span class="sd">        linear; naive substitution would either double-norm or skip the norm.</span>
+</span><span id="__span-0-50"><a id="__codelineno-0-50" name="__codelineno-0-50"></a>
+</span><span id="__span-0-51"><a id="__codelineno-0-51" name="__codelineno-0-51"></a><span class="sd">        For explicit kernel configuration (custom ``ignore_index``,</span>
+</span><span id="__span-0-52"><a id="__codelineno-0-52" name="__codelineno-0-52"></a><span class="sd">        ``label_smoothing``, etc.) instantiate ``LigerMegatronCrossEntropy``</span>
+</span><span id="__span-0-53"><a id="__codelineno-0-53" name="__codelineno-0-53"></a><span class="sd">        directly and wire it into your model (Mode 2). The monkey-patch path</span>
+</span><span id="__span-0-54"><a id="__codelineno-0-54" name="__codelineno-0-54"></a><span class="sd">        is intentionally a transparent drop-in: it matches Megatron&#39;s native</span>
+</span><span id="__span-0-55"><a id="__codelineno-0-55" name="__codelineno-0-55"></a><span class="sd">        defaults so callers can flip Liger on without touching loss config.</span>
+</span><span id="__span-0-56"><a id="__codelineno-0-56" name="__codelineno-0-56"></a>
+</span><span id="__span-0-57"><a id="__codelineno-0-57" name="__codelineno-0-57"></a><span class="sd">    Raises:</span>
+</span><span id="__span-0-58"><a id="__codelineno-0-58" name="__codelineno-0-58"></a><span class="sd">        RuntimeError: When ``cross_entropy=True`` and Megatron&#39;s parallel</span>
+</span><span id="__span-0-59"><a id="__codelineno-0-59" name="__codelineno-0-59"></a><span class="sd">            state already reports ``tensor_model_parallel_size &gt; 1``.</span>
+</span><span id="__span-0-60"><a id="__codelineno-0-60" name="__codelineno-0-60"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-0-61"><a id="__codelineno-0-61" name="__codelineno-0-61"></a>    <span class="k">if</span> <span class="n">rms_norm</span><span class="p">:</span>
+</span><span id="__span-0-62"><a id="__codelineno-0-62" name="__codelineno-0-62"></a>        <span class="n">_patch_local_spec_provider_layer_norm</span><span class="p">()</span>
+</span><span id="__span-0-63"><a id="__codelineno-0-63" name="__codelineno-0-63"></a>        <span class="n">_patch_transformer_block_layernorm_impl</span><span class="p">()</span>
+</span><span id="__span-0-64"><a id="__codelineno-0-64" name="__codelineno-0-64"></a>    <span class="k">if</span> <span class="n">cross_entropy</span><span class="p">:</span>
+</span><span id="__span-0-65"><a id="__codelineno-0-65" name="__codelineno-0-65"></a>        <span class="n">_check_tensor_parallel_size_at_patch_time</span><span class="p">()</span>
+</span><span id="__span-0-66"><a id="__codelineno-0-66" name="__codelineno-0-66"></a>        <span class="n">_patch_fused_vocab_parallel_cross_entropy</span><span class="p">()</span>
+</span><span id="__span-0-67"><a id="__codelineno-0-67" name="__codelineno-0-67"></a>        <span class="n">_patch_vocab_parallel_cross_entropy</span><span class="p">()</span>
 </span></code></pre></div></td></tr></table></div>
             </details>
     </div>
