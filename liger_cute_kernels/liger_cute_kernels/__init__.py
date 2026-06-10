@@ -1,10 +1,10 @@
-"""liger_cute_kernel — native CUTLASS + NVSHMEM MoE kernels (the "lck" wheel).
+"""liger_cute_kernels — native CUTLASS + NVSHMEM MoE kernels (the "lck" wheel).
 
 Standalone top-level package, kept separate from ``liger_kernel`` so the native
 libraries don't mix into the pure-Python package. It ships the compiled
 extension and its support libraries side by side::
 
-    liger_cute_kernel/
+    liger_cute_kernels/
       __init__.py
       _C.*.so                    # pybind shim (links libtorch)
       libliger_cute_kernels.so   # torch-free CUTLASS + NVSHMEM core
@@ -20,5 +20,5 @@ package directly.
 
 from __future__ import annotations
 
-# Ensure libtorch is loaded before any `import liger_cute_kernel._C`.
+# Ensure libtorch is loaded before any `import liger_cute_kernels._C`.
 import torch  # noqa: F401

@@ -1,13 +1,13 @@
 """Build helpers for the LigerCute native core (the "lck" library).
 
-This module lives entirely under ``ops/cute/backend`` and is self-contained: it
-knows how to compile the torch-free core ``libliger_cute_kernels.so`` from the
-CMake project sitting next to it.
+This module lives in the standalone ``liger_cute_kernels`` module at the repo
+root and is self-contained: it knows how to compile the torch-free core
+``libliger_cute_kernels.so`` from the CMake project sitting next to it.
 
 It is deliberately decoupled from the top-level ``liger_kernel`` wheel — that
 wheel is pure Python/Triton and never builds native code. The separate,
 CUDA/torch-version-prefixed **lck wheel** (its own setup.py + optional install)
-is handled separately; see backend/README.md.
+is handled separately; see this module's README.md.
 
 Phase 3.1 — build the torch-free core (no torch required)::
 
@@ -35,7 +35,7 @@ NVSHMEM_SO = "libnvshmem_host.so"
 
 # In-wheel location of the native libraries: the lck wheel's own top-level
 # package, kept separate from liger_kernel so it doesn't mix with it.
-PKG_REL = Path("liger_cute_kernel")
+PKG_REL = Path("liger_cute_kernels")
 
 
 def _cmake_base_args() -> list[str]:
@@ -102,7 +102,7 @@ class CMakeExtension(Extension):
 
 class LckBuildExt(build_ext):
     """Build the lck wheel: compile _C (+ core) and place the .so into the
-    wheel's own ``liger_cute_kernel`` package dir.
+    wheel's own ``liger_cute_kernels`` package dir.
 
     If ``LIGER_CUTE_CORE_DIR`` points at a prebuilt core, it is linked as an
     imported lib (no core recompile); otherwise the core is built from source.
@@ -122,7 +122,7 @@ class LckBuildExt(build_ext):
         targets = ["_C"] if use_prebuilt else ["liger_cute_kernels", "_C"]
         subprocess.check_call(["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", *targets])
 
-        # Place the three .so into the lck wheel's own liger_cute_kernel package
+        # Place the three .so into the lck wheel's own liger_cute_kernels package
         # (its __init__.py comes from build_py). build_ext expects _C at
         # get_ext_fullpath(); the cmake output name matches, so copying it there
         # satisfies setuptools.

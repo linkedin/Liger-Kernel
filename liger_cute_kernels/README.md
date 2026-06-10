@@ -19,45 +19,53 @@ once and reused across the whole torch matrix.
 The top-level **`liger_kernel` wheel is pure Python/Triton** and does **not**
 build or contain any of this native code. The native libraries ship as a
 **separate, CUDA/torch-version-prefixed `lck` wheel** that installs its own
-standalone top-level package **`liger_cute_kernel`** (kept separate from
+standalone top-level package **`liger_cute_kernels`** (kept separate from
 `liger_kernel` so the native libs don't mix in). `liger_kernel.ops.cute` imports
-`liger_cute_kernel._C` at runtime. Intended order:
+`liger_cute_kernels._C` at runtime. Intended order:
 
 1. Install the top-level `liger_kernel` wheel (pure Python).
-2. *Optionally* install the matching `lck` wheel (package `liger_cute_kernel`)
+2. *Optionally* install the matching `lck` wheel (package `liger_cute_kernels`)
    for the local CUDA + torch environment.
 
-The lck wheel is built by `backend/setup.py` (see **Building the lck wheel**
-below). Selecting/installing the right lck wheel automatically for the local
-CUDA + torch environment is a separate follow-up.
+The lck wheel is built by this module's `setup.py` (see **Building the lck
+wheel** below). Selecting/installing the right lck wheel automatically for the
+local CUDA + torch environment is a separate follow-up.
 
 ## Layout
 
-This `backend/` folder holds everything needed to build the native libraries.
-Only `__init__.py` (the Python entry point) lives one level up in `cute/`.
+`liger_cute_kernels/` is a **standalone module at the repo root** holding
+everything needed to build the native libraries. Only `__init__.py` (the
+in-liger entry point) lives separately, under `src/liger_kernel/ops/cute/`.
 
 ```
-ops/cute/
-├── __init__.py                 # runtime entry point: liger_kernel.ops.cute
-└── backend/                    # ← native build harness (this folder)
-    ├── README.md
-    ├── setup.py                # builds the lck wheel (package liger_cute_kernel)
-    ├── pyproject.toml
-    ├── cute_build.py           # build_core() helper + LckBuildExt
-    ├── liger_cute_kernel/      # the lck wheel's package source
-    │   └── __init__.py         # (.so are added here at build time)
-    ├── CMakeLists.txt          # core (always) + bindings (opt-in)
-    ├── cmake/
-    │   ├── FindNVSHMEM.cmake
-    │   └── FindCUTLASS.cmake    # locates main + tools/util/include
-    └── csrc/
-        ├── core/               # → libliger_cute_kernels.so (torch-free)
-        │   ├── include/liger_cute/{liger_cute.h, export.h, tensor_view.h}
-        │   ├── src/*.{cu,cpp}
-        │   └── liger_cute.version   # exports only liger_cute_*
-        └── bindings/           # → _C (torch + pybind11)
-            ├── bindings.cpp
-            └── tensor_view_conversion.h   # torch::Tensor <-> TensorView<N>
+liger_cute_kernels/             # ← standalone native build module (repo root)
+├── README.md
+├── setup.py                    # builds the lck wheel (package liger_cute_kernels)
+├── pyproject.toml
+├── cute_build.py               # build_core() helper + LckBuildExt
+├── liger_cute_kernels/         # the lck wheel's package source
+│   └── __init__.py             # (.so are added here at build time)
+├── test/                       # the lck package's own unit tests
+│   └── test_moe_bindings.py
+├── CMakeLists.txt              # core (always) + bindings (opt-in)
+├── cmake/
+│   ├── FindNVSHMEM.cmake
+│   └── FindCUTLASS.cmake        # locates main + tools/util/include
+└── csrc/
+    ├── core/                   # → libliger_cute_kernels.so (torch-free)
+    │   ├── include/liger_cute/
+    │   │   ├── {liger_cute.h, export.h}     # flat extern "C" ABI (C-parseable)
+    │   │   ├── {check.h, tensor_view.h, moe.h}  # C++-only core surface
+    │   │   └── detail/symmetric_memory.h    # core-internal (nvshmem+STL); not ABI
+    │   ├── src/*.{cu,cpp}
+    │   └── liger_cute.version   # exports only liger_cute_*
+    └── bindings/               # → _C (torch + pybind11)
+        ├── bindings.cpp
+        └── tensor_view_conversion.h   # torch::Tensor <-> TensorView<N>
+
+src/liger_kernel/ops/cute/
+└── __init__.py                 # runtime entry point: liger_kernel.ops.cute
+                                #   (loads liger_cute_kernels._C if installed)
 ```
 
 ## Prerequisites
@@ -74,7 +82,7 @@ ops/cute/
   the active Python).
 
 Build commands below are run from the **repository root**; the CMake project is
-`src/liger_kernel/ops/cute/backend`.
+the `liger_cute_kernels/` module directory.
 
 ## Building
 
@@ -83,24 +91,24 @@ Build commands below are run from the **repository root**; the CMake project is
 No torch required. This is the expensive CUTLASS compile, done once.
 
 ```bash
-cmake -S src/liger_kernel/ops/cute/backend -B build/core \
+cmake -S liger_cute_kernels -B build/core \
       -DLIGER_CUTE_BUILD_BINDINGS=OFF \
       -DCMAKE_BUILD_TYPE=Release -GNinja
 cmake --build build/core --target liger_cute_kernels -j
 # -> build/core/csrc/core/libliger_cute_kernels.so
 ```
 
-Or from Python:
+Or from Python (with `liger_cute_kernels/` on `sys.path`):
 
 ```python
-from liger_kernel.ops.cute.backend.cute_build import build_core
+from cute_build import build_core
 build_core("build/core")   # stages libliger_cute_kernels.so + libnvshmem_host.so
 ```
 
 ### 2. Core + bindings from source (single local build)
 
 ```bash
-cmake -S src/liger_kernel/ops/cute/backend -B build/all \
+cmake -S liger_cute_kernels -B build/all \
       -DLIGER_CUTE_BUILD_BINDINGS=ON \
       -DCMAKE_BUILD_TYPE=Release -GNinja
 cmake --build build/all --target liger_cute_kernels _C -j
@@ -112,7 +120,7 @@ Reuses an existing `libliger_cute_kernels.so` instead of recompiling the core.
 CUTLASS is not even searched here.
 
 ```bash
-cmake -S src/liger_kernel/ops/cute/backend -B build/bind \
+cmake -S liger_cute_kernels -B build/bind \
       -DLIGER_CUTE_BUILD_BINDINGS=ON \
       -DLIGER_CUTE_CORE_IMPORTED_DIR=/abs/path/to/dir-with-core \
       -DCMAKE_BUILD_TYPE=Release -GNinja
@@ -121,17 +129,17 @@ cmake --build build/bind --target _C -j
 
 ## Building the lck wheel
 
-`backend/setup.py` packages the native libraries into the independent **lck
-wheel**, whose package is the standalone top-level **`liger_cute_kernel`**. It
-builds the core + `_C` and ships
-`liger_cute_kernel/{_C.so, libliger_cute_kernels.so, libnvshmem_host.so}` (plus
+This module's `setup.py` packages the native libraries into the independent
+**lck wheel**, whose package is the standalone top-level **`liger_cute_kernels`**.
+It builds the core + `_C` and ships
+`liger_cute_kernels/{_C.so, libliger_cute_kernels.so, libnvshmem_host.so}` (plus
 that package's `__init__.py`). Build against the **local** torch/CUDA (no build
-isolation), from this `backend/` directory:
+isolation), from this module directory:
 
 ```bash
-cd src/liger_kernel/ops/cute/backend
+cd liger_cute_kernels
 pip wheel . --no-deps --no-build-isolation -w dist
-# -> dist/liger_cute_kernel-0.1.0+cu130.torch2.9.1-cp312-cp312-linux_x86_64.whl
+# -> dist/liger_cute_kernels-0.1.0+cu130.torch2.9.1-cp312-cp312-linux_x86_64.whl
 ```
 
 The wheel is tagged with the CUDA + torch version as a PEP 440 local version
