@@ -1,22 +1,28 @@
-"""Mode 2 — hand-assembled TransformerBlockSubmodules using LigerMegatronRMSNorm.
+"""Mode 2 — hand-assembled spec + GPTModel subclass using Liger directly.
 
 Adapted from Megatron's ``examples/run_simple_mcore_train_loop.py``. The
 relevant additions (vs. that file) are:
 
-  1. Direct import of ``LigerMegatronRMSNorm`` (no monkey-patch).
+  1. Direct imports of ``LigerMegatronRMSNorm`` and ``LigerMegatronCrossEntropy``
+     (no monkey-patch).
 
-  2. ``model_provider()`` assembles a ``TransformerBlockSubmodules`` by
-     hand, placing ``LigerMegatronRMSNorm`` into every norm slot:
+  2. ``model_provider()`` assembles a ``TransformerBlockSubmodules`` by hand,
+     placing ``LigerMegatronRMSNorm`` into every norm slot:
        - per-layer ``input_layernorm`` and ``pre_mlp_layernorm``
        - the block-level ``layer_norm`` field that backs
          ``decoder.final_layernorm``
-     This is the slot-level integration path — verbose but maximally
-     explicit. It is the only way to control ``final_layernorm`` from
-     user code without monkey-patching.
+     This is the slot-level integration path — verbose but maximally explicit.
+     It is the only way to control ``final_layernorm`` from user code without
+     monkey-patching.
 
-  3. ``_print_norm_classes`` after model construction — prints the
-     resolved class for every norm slot so you can verify Liger took
-     over.
+  3. ``_LigerCEGPTModel(GPTModel)`` overrides
+     ``LanguageModule.compute_language_model_loss`` to route the loss through
+     a ``LigerMegatronCrossEntropy`` instance. Cross-entropy has no spec slot
+     in Megatron, so subclassing is the symmetric "hand-built" path.
+
+  4. ``_print_norm_classes`` + ``_print_ce_class`` after model construction
+     — print the resolved class for every norm slot AND the resolved CE
+     class on the model so you can verify Liger took over.
 
 Run with:
     torchrun --nproc_per_node=2 --master_addr=127.0.0.1 --master_port=29500 \\
@@ -65,6 +71,7 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 
 # --- Liger integration: Mode 2 ---------------------------------------------
+from liger_kernel.megatron import LigerMegatronCrossEntropy
 from liger_kernel.megatron import LigerMegatronRMSNorm
 
 # ---------------------------------------------------------------------------
@@ -72,6 +79,31 @@ from liger_kernel.megatron import LigerMegatronRMSNorm
 _SEQUENCE_LENGTH = 64
 _NUM_ITERS = 5
 _NUM_LAYERS = 2
+_LABEL_SMOOTHING = 0.1
+
+
+class _LigerCEGPTModel(GPTModel):
+    """``GPTModel`` subclass that routes its loss through ``LigerMegatronCrossEntropy``.
+
+    Megatron's CE is not a spec slot — ``LanguageModule.compute_language_model_loss``
+    calls ``fused_vocab_parallel_cross_entropy`` directly. The symmetric "hand-built"
+    integration is therefore to subclass ``GPTModel`` and override that method.
+    """
+
+    def __init__(self, *args, liger_ce_label_smoothing: float = 0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.liger_ce = LigerMegatronCrossEntropy(
+            ignore_index=-100,
+            label_smoothing=liger_ce_label_smoothing,
+            reduction="none",
+        )
+
+    def compute_language_model_loss(self, labels, logits):
+        # LanguageModule contract: input labels are [b, s], output loss is [b, s].
+        # LigerMegatronCrossEntropy matches the fused signature, which expects [s, b].
+        labels_sb = labels.transpose(0, 1).contiguous()  # [s, b]
+        loss_sb = self.liger_ce(logits, labels_sb, self.pg_collection.tp)  # [s, b]
+        return loss_sb.transpose(0, 1).contiguous()  # [b, s]
 
 
 def initialize_distributed(tp: int = 2, pp: int = 1) -> None:
@@ -133,11 +165,12 @@ def model_provider() -> GPTModel:
     )
     # ↑↑ ----------------------------------------------------------------- ↑↑
 
-    return GPTModel(
+    return _LigerCEGPTModel(
         config=cfg,
         transformer_layer_spec=block_spec,
-        vocab_size=100,
+        vocab_size=128,
         max_sequence_length=_SEQUENCE_LENGTH,
+        liger_ce_label_smoothing=_LABEL_SMOOTHING,
     )
 
 
@@ -194,8 +227,23 @@ def _print_norm_classes(model: torch.nn.Module) -> None:
     print()
 
 
+def _print_ce_class(model: torch.nn.Module) -> None:
+    """Show that ``compute_language_model_loss`` will route through Liger."""
+    ce = getattr(model, "liger_ce", None)
+    print("=== Resolved CE class ===")
+    if ce is None:
+        print("  model.liger_ce  → (not set; subclass missing)")
+    else:
+        print(f"  model.liger_ce            →  {type(ce).__module__}.{type(ce).__name__}")
+        print(f"  ce.label_smoothing        →  {ce.label_smoothing}")
+        print(f"  ce.ignore_index           →  {ce.ignore_index}")
+    print()
+
+
 def main() -> None:
-    initialize_distributed(tp=2, pp=1)
+    # TP=1, DP=2 — CE patch (TP=1 only). Norms are correct under any TP value, so
+    # demonstrating both Liger features in one script means running data-parallel.
+    initialize_distributed(tp=1, pp=1)
     model_parallel_cuda_manual_seed(123)
     torch.manual_seed(123)
 
@@ -205,6 +253,7 @@ def main() -> None:
         print("\n=== Full model tree (mode 2: hand-built spec) ===")
         print(gpt_model)
         _print_norm_classes(gpt_model)
+        _print_ce_class(gpt_model)
 
     ddp_cfg = DistributedDataParallelConfig(
         grad_reduce_in_fp32=False,
