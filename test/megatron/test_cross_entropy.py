@@ -66,16 +66,28 @@ def _reference_loss(
     ],
 )
 def test_class_matches_pytorch_cross_entropy(s, b, v, dtype, atol, rtol):
+    """Headline correctness — forward AND backward parity vs. PyTorch's F.cross_entropy.
+
+    Liger writes the gradient back into the input tensor in-place during forward; both paths
+    are fed independent clones of the same starting tensor so the in-place write on the Liger
+    side can't corrupt the reference path."""
     ce = LigerMegatronCrossEntropy()
 
-    logits = torch.randn(s, b, v, device=device, dtype=dtype) * 0.5
+    base = torch.randn(s, b, v, device=device, dtype=dtype) * 0.5
     target = torch.randint(0, v, (s, b), device=device, dtype=torch.long)
 
-    ref = _reference_loss(logits, target, ignore_index=-100, label_smoothing=0.0)
-    got = ce(logits, target)
+    h_ref = base.detach().clone().requires_grad_(True)
+    h_got = base.detach().clone().requires_grad_(True)
+
+    ref = _reference_loss(h_ref, target, ignore_index=-100, label_smoothing=0.0)
+    got = ce(h_got, target)
 
     assert got.shape == (s, b)
     assert_verbose_allclose(got.float(), ref.float(), atol=atol, rtol=rtol)
+
+    ref.sum().backward()
+    got.sum().backward()
+    assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=atol, rtol=rtol)
 
 
 # ---------------------------------------------------------------------------
@@ -85,29 +97,48 @@ def test_class_matches_pytorch_cross_entropy(s, b, v, dtype, atol, rtol):
 
 @pytest.mark.parametrize("ignore_index", [-100, 0])
 def test_class_respects_ignore_index(ignore_index):
+    """ignore_index plumbing — forward AND backward parity. Ignored positions must
+    contribute zero loss AND zero gradient on the Liger side."""
     s, b, v = 16, 2, 1024
     ce = LigerMegatronCrossEntropy(ignore_index=ignore_index)
 
-    logits = torch.randn(s, b, v, device=device, dtype=torch.float32)
+    base = torch.randn(s, b, v, device=device, dtype=torch.float32)
     target = torch.randint(0, v, (s, b), device=device, dtype=torch.long)
     target.view(-1)[: (s * b) // 4] = ignore_index
 
-    ref = _reference_loss(logits, target, ignore_index=ignore_index, label_smoothing=0.0)
-    got = ce(logits, target)
+    h_ref = base.detach().clone().requires_grad_(True)
+    h_got = base.detach().clone().requires_grad_(True)
+
+    ref = _reference_loss(h_ref, target, ignore_index=ignore_index, label_smoothing=0.0)
+    got = ce(h_got, target)
     assert_verbose_allclose(got.float(), ref.float(), atol=1e-6, rtol=1e-5)
+
+    ref.sum().backward()
+    got.sum().backward()
+    assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=1e-6, rtol=1e-5)
 
 
 @pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
 def test_class_respects_label_smoothing(label_smoothing):
+    """label_smoothing plumbing — forward AND backward parity. Liger and PyTorch share the
+    same smoothing formula but with different intermediate kernels; gradient check guards
+    against algebraic-equivalence-but-numerical-divergence bugs."""
     s, b, v = 8, 2, 512
     ce = LigerMegatronCrossEntropy(label_smoothing=label_smoothing)
 
-    logits = torch.randn(s, b, v, device=device, dtype=torch.float32)
+    base = torch.randn(s, b, v, device=device, dtype=torch.float32)
     target = torch.randint(0, v, (s, b), device=device, dtype=torch.long)
 
-    ref = _reference_loss(logits, target, ignore_index=-100, label_smoothing=label_smoothing)
-    got = ce(logits, target)
+    h_ref = base.detach().clone().requires_grad_(True)
+    h_got = base.detach().clone().requires_grad_(True)
+
+    ref = _reference_loss(h_ref, target, ignore_index=-100, label_smoothing=label_smoothing)
+    got = ce(h_got, target)
     assert_verbose_allclose(got.float(), ref.float(), atol=1e-5, rtol=1e-4)
+
+    ref.sum().backward()
+    got.sum().backward()
+    assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=1e-5, rtol=1e-4)
 
 
 @pytest.mark.parametrize("bad_reduction", ["mean", "sum", "MEAN", "garbage"])
@@ -169,17 +200,28 @@ def test_class_accepts_single_rank_tp_group():
 
 
 def test_class_preserves_gradients():
+    """Backward smoke test — grad exists with correct shape AND matches PyTorch's reference.
+
+    Previously asserted only ``grad is not None`` + shape; that gave a misleadingly green test
+    when grad values were wrong. Now compares against ``F.cross_entropy(...).sum().backward()``."""
     s, b, v = 8, 2, 256
     ce = LigerMegatronCrossEntropy()
 
-    logits = torch.randn(s, b, v, device=device, dtype=torch.float32, requires_grad=True)
+    base = torch.randn(s, b, v, device=device, dtype=torch.float32)
     target = torch.randint(0, v, (s, b), device=device, dtype=torch.long)
 
-    loss = ce(logits, target).sum()
-    loss.backward()
+    h_ref = base.detach().clone().requires_grad_(True)
+    h_got = base.detach().clone().requires_grad_(True)
 
-    assert logits.grad is not None
-    assert logits.grad.shape == logits.shape
+    ref = _reference_loss(h_ref, target, ignore_index=-100, label_smoothing=0.0)
+    got = ce(h_got, target)
+
+    ref.sum().backward()
+    got.sum().backward()
+
+    assert h_got.grad is not None
+    assert h_got.grad.shape == h_got.shape
+    assert_verbose_allclose(h_got.grad.float(), h_ref.grad.float(), atol=1e-6, rtol=1e-5)
 
 
 def test_class_extra_repr():
