@@ -223,8 +223,7 @@ def _patch_fused_vocab_parallel_cross_entropy() -> None:
     fused_ce.fused_vocab_parallel_cross_entropy = liger_fused_vocab_parallel_cross_entropy
 
     logger.info(
-        "Patched megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy "
-        "with Liger cross-entropy."
+        "Patched megatron.core.fusions.fused_cross_entropy.fused_vocab_parallel_cross_entropy with Liger cross-entropy."
     )
 
 
@@ -287,6 +286,5 @@ def _patch_vocab_parallel_cross_entropy() -> None:
     unfused_ce.vocab_parallel_cross_entropy = liger_vocab_parallel_cross_entropy
 
     logger.info(
-        "Patched megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy "
-        "with Liger cross-entropy."
+        "Patched megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy with Liger cross-entropy."
     )

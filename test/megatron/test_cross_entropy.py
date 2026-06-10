@@ -151,12 +151,12 @@ def test_class_rejects_non_none_reduction(bad_reduction):
 def test_class_rejects_non_3d_logits():
     """The class explicitly guards against HuggingFace-shape [b, s, v] callers etc."""
     ce = LigerMegatronCrossEntropy()
-    bad = torch.randn(8, 16, device=device)               # 2-D
+    bad = torch.randn(8, 16, device=device)  # 2-D
     target = torch.randint(0, 16, (8,), device=device, dtype=torch.long)
     with pytest.raises(ValueError, match="3-D"):
         ce(bad, target)
 
-    too_many = torch.randn(2, 2, 4, 16, device=device)    # 4-D
+    too_many = torch.randn(2, 2, 4, 16, device=device)  # 4-D
     target2 = torch.randint(0, 16, (2, 2, 4), device=device, dtype=torch.long)
     with pytest.raises(ValueError, match="3-D"):
         ce(too_many, target2)
@@ -259,7 +259,7 @@ def _assign_ignore_index(target: torch.Tensor, ignore_index: int, frac: float = 
     [
         (16, 1, 4096),
         (32, 2, 32000),  # llama-ish vocab
-        (5, 3, 123),     # weird shape
+        (5, 3, 123),  # weird shape
     ],
 )
 @pytest.mark.parametrize("scalar", [0.5, 1.0, 5.0])
@@ -302,8 +302,8 @@ def test_class_correctness_scalar_sweep(s, b, v, scalar, dtype, atol, rtol):
     "s, b, v, ignore_index",
     [
         (16, 1, 4096, -100),  # standard hf sentinel
-        (32, 2, 32000, 2),    # positive id (valid vocab slot used as ignore)
-        (5, 3, 123, -123),    # weird negative
+        (32, 2, 32000, 2),  # positive id (valid vocab slot used as ignore)
+        (5, 3, 123, -123),  # weird negative
     ],
 )
 @pytest.mark.parametrize(
@@ -360,7 +360,14 @@ def test_class_correctness_with_ignore_index_sweep(s, b, v, ignore_index, dtype,
     ],
 )
 def test_class_correctness_with_label_smoothing_and_ignore_index(
-    s, b, v, ignore_index, label_smoothing, dtype, atol, rtol,
+    s,
+    b,
+    v,
+    ignore_index,
+    label_smoothing,
+    dtype,
+    atol,
+    rtol,
 ):
     """Combined ignore_index × label_smoothing sweep — the two are independent in Liger's CE
     kernel but mixing them historically surfaced bugs in the smoothing math. Mirrors

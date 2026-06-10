@@ -104,9 +104,7 @@ def _select_fwd(provider: str):
         return _megatron_fused_call
     if provider == "megatron-unfused":
         if not _MEGATRON_AVAILABLE:
-            raise RuntimeError(
-                "megatron-core not installed; cannot benchmark 'megatron-unfused' provider"
-            )
+            raise RuntimeError("megatron-core not installed; cannot benchmark 'megatron-unfused' provider")
         tp_group = _ensure_single_rank_tp_group()
 
         def _megatron_unfused_call(logits, target):

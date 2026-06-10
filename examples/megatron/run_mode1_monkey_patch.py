@@ -152,14 +152,8 @@ def _print_ce_symbols() -> None:
     import megatron.core.tensor_parallel.cross_entropy as unfused
 
     print("\n=== Resolved CE symbols ===")
-    print(
-        f"  fused.fused_vocab_parallel_cross_entropy   →  "
-        f"{fused.fused_vocab_parallel_cross_entropy.__name__}"
-    )
-    print(
-        f"  unfused.vocab_parallel_cross_entropy       →  "
-        f"{unfused.vocab_parallel_cross_entropy.__name__}"
-    )
+    print(f"  fused.fused_vocab_parallel_cross_entropy   →  {fused.fused_vocab_parallel_cross_entropy.__name__}")
+    print(f"  unfused.vocab_parallel_cross_entropy       →  {unfused.vocab_parallel_cross_entropy.__name__}")
     print()
 
 

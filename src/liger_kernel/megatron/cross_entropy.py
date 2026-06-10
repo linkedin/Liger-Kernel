@@ -77,8 +77,4 @@ class LigerMegatronCrossEntropy(torch.nn.Module):
         return loss.reshape(s, b)
 
     def extra_repr(self) -> str:
-        return (
-            f"ignore_index={self.ignore_index}, "
-            f"label_smoothing={self.label_smoothing}, "
-            f"reduction={self.reduction!r}"
-        )
+        return f"ignore_index={self.ignore_index}, label_smoothing={self.label_smoothing}, reduction={self.reduction!r}"

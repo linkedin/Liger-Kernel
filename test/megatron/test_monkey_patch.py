@@ -29,7 +29,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 # ===========================================================================
 # 1. Stub-megatron installers + fixtures
 # ===========================================================================
@@ -77,7 +76,10 @@ def _install_fake_megatron_ce(
     if with_unfused_symbol:
 
         def original_vocab_parallel_cross_entropy(
-            vocab_parallel_logits, target, label_smoothing=0.0, tp_group=None,
+            vocab_parallel_logits,
+            target,
+            label_smoothing=0.0,
+            tp_group=None,
         ):
             raise AssertionError("original megatron unfused kernel called — patch failed")
 
@@ -437,11 +439,13 @@ def test_patch_constructs_ce_with_class_defaults(fake_megatron_ce):
     real_ctor = ce_mod.LigerMegatronCrossEntropy.__init__
 
     def recording_init(self, ignore_index=-100, label_smoothing=0.0, reduction="none"):
-        captured.append({
-            "ignore_index": ignore_index,
-            "label_smoothing": label_smoothing,
-            "reduction": reduction,
-        })
+        captured.append(
+            {
+                "ignore_index": ignore_index,
+                "label_smoothing": label_smoothing,
+                "reduction": reduction,
+            }
+        )
         real_ctor(self, ignore_index=ignore_index, label_smoothing=label_smoothing, reduction=reduction)
 
     with patch.object(ce_mod.LigerMegatronCrossEntropy, "__init__", recording_init):
@@ -492,8 +496,7 @@ def test_unfused_wrapper_honors_runtime_label_smoothing(fake_megatron_ce):
         unfused_ce.vocab_parallel_cross_entropy(logits, target, label_smoothing=0.3)
 
     assert constructed == [0.3], (
-        f"unfused wrapper should construct one fresh instance with the runtime override; "
-        f"got: {constructed}"
+        f"unfused wrapper should construct one fresh instance with the runtime override; got: {constructed}"
     )
 
 
@@ -525,9 +528,7 @@ def test_unfused_wrapper_uses_default_when_caller_does_not_pass_label_smoothing(
         # Second positional call also without label_smoothing — still no new construction.
         unfused_ce.vocab_parallel_cross_entropy(logits, target)
 
-    assert constructed == [], (
-        f"default-path calls must reuse default_ce — no fresh instances; got: {constructed}"
-    )
+    assert constructed == [], f"default-path calls must reuse default_ce — no fresh instances; got: {constructed}"
 
 
 def test_unfused_wrapper_honors_explicit_zero_label_smoothing(fake_megatron_ce):
@@ -563,8 +564,7 @@ def test_unfused_wrapper_honors_explicit_zero_label_smoothing(fake_megatron_ce):
         unfused_ce.vocab_parallel_cross_entropy(logits, target, 0.0)
 
     assert constructed == [0.0], (
-        f"explicit label_smoothing=0.0 at call time must be honored verbatim; "
-        f"got: {constructed}"
+        f"explicit label_smoothing=0.0 at call time must be honored verbatim; got: {constructed}"
     )
 
 
@@ -820,8 +820,9 @@ from test.utils import assert_verbose_allclose  # noqa: E402
 _device = infer_device()
 
 
-def _ref_loss_sbv(logits_sbv: torch.Tensor, target_sb: torch.Tensor,
-                  ignore_index: int = -100, label_smoothing: float = 0.0) -> torch.Tensor:
+def _ref_loss_sbv(
+    logits_sbv: torch.Tensor, target_sb: torch.Tensor, ignore_index: int = -100, label_smoothing: float = 0.0
+) -> torch.Tensor:
     """Reference CE for [s, b, v] logits / [s, b] target, returning [s, b]."""
     s, b, v = logits_sbv.shape
     loss_flat = F.cross_entropy(
@@ -896,7 +897,9 @@ def test_patched_unfused_symbol_runtime_label_smoothing_matches_pytorch(fake_meg
 
     ref = _ref_loss_sbv(logits.clone(), target, label_smoothing=label_smoothing)
     got = unfused_ce.vocab_parallel_cross_entropy(
-        logits.clone(), target, label_smoothing=label_smoothing,
+        logits.clone(),
+        target,
+        label_smoothing=label_smoothing,
     )
     assert_verbose_allclose(got.float(), ref.float(), atol=1e-5, rtol=1e-4)
 

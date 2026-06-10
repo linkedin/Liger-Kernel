@@ -101,9 +101,9 @@ class _LigerCEGPTModel(GPTModel):
     def compute_language_model_loss(self, labels, logits):
         # LanguageModule contract: input labels are [b, s], output loss is [b, s].
         # LigerMegatronCrossEntropy matches the fused signature, which expects [s, b].
-        labels_sb = labels.transpose(0, 1).contiguous()                    # [s, b]
+        labels_sb = labels.transpose(0, 1).contiguous()  # [s, b]
         loss_sb = self.liger_ce(logits, labels_sb, self.pg_collection.tp)  # [s, b]
-        return loss_sb.transpose(0, 1).contiguous()                        # [b, s]
+        return loss_sb.transpose(0, 1).contiguous()  # [b, s]
 
 
 def initialize_distributed(tp: int = 2, pp: int = 1) -> None:
@@ -234,8 +234,7 @@ def _print_ce_class(model: torch.nn.Module) -> None:
     if ce is None:
         print("  model.liger_ce  → (not set; subclass missing)")
     else:
-        print(f"  model.liger_ce            →  "
-              f"{type(ce).__module__}.{type(ce).__name__}")
+        print(f"  model.liger_ce            →  {type(ce).__module__}.{type(ce).__name__}")
         print(f"  ce.label_smoothing        →  {ce.label_smoothing}")
         print(f"  ce.ignore_index           →  {ce.ignore_index}")
     print()
