@@ -2219,102 +2219,102 @@ jsd,liger,full,memory,MB,BT,total tokens,1024,3514.0009765625,3514.0009765625,35
 jsd,liger,full,memory,MB,BT,total tokens,2048,7014.0009765625,7014.0009765625,7014.0009765625,"{""vocab_size"": 128256, ""bsz"": 1, ""seq_len"": 8192}",NVIDIA B200,2026-05-27 17:14:32,0.8.0
 jsd,liger,full,memory,MB,BT,total tokens,4096,14028.0009765625,14028.0009765625,14028.0009765625,"{""vocab_size"": 128256, ""bsz"": 1, ""seq_len"": 8192}",NVIDIA B200,2026-05-27 17:14:32,0.8.0
 jsd,liger,full,memory,MB,BT,total tokens,8192,28056.0,28056.0,28056.0,"{""vocab_size"": 128256, ""bsz"": 1, ""seq_len"": 8192}",NVIDIA B200,2026-05-27 17:14:32,0.8.0
-megatron_cross_entropy,liger,forward,speed,ms,V,vocab size,4096,0.2385600060224533,0.23590399324893951,0.24048000574111938,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:43:58,0.8.0
-megatron_cross_entropy,liger,forward,speed,ms,V,vocab size,8192,0.26820799708366394,0.26531198620796204,0.27125120162963867,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:43:58,0.8.0
-megatron_cross_entropy,liger,forward,speed,ms,V,vocab size,16384,0.3599199950695038,0.3569599986076355,0.36266239881515505,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:43:58,0.8.0
-megatron_cross_entropy,liger,forward,speed,ms,V,vocab size,32768,0.6502079963684082,0.6452223896980286,0.6563008189201356,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:43:58,0.8.0
-megatron_cross_entropy,liger,forward,speed,ms,V,vocab size,65536,1.087440013885498,1.0827391862869262,1.0942399978637696,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:43:58,0.8.0
-megatron_cross_entropy,liger,forward,speed,ms,V,vocab size,131072,2.1112000942230225,2.108524799346924,2.1132928848266603,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:43:58,0.8.0
-megatron_cross_entropy,torch,forward,speed,ms,V,vocab size,4096,0.2269120067358017,0.225913605093956,0.22775039970874789,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:43:59,0.8.0
-megatron_cross_entropy,torch,forward,speed,ms,V,vocab size,8192,0.48070400953292847,0.47954559326171875,0.48152959942817686,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:43:59,0.8.0
-megatron_cross_entropy,torch,forward,speed,ms,V,vocab size,16384,0.8124480247497559,0.8111680150032043,0.813696026802063,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:43:59,0.8.0
-megatron_cross_entropy,torch,forward,speed,ms,V,vocab size,32768,2.1381120681762695,2.1316160202026366,2.142361545562744,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:43:59,0.8.0
-megatron_cross_entropy,torch,forward,speed,ms,V,vocab size,65536,4.391056060791016,4.389933013916016,4.3939519882202145,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:43:59,0.8.0
-megatron_cross_entropy,torch,forward,speed,ms,V,vocab size,131072,8.81107234954834,8.806303977966309,8.81488037109375,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:43:59,0.8.0
-megatron_cross_entropy,megatron,forward,speed,ms,V,vocab size,4096,0.31273600459098816,0.31200000643730164,0.31331199407577515,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:01,0.8.0
-megatron_cross_entropy,megatron,forward,speed,ms,V,vocab size,8192,0.6373440027236938,0.636352002620697,0.6381440162658691,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:01,0.8.0
-megatron_cross_entropy,megatron,forward,speed,ms,V,vocab size,16384,1.3848639726638794,1.3825664043426515,1.3870784282684325,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:01,0.8.0
-megatron_cross_entropy,megatron,forward,speed,ms,V,vocab size,32768,2.829935908317566,2.8288448333740233,2.8316224098205565,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:01,0.8.0
-megatron_cross_entropy,megatron,forward,speed,ms,V,vocab size,65536,5.823584079742432,5.8137922286987305,5.826655864715576,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:01,0.8.0
-megatron_cross_entropy,megatron,forward,speed,ms,V,vocab size,131072,11.810944080352783,11.80013427734375,11.817446517944337,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:01,0.8.0
-megatron_cross_entropy,megatron-unfused,forward,speed,ms,V,vocab size,4096,0.5649279952049255,0.5639231920242309,0.5661375880241394,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:02,0.8.0
-megatron_cross_entropy,megatron-unfused,forward,speed,ms,V,vocab size,8192,1.094543993473053,1.093395209312439,1.0956799983978271,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:02,0.8.0
-megatron_cross_entropy,megatron-unfused,forward,speed,ms,V,vocab size,16384,2.0701760053634644,2.068671941757202,2.072096109390259,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:02,0.8.0
-megatron_cross_entropy,megatron-unfused,forward,speed,ms,V,vocab size,32768,4.027215957641602,4.024915313720703,4.028927993774413,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:02,0.8.0
-megatron_cross_entropy,megatron-unfused,forward,speed,ms,V,vocab size,65536,7.93833589553833,7.937132930755616,7.940275096893311,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:02,0.8.0
-megatron_cross_entropy,megatron-unfused,forward,speed,ms,V,vocab size,131072,15.817471981048584,15.814432144165039,15.821215629577637,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:02,0.8.0
-megatron_cross_entropy,liger,backward,speed,ms,V,vocab size,4096,0.3516159951686859,0.3489919900894165,0.35476480722427367,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:03,0.8.0
-megatron_cross_entropy,liger,backward,speed,ms,V,vocab size,8192,0.4639679938554764,0.46081281304359434,0.46724479794502255,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:03,0.8.0
-megatron_cross_entropy,liger,backward,speed,ms,V,vocab size,16384,0.7123200297355652,0.7092544078826905,0.7154880046844483,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:03,0.8.0
-megatron_cross_entropy,liger,backward,speed,ms,V,vocab size,32768,1.322975993156433,1.3184319734573364,1.328320026397705,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:03,0.8.0
-megatron_cross_entropy,liger,backward,speed,ms,V,vocab size,65536,2.3985120058059692,2.393356847763062,2.405248022079468,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:03,0.8.0
-megatron_cross_entropy,liger,backward,speed,ms,V,vocab size,131072,4.698495864868164,4.69042558670044,4.70184965133667,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:03,0.8.0
-megatron_cross_entropy,torch,backward,speed,ms,V,vocab size,4096,0.48710399866104126,0.4862975895404816,0.48793599009513855,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:04,0.8.0
-megatron_cross_entropy,torch,backward,speed,ms,V,vocab size,8192,0.9741439819335938,0.9731391787528991,0.9752448081970215,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:04,0.8.0
-megatron_cross_entropy,torch,backward,speed,ms,V,vocab size,16384,1.8759199976921082,1.8737216234207152,1.8779136180877687,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:04,0.8.0
-megatron_cross_entropy,torch,backward,speed,ms,V,vocab size,32768,4.405440092086792,4.398931121826172,4.407916831970215,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:04,0.8.0
-megatron_cross_entropy,torch,backward,speed,ms,V,vocab size,65536,8.920191764831543,8.916671752929688,8.923616409301758,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:04,0.8.0
-megatron_cross_entropy,torch,backward,speed,ms,V,vocab size,131072,17.845855712890625,17.843469619750977,17.847046661376954,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:04,0.8.0
-megatron_cross_entropy,megatron,backward,speed,ms,V,vocab size,4096,0.5368639826774597,0.536191999912262,0.5374848127365113,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:05,0.8.0
-megatron_cross_entropy,megatron,backward,speed,ms,V,vocab size,8192,1.0521279573440552,1.05141122341156,1.0528064489364624,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:05,0.8.0
-megatron_cross_entropy,megatron,backward,speed,ms,V,vocab size,16384,2.1722079515457153,2.169472026824951,2.1735936641693114,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:05,0.8.0
-megatron_cross_entropy,megatron,backward,speed,ms,V,vocab size,32768,4.448447942733765,4.447282981872559,4.449868965148926,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:05,0.8.0
-megatron_cross_entropy,megatron,backward,speed,ms,V,vocab size,65536,9.033520221710205,9.030751991271973,9.042854690551758,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:05,0.8.0
-megatron_cross_entropy,megatron,backward,speed,ms,V,vocab size,131072,17.958431243896484,17.9557315826416,17.960690689086913,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:05,0.8.0
-megatron_cross_entropy,megatron-unfused,backward,speed,ms,V,vocab size,4096,0.7786880135536194,0.7767040133476257,0.7803391933441162,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:06,0.8.0
-megatron_cross_entropy,megatron-unfused,backward,speed,ms,V,vocab size,8192,1.475823998451233,1.4742015838623046,1.4774847745895388,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:06,0.8.0
-megatron_cross_entropy,megatron-unfused,backward,speed,ms,V,vocab size,16384,2.787328004837036,2.785683250427246,2.7883071899414062,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:06,0.8.0
-megatron_cross_entropy,megatron-unfused,backward,speed,ms,V,vocab size,32768,5.420928001403809,5.419379329681396,5.423315238952636,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:06,0.8.0
-megatron_cross_entropy,megatron-unfused,backward,speed,ms,V,vocab size,65536,10.677472114562988,10.674201774597169,10.67763843536377,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:06,0.8.0
-megatron_cross_entropy,megatron-unfused,backward,speed,ms,V,vocab size,131072,21.254928588867188,21.25368995666504,21.2557315826416,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:06,0.8.0
-megatron_cross_entropy,liger,full,speed,ms,V,vocab size,4096,0.41488000750541687,0.4122175931930542,0.41767039299011227,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:07,0.8.0
-megatron_cross_entropy,liger,full,speed,ms,V,vocab size,8192,0.5923520028591156,0.5882560014724731,0.6005120277404785,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:07,0.8.0
-megatron_cross_entropy,liger,full,speed,ms,V,vocab size,16384,0.9725440144538879,0.9690751910209655,0.9779008150100708,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:07,0.8.0
-megatron_cross_entropy,liger,full,speed,ms,V,vocab size,32768,1.8396799564361572,1.8349119424819946,1.8454079627990723,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:07,0.8.0
-megatron_cross_entropy,liger,full,speed,ms,V,vocab size,65536,3.4398880004882812,3.429087924957275,3.4599680423736574,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:07,0.8.0
-megatron_cross_entropy,liger,full,speed,ms,V,vocab size,131072,6.780799865722656,6.763827323913574,6.796000003814697,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:07,0.8.0
-megatron_cross_entropy,torch,full,speed,ms,V,vocab size,4096,0.5540960133075714,0.5528640151023865,0.555296003818512,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:08,0.8.0
-megatron_cross_entropy,torch,full,speed,ms,V,vocab size,8192,1.1072640419006348,1.1059776306152345,1.1086400032043457,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:08,0.8.0
-megatron_cross_entropy,torch,full,speed,ms,V,vocab size,16384,2.139024019241333,2.1362879276275635,2.142067241668701,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:08,0.8.0
-megatron_cross_entropy,torch,full,speed,ms,V,vocab size,32768,4.9202880859375,4.91553258895874,4.924480152130127,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:08,0.8.0
-megatron_cross_entropy,torch,full,speed,ms,V,vocab size,65536,9.961983680725098,9.958450889587402,9.964262008666992,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:08,0.8.0
-megatron_cross_entropy,torch,full,speed,ms,V,vocab size,131072,19.926143646240234,19.913933563232423,19.93060417175293,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:08,0.8.0
-megatron_cross_entropy,megatron,full,speed,ms,V,vocab size,4096,0.6057599782943726,0.604960024356842,0.6063359975814819,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:09,0.8.0
-megatron_cross_entropy,megatron,full,speed,ms,V,vocab size,8192,1.1868000030517578,1.1857984066009521,1.1880639791488647,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:09,0.8.0
-megatron_cross_entropy,megatron,full,speed,ms,V,vocab size,16384,2.4351680278778076,2.4330944538116457,2.4368255615234373,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:09,0.8.0
-megatron_cross_entropy,megatron,full,speed,ms,V,vocab size,32768,4.968512058258057,4.967942237854004,4.969702434539795,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:09,0.8.0
-megatron_cross_entropy,megatron,full,speed,ms,V,vocab size,65536,10.074239730834961,10.06367359161377,10.077676963806152,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:09,0.8.0
-megatron_cross_entropy,megatron,full,speed,ms,V,vocab size,131072,20.022079467773438,20.015307998657228,20.02815971374512,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:09,0.8.0
-megatron_cross_entropy,megatron-unfused,full,speed,ms,V,vocab size,4096,0.846015989780426,0.8447743892669677,0.8472639918327332,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,megatron-unfused,full,speed,ms,V,vocab size,8192,1.6103359460830688,1.6088960409164428,1.6117696285247802,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,megatron-unfused,full,speed,ms,V,vocab size,16384,3.0503358840942383,3.049056053161621,3.0524160861968994,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,megatron-unfused,full,speed,ms,V,vocab size,32768,5.937999963760376,5.936895847320557,5.939583778381348,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,megatron-unfused,full,speed,ms,V,vocab size,65536,11.711487770080566,11.710764503479005,11.713843536376952,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,megatron-unfused,full,speed,ms,V,vocab size,131072,23.322416305541992,23.321644973754882,23.32369956970215,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,liger,full,memory,MB,V,vocab size,4096,192.0791015625,192.0791015625,192.0791015625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,liger,full,memory,MB,V,vocab size,8192,384.0791015625,384.0791015625,384.0791015625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,liger,full,memory,MB,V,vocab size,16384,768.0791015625,768.0791015625,768.0791015625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,liger,full,memory,MB,V,vocab size,32768,1536.0791015625,1536.0791015625,1536.0791015625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,liger,full,memory,MB,V,vocab size,65536,3072.0791015625,3072.0791015625,3072.0791015625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,liger,full,memory,MB,V,vocab size,131072,6144.0791015625,6144.0791015625,6144.0791015625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,torch,full,memory,MB,V,vocab size,4096,512.0947265625,512.0947265625,512.0947265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,torch,full,memory,MB,V,vocab size,8192,1024.0947265625,1024.0947265625,1024.0947265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,torch,full,memory,MB,V,vocab size,16384,2048.0947265625,2048.0947265625,2048.0947265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,torch,full,memory,MB,V,vocab size,32768,4096.0947265625,4096.0947265625,4096.0947265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,torch,full,memory,MB,V,vocab size,65536,8192.0947265625,8192.0947265625,8192.0947265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,torch,full,memory,MB,V,vocab size,131072,16384.09375,16384.09375,16384.09375,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,megatron,full,memory,MB,V,vocab size,4096,448.1650390625,448.1650390625,448.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,megatron,full,memory,MB,V,vocab size,8192,896.1650390625,896.1650390625,896.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,megatron,full,memory,MB,V,vocab size,16384,1792.1650390625,1792.1650390625,1792.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,megatron,full,memory,MB,V,vocab size,32768,3584.1650390625,3584.1650390625,3584.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,megatron,full,memory,MB,V,vocab size,65536,7168.1650390625,7168.1650390625,7168.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,megatron,full,memory,MB,V,vocab size,131072,14336.1650390625,14336.1650390625,14336.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:10,0.8.0
-megatron_cross_entropy,megatron-unfused,full,memory,MB,V,vocab size,4096,320.1650390625,320.1650390625,320.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:11,0.8.0
-megatron_cross_entropy,megatron-unfused,full,memory,MB,V,vocab size,8192,640.1650390625,640.1650390625,640.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:11,0.8.0
-megatron_cross_entropy,megatron-unfused,full,memory,MB,V,vocab size,16384,1280.1650390625,1280.1650390625,1280.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:11,0.8.0
-megatron_cross_entropy,megatron-unfused,full,memory,MB,V,vocab size,32768,2560.1650390625,2560.1650390625,2560.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:11,0.8.0
-megatron_cross_entropy,megatron-unfused,full,memory,MB,V,vocab size,65536,5120.1650390625,5120.1650390625,5120.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:11,0.8.0
-megatron_cross_entropy,megatron-unfused,full,memory,MB,V,vocab size,131072,10240.1650390625,10240.1650390625,10240.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-10 07:44:11,0.8.0
+megatron_cross_entropy,liger,forward,speed,ms,V,vocab size,4096,0.14204800128936768,0.1410367965698242,0.1430591970682144,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:48,0.8.0
+megatron_cross_entropy,liger,forward,speed,ms,V,vocab size,8192,0.2648000121116638,0.26339200139045715,0.26604801416397095,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:48,0.8.0
+megatron_cross_entropy,liger,forward,speed,ms,V,vocab size,16384,0.41708800196647644,0.4160703957080841,0.4182016015052795,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:48,0.8.0
+megatron_cross_entropy,liger,forward,speed,ms,V,vocab size,32768,0.8109760284423828,0.8091199994087219,0.8127679824829102,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:48,0.8.0
+megatron_cross_entropy,liger,forward,speed,ms,V,vocab size,65536,1.53164803981781,1.5298240184783936,1.5327039957046509,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:48,0.8.0
+megatron_cross_entropy,liger,forward,speed,ms,V,vocab size,131072,2.9676640033721924,2.9664767265319827,2.968652772903442,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:48,0.8.0
+megatron_cross_entropy,torch,forward,speed,ms,V,vocab size,4096,0.2261119931936264,0.22495999932289124,0.22681599855422974,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:49,0.8.0
+megatron_cross_entropy,torch,forward,speed,ms,V,vocab size,8192,0.47790399193763733,0.4768640100955963,0.47873919606208803,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:49,0.8.0
+megatron_cross_entropy,torch,forward,speed,ms,V,vocab size,16384,0.8101440072059631,0.8090879917144775,0.8117120265960693,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:49,0.8.0
+megatron_cross_entropy,torch,forward,speed,ms,V,vocab size,32768,2.1363840103149414,2.1300607204437254,2.1403968811035154,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:49,0.8.0
+megatron_cross_entropy,torch,forward,speed,ms,V,vocab size,65536,4.387887954711914,4.385920143127441,4.391807937622071,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:49,0.8.0
+megatron_cross_entropy,torch,forward,speed,ms,V,vocab size,131072,8.809280395507812,8.799296379089355,8.81760025024414,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:49,0.8.0
+megatron_cross_entropy,megatron,forward,speed,ms,V,vocab size,4096,0.31174400448799133,0.31088640689849856,0.31244799494743347,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:51,0.8.0
+megatron_cross_entropy,megatron,forward,speed,ms,V,vocab size,8192,0.6334720253944397,0.6325119733810425,0.6344000101089478,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:51,0.8.0
+megatron_cross_entropy,megatron,forward,speed,ms,V,vocab size,16384,1.3822879791259766,1.3799808263778686,1.3836927890777586,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:51,0.8.0
+megatron_cross_entropy,megatron,forward,speed,ms,V,vocab size,32768,2.8581440448760986,2.853868770599365,2.8636031627655028,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:51,0.8.0
+megatron_cross_entropy,megatron,forward,speed,ms,V,vocab size,65536,5.754720211029053,5.749446392059326,5.759596729278565,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:51,0.8.0
+megatron_cross_entropy,megatron,forward,speed,ms,V,vocab size,131072,11.80731201171875,11.79536018371582,11.820031929016114,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:51,0.8.0
+megatron_cross_entropy,megatron-unfused,forward,speed,ms,V,vocab size,4096,0.5622880160808563,0.5611839890480042,0.5637440085411072,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:52,0.8.0
+megatron_cross_entropy,megatron-unfused,forward,speed,ms,V,vocab size,8192,1.0907040238380432,1.0897855758666992,1.091647982597351,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:52,0.8.0
+megatron_cross_entropy,megatron-unfused,forward,speed,ms,V,vocab size,16384,2.064527988433838,2.0628480911254883,2.066080093383789,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:52,0.8.0
+megatron_cross_entropy,megatron-unfused,forward,speed,ms,V,vocab size,32768,4.0188000202178955,4.017126560211182,4.020025730133057,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:52,0.8.0
+megatron_cross_entropy,megatron-unfused,forward,speed,ms,V,vocab size,65536,7.925887823104858,7.9248512268066404,7.926425743103027,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:52,0.8.0
+megatron_cross_entropy,megatron-unfused,forward,speed,ms,V,vocab size,131072,15.792416095733643,15.790783882141113,15.79366397857666,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:52,0.8.0
+megatron_cross_entropy,liger,backward,speed,ms,V,vocab size,4096,0.3172000050544739,0.31576319932937624,0.3184320032596588,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:53,0.8.0
+megatron_cross_entropy,liger,backward,speed,ms,V,vocab size,8192,0.586463987827301,0.5851967811584473,0.5876479744911194,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:53,0.8.0
+megatron_cross_entropy,liger,backward,speed,ms,V,vocab size,16384,1.050112009048462,1.0490943908691406,1.0505536079406739,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:53,0.8.0
+megatron_cross_entropy,liger,backward,speed,ms,V,vocab size,32768,2.0596959590911865,2.058016061782837,2.0615999698638916,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:53,0.8.0
+megatron_cross_entropy,liger,backward,speed,ms,V,vocab size,65536,4.020416021347046,4.018668842315674,4.022879981994629,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:53,0.8.0
+megatron_cross_entropy,liger,backward,speed,ms,V,vocab size,131072,7.96014404296875,7.958560180664063,7.962348937988281,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:53,0.8.0
+megatron_cross_entropy,torch,backward,speed,ms,V,vocab size,4096,0.48313599824905396,0.48229760527610777,0.48399999737739563,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:54,0.8.0
+megatron_cross_entropy,torch,backward,speed,ms,V,vocab size,8192,0.9732640087604523,0.9721663832664489,0.9744127869606019,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:54,0.8.0
+megatron_cross_entropy,torch,backward,speed,ms,V,vocab size,16384,1.8688000440597534,1.8666880130767822,1.871008038520813,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:54,0.8.0
+megatron_cross_entropy,torch,backward,speed,ms,V,vocab size,32768,4.401024103164673,4.397606277465821,4.405151844024658,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:54,0.8.0
+megatron_cross_entropy,torch,backward,speed,ms,V,vocab size,65536,8.918047904968262,8.913887977600098,8.918880462646484,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:54,0.8.0
+megatron_cross_entropy,torch,backward,speed,ms,V,vocab size,131072,17.8351993560791,17.83012466430664,17.841004180908204,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:54,0.8.0
+megatron_cross_entropy,megatron,backward,speed,ms,V,vocab size,4096,0.532863974571228,0.53193598985672,0.5355648040771485,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:55,0.8.0
+megatron_cross_entropy,megatron,backward,speed,ms,V,vocab size,8192,1.0489439964294434,1.0482560396194458,1.049715209007263,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:55,0.8.0
+megatron_cross_entropy,megatron,backward,speed,ms,V,vocab size,16384,2.168928027153015,2.16725754737854,2.170950412750244,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:55,0.8.0
+megatron_cross_entropy,megatron,backward,speed,ms,V,vocab size,32768,4.47219181060791,4.468128204345703,4.479455947875977,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:55,0.8.0
+megatron_cross_entropy,megatron,backward,speed,ms,V,vocab size,65536,8.917440414428711,8.915040016174316,8.9202241897583,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:55,0.8.0
+megatron_cross_entropy,megatron,backward,speed,ms,V,vocab size,131072,17.950496673583984,17.94822425842285,17.95738868713379,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:55,0.8.0
+megatron_cross_entropy,megatron-unfused,backward,speed,ms,V,vocab size,4096,0.7727360129356384,0.771232008934021,0.7743039727210999,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:56,0.8.0
+megatron_cross_entropy,megatron-unfused,backward,speed,ms,V,vocab size,8192,1.4704959988594055,1.4686784029006956,1.4720319509506226,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:56,0.8.0
+megatron_cross_entropy,megatron-unfused,backward,speed,ms,V,vocab size,16384,2.778815984725952,2.7771327972412108,2.78067831993103,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:56,0.8.0
+megatron_cross_entropy,megatron-unfused,backward,speed,ms,V,vocab size,32768,5.40828800201416,5.406438541412354,5.410143947601318,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:56,0.8.0
+megatron_cross_entropy,megatron-unfused,backward,speed,ms,V,vocab size,65536,10.661664009094238,10.66040325164795,10.6633731842041,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:56,0.8.0
+megatron_cross_entropy,megatron-unfused,backward,speed,ms,V,vocab size,131072,21.23033618927002,21.227769470214845,21.23282585144043,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:56,0.8.0
+megatron_cross_entropy,liger,full,speed,ms,V,vocab size,4096,0.385343998670578,0.3840256094932556,0.3868928074836731,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:57,0.8.0
+megatron_cross_entropy,liger,full,speed,ms,V,vocab size,8192,0.7180799841880798,0.7167487859725952,0.7197887778282166,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:57,0.8.0
+megatron_cross_entropy,liger,full,speed,ms,V,vocab size,16384,1.3109760284423828,1.3099839687347412,1.3128000497817993,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:57,0.8.0
+megatron_cross_entropy,liger,full,speed,ms,V,vocab size,32768,2.580672025680542,2.57894401550293,2.5822464466094974,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:57,0.8.0
+megatron_cross_entropy,liger,full,speed,ms,V,vocab size,65536,5.058495998382568,5.056499099731445,5.0599554061889656,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:57,0.8.0
+megatron_cross_entropy,liger,full,speed,ms,V,vocab size,131072,10.035072326660156,10.03258228302002,10.037696075439452,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:57,0.8.0
+megatron_cross_entropy,torch,full,speed,ms,V,vocab size,4096,0.5521600246429443,0.5510527968406678,0.5535295963287353,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:58,0.8.0
+megatron_cross_entropy,torch,full,speed,ms,V,vocab size,8192,1.104207992553711,1.1026623964309692,1.1058623790740967,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:58,0.8.0
+megatron_cross_entropy,torch,full,speed,ms,V,vocab size,16384,2.1310720443725586,2.129248046875,2.133068799972534,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:58,0.8.0
+megatron_cross_entropy,torch,full,speed,ms,V,vocab size,32768,4.91487979888916,4.909004878997803,4.920441722869873,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:58,0.8.0
+megatron_cross_entropy,torch,full,speed,ms,V,vocab size,65536,9.952128410339355,9.951020812988283,9.95370273590088,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:58,0.8.0
+megatron_cross_entropy,torch,full,speed,ms,V,vocab size,131072,19.904319763183594,19.9025016784668,19.908646011352538,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:58,0.8.0
+megatron_cross_entropy,megatron,full,speed,ms,V,vocab size,4096,0.6039680242538452,0.6028479933738708,0.605184018611908,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:59,0.8.0
+megatron_cross_entropy,megatron,full,speed,ms,V,vocab size,8192,1.182848036289215,1.181920051574707,1.1837823629379272,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:59,0.8.0
+megatron_cross_entropy,megatron,full,speed,ms,V,vocab size,16384,2.4326400756835938,2.429817533493042,2.4341439723968508,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:59,0.8.0
+megatron_cross_entropy,megatron,full,speed,ms,V,vocab size,32768,4.997856140136719,4.992627334594727,5.005472087860108,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:59,0.8.0
+megatron_cross_entropy,megatron,full,speed,ms,V,vocab size,65536,9.963295936584473,9.95948829650879,9.966624069213868,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:59,0.8.0
+megatron_cross_entropy,megatron,full,speed,ms,V,vocab size,131072,20.291247367858887,20.268159866333008,20.304812622070315,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:20:59,0.8.0
+megatron_cross_entropy,megatron-unfused,full,speed,ms,V,vocab size,4096,0.8429440259933472,0.8413824081420899,0.8443904161453246,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,megatron-unfused,full,speed,ms,V,vocab size,8192,1.6034560203552246,1.602579188346863,1.604761576652527,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,megatron-unfused,full,speed,ms,V,vocab size,16384,3.0449600219726562,3.0435519218444824,3.0460479259490967,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,megatron-unfused,full,speed,ms,V,vocab size,32768,5.933680057525635,5.931424140930176,5.934944152832031,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,megatron-unfused,full,speed,ms,V,vocab size,65536,11.71068811416626,11.708269119262695,11.711859130859374,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,megatron-unfused,full,speed,ms,V,vocab size,131072,23.32307243347168,23.31925163269043,23.326662826538087,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,liger,full,memory,MB,V,vocab size,4096,320.1572265625,320.1572265625,320.1572265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,liger,full,memory,MB,V,vocab size,8192,640.1572265625,640.1572265625,640.1572265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,liger,full,memory,MB,V,vocab size,16384,1280.1572265625,1280.1572265625,1280.1572265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,liger,full,memory,MB,V,vocab size,32768,2560.1572265625,2560.1572265625,2560.1572265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,liger,full,memory,MB,V,vocab size,65536,5120.1572265625,5120.1572265625,5120.1572265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,liger,full,memory,MB,V,vocab size,131072,10240.1572265625,10240.1572265625,10240.1572265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,torch,full,memory,MB,V,vocab size,4096,512.0947265625,512.0947265625,512.0947265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,torch,full,memory,MB,V,vocab size,8192,1024.0947265625,1024.0947265625,1024.0947265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,torch,full,memory,MB,V,vocab size,16384,2048.0947265625,2048.0947265625,2048.0947265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,torch,full,memory,MB,V,vocab size,32768,4096.0947265625,4096.0947265625,4096.0947265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,torch,full,memory,MB,V,vocab size,65536,8192.0947265625,8192.0947265625,8192.0947265625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,torch,full,memory,MB,V,vocab size,131072,16384.09375,16384.09375,16384.09375,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,megatron,full,memory,MB,V,vocab size,4096,448.1650390625,448.1650390625,448.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,megatron,full,memory,MB,V,vocab size,8192,896.1650390625,896.1650390625,896.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,megatron,full,memory,MB,V,vocab size,16384,1792.1650390625,1792.1650390625,1792.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,megatron,full,memory,MB,V,vocab size,32768,3584.1650390625,3584.1650390625,3584.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,megatron,full,memory,MB,V,vocab size,65536,7168.1650390625,7168.1650390625,7168.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,megatron,full,memory,MB,V,vocab size,131072,14336.1650390625,14336.1650390625,14336.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:00,0.8.0
+megatron_cross_entropy,megatron-unfused,full,memory,MB,V,vocab size,4096,320.1650390625,320.1650390625,320.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:01,0.8.0
+megatron_cross_entropy,megatron-unfused,full,memory,MB,V,vocab size,8192,640.1650390625,640.1650390625,640.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:01,0.8.0
+megatron_cross_entropy,megatron-unfused,full,memory,MB,V,vocab size,16384,1280.1650390625,1280.1650390625,1280.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:01,0.8.0
+megatron_cross_entropy,megatron-unfused,full,memory,MB,V,vocab size,32768,2560.1650390625,2560.1650390625,2560.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:01,0.8.0
+megatron_cross_entropy,megatron-unfused,full,memory,MB,V,vocab size,65536,5120.1650390625,5120.1650390625,5120.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:01,0.8.0
+megatron_cross_entropy,megatron-unfused,full,memory,MB,V,vocab size,131072,10240.1650390625,10240.1650390625,10240.1650390625,"{""S"": 2048, ""B"": 4}",NVIDIA H100 80GB HBM3,2026-06-12 23:21:01,0.8.0
 megatron_rms_norm,liger,forward,speed,ms,H,hidden size,1024,0.012160000391304493,0.011935999616980553,0.012460799887776375,"{""S"": 4096, ""B"": 1}",NVIDIA H100 80GB HBM3,2026-06-10 21:03:37,0.8.0
 megatron_rms_norm,liger,forward,speed,ms,H,hidden size,2048,0.01756799966096878,0.01740800030529499,0.017920000478625298,"{""S"": 4096, ""B"": 1}",NVIDIA H100 80GB HBM3,2026-06-10 21:03:37,0.8.0
 megatron_rms_norm,liger,forward,speed,ms,H,hidden size,4096,0.029184000566601753,0.028863999992609024,0.029888000339269638,"{""S"": 4096, ""B"": 1}",NVIDIA H100 80GB HBM3,2026-06-10 21:03:37,0.8.0
@@ -2375,3 +2375,57 @@ megatron_rms_norm,megatron,full,memory,MB,H,hidden size,2048,80.0283203125,80.02
 megatron_rms_norm,megatron,full,memory,MB,H,hidden size,4096,160.0400390625,160.0400390625,160.0400390625,"{""S"": 4096, ""B"": 1}",NVIDIA H100 80GB HBM3,2026-06-10 21:03:43,0.8.0
 megatron_rms_norm,megatron,full,memory,MB,H,hidden size,8192,320.0634765625,320.0634765625,320.0634765625,"{""S"": 4096, ""B"": 1}",NVIDIA H100 80GB HBM3,2026-06-10 21:03:43,0.8.0
 megatron_rms_norm,megatron,full,memory,MB,H,hidden size,16384,640.1103515625,640.1103515625,640.1103515625,"{""S"": 4096, ""B"": 1}",NVIDIA H100 80GB HBM3,2026-06-10 21:03:43,0.8.0
+megatron_cross_entropy_tp2,liger,forward,speed,ms,V,vocab size,4096,0.3052,0.3,0.3097,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,forward,speed,ms,V,vocab size,8192,0.2981,0.2973,0.3985,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,forward,speed,ms,V,vocab size,16384,0.2965,0.2933,0.3738,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,forward,speed,ms,V,vocab size,32768,0.448,0.446,0.4618,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,forward,speed,ms,V,vocab size,65536,0.8396,0.8395,0.8404,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,forward,speed,ms,V,vocab size,131072,1.5589,1.5584,1.559,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,backward,speed,ms,V,vocab size,4096,0.5774,0.5255,0.6018,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,backward,speed,ms,V,vocab size,8192,0.4766,0.4692,0.5647,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,backward,speed,ms,V,vocab size,16384,0.6205,0.62,0.6641,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,backward,speed,ms,V,vocab size,32768,1.0826,1.0815,1.0838,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,backward,speed,ms,V,vocab size,65536,2.0891,2.0882,2.093,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,backward,speed,ms,V,vocab size,131072,4.0489,4.0487,4.0512,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,full,speed,ms,V,vocab size,4096,0.5567,0.5158,0.5831,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,full,speed,ms,V,vocab size,8192,0.5432,0.4799,0.5512,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,full,speed,ms,V,vocab size,16384,0.6181,0.6175,0.6293,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,full,speed,ms,V,vocab size,32768,1.0824,1.081,1.0842,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,full,speed,ms,V,vocab size,65536,2.0905,2.0896,2.0935,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,liger,full,speed,ms,V,vocab size,131072,4.0504,4.0488,4.0527,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,forward,speed,ms,V,vocab size,4096,0.2888,0.2776,0.3056,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,forward,speed,ms,V,vocab size,8192,0.3432,0.343,0.3547,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,forward,speed,ms,V,vocab size,16384,0.6569,0.6563,0.6585,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,forward,speed,ms,V,vocab size,32768,1.4338,1.433,1.4339,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,forward,speed,ms,V,vocab size,65536,2.8674,2.8669,2.8679,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,forward,speed,ms,V,vocab size,131072,5.8221,5.8214,5.8221,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,backward,speed,ms,V,vocab size,4096,0.5774,0.4951,1.0666,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,backward,speed,ms,V,vocab size,8192,0.5993,0.5629,0.6119,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,backward,speed,ms,V,vocab size,16384,1.0757,1.0751,1.076,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,backward,speed,ms,V,vocab size,32768,2.2451,2.2445,2.2454,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,backward,speed,ms,V,vocab size,65536,4.4908,4.4898,4.4915,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,backward,speed,ms,V,vocab size,131072,9.0453,9.0432,9.0464,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,full,speed,ms,V,vocab size,4096,0.5491,0.4899,0.5554,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,full,speed,ms,V,vocab size,8192,0.5958,0.5921,0.6168,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,full,speed,ms,V,vocab size,16384,1.0751,1.0749,1.0753,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,full,speed,ms,V,vocab size,32768,2.2452,2.2446,2.2455,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,full,speed,ms,V,vocab size,65536,4.4905,4.4903,4.491,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron,full,speed,ms,V,vocab size,131072,9.0463,9.043,9.0487,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,forward,speed,ms,V,vocab size,4096,0.3564,0.3553,0.4335,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,forward,speed,ms,V,vocab size,8192,0.5776,0.5775,0.5838,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,forward,speed,ms,V,vocab size,16384,1.1112,1.1109,1.1155,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,forward,speed,ms,V,vocab size,32768,2.1003,2.0999,2.1005,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,forward,speed,ms,V,vocab size,65536,4.0584,4.0583,4.0585,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,forward,speed,ms,V,vocab size,131072,7.9712,7.9697,7.9719,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,backward,speed,ms,V,vocab size,4096,0.6194,0.6103,0.645,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,backward,speed,ms,V,vocab size,8192,0.7835,0.7833,0.7941,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,backward,speed,ms,V,vocab size,16384,1.4871,1.4861,1.4875,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,backward,speed,ms,V,vocab size,32768,2.8173,2.8165,2.8175,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,backward,speed,ms,V,vocab size,65536,5.4491,5.4487,5.4505,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,backward,speed,ms,V,vocab size,131072,10.706,10.706,10.7063,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,full,speed,ms,V,vocab size,4096,0.5656,0.5545,0.6345,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,full,speed,ms,V,vocab size,8192,0.784,0.7838,0.7924,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,full,speed,ms,V,vocab size,16384,1.4877,1.4873,1.4881,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,full,speed,ms,V,vocab size,32768,2.8181,2.8174,2.8186,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,full,speed,ms,V,vocab size,65536,5.4486,5.4484,5.4494,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
+megatron_cross_entropy_tp2,megatron-unfused,full,speed,ms,V,vocab size,131072,10.7058,10.7052,10.7059,"{""S"": 2048, ""B"": 4, ""TP"": 2}",NVIDIA H100 80GB HBM3,2026-06-12 23:23:27,0.8.0
