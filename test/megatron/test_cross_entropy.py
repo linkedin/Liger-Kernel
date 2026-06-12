@@ -684,11 +684,32 @@ def _tp_ce_worker(
     dist.destroy_process_group()
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.device_count() < 2,
-    reason="requires >= 2 GPUs for TP>1 vocab-parallel CE",
+@pytest.mark.parametrize(
+    "tp_size",
+    [
+        pytest.param(
+            2,
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available() or torch.cuda.device_count() < 2,
+                reason="requires >= 2 GPUs",
+            ),
+        ),
+        pytest.param(
+            4,
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available() or torch.cuda.device_count() < 4,
+                reason="requires >= 4 GPUs",
+            ),
+        ),
+        pytest.param(
+            8,
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available() or torch.cuda.device_count() < 8,
+                reason="requires >= 8 GPUs",
+            ),
+        ),
+    ],
 )
-@pytest.mark.parametrize("tp_size", [2])
 @pytest.mark.parametrize("s, b, v_global", [(8, 2, 128), (16, 1, 4096)])
 @pytest.mark.parametrize("formula", ["pytorch", "megatron"])
 @pytest.mark.parametrize("mode", ["global", "partition"])
