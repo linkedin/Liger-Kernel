@@ -40,7 +40,6 @@ import tempfile
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-import torch.nn.functional as F
 
 from utils import BenchmarkData
 from utils import get_formatted_time
@@ -69,17 +68,6 @@ def _select_fwd(provider, tp_group):
     if provider == "liger":
         ce = LigerMegatronCrossEntropy()
         return lambda logits, target: ce(logits, target, tp_group=tp_group)
-    if provider == "torch":
-
-        def torch_ce(logits, target):
-            s, b, v = logits.shape
-            return F.cross_entropy(
-                logits.reshape(-1, v).float(),
-                target.reshape(-1),
-                reduction="none",
-            ).reshape(s, b)
-
-        return torch_ce
     if provider == "megatron":
         return lambda logits, target: fused_vocab_parallel_cross_entropy(logits, target, tp_group)
     if provider == "megatron-unfused":
@@ -302,11 +290,7 @@ def main():
         raise RuntimeError(f"--tp-size={tp_size} requires {tp_size} GPUs; have {have_gpus}.")
 
     if _MEGATRON_AVAILABLE:
-        # "torch" only at TP=1 — F.cross_entropy isn't vocab-parallel and would assert on
-        # target values >= V_local at TP>1.
         providers = ["liger", "megatron", "megatron-unfused"]
-        if tp_size == 1:
-            providers.insert(1, "torch")
     else:
         providers = ["liger"]
 
