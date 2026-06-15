@@ -35,7 +35,7 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 
 from liger_kernel.megatron import LigerMegatronCrossEntropy
-from liger_kernel.megatron import LigerVocabParallelCrossEntropy
+from liger_kernel.transformers import LigerVocabParallelCrossEntropy
 from liger_kernel.utils import infer_device
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed

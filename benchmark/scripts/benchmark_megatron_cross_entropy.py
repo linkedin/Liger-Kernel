@@ -10,9 +10,7 @@ desyncs the collectives — see the long comment in ``_timed_loop``).
 Compared providers (each rank executes its own ``V/TP`` slice):
 
   - **liger**: ``LigerMegatronCrossEntropy`` — Liger's vocab-parallel kernel.
-  - **torch**: vanilla ``F.cross_entropy``. Included only at ``--tp-size 1`` — it
-    isn't vocab-parallel and would assert on target values >= V_local at TP>1.
-  - **megatron**: Megatron's *fused* ``fused_vocab_parallel_cross_entropy``
+  - **megatron-fused**: Megatron's *fused* ``fused_vocab_parallel_cross_entropy``
     (``cross_entropy_loss_fusion=True``, JIT-fused via TorchScript).
   - **megatron-unfused**: Megatron's *unfused* ``vocab_parallel_cross_entropy``
     (``cross_entropy_loss_fusion=False``, eager Python — the path with runtime
@@ -68,7 +66,7 @@ def _select_fwd(provider, tp_group):
     if provider == "liger":
         ce = LigerMegatronCrossEntropy()
         return lambda logits, target: ce(logits, target, tp_group=tp_group)
-    if provider == "megatron":
+    if provider == "megatron-fused":
         return lambda logits, target: fused_vocab_parallel_cross_entropy(logits, target, tp_group)
     if provider == "megatron-unfused":
         return lambda logits, target: vocab_parallel_cross_entropy(logits, target, 0.0, tp_group)
@@ -290,7 +288,7 @@ def main():
         raise RuntimeError(f"--tp-size={tp_size} requires {tp_size} GPUs; have {have_gpus}.")
 
     if _MEGATRON_AVAILABLE:
-        providers = ["liger", "megatron", "megatron-unfused"]
+        providers = ["liger", "megatron-fused", "megatron-unfused"]
     else:
         providers = ["liger"]
 

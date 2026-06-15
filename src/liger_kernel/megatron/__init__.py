@@ -13,18 +13,16 @@ Public API:
 The general-purpose ``LigerVocabParallelCrossEntropy`` Module lives under
 ``liger_kernel.transformers`` alongside the other nn.Module wrappers; the
 ``LigerVocabParallelCEFunction`` autograd op lives under ``liger_kernel.ops``
-alongside the Triton kernels. Both are re-exported from this package for
-discoverability since this is where Megatron users land first.
+alongside the Triton kernels. Import them from there directly when you need
+the general-purpose (non-Megatron-default) variant.
 """
 
 from liger_kernel.megatron.cross_entropy import LigerMegatronCrossEntropy
 from liger_kernel.megatron.monkey_patch import apply_liger_kernel_to_megatron
 from liger_kernel.megatron.rms_norm import LigerMegatronRMSNorm
-from liger_kernel.transformers.vocab_parallel_cross_entropy import LigerVocabParallelCrossEntropy
 
 __all__ = [
     "LigerMegatronCrossEntropy",
     "LigerMegatronRMSNorm",
-    "LigerVocabParallelCrossEntropy",
     "apply_liger_kernel_to_megatron",
 ]
