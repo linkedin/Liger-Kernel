@@ -13,7 +13,8 @@
 // The functions keep `extern "C"` linkage so they export as plain liger_cute_*
 // symbols (caught by the version script) and so the rule "no exceptions cross
 // the boundary" is explicit: each entry point catches internally and reports
-// via liger_cute_status_t + liger_cute_last_error_string(). The torch::Tensor
+// via liger_cute_status_t + liger_cute_last_error_string() (declared in
+// liger_cute.h — shared across all entry-point families). The torch::Tensor
 // <-> TensorView marshalling lives in the binding (_C); the core never sees
 // torch.
 #pragma once
@@ -21,17 +22,12 @@
 #include <stdint.h>
 
 #include "liger_cute/export.h"
-#include "liger_cute/liger_cute.h"  // liger_cute_status_t
+#include "liger_cute/liger_cute.h"  // liger_cute_status_t, liger_cute_last_error_string
 #include "liger_cute/tensor_view.h"
 
 #ifdef __cplusplus
 
 extern "C" {
-
-// Most recent error message on the calling thread, set whenever a liger_cute_moe_*
-// entry point returns non-OK. Static thread-local storage; never null (empty
-// string when there is no error). Cleared at the start of each entry point.
-LIGER_CUTE_API const char* liger_cute_last_error_string(void);
 
 // POD snapshot of the symmetric configuration (filled by
 // liger_cute_moe_get_symm_config). Flat — safe to read from the binding so it

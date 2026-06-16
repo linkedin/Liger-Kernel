@@ -66,8 +66,11 @@ def test_extension_exposes_moe_bindings(ext):
         assert hasattr(ext, name), f"missing binding: {name}"
 
 
+@pytest.mark.skipif(not _HAS_CUDA, reason="configure uploads the comm schedule to device constant memory")
 def test_configure_symmetric_valid(ext):
-    # Returns None and does not raise for a consistent topology.
+    # Returns None and does not raise for a consistent topology. Needs CUDA: the
+    # call now uploads the comm schedule (g_dest_table / g_rank_table) via
+    # cudaMemcpyToSymbol, which requires a CUDA context.
     assert ext.moe_configure_symmetric(**_CFG) is None
 
 

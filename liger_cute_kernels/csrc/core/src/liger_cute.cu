@@ -1,7 +1,8 @@
-// liger_cute.cu — placeholder translation unit for liger_cute_kernels.so.
+// liger_cute.cu — base translation unit for liger_cute_kernels.so.
 //
-// Exists so the harness produces a real, loadable shared library before any
-// functional kernel is ported. Also the canonical example of the boundary
+// Home of the shared, family-agnostic ABI: the status-string table and the
+// thread-local last-error accessor that every other entry-point family (MoE,
+// NVSHMEM) reports through. Also the canonical example of the boundary
 // contract: a .cu TU (where CUTLASS/CuTe and NVSHMEM device code will
 // eventually live) exposing ONLY flat `extern "C"` symbols tagged
 // LIGER_CUTE_API.
@@ -9,7 +10,13 @@
 
 #include "liger_cute/liger_cute.h"
 
+#include "liger_cute/detail/status.h"
+
 extern "C" {
+
+const char* liger_cute_last_error_string(void) {
+  return liger_cute::detail::tls_error_buf();  // empty string when no error; never null
+}
 
 const char* liger_cute_status_string(liger_cute_status_t status) {
   switch (status) {
