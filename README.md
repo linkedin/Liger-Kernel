@@ -135,6 +135,16 @@ y = orpo_loss(lm_head.weight, x, target)
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
 ```
 
+#### Ascend NPU
+
+- `torch == 2.7.1`
+- `torch_npu == 2.7.1`
+- `triton-ascend == 3.2.1` Install from the Ascend PyPI mirror (not on default PyPI).
+
+```bash
+pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/simple
+```
+
 ### Optional Dependencies
 
 - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
