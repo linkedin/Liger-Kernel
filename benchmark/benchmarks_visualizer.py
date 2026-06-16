@@ -379,6 +379,18 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
             color=color,
             capsize=5,
         )
+    # Title includes kernel name, metric, operation mode, and GPU so the
+    # PNG is self-describing without relying on the filename.
+    gpu = df["gpu_name"].iloc[0] if "gpu_name" in df.columns and not df["gpu_name"].empty else ""
+    title_parts = [
+        config.kernel_name,
+        f"{config.metric_name} ({df['metric_unit'].iloc[0]})",
+        f"{config.kernel_operation_mode} pass",
+    ]
+    if gpu:
+        title_parts.append(gpu)
+    plt.title(" — ".join(title_parts))
+
     plt.legend(title="Kernel Provider")
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
