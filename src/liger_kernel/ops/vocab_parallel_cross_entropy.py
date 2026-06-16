@@ -213,8 +213,15 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
         label_smoothing_formula: str,
         label_smoothing_mode: str,
     ) -> torch.Tensor:
+        # Module wrappers already check this, but the Function is reachable directly
+        # via ``liger_kernel.ops`` so guard here too to avoid an unhelpful
+        # "not enough values to unpack" error from the shape destructuring below.
+        if vocab_parallel_logits.dim() != 3:
+            raise ValueError(
+                f"vocab_parallel_logits must be 3-D ([seq, batch, vocab]); "
+                f"got shape {tuple(vocab_parallel_logits.shape)}."
+            )
         s, b, v_local = vocab_parallel_logits.shape
-        v_local_int = int(v_local)
         BT = s * b
 
         tp_distributed = _is_tp_distributed(tp_group)
@@ -223,13 +230,13 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
             world = dist.get_world_size(tp_group)
         else:
             rank, world = 0, 1
-        vocab_start = rank * v_local_int
+        vocab_start = rank * v_local
 
         # --- 1. Per-token global max (cheap; small output) ---
         # amax on the input dtype, cast the [S, B] result to fp32 for the kernel.
         # No full-buffer fp32 conversion.
-        x = vocab_parallel_logits.detach().contiguous()
-        logits_max = x.reshape(BT, v_local_int).amax(dim=-1).float()
+        x = vocab_parallel_logits.contiguous()
+        logits_max = x.amax(dim=-1).float()
         if tp_distributed:
             dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=tp_group)
 
@@ -237,14 +244,19 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
         flat_target = target.reshape(-1).contiguous().to(torch.int64)
 
         # --- 3. Kernel 1: shift, exp, sum_exp, predicted_local ---
-        exp_buf = torch.empty(BT, v_local_int, device=x.device, dtype=torch.float32)
+        # exp_buf is fp32 for precision — matches Megatron's vocab-parallel CE,
+        # which also keeps the saved softmax in fp32. Moving to bf16 (or input
+        # dtype) would save BT*V_local*2 bytes per call but introduces ~1 %
+        # relative error on low-probability softmax tails; gated on a separate
+        # convergence study.
+        exp_buf = torch.empty(BT, v_local, device=x.device, dtype=torch.float32)
         predicted_local = torch.empty(BT, device=x.device, dtype=torch.float32)
         sum_exp_local = torch.empty(BT, device=x.device, dtype=torch.float32)
 
-        block_size = _select_block_size(v_local_int)
+        block_size = _select_block_size(v_local)
         num_warps = _get_num_warps(block_size)
 
-        x_2d = x.view(BT, v_local_int)
+        x_2d = x.view(BT, v_local)
         liger_vocab_parallel_ce_forward_kernel[(BT,)](
             X_ptr=x_2d,
             X_stride=x_2d.stride(0),
@@ -255,7 +267,7 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
             pred_ptr=predicted_local,
             sum_exp_ptr=sum_exp_local,
             vocab_start=vocab_start,
-            n_cols=v_local_int,
+            n_cols=v_local,
             ignore_index=ignore_index,
             BLOCK_SIZE=block_size,
             num_warps=num_warps,
@@ -271,7 +283,7 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
 
         # --- 6. Label smoothing (Python; chooses K, formula, averaging scope) ---
         if label_smoothing > 0:
-            v_for_K = v_local_int * world if label_smoothing_mode == "global" else v_local_int
+            v_for_K = v_local * world if label_smoothing_mode == "global" else v_local
             if label_smoothing_formula == "megatron":
                 alpha_eff = label_smoothing * v_for_K / (v_for_K - 1)
             else:  # "pytorch"
@@ -305,7 +317,7 @@ class LigerVocabParallelCEFunction(torch.autograd.Function):
         ctx.eps_eff = float(eps_eff)
         ctx.has_smoothing = bool(label_smoothing > 0)
         ctx.vocab_start = vocab_start
-        ctx.v_local = v_local_int
+        ctx.v_local = v_local
         ctx.ignore_index = ignore_index
         ctx.orig_dtype = vocab_parallel_logits.dtype
         ctx.orig_shape = (s, b)
