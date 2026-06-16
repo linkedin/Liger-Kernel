@@ -16,8 +16,8 @@ from liger_kernel.utils import infer_device
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
 MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536 // 2
-DEFAULT_CHUNK_MEMORY_MB = 1024
-DEFAULT_MIN_CHUNK_SIZE = 256
+DEFAULT_CHUNK_MEMORY_MB = 2048
+DEFAULT_MIN_CHUNK_SIZE = 512
 CHUNK_SIZE_ENV = "LIGER_FUSED_LINEAR_JSD_CHUNK_SIZE"
 CHUNK_MEMORY_MB_ENV = "LIGER_FUSED_LINEAR_JSD_CHUNK_MEMORY_MB"
 MIN_CHUNK_SIZE_ENV = "LIGER_FUSED_LINEAR_JSD_MIN_CHUNK_SIZE"
@@ -55,12 +55,12 @@ def _calculate_adaptive_chunk_size(BT, H, V):
 
     chunk_memory_mb = _get_positive_int_env(CHUNK_MEMORY_MB_ENV, DEFAULT_CHUNK_MEMORY_MB)
     if chunk_memory_mb is not None:
-        # The fast path keeps multiple fp32 (chunk, V) intermediates alive.
-        # Budget for roughly four such tensors: student/teacher logits and
-        # student/teacher log-probs. Use a power-of-two cap to avoid odd GEMMs.
+        # The memory budget is a hard cap. It may reduce the final chunk size
+        # below MIN_CHUNK_SIZE_ENV to avoid exceeding the temporary-buffer budget.
         bytes_per_token = 4 * V * torch.float32.itemsize
         max_chunk_size = max(1, (chunk_memory_mb * 2**20) // bytes_per_token)
-        chunk_size = min(chunk_size, _previous_power_of_2(max_chunk_size))
+        max_chunk_size = _previous_power_of_2(max_chunk_size)
+        chunk_size = min(chunk_size, max_chunk_size)
 
     return max(1, min(BT, chunk_size))
 
@@ -75,6 +75,8 @@ def _jsd_lm_head_kernel(
     dlogits_ptr,
     dlogits_stride,
     label_ptr,
+    student_prob_ptr,  # student probabilities (softmax of logits), pre-computed for numerical stability
+    student_prob_stride,
     beta: tl.constexpr,
     n_non_ignore: int,
     ignore_index: tl.constexpr,
@@ -87,53 +89,66 @@ def _jsd_lm_head_kernel(
     X_ptr += pid * X_stride
     Y_ptr += pid * Y_stride
     dlogits_ptr += pid * dlogits_stride
+    student_prob_ptr += pid * student_prob_stride
     label_ptr += pid
-
-    offsets = tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_cols
 
     if HAS_LABEL:
         label = tl.load(label_ptr)
         if label == ignore_index:
+            for i in range(0, n_cols, BLOCK_SIZE):
+                offsets = i + tl.arange(0, BLOCK_SIZE)
+                tl.store(dlogits_ptr + offsets, 0.0, mask=offsets < n_cols)
             tl.store(loss_ptr + pid, 0.0)
-            tl.store(dlogits_ptr + offsets, 0.0, mask=mask)
             return
 
-    X = tl.load(X_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
-    Y = tl.load(Y_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
-
-    if beta == 0.0:  # forward KL
-        Y_max = tl.max(Y, axis=0)
-        P = tl.exp(Y - Y_max) * tl.exp(Y_max)
-        loss = P * (Y - X)
-        dX = -P
-    elif beta == 1.0:  # reverse KL
-        X_max = tl.max(X, axis=0)
-        Q = tl.exp(X - X_max) * tl.exp(X_max)
-        loss = Q * (X - Y)
-        dX = loss + Q
-    else:
-        max_val = tl.maximum(tl.max(X, axis=0), tl.max(Y, axis=0))
-        exp_max = tl.exp(max_val)
-        Q = tl.exp(X - max_val) * exp_max
-        P = tl.exp(Y - max_val) * exp_max
-        beta_P = beta * P
-        one_minus_beta_Q = (1 - beta) * Q
-        M = beta_P + one_minus_beta_Q
-        log_M = tl.log(M)
-        loss = beta_P * Y + one_minus_beta_Q * X - M * log_M
-        dX = one_minus_beta_Q * (X - log_M)
-
+    loss_acc = 0.0
+    dX_sum = 0.0
     scale = 1.0 / n_non_ignore
-    loss = loss * scale
-    dX = dX * scale
-    Q = tl.exp(X)
 
-    sum_dX = tl.sum(tl.where(mask, dX, 0.0), axis=0)
-    dlogits = (dX - Q * sum_dX) / temperature
+    for i in range(0, n_cols, BLOCK_SIZE):
+        offsets = i + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_cols
 
-    tl.store(loss_ptr + pid, tl.sum(tl.where(mask, loss, 0.0), axis=0))
-    tl.store(dlogits_ptr + offsets, dlogits, mask=mask)
+        X = tl.load(X_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
+        Y = tl.load(Y_ptr + offsets, mask=mask, other=float("-inf")).to(tl.float32)
+        Q = tl.load(student_prob_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+
+        if beta == 0.0:
+            Y_max = tl.max(Y, axis=0)
+            P = tl.exp(Y - Y_max) * tl.exp(Y_max)
+            loss = P * (Y - X)
+            dX = -P
+        elif beta == 1.0:
+            loss = Q * (X - Y)
+            dX = loss + Q
+        else:
+            max_val = tl.maximum(tl.max(X, axis=0), tl.max(Y, axis=0))
+            exp_max = tl.exp(max_val)
+            P = tl.exp(Y - max_val) * exp_max
+            beta_P = beta * P
+            one_minus_beta_Q = (1 - beta) * Q
+            M = beta_P + one_minus_beta_Q
+            log_M = tl.log(M)
+            loss = beta_P * Y + one_minus_beta_Q * X - M * log_M
+            dX = one_minus_beta_Q * (X - log_M)
+
+        loss_acc += tl.sum(tl.where(mask, loss, 0.0), axis=0)
+        dX_sum += tl.sum(tl.where(mask, dX, 0.0), axis=0)
+        tl.store(dlogits_ptr + offsets, dX, mask=mask)
+
+    loss_acc = loss_acc * scale
+    dX_sum = dX_sum * scale
+    tl.store(loss_ptr + pid, loss_acc)
+
+    inv_temp = 1.0 / temperature
+    for i in range(0, n_cols, BLOCK_SIZE):
+        offsets = i + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_cols
+
+        Q = tl.load(student_prob_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        dX = tl.load(dlogits_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        dlogits = (dX * scale - Q * dX_sum) * inv_temp
+        tl.store(dlogits_ptr + offsets, dlogits, mask=mask)
 
 
 def fused_linear_jsd_forward(
@@ -179,12 +194,9 @@ def fused_linear_jsd_forward(
         teacher_logits_chunk = (teacher_input_chunk @ teacher_weight.t()).to(torch.float32)
         chunk_n_rows = student_logits_chunk.shape[0]
 
-        if temperature == 1.0:
-            student_logprob_chunk = torch.log_softmax(student_logits_chunk, dim=-1)
-            teacher_logprob_chunk = torch.log_softmax(teacher_logits_chunk, dim=-1)
-        else:
-            student_logprob_chunk = torch.log_softmax(student_logits_chunk / temperature, dim=-1)
-            teacher_logprob_chunk = torch.log_softmax(teacher_logits_chunk / temperature, dim=-1)
+        student_logprob_chunk = torch.log_softmax(student_logits_chunk / temperature, dim=-1)
+        teacher_logprob_chunk = torch.log_softmax(teacher_logits_chunk / temperature, dim=-1)
+        student_prob_chunk = torch.exp(student_logprob_chunk).to(student_logits_chunk.dtype).contiguous()
 
         _jsd_lm_head_kernel[(chunk_n_rows,)](
             X_ptr=student_logprob_chunk,
@@ -195,6 +207,8 @@ def fused_linear_jsd_forward(
             dlogits_ptr=student_logprob_chunk,
             dlogits_stride=student_logprob_chunk.stride(-2),
             label_ptr=shift_labels[start_idx:end_idx] if has_label else torch.empty(1, device=device),
+            student_prob_ptr=student_prob_chunk,
+            student_prob_stride=student_prob_chunk.stride(-2),
             beta=jsd_beta,
             n_non_ignore=n_non_ignore,
             ignore_index=ignore_index,
