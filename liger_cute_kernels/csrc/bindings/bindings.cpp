@@ -11,9 +11,12 @@
 #include <pybind11/pybind11.h>
 #include <torch/extension.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <tuple>
 
 #include "liger_cute/moe.h"
+#include "liger_cute/nvshmem.h"
 #include "tensor_view_conversion.h"
 
 namespace py = pybind11;
@@ -38,6 +41,127 @@ torch::Tensor empty_like_device(const torch::Tensor& ref, c10::IntArrayRef sizes
 
 PYBIND11_MODULE(_C, m) {
   m.doc() = "LigerCute: torch bindings over the ABI-agnostic CUTLASS/NVSHMEM core";
+
+  // ── NVSHMEM bootstrap ──────────────────────────────────────────────────
+  // Low-level primitives; the torch.distributed-aware process-group → team
+  // translation (init_from_pg / team_from_pg) lives in the Python layer
+  // (liger_cute_kernels.nvshmem) on top of these.
+  m.def(
+      "uniqueid_nbytes",
+      []() {
+        std::size_t n = 0;
+        check_status(liger_cute_nvshmem_uniqueid_nbytes(&n), "uniqueid_nbytes");
+        return n;
+      },
+      "Size in bytes of an nvshmemx_uniqueid_t (for sizing the broadcast buffer).");
+
+  m.def(
+      "get_uniqueid",
+      [](std::uintptr_t buf_ptr) {
+        check_status(liger_cute_nvshmem_get_uniqueid(reinterpret_cast<void*>(buf_ptr)),
+                     "get_uniqueid");
+      },
+      py::arg("buf_ptr"),
+      "Fill `buf_ptr` (CPU memory, uniqueid_nbytes()) with a fresh unique id.");
+
+  m.def(
+      "init_with_uniqueid",
+      [](int rank, int nranks, std::uintptr_t buf_ptr) {
+        check_status(liger_cute_nvshmem_init_with_uniqueid(
+                         rank, nranks, reinterpret_cast<const void*>(buf_ptr)),
+                     "init_with_uniqueid");
+      },
+      py::arg("rank"), py::arg("nranks"), py::arg("buf_ptr"),
+      "Initialise NVSHMEM using a unique id previously broadcast to all ranks.");
+
+  m.def(
+      "init_pmi", []() { check_status(liger_cute_nvshmem_init_pmi(), "init_pmi"); },
+      "Initialise NVSHMEM under the launcher's PMI bootstrap (srun/mpirun).");
+
+  m.def(
+      "finalize", []() { check_status(liger_cute_nvshmem_finalize(), "finalize"); },
+      "Drain the core's symmetric caches, then shut down NVSHMEM.");
+
+  // ── PE queries / teams ─────────────────────────────────────────────────
+  m.def("my_pe", []() {
+    int v = 0;
+    check_status(liger_cute_nvshmem_my_pe(&v), "my_pe");
+    return v;
+  });
+  m.def("n_pes", []() {
+    int v = 0;
+    check_status(liger_cute_nvshmem_n_pes(&v), "n_pes");
+    return v;
+  });
+
+  m.def(
+      "team_world",
+      []() {
+        int64_t h = 0;
+        check_status(liger_cute_nvshmem_team_world(&h), "team_world");
+        return h;
+      },
+      "Return NVSHMEM_TEAM_WORLD as an int64 handle.");
+
+  m.def(
+      "team_split_strided",
+      [](int64_t parent, int start, int stride, int size) {
+        int64_t h = 0;
+        check_status(
+            liger_cute_nvshmem_team_split_strided(parent, start, stride, size, &h),
+            "team_split_strided");
+        return h;
+      },
+      py::arg("parent"), py::arg("start"), py::arg("stride"), py::arg("size"),
+      "Split a team strided. Returns -1 on non-member ranks.");
+
+  m.def(
+      "team_destroy",
+      [](int64_t team_handle) {
+        check_status(liger_cute_nvshmem_team_destroy(team_handle), "team_destroy");
+      },
+      py::arg("team_handle"));
+
+  m.def(
+      "team_my_pe",
+      [](int64_t team_handle) {
+        int v = 0;
+        check_status(liger_cute_nvshmem_team_my_pe(team_handle, &v), "team_my_pe");
+        return v;
+      },
+      py::arg("team_handle"), "NVSHMEM team-local PE for the calling rank.");
+
+  m.def(
+      "team_n_pes",
+      [](int64_t team_handle) {
+        int v = 0;
+        check_status(liger_cute_nvshmem_team_n_pes(team_handle, &v), "team_n_pes");
+        return v;
+      },
+      py::arg("team_handle"), "Total PE count of the given team.");
+
+  m.def(
+      "team_translate_pe",
+      [](int64_t src_team, int src_pe, int64_t dst_team) {
+        int v = 0;
+        check_status(
+            liger_cute_nvshmem_team_translate_pe(src_team, src_pe, dst_team, &v),
+            "team_translate_pe");
+        return v;
+      },
+      py::arg("src_team"), py::arg("src_pe"), py::arg("dst_team"),
+      "Translate `src_pe` from `src_team`'s numbering to `dst_team`'s. "
+      "Returns -1 if the PE isn't a member of dst_team.");
+
+  // ── Memory pools ───────────────────────────────────────────────────────
+  m.def(
+      "pool_clear_all", []() { check_status(liger_cute_pool_clear_all(), "pool_clear_all"); },
+      "Drain both the symmetric stack and the buffer pool (does not finalize NVSHMEM).");
+
+  m.def(
+      "pool_clear_buffers",
+      []() { check_status(liger_cute_pool_clear_buffers(), "pool_clear_buffers"); },
+      "Drain only the per-name buffer pool; keep the symmetric stack intact.");
 
   // ── Symmetric configuration ────────────────────────────────────────────
   m.def(

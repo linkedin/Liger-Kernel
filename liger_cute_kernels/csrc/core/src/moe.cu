@@ -11,13 +11,16 @@
 
 #include <cuda_runtime.h>
 
-#include <cstdio>
-#include <exception>
-
 #include "liger_cute/check.h"
+#include "liger_cute/detail/comm_schedule.cuh"
+#include "liger_cute/detail/status.h"
 #include "liger_cute/detail/symmetric_memory.h"
 
 namespace {
+
+// Shared exception->status guard + last-error reporting (see detail/status.h).
+// liger_cute_last_error_string itself is defined once in liger_cute.cu.
+using liger_cute::detail::guarded;
 
 // Symmetric-stack keys for the buffers that persist fwd -> bwd. Lexicographic
 // order here is irrelevant; the stack keys on these exact strings.
@@ -44,41 +47,6 @@ SymmConfig& symm_config() {
   return cfg;
 }
 
-// Per-thread last-error message backing liger_cute_last_error_string(). A fixed
-// buffer (not std::string) so recording an error never allocates — the report
-// survives even when the exception being handled is std::bad_alloc. snprintf
-// truncates gracefully; 1024 comfortably fits a LIGER_CHECK message.
-constexpr int kErrorBufLen = 1024;
-
-char* tls_error_buf() {
-  static thread_local char buf[kErrorBufLen] = {0};
-  return buf;
-}
-
-void set_tls_error(const char* msg) {
-  std::snprintf(tls_error_buf(), kErrorBufLen, "%s", msg != nullptr ? msg : "");
-}
-
-// Run `body`, translating any escaping exception into a status code + a
-// last-error message. This is the ONLY place exceptions are allowed to surface;
-// every extern "C" entry point routes through it so nothing crosses the ABI.
-template <typename Body>
-liger_cute_status_t guarded(Body&& body) {
-  try {
-    tls_error_buf()[0] = '\0';
-    return body();
-  } catch (const liger_cute::Error& e) {
-    set_tls_error(e.what());
-    return LIGER_CUTE_ERR_INVALID_ARGUMENT;
-  } catch (const std::exception& e) {
-    set_tls_error(e.what());
-    return LIGER_CUTE_ERR_INTERNAL;
-  } catch (...) {
-    set_tls_error("liger_cute: unknown error");
-    return LIGER_CUTE_ERR_INTERNAL;
-  }
-}
-
 // Fill an output view to alias `data` with the given shape/dtype.
 void set_view(liger_cute::TensorView<2>* v, void* data, int64_t d0, int64_t d1,
               liger_cute_dtype_t dtype) {
@@ -100,10 +68,6 @@ void require_dtype(const liger_cute::TensorView<N>& v, const char* name,
 }  // namespace
 
 extern "C" {
-
-const char* liger_cute_last_error_string(void) {
-  return tls_error_buf();  // empty string when no error; never null
-}
 
 liger_cute_status_t liger_cute_moe_get_symm_config(liger_cute_moe_symm_config_t* out) {
   return guarded([&]() -> liger_cute_status_t {
@@ -135,8 +99,10 @@ liger_cute_status_t liger_cute_moe_configure_symmetric(
                 "moe_configure_symmetric: max_num_experts (", max_num_experts,
                 ") must be divisible by num_pes (", num_pes, ")");
 
-    // TODO(port): init_comm_schedule(num_hosts, gpus_per_host) — populate the
-    // g_dest_table / g_rank_table device constant memory.
+    // Populate the g_dest_table / g_rank_table device constant memory for the
+    // (num_hosts × gpus_per_host) layout. Throws (caught by guarded) on a bad
+    // layout or a failed cudaMemcpyToSymbol.
+    liger_cute::detail::init_comm_schedule(num_hosts, gpus_per_host);
 
     SymmConfig& cfg = symm_config();
     cfg.max_total_slots = max_tokens * max_top_k + max_num_experts * kTileM;

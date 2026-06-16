@@ -7,8 +7,9 @@
 // wheels (see export.h). CUTLASS/CuTe usage lives entirely behind it in the
 // .cu/.cpp translation units.
 //
-// NOTE: harness stage — only the status type is wired up so far. The real MoE /
-// NVSHMEM entry points get ported in behind this boundary later.
+// NOTE: harness stage — the status type + shared error string live here; the
+// MoE entry points are in moe.h and the NVSHMEM bootstrap/team/comm-schedule
+// entry points in nvshmem.h, both behind this same boundary.
 #pragma once
 
 #include "liger_cute/export.h"
@@ -29,6 +30,13 @@ typedef enum liger_cute_status_t {
 
 // Translate a status code to a static, human-readable string.
 LIGER_CUTE_API const char* liger_cute_status_string(liger_cute_status_t status);
+
+// Most recent error message on the calling thread, set whenever ANY liger_cute_*
+// entry point returns non-OK. Static thread-local storage; never null (empty
+// string when there is no error). Cleared at the start of each entry point.
+// Shared across all entry-point families (MoE, NVSHMEM, ...) so the binding's
+// status check reads one place regardless of which call failed.
+LIGER_CUTE_API const char* liger_cute_last_error_string(void);
 
 #ifdef __cplusplus
 }  // extern "C"
