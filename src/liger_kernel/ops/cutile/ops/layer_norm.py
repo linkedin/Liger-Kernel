@@ -200,14 +200,10 @@ def _layer_norm_bwd_combined_kernel_ct(
             db_acc = ct.add(db_acc, dy_tile)
 
     # Write per-block DW/DB partials.
-    # ALIGNED=True: BLOCK_SIZE==n_cols, ct.store is safe (no OOB).
-    # ALIGNED=False: BLOCK_SIZE>n_cols, scatter with check_bounds=True to avoid OOB writes.
-    if ALIGNED:
-        ct.store(dw_partial, index=(block_id, 0), tile=dw_acc.reshape((1, BLOCK_SIZE)))
-        ct.store(db_partial, index=(block_id, 0), tile=db_acc.reshape((1, BLOCK_SIZE)))
-    else:
-        ct.scatter(dw_partial, (block_id, col_idx), dw_acc, check_bounds=True)
-        ct.scatter(db_partial, (block_id, col_idx), db_acc, check_bounds=True)
+    # ALIGNED=True: BLOCK_SIZE==n_cols, no OOB so check_bounds=False is safe.
+    # ALIGNED=False: BLOCK_SIZE>n_cols, check_bounds=True to avoid OOB writes.
+    ct.scatter(dw_partial, (block_id, col_idx), dw_acc, check_bounds=check_bounds)
+    ct.scatter(db_partial, (block_id, col_idx), db_acc, check_bounds=check_bounds)
 
 
 def _layer_norm_forward_ct(X, W, B, eps):

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import math
+
 from typing import Optional
 
 import cuda.tile as ct

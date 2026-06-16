@@ -10,6 +10,7 @@ import torch
 from liger_kernel.ops.cutile.ops.jsd import JSD_BLOCK_SIZE
 from liger_kernel.ops.cutile.ops.jsd import jsd_kernel_ct
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
+from liger_kernel.ops.cutile.ops.utils import element_mul_kernel
 from liger_kernel.ops.utils import ensure_contiguous
 
 MAX_FUSED_SIZE = 65536 // 2
@@ -65,11 +66,7 @@ def fused_linear_jsd_forward(
         log_prob_s_chunk = torch.log_softmax(student_logits_chunk, dim=-1).contiguous()
         log_prob_t_chunk = torch.log_softmax(teacher_logits_chunk, dim=-1).contiguous()
 
-        label_chunk = (
-            shift_labels[start_idx:end_idx]
-            if has_label
-            else torch.empty(1, device=device, dtype=torch.int64)
-        )
+        label_chunk = shift_labels[start_idx:end_idx] if has_label else torch.empty(1, device=device, dtype=torch.int64)
 
         ct.launch(
             torch.cuda.current_stream(),
@@ -107,13 +104,30 @@ def fused_linear_jsd_forward(
 
 
 def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
+    # If JSD is the last layer, grad_output is 1.0. Skip the mul to save time
     if torch.ne(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        # Use out-of-place mul to avoid PyTorch version-tracking issues when
-        # backward is called with retain_graph=True (unlike Triton kernels,
-        # Python-level in-place ops bump the version counter on saved tensors).
-        grad_input = grad_input * grad_output
+        BT, H = grad_input.shape
+        n_rows = BT
+        BLOCK_SIZE = min(MAX_FUSED_SIZE, _next_power_of_2(H))
+
+        ct.launch(
+            torch.cuda.current_stream(),
+            (n_rows, 1, 1),
+            element_mul_kernel,
+            (grad_input, grad_output, int(H), int(BLOCK_SIZE), H % BLOCK_SIZE != 0),
+        )
+
         if grad_weight is not None:
-            grad_weight = grad_weight * grad_output
+            V, H = grad_weight.shape
+            n_rows = V
+
+            ct.launch(
+                torch.cuda.current_stream(),
+                (n_rows, 1, 1),
+                element_mul_kernel,
+                (grad_weight, grad_output, int(H), int(BLOCK_SIZE), H % BLOCK_SIZE != 0),
+            )
+
     return grad_input, grad_weight
 
 
