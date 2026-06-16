@@ -9,8 +9,15 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-DATA_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "data/all_benchmark_data.csv"))
+DEFAULT_DATA_FILE = "data/all_benchmark_data.csv"
+DATA_DIR = os.path.abspath(os.path.dirname(__file__))
 VISUALIZATIONS_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "visualizations/"))
+
+
+def resolve_data_path(data_file: str | None) -> str:
+    """Resolve --data-file to an absolute CSV path; falls back to the default."""
+    path = data_file or DEFAULT_DATA_FILE
+    return path if os.path.isabs(path) else os.path.abspath(os.path.join(DATA_DIR, path))
 
 
 # Map --sweep-mode values to the x_name used in benchmark CSV data.
@@ -45,6 +52,7 @@ class VisualizationsConfig:
     sweep_mode: str = "token_length"
     extra_config_filter: str | None = None
     gpu_filter: str | None = None
+    data_file: str | None = None
     display: bool = False
     overwrite: bool = False
 
@@ -94,6 +102,14 @@ def parse_args() -> VisualizationsConfig:
         help="Filter by GPU name. When multiple devices are present, selects "
         "the matching GPU (uses most recent match if multiple found). "
         "If omitted, the most recent device is used automatically.",
+    )
+    parser.add_argument(
+        "--data-file",
+        type=str,
+        default=None,
+        help="Benchmark CSV to read, relative to benchmark/ or absolute. "
+        "Defaults to data/all_benchmark_data.csv. Use "
+        "data/all_benchmark_data_cutile.csv for Triton vs CuTile comparisons.",
     )
     parser.add_argument("--display", action="store_true", help="Display the visualization")
     parser.add_argument(
@@ -264,7 +280,7 @@ def load_data(config: VisualizationsConfig) -> pd.DataFrame:
     Returns:
         pd.DataFrame: Filtered benchmark dataframe.
     """
-    df = pd.read_csv(DATA_PATH)
+    df = pd.read_csv(resolve_data_path(config.data_file))
     df["extra_benchmark_config"] = df["extra_benchmark_config_str"].apply(json.loads)
 
     mask = (
@@ -386,7 +402,7 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
 
 def main():
     args = parse_args()
-    all_df = pd.read_csv(DATA_PATH)
+    all_df = pd.read_csv(resolve_data_path(args.data_file))
     all_df["extra_benchmark_config"] = all_df["extra_benchmark_config_str"].apply(json.loads)
 
     if args.metric_name == "memory":
@@ -408,6 +424,7 @@ def main():
             sweep_mode=args.sweep_mode,
             extra_config_filter=args.extra_config_filter,
             gpu_filter=args.gpu_filter,
+            data_file=args.data_file,
             display=args.display,
             overwrite=args.overwrite,
         )
