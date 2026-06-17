@@ -178,18 +178,14 @@ def team_from_pg(pg: "torch.distributed.ProcessGroup") -> int:
     if not dist.is_initialized():
         raise RuntimeError("torch.distributed is not initialised")
 
-    my_group_ranks = tuple(
-        sorted(dist.get_global_rank(pg, i) for i in range(dist.get_world_size(pg)))
-    )
+    my_group_ranks = tuple(sorted(dist.get_global_rank(pg, i) for i in range(dist.get_world_size(pg))))
 
     world_size = dist.get_world_size()
 
     # Short-circuit: if the group already covers all of WORLD, skip the
     # (collective) split — just return NVSHMEM_TEAM_WORLD. Avoids creating a team
     # that has to be destroyed before finalize.
-    if len(my_group_ranks) == world_size and tuple(my_group_ranks) == tuple(
-        range(world_size)
-    ):
+    if len(my_group_ranks) == world_size and tuple(my_group_ranks) == tuple(range(world_size)):
         return _C.team_world()
 
     gathered = [None] * world_size
@@ -210,8 +206,7 @@ def team_from_pg(pg: "torch.distributed.ProcessGroup") -> int:
 
     if my_handle == -1:
         raise RuntimeError(
-            f"team_from_pg: rank {my_global_rank} did not land in any group "
-            f"(gathered groups: {unique_groups})"
+            f"team_from_pg: rank {my_global_rank} did not land in any group (gathered groups: {unique_groups})"
         )
     return my_handle
 

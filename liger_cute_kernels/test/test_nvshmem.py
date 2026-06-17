@@ -27,15 +27,17 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+
 from datetime import timedelta
 
 import pytest
 
 try:
+    import liger_cute_kernels._C as _ext_mod
     import torch
     import torch.distributed as dist
     import torch.multiprocessing as mp
-    import liger_cute_kernels._C as _ext_mod
+
     from liger_cute_kernels import nvshmem
 except ImportError:
     torch = None
@@ -49,11 +51,7 @@ pytestmark = pytest.mark.skipif(
     reason="liger_cute_kernels not built/installed; build it to run these.",
 )
 
-_NDEV = (
-    torch.cuda.device_count()
-    if (_ext_mod is not None and torch is not None and torch.cuda.is_available())
-    else 0
-)
+_NDEV = torch.cuda.device_count() if (_ext_mod is not None and torch is not None and torch.cuda.is_available()) else 0
 
 _NVSHMEM_BINDINGS = (
     "uniqueid_nbytes",

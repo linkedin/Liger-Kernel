@@ -10,6 +10,7 @@
 // storage and stay valid until pop / the matching backward.
 #include <pybind11/pybind11.h>
 #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -201,19 +202,26 @@ PYBIND11_MODULE(_C, m) {
         const int64_t max_m_tiles = (cfg.max_total_slots + 127) / 128;
 
         // Caller-owned outputs (the kernel writes them; binding owns lifetime).
+        // token_expert_slots / tile_expert_ids are flat sort outputs sized to the
+        // kernel's worst case (max_total_slots / max_total_slots÷128) — the bwd
+        // path consumes them, so they must outlive this call.
         torch::Tensor Y = empty_like_device(X, {num_tokens, hidden_dim}, torch::kBFloat16);
         torch::Tensor token_expert_slots =
-            empty_like_device(X, {num_tokens, top_k}, torch::kInt32);
+            empty_like_device(X, {cfg.max_total_slots}, torch::kInt32);
         torch::Tensor tile_expert_ids = empty_like_device(X, {max_m_tiles}, torch::kInt32);
 
         // Output views the core fills / writes into (must be addressable lvalues).
         auto Y_v = liger_cute::to_tensor_view<2>(Y);
-        auto slots_v = liger_cute::to_tensor_view<2>(token_expert_slots);
+        auto slots_v = liger_cute::to_tensor_view<1>(token_expert_slots);
         auto tiles_v = liger_cute::to_tensor_view<1>(tile_expert_ids);
         liger_cute::TensorView<2> x_sorted_v{};  // filled to alias symmetric buffers
         liger_cute::TensorView<2> y_buf_v{};
         liger_cute::TensorView<2> offsets_v{};
         int chosen_tile_m = 0;
+
+        // Launch on the current torch stream (cudaStream_t -> int64 handle).
+        const int64_t stream_handle =
+            reinterpret_cast<int64_t>(c10::cuda::getCurrentCUDAStream().stream());
 
         // Inputs are passed by value: each to_tensor_view prvalue is constructed
         // directly into the parameter (guaranteed copy elision in C++17).
@@ -224,6 +232,7 @@ PYBIND11_MODULE(_C, m) {
                          liger_cute::to_tensor_view<3>(all_B),
                          liger_cute::to_tensor_view<3>(all_C),
                          liger_cute::to_tensor_view<3>(all_A), num_experts, top_k, team_handle,
+                         stream_handle,
                          &Y_v, &slots_v, &tiles_v, &x_sorted_v, &y_buf_v, &offsets_v,
                          &chosen_tile_m),
                      "moe_fused_fwd_bf16");
@@ -267,12 +276,15 @@ PYBIND11_MODULE(_C, m) {
         auto dA_v = liger_cute::to_tensor_view<3>(dA);
         auto dW_v = liger_cute::to_tensor_view<2>(dW);
 
+        const int64_t stream_handle =
+            reinterpret_cast<int64_t>(c10::cuda::getCurrentCUDAStream().stream());
+
         // Inputs by value: prvalue constructed directly into the parameter.
         check_status(liger_cute_moe_fused_bwd_bf16_auto(
                          liger_cute::to_tensor_view<2>(dY),
                          liger_cute::to_tensor_view<2>(Y_fwd),
                          liger_cute::to_tensor_view<2>(x_sorted),
-                         liger_cute::to_tensor_view<2>(token_expert_slots),
+                         liger_cute::to_tensor_view<1>(token_expert_slots),
                          liger_cute::to_tensor_view<1>(tile_expert_ids),
                          liger_cute::to_tensor_view<2>(expert_offsets),
                          liger_cute::to_tensor_view<2>(expert_indices),
@@ -280,7 +292,7 @@ PYBIND11_MODULE(_C, m) {
                          liger_cute::to_tensor_view<3>(all_B),
                          liger_cute::to_tensor_view<3>(all_C),
                          liger_cute::to_tensor_view<3>(all_A), num_experts, top_k, team_handle,
-                         fwd_tile_m, &dX_v, &dB_v, &dC_v, &dA_v, &dW_v),
+                         stream_handle, fwd_tile_m, &dX_v, &dB_v, &dC_v, &dA_v, &dW_v),
                      "moe_fused_bwd_bf16");
 
         return std::make_tuple(dX, dB, dC, dA, dW);
