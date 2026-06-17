@@ -1,0 +1,682 @@
+#pragma once
+
+// ═══════════════════════════════════════════════════════════════════
+// Backward MoE communication: gets X + dY, puts dX
+// ═══════════════════════════════════════════════════════════════════
+//
+// Warp roles (mirrors fwd in mlp_comms.cuh):
+//   warp 1 → X/dY get warp 0
+//   warp 2 → X/dY get warp 1 (also prologue leader)
+//   warp 3 → dX put warp
+//
+// Grid is launched 2D as (gridDim.x, NSplit) where NSplit is the
+// MLP-side cooperative count. Comms re-indexes the flat CTA id into
+// a (MC, NC) logical grid:
+//
+//   cta_id = blockIdx.x * gridDim.y + blockIdx.y
+//   xc     = cta_id / NC                in [0, MC)
+//   yc     = cta_id % NC                in [0, NC)
+//   MC     = (gridDim.x * gridDim.y) / NC   (multiply before divide so
+//                                            MC is exact when NC ∤ NSplit)
+//
+// NC CTAs (same xc, different yc) cooperate on one tile per get/put.
+// MC > gridDim.x when NC < NSplit so excess comm CTAs run ahead and
+// load the next tiles while the MLP is still on the current one.
+//
+// ── Tile-level locking (same as fwd) ───────────────────────────────
+//
+// All three pipes (X, dY, dX) use the per-tile StagePipe over a flat
+// [L = MC * NumStages]-sized signal array. Get pipes have
+// NumProducers = kNumGetWarpsPerCta·NC, NumConsumers = NSplit. Put
+// pipe has NumProducers = NSplit, NumConsumers = NC. Comm strides MC
+// across stages (NumStages entries — full ring cycle, independent of
+// NSplit and NC); MLP is ticket-based (RemoteMlpTileIteratorBwd) and
+// keys on the absolute slot index = (m_base + idx·gridDim.x) mod L.
+// Both sides cover the same flat L slots.
+//
+// ═══════════════════════════════════════════════════════════════════
+
+#include "mlp_comms.cuh"
+
+namespace liger {
+
+// ═══════════════════════════════════════════════════════════════════
+// Bwd comm warp constants
+// ═══════════════════════════════════════════════════════════════════
+//
+// Prologue still uses warps 2-3 (kCommWarpStart..kCommWarpEnd from
+// mlp_comms.cuh) since the prologue is shared with fwd. Main loop
+// runs on warps 1-3.
+
+static constexpr int kCommBwdGetWarp0  = 1;
+static constexpr int kCommBwdGetWarp1  = 2;
+static constexpr int kCommBwdPutWarp   = 3;
+static constexpr int kCommBwdWarpStart = kCommBwdGetWarp0;
+static constexpr int kCommBwdWarpEnd   = kCommBwdPutWarp;
+
+// ── TMA-GET (NVLink) warp rebalance ─────────────────────────────────
+// Mirrors the fwd #111 layout: when the TMA-GET path is enabled, ONE warp
+// saturates the per-SM TMA unit, so warp 1 alone does both the X and dY
+// gets (issue-bound DMA) and warps 2+3 become symmetric dX put warps.
+// When TMA is disabled (IB, odd shapes, or smem doesn't fit the bounce),
+// the kernel keeps the original 2-get + 1-put getmem layout — so tight
+// configs never regress. The MLP-side iterator picks producer/consumer
+// counts from the same runtime tma_enabled flag.
+static constexpr int kNumGetWarpsBwd = 1;  // TMA mode: 1 get warp (X+dY)
+static constexpr int kNumPutWarpsBwd = 2;  // TMA mode: 2 put warps (dX)
+
+// ═══════════════════════════════════════════════════════════════════
+// GetTmaDescsBwd — raw CUtensorMap descriptors for the bwd TMA GET
+// ═══════════════════════════════════════════════════════════════════
+//
+// Per-peer source maps over nvshmem_ptr(x_sorted, peer) and
+// nvshmem_ptr(dy_sorted, peer); one local dst map each over x_staging /
+// dy_staging. Built host-side in moe_bwd.cu, passed __grid_constant__.
+// `enabled` gates the whole TMA path (NVLink P2P + divisible hidden_dim +
+// bounce smem fits) — else do_get_bwd's getmem/int4 fallback runs.
+struct GetTmaDescsBwd {
+	CUtensorMap src_x_desc[kGetMaxPes];   // index by TileInfo::pe (team PE)
+	CUtensorMap src_dy_desc[kGetMaxPes];
+	CUtensorMap dst_x_staging_desc;       // local x_staging
+	CUtensorMap dst_dy_staging_desc;      // local dy_staging
+	int enabled;                          // 1 = NVLink P2P TMA path; 0 = getmem
+};
+
+// Box height (rows) of a single bwd TMA transfer. The bwd smem union sits
+// near the 228 KiB cap (mlp1_act ≈ 216 KiB), so unlike the fwd's 32 KiB
+// [64×256] box, the bwd uses a small [kGetBoxRowsBwd × kGetKChunk] box and
+// the get warp loops over row-bands. kGetBoxRowsBwd must divide the warp's
+// row band (TileM / NC). 16 divides 64/32/16 for NC ∈ {2,4,8} at TileM=128.
+// Box = 16·256·2 = 8 KiB, which fits the ~12 KiB headroom of the default
+// config (216 KiB union); tighter tuned configs fall back to getmem.
+static constexpr int kGetBoxRowsBwd = 16;
+
+// Smem bounce: one [kGetBoxRowsBwd × kGetKChunk] box + its mbarrier, both
+// 128-aligned. Single get warp → one region.
+template <typename Element>
+struct GetBounceBwd {
+	static constexpr int kBoxRows  = kGetBoxRowsBwd;
+	static constexpr int kBoxElems = kBoxRows * kGetKChunk;
+	static constexpr int kBoxBytes = kBoxElems * (int)sizeof(Element);
+	static constexpr int kPerWarpStride = ((kBoxBytes + 8) + 127) & ~127;
+	static constexpr int kTotalBytes    = kPerWarpStride;
+};
+
+// do_get_bwd_tma is defined below, after CommBuffersBwd (it needs the
+// complete struct type for bufs.hidden_dim).
+
+// ═══════════════════════════════════════════════════════════════════
+// CommBuffersBwd — backward-specific buffer pointers
+// ═══════════════════════════════════════════════════════════════════
+
+struct CommBuffersBwd {
+	// Staging: flat slot list [L][TileM][hidden_dim] where
+	// L = gridDim.x * NumStages. Indexed by slot ∈ [0, L).
+	void* x_staging;           // gets: X from remote PE
+	void* dy_staging;          // gets: dY from remote PE
+	void* dx_staging;          // puts: dX back to remote PE
+
+	// Per-tile signals ([L] entries each), one counter pair per slot —
+	// same granularity as fwd src/dst pipes.
+	int* x_src_ready;
+	int* x_src_consumed;
+	int* dy_src_ready;
+	int* dy_src_consumed;
+	int* dst_ready;
+	int* dst_consumed;
+
+	// Per-slot expert IDs ([L] each), one array per get pipe.
+	//
+	// They hold the SAME value for any given live slot — info.expert at the
+	// time the comm warp wrote that slot — but each is gated by its own
+	// pipe's StagePipe release window:
+	//
+	//   tile_expert_ids_x  is overwritten between MLP's release_src and
+	//                      comm's next-lap producer_release on the X pipe.
+	//                      Phase 2 mlp4 reads this (mlp4 reads X) and is
+	//                      safe as long as release_src is deferred past mlp4.
+	//
+	//   tile_expert_ids_dy is overwritten between MLP's release_dy and
+	//                      comm's next-lap producer_release on the dY pipe.
+	//                      Phase 2 mlp3 reads this (mlp3 reads dY) and is
+	//                      safe as long as release_dy is deferred past mlp3.
+	//
+	// Splitting the array is what lets release_src happen between mlp4 and
+	// mlp3 without races: comm refilling tile_expert_ids_x in that window
+	// can't poison mlp3, because mlp3 reads the dY-pipe array.
+	int* tile_expert_ids_x;
+	int* tile_expert_ids_dy;
+
+	// Remote data pointers (symmetric memory)
+	void* remote_x;            // get source: X on remote PE
+	void* remote_dy;           // get source: dY on remote PE
+	void* remote_dx;           // put destination: dX on remote PE
+
+	// Reused from forward
+	int* all_expert_offsets;
+	int all_expert_offsets_stride;
+
+	int my_pe;
+	int num_pes;
+	nvshmem_team_t team;
+
+	int hidden_dim;
+	int num_experts;
+	int experts_per_pe;
+
+	// GEMM/comm-active CTA count = floor_NS = grid_x · NSplit (NOT the
+	// launched grid size). Under the flat 1-D launch gridDim.x = num_blocks
+	// (= num_sms) ≥ n_gemm, so MC = n_gemm / NC and the MLP column count
+	// grid_x = n_gemm / NSplit must come from here, not from gridDim.
+	int n_gemm;
+
+	// Used by the dummy_consumer_bwd in mlp_comms_bwd.cu when it replicates
+	// the real BWD's batch loop (mlp_global_barrier + mlp_x_barrier). Not
+	// used by the comm warps themselves.
+	int* barrier_counter;
+	int* phase_counter;
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// do_get_bwd_tma — TMA GET of one buffer (X or dY) for one tile
+// ═══════════════════════════════════════════════════════════════════
+//
+// Mirrors fwd do_get's TMA path (cuda::ptx intrinsics): peer → smem box →
+// local staging, via TMA load + TMA store. Because the bounce box is small
+// (kGetBoxRowsBwd rows), the single get warp loops over its TileM/NC-row
+// band in kGetBoxRowsBwd-tall sub-bands × kGetKChunk-wide column boxes.
+// chunk_idx == yc (the CTA's slot within its NC-cooperating group); with
+// kNumGetWarpsBwd == 1 the per-warp row band is TileM/NC.
+template <typename Element, int TileM, int K, int NC, int NSplit>
+__device__ __forceinline__ void do_get_bwd_tma(
+		StagePipe<K, kNumGetWarpsBwd * NC, NSplit>& src_pipe,
+		const CommBuffersBwd& bufs,
+		const TileInfo& info,
+		int xc,
+		int MC,
+		int chunk_idx,                 // = yc (0..NC-1)
+		int lane,
+		int* tile_expert_ids_dst,
+		const CUtensorMap* src_desc_per_pe,  // descs->src_x_desc or src_dy_desc
+		const CUtensorMap* dst_desc,         // descs->dst_x_staging or dst_dy_staging
+		char* bounce_warp) {
+
+	namespace ptx = cuda::ptx;
+	using Bounce = GetBounceBwd<Element>;
+	constexpr int kWarpsPerTile = kNumGetWarpsBwd * NC;  // = NC
+	constexpr int kRowBand      = TileM / kWarpsPerTile;  // rows this warp owns
+	constexpr int kBoxRows      = Bounce::kBoxRows;
+
+	src_pipe.producer_acquire();
+
+	int slot = xc + src_pipe.producer_stage() * MC;
+
+	Element*  sbuf = reinterpret_cast<Element*>(bounce_warp);
+	uint64_t* mbar = reinterpret_cast<uint64_t*>(bounce_warp + Bounce::kBoxBytes);
+
+	if (lane == 0)
+		ptx::mbarrier_init(mbar, 1u);
+	__syncwarp();
+	ptx::fence_proxy_async(ptx::space_shared);
+
+	const int n_k = bufs.hidden_dim / kGetKChunk;
+	const uint32_t txbytes = (uint32_t)Bounce::kBoxBytes;
+	int y_src_base = info.token_offset + chunk_idx * kRowBand;  // peer row
+	int y_dst_base = slot * TileM       + chunk_idx * kRowBand;  // staging row
+
+	uint32_t phase = 0;
+	for (int rb = 0; rb < kRowBand; rb += kBoxRows) {
+		for (int k = 0; k < n_k; ++k) {
+			int x = k * kGetKChunk;
+			if (lane == 0) {
+				(void)ptx::mbarrier_arrive_expect_tx(
+					ptx::sem_release, ptx::scope_cta, ptx::space_shared,
+					mbar, txbytes);
+				int32_t load_crd[2] = {x, y_src_base + rb};
+				ptx::cp_async_bulk_tensor(
+					ptx::space_cluster, ptx::space_global,
+					sbuf, &src_desc_per_pe[info.pe], load_crd, mbar);
+				while (!ptx::mbarrier_try_wait_parity(mbar, phase)) {}
+				int32_t store_crd[2] = {x, y_dst_base + rb};
+				ptx::cp_async_bulk_tensor(
+					ptx::space_global, ptx::space_shared,
+					dst_desc, store_crd, sbuf);
+				ptx::cp_async_bulk_commit_group();
+				ptx::cp_async_bulk_wait_group(ptx::n32_t<0>{});
+			}
+			phase ^= 1;
+			__syncwarp();
+		}
+	}
+
+	if (tile_expert_ids_dst != nullptr && chunk_idx == 0 && lane == 0)
+		tile_expert_ids_dst[slot] = info.expert;
+
+	__syncwarp();
+	src_pipe.producer_release(lane);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// do_get_bwd — gets one buffer (X or dY) for one tile
+// ═══════════════════════════════════════════════════════════════════
+//
+// kWarpsPerTile = kNumGetWarpsPerCta * NC = 2·NC (warps 1+2 across
+// NC cooperating CTAs). Slot in flat list = xc + producer_stage*MC.
+
+// `tile_expert_ids_dst` is the per-pipe expert-id array to write to (one of
+// bufs.tile_expert_ids_x or bufs.tile_expert_ids_dy, depending on which pipe
+// this call is for), or nullptr to skip the write. Exactly one comm warp per
+// tile is expected to pass non-null — caller picks the writer to avoid double
+// writes and false sharing.
+//
+// The write happens AFTER the getmem completes and BEFORE producer_release,
+// so it is part of the slot's atomic publish: any consumer that's seen
+// producer_release sees both the getmem'd staging bytes AND the expert id.
+template <typename Element, int TileM, int K, int NC, int NSplit>
+__device__ __forceinline__ void do_get_bwd(
+		StagePipe<K, kNumGetWarpsPerCta * NC, NSplit>& src_pipe,
+		const CommBuffersBwd& bufs,
+		const TileInfo& info,
+		Element* remote_base,
+		Element* staging_base,    // base of flat [L][TileM][hidden_dim]
+		int tile_elems,
+		int xc,                   // start slot in flat list
+		int MC,                   // stride between consecutive comm slots
+		int chunk_idx,            // 0..2·NC-1
+		int& ib_seq,              // IB-tile counter (round-robin turn; advanced here)
+		int lane,
+		int* tile_expert_ids_dst) {
+
+	constexpr int kWarpsPerTile = kNumGetWarpsPerCta * NC;
+	int chunk = tile_elems / kWarpsPerTile;
+	int offset = chunk_idx * chunk;
+
+	src_pipe.producer_acquire();
+
+	// Slot in the flat list. Comm strides MC across pipe stages;
+	// MLP strides gridDim.x. Both resolve to the same physical
+	// slot for a given global tile since L = MC·K = gridDim.x·NumStages.
+	int slot = xc + src_pipe.producer_stage() * MC;
+
+	int global_pe = nvshmem_team_translate_pe(bufs.team, info.pe, NVSHMEM_TEAM_WORLD);
+
+	// Tile base (offset 0). P2P chunks add `offset`; the IB whole-tile
+	// transfer addresses the base directly.
+	Element* local_tile  = staging_base + slot * tile_elems;
+	Element* remote_tile = remote_base + info.token_offset * bufs.hidden_dim;
+
+	// Fast path: NVLink P2P → all 2·NC warps cooperate, each copying its
+	// chunk with direct int4 loads. IB path: one whole-tile getmem issued
+	// by a single warp, chosen round-robin across IB tiles only (ib_seq
+	// skips local/P2P tiles and is advanced in lockstep by every warp).
+	// See the matching fwd do_get for the full rationale.
+	void* p2p_remote = nvshmem_ptr(remote_tile, global_pe);
+	if (p2p_remote != nullptr) {
+		static_assert(sizeof(Element) == 2,
+			"P2P int4 copy assumes 2-byte elements (bf16/half)");
+		constexpr int kElemsPerVec = sizeof(int4) / sizeof(Element);
+		int n_vec = chunk / kElemsPerVec;
+		const int4* src_v = reinterpret_cast<const int4*>(
+			static_cast<Element*>(p2p_remote) + offset);
+		int4*       dst_v = reinterpret_cast<int4*>(local_tile + offset);
+		#pragma unroll 4
+		for (int i = lane; i < n_vec; i += 32) {
+			dst_v[i] = src_v[i];
+		}
+		__syncwarp();
+	} else {
+		if (chunk_idx == ib_seq % kWarpsPerTile) {
+			nvshmemx_getmem_warp(local_tile, remote_tile,
+				(size_t)tile_elems * sizeof(Element), global_pe);
+		}
+		++ib_seq;
+	}
+
+	if (tile_expert_ids_dst != nullptr && chunk_idx == 0 && lane == 0) {
+		tile_expert_ids_dst[slot] = info.expert;
+	}
+	__threadfence();
+
+	src_pipe.producer_release(lane);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// do_put_bwd — puts dX for one tile back to remote PE
+// ═══════════════════════════════════════════════════════════════════
+//
+// kWarpsPerTile = NC. NumProducers = NSplit (MLP-side),
+// NumConsumers = NC (comm-side).
+
+// num_put_warps / put_local_idx default to the original single-put-warp
+// layout (kWarpsPerTile = NC, slice = yc), so the getmem fallback caller is
+// byte-for-byte unchanged. The TMA-rebalanced caller passes num_put_warps=2
+// and put_local_idx ∈ {0,1} so the tile is split 2·NC ways across warps 2+3.
+// NumConsumers in the pipe type is cosmetic here (the consumer side never
+// reads it); both callers can use StagePipe<K, NSplit, NC>.
+template <typename Element, int TileM, int K, int NC, int NSplit>
+__device__ __forceinline__ void do_put_bwd(
+		StagePipe<K, NSplit, NC>& dst_pipe,
+		const CommBuffersBwd& bufs,
+		const TileInfo& info,
+		Element* dx_staging,      // base of flat [L][TileM][hidden_dim]
+		int tile_elems,
+		int xc,
+		int MC,
+		int chunk_idx,            // 0..NC-1 (= yc)
+		int& ib_seq,              // IB-tile counter (round-robin turn; advanced here)
+		int lane,
+		int num_put_warps = 1,    // 1 (fallback) or kNumPutWarpsBwd (TMA mode)
+		int put_local_idx = 0) {  // 0..num_put_warps-1
+
+	int kWarpsPerTile = num_put_warps * NC;
+	int put_idx = chunk_idx * num_put_warps + put_local_idx;  // 0..kWarpsPerTile-1
+	int chunk = tile_elems / kWarpsPerTile;
+	int offset = put_idx * chunk;
+	int my_bytes = chunk * sizeof(Element);
+
+	dst_pipe.consumer_acquire();
+
+	int slot = xc + dst_pipe.consumer_stage() * MC;
+	auto* remote_dx = static_cast<Element*>(bufs.remote_dx);
+	Element* local_tile  = dx_staging + slot * tile_elems;
+	Element* remote_tile = remote_dx + info.token_offset * bufs.hidden_dim;
+
+	int global_pe = nvshmem_team_translate_pe(bufs.team, info.pe, NVSHMEM_TEAM_WORLD);
+
+	// NVLink P2P peers keep the cooperative split; IB peers send the whole
+	// tile as one RDMA issued by a single put warp, round-robin over IB
+	// tiles only (see do_get_bwd / fwd do_put).
+	void* p2p_remote = nvshmem_ptr(remote_tile, global_pe);
+	if (p2p_remote != nullptr) {
+		nvshmemx_putmem_warp(remote_tile + offset, local_tile + offset,
+			my_bytes, global_pe);
+	} else {
+		if (put_idx == ib_seq % kWarpsPerTile) {
+			nvshmemx_putmem_warp(remote_tile, local_tile,
+				(size_t)tile_elems * sizeof(Element), global_pe);
+		}
+		++ib_seq;
+	}
+
+	dst_pipe.consumer_release(lane);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// nvshmem_comm_prologue_bwd — fetch remote offsets, compute tile counts
+// ═══════════════════════════════════════════════════════════════════
+//
+// Mirrors fwd nvshmem_comm_prologue. Computes both counts since uneven
+// distribution can give comm and MLP different per-CTA tile counts:
+//   smem.total_tiles   = comm count  (start = xc, stride = MC)
+//   smem.per_cta_tiles = MLP  count  (start = blockIdx.x, stride = gridDim.x)
+//
+// Runs on warps 2-3 (kCommWarpStart..kCommWarpEnd). Grid is 2D
+// (gridDim.x, NSplit).
+
+template <int TileM, int NC = 2, int N_SPLIT = NC>
+__device__ __forceinline__ void nvshmem_comm_prologue_bwd(
+		CommSmem& smem,
+		const CommBuffersBwd& bufs) {
+
+	int warp_id = threadIdx.x / 32;
+	if (warp_id < kCommWarpStart || warp_id > kCommWarpEnd)
+		return;
+
+	int lane = threadIdx.x % 32;
+	int local_warp = warp_id - kCommWarpStart;
+	bool is_leader = (local_warp == 0 && lane == 0);
+
+	int experts_per_pe = bufs.experts_per_pe;
+	int num_pes        = bufs.num_pes;
+	int my_pe          = bufs.my_pe;
+
+	if (bufs.all_expert_offsets == nullptr) {
+		if (is_leader) {
+			smem.total_tiles   = 0;
+			smem.per_cta_tiles = 0;
+			smem.global_total  = 0;
+		}
+		__threadfence_block();
+		__syncwarp();
+		return;
+	}
+	// NOTE: num_pes == 1 is NO LONGER short-circuited (mirrors fwd
+	// nvshmem_comm_prologue). The shared TileIterator enumerates the LOCAL PE
+	// (p=0), so a single-GPU bwd run stages its local X/dY through the comm
+	// get path and puts dX back through the comm put path exactly like the
+	// multi-GPU remote path — the separate local MLP pass is gone.
+
+	int local_e_start = my_pe * experts_per_pe;
+	int src_stride = bufs.num_experts + 1;
+	int dst_stride = experts_per_pe + 1;
+	{
+		int tid = threadIdx.x - kCommThreadStart;
+		for (int pe = 0; pe < num_pes; ++pe) {
+			for (int i = tid; i <= experts_per_pe; i += (kCommWarpsPerCta * 32))
+				smem.remote_offsets[pe * dst_stride + i] =
+					bufs.all_expert_offsets[pe * src_stride + local_e_start + i];
+		}
+	}
+	__syncwarp();
+
+	// Flat 1-D launch: cta_id = flat_id = blockIdx.x (gridDim.y == 1).
+	// Comm/GEMM index off n_gemm (= floor_NS), NOT the launched grid size:
+	//   MC     = n_gemm / NC          (comm ring columns)
+	//   grid_x = n_gemm / N_SPLIT     (MLP columns)
+	// CTAs with flat_id >= n_gemm are GEMM/comm gap CTAs; the caller gates
+	// them off (they still run Phase 2 + grid-stride phases).
+	int cta_id = blockIdx.x * gridDim.y + blockIdx.y;
+	int xc = cta_id / NC;
+	int MC = bufs.n_gemm / NC;
+	int grid_x = bufs.n_gemm / N_SPLIT;
+	int mlp_col = cta_id / N_SPLIT;
+
+	TileIterator<TileM> iter;
+	iter.remote_offsets = smem.remote_offsets;
+	iter.offsets_stride = dst_stride;
+	iter.experts_per_pe = experts_per_pe;
+	iter.num_pes = num_pes;
+	iter.my_pe = my_pe;
+
+	// Comm count: this CTA's per-(xc, yc) workload.
+	iter.init(xc, MC);
+	int comm_count = iter.total_tiles;
+
+	// MLP count: this CTA's logical column (mlp_col) workload, stride grid_x.
+	iter.init(mlp_col, grid_x);
+	int mlp_count = iter.total_tiles;
+
+	// Grid-wide remote tile count (start=0, stride=1 → counts every tile
+	// once). Same value on every CTA — used by moe_fused_bwd to gate the
+	// remote phase consistently across the grid.
+	iter.init(0, 1);
+	int grid_total = iter.total_tiles;
+
+	if (is_leader) {
+		smem.total_tiles   = comm_count;   // read by comm_main_bwd
+		smem.per_cta_tiles = mlp_count;    // read by MLP iterator
+		smem.global_total  = grid_total;   // read by moe_fused_bwd gate
+	}
+	// Block-scope fence so the leader's smem writes above are visible
+	// to all threads in this CTA (including MLP warps that early-
+	// returned at the top) AFTER the caller's __syncthreads(). Without
+	// this, the compiler/HW may reorder MLP warps' loads of
+	// smem.global_total to before the comm warp's store, giving stale
+	// (zero-initialized) values and causing CTA(0,0) to skip the remote
+	// phase while peer CTAs proceed — manifests as a multi-PE deadlock.
+	__threadfence_block();
+	__syncwarp();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// nvshmem_comm_main_bwd — independent flat loops per warp role
+// ═══════════════════════════════════════════════════════════════════
+//
+// All three pipes are per-tile StagePipes (mirrors fwd). Comm at xc
+// walks slots {xc, xc+MC, ..., xc+(K-1)·MC} of the [L]-sized signal
+// arrays (stride MC). Get pipes use NumProducers = 2·NC,
+// NumConsumers = NSplit; put pipe uses NumProducers = NSplit,
+// NumConsumers = NC.
+
+template <typename Element, int TileM, int NumStages,
+          int NC = 2, int NSplit = 2>
+__device__ __forceinline__ void nvshmem_comm_main_bwd(
+		CommSmem& smem,
+		const CommBuffersBwd& bufs,
+		const GetTmaDescsBwd* descs = nullptr,  // nullptr/disabled → getmem layout
+		char* get_bounce = nullptr) {           // bwd TMA bounce smem region
+
+	// Comm-side pipe depth is NumStages — one comm CTA cycle covers
+	// the full MC × NumStages staging area, independent of NSplit and
+	// NC. The MLP side is ticket-based (RemoteMlpTileIteratorBwd) and
+	// shares no per-stage_id state, so no divisibility relationship is
+	// required between NumStages, NSplit and NC.
+	constexpr int K = NumStages;
+
+	int warp_id = threadIdx.x / 32;
+	if (warp_id < kCommBwdWarpStart || warp_id > kCommBwdWarpEnd)
+		return;
+
+	int lane = threadIdx.x % 32;
+	bool is_leader = (lane == 0);
+
+	// Flat 1-D launch: cta_id = flat_id = blockIdx.x (gridDim.y == 1).
+	int cta_id = blockIdx.x * gridDim.y + blockIdx.y;
+	int xc = cta_id / NC;
+	int yc = cta_id % NC;
+	// MC = n_gemm / NC (ring columns). n_gemm = floor_NS ≤ num_blocks; the
+	// launched grid (gridDim.x) over-covers it with gap CTAs, so MC must be
+	// derived from n_gemm, not gridDim.
+	int MC = bufs.n_gemm / NC;
+
+	int total = smem.total_tiles;
+	if (total == 0) return;
+
+	int tile_elems = TileM * bufs.hidden_dim;
+
+	TileIterator<TileM> iter;
+	iter.remote_offsets = smem.remote_offsets;
+	iter.offsets_stride = bufs.experts_per_pe + 1;
+	iter.experts_per_pe = bufs.experts_per_pe;
+	iter.num_pes = bufs.num_pes;
+	iter.my_pe = bufs.my_pe;
+	iter.init(xc, MC);
+
+	int my_total = iter.total_tiles;
+	if (my_total == 0) return;
+
+	auto* x_staging  = static_cast<Element*>(bufs.x_staging);
+	auto* dy_staging = static_cast<Element*>(bufs.dy_staging);
+	auto* dx_staging = static_cast<Element*>(bufs.dx_staging);
+	auto* remote_x_base  = static_cast<Element*>(bufs.remote_x);
+	auto* remote_dy_base = static_cast<Element*>(bufs.remote_dy);
+
+	// ── TMA-rebalanced layout (NVLink, #111-style) ─────────────────────
+	// warp 1 = single TMA get warp (X then dY); warps 2+3 = dX put warps.
+	// Get producers/slot = kNumGetWarpsBwd·NC = NC; put consumers/slot =
+	// kNumPutWarpsBwd·NC = 2·NC (the MLP iterator's thresholds follow the
+	// same runtime tma_enabled flag — see moe_bwd.cu init_remote).
+	if (descs && descs->enabled) {
+		if (warp_id == kCommBwdGetWarp0) {
+			StagePipe<K, kNumGetWarpsBwd * NC, NSplit> x_pipe;
+			x_pipe.init(bufs.x_src_ready + xc, bufs.x_src_consumed + xc,
+			            is_leader, MC);
+			StagePipe<K, kNumGetWarpsBwd * NC, NSplit> dy_pipe;
+			dy_pipe.init(bufs.dy_src_ready + xc, bufs.dy_src_consumed + xc,
+			             is_leader, MC);
+
+			int chunk_idx = yc;               // kNumGetWarpsBwd == 1
+			bool writer   = (yc == 0);        // single get warp, yc==0 CTA
+			int* x_eid  = writer ? bufs.tile_expert_ids_x  : nullptr;
+			int* dy_eid = writer ? bufs.tile_expert_ids_dy : nullptr;
+
+			for (int i = 0; i < my_total; ++i) {
+				TileInfo info = iter.next();
+				do_get_bwd_tma<Element, TileM, K, NC, NSplit>(
+					x_pipe, bufs, info, xc, MC, chunk_idx, lane, x_eid,
+					descs->src_x_desc, &descs->dst_x_staging_desc, get_bounce);
+				do_get_bwd_tma<Element, TileM, K, NC, NSplit>(
+					dy_pipe, bufs, info, xc, MC, chunk_idx, lane, dy_eid,
+					descs->src_dy_desc, &descs->dst_dy_staging_desc, get_bounce);
+			}
+		} else {  // warps 2 + 3 → two symmetric dX put warps
+			StagePipe<K, NSplit, NC> dst_pipe;
+			dst_pipe.init(bufs.dst_ready + xc, bufs.dst_consumed + xc,
+			              is_leader, MC);
+			int put_local_idx = (warp_id == kCommBwdGetWarp1) ? 0 : 1;
+			int chunk_idx = yc;
+			int ib_seq = 0;
+			for (int i = 0; i < my_total; ++i) {
+				TileInfo info = iter.next();
+				do_put_bwd<Element, TileM, K, NC, NSplit>(
+					dst_pipe, bufs, info,
+					dx_staging, tile_elems, xc, MC, chunk_idx, ib_seq, lane,
+					kNumPutWarpsBwd, put_local_idx);
+			}
+		}
+		return;
+	}
+
+	if (warp_id == kCommBwdGetWarp0 || warp_id == kCommBwdGetWarp1) {
+		// ── Get warps: X then dY per tile, my_total iterations ─
+		StagePipe<K, kNumGetWarpsPerCta * NC, NSplit> x_pipe;
+		x_pipe.init(bufs.x_src_ready + xc, bufs.x_src_consumed + xc,
+		            is_leader, MC);
+
+		StagePipe<K, kNumGetWarpsPerCta * NC, NSplit> dy_pipe;
+		dy_pipe.init(bufs.dy_src_ready + xc, bufs.dy_src_consumed + xc,
+		             is_leader, MC);
+
+		int local_get_idx = warp_id - kCommBwdGetWarp0;  // 0 or 1
+		int chunk_idx = yc * kNumGetWarpsPerCta + local_get_idx;
+		// Exactly one writer per tile per pipe: warp 1 (kCommBwdGetWarp0),
+		// yc=0, lane=0. The X-pipe get writes tile_expert_ids_x; the dY-pipe
+		// get writes tile_expert_ids_dy. Both arrays end up holding the same
+		// info.expert for any given live slot — but each is gated by its
+		// own pipe's release window, so MLP can use the X-pipe array for
+		// Phase 2 mlp4 and the dY-pipe array for Phase 2 mlp3 with
+		// asymmetric release timing (release_src after mlp4, release_dy
+		// after mlp3) and no race in either read.
+		bool is_expert_id_writer =
+			(warp_id == kCommBwdGetWarp0) && (yc == 0);
+		int* x_expert_dst  = is_expert_id_writer ? bufs.tile_expert_ids_x  : nullptr;
+		int* dy_expert_dst = is_expert_id_writer ? bufs.tile_expert_ids_dy : nullptr;
+
+		// One IB-tile counter shared by the X and dY gets, advanced per IB
+		// getmem so X(t), dY(t), X(t+1), … rotate across the 2·NC get warps.
+		int ib_seq = 0;
+		for (int i = 0; i < my_total; ++i) {
+			TileInfo info = iter.next();
+
+			do_get_bwd<Element, TileM, K, NC, NSplit>(
+				x_pipe, bufs, info,
+				remote_x_base, x_staging, tile_elems,
+				xc, MC, chunk_idx, ib_seq, lane,
+				x_expert_dst);
+
+			do_get_bwd<Element, TileM, K, NC, NSplit>(
+				dy_pipe, bufs, info,
+				remote_dy_base, dy_staging, tile_elems,
+				xc, MC, chunk_idx, ib_seq, lane,
+				dy_expert_dst);
+		}
+	} else {  // warp_id == kCommBwdPutWarp
+		// ── Put warp: dX, my_total iterations ─
+		StagePipe<K, NSplit, NC> dst_pipe;
+		dst_pipe.init(bufs.dst_ready + xc, bufs.dst_consumed + xc,
+		              is_leader, MC);
+
+		int chunk_idx = yc;  // 0..NC-1
+
+		int ib_seq = 0;  // advances only on IB tiles (inside do_put_bwd)
+		for (int i = 0; i < my_total; ++i) {
+			TileInfo info = iter.next();
+			do_put_bwd<Element, TileM, K, NC, NSplit>(
+				dst_pipe, bufs, info,
+				dx_staging, tile_elems,
+				xc, MC, chunk_idx, ib_seq, lane);
+		}
+	}
+}
+
+} // namespace liger

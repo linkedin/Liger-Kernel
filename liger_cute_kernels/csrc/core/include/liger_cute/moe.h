@@ -65,9 +65,11 @@ LIGER_CUTE_API liger_cute_status_t liger_cute_moe_pop_fwd(void);
 // (Y / token_expert_slots / tile_expert_ids) are allocated by the binding and
 // passed in; the kernel writes them.
 //
-// HARNESS STAGE: validation + symmetric memory management only — no kernel is
-// launched yet (see TODO in moe.cu). *chosen_tile_m_out is the WGMMA default
-// (128) until the autotuner is ported.
+// stream_handle is the CUDA stream to launch on (a cudaStream_t reinterpreted as
+// int64; the binding passes the current torch stream). 0 = the default stream.
+// token_expert_slots_out / tile_expert_ids_out are flat caller-owned buffers the
+// kernel writes (sized [max_total_slots] and [max_total_slots/128]); they are
+// consumed by the matching backward.
 LIGER_CUTE_API liger_cute_status_t liger_cute_moe_fused_fwd_bf16_auto(
     const liger_cute::TensorView<2> X,
     const liger_cute::TensorView<2> expert_indices,
@@ -78,8 +80,9 @@ LIGER_CUTE_API liger_cute_status_t liger_cute_moe_fused_fwd_bf16_auto(
     const int num_experts,
     const int top_k,
     const int64_t team_handle,
+    const int64_t stream_handle,
     liger_cute::TensorView<2>* Y_out,
-    liger_cute::TensorView<2>* token_expert_slots_out,
+    liger_cute::TensorView<1>* token_expert_slots_out,
     liger_cute::TensorView<1>* tile_expert_ids_out,
     liger_cute::TensorView<2>* x_sorted_out_symm,
     liger_cute::TensorView<2>* y_buf_out_symm,
@@ -100,7 +103,7 @@ LIGER_CUTE_API liger_cute_status_t liger_cute_moe_fused_bwd_bf16_auto(
     const liger_cute::TensorView<2> dY,
     const liger_cute::TensorView<2> Y_fwd,
     const liger_cute::TensorView<2> x_sorted,
-    const liger_cute::TensorView<2> token_expert_slots,
+    const liger_cute::TensorView<1> token_expert_slots,
     const liger_cute::TensorView<1> tile_expert_ids,
     const liger_cute::TensorView<2> expert_offsets,
     const liger_cute::TensorView<2> expert_indices,
@@ -111,6 +114,7 @@ LIGER_CUTE_API liger_cute_status_t liger_cute_moe_fused_bwd_bf16_auto(
     const int num_experts,
     const int top_k,
     const int64_t team_handle,
+    const int64_t stream_handle,
     const int fwd_tile_m,
     liger_cute::TensorView<2>* dX_out,
     liger_cute::TensorView<3>* dB_out,
