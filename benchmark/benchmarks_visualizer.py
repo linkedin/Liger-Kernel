@@ -320,8 +320,9 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
     # — e.g., megatron-unfused has bit-identical memory to Liger in the
     # megatron_cross_entropy benchmark and would hide it under alphabetical sort.
     providers = df["kernel_provider"].unique().tolist()
-    non_liger = sorted(p for p in providers if p != "liger")
-    order = non_liger + (["liger"] if "liger" in providers else [])
+    liger_providers = sorted(p for p in providers if p == "liger" or p.startswith("liger-"))
+    non_liger = sorted(p for p in providers if p not in liger_providers)
+    order = non_liger + liger_providers
     df["kernel_provider"] = pd.Categorical(df["kernel_provider"], categories=order, ordered=True)
     df = df.sort_values(by="kernel_provider")
 
