@@ -26,16 +26,18 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+
 from datetime import timedelta
 
 import pytest
 
 try:
+    import liger_cute_kernels._C as _ext_mod
     import torch
     import torch.distributed as dist
     import torch.multiprocessing as mp
     import torch.nn.functional as Fnn
-    import liger_cute_kernels._C as _ext_mod
+
     from liger_cute_kernels import nvshmem
 except ImportError:
     torch = None
@@ -49,11 +51,7 @@ pytestmark = pytest.mark.skipif(
     reason="liger_cute_kernels not built/installed; build it to run these.",
 )
 
-_NDEV = (
-    torch.cuda.device_count()
-    if (_ext_mod is not None and torch is not None and torch.cuda.is_available())
-    else 0
-)
+_NDEV = torch.cuda.device_count() if (_ext_mod is not None and torch is not None and torch.cuda.is_available()) else 0
 
 # MoE shape — matches a row the tuned table covers (so the auto path resolves a
 # config) and keeps E divisible by every world size we run.
@@ -79,14 +77,13 @@ def _route(X: "torch.Tensor", gate_W: "torch.Tensor", top_k: int):
     tensors feed the kernel and the reference, so absolute routing values are
     irrelevant — only consistency matters.
     """
-    logits = X.float() @ gate_W.float().t()           # [T, E]
+    logits = X.float() @ gate_W.float().t()  # [T, E]
     weights, indices = torch.topk(logits, top_k, dim=1)
     weights = torch.softmax(weights, dim=1)
     return indices.to(torch.int32).contiguous(), weights.to(torch.bfloat16).contiguous()
 
 
-def _torch_reference_moe(X, expert_indices, expert_weights,
-                         all_B_global, all_C_global, all_A_global, top_k):
+def _torch_reference_moe(X, expert_indices, expert_weights, all_B_global, all_C_global, all_A_global, top_k):
     T, D = X.shape
     E = all_B_global.size(0)
     device = X.device
@@ -101,12 +98,12 @@ def _torch_reference_moe(X, expert_indices, expert_weights,
     idx_cpu = expert_indices.cpu()
 
     for e in range(E):
-        mask = (idx_cpu == e)
+        mask = idx_cpu == e
         if not mask.any():
             continue
         rows, slots_k = mask.nonzero(as_tuple=True)
         rows = rows.to(device)
-        slots = (rows * top_k + slots_k.to(device))
+        slots = rows * top_k + slots_k.to(device)
         X_e = X_f32.index_select(0, rows)
         BX = X_e @ B_f32[e].t()
         CX = X_e @ C_f32[e].t()
@@ -135,8 +132,7 @@ def _check_close(ours, ref, *, mean_rel_tol=0.15, atol_for_rel=1e-3):
     rel = diff / ref_f32.abs().clamp_min(atol_for_rel)
     mean_rel = rel.mean().item()
     assert mean_rel < mean_rel_tol, (
-        f"reference mismatch: mean_rel={mean_rel:.4f} (tol {mean_rel_tol}), "
-        f"max_abs={diff.max().item():.4f}"
+        f"reference mismatch: mean_rel={mean_rel:.4f} (tol {mean_rel_tol}), max_abs={diff.max().item():.4f}"
     )
 
 
@@ -170,8 +166,13 @@ def _make_inputs(rank: int, world_size: int):
 
 def _configure(world_size: int):
     _ext_mod.moe_configure_symmetric(
-        max_tokens=_T, hidden_dim=_D, max_num_experts=_E, max_top_k=_K,
-        num_pes=nvshmem.n_pes(), num_hosts=1, gpus_per_host=world_size,
+        max_tokens=_T,
+        hidden_dim=_D,
+        max_num_experts=_E,
+        max_top_k=_K,
+        num_pes=nvshmem.n_pes(),
+        num_hosts=1,
+        gpus_per_host=world_size,
     )
 
 
@@ -196,8 +197,8 @@ def _fwd_graph_worker(rank: int, world_size: int, init_file: str):
 
         def fwd():
             return _ext_mod.moe_fused_fwd_bf16(
-                X, ei, ew, all_B, all_C, all_A,
-                num_experts=_E, top_k=_K, team_handle=team)
+                X, ei, ew, all_B, all_C, all_A, num_experts=_E, top_k=_K, team_handle=team
+            )
 
         # Reference (global experts gathered across PEs).
         all_B_g = _gather_experts(all_B, dist.group.WORLD)
@@ -260,15 +261,28 @@ def _fwd_bwd_graph_worker(rank: int, world_size: int, init_file: str):
 
         def fwd():
             return _ext_mod.moe_fused_fwd_bf16(
-                X, ei, ew, all_B, all_C, all_A,
-                num_experts=_E, top_k=_K, team_handle=team)
+                X, ei, ew, all_B, all_C, all_A, num_experts=_E, top_k=_K, team_handle=team
+            )
 
         def bwd(dY, fwd_out):
             (Y, x_sorted, y_buf, all_off, tok_slots, tile_ids, tile_m) = fwd_out
             return _ext_mod.moe_fused_bwd_bf16(
-                dY, y_buf, x_sorted, tok_slots, tile_ids, all_off, ei, ew,
-                all_B, all_C, all_A,
-                num_experts=_E, top_k=_K, team_handle=team, fwd_tile_m=tile_m)
+                dY,
+                y_buf,
+                x_sorted,
+                tok_slots,
+                tile_ids,
+                all_off,
+                ei,
+                ew,
+                all_B,
+                all_C,
+                all_A,
+                num_experts=_E,
+                top_k=_K,
+                team_handle=team,
+                fwd_tile_m=tile_m,
+            )
 
         # Warmup fwd+bwd (eager), then release symm buffers.
         out = fwd()
