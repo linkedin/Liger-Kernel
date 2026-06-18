@@ -11,13 +11,18 @@ just the entry point that loads ``liger_cute_kernels._C`` when it is installed::
       libliger_cute_kernels.so    # torch-free CUTLASS + NVSHMEM core
       libnvshmem_host.so          # bundled nvshmem
 
-Harness stage: no functional kernels are wired up yet. The lck wheel is
-optional, so the rest of ``liger_kernel`` keeps working without it.
+The fused MoE op (``moe_fused``) lives in ``cute/ops/`` and is wired up as the
+opt-in ``cute`` implementation (``LIGER_KERNEL_IMPL=cute``). The lck wheel is
+optional, so the rest of ``liger_kernel`` keeps working without it — the ops
+module is imported only when the ``cute`` implementation is actively selected.
 """
 
 from __future__ import annotations
 
 import importlib
+
+from liger_kernel.ops.backends.registry import ImplInfo
+from liger_kernel.ops.backends.registry import register_impl
 
 # Cached handle to the compiled extension (from the separate liger_cute_kernels
 # package). None until first loaded.
@@ -53,3 +58,18 @@ def is_available() -> bool:
 
 
 __all__ = ["is_available"]
+
+
+# Self-register as the opt-in "cute" implementation. Like cutile, ``cute`` has no
+# default_devices, so it is never auto-applied — users select it explicitly via
+# ``LIGER_KERNEL_IMPL=cute``. Registration is pure metadata and must not import
+# the native extension: this __init__ is imported during impl discovery even when
+# the lck wheel is absent. The ops module (``cute.ops``) — which does load the
+# extension — is imported only when this implementation is actively selected.
+register_impl(
+    ImplInfo(
+        name="cute",
+        devices=("cuda",),
+        module_path=f"{__name__}.ops",  # liger_kernel.ops.cute.ops
+    )
+)

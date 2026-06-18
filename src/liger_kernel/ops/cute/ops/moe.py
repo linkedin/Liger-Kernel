@@ -1,0 +1,224 @@
+"""Fused expert-parallel MoE autograd op for the ``cute`` backend.
+
+Thin autograd wrapper around the native fused MoE fwd/bwd kernels shipped by the
+separate ``liger_cute_kernels`` (lck) wheel. Ported from LigerCommKernels'
+``liger_comm_kernels/moe_ops.py``; the kernel ABI is identical, only the package
+plumbing differs:
+
+  - the compiled extension is reached through the parent package's
+    ``_load_extension()`` (``liger_cute_kernels._C``), and
+  - the expert-parallel ``ProcessGroup`` -> NVSHMEM team translation reuses
+    ``liger_cute_kernels.nvshmem.resolve_team`` (which already caches per-PG).
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+from typing import Optional
+
+import torch
+
+from liger_kernel.ops.cute import _load_extension
+
+if TYPE_CHECKING:
+    from torch.distributed import ProcessGroup
+
+__all__ = ["LigerExpertParallelFusedMoEFunction", "moe_fused"]
+
+# Resolve the native extension once at import. cute/ops is imported only when the
+# "cute" implementation is actively selected, so a missing lck wheel surfaces as
+# a clear ImportError to the user who asked for it (see _load_extension).
+_C = _load_extension()
+
+
+def _resolve_team(pg: Optional["ProcessGroup"]) -> int:
+    """Translate the expert-parallel ``ProcessGroup`` into an NVSHMEM team handle.
+
+    ``pg=None`` maps to ``NVSHMEM_TEAM_WORLD``. ``resolve_team`` caches per
+    ProcessGroup, so the underlying collective (``team_from_pg``'s
+    all_gather_object for non-WORLD groups) runs at most once per group — the
+    cached handle is what later/captured calls see.
+    """
+    from liger_cute_kernels.nvshmem import resolve_team
+
+    return resolve_team(pg)
+
+
+class LigerExpertParallelFusedMoEFunction(torch.autograd.Function):
+    """Autograd wrapper around the fused expert-parallel MoE fwd/bwd kernels.
+
+    Takes the expert-parallel ``ProcessGroup`` directly and translates it into an
+    NVSHMEM team inside ``forward``; the resolved team handle is stashed on
+    ``ctx`` so ``backward`` reuses it rather than re-running the (collective)
+    translation.
+
+    The forward always uses the with-intermediates kernel and saves every tensor
+    bwd consumes on ``ctx``. The no-grad fast path is handled in ``moe_fused``
+    *outside* this Function — checking ``torch.is_grad_enabled()`` inside
+    ``forward`` is unsafe because PyTorch disables grad globally while running
+    ``Function.forward``.
+
+    Backward calls the bwd kernel and then ``moe_pop_fwd`` so the symmetric stack
+    returns to its pre-fwd depth and the buffers are available for the next
+    iteration.
+    """
+
+    @staticmethod
+    def forward(  # type: ignore[override]
+        ctx,
+        X: torch.Tensor,
+        expert_indices: torch.Tensor,
+        expert_weights: torch.Tensor,
+        all_B: torch.Tensor,
+        all_C: torch.Tensor,
+        all_A: torch.Tensor,
+        num_experts: int,
+        top_k: int,
+        pg: Optional["ProcessGroup"],
+    ) -> torch.Tensor:
+        team_handle = _resolve_team(pg)
+
+        (
+            Y,
+            x_sorted,
+            y_buf,
+            expert_offsets,
+            token_expert_slots,
+            tile_expert_ids,
+            chosen_tile_m,
+        ) = _C.moe_fused_fwd_bf16(
+            X,
+            expert_indices,
+            expert_weights,
+            all_B,
+            all_C,
+            all_A,
+            num_experts,
+            top_k,
+            team_handle,
+        )
+
+        ctx.save_for_backward(
+            expert_indices,
+            expert_weights,
+            all_B,
+            all_C,
+            all_A,
+            x_sorted,
+            y_buf,
+            token_expert_slots,
+            tile_expert_ids,
+            expert_offsets,
+        )
+        ctx.num_experts = num_experts
+        ctx.top_k = top_k
+        # Reuse the team resolved in forward — re-translating in backward would
+        # re-run team_from_pg's collective (and is unsafe under graph capture).
+        ctx.team_handle = team_handle
+        # TileM the fwd autotuner picked. Bwd MUST run with the same TileM:
+        # tile_expert_ids, expert_offsets, and x_sorted are all laid out at FWD's
+        # TileM granularity. The C++ bwd auto entry enforces this via the
+        # dispatch filter.
+        ctx.fwd_tile_m = chosen_tile_m
+        return Y
+
+    @staticmethod
+    def backward(ctx, dY: torch.Tensor):  # type: ignore[override]
+        (
+            expert_indices,
+            expert_weights,
+            all_B,
+            all_C,
+            all_A,
+            x_sorted,
+            y_buf,
+            token_expert_slots,
+            tile_expert_ids,
+            expert_offsets,
+        ) = ctx.saved_tensors
+
+        dX, dB, dC, dA, dW = _C.moe_fused_bwd_bf16(
+            dY.contiguous(),
+            y_buf,
+            x_sorted,
+            token_expert_slots,
+            tile_expert_ids,
+            expert_offsets,
+            expert_indices,
+            expert_weights,
+            all_B,
+            all_C,
+            all_A,
+            ctx.num_experts,
+            ctx.top_k,
+            ctx.team_handle,
+            ctx.fwd_tile_m,
+        )
+        _C.moe_pop_fwd()
+
+        # Argument order matches forward: X, expert_indices, expert_weights,
+        # all_B, all_C, all_A, num_experts, top_k, pg.
+        return dX, None, dW, dB, dC, dA, None, None, None
+
+
+def moe_fused(
+    X: torch.Tensor,
+    expert_indices: torch.Tensor,
+    expert_weights: torch.Tensor,
+    all_B: torch.Tensor,
+    all_C: torch.Tensor,
+    all_A: torch.Tensor,
+    num_experts: int,
+    top_k: int,
+    pg: Optional["ProcessGroup"] = None,
+) -> torch.Tensor:
+    """Fused expert-parallel MoE forward with autograd support.
+
+    ``pg`` is the expert-parallel process group whose ranks hold the remote
+    experts. The default ``pg=None`` runs purely local — the kernel uses
+    ``NVSHMEM_TEAM_WORLD`` and on single-PE jobs that means no cross-rank
+    traffic. For multi-rank EP the caller should pass the EP group; the resulting
+    NVSHMEM team is cached per ``ProcessGroup`` (``team_from_pg`` is collective).
+
+    Returns the combined output ``Y`` of shape ``X.shape``. Under
+    ``torch.no_grad()`` (or when no input requires grad) the symmetric memory
+    used by fwd is popped immediately before returning; otherwise the
+    intermediates stay alive on the autograd context until the matching
+    ``backward`` consumes them and pops the stack there.
+    """
+    # Decide which path to take BEFORE entering the Function:
+    # torch.is_grad_enabled() is forced to False inside
+    # autograd.Function.forward, so the check has to live here.
+    needs_grad = torch.is_grad_enabled() and any(t.requires_grad for t in (X, expert_weights, all_B, all_C, all_A))
+
+    if not needs_grad:
+        # Inference / torch.no_grad(): there is no backward to consume the fwd's
+        # symmetric buffers, so pop them right away to return the symmetric stack
+        # to its pre-fwd depth (rather than leaking until a backward that never
+        # runs).
+        team_handle = _resolve_team(pg)
+        Y, _x_sorted, _y_buf, _all_eo, _tes, _tei, _tile_m = _C.moe_fused_fwd_bf16(
+            X,
+            expert_indices,
+            expert_weights,
+            all_B,
+            all_C,
+            all_A,
+            num_experts,
+            top_k,
+            team_handle,
+        )
+        _C.moe_pop_fwd()
+        return Y
+
+    return LigerExpertParallelFusedMoEFunction.apply(
+        X,
+        expert_indices,
+        expert_weights,
+        all_B,
+        all_C,
+        all_A,
+        num_experts,
+        top_k,
+        pg,
+    )
