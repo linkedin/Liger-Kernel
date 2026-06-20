@@ -25,6 +25,7 @@ from liger_kernel.transformers import LigerRMSNorm
 from liger_kernel.transformers import LigerSwiGLUMLP
 from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
+from liger_kernel.transformers.model.deepseek_v32 import lce_forward as deepseek_v32_lce_forward
 from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
@@ -219,6 +220,15 @@ def is_deepseek_v4_available():
         return False
 
 
+def is_deepseek_v32_available():
+    try:
+        import transformers.models.deepseek_v32  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def is_falcon_h1_available():
     try:
         import transformers.models.falcon_h1  # noqa: F401
@@ -285,6 +295,7 @@ def is_nemotron_available():
 def test_import_from_root():
     try:
         from liger_kernel.transformers import AutoLigerKernelForCausalLM  # noqa: F401
+        from liger_kernel.transformers import apply_liger_kernel_to_deepseek_v32  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma2  # noqa: F401
         from liger_kernel.transformers import apply_liger_kernel_to_gemma3  # noqa: F401
@@ -1603,6 +1614,72 @@ def test_apply_liger_kernel_to_instance_for_mixtral():
                     assert inspect.getsource(expert.forward) == inspect.getsource(LigerBlockSparseTop2MLP.forward)
             assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
             assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+
+        try:
+            print(dummy_model_instance)
+        except Exception as e:
+            pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+@pytest.mark.skipif(not is_deepseek_v32_available(), reason="deepseek_v32 module not available")
+def test_apply_liger_kernel_to_instance_for_deepseek_v32():
+    with patch("transformers.models.deepseek_v32.modeling_deepseek_v32"):
+        config = transformers.models.deepseek_v32.configuration_deepseek_v32.DeepseekV32Config(
+            vocab_size=1024,
+            hidden_size=32,
+            intermediate_size=64,
+            moe_intermediate_size=16,
+            num_hidden_layers=4,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            q_lora_rank=8,
+            kv_lora_rank=8,
+            qk_rope_head_dim=8,
+            qk_nope_head_dim=8,
+            v_head_dim=16,
+            num_experts_per_tok=2,
+            n_routed_experts=4,
+            num_experts=4,
+            n_group=2,
+            topk_group=1,
+            index_n_heads=2,
+            index_head_dim=8,
+            index_topk=4,
+            first_k_dense_replace=1,
+            max_position_embeddings=128,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        assert inspect.getsource(dummy_model_instance.forward) != inspect.getsource(deepseek_v32_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) != inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            if hasattr(layer.mlp, "shared_experts"):
+                assert inspect.getsource(layer.mlp.shared_experts.forward) != inspect.getsource(
+                    LigerQwen3MoeSwiGLUMLP.forward
+                )
+            else:
+                assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.q_a_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.kv_a_layernorm.forward) != inspect.getsource(LigerRMSNorm.forward)
+
+        _apply_liger_kernel_to_instance(model=dummy_model_instance)
+
+        assert inspect.getsource(dummy_model_instance.forward) == inspect.getsource(deepseek_v32_lce_forward)
+        assert inspect.getsource(dummy_model_instance.model.norm.forward) == inspect.getsource(LigerRMSNorm.forward)
+        for layer in dummy_model_instance.model.layers:
+            if hasattr(layer.mlp, "shared_experts"):
+                assert inspect.getsource(layer.mlp.shared_experts.forward) == inspect.getsource(
+                    LigerQwen3MoeSwiGLUMLP.forward
+                )
+                assert inspect.getsource(layer.mlp.experts.forward) != inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            else:
+                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerQwen3MoeSwiGLUMLP.forward)
+            assert inspect.getsource(layer.input_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.post_attention_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.q_a_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
+            assert inspect.getsource(layer.self_attn.kv_a_layernorm.forward) == inspect.getsource(LigerRMSNorm.forward)
 
         try:
             print(dummy_model_instance)
