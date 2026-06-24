@@ -221,7 +221,7 @@ def fused_linear_cross_entropy_forward(
                 torch.addmm(
                     grad_weight,
                     grad_logits_chunk.t(),
-                    _input_chunk.to(dtype=grad_logits_chunk.t().dtype),
+                    _input_chunk,
                     out_dtype=torch.float32,
                     out=grad_weight,
                 )
