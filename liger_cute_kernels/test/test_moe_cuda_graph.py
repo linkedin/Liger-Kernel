@@ -3,7 +3,7 @@
 Ported from LigerCommKernels' ``tests/python/test_autograd.py`` (the
 ``test_moe_fused_cuda_graph`` / fwd+bwd graph tests). Those upstream tests drove
 the kernels through the ``lck.moe_fused`` autograd wrapper and ``moe_router_fwd``;
-neither is in scope for this package yet, so here we drive the **raw ``_C``
+neither is in scope for this package yet, so here we drive the **raw TVM FFI
 bindings** directly — which is exactly what the graph tests are about: proving the
 *kernel itself* is CUDA-graph-safe (no host syncs, no non-capturable NVSHMEM calls,
 stable symmetric-stack offsets across replays). Routing is computed in plain torch
@@ -32,7 +32,7 @@ from datetime import timedelta
 import pytest
 
 try:
-    import liger_cute_kernels._C as _ext_mod
+    import liger_cute_kernels.tvm_ffi as _ext_mod
     import torch
     import torch.distributed as dist
     import torch.multiprocessing as mp
@@ -47,11 +47,15 @@ except ImportError:
     nvshmem = None
 
 pytestmark = pytest.mark.skipif(
-    _ext_mod is None,
+    _ext_mod is None or not _ext_mod.is_available(),
     reason="liger_cute_kernels not built/installed; build it to run these.",
 )
 
-_NDEV = torch.cuda.device_count() if (_ext_mod is not None and torch is not None and torch.cuda.is_available()) else 0
+_NDEV = (
+    torch.cuda.device_count()
+    if (_ext_mod is not None and _ext_mod.is_available() and torch is not None and torch.cuda.is_available())
+    else 0
+)
 
 # MoE shape — matches a row the tuned table covers (so the auto path resolves a
 # config) and keeps E divisible by every world size we run.

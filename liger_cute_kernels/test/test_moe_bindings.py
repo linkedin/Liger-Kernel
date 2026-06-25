@@ -1,11 +1,11 @@
-"""Unit tests for the ``liger_cute_kernels`` (``_C``) MoE bindings.
+"""Unit tests for the ``liger_cute_kernels`` TVM FFI MoE bindings.
 
 These belong to the standalone ``liger_cute_kernels`` module — they import the
 compiled package directly and do NOT depend on ``liger_kernel``. The native
 kernels are not ported yet, so these do NOT check numerics; they exercise the
 binding *surface* that already exists:
 
-  * the ``liger_cute_kernels._C`` extension imports and exposes the MoE entry
+  * the ``liger_cute_kernels.tvm_ffi`` facade imports and exposes the MoE entry
     points,
   * symmetric configuration succeeds for a valid topology,
   * a failed ``LIGER_CHECK`` in the torch-free core propagates across the
@@ -23,19 +23,19 @@ an explicit skip.
 import pytest
 
 try:
-    import liger_cute_kernels._C as _ext_mod
+    import liger_cute_kernels.tvm_ffi as _ext_mod
     import torch
 except ImportError:
     torch = None
     _ext_mod = None
 
 pytestmark = pytest.mark.skipif(
-    _ext_mod is None,
+    _ext_mod is None or not _ext_mod.is_available(),
     reason="liger_cute_kernels not built/installed; build it to run these.",
 )
 
 # Safe even when torch failed to import (module is skipped in that case anyway).
-_HAS_CUDA = _ext_mod is not None and torch is not None and torch.cuda.is_available()
+_HAS_CUDA = _ext_mod is not None and _ext_mod.is_available() and torch is not None and torch.cuda.is_available()
 
 # Valid symmetric-config topology reused across tests: num_hosts * gpus_per_host
 # == num_pes, and max_num_experts divisible by num_pes.
@@ -52,7 +52,7 @@ _CFG = dict(
 
 @pytest.fixture(scope="module")
 def ext():
-    """The compiled ``liger_cute_kernels._C`` extension module."""
+    """The ``liger_cute_kernels.tvm_ffi`` facade module."""
     return _ext_mod
 
 

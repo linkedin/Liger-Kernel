@@ -25,7 +25,7 @@ from typing import Optional
 
 import torch
 
-from liger_cute_kernels import _C
+from liger_cute_kernels import tvm_ffi as _C
 
 __all__ = [
     "init_from_pg",
