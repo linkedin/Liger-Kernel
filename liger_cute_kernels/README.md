@@ -6,13 +6,13 @@ Native CUDA build for the MoE port (from `LigerCommKernels`). It compiles into
 | Artifact | Sources | Links | Boundary | Built |
 |---|---|---|---|---|
 | `libliger_cute_kernels.so` (the "core", aka *lck*) | `csrc/core` | CUTLASS + NVSHMEM + CUDA — **no torch** | flat `extern "C"` (`liger_cute.h`) | **once** |
-| `tvm_ffi` (the binding) | `liger_cute_kernels/tvm_ffi*.{py,cpp}` | the core + TVM FFI | DLPack/TVM FFI | **source-packaged, JIT-built** |
+| `tvm_ffi` (the binding) | `liger_cute_kernels/tvm_ffi*.{py,cpp}` | the core + TVM FFI | DLPack/TVM FFI | **built into the lck wheel** |
 
 The core's public ABI is `extern "C"` only (no `std::`/torch types cross it),
 symbols are hidden except `liger_cute_*`, and libstdc++/libgcc are linked
 statically. That makes the core **ABI-agnostic**: one compiled core links into a
-TVM FFI shim loaded from packaged source, so the expensive CUTLASS compile is done
-once and the Python binding is not tied to a specific torch wheel.
+prebuilt TVM FFI shim, so the expensive CUTLASS compile is done once and the
+Python binding is not tied to a specific torch wheel or runtime JIT compile.
 
 ## Two separate wheels
 
@@ -46,7 +46,8 @@ liger_cute_kernels/             # ← standalone native build module (repo root)
 ├── liger_cute_kernels/         # the lck wheel's package source
 │   ├── __init__.py             # (.so are added here at build time)
 │   ├── tvm_ffi.py              # Python facade matching the old _C API
-│   └── tvm_ffi_bindings.cpp    # TVM FFI C++ shim over the torch-free core
+│   ├── tvm_ffi_bindings.cpp    # TVM FFI C++ shim over the torch-free core
+│   └── liger_cute_kernels_tvm_ffi.so  # built TVM FFI module
 ├── test/                       # the lck package's own unit tests
 │   └── test_moe_bindings.py
 ├── CMakeLists.txt              # core (always) + bindings (opt-in)
@@ -136,8 +137,9 @@ This module's `setup.py` packages the native libraries into the independent
 **lck wheel**, whose package is the standalone top-level **`liger_cute_kernels`**.
 It builds the core and ships
 `liger_cute_kernels/{libliger_cute_kernels.so, libnvshmem_host.so,
-tvm_ffi.py, tvm_ffi_bindings.cpp}`. Build against the **local** CUDA/NVSHMEM
-environment (no build isolation), from this module directory:
+tvm_ffi.py, tvm_ffi_bindings.cpp, liger_cute_kernels_tvm_ffi.so}`. Build against
+the **local** CUDA/NVSHMEM environment (no build isolation), from this module
+directory:
 
 ```bash
 cd liger_cute_kernels
@@ -196,6 +198,7 @@ The core should export only `liger_cute_*` symbols and have no direct
 
 ## Runtime notes
 
-- `tvm_ffi.py` JIT-builds `tvm_ffi_bindings.cpp` and links its sibling
-  `libliger_cute_kernels.so` / `libnvshmem_host.so` via an installed-package
-  rpath — no `LD_LIBRARY_PATH` needed once they sit together in the package.
+- `tvm_ffi.py` loads the prebuilt `liger_cute_kernels_tvm_ffi.so`, which links
+  sibling `libliger_cute_kernels.so` / `libnvshmem_host.so` via an
+  installed-package rpath — no `LD_LIBRARY_PATH` or runtime JIT compile needed
+  once they sit together in the package.

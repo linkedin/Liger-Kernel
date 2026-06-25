@@ -43,7 +43,7 @@ setup(
     # platform wheel (cpXY/abi/platform tags).
     packages=["liger_cute_kernels"],
     package_dir={"liger_cute_kernels": "liger_cute_kernels"},
-    package_data={"liger_cute_kernels": ["tvm_ffi_bindings.cpp"]},
+    package_data={"liger_cute_kernels": ["tvm_ffi_bindings.cpp", "liger_cute_kernels_tvm_ffi.so"]},
     ext_modules=[CMakeExtension("liger_cute_kernels._C")],
     cmdclass={"build_ext": LckBuildExt},
     zip_safe=False,

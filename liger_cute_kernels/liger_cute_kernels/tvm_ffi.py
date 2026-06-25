@@ -7,11 +7,14 @@ Torch/pybind extension.
 
 from __future__ import annotations
 
+import ctypes
+
 from pathlib import Path
 
 import torch
 
 _MOD = None
+_NVSHMEM_LIBS_LOADED = False
 
 
 def is_available() -> bool:
@@ -25,24 +28,25 @@ def is_available() -> bool:
 def _load_module():
     global _MOD
     if _MOD is None:
-        import tvm_ffi.cpp
+        import tvm_ffi
 
         pkg_dir = Path(__file__).resolve().parent
-        source = pkg_dir / "tvm_ffi_bindings.cpp"
-        if not source.exists():
-            raise FileNotFoundError(f"Missing packaged TVM FFI binding source: {source}")
-        _MOD = tvm_ffi.cpp.load(
-            name="liger_cute_kernels_tvm_ffi",
-            sources=[str(source)],
-            extra_cflags=["-O3", "-std=c++17"],
-            extra_ldflags=[
-                f"-L{pkg_dir}",
-                "-lliger_cute_kernels",
-                "-lnvshmem_host",
-                f"-Wl,-rpath,{pkg_dir}",
-            ],
-        )
+        _load_nvshmem_libraries(pkg_dir)
+        module = pkg_dir / "liger_cute_kernels_tvm_ffi.so"
+        if not module.exists():
+            raise FileNotFoundError(f"Missing packaged TVM FFI module: {module}")
+        _MOD = tvm_ffi.load_module(str(module))
     return _MOD
+
+
+def _load_nvshmem_libraries(pkg_dir: Path) -> None:
+    global _NVSHMEM_LIBS_LOADED
+    if _NVSHMEM_LIBS_LOADED:
+        return
+    uid_bootstrap = pkg_dir / "nvshmem_bootstrap_uid.so.3"
+    if uid_bootstrap.exists():
+        ctypes.CDLL(str(uid_bootstrap), mode=ctypes.RTLD_GLOBAL)
+    _NVSHMEM_LIBS_LOADED = True
 
 
 def _int64_out() -> torch.Tensor:

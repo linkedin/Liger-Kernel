@@ -33,6 +33,7 @@ CMAKE_DIR = HERE  # CMakeLists.txt sits beside this module
 
 CORE_SO = "libliger_cute_kernels.so"
 NVSHMEM_SO = "libnvshmem_host.so"
+TVM_FFI_SO = "liger_cute_kernels_tvm_ffi.so"
 
 # In-wheel location of the native libraries: the lck wheel's own top-level
 # package, kept separate from liger_kernel so it doesn't mix with it.
@@ -101,11 +102,41 @@ def _stage_nvshmem(out_dir: Path) -> None:
         shutil.copy2(nvshmem, out_dir / NVSHMEM_SO)
         if nvshmem.name != NVSHMEM_SO:
             shutil.copy2(nvshmem, out_dir / nvshmem.name)
+        for plugin in nvshmem.parent.glob("nvshmem_*.so*"):
+            shutil.copy2(plugin, out_dir / plugin.name)
     else:
         print(
             f"WARNING: {NVSHMEM_SO} not found under NVSHMEM_HOME; the lck wheel will not bundle nvshmem",
             file=sys.stderr,
         )
+
+
+def _build_tvm_ffi_binding(dest: Path) -> None:
+    cxx = os.environ.get("CXX", "c++")
+    source = HERE / "liger_cute_kernels" / "tvm_ffi_bindings.cpp"
+    output = dest / TVM_FFI_SO
+    cflags = subprocess.check_output(["tvm-ffi-config", "--cflags"], text=True).split()
+    ldflags = subprocess.check_output(["tvm-ffi-config", "--ldflags"], text=True).split()
+    tvm_lib_dirs = [flag[2:] for flag in ldflags if flag.startswith("-L")]
+    cmd = [
+        cxx,
+        "-shared",
+        "-fPIC",
+        "-O3",
+        "-std=c++17",
+        *cflags,
+        str(source),
+        "-o",
+        str(output),
+        f"-L{dest}",
+        "-lliger_cute_kernels",
+        "-lnvshmem_host",
+        *ldflags,
+        "-ltvm_ffi",
+        "-Wl,-rpath,$ORIGIN",
+        *(f"-Wl,-rpath,{path}" for path in tvm_lib_dirs),
+    ]
+    subprocess.check_call(cmd)
 
 
 def build_core(out_dir: Path | str, build_temp: Path | str | None = None) -> Path:
@@ -179,6 +210,7 @@ class LckBuildExt(build_ext):
         else:
             shutil.copy2(next(build_temp.rglob(CORE_SO)), dest / CORE_SO)
         _stage_nvshmem(dest)
+        _build_tvm_ffi_binding(dest)
         print(f"staged lck artifacts -> {dest}")
 
 
