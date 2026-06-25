@@ -375,6 +375,17 @@ def cross_entropy_forward(
     if target.stride(-1) != 1:
         target = target.contiguous()
 
+    # num_warps is dtype- and arch-dependent (measured on CE, full fwd+bwd):
+    #   Blackwell (B200, sm_100) bf16/fp16 -> 8 (instruction-issue-bound); fp32 -> 32
+    #   Hopper (H100, sm_90) and earlier   -> 32 for all dtypes (bandwidth-bound)
+    #   AMD (ROCm)                         -> 16
+    # Auto-selected below; if you target a single GPU you can hardcode it and drop the check.
+    if is_hip():
+        ce_num_warps = 16
+    else:
+        is_blackwell = _input.is_cuda and torch.cuda.get_device_capability(_input.device)[0] >= 10
+        ce_num_warps = 8 if (_input.element_size() <= 2 and is_blackwell) else 32
+
     # Here we use a trick to store X_ptr gradient in X_ptr so we can save memory
     liger_cross_entropy_kernel[(n_rows,)](
         X_ptr=_input,
@@ -409,9 +420,7 @@ def cross_entropy_forward(
         HAS_WEIGHT=True if weight is not None else False,
         HAS_SOFTCAPPING=True if softcap is not None else False,
         HAS_GRADIENTS=_input.requires_grad,
-        # TODO: 32 seems to give the best performance
-        # Performance is quite sensitive to num_warps
-        num_warps=32 if not is_hip() else 16,
+        num_warps=ce_num_warps,
     )
 
     if reduction == "none":
