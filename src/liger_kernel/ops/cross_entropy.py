@@ -215,8 +215,7 @@ def liger_cross_entropy_kernel(
                 X_block += 2 * lse_square_scale * lse * X_block
                 # smoothing term
                 X_block += -eps
-                # special handle dx_y
-                X_block = tl.where(X_offsets != y, X_block, X_block - (1 - label_smoothing))
+                # dx_y corrected once after the loop (removed the per-element tl.where)
                 # reduction scale
                 if reduction == "mean":
                     X_block = X_block / n_non_ignore
@@ -225,8 +224,7 @@ def liger_cross_entropy_kernel(
                 softmax_X = tl.exp2((X_block - m) * LOG2_E) / d
                 # derivative of original_loss
                 dloss_ori = (1 - label_smoothing) * softmax_X
-                # specially handle dx_y
-                dloss_ori = tl.where(X_offsets != y, dloss_ori, dloss_ori - (1 - label_smoothing))
+                # dx_y corrected once after the loop (removed the per-element tl.where)
                 dloss_ori = dloss_ori * weight_y
                 # derivative of smooth_loss
                 dloss_smooth = eps * (-weight_block + softmax_X * weight_sum)
@@ -247,6 +245,22 @@ def liger_cross_entropy_kernel(
                 X_block = X_block * (1 - intermediate * intermediate)
 
             tl.store(X_ptr + X_offsets, X_block, mask=X_offsets < n_cols)
+
+        # dx_y correction: apply the -(1 - label_smoothing) term once at index y
+        # (replaces the per-element tl.where removed above). Barrier first so the loop's
+        # in-place store to X[y] is visible before we read it back.
+        tl.debug_barrier()
+        dxy = -(1 - label_smoothing)
+        if HAS_WEIGHT:
+            dxy = dxy * weight_y
+            if reduction == "mean":
+                dxy = dxy / sum_non_ignore_weight
+        elif reduction == "mean":
+            dxy = dxy / n_non_ignore
+        if HAS_SOFTCAPPING:
+            t_y = ori_X_y / softcap
+            dxy = dxy * (1 - t_y * t_y)
+        tl.store(X_ptr + y, tl.load(X_ptr + y) + dxy)
 
     # We need tl.debug_barrier() to ensure the new result of X_ptr is written as mentioned in
     # https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/ops/cross_entropy.py#L34
