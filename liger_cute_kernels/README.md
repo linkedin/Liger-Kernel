@@ -74,7 +74,9 @@ src/liger_kernel/ops/cute/
 
 - **CUDA toolkit** with `nvcc` and SM 9.0a (Hopper / `sm_90a`) support.
 - **NVSHMEM** install (host `.so`, device `.a`, headers) — point `NVSHMEM_HOME`
-  at it (default `/usr/local/nvshmem`).
+  at it (default `/usr/local/nvshmem`). The lck build also auto-detects the
+  `nvidia-nvshmem-cu13` pip package layout and creates unversioned compatibility
+  symlinks for CMake when needed.
 - **CUTLASS** headers (4.x) — point `CUTLASS_HOME` at the repo root (so that
   `$CUTLASS_HOME/include/cutlass/cutlass.h` and
   `$CUTLASS_HOME/tools/util/include` exist). *Not needed when linking a prebuilt
