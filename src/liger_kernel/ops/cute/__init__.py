@@ -26,17 +26,17 @@ from liger_kernel.ops.backends.registry import register_impl
 
 # Cached handle to the TVM FFI facade (from the separate liger_cute_kernels
 # package). None until first loaded.
-_ext = None
+_tvm_ffi = None
 
 
-def _load_extension():
+def _load_tvm_ffi():
     """Import the ``liger_cute_kernels.tvm_ffi`` facade, or raise a helpful error."""
-    global _ext
-    if _ext is not None:
-        return _ext
+    global _tvm_ffi
+    if _tvm_ffi is not None:
+        return _tvm_ffi
     try:
-        _ext = importlib.import_module("liger_cute_kernels.tvm_ffi")
-        if not _ext.is_available():
+        _tvm_ffi = importlib.import_module("liger_cute_kernels.tvm_ffi")
+        if not _tvm_ffi.is_available():
             raise ImportError("liger_cute_kernels.tvm_ffi could not load the native core")
     except ImportError as exc:  # pragma: no cover - depends on a CUDA build
         raise ImportError(
@@ -44,13 +44,13 @@ def _load_extension():
             "for your CUDA/torch environment, or build it locally (see the "
             "liger_cute_kernels/ module at the repo root)."
         ) from exc
-    return _ext
+    return _tvm_ffi
 
 
 def is_available() -> bool:
-    """True if the compiled ``_C`` extension can be imported."""
+    """True if the TVM FFI facade can load the native core."""
     try:
-        return _load_extension() is not None
+        return _load_tvm_ffi() is not None
     except ImportError:
         return False
 

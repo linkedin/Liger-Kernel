@@ -32,7 +32,7 @@ from datetime import timedelta
 import pytest
 
 try:
-    import liger_cute_kernels.tvm_ffi as _ext_mod
+    import liger_cute_kernels.tvm_ffi as tvm_ffi
     import torch
     import torch.distributed as dist
     import torch.multiprocessing as mp
@@ -43,17 +43,17 @@ except ImportError:
     torch = None
     dist = None
     mp = None
-    _ext_mod = None
+    tvm_ffi = None
     nvshmem = None
 
 pytestmark = pytest.mark.skipif(
-    _ext_mod is None or not _ext_mod.is_available(),
+    tvm_ffi is None or not tvm_ffi.is_available(),
     reason="liger_cute_kernels not built/installed; build it to run these.",
 )
 
 _NDEV = (
     torch.cuda.device_count()
-    if (_ext_mod is not None and _ext_mod.is_available() and torch is not None and torch.cuda.is_available())
+    if (tvm_ffi is not None and tvm_ffi.is_available() and torch is not None and torch.cuda.is_available())
     else 0
 )
 
@@ -169,7 +169,7 @@ def _make_inputs(rank: int, world_size: int):
 
 
 def _configure(world_size: int):
-    _ext_mod.moe_configure_symmetric(
+    tvm_ffi.moe_configure_symmetric(
         max_tokens=_T,
         hidden_dim=_D,
         max_num_experts=_E,
@@ -200,7 +200,7 @@ def _fwd_graph_worker(rank: int, world_size: int, init_file: str):
         X, gate_W, all_B, all_C, all_A, ei, ew = _make_inputs(rank, world_size)
 
         def fwd():
-            return _ext_mod.moe_fused_fwd_bf16(
+            return tvm_ffi.moe_fused_fwd_bf16(
                 X, ei, ew, all_B, all_C, all_A, num_experts=_E, top_k=_K, team_handle=team
             )
 
@@ -213,12 +213,12 @@ def _fwd_graph_worker(rank: int, world_size: int, init_file: str):
         # Warmup: triggers all lazy/non-capturable work (team cache, symm sizing,
         # dispatch-table walk). Release the symm buffers immediately (no-grad path).
         Y_w = fwd()[0]
-        _ext_mod.moe_pop_fwd()
+        tvm_ffi.moe_pop_fwd()
         torch.cuda.synchronize()
 
         # Eager output, snapshotted to CPU before the capture mempool is opened.
         Y_eager = fwd()[0]
-        _ext_mod.moe_pop_fwd()
+        tvm_ffi.moe_pop_fwd()
         torch.cuda.synchronize()
         Y_eager_cpu = Y_eager.detach().cpu().clone()
         del Y_eager, Y_w
@@ -229,7 +229,7 @@ def _fwd_graph_worker(rank: int, world_size: int, init_file: str):
         g = torch.cuda.CUDAGraph()
         with torch.cuda.graph(g, pool=mempool, capture_error_mode="thread_local"):
             Y_captured = fwd()[0]
-            _ext_mod.moe_pop_fwd()  # host-side stack bookkeeping; nothing recorded
+            tvm_ffi.moe_pop_fwd()  # host-side stack bookkeeping; nothing recorded
 
         results = []
         for _ in range(2):  # second replay must hit the same symm offsets
@@ -264,13 +264,13 @@ def _fwd_bwd_graph_worker(rank: int, world_size: int, init_file: str):
         X, gate_W, all_B, all_C, all_A, ei, ew = _make_inputs(rank, world_size)
 
         def fwd():
-            return _ext_mod.moe_fused_fwd_bf16(
+            return tvm_ffi.moe_fused_fwd_bf16(
                 X, ei, ew, all_B, all_C, all_A, num_experts=_E, top_k=_K, team_handle=team
             )
 
         def bwd(dY, fwd_out):
             (Y, x_sorted, y_buf, all_off, tok_slots, tile_ids, tile_m) = fwd_out
-            return _ext_mod.moe_fused_bwd_bf16(
+            return tvm_ffi.moe_fused_bwd_bf16(
                 dY,
                 y_buf,
                 x_sorted,
@@ -292,7 +292,7 @@ def _fwd_bwd_graph_worker(rank: int, world_size: int, init_file: str):
         out = fwd()
         dY = torch.randn_like(out[0])
         bwd(dY, out)
-        _ext_mod.moe_pop_fwd()
+        tvm_ffi.moe_pop_fwd()
         torch.cuda.synchronize()
 
         # Eager reference grads, snapshotted to CPU.
@@ -305,7 +305,7 @@ def _fwd_bwd_graph_worker(rank: int, world_size: int, init_file: str):
         dB_ref = dB_e.detach().cpu().clone()
         dC_ref = dC_e.detach().cpu().clone()
         dA_ref = dA_e.detach().cpu().clone()
-        _ext_mod.moe_pop_fwd()
+        tvm_ffi.moe_pop_fwd()
         del out, dY, dX_e, dB_e, dC_e, dA_e, dW_e
         torch.cuda.synchronize()
 
@@ -321,7 +321,7 @@ def _fwd_bwd_graph_worker(rank: int, world_size: int, init_file: str):
         bwd_g = torch.cuda.CUDAGraph()
         with torch.cuda.graph(bwd_g, pool=mempool, capture_error_mode="thread_local"):
             grads = bwd(dY_static, fwd_out)
-            _ext_mod.moe_pop_fwd()
+            tvm_ffi.moe_pop_fwd()
         torch.cuda.synchronize()
 
         # Replay fwd -> bwd with the real upstream grad.

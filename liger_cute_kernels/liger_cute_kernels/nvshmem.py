@@ -1,6 +1,6 @@
 """NVSHMEM bootstrap + process-group → team translation (torch-facing layer).
 
-These helpers sit on top of the low-level ``liger_cute_kernels._C`` primitives
+These helpers sit on top of the low-level ``liger_cute_kernels.tvm_ffi`` primitives
 (``team_world``, ``team_split_strided``, ``uniqueid_*``, ...). Unlike the core
 ``.so``, this module depends on ``torch`` / ``torch.distributed``: bootstrapping
 NVSHMEM and translating a ``torch.distributed.ProcessGroup`` into an NVSHMEM team
@@ -25,7 +25,7 @@ from typing import Optional
 
 import torch
 
-from liger_cute_kernels import tvm_ffi as _C
+from liger_cute_kernels import tvm_ffi
 
 __all__ = [
     "init_from_pg",
@@ -68,56 +68,56 @@ def init_from_pg(pg: Optional["torch.distributed.ProcessGroup"] = None) -> None:
     # NVSHMEM reads the unique id from host memory, but NCCL-backed PGs can only
     # broadcast CUDA tensors. Fill on CPU, move to CUDA for the broadcast, then
     # copy back to a contiguous CPU buffer.
-    uid_cpu = torch.empty(_C.uniqueid_nbytes(), dtype=torch.uint8, device="cpu")
+    uid_cpu = torch.empty(tvm_ffi.uniqueid_nbytes(), dtype=torch.uint8, device="cpu")
     if rank == 0:
-        _C.get_uniqueid(uid_cpu.data_ptr())
+        tvm_ffi.get_uniqueid(uid_cpu.data_ptr())
     uid_cuda = uid_cpu.to("cuda", non_blocking=False)
     dist.broadcast(uid_cuda, src=dist.get_global_rank(pg, 0), group=pg)
     uid_cpu = uid_cuda.cpu().contiguous()
-    _C.init_with_uniqueid(rank, world, uid_cpu.data_ptr())
+    tvm_ffi.init_with_uniqueid(rank, world, uid_cpu.data_ptr())
 
 
 def init_pmi() -> None:
     """Bootstrap NVSHMEM under the launcher's PMI bootstrap (srun/mpirun)."""
-    _C.init_pmi()
+    tvm_ffi.init_pmi()
 
 
 def finalize() -> None:
-    _C.finalize()
+    tvm_ffi.finalize()
 
 
 # ── PE queries / team wrappers ───────────────────────────────────────────────
 
 
 def my_pe() -> int:
-    return _C.my_pe()
+    return tvm_ffi.my_pe()
 
 
 def n_pes() -> int:
-    return _C.n_pes()
+    return tvm_ffi.n_pes()
 
 
 def team_world() -> int:
-    return _C.team_world()
+    return tvm_ffi.team_world()
 
 
 def team_split_strided(parent: int, start: int, stride: int, size: int) -> int:
     """Split ``parent`` strided; returns a team handle or -1 on non-member ranks."""
-    return _C.team_split_strided(parent, start, stride, size)
+    return tvm_ffi.team_split_strided(parent, start, stride, size)
 
 
 def team_destroy(team_handle: int) -> None:
-    _C.team_destroy(team_handle)
+    tvm_ffi.team_destroy(team_handle)
 
 
 def team_my_pe(team_handle: int) -> int:
     """NVSHMEM team-local PE for the calling rank."""
-    return _C.team_my_pe(team_handle)
+    return tvm_ffi.team_my_pe(team_handle)
 
 
 def team_n_pes(team_handle: int) -> int:
     """Total PE count of the given team."""
-    return _C.team_n_pes(team_handle)
+    return tvm_ffi.team_n_pes(team_handle)
 
 
 def team_translate_pe(src_team: int, src_pe: int, dst_team: int) -> int:
@@ -125,7 +125,7 @@ def team_translate_pe(src_team: int, src_pe: int, dst_team: int) -> int:
 
     Returns -1 if the PE isn't a member of ``dst_team``.
     """
-    return _C.team_translate_pe(src_team, src_pe, dst_team)
+    return tvm_ffi.team_translate_pe(src_team, src_pe, dst_team)
 
 
 # ── Memory pools ─────────────────────────────────────────────────────────────
@@ -133,12 +133,12 @@ def team_translate_pe(src_team: int, src_pe: int, dst_team: int) -> int:
 
 def pool_clear_all() -> None:
     """Drain both the symmetric stack and the buffer pool (no NVSHMEM finalize)."""
-    _C.pool_clear_all()
+    tvm_ffi.pool_clear_all()
 
 
 def pool_clear_buffers() -> None:
     """Drain only the per-name buffer pool; keep the symmetric stack intact."""
-    _C.pool_clear_buffers()
+    tvm_ffi.pool_clear_buffers()
 
 
 # ── Process group → NVSHMEM team translation ─────────────────────────────────
@@ -186,7 +186,7 @@ def team_from_pg(pg: "torch.distributed.ProcessGroup") -> int:
     # (collective) split — just return NVSHMEM_TEAM_WORLD. Avoids creating a team
     # that has to be destroyed before finalize.
     if len(my_group_ranks) == world_size and tuple(my_group_ranks) == tuple(range(world_size)):
-        return _C.team_world()
+        return tvm_ffi.team_world()
 
     gathered = [None] * world_size
     dist.all_gather_object(gathered, my_group_ranks)
@@ -200,7 +200,7 @@ def team_from_pg(pg: "torch.distributed.ProcessGroup") -> int:
         # Every rank issues every split in the same order (the split is collective
         # across the parent team); each rank keeps the handle for the group it is
         # a member of.
-        handle = _C.team_split_strided(_C.team_world(), start, stride, size)
+        handle = tvm_ffi.team_split_strided(tvm_ffi.team_world(), start, stride, size)
         if my_global_rank in group:
             my_handle = handle
 
@@ -227,7 +227,7 @@ def resolve_team(pg: Optional["torch.distributed.ProcessGroup"]) -> int:
     WORLD — pass an explicit ``pg`` to scope the routing.
     """
     if pg is None:
-        return _C.team_world()
+        return tvm_ffi.team_world()
 
     key = id(pg)
     handle = _PG_TEAM_CACHE.get(key)
