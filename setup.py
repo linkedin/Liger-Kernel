@@ -4,6 +4,7 @@ import subprocess
 
 from typing import Literal
 
+from setuptools import find_packages
 from setuptools import setup
 
 
@@ -15,20 +16,23 @@ def get_default_dependencies():
         return [
             "torch>=2.1.2",
             "triton>=2.3.1",
+            "apache-tvm-ffi",
         ]
     elif platform == "rocm":
         return [
             "triton>=3.0.0",
+            "apache-tvm-ffi",
         ]
     elif platform == "xpu":
         return [
             "torch>=2.6.0",
+            "apache-tvm-ffi",
         ]
     # TODO: Currently, triton-ascend is not compatible with torch 2.7.1. We will upgrade it later.
     # TODO: triton-ascend v3.2.1 is expected to release soon with some incompatible API changes.
     # Until we adapt to those changes, pin triton-ascend to v3.2.0.
     elif platform == "npu":
-        return ["torch==2.6.0", "torch_npu==2.6.0", "triton-ascend==3.2.0"]
+        return ["torch==2.6.0", "torch_npu==2.6.0", "triton-ascend==3.2.0", "apache-tvm-ffi"]
 
 
 def get_optional_dependencies():
@@ -126,7 +130,15 @@ def get_platform() -> Literal["cuda", "rocm", "cpu", "xpu", "npu"]:
 setup(
     name="liger_kernel",
     package_dir={"": "src"},
-    packages=["liger_kernel"],
+    packages=find_packages(where="src"),
+    package_data={
+        "liger_kernel": [
+            "ops/**/*.cpp",
+            "ops/**/*.cu",
+            "ops/**/*.h",
+            "ops/**/*.hpp",
+        ],
+    },
     install_requires=get_default_dependencies(),
     extras_require=get_optional_dependencies(),
     classifiers=[
