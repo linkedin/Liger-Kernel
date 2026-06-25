@@ -170,7 +170,7 @@ def liger_cross_entropy_kernel(
             else:
                 scaled_x_sum += tl.sum(tl.where(X_offsets < n_cols, -eps * X_block, 0.0))
         m_new = tl.maximum(m, block_max)
-        d = d * tl.exp(m - m_new) + tl.sum(tl.exp(X_block - m_new))
+        d = d * tl.exp2((m - m_new) * 1.4426950408889634) + tl.sum(tl.exp2((X_block - m_new) * 1.4426950408889634))
         m = m_new
 
     # log (sum(e^(X_i))) = log (sum(e ^ (max(X) * e ^ (X_i - max(X)))))
@@ -207,7 +207,7 @@ def liger_cross_entropy_kernel(
 
             if not HAS_WEIGHT:
                 # softmax(x_i)
-                X_block = tl.exp(X_block - m) / d
+                X_block = tl.exp2((X_block - m) * 1.4426950408889634) / d
                 # derivative of z-loss: 2 * lse_square_scale * lse * softmax(x_i)
                 X_block += 2 * lse_square_scale * lse * X_block
                 # smoothing term
@@ -219,7 +219,7 @@ def liger_cross_entropy_kernel(
                     X_block = X_block / n_non_ignore
             else:
                 weight_block = tl.load(weight_ptr + X_offsets, mask=X_offsets < n_cols)
-                softmax_X = tl.exp(X_block - m) / d
+                softmax_X = tl.exp2((X_block - m) * 1.4426950408889634) / d
                 # derivative of original_loss
                 dloss_ori = (1 - label_smoothing) * softmax_X
                 # specially handle dx_y
