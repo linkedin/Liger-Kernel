@@ -111,34 +111,6 @@ def _stage_nvshmem(out_dir: Path) -> None:
         )
 
 
-def _build_tvm_ffi_binding(dest: Path) -> None:
-    cxx = os.environ.get("CXX", "c++")
-    source = HERE / "liger_cute_kernels" / "tvm_ffi_bindings.cpp"
-    output = dest / TVM_FFI_SO
-    cflags = subprocess.check_output(["tvm-ffi-config", "--cflags"], text=True).split()
-    ldflags = subprocess.check_output(["tvm-ffi-config", "--ldflags"], text=True).split()
-    tvm_lib_dirs = [flag[2:] for flag in ldflags if flag.startswith("-L")]
-    cmd = [
-        cxx,
-        "-shared",
-        "-fPIC",
-        "-O3",
-        "-std=c++17",
-        *cflags,
-        str(source),
-        "-o",
-        str(output),
-        f"-L{dest}",
-        "-lliger_cute_kernels",
-        "-lnvshmem_host",
-        *ldflags,
-        "-ltvm_ffi",
-        "-Wl,-rpath,$ORIGIN",
-        *(f"-Wl,-rpath,{path}" for path in tvm_lib_dirs),
-    ]
-    subprocess.check_call(cmd)
-
-
 def build_core(out_dir: Path | str, build_temp: Path | str | None = None) -> Path:
     """Build the torch-free core. Returns the path to the core .so.
 
@@ -194,9 +166,8 @@ class LckBuildExt(build_ext):
         if use_prebuilt:
             cmake_args.append(f"-DLIGER_CUTE_CORE_IMPORTED_DIR={core_dir}")
         subprocess.check_call(["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp), *cmake_args])
-        targets = [] if use_prebuilt else ["liger_cute_kernels"]
-        if targets:
-            subprocess.check_call(["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", *targets])
+        targets = ["liger_cute_kernels_tvm_ffi"] if use_prebuilt else ["liger_cute_kernels", "liger_cute_kernels_tvm_ffi"]
+        subprocess.check_call(["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", *targets])
 
         # Place native artifacts into the lck wheel's own liger_cute_kernels package.
         dest = Path(self.build_lib) / PKG_REL
@@ -205,8 +176,8 @@ class LckBuildExt(build_ext):
             shutil.copy2(Path(core_dir) / CORE_SO, dest / CORE_SO)
         else:
             shutil.copy2(next(build_temp.rglob(CORE_SO)), dest / CORE_SO)
+        shutil.copy2(next(build_temp.rglob(TVM_FFI_SO)), dest / TVM_FFI_SO)
         _stage_nvshmem(dest)
-        _build_tvm_ffi_binding(dest)
         print(f"staged lck artifacts -> {dest}")
 
 

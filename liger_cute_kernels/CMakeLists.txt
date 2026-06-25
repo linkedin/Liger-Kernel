@@ -1,17 +1,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # LigerCute — native build harness (ported from LigerCommKernels)
 #
-# Two-target split, decoupled so ONE expensive core compile serves N torch
-# wheels:
+# Target split:
 #
 #   1. liger_cute_kernels  (csrc/core)     — CUTLASS + NVSHMEM kernels.
 #      *No torch.* Exposes a flat `extern "C"` ABI so the .so is ABI-agnostic
 #      and can be linked into a binding built against any torch wheel. This is
 #      the slow compile (CuTe templates) and is built ONCE.
 #
-#   2. _C                  (csrc/bindings) — torch + pybind11 marshalling shim.
-#      Cheap to compile; rebuilt once per torch version in the wheel matrix.
-#      Links liger_cute_kernels via $ORIGIN RPATH.
+#   2. liger_cute_kernels_tvm_ffi — TVM FFI/DLPack shim over the core.
+#      Cheap to compile, no torch/pybind dependency, packaged in the lck wheel.
 #
 # Build the core alone (no torch needed) with:
 #     cmake -S . -B build -DLIGER_CUTE_BUILD_BINDINGS=OFF
@@ -102,6 +100,38 @@ else()
     # Build the torch-free core from source.
     add_subdirectory(csrc/core)
 endif()
+
+# TVM FFI shim over the torch-free core. This is the Python-facing native module
+# loaded by liger_cute_kernels.tvm_ffi.
+find_program(TVM_FFI_CONFIG tvm-ffi-config REQUIRED)
+execute_process(
+    COMMAND "${TVM_FFI_CONFIG}" --cflags
+    OUTPUT_VARIABLE TVM_FFI_CFLAGS
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+execute_process(
+    COMMAND "${TVM_FFI_CONFIG}" --ldflags
+    OUTPUT_VARIABLE TVM_FFI_LDFLAGS
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+separate_arguments(TVM_FFI_CFLAGS UNIX_COMMAND "${TVM_FFI_CFLAGS}")
+separate_arguments(TVM_FFI_LDFLAGS UNIX_COMMAND "${TVM_FFI_LDFLAGS}")
+
+add_library(liger_cute_kernels_tvm_ffi SHARED
+    liger_cute_kernels/tvm_ffi_bindings.cpp
+)
+target_compile_options(liger_cute_kernels_tvm_ffi PRIVATE ${TVM_FFI_CFLAGS})
+target_link_libraries(liger_cute_kernels_tvm_ffi PRIVATE
+    liger_cute_kernels
+    NVSHMEM::nvshmem_host
+    ${TVM_FFI_LDFLAGS}
+    tvm_ffi
+)
+set_target_properties(liger_cute_kernels_tvm_ffi PROPERTIES
+    PREFIX ""
+    BUILD_WITH_INSTALL_RPATH ON
+    INSTALL_RPATH "$ORIGIN"
+)
 
 # Bindings are opt-in and pull in torch + pybind11.
 if(LIGER_CUTE_BUILD_BINDINGS)

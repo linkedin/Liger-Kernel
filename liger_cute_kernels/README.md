@@ -50,7 +50,7 @@ liger_cute_kernels/             # ← standalone native build module (repo root)
 │   └── liger_cute_kernels_tvm_ffi.so  # built TVM FFI module
 ├── test/                       # the lck package's own unit tests
 │   └── test_moe_bindings.py
-├── CMakeLists.txt              # core (always) + bindings (opt-in)
+├── CMakeLists.txt              # core + TVM FFI shim (+ legacy bindings opt-in)
 ├── cmake/
 │   ├── FindNVSHMEM.cmake
 │   └── FindCUTLASS.cmake        # locates main + tools/util/include
