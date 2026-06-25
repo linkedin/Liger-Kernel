@@ -125,7 +125,6 @@ y = orpo_loss(lm_head.weight, x, target)
 
 - `torch >= 2.1.2`
 - `triton >= 2.3.0`
-- `apache-tvm-ffi`: Required for source-packaged C++ kernels built through TVM FFI.
 
 #### ROCm
 
