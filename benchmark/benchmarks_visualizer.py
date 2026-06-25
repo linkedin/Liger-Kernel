@@ -330,7 +330,15 @@ def plot_data(df: pd.DataFrame, config: VisualizationsConfig):
 
     xlabel = df["x_label"].iloc[0]
     ylabel = f"{config.metric_name} ({df['metric_unit'].iloc[0]})"
-    # Sort by "kernel_provider" to ensure consistent color assignment
+    # Sort by "kernel_provider" so color assignment is stable across runs, with
+    # "liger" pinned to the END so seaborn draws it LAST (on top). Without this,
+    # any other provider with identical y-values would obscure Liger at the overlap
+    # — e.g., megatron-unfused has bit-identical memory to Liger in the
+    # megatron_cross_entropy benchmark and would hide it under alphabetical sort.
+    providers = df["kernel_provider"].unique().tolist()
+    non_liger = sorted(p for p in providers if p != "liger")
+    order = non_liger + (["liger"] if "liger" in providers else [])
+    df["kernel_provider"] = pd.Categorical(df["kernel_provider"], categories=order, ordered=True)
     df = df.sort_values(by="kernel_provider")
 
     plt.figure(figsize=(10, 6))

@@ -31,10 +31,11 @@ def apply_liger_kernel_to_megatron(
             (fused path) and
             ``megatron.core.tensor_parallel.cross_entropy.vocab_parallel_cross_entropy``
             (unfused path) with Liger's Triton cross-entropy. Default
-            ``False`` because this path currently supports
-            ``tensor_model_parallel_size=1`` only. The fused wrapper matches
-            native's ``(logits, target, tp_group)`` signature exactly; the
-            unfused wrapper additionally honors a runtime ``label_smoothing``
+            ``False`` so adopters opt in explicitly. All tensor-parallel sizes
+            are supported (TP=1 and TP>1 share the same vocab-parallel
+            kernel). The fused wrapper matches native's
+            ``(logits, target, tp_group)`` signature exactly; the unfused
+            wrapper additionally honors a runtime ``label_smoothing``
             argument, matching native's
             ``(logits, target, label_smoothing=0.0, tp_group=None)``.
 
@@ -53,42 +54,13 @@ def apply_liger_kernel_to_megatron(
         directly and wire it into your model (Mode 2). The monkey-patch path
         is intentionally a transparent drop-in: it matches Megatron's native
         defaults so callers can flip Liger on without touching loss config.
-
-    Raises:
-        RuntimeError: When ``cross_entropy=True`` and Megatron's parallel
-            state already reports ``tensor_model_parallel_size > 1``.
     """
     if rms_norm:
         _patch_local_spec_provider_layer_norm()
         _patch_transformer_block_layernorm_impl()
     if cross_entropy:
-        _check_tensor_parallel_size_at_patch_time()
         _patch_fused_vocab_parallel_cross_entropy()
         _patch_vocab_parallel_cross_entropy()
-
-
-def _check_tensor_parallel_size_at_patch_time() -> None:
-    """Raise RuntimeError if Megatron's parallel state already reports TP>1.
-
-    If Megatron is importable but the parallel state is not yet initialized
-    (for example, ``apply_liger_kernel_to_megatron`` is called before
-    ``initialize_megatron``), silently defer; per-kernel wrappers check again
-    at call time against the ``tp_group`` argument Megatron supplies.
-    """
-    try:
-        from megatron.core import parallel_state
-    except ImportError:
-        return
-    try:
-        tp_size = parallel_state.get_tensor_model_parallel_world_size()
-    except (AssertionError, RuntimeError):
-        return
-    if tp_size > 1:
-        raise RuntimeError(
-            f"apply_liger_kernel_to_megatron(cross_entropy=True) currently requires "
-            f"tensor_model_parallel_size=1, got {tp_size}. Vocab-parallel cross-entropy "
-            f"support is planned as follow-up work."
-        )
 
 
 def _patch_local_spec_provider_layer_norm() -> None:
