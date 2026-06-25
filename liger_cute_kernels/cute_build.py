@@ -174,8 +174,7 @@ class CMakeExtension(Extension):
 
 
 class LckBuildExt(build_ext):
-    """Build the lck wheel: compile _C (+ core) and place the .so into the
-    wheel's own ``liger_cute_kernels`` package dir.
+    """Build the lck wheel: compile the core plus TVM FFI shim.
 
     If ``LIGER_CUTE_CORE_DIR`` points at a prebuilt core, it is linked as an
     imported lib (no core recompile); otherwise the core is built from source.
@@ -188,23 +187,20 @@ class LckBuildExt(build_ext):
         core_dir = os.environ.get("LIGER_CUTE_CORE_DIR")
         use_prebuilt = bool(core_dir) and (Path(core_dir) / CORE_SO).exists()
 
-        cmake_args = [*_cmake_base_args(), "-DLIGER_CUTE_BUILD_BINDINGS=ON"]
+        cmake_args = [*_cmake_base_args(), "-DLIGER_CUTE_BUILD_BINDINGS=OFF"]
         nvshmem_home = _prepare_pip_nvshmem_home(build_temp)
         if nvshmem_home is not None:
             cmake_args.append(f"-DNVSHMEM_HOME={nvshmem_home}")
         if use_prebuilt:
             cmake_args.append(f"-DLIGER_CUTE_CORE_IMPORTED_DIR={core_dir}")
         subprocess.check_call(["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp), *cmake_args])
-        targets = ["_C"] if use_prebuilt else ["liger_cute_kernels", "_C"]
-        subprocess.check_call(["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", *targets])
+        targets = [] if use_prebuilt else ["liger_cute_kernels"]
+        if targets:
+            subprocess.check_call(["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", *targets])
 
-        # Place the three .so into the lck wheel's own liger_cute_kernels package
-        # (its __init__.py comes from build_py). build_ext expects _C at
-        # get_ext_fullpath(); the cmake output name matches, so copying it there
-        # satisfies setuptools.
+        # Place native artifacts into the lck wheel's own liger_cute_kernels package.
         dest = Path(self.build_lib) / PKG_REL
         dest.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(next(build_temp.rglob("_C*.so")), dest)
         if use_prebuilt:
             shutil.copy2(Path(core_dir) / CORE_SO, dest / CORE_SO)
         else:
