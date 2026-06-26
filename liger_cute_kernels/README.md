@@ -59,7 +59,11 @@ liger_cute_kernels/             # ← standalone native build module (repo root)
     │   │   ├── {liger_cute.h, export.h}     # flat extern "C" ABI (C-parseable)
     │   │   ├── {check.h, tensor_view.h, moe.h}  # C++-only core surface
     │   │   └── detail/symmetric_memory.h    # core-internal (nvshmem+STL); not ABI
-    │   ├── src/*.{cu,cpp}
+    │   ├── src/                 # *.{cu,cpp} compiled INTO the core …
+    │   │   └── moe/             #   … fused MoE kernels (moe.cu, moe_bwd.cu, mlp*.cu)
+    │   │       └── tune/        # standalone offline autotuner — NOT a core source
+    │   │           ├── CMakeLists.txt        #   its own project; links torch
+    │   │           └── tune_moe_fwd_bwd.cu   #   (excluded from the core glob)
     │   └── liger_cute.version   # exports only liger_cute_*
     └── bindings/               # legacy _C (torch + pybind11)
         ├── bindings.cpp
@@ -129,6 +133,37 @@ cmake -S liger_cute_kernels -B build/bind \
       -DLIGER_CUTE_CORE_IMPORTED_DIR=/abs/path/to/dir-with-core \
       -DCMAKE_BUILD_TYPE=Release -GNinja
 cmake --build build/bind --target liger_cute_kernels -j
+```
+
+### 4. Offline autotuner (`tune_moe_fwd_bwd`) — optional, not in the wheel
+
+`csrc/core/src/moe/tune/` holds a **standalone** executable that regenerates the
+tuned-config tables (`csrc/core/src/moe/moe_fwd_bwd_tuning_configs_{single,multi}.cuh`)
+the runtime auto-dispatcher searches. It is **not** built by the core/bindings
+targets above or shipped in the wheel: it has its **own** CMake project, and it
+links the templated kernel launchers that the core `.so` deliberately hides
+(visibility hidden + version script), so it recompiles `moe.cu` / `moe_bwd.cu`
+itself at default visibility against **torch**. That makes it a full CuTe compile
+(~45 min) — build it on demand, only when retuning.
+
+Needs `CUTLASS_HOME`, `NVSHMEM_HOME`, and an importable **torch** (same as the
+bindings). Build it as its own project (note `-S` points at the `tune/` dir, not
+the repo root):
+
+```bash
+cmake -S liger_cute_kernels/csrc/core/src/moe/tune -B build/tuner \
+      -DCMAKE_BUILD_TYPE=Release -GNinja
+cmake --build build/tuner -j
+# -> build/tuner/tune_moe_fwd_bwd
+```
+
+Run one rank per GPU under a PMI bootstrap; point the output env var at the table
+you are regenerating (without it the `.cuh` is written to the current directory):
+
+```bash
+LIGER_MOE_FWDBWD_TUNED_OUTPUT=/abs/path/to/moe_fwd_bwd_tuning_configs_multi.cuh \
+    srun --mpi=pmi2 --ntasks=8 ./build/tuner/tune_moe_fwd_bwd   # multi-PE class
+# single-PE class (all experts local): --ntasks=1 + the _single.cuh output path
 ```
 
 ## Building the lck wheel

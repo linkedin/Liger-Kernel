@@ -12,6 +12,10 @@ file(GLOB_RECURSE LIGER_CUTE_CORE_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
+# src/moe/tune/ holds the standalone offline autotuner (tune_moe_fwd_bwd) — its
+# own CMake project, a torch-linking executable that is NOT a core lib source.
+# The recursive glob above would otherwise sweep it into the torch-free core and
+# break the build on its `#include <torch/torch.h>`. Keep it out.
 list(FILTER LIGER_CUTE_CORE_SOURCES EXCLUDE REGEX "/src/moe/tune/")
 file(GLOB_RECURSE LIGER_CUTE_CORE_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"

@@ -15,7 +15,9 @@
 #     cmake -S . -B build -DLIGER_CUTE_BUILD_BINDINGS=OFF
 #     cmake --build build --target liger_cute_kernels
 #
-# NOTE: no functional kernel code is wired up yet — this is the harness only.
+# The fused MoE kernels (csrc/core/src/moe/{moe,moe_bwd,mlp*}.cu) are wired into
+# the core; csrc/core/src/moe/tune/ is a separate standalone autotuner project
+# (see README "Offline autotuner"), excluded from the core target.
 # ─────────────────────────────────────────────────────────────────────────────
 cmake_minimum_required(VERSION 3.24)
 project(LigerCute LANGUAGES CXX CUDA)
