@@ -262,8 +262,11 @@ PYBIND11_MODULE(_C, m) {
          const torch::Tensor& expert_weights, const torch::Tensor& all_B,
          const torch::Tensor& all_C, const torch::Tensor& all_A, int num_experts, int top_k,
          int64_t team_handle, int fwd_tile_m) {
-        // Gradient outputs mirror the corresponding input shapes.
-        torch::Tensor dX = torch::empty_like(Y_fwd);
+        // Gradient outputs mirror the corresponding input shapes. dX matches X,
+        // which is [T, D] — same shape as the upstream grad dY. (Do NOT size it
+        // from Y_fwd: the wrapper passes the internal padded y_buf there, whose
+        // row count is the padded slot total, not T.)
+        torch::Tensor dX = torch::empty_like(dY);
         torch::Tensor dB = torch::empty_like(all_B);
         torch::Tensor dC = torch::empty_like(all_C);
         torch::Tensor dA = torch::empty_like(all_A);
