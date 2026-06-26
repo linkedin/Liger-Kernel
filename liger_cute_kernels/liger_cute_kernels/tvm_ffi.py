@@ -43,6 +43,10 @@ def _load_nvshmem_libraries(pkg_dir: Path) -> None:
     global _NVSHMEM_LIBS_LOADED
     if _NVSHMEM_LIBS_LOADED:
         return
+    for host in (pkg_dir / "libnvshmem_host.so.3", pkg_dir / "libnvshmem_host.so"):
+        if host.exists():
+            ctypes.CDLL(str(host), mode=ctypes.RTLD_GLOBAL)
+            break
     uid_bootstrap = pkg_dir / "nvshmem_bootstrap_uid.so.3"
     if uid_bootstrap.exists():
         ctypes.CDLL(str(uid_bootstrap), mode=ctypes.RTLD_GLOBAL)

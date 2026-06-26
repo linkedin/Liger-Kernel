@@ -99,10 +99,16 @@ def _stage_nvshmem(out_dir: Path) -> None:
     nvshmem = _find_nvshmem_so()
     if nvshmem is not None:
         shutil.copy2(nvshmem, out_dir / NVSHMEM_SO)
-        if nvshmem.name != NVSHMEM_SO:
+        versioned_host = nvshmem.parent / f"{NVSHMEM_SO}.3"
+        if versioned_host.exists():
+            shutil.copy2(versioned_host, out_dir / versioned_host.name)
+        elif nvshmem.name != NVSHMEM_SO:
             shutil.copy2(nvshmem, out_dir / nvshmem.name)
         for plugin in nvshmem.parent.glob("nvshmem_*.so*"):
             shutil.copy2(plugin, out_dir / plugin.name)
+            versioned_plugin = plugin.parent / f"{plugin.name}.3"
+            if versioned_plugin.exists():
+                shutil.copy2(versioned_plugin, out_dir / versioned_plugin.name)
     else:
         print(
             f"WARNING: {NVSHMEM_SO} not found under NVSHMEM_HOME; the lck wheel will not bundle nvshmem",

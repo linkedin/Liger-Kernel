@@ -42,6 +42,8 @@ target_include_directories(liger_cute_kernels
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/moe
 )
 
 # Deliberately NO torch here — that is the entire point of the split.

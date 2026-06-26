@@ -1501,7 +1501,7 @@ static bool find_nearest_tuned(int TK, int TKE, int D, int I, int n_pes,
 // instantiation via the dispatch table. Writes the chosen comm TileM to
 // *chosen_tile_m. All shape info comes from the MoeFwdArgs bundle; the launcher
 // writes the outputs in place.
-static void moe_fused_fwd_dispatch(const MoeFwdArgs& a, int* chosen_tile_m) {
+void moe_fused_fwd_dispatch(const MoeFwdArgs& a, int* chosen_tile_m) {
 	const int T  = a.num_tokens;
 	const int D  = a.hidden_dim;
 	const int I  = a.intermediate_dim;
