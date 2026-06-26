@@ -57,7 +57,7 @@ def fused_linear_cross_entropy_forward(
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
-    grad_input = torch.zeros_like(_input, device=device)
+    grad_input = torch.empty_like(_input, device=device)  # fully overwritten per-chunk below
 
     # we use fp32 for loss and gradients accumulator
     if input_requires_grad:
@@ -101,7 +101,12 @@ def fused_linear_cross_entropy_forward(
         # when doing matmul, use the original precision
         logits_chunk = _input_chunk @ weight.t()  # chunk_size x V
         if bias is not None:
-            logits_chunk = logits_chunk + bias
+            # in-place add avoids a second chunk_size x V temp; fall back to out-of-place when
+            # dtypes differ (autocast promotes bf16 matmul + fp32 bias -> keep that behavior)
+            if logits_chunk.dtype == bias.dtype:
+                logits_chunk += bias
+            else:
+                logits_chunk = logits_chunk + bias
 
         target_chunk = target[start_idx:end_idx]  # chunk_size,
 
@@ -209,7 +214,17 @@ def fused_linear_cross_entropy_forward(
             grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
         if grad_weight is not None and input_requires_grad:
-            grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
+            # Fuse matmul + accumulate via cuBLAS (beta=1): one GEMM, no fp32 temp, no separate
+            # add. The old `+= mm(...).float()` materialized a V*H fp32 copy and ran a separate
+            # elementwise add every chunk (~28% of the forward by nsys: direct_copy 12% + add 16%).
+            # addmm_ needs ALL THREE operands the same dtype. Under autocast the matmul output
+            # (grad_logits_chunk) is bf16 while _input_chunk stays fp32, and the fp32-accumulator
+            # path makes grad_weight fp32 -- those mixed-dtype cases fall back to the autocast-safe
+            # mm+upcast (which is what passed before); the pure same-dtype case gets the fused GEMM.
+            if grad_weight.dtype == grad_logits_chunk.dtype == _input_chunk.dtype:
+                grad_weight.addmm_(grad_logits_chunk.t(), _input_chunk)
+            else:
+                grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
 
         if bias is not None and input_requires_grad:
             torch.add(
