@@ -8,8 +8,8 @@
 #      and can be linked into a binding built against any torch wheel. This is
 #      the slow compile (CuTe templates) and is built ONCE.
 #
-#   2. liger_cute_kernels_tvm_ffi — TVM FFI/DLPack shim over the core.
-#      Cheap to compile, no torch/pybind dependency, packaged in the lck wheel.
+#   2. TVM FFI exports are compiled into the same core .so.
+#      No torch/pybind dependency and no separate shim library.
 #
 # Build the core alone (no torch needed) with:
 #     cmake -S . -B build -DLIGER_CUTE_BUILD_BINDINGS=OFF
@@ -79,30 +79,7 @@ if(NOT LIGER_CUTE_CORE_IMPORTED_DIR)
     find_package(CUTLASS REQUIRED)
 endif()
 
-# ---------- Targets ----------
-if(LIGER_CUTE_CORE_IMPORTED_DIR)
-    # Reuse a prebuilt core: define liger_cute_kernels as an IMPORTED target so
-    # _C links the cached .so directly and the core is never recompiled.
-    set(_imported_core "${LIGER_CUTE_CORE_IMPORTED_DIR}/libliger_cute_kernels.so")
-    if(NOT EXISTS "${_imported_core}")
-        message(FATAL_ERROR "LIGER_CUTE_CORE_IMPORTED_DIR set but no core at ${_imported_core}")
-    endif()
-    add_library(liger_cute_kernels SHARED IMPORTED GLOBAL)
-    set_target_properties(liger_cute_kernels PROPERTIES
-        IMPORTED_LOCATION "${_imported_core}"
-        # Allow the linker to resolve the core's NVSHMEM/CUDA deps when linking _C.
-        INTERFACE_LINK_LIBRARIES "NVSHMEM::nvshmem_host;CUDA::cudart;CUDA::cuda_driver"
-    )
-    target_include_directories(liger_cute_kernels INTERFACE
-        "${CMAKE_CURRENT_SOURCE_DIR}/csrc/core/include")
-    message(STATUS "Using prebuilt core: ${_imported_core}")
-else()
-    # Build the torch-free core from source.
-    add_subdirectory(csrc/core)
-endif()
-
-# TVM FFI shim over the torch-free core. This is the Python-facing native module
-# loaded by liger_cute_kernels.tvm_ffi.
+# TVM FFI headers/libs used by the in-core TVM FFI exports.
 find_program(TVM_FFI_CONFIG tvm-ffi-config REQUIRED)
 execute_process(
     COMMAND "${TVM_FFI_CONFIG}" --cflags
@@ -117,21 +94,27 @@ execute_process(
 separate_arguments(TVM_FFI_CFLAGS UNIX_COMMAND "${TVM_FFI_CFLAGS}")
 separate_arguments(TVM_FFI_LDFLAGS UNIX_COMMAND "${TVM_FFI_LDFLAGS}")
 
-add_library(liger_cute_kernels_tvm_ffi SHARED
-    liger_cute_kernels/tvm_ffi_bindings.cpp
-)
-target_compile_options(liger_cute_kernels_tvm_ffi PRIVATE ${TVM_FFI_CFLAGS})
-target_link_libraries(liger_cute_kernels_tvm_ffi PRIVATE
-    liger_cute_kernels
-    NVSHMEM::nvshmem_host
-    ${TVM_FFI_LDFLAGS}
-    tvm_ffi
-)
-set_target_properties(liger_cute_kernels_tvm_ffi PROPERTIES
-    PREFIX ""
-    BUILD_WITH_INSTALL_RPATH ON
-    INSTALL_RPATH "$ORIGIN"
-)
+# ---------- Targets ----------
+if(LIGER_CUTE_CORE_IMPORTED_DIR)
+    # Reuse a prebuilt core: define liger_cute_kernels as an IMPORTED target so
+    # _C links the cached .so directly and the core is never recompiled.
+    set(_imported_core "${LIGER_CUTE_CORE_IMPORTED_DIR}/libliger_cute_kernels.so")
+    if(NOT EXISTS "${_imported_core}")
+        message(FATAL_ERROR "LIGER_CUTE_CORE_IMPORTED_DIR set but no core at ${_imported_core}")
+    endif()
+    add_library(liger_cute_kernels SHARED IMPORTED GLOBAL)
+    set_target_properties(liger_cute_kernels PROPERTIES
+        IMPORTED_LOCATION "${_imported_core}"
+        # Allow dependents to resolve the core's NVSHMEM/CUDA deps.
+        INTERFACE_LINK_LIBRARIES "NVSHMEM::nvshmem_host;CUDA::cudart;CUDA::cuda_driver"
+    )
+    target_include_directories(liger_cute_kernels INTERFACE
+        "${CMAKE_CURRENT_SOURCE_DIR}/csrc/core/include")
+    message(STATUS "Using prebuilt core: ${_imported_core}")
+else()
+    # Build the torch-free core from source.
+    add_subdirectory(csrc/core)
+endif()
 
 # Bindings are opt-in and pull in torch + pybind11.
 if(LIGER_CUTE_BUILD_BINDINGS)

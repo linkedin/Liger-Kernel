@@ -33,7 +33,6 @@ CMAKE_DIR = HERE  # CMakeLists.txt sits beside this module
 
 CORE_SO = "libliger_cute_kernels.so"
 NVSHMEM_SO = "libnvshmem_host.so"
-TVM_FFI_SO = "liger_cute_kernels_tvm_ffi.so"
 
 # In-wheel location of the native libraries: the lck wheel's own top-level
 # package, kept separate from liger_kernel so it doesn't mix with it.
@@ -166,8 +165,10 @@ class LckBuildExt(build_ext):
         if use_prebuilt:
             cmake_args.append(f"-DLIGER_CUTE_CORE_IMPORTED_DIR={core_dir}")
         subprocess.check_call(["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp), *cmake_args])
-        targets = ["liger_cute_kernels_tvm_ffi"] if use_prebuilt else ["liger_cute_kernels", "liger_cute_kernels_tvm_ffi"]
-        subprocess.check_call(["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", *targets])
+        if not use_prebuilt:
+            subprocess.check_call(
+                ["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", "liger_cute_kernels"]
+            )
 
         # Place native artifacts into the lck wheel's own liger_cute_kernels package.
         dest = Path(self.build_lib) / PKG_REL
@@ -176,7 +177,6 @@ class LckBuildExt(build_ext):
             shutil.copy2(Path(core_dir) / CORE_SO, dest / CORE_SO)
         else:
             shutil.copy2(next(build_temp.rglob(CORE_SO)), dest / CORE_SO)
-        shutil.copy2(next(build_temp.rglob(TVM_FFI_SO)), dest / TVM_FFI_SO)
         _stage_nvshmem(dest)
         print(f"staged lck artifacts -> {dest}")
 

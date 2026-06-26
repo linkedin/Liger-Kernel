@@ -32,7 +32,7 @@ def _load_module():
 
         pkg_dir = Path(__file__).resolve().parent
         _load_nvshmem_libraries(pkg_dir)
-        module = pkg_dir / "liger_cute_kernels_tvm_ffi.so"
+        module = pkg_dir / "libliger_cute_kernels.so"
         if not module.exists():
             raise FileNotFoundError(f"Missing packaged TVM FFI module: {module}")
         _MOD = tvm_ffi.load_module(str(module))
