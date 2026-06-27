@@ -5,6 +5,8 @@ try:
 except ImportError:
     PEFT_AVAILABLE = False
 
+import functools
+
 import torch
 
 
@@ -63,6 +65,87 @@ def is_npu_available() -> bool:
         return is_torch_npu_available()
     except Exception:
         return False
+
+
+# NVIDIA: CUDA compute-capability major -> coarse arch family
+_NVIDIA_ARCH_BY_MAJOR = {
+    7: "volta_turing",  # 7.0 Volta, 7.5 Turing
+    8: "ampere_ada",  # 8.0/8.6 Ampere, 8.9 Ada Lovelace
+    9: "hopper",  # H100
+    10: "blackwell",  # B100/B200/GB200
+    12: "blackwell",  # consumer RTX 50xx
+}
+
+# AMD: gfx target (gcnArchName) -> coarse arch family
+_AMD_ARCH_BY_GFX = {
+    "gfx908": "cdna",  # MI100
+    "gfx90a": "cdna2",  # MI200
+    "gfx940": "cdna3",  # MI300
+    "gfx941": "cdna3",
+    "gfx942": "cdna3",  # MI300X/MI300A
+    "gfx1100": "rdna3",  # RX 7900
+    "gfx1101": "rdna3",
+    "gfx1102": "rdna3",
+}
+
+
+def _infer_nvidia_arch(device_id: int) -> str:
+    major, _ = torch.cuda.get_device_capability(device_id)
+    return _NVIDIA_ARCH_BY_MAJOR.get(major, f"sm_{major}0")
+
+
+def _infer_amd_arch(device_id: int) -> str:
+    # gcnArchName looks like "gfx942:sramecc+:xnack-"; keep the gfx target only.
+    gfx = getattr(torch.cuda.get_device_properties(device_id), "gcnArchName", "").split(":")[0]
+    return _AMD_ARCH_BY_GFX.get(gfx, gfx or "cuda")
+
+
+def _infer_xpu_arch(device_id: int) -> str:
+    name = torch.xpu.get_device_properties(device_id).name.lower()
+    if any(tag in name for tag in ("max", "pvc", "ponte")):
+        return "pvc"  # Ponte Vecchio / Data Center GPU Max
+    if any(tag in name for tag in ("arc", "battlemage", "alchemist")):
+        return "arc"
+    return "xpu"
+
+
+def _infer_npu_arch(device_id: int) -> str:
+    name = torch.npu.get_device_properties(device_id).name.lower()
+    if "910" in name:
+        return "ascend910"
+    if "310" in name:
+        return "ascend310"
+    return "npu"
+
+
+@functools.lru_cache(maxsize=None)
+def infer_device_arch(device_id: int = 0) -> str:
+    """
+    Get a coarse architecture/generation name for the current device.
+
+    Returns a family name when detectable, falling back to the device type
+    from ``infer_device()`` (e.g. ``"cpu"``) otherwise:
+
+      - NVIDIA: ``"volta_turing"``, ``"ampere_ada"``, ``"hopper"``, ``"blackwell"``
+                (else ``"sm_<major>0"``)
+      - AMD:    ``"cdna"``, ``"cdna2"``, ``"cdna3"``, ``"rdna3"`` (else the raw gfx target)
+      - Intel:  ``"pvc"``, ``"arc"`` (else ``"xpu"``)
+      - Ascend: ``"ascend910"``, ``"ascend310"`` (else ``"npu"``)
+
+    The result is cached; call ``infer_device_arch.cache_clear()`` to reset.
+    """
+    device = infer_device()
+    try:
+        if device == "cuda":
+            # ROCm reports as "cuda" in torch; torch.version.hip distinguishes AMD.
+            return _infer_amd_arch(device_id) if torch.version.hip else _infer_nvidia_arch(device_id)
+        if device == "xpu":
+            return _infer_xpu_arch(device_id)
+        if device == "npu":
+            return _infer_npu_arch(device_id)
+    except Exception:
+        return device
+    return device
 
 
 def transformers_version_dispatch(
