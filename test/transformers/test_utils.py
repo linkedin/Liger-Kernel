@@ -34,8 +34,10 @@ def clear_arch_cache():
         ((8, 9), "ampere_ada"),
         ((9, 0), "hopper"),
         ((10, 0), "blackwell"),
-        ((12, 0), "blackwell"),
-        ((11, 0), "sm_110"),  # unknown major -> sm_<major>0 fallback
+        ((10, 3), "blackwell_ultra"),
+        ((12, 0), "blackwell_consumer"),
+        ((8, 7), "sm_87"),  # known major, unknown minor -> fallback keeps the minor
+        ((11, 0), "sm_110"),  # unknown cc -> sm_<major><minor> fallback
     ],
 )
 def test_infer_nvidia_arch(monkeypatch, capability, expected):

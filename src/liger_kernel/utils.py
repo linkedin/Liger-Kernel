@@ -67,13 +67,17 @@ def is_npu_available() -> bool:
         return False
 
 
-# NVIDIA: CUDA compute-capability major -> coarse arch family
-_NVIDIA_ARCH_BY_MAJOR = {
-    7: "volta_turing",  # 7.0 Volta, 7.5 Turing
-    8: "ampere_ada",  # 8.0/8.6 Ampere, 8.9 Ada Lovelace
-    9: "hopper",  # H100
-    10: "blackwell",  # B100/B200/GB200
-    12: "blackwell",  # consumer RTX 50xx
+# NVIDIA: CUDA compute capability (major, minor) -> coarse arch family
+_NVIDIA_ARCH_BY_CC = {
+    (7, 0): "volta_turing",  # Volta V100
+    (7, 5): "volta_turing",  # Turing T4 / RTX 20xx
+    (8, 0): "ampere_ada",  # Ampere A100
+    (8, 6): "ampere_ada",  # Ampere RTX 30xx / A40
+    (8, 9): "ampere_ada",  # Ada Lovelace RTX 40xx / L4 / L40
+    (9, 0): "hopper",  # H100 / H200
+    (10, 0): "blackwell",  # B100 / B200 / GB200 (sm_100)
+    (10, 3): "blackwell_ultra",  # B300 / GB300 (sm_103)
+    (12, 0): "blackwell_consumer",  # RTX 50xx (sm_120)
 }
 
 # AMD: gfx target (gcnArchName) -> coarse arch family
@@ -90,8 +94,8 @@ _AMD_ARCH_BY_GFX = {
 
 
 def _infer_nvidia_arch(device_id: int) -> str:
-    major, _ = torch.cuda.get_device_capability(device_id)
-    return _NVIDIA_ARCH_BY_MAJOR.get(major, f"sm_{major}0")
+    major, minor = torch.cuda.get_device_capability(device_id)
+    return _NVIDIA_ARCH_BY_CC.get((major, minor), f"sm_{major}{minor}")
 
 
 def _infer_amd_arch(device_id: int) -> str:
@@ -126,8 +130,8 @@ def infer_device_arch(device_id: int = 0) -> str:
     Returns a family name when detectable, falling back to the device type
     from ``infer_device()`` (e.g. ``"cpu"``) otherwise:
 
-      - NVIDIA: ``"volta_turing"``, ``"ampere_ada"``, ``"hopper"``, ``"blackwell"``
-                (else ``"sm_<major>0"``)
+      - NVIDIA: ``"volta_turing"``, ``"ampere_ada"``, ``"hopper"``, ``"blackwell"``,
+                ``"blackwell_ultra"``, ``"blackwell_consumer"`` (else ``"sm_<major><minor>"``)
       - AMD:    ``"cdna"``, ``"cdna2"``, ``"cdna3"``, ``"rdna3"`` (else the raw gfx target)
       - Intel:  ``"pvc"``, ``"arc"`` (else ``"xpu"``)
       - Ascend: ``"ascend910"``, ``"ascend310"`` (else ``"npu"``)
