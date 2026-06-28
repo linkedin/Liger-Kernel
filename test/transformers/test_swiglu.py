@@ -13,6 +13,8 @@ from transformers.models.mixtral.configuration_mixtral import MixtralConfig
 from transformers.models.phi3.configuration_phi3 import Phi3Config
 from transformers.models.phi3.modeling_phi3 import Phi3MLP
 
+import liger_kernel.ops.swiglu as swiglu_ops
+
 from liger_kernel.ops import LigerSiLUMulFunction
 from liger_kernel.transformers.functional import liger_swiglu
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
@@ -670,3 +672,59 @@ def test_dtensor_liger_silumul(world_size, bsz, seq_len, hidden_size, dtype, ato
             nprocs=world_size,
             join=True,
         )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Blackwell tiled SwiGLU path is CUDA-only")
+@pytest.mark.parametrize(
+    "n_rows, n_cols",
+    [
+        (4, 11009),  # wide + NOT a multiple of the 1024 tile -> exercises the column mask
+        (3, 14337),  # ragged final tile, odd row count
+        (4, 16384),  # exactly tile-aligned (16 full tiles)
+    ],
+)
+@pytest.mark.parametrize("gate_multiplier", [1.0, 1.3])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.float32,
+        pytest.param(
+            torch.bfloat16,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+    ],
+)
+def test_swiglu_blackwell_tiled_matches_original(monkeypatch, n_rows, n_cols, gate_multiplier, dtype):
+    """The Blackwell column-tiled path must be bit-for-bit identical to the one-row kernel.
+
+    The dispatch normally only fires on SM 10.x, so CI never reaches it. The tiled kernels
+    use no Blackwell-only instructions, so we force the gate on and compare against the
+    original kernel on any CUDA GPU. Widths land on a ragged final tile (n_cols % 1024 != 0)
+    to cover the column mask.
+    """
+    torch.manual_seed(0)
+    a = torch.randn(n_rows, n_cols, device=device, dtype=dtype)
+    b = torch.randn(n_rows, n_cols, device=device, dtype=dtype)
+    dc = torch.randn(n_rows, n_cols, device=device, dtype=dtype)
+
+    def run():
+        a_ = a.clone().detach().requires_grad_(True)
+        b_ = b.clone().detach().requires_grad_(True)
+        c = LigerSiLUMulFunction.apply(a_, b_, gate_multiplier)
+        c.backward(dc)
+        return c.detach(), a_.grad.detach(), b_.grad.detach()
+
+    # Original one-row kernel (gate forced off).
+    monkeypatch.setattr(swiglu_ops, "_is_blackwell", lambda: False)
+    assert not swiglu_ops._should_tile(n_cols)
+    c_ref, da_ref, db_ref = run()
+
+    # Forced Blackwell tiled kernel (gate forced on).
+    monkeypatch.setattr(swiglu_ops, "_is_blackwell", lambda: True)
+    assert swiglu_ops._should_tile(n_cols)
+    c_tiled, da_tiled, db_tiled = run()
+
+    # Launch-geometry change only -> require exact equality (the PR's headline claim).
+    torch.testing.assert_close(c_tiled, c_ref, rtol=0, atol=0)
+    torch.testing.assert_close(da_tiled, da_ref, rtol=0, atol=0)
+    torch.testing.assert_close(db_tiled, db_ref, rtol=0, atol=0)
