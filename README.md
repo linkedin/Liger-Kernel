@@ -245,6 +245,32 @@ apply_liger_kernel_to_llama(
 model = transformers.AutoModelForCausalLM("path/to/llama/model")
 ```
 
+#### Memory-efficient tiled MLP (opt-in)
+
+For long sequences you can additionally replace the MLP with Liger's tiled MLP, which recomputes the MLP
+forward during the backward to trade compute for a large activation-memory saving. It is opt-in and
+covers every model that shares the SwiGLU or GeGLU layout.
+
+```python
+from liger_kernel.transformers import apply_liger_tiled_mlp
+
+# Before loading: register the tiled MLP so it is applied to any supported model on construction
+apply_liger_tiled_mlp()
+model = transformers.AutoModelForCausalLM.from_pretrained("path/to/llama/model")
+
+# Or patch an already-loaded model in place
+apply_liger_tiled_mlp(model=model, num_shards=4)
+```
+
+It is also reachable through the standard instance patching entry point (and therefore the Hugging Face
+Trainer `use_liger_kernel` config) via the `tiled_mlp` and `tiled_mlp_num_shards` keyword arguments.
+
+> [!WARNING]
+> Tiled MLP's distributed support is uneven. Checked on 2x H100: gradients match a non-tiled reference
+> under FSDP2 (`torch.distributed.fsdp.fully_shard`), but DeepSpeed ZeRO-3 currently fails because the
+> per-shard recompute fires ZeRO's gradient hook multiple times per parameter. ZeRO-1/2 and plain DDP
+> are untested (a DDP fix is in flight in #1125). Verify gradient correctness for your setup first.
+
 ### 3. Compose Your Own Model
 
 You can take individual [kernels](https://github.com/linkedin/Liger-Kernel?tab=readme-ov-file#model-kernels) to compose your models.

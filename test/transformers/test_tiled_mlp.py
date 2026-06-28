@@ -1,9 +1,13 @@
+import copy
+
 import pytest
 import torch
 
 from test.utils import supports_bfloat16
+from transformers import AutoModelForCausalLM
 from transformers.models.llama.configuration_llama import LlamaConfig
 
+from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP
@@ -195,3 +199,44 @@ def test_tiled_swiglu_correctness(
         )
 
     torch.testing.assert_close(x1.grad, x2.grad, atol=atol, rtol=rtol, msg="Input gradients don't match")
+
+
+def test_apply_liger_tiled_mlp_patch_matches_regular_swiglu():
+    """The tiled MLP monkey patch must produce the same logits and gradients as the regular Liger SwiGLU
+    patch, end to end through a real model."""
+    config = LlamaConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        vocab_size=512,
+        max_position_embeddings=512,
+        hidden_act="silu",
+        attn_implementation="eager",
+    )
+    torch.manual_seed(0)
+    base = AutoModelForCausalLM.from_config(config).to(device).to(torch.float32)
+
+    tiled_model = copy.deepcopy(base)
+    regular_model = copy.deepcopy(base)
+
+    monkey_patch.apply_liger_tiled_mlp(model=tiled_model, num_shards=4)
+    for layer in regular_model.model.layers:
+        monkey_patch._patch_swiglu_module(layer.mlp, LigerSwiGLUMLP)
+
+    input_ids = torch.randint(0, config.vocab_size, (2, 256), device=device)
+    labels = input_ids.clone()
+
+    tiled_out = tiled_model(input_ids=input_ids, labels=labels)
+    regular_out = regular_model(input_ids=input_ids, labels=labels)
+
+    torch.testing.assert_close(tiled_out.logits, regular_out.logits, atol=1e-3, rtol=1e-3)
+
+    tiled_out.loss.backward()
+    regular_out.loss.backward()
+
+    for (name, p_tiled), (_, p_regular) in zip(tiled_model.named_parameters(), regular_model.named_parameters()):
+        if p_tiled.grad is None:
+            continue
+        torch.testing.assert_close(p_tiled.grad, p_regular.grad, atol=1e-2, rtol=1e-2, msg=name)
