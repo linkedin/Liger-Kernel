@@ -551,9 +551,7 @@ def test_apply_liger_kernel_to_instance_for_llama_with_tiled_mlp():
             clear_patch_mapping()
 
 
-def test_apply_liger_kernel_to_llama_tiled_mlp_registers_patch_mapping():
-    from transformers.monkey_patching import clear_patch_mapping
-
+def test_apply_liger_tiled_mlp_to_instance():
     config = transformers.models.llama.configuration_llama.LlamaConfig(
         dtype=torch.bfloat16,
         rms_norm_eps=1e-5,
@@ -562,20 +560,16 @@ def test_apply_liger_kernel_to_llama_tiled_mlp_registers_patch_mapping():
         hidden_act="silu",
         num_hidden_layers=2,
     )
+    model = AutoModelForCausalLM.from_config(config)
 
-    try:
-        monkey_patch.apply_liger_kernel_to_llama(
-            rope=False,
-            rms_norm=False,
-            fused_linear_cross_entropy=False,
-            swiglu=False,
-            tiled_mlp=True,
-        )
-        model = AutoModelForCausalLM.from_config(config)
-        for layer in model.model.layers:
-            assert isinstance(layer.mlp, LigerTiledSwiGLUMLP)
-    finally:
-        clear_patch_mapping()
+    for layer in model.model.layers:
+        assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerTiledSwiGLUMLP.forward)
+
+    monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=4)
+
+    for layer in model.model.layers:
+        assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerTiledSwiGLUMLP.forward)
+        assert layer.mlp.num_shards == 4
 
 
 def test_apply_liger_tiled_mlp_registers_supported_models():

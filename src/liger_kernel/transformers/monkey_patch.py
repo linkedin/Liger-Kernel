@@ -169,19 +169,38 @@ LIGER_TILED_MLP_PATCH_MAPPING = {
 }
 
 
-def apply_liger_tiled_mlp(mapping=LIGER_TILED_MLP_PATCH_MAPPING) -> None:
+def apply_liger_tiled_mlp(model=None, num_shards=None, mapping=LIGER_TILED_MLP_PATCH_MAPPING) -> None:
     """
-    Register Liger's memory-efficient tiled MLP for the supported models through the official
-    transformers patch mapping. Once registered, the replacement is applied automatically whenever a
-    model is loaded with `from_pretrained` or `from_config`.
+    Apply Liger's memory-efficient tiled MLP to the supported models.
+
+    When `model` is None the replacement is registered through the official transformers patch mapping
+    (`register_patch_mapping`) and applied automatically to any model later built with `from_pretrained`
+    or `from_config`. When `model` is provided, every already-instantiated MLP whose class name is in
+    `mapping` is patched in place, reusing its existing weights.
+
+    Tiled MLP recomputes the MLP forward during the backward to trade compute for a large activation
+    memory saving on long sequences. It is opt-in, and its distributed behaviour follows the underlying
+    `LigerTiledMLPFunction`: the default backward targets DeepSpeed/ZeRO. FSDP and plain DDP are not yet
+    handled by that backward, so enabling tiled MLP under those backends can corrupt gradients.
 
     Args:
+        model (PreTrainedModel): An already-loaded model to patch in place. If None, the replacement is
+            registered for future model construction instead. Default is None.
+        num_shards (Optional[int]): Number of sequence shards used when patching an existing model
+            instance. If None, it is computed automatically per forward. Default is None.
         mapping (dict): Mapping from transformers MLP class name to the Liger tiled MLP class to use.
             Defaults to all models that share the SwiGLU or GEGLU layout.
     """
-    from transformers.monkey_patching import register_patch_mapping
+    if model is None:
+        from transformers.monkey_patching import register_patch_mapping
 
-    register_patch_mapping(mapping, overwrite=True)
+        register_patch_mapping(mapping, overwrite=True)
+        return
+
+    for module in model.modules():
+        liger_tiled_module = mapping.get(module.__class__.__name__)
+        if liger_tiled_module is not None:
+            _patch_tiled_mlp_module(module, liger_tiled_module, num_shards=num_shards)
 
 
 def _patch_geglu_module(module):
@@ -270,8 +289,6 @@ def apply_liger_kernel_to_llama(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
-    tiled_mlp: bool = False,
-    tiled_mlp_num_shards: Optional[int] = None,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -286,10 +303,6 @@ def apply_liger_kernel_to_llama(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
-        tiled_mlp (bool): Whether to apply Liger's memory-efficient tiled SwiGLU MLP. Takes precedence
-            over `swiglu` when True. Default is False.
-        tiled_mlp_num_shards (Optional[int]): Number of sequence shards used when patching an existing
-            model instance with tiled MLP. If None, it is computed automatically. Default is None.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -300,15 +313,12 @@ def apply_liger_kernel_to_llama(
 
     from transformers.models.llama import modeling_llama
     from transformers.models.llama.modeling_llama import LlamaModel
-    from transformers.monkey_patching import register_patch_mapping
 
     if rope:
         modeling_llama.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         modeling_llama.LlamaRMSNorm = LigerRMSNorm
-    if tiled_mlp:
-        register_patch_mapping({"LlamaMLP": LigerTiledSwiGLUMLP}, overwrite=True)
-    elif swiglu:
+    if swiglu:
         modeling_llama.LlamaMLP = LigerSwiGLUMLP
 
     if cross_entropy:
@@ -333,9 +343,7 @@ def apply_liger_kernel_to_llama(
             _patch_rms_norm_module(base_model.norm)
 
         for decoder_layer in base_model.layers:
-            if tiled_mlp:
-                _patch_tiled_mlp_module(decoder_layer.mlp, LigerTiledSwiGLUMLP, num_shards=tiled_mlp_num_shards)
-            elif swiglu:
+            if swiglu:
                 _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
@@ -3677,12 +3685,19 @@ def _apply_liger_kernel(model_type: str, **kwargs) -> None:
     apply_fn(**applicable_kwargs)
 
 
-def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
+def _apply_liger_kernel_to_instance(
+    model: PreTrainedModel, tiled_mlp: bool = False, tiled_mlp_num_shards: Optional[int] = None, **kwargs
+) -> None:
     """
     Applies Liger kernels to the provided model instance.
 
     Args:
         - model: the model instance to apply Liger kernels to
+        - tiled_mlp: whether to additionally replace the model's MLP with Liger's tiled MLP for
+          activation-memory savings on long sequences. Opt-in; see `apply_liger_tiled_mlp` for the
+          distributed-backend caveats.
+        - tiled_mlp_num_shards: number of sequence shards used by the tiled MLP, computed automatically
+          when None.
         - kwargs: keyword arguments that are passed to the corresponding apply_liger_kernel_to_* function.
     """
     model_type = getattr(model, "config", None) and getattr(model.config, "model_type", None)
@@ -3705,3 +3720,6 @@ def _apply_liger_kernel_to_instance(model: PreTrainedModel, **kwargs) -> None:
     )
 
     apply_fn(model=model, **applicable_kwargs)
+
+    if tiled_mlp:
+        apply_liger_tiled_mlp(model=model, num_shards=tiled_mlp_num_shards)
