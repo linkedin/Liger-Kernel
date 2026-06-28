@@ -265,11 +265,10 @@ apply_liger_tiled_mlp(model=model, num_shards=4)
 It is also reachable through the standard instance patching entry point (and therefore the Hugging Face
 Trainer `use_liger_kernel` config) via the `tiled_mlp` and `tiled_mlp_num_shards` keyword arguments.
 
-> [!WARNING]
-> Tiled MLP's distributed support is uneven. Checked on 2x H100: gradients match a non-tiled reference
-> under FSDP2 (`torch.distributed.fsdp.fully_shard`), but DeepSpeed ZeRO-3 currently fails because the
-> per-shard recompute fires ZeRO's gradient hook multiple times per parameter. ZeRO-1/2 and plain DDP
-> are untested (a DDP fix is in flight in #1125). Verify gradient correctness for your setup first.
+> [!NOTE]
+> Distributed support, verified on 2x H100: tiled gradients match a non-tiled reference under both FSDP2
+> (`torch.distributed.fsdp.fully_shard`) and DeepSpeed ZeRO-3. Plain DDP is not yet covered (a fix is in
+> flight in #1125). Verify gradient correctness for your setup before relying on it.
 
 ### 3. Compose Your Own Model
 

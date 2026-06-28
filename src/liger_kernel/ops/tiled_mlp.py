@@ -44,6 +44,7 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         ctx.fn = fn
         ctx.mlp_module = mlp_module
         ctx.shards = shards
+        ctx.compute_params = compute_params
         ctx.save_for_backward(x)
 
         # x.shape could be [bs, seqlen, hidden_size] or [seqlen, hidden_size] (moe experts)
@@ -61,6 +62,7 @@ class LigerTiledMLPFunction(torch.autograd.Function):
         (x,) = ctx.saved_tensors
         mlp_module = ctx.mlp_module
         shards = ctx.shards
+        compute_params = ctx.compute_params
 
         x_requires_grad = x.requires_grad
         x = x.detach()
@@ -87,6 +89,15 @@ class LigerTiledMLPFunction(torch.autograd.Function):
 
             x_shard.grad = x_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
             incoming_grad_shard = incoming_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
+
+            # Under ZeRO-3 each shard's recompute would queue the same parameter for gradient reduction,
+            # so defer DeepSpeed's reduction until the last shard has accumulated into param.grad. The
+            # ds_id attribute marks a ZeRO-3 partitioned parameter, leaving other backends untouched.
+            if compute_params:
+                is_last_shard = i + 1 == len(x_shards)
+                for param in compute_params:
+                    if hasattr(param, "ds_id"):
+                        param.ds_grad_is_ready = is_last_shard
 
             with torch.enable_grad():
                 output = fn(mlp_module, x_shard)

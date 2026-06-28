@@ -240,3 +240,49 @@ def test_apply_liger_tiled_mlp_patch_matches_regular_swiglu():
         if p_tiled.grad is None:
             continue
         torch.testing.assert_close(p_tiled.grad, p_regular.grad, atol=1e-2, rtol=1e-2, msg=name)
+
+
+@pytest.mark.parametrize("num_shards", [2, 4, 8])
+@pytest.mark.parametrize(
+    "mlp_cls, hidden_act",
+    [
+        (LigerTiledSwiGLUMLP, "silu"),
+        (LigerTiledGEGLUMLP, "gelu_pytorch_tanh"),
+    ],
+)
+def test_tiled_mlp_zero3_gradient_reduction_deferral(mlp_cls, hidden_act, num_shards):
+    """The tiled backward must defer DeepSpeed ZeRO-3 gradient reduction (ds_grad_is_ready stays False
+    until the last shard), run the recompute exactly once per shard, leave non-ZeRO-3 parameters
+    untouched, and leave the computed gradients unchanged."""
+    config = LlamaConfig(hidden_size=128, intermediate_size=256, hidden_act=hidden_act)
+    x = torch.randn(2, 512, 128, device=device, dtype=torch.float32)
+
+    # Without a ds_id marker the deferral logic is a no-op and must not set ds_grad_is_ready
+    plain = mlp_cls(config=config, num_shards=num_shards).to(device).to(torch.float32)
+    plain(x.detach().clone().requires_grad_(True)).pow(2).sum().backward()
+    assert all(not hasattr(p, "ds_grad_is_ready") for p in plain.parameters())
+    ref_grads = [p.grad.clone() for p in plain.parameters()]
+
+    # With a ds_id marker (ZeRO-3 partitioned), same weights, record the flag during each recompute
+    z3 = mlp_cls(config=config, num_shards=num_shards).to(device).to(torch.float32)
+    z3.load_state_dict(plain.state_dict())
+    for p in z3.parameters():
+        p.ds_id = 0
+
+    seen = []
+    original_mlp_forward = z3._mlp_forward
+
+    def recording_mlp_forward(module, shard):
+        seen.append(getattr(next(z3.parameters()), "ds_grad_is_ready", None))
+        return original_mlp_forward(module, shard)
+
+    z3._mlp_forward = recording_mlp_forward
+    z3(x.detach().clone().requires_grad_(True)).pow(2).sum().backward()
+
+    # the recompute runs once per shard in forward and once per shard in backward
+    assert len(seen) == 2 * num_shards
+    # reduction is deferred for every shard but the last, where the accumulated grad is released
+    assert seen[-num_shards:] == [False] * (num_shards - 1) + [True]
+    # the flag is bookkeeping only: gradients must match the non-ZeRO-3 run exactly
+    for p, ref in zip(z3.parameters(), ref_grads):
+        torch.testing.assert_close(p.grad, ref)
