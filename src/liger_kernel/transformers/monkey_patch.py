@@ -179,9 +179,9 @@ def apply_liger_tiled_mlp(model=None, num_shards=None, mapping=LIGER_TILED_MLP_P
     `mapping` is patched in place, reusing its existing weights.
 
     Tiled MLP recomputes the MLP forward during the backward to trade compute for a large activation
-    memory saving on long sequences. It is opt-in, and its distributed behaviour follows the underlying
-    `LigerTiledMLPFunction`: the default backward targets DeepSpeed/ZeRO. FSDP and plain DDP are not yet
-    handled by that backward, so enabling tiled MLP under those backends can corrupt gradients.
+    memory saving on long sequences. It is opt-in. Gradients have been verified to match a non-tiled
+    reference under both FSDP2 (`torch.distributed.fsdp.fully_shard`) and DeepSpeed ZeRO-3, where the
+    backward defers ZeRO-3 gradient reduction to the last shard. Plain DDP is not yet covered.
 
     Args:
         model (PreTrainedModel): An already-loaded model to patch in place. If None, the replacement is
