@@ -138,6 +138,15 @@ def apply_tiled_mlp(
     # Ensure num_shards is at least 1
     num_shards = max(1, num_shards)
 
+    # All ranks must run the same number of shards: a sharded-parameter backend (DeepSpeed ZeRO-3, FSDP)
+    # gathers weights inside each shard's recompute, so a rank that runs fewer shards stops participating
+    # in those collectives and deadlocks the others. Harmonize on the per-rank maximum.
+    dist = torch.distributed
+    if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+        num_shards_tensor = torch.tensor(num_shards, device=x.device)
+        dist.all_reduce(num_shards_tensor, op=dist.ReduceOp.MAX)
+        num_shards = int(num_shards_tensor.item())
+
     return LigerTiledMLPFunction.apply(
         fn,
         mlp_module,

@@ -286,3 +286,31 @@ def test_tiled_mlp_zero3_gradient_reduction_deferral(mlp_cls, hidden_act, num_sh
     # the flag is bookkeeping only: gradients must match the non-ZeRO-3 run exactly
     for p, ref in zip(z3.parameters(), ref_grads):
         torch.testing.assert_close(p.grad, ref)
+
+
+def test_tiled_mlp_synchronizes_num_shards_across_ranks(monkeypatch):
+    """Under a distributed sharded-parameter backend num_shards must be raised to the per-rank maximum,
+    so every rank runs the same number of weight-gathering collectives and cannot deadlock."""
+    import torch.distributed as dist
+
+    config = LlamaConfig(hidden_size=128, intermediate_size=256, hidden_act="silu")
+    mlp = LigerTiledSwiGLUMLP(config=config, num_shards=2).to(device).to(torch.float32)
+
+    global_max_shards = 4
+    monkeypatch.setattr(dist, "is_available", lambda: True)
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(dist, "all_reduce", lambda tensor, op=None: tensor.fill_(global_max_shards))
+
+    shard_calls = []
+    original_mlp_forward = mlp._mlp_forward
+
+    def recording_mlp_forward(module, shard):
+        shard_calls.append(shard)
+        return original_mlp_forward(module, shard)
+
+    mlp._mlp_forward = recording_mlp_forward
+    mlp(torch.randn(2, 512, 128, device=device).requires_grad_(True)).pow(2).sum().backward()
+
+    # this rank locally wanted 2 shards but must run the global max of 4, in both forward and backward
+    assert len(shard_calls) == 2 * global_max_shards
