@@ -38,6 +38,7 @@ from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerExperts
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
+from liger_kernel.transformers.tiled_mlp import LigerTiledGEGLUMLP
 from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP
 
 try:
@@ -144,6 +145,43 @@ def _patch_tiled_mlp_module(module, liger_tiled_module, num_shards=None):
     _bind_method_to_module(module, "_mlp_forward", liger_tiled_module._mlp_forward)
     _bind_method_to_module(module, "forward", liger_tiled_module.forward)
     _bind_method_to_module(module, "_get_name", lambda self: liger_tiled_module.__name__)
+
+
+# Maps the transformers MLP class name to the Liger tiled MLP that replaces it. Only models whose MLP
+# matches the gate/up/down SwiGLU or GEGLU layout are listed; MoE experts, fused gate_up (phi3) and
+# Gemma4 use bespoke layouts and are intentionally excluded until tiled variants exist.
+LIGER_TILED_MLP_PATCH_MAPPING = {
+    "LlamaMLP": LigerTiledSwiGLUMLP,
+    "MllamaTextMLP": LigerTiledSwiGLUMLP,
+    "Llama4TextMLP": LigerTiledSwiGLUMLP,
+    "MistralMLP": LigerTiledSwiGLUMLP,
+    "MinistralMLP": LigerTiledSwiGLUMLP,
+    "PixtralMLP": LigerTiledSwiGLUMLP,
+    "Qwen2MLP": LigerTiledSwiGLUMLP,
+    "Qwen3MLP": LigerTiledSwiGLUMLP,
+    "SmolLM3MLP": LigerTiledSwiGLUMLP,
+    "Exaone4MLP": LigerTiledSwiGLUMLP,
+    "Olmo2MLP": LigerTiledSwiGLUMLP,
+    "Olmo3MLP": LigerTiledSwiGLUMLP,
+    "GemmaMLP": LigerTiledGEGLUMLP,
+    "Gemma2MLP": LigerTiledGEGLUMLP,
+    "Gemma3MLP": LigerTiledGEGLUMLP,
+}
+
+
+def apply_liger_tiled_mlp(mapping=LIGER_TILED_MLP_PATCH_MAPPING) -> None:
+    """
+    Register Liger's memory-efficient tiled MLP for the supported models through the official
+    transformers patch mapping. Once registered, the replacement is applied automatically whenever a
+    model is loaded with `from_pretrained` or `from_config`.
+
+    Args:
+        mapping (dict): Mapping from transformers MLP class name to the Liger tiled MLP class to use.
+            Defaults to all models that share the SwiGLU or GEGLU layout.
+    """
+    from transformers.monkey_patching import register_patch_mapping
+
+    register_patch_mapping(mapping, overwrite=True)
 
 
 def _patch_geglu_module(module):

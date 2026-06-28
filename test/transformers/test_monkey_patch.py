@@ -23,6 +23,7 @@ from liger_kernel.transformers import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers import LigerQwen3MoeSwiGLUMLP
 from liger_kernel.transformers import LigerRMSNorm
 from liger_kernel.transformers import LigerSwiGLUMLP
+from liger_kernel.transformers import LigerTiledGEGLUMLP
 from liger_kernel.transformers import LigerTiledSwiGLUMLP
 from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
@@ -573,6 +574,41 @@ def test_apply_liger_kernel_to_llama_tiled_mlp_registers_patch_mapping():
         model = AutoModelForCausalLM.from_config(config)
         for layer in model.model.layers:
             assert isinstance(layer.mlp, LigerTiledSwiGLUMLP)
+    finally:
+        clear_patch_mapping()
+
+
+def test_apply_liger_tiled_mlp_registers_supported_models():
+    from transformers.monkey_patching import clear_patch_mapping
+
+    llama_config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="silu",
+        num_hidden_layers=2,
+    )
+    gemma2_config = transformers.models.gemma2.configuration_gemma2.Gemma2Config(
+        dtype=torch.bfloat16,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=16,
+    )
+
+    try:
+        monkey_patch.apply_liger_tiled_mlp()
+
+        llama_model = AutoModelForCausalLM.from_config(llama_config)
+        gemma2_model = AutoModelForCausalLM.from_config(gemma2_config)
+
+        for layer in llama_model.model.layers:
+            assert isinstance(layer.mlp, LigerTiledSwiGLUMLP)
+        for layer in gemma2_model.model.layers:
+            assert isinstance(layer.mlp, LigerTiledGEGLUMLP)
     finally:
         clear_patch_mapping()
 
