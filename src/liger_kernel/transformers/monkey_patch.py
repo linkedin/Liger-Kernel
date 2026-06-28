@@ -38,6 +38,7 @@ from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerExperts
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
+from liger_kernel.transformers.tiled_mlp import LigerTiledSwiGLUMLP
 
 try:
     import peft
@@ -138,6 +139,13 @@ def _patch_swiglu_module(module, liger_module):
     _bind_method_to_module(module, "_get_name", lambda self: liger_module.__name__)
 
 
+def _patch_tiled_mlp_module(module, liger_tiled_module, num_shards=None):
+    module.num_shards = num_shards
+    _bind_method_to_module(module, "_mlp_forward", liger_tiled_module._mlp_forward)
+    _bind_method_to_module(module, "forward", liger_tiled_module.forward)
+    _bind_method_to_module(module, "_get_name", lambda self: liger_tiled_module.__name__)
+
+
 def _patch_geglu_module(module):
     _bind_method_to_module(module, "forward", LigerGEGLUMLP.forward)
     _bind_method_to_module(module, "_get_name", lambda self: LigerGEGLUMLP.__name__)
@@ -224,6 +232,8 @@ def apply_liger_kernel_to_llama(
     fused_linear_cross_entropy: bool = True,
     rms_norm: bool = True,
     swiglu: bool = True,
+    tiled_mlp: bool = False,
+    tiled_mlp_num_shards: Optional[int] = None,
     model: PreTrainedModel = None,
 ) -> None:
     """
@@ -238,6 +248,10 @@ def apply_liger_kernel_to_llama(
             If `fused_linear_cross_entropy` is True, the logits will not be materialized but more memory efficient.
         rms_norm (bool): Whether to apply Liger's RMSNorm. Default is True.
         swiglu (bool): Whether to apply Liger's SwiGLU MLP. Default is True.
+        tiled_mlp (bool): Whether to apply Liger's memory-efficient tiled SwiGLU MLP. Takes precedence
+            over `swiglu` when True. Default is False.
+        tiled_mlp_num_shards (Optional[int]): Number of sequence shards used when patching an existing
+            model instance with tiled MLP. If None, it is computed automatically. Default is None.
         model (PreTrainedModel): The model instance to apply Liger kernels to, if the model has already been
         loaded. Default is None.
     """
@@ -248,12 +262,15 @@ def apply_liger_kernel_to_llama(
 
     from transformers.models.llama import modeling_llama
     from transformers.models.llama.modeling_llama import LlamaModel
+    from transformers.monkey_patching import register_patch_mapping
 
     if rope:
         modeling_llama.apply_rotary_pos_emb = liger_rotary_pos_emb
     if rms_norm:
         modeling_llama.LlamaRMSNorm = LigerRMSNorm
-    if swiglu:
+    if tiled_mlp:
+        register_patch_mapping({"LlamaMLP": LigerTiledSwiGLUMLP}, overwrite=True)
+    elif swiglu:
         modeling_llama.LlamaMLP = LigerSwiGLUMLP
 
     if cross_entropy:
@@ -278,7 +295,9 @@ def apply_liger_kernel_to_llama(
             _patch_rms_norm_module(base_model.norm)
 
         for decoder_layer in base_model.layers:
-            if swiglu:
+            if tiled_mlp:
+                _patch_tiled_mlp_module(decoder_layer.mlp, LigerTiledSwiGLUMLP, num_shards=tiled_mlp_num_shards)
+            elif swiglu:
                 _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
             if rms_norm:
                 _patch_rms_norm_module(decoder_layer.input_layernorm)
