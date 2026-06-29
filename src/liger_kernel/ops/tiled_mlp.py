@@ -5,6 +5,7 @@ from typing import List
 from typing import Optional
 
 import torch
+import torch.distributed as dist
 
 from liger_kernel.ops.utils import ensure_contiguous
 
@@ -80,6 +81,10 @@ class LigerTiledMLPFunction(torch.autograd.Function):
 
         x_shards = list(torch.chunk(x, chunks=shards, dim=0))
 
+        # ZeRO-3 partitioned parameters carry a ds_id; collect them once so the per-shard loop only
+        # flips the ready flag. Parameters on other backends have no ds_id and are left untouched.
+        ds_params = [p for p in compute_params if hasattr(p, "ds_id")] if compute_params else []
+
         for i, x_shard in enumerate(x_shards):
             x_shard.requires_grad_(x_requires_grad)
 
@@ -90,14 +95,10 @@ class LigerTiledMLPFunction(torch.autograd.Function):
             x_shard.grad = x_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
             incoming_grad_shard = incoming_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
 
-            # Under ZeRO-3 each shard's recompute would queue the same parameter for gradient reduction,
-            # so defer DeepSpeed's reduction until the last shard has accumulated into param.grad. The
-            # ds_id attribute marks a ZeRO-3 partitioned parameter, leaving other backends untouched.
-            if compute_params:
-                is_last_shard = i + 1 == len(x_shards)
-                for param in compute_params:
-                    if hasattr(param, "ds_id"):
-                        param.ds_grad_is_ready = is_last_shard
+            # Defer DeepSpeed's reduction until the last shard has accumulated into param.grad; the flag
+            # is read by ZeRO's hook during each shard's backward, so it must be set per shard.
+            for param in ds_params:
+                param.ds_grad_is_ready = i + 1 == len(x_shards)
 
             with torch.enable_grad():
                 output = fn(mlp_module, x_shard)
@@ -141,7 +142,6 @@ def apply_tiled_mlp(
     # All ranks must run the same number of shards: a sharded-parameter backend (DeepSpeed ZeRO-3, FSDP)
     # gathers weights inside each shard's recompute, so a rank that runs fewer shards stops participating
     # in those collectives and deadlocks the others. Harmonize on the per-rank maximum.
-    dist = torch.distributed
     if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
         num_shards_tensor = torch.tensor(num_shards, device=x.device)
         dist.all_reduce(num_shards_tensor, op=dist.ReduceOp.MAX)
