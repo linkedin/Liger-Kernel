@@ -5,14 +5,14 @@ This is a SEPARATE distribution from the top-level ``liger_kernel`` wheel (which
 is pure Python/Triton) and is intentionally its OWN package so it does not mix
 into ``liger_kernel``. The lck wheel:
 
-  * builds the torch-free core ``libliger_cute_kernels.so`` + the per-torch
-    ``_C`` pybind shim,
-  * ships them as ``liger_cute_kernels/{_C.so, libliger_cute_kernels.so,
+  * builds the torch-free core ``libliger_cute_kernels.so`` with TVM FFI exports
+    compiled into that same shared library,
+  * ships it as ``liger_cute_kernels/{libliger_cute_kernels.so,
     libnvshmem_host.so}`` (plus its own ``__init__.py``),
   * is tagged with the CUDA + torch version as a PEP 440 local version, e.g.
     ``liger_cute_kernels-0.1.0+cu130.torch2.9.1-cp312-cp312-linux_x86_64.whl``.
 
-``liger_kernel.ops.cute`` (from the liger wheel) imports ``liger_cute_kernels._C``
+``liger_kernel.ops.cute`` (from the liger wheel) imports ``liger_cute_kernels.tvm_ffi``
 at runtime, so the two packages stay cleanly separated.
 
 Build against the LOCAL torch/CUDA (no build isolation), from this directory:
@@ -37,13 +37,14 @@ setup(
     version=f"{BASE_VERSION}+{lck_local_version()}",
     description="Native CUTLASS + NVSHMEM MoE kernels (lck) for liger_kernel.ops.cute",
     python_requires=">=3.9",
-    install_requires=["torch"],
+    install_requires=["torch", "apache-tvm-ffi", "nvidia-nvshmem-cu13"],
     # Self-contained package: its __init__.py is packaged by build_py and the
     # .so are placed beside it by LckBuildExt. The ext module also makes this a
     # platform wheel (cpXY/abi/platform tags).
     packages=["liger_cute_kernels"],
     package_dir={"liger_cute_kernels": "liger_cute_kernels"},
-    ext_modules=[CMakeExtension("liger_cute_kernels._C")],
+    package_data={"liger_cute_kernels": ["tvm_ffi_bindings.cpp"]},
+    ext_modules=[CMakeExtension("liger_cute_kernels.libliger_cute_kernels")],
     cmdclass={"build_ext": LckBuildExt},
     zip_safe=False,
 )

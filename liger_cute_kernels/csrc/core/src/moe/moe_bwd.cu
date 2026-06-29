@@ -1624,7 +1624,7 @@ static bool find_nearest_tuned_bwd(int TK, int TKE, int D, int I,
 // Internal auto-dispatch: nearest tuned bwd config for the runtime shape (or
 // LIGER_MOE_BWD_FORCE_CONFIG), then invoke the matching template instantiation.
 // All shape info comes from the MoeBwdArgs bundle; the launcher writes the grads.
-static void moe_bwd_dispatch(const MoeBwdArgs& a, int fwd_tile_m) {
+void moe_bwd_dispatch(const MoeBwdArgs& a, int fwd_tile_m) {
 	const int T  = a.num_tokens;
 	const int D  = a.hidden_dim;
 	const int I  = a.intermediate_dim;

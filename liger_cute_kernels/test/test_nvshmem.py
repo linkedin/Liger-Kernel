@@ -33,7 +33,7 @@ from datetime import timedelta
 import pytest
 
 try:
-    import liger_cute_kernels._C as _ext_mod
+    import liger_cute_kernels.tvm_ffi as tvm_ffi
     import torch
     import torch.distributed as dist
     import torch.multiprocessing as mp
@@ -43,15 +43,19 @@ except ImportError:
     torch = None
     dist = None
     mp = None
-    _ext_mod = None
+    tvm_ffi = None
     nvshmem = None
 
 pytestmark = pytest.mark.skipif(
-    _ext_mod is None,
+    tvm_ffi is None or not tvm_ffi.is_available(),
     reason="liger_cute_kernels not built/installed; build it to run these.",
 )
 
-_NDEV = torch.cuda.device_count() if (_ext_mod is not None and torch is not None and torch.cuda.is_available()) else 0
+_NDEV = (
+    torch.cuda.device_count()
+    if (tvm_ffi is not None and tvm_ffi.is_available() and torch is not None and torch.cuda.is_available())
+    else 0
+)
 
 _NVSHMEM_BINDINGS = (
     "uniqueid_nbytes",
@@ -77,12 +81,12 @@ _NVSHMEM_BINDINGS = (
 
 def test_extension_exposes_nvshmem_bindings():
     for name in _NVSHMEM_BINDINGS:
-        assert hasattr(_ext_mod, name), f"missing binding: {name}"
+        assert hasattr(tvm_ffi, name), f"missing binding: {name}"
 
 
 def test_uniqueid_nbytes_positive():
     # sizeof(nvshmemx_uniqueid_t) — a compile-time constant; no runtime needed.
-    n = _ext_mod.uniqueid_nbytes()
+    n = tvm_ffi.uniqueid_nbytes()
     assert isinstance(n, int) and n > 0
 
 
@@ -150,7 +154,7 @@ def _worker(rank: int, world_size: int, init_file: str, scenario: str, groups):
 
             # Comm-schedule upload + symmetric sizing (local, per-PE) succeeds on
             # the live runtime, then drop the cached pools.
-            _ext_mod.moe_configure_symmetric(
+            tvm_ffi.moe_configure_symmetric(
                 max_tokens=64,
                 hidden_dim=512,
                 max_num_experts=world_size,
@@ -159,7 +163,7 @@ def _worker(rank: int, world_size: int, init_file: str, scenario: str, groups):
                 num_hosts=1,
                 gpus_per_host=world_size,
             )
-            _ext_mod.pool_clear_all()
+            tvm_ffi.pool_clear_all()
 
         elif scenario == "subgroups":
             # Build every sub-group collectively (all ranks call new_group for

@@ -8,6 +8,7 @@
 {
   global:
     liger_cute_*;
+    __tvm_ffi_*;
   local:
     *;
 };

@@ -1,18 +1,18 @@
 # LigerCute — native MoE kernels (CUTLASS + NVSHMEM)
 
-Native CUDA build for the MoE port (from `LigerCommKernels`). It compiles into
-**two** artifacts that are deliberately decoupled:
+Native CUDA build for the MoE port (from `LigerCommKernels`). The lck wheel
+packages one native core shared library that also exports the Python-facing TVM
+FFI functions:
 
 | Artifact | Sources | Links | Boundary | Built |
 |---|---|---|---|---|
-| `libliger_cute_kernels.so` (the "core", aka *lck*) | `csrc/core` | CUTLASS + NVSHMEM + CUDA — **no torch** | flat `extern "C"` (`liger_cute.h`) | **once** |
-| `_C` (the binding) | `csrc/bindings` | the core + libtorch + pybind11 | torch/pybind | **once per torch version** |
+| `libliger_cute_kernels.so` (the "core", aka *lck*) | `csrc/core` + `liger_cute_kernels/tvm_ffi_bindings.cpp` | CUTLASS + NVSHMEM + CUDA + TVM FFI — **no torch** | flat `extern "C"` (`liger_cute.h`) and TVM FFI exports (`__tvm_ffi_*`) | **once** |
 
 The core's public ABI is `extern "C"` only (no `std::`/torch types cross it),
-symbols are hidden except `liger_cute_*`, and libstdc++/libgcc are linked
-statically. That makes the core **ABI-agnostic**: one compiled core links into a
-`_C` shim built against any torch wheel, so the expensive CUTLASS compile is done
-once and reused across the whole torch matrix.
+symbols are hidden except `liger_cute_*` and `__tvm_ffi_*`, and libstdc++/libgcc
+are linked statically. That makes the core **ABI-agnostic**: the Python binding
+is TVM FFI/DLPack based and is not tied to a specific torch wheel or runtime JIT
+compile.
 
 ## Two separate wheels
 
@@ -21,7 +21,7 @@ build or contain any of this native code. The native libraries ship as a
 **separate, CUDA/torch-version-prefixed `lck` wheel** that installs its own
 standalone top-level package **`liger_cute_kernels`** (kept separate from
 `liger_kernel` so the native libs don't mix in). `liger_kernel.ops.cute` imports
-`liger_cute_kernels._C` at runtime. Intended order:
+`liger_cute_kernels.tvm_ffi` at runtime. Intended order:
 
 1. Install the top-level `liger_kernel` wheel (pure Python).
 2. *Optionally* install the matching `lck` wheel (package `liger_cute_kernels`)
@@ -44,10 +44,12 @@ liger_cute_kernels/             # ← standalone native build module (repo root)
 ├── pyproject.toml
 ├── cute_build.py               # build_core() helper + LckBuildExt
 ├── liger_cute_kernels/         # the lck wheel's package source
-│   └── __init__.py             # (.so are added here at build time)
+│   ├── __init__.py             # (.so are added here at build time)
+│   ├── tvm_ffi.py              # Python facade matching the old _C API
+│   └── tvm_ffi_bindings.cpp    # TVM FFI C++ exports compiled into the core
 ├── test/                       # the lck package's own unit tests
 │   └── test_moe_bindings.py
-├── CMakeLists.txt              # core (always) + bindings (opt-in)
+├── CMakeLists.txt              # core with TVM FFI exports (+ legacy bindings opt-in)
 ├── cmake/
 │   ├── FindNVSHMEM.cmake
 │   └── FindCUTLASS.cmake        # locates main + tools/util/include
@@ -63,27 +65,28 @@ liger_cute_kernels/             # ← standalone native build module (repo root)
     │   │           ├── CMakeLists.txt        #   its own project; links torch
     │   │           └── tune_moe_fwd_bwd.cu   #   (excluded from the core glob)
     │   └── liger_cute.version   # exports only liger_cute_*
-    └── bindings/               # → _C (torch + pybind11)
+    └── bindings/               # legacy _C (torch + pybind11)
         ├── bindings.cpp
         └── tensor_view_conversion.h   # torch::Tensor <-> TensorView<N>
 
 src/liger_kernel/ops/cute/
 └── __init__.py                 # runtime entry point: liger_kernel.ops.cute
-                                #   (loads liger_cute_kernels._C if installed)
+                                #   (loads liger_cute_kernels.tvm_ffi if installed)
 ```
 
 ## Prerequisites
 
 - **CUDA toolkit** with `nvcc` and SM 9.0a (Hopper / `sm_90a`) support.
 - **NVSHMEM** install (host `.so`, device `.a`, headers) — point `NVSHMEM_HOME`
-  at it (default `/usr/local/nvshmem`).
+  at it (default `/usr/local/nvshmem`). The lck build also auto-detects the
+  `nvidia-nvshmem-cu13` pip package layout and creates unversioned compatibility
+  symlinks for CMake when needed.
 - **CUTLASS** headers (4.x) — point `CUTLASS_HOME` at the repo root (so that
   `$CUTLASS_HOME/include/cutlass/cutlass.h` and
   `$CUTLASS_HOME/tools/util/include` exist). *Not needed when linking a prebuilt
   core.*
 - **CMake ≥ 3.24**; **Ninja** recommended.
-- For the bindings only: a **torch** install and **pybind11** (auto-detected via
-  the active Python).
+- For the TVM FFI exports only: **apache-tvm-ffi** at runtime.
 
 Build commands below are run from the **repository root**; the CMake project is
 the `liger_cute_kernels/` module directory.
@@ -109,26 +112,27 @@ from cute_build import build_core
 build_core("build/core")   # stages libliger_cute_kernels.so + libnvshmem_host.so
 ```
 
-### 2. Core + bindings from source (single local build)
+### 2. Core + TVM FFI exports from source (single local build)
 
 ```bash
 cmake -S liger_cute_kernels -B build/all \
-      -DLIGER_CUTE_BUILD_BINDINGS=ON \
+      -DLIGER_CUTE_BUILD_BINDINGS=OFF \
       -DCMAKE_BUILD_TYPE=Release -GNinja
-cmake --build build/all --target liger_cute_kernels _C -j
+cmake --build build/all --target liger_cute_kernels -j
 ```
 
-### 3. Bindings against a prebuilt core (reuse across the torch matrix)
+### 3. Wheel build against a prebuilt core (reuse across builds)
 
 Reuses an existing `libliger_cute_kernels.so` instead of recompiling the core.
-CUTLASS is not even searched here.
+CUTLASS is not even searched here. This mode is useful when packaging a core
+that was already compiled in a separate step.
 
 ```bash
 cmake -S liger_cute_kernels -B build/bind \
-      -DLIGER_CUTE_BUILD_BINDINGS=ON \
+      -DLIGER_CUTE_BUILD_BINDINGS=OFF \
       -DLIGER_CUTE_CORE_IMPORTED_DIR=/abs/path/to/dir-with-core \
       -DCMAKE_BUILD_TYPE=Release -GNinja
-cmake --build build/bind --target _C -j
+cmake --build build/bind --target liger_cute_kernels -j
 ```
 
 ### 4. Offline autotuner (`tune_moe_fwd_bwd`) — optional, not in the wheel
@@ -166,10 +170,10 @@ LIGER_MOE_FWDBWD_TUNED_OUTPUT=/abs/path/to/moe_fwd_bwd_tuning_configs_multi.cuh 
 
 This module's `setup.py` packages the native libraries into the independent
 **lck wheel**, whose package is the standalone top-level **`liger_cute_kernels`**.
-It builds the core + `_C` and ships
-`liger_cute_kernels/{_C.so, libliger_cute_kernels.so, libnvshmem_host.so}` (plus
-that package's `__init__.py`). Build against the **local** torch/CUDA (no build
-isolation), from this module directory:
+It builds the core and ships
+`liger_cute_kernels/{libliger_cute_kernels.so, libnvshmem_host.so,
+tvm_ffi.py, tvm_ffi_bindings.cpp}`. Build against the **local** CUDA/NVSHMEM
+environment (no build isolation), from this module directory:
 
 ```bash
 cd liger_cute_kernels
@@ -193,7 +197,7 @@ optionally the matching lck wheel.
 
 | Option | Default | Effect |
 |---|---|---|
-| `LIGER_CUTE_BUILD_BINDINGS` | `ON` | Build the torch/pybind11 `_C` extension. `OFF` builds only the torch-free core (no torch needed). |
+| `LIGER_CUTE_BUILD_BINDINGS` | `ON` | Legacy CMake option for the torch/pybind11 `_C` extension. Wheel builds set this OFF; the runtime Python API now uses TVM FFI. |
 | `LIGER_CUTE_CORE_IMPORTED_DIR` | *(empty)* | Dir holding a prebuilt `libliger_cute_kernels.so`. When set, the core is linked as an imported library (not compiled) and CUTLASS is not required. |
 | `LIGER_CUTE_STATIC_LIBSTDCXX` | `ON` | Statically link libstdc++/libgcc into the core so its internal C++ ABI is invisible to consumers. |
 | `NVSHMEM_HOME` | `/usr/local/nvshmem` | NVSHMEM install root (also read from the env var). |
@@ -228,8 +232,7 @@ The core should export only `liger_cute_*` symbols and have no direct
 
 ## Runtime notes
 
-- `_C` finds its sibling `libliger_cute_kernels.so` (and bundled nvshmem) via an
-  `$ORIGIN` RPATH — no `LD_LIBRARY_PATH` needed once they sit together in the
-  installed package.
-- `import torch` **before** `_C` (the package `__init__.py` does this): `_C`
-  needs `libtorch.so` loaded first.
+- `tvm_ffi.py` loads `libliger_cute_kernels.so` directly with
+  `tvm_ffi.load_module`. The TVM FFI exports live in that same library, so no
+  separate shim `.so`, `LD_LIBRARY_PATH`, or runtime JIT compile is needed once
+  the wheel is installed.

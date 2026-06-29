@@ -9,7 +9,7 @@ Two layers of coverage:
 
   * ``test_moe_fused_autograd`` — the functional test, **skipped unless the lck
     wheel is installed and >= 2 CUDA devices are present**. It drives the
-    autograd wrapper ``liger_kernel.ops.cute.ops.moe_fused`` (not the raw ``_C``
+    autograd wrapper ``liger_kernel.ops.cute.ops.moe_fused`` (not the raw TVM FFI
     bindings) through both paths: the no-grad fast path (which must pop the
     symmetric stack immediately) and the grad path (with-intermediates fwd + a
     backward that pops the stack after consuming the saved tensors). The
@@ -173,7 +173,7 @@ def _make_inputs(rank, world_size):
 
 
 def _autograd_worker(rank, world_size, init_file):
-    from liger_cute_kernels import _C
+    from liger_cute_kernels import tvm_ffi
     from liger_cute_kernels import nvshmem
 
     from liger_kernel.ops.cute.ops import LigerExpertParallelFusedMoEFunction
@@ -189,7 +189,7 @@ def _autograd_worker(rank, world_size, init_file):
     )
     nvshmem.init_from_pg()
     try:
-        _C.moe_configure_symmetric(
+        tvm_ffi.moe_configure_symmetric(
             max_tokens=_T,
             hidden_dim=_D,
             max_num_experts=_E,

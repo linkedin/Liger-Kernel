@@ -16,7 +16,7 @@ file(GLOB_RECURSE LIGER_CUTE_CORE_SOURCES
 # own CMake project, a torch-linking executable that is NOT a core lib source.
 # The recursive glob above would otherwise sweep it into the torch-free core and
 # break the build on its `#include <torch/torch.h>`. Keep it out.
-list(FILTER LIGER_CUTE_CORE_SOURCES EXCLUDE REGEX "/moe/tune/")
+list(FILTER LIGER_CUTE_CORE_SOURCES EXCLUDE REGEX "/src/moe/tune/")
 file(GLOB_RECURSE LIGER_CUTE_CORE_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.cuh"
@@ -25,6 +25,7 @@ file(GLOB_RECURSE LIGER_CUTE_CORE_HEADERS
 add_library(liger_cute_kernels SHARED
     ${LIGER_CUTE_CORE_SOURCES}
     ${LIGER_CUTE_CORE_HEADERS}
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../liger_cute_kernels/tvm_ffi_bindings.cpp"
 )
 
 # Produces libliger_cute_kernels.so (kept the lib prefix for `-l` linking).
@@ -39,11 +40,14 @@ set_target_properties(liger_cute_kernels PROPERTIES
 )
 
 target_compile_definitions(liger_cute_kernels PRIVATE LIGER_CUTE_BUILDING=1)
+target_compile_options(liger_cute_kernels PRIVATE ${TVM_FFI_CFLAGS})
 
 target_include_directories(liger_cute_kernels
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/moe
 )
 
 # Deliberately NO torch here — that is the entire point of the split.
@@ -56,6 +60,8 @@ target_link_libraries(liger_cute_kernels PUBLIC
     NVSHMEM::nvshmem_device
     CUDA::cudart
     CUDA::cuda_driver
+    ${TVM_FFI_LDFLAGS}
+    tvm_ffi
 )
 
 # ── ABI-agnostic hardening (Linux/ELF) ───────────────────────────────────────

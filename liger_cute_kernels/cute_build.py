@@ -21,6 +21,7 @@ import os
 import shutil
 import subprocess
 import sys
+import importlib.util
 
 from pathlib import Path
 
@@ -46,11 +47,50 @@ def _cmake_base_args() -> list[str]:
 
 
 def _find_nvshmem_so() -> Path | None:
-    home = Path(os.environ.get("NVSHMEM_HOME", "/usr/local/nvshmem"))
-    for libdir in ("lib", "lib64"):
-        cand = home / libdir / NVSHMEM_SO
-        if cand.exists():
-            return cand
+    for home in _nvshmem_home_candidates():
+        for libdir in ("lib", "lib64"):
+            for name in (NVSHMEM_SO, f"{NVSHMEM_SO}.3"):
+                cand = home / libdir / name
+                if cand.exists():
+                    return cand
+    return None
+
+
+def _nvshmem_home_candidates() -> list[Path]:
+    candidates = [Path(os.environ.get("NVSHMEM_HOME", "/usr/local/nvshmem"))]
+    spec = importlib.util.find_spec("nvidia.nvshmem")
+    if spec is not None:
+        if spec.origin:
+            candidates.append(Path(spec.origin).resolve().parent)
+        for location in spec.submodule_search_locations or []:
+            candidates.append(Path(location).resolve())
+    return candidates
+
+
+def _prepare_pip_nvshmem_home(build_temp: Path) -> Path | None:
+    for home in _nvshmem_home_candidates():
+        if (home / "include" / "nvshmem.h").exists() and (
+            (home / "lib" / NVSHMEM_SO).exists() or (home / "lib" / f"{NVSHMEM_SO}.3").exists()
+        ):
+            if (home / "lib" / NVSHMEM_SO).exists():
+                return home
+            compat = build_temp / "nvshmem_home"
+            compat_lib = compat / "lib"
+            compat.mkdir(parents=True, exist_ok=True)
+            compat_lib.mkdir(parents=True, exist_ok=True)
+            include = compat / "include"
+            if not include.exists():
+                include.symlink_to(home / "include")
+            for so in (home / "lib").glob("*.so.3"):
+                link = compat_lib / so.name.removesuffix(".3")
+                if not link.exists():
+                    link.symlink_to(so)
+            device = home / "lib" / "libnvshmem_device.a"
+            if device.exists():
+                link = compat_lib / "libnvshmem_device.a"
+                if not link.exists():
+                    link.symlink_to(device)
+            return compat
     return None
 
 
@@ -59,6 +99,16 @@ def _stage_nvshmem(out_dir: Path) -> None:
     nvshmem = _find_nvshmem_so()
     if nvshmem is not None:
         shutil.copy2(nvshmem, out_dir / NVSHMEM_SO)
+        versioned_host = nvshmem.parent / f"{NVSHMEM_SO}.3"
+        if versioned_host.exists():
+            shutil.copy2(versioned_host, out_dir / versioned_host.name)
+        elif nvshmem.name != NVSHMEM_SO:
+            shutil.copy2(nvshmem, out_dir / nvshmem.name)
+        for plugin in nvshmem.parent.glob("nvshmem_*.so*"):
+            shutil.copy2(plugin, out_dir / plugin.name)
+            versioned_plugin = plugin.parent / f"{plugin.name}.3"
+            if versioned_plugin.exists():
+                shutil.copy2(versioned_plugin, out_dir / versioned_plugin.name)
     else:
         print(
             f"WARNING: {NVSHMEM_SO} not found under NVSHMEM_HOME; the lck wheel will not bundle nvshmem",
@@ -101,8 +151,7 @@ class CMakeExtension(Extension):
 
 
 class LckBuildExt(build_ext):
-    """Build the lck wheel: compile _C (+ core) and place the .so into the
-    wheel's own ``liger_cute_kernels`` package dir.
+    """Build the lck wheel: compile the core plus TVM FFI shim.
 
     If ``LIGER_CUTE_CORE_DIR`` points at a prebuilt core, it is linked as an
     imported lib (no core recompile); otherwise the core is built from source.
@@ -115,20 +164,21 @@ class LckBuildExt(build_ext):
         core_dir = os.environ.get("LIGER_CUTE_CORE_DIR")
         use_prebuilt = bool(core_dir) and (Path(core_dir) / CORE_SO).exists()
 
-        cmake_args = [*_cmake_base_args(), "-DLIGER_CUTE_BUILD_BINDINGS=ON"]
+        cmake_args = [*_cmake_base_args(), "-DLIGER_CUTE_BUILD_BINDINGS=OFF"]
+        nvshmem_home = _prepare_pip_nvshmem_home(build_temp)
+        if nvshmem_home is not None:
+            cmake_args.append(f"-DNVSHMEM_HOME={nvshmem_home}")
         if use_prebuilt:
             cmake_args.append(f"-DLIGER_CUTE_CORE_IMPORTED_DIR={core_dir}")
         subprocess.check_call(["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp), *cmake_args])
-        targets = ["_C"] if use_prebuilt else ["liger_cute_kernels", "_C"]
-        subprocess.check_call(["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", *targets])
+        if not use_prebuilt:
+            subprocess.check_call(
+                ["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", "liger_cute_kernels"]
+            )
 
-        # Place the three .so into the lck wheel's own liger_cute_kernels package
-        # (its __init__.py comes from build_py). build_ext expects _C at
-        # get_ext_fullpath(); the cmake output name matches, so copying it there
-        # satisfies setuptools.
+        # Place native artifacts into the lck wheel's own liger_cute_kernels package.
         dest = Path(self.build_lib) / PKG_REL
         dest.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(next(build_temp.rglob("_C*.so")), dest)
         if use_prebuilt:
             shutil.copy2(Path(core_dir) / CORE_SO, dest / CORE_SO)
         else:

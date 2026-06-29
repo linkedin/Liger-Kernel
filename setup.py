@@ -4,6 +4,7 @@ import subprocess
 
 from typing import Literal
 
+from setuptools import find_packages
 from setuptools import setup
 
 
@@ -126,7 +127,7 @@ def get_platform() -> Literal["cuda", "rocm", "cpu", "xpu", "npu"]:
 setup(
     name="liger_kernel",
     package_dir={"": "src"},
-    packages=["liger_kernel"],
+    packages=find_packages(where="src"),
     install_requires=get_default_dependencies(),
     extras_require=get_optional_dependencies(),
     classifiers=[

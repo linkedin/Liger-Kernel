@@ -5,8 +5,8 @@ separate ``liger_cute_kernels`` (lck) wheel. Ported from LigerCommKernels'
 ``liger_comm_kernels/moe_ops.py``; the kernel ABI is identical, only the package
 plumbing differs:
 
-  - the compiled extension is reached through the parent package's
-    ``_load_extension()`` (``liger_cute_kernels._C``), and
+  - the TVM FFI facade is reached through the parent package's
+    ``_load_tvm_ffi()`` (``liger_cute_kernels.tvm_ffi``), and
   - the expert-parallel ``ProcessGroup`` -> NVSHMEM team translation reuses
     ``liger_cute_kernels.nvshmem.resolve_team`` (which already caches per-PG).
 """
@@ -18,17 +18,17 @@ from typing import Optional
 
 import torch
 
-from liger_kernel.ops.cute import _load_extension
+from liger_kernel.ops.cute import _load_tvm_ffi
 
 if TYPE_CHECKING:
     from torch.distributed import ProcessGroup
 
 __all__ = ["LigerExpertParallelFusedMoEFunction", "moe_fused"]
 
-# Resolve the native extension once at import. cute/ops is imported only when the
+# Resolve the TVM FFI facade once at import. cute/ops is imported only when the
 # "cute" implementation is actively selected, so a missing lck wheel surfaces as
-# a clear ImportError to the user who asked for it (see _load_extension).
-_C = _load_extension()
+# a clear ImportError to the user who asked for it (see _load_tvm_ffi).
+tvm_ffi = _load_tvm_ffi()
 
 
 def _resolve_team(pg: Optional["ProcessGroup"]) -> int:
@@ -86,7 +86,7 @@ class LigerExpertParallelFusedMoEFunction(torch.autograd.Function):
             token_expert_slots,
             tile_expert_ids,
             chosen_tile_m,
-        ) = _C.moe_fused_fwd_bf16(
+        ) = tvm_ffi.moe_fused_fwd_bf16(
             X,
             expert_indices,
             expert_weights,
@@ -137,7 +137,7 @@ class LigerExpertParallelFusedMoEFunction(torch.autograd.Function):
             expert_offsets,
         ) = ctx.saved_tensors
 
-        dX, dB, dC, dA, dW = _C.moe_fused_bwd_bf16(
+        dX, dB, dC, dA, dW = tvm_ffi.moe_fused_bwd_bf16(
             dY.contiguous(),
             y_buf,
             x_sorted,
@@ -154,7 +154,7 @@ class LigerExpertParallelFusedMoEFunction(torch.autograd.Function):
             ctx.team_handle,
             ctx.fwd_tile_m,
         )
-        _C.moe_pop_fwd()
+        tvm_ffi.moe_pop_fwd()
 
         # Argument order matches forward: X, expert_indices, expert_weights,
         # all_B, all_C, all_A, num_experts, top_k, pg.
@@ -197,7 +197,7 @@ def moe_fused(
         # to its pre-fwd depth (rather than leaking until a backward that never
         # runs).
         team_handle = _resolve_team(pg)
-        Y, _x_sorted, _y_buf, _all_eo, _tes, _tei, _tile_m = _C.moe_fused_fwd_bf16(
+        Y, _x_sorted, _y_buf, _all_eo, _tes, _tei, _tile_m = tvm_ffi.moe_fused_fwd_bf16(
             X,
             expert_indices,
             expert_weights,
@@ -208,7 +208,7 @@ def moe_fused(
             top_k,
             team_handle,
         )
-        _C.moe_pop_fwd()
+        tvm_ffi.moe_pop_fwd()
         return Y
 
     return LigerExpertParallelFusedMoEFunction.apply(
