@@ -1,211 +1,363 @@
-"""Correctness tests for the CuteDSL SwiGLU kernels.
+"""CuteDSL (NVIDIA CUTLASS Python DSL) implementation of the SwiGLU activation.
 
-These tests require the optional ``nvidia-cutlass-dsl`` package and an NVIDIA
-GPU; they are skipped otherwise. Numerics are checked both against a pure
-PyTorch reference and against the existing Triton kernel
-(``LigerSiLUMulFunction``).
+This is a drop-in alternative to the Triton kernels in
+``liger_kernel.ops.swiglu``. It computes the element-wise SwiGLU gate
+
+    forward:   c  = silu(a * gate_multiplier) * b
+    backward:  da = dc * (silu(a') * (1 - sig(a')) + sig(a')) * b * gate_multiplier
+               db = dc * silu(a')          with a' = a * gate_multiplier
+
+where ``silu(x) = x * sigmoid(x)``.
+
+Design notes (tuned on B200 / sm_100):
+  * The problem is purely memory-bound, so the kernel is a flat 1-D element-wise
+    pass that issues a single 128-bit (vectorized) load/store per thread per
+    tensor. ``vec = 128 // dtype.width`` elements are processed contiguously.
+  * ``sigmoid`` uses the fast ``exp2`` path (SFU) instead of ``exp``; the
+    sigmoid math is done in fp32 for numerical parity with the Triton kernel.
+  * Two kernel variants are compiled per dtype and cached: a *fast* variant with
+    no bounds predication (used when ``numel`` is a multiple of the CTA tile)
+    and a *general* predicated variant that handles any ``numel``.
+  * Backward writes the gradients in place into the saved ``a`` / ``b`` buffers,
+    exactly like the Triton kernel, so peak memory matches.
+
+The public API mirrors ``liger_kernel.ops.swiglu``:
+``swiglu_forward`` / ``swiglu_backward`` / ``LigerSiLUMulCuteDSLFunction``.
 """
 
-import importlib.util
-
-import pytest
 import torch
 
-from test.utils import supports_bfloat16
+try:
+    import torch.distributed.tensor  # noqa: F401
+except ImportError:
+    pass
 
-from liger_kernel.ops.swiglu import LigerSiLUMulFunction
-from liger_kernel.utils import infer_device
+import cutlass
+import cutlass.cute as cute
+import cutlass.cute.math as cute_math
 
-device = infer_device()
+from cutlass.cute.runtime import from_dlpack
 
-cutedsl_available = importlib.util.find_spec("cutlass") is not None and torch.cuda.is_available()
+from liger_kernel.ops.utils import ensure_contiguous
 
-pytestmark = pytest.mark.skipif(
-    not cutedsl_available,
-    reason="nvidia-cutlass-dsl + CUDA GPU required for CuteDSL SwiGLU",
-)
+# log2(e); sigmoid(x) = 1 / (1 + exp(-x)) = 1 / (1 + exp2(-x * LOG2E))
+_LOG2E = 1.4426950408889634
 
-if cutedsl_available:
-    from liger_kernel.ops.swiglu_cutedsl import LigerSiLUMulCuteDSLFunction
-    from liger_kernel.ops.swiglu_cutedsl import swiglu_forward as cutedsl_forward
-
-
-def _tol(dtype):
-    if dtype == torch.float32:
-        return 1e-4, 1e-4
-    # bf16/fp16: the fast exp2-based sigmoid differs from Triton's sigmoid by up
-    # to ~1 ULP on a small fraction of elements.
-    return 1e-2, 1e-2
+# Threads per CTA. 128 maximizes achieved bandwidth for the single-128-bit-load
+# pattern on B200 (see benchmark/scripts/benchmark_swiglu_cutedsl.py).
+_NUM_THREADS = 128
 
 
-def _torch_silu_mul_ref(a, b, gate_multiplier=1.0, down_multiplier=1.0):
-    """Pure-PyTorch reference for silu(a * gate_mult) * b * down_mult."""
-    return torch.nn.functional.silu(a * gate_multiplier) * b * down_multiplier
+# ---------------------------------------------------------------------------
+# Device kernels
+# ---------------------------------------------------------------------------
+@cute.kernel
+def _swiglu_fwd_kernel(
+    gA: cute.Tensor,
+    gB: cute.Tensor,
+    gC: cute.Tensor,
+    cC: cute.Tensor,
+    shape: cute.Shape,
+    thr_layout: cute.Layout,
+    val_layout: cute.Layout,
+    gate_mult: cutlass.Float32,
+    PREDICATED: cutlass.Constexpr,
+):
+    tidx, _, _ = cute.arch.thread_idx()
+    bidx, _, _ = cute.arch.block_idx()
+
+    blk_coord = ((None,), bidx)
+    blkA = gA[blk_coord]
+    blkB = gB[blk_coord]
+    blkC = gC[blk_coord]
+
+    copy_load = cute.make_copy_atom(cute.nvgpu.CopyUniversalOp(), gA.element_type)
+    copy_store = cute.make_copy_atom(cute.nvgpu.CopyUniversalOp(), gC.element_type)
+
+    thr_load = cute.make_tiled_copy_tv(copy_load, thr_layout, val_layout).get_slice(tidx)
+    thr_store = cute.make_tiled_copy_tv(copy_store, thr_layout, val_layout).get_slice(tidx)
+
+    thrA = thr_load.partition_S(blkA)
+    thrB = thr_load.partition_S(blkB)
+    thrC = thr_store.partition_S(blkC)
+
+    frgA = cute.make_fragment_like(thrA)
+    frgB = cute.make_fragment_like(thrB)
+    frgC = cute.make_fragment_like(thrC)
+
+    if cutlass.const_expr(PREDICATED):
+        blkCrd = cC[blk_coord]
+        thrCrd = thr_store.partition_S(blkCrd)
+        frgPred = cute.make_rmem_tensor(thrCrd.shape, cutlass.Boolean)
+        for i in cutlass.range_constexpr(cute.size(frgPred)):
+            frgPred[i] = cute.elem_less(thrCrd[i], shape)
+        cute.copy(copy_load, thrA, frgA, pred=frgPred)
+        cute.copy(copy_load, thrB, frgB, pred=frgPred)
+    else:
+        cute.copy(copy_load, thrA, frgA)
+        cute.copy(copy_load, thrB, frgB)
+
+    a = frgA.load().to(cutlass.Float32) * gate_mult
+    b = frgB.load().to(cutlass.Float32)
+    sig = 1.0 / (1.0 + cute_math.exp2(-a * _LOG2E))
+    res = (a * sig) * b
+    frgC.store(res.to(gC.element_type))
+
+    if cutlass.const_expr(PREDICATED):
+        cute.copy(copy_store, frgC, thrC, pred=frgPred)
+    else:
+        cute.copy(copy_store, frgC, thrC)
 
 
-@pytest.mark.parametrize(
-    "shape",
-    [
-        (4096, 11008),  # llama, tile-aligned
-        (2, 256, 512),
-        (6, 42, 431),  # non-tile-aligned (exercises predicated kernel)
-        (1, 1, 7),  # tiny, predicated
-        (3, 1023),  # odd number of columns
-    ],
-)
-@pytest.mark.parametrize(
-    "dtype",
-    [
-        pytest.param(
-            torch.bfloat16,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-        ),
-        torch.float16,
-        torch.float32,
-    ],
-)
-@pytest.mark.parametrize("gate_mult, down_mult", [(1.0, 1.0), (1.5, 0.75)])
-def test_cutedsl_matches_triton(shape, dtype, gate_mult, down_mult):
-    torch.manual_seed(0)
-    atol, rtol = _tol(dtype)
-    a = torch.randn(*shape, device=device, dtype=dtype)
-    b = torch.randn(*shape, device=device, dtype=dtype)
+@cute.kernel
+def _swiglu_bwd_kernel(
+    gDC: cute.Tensor,
+    gA: cute.Tensor,
+    gB: cute.Tensor,
+    cC: cute.Tensor,
+    shape: cute.Shape,
+    thr_layout: cute.Layout,
+    val_layout: cute.Layout,
+    gate_mult: cutlass.Float32,
+    PREDICATED: cutlass.Constexpr,
+):
+    tidx, _, _ = cute.arch.thread_idx()
+    bidx, _, _ = cute.arch.block_idx()
 
-    a_ref = a.clone().requires_grad_(True)
-    b_ref = b.clone().requires_grad_(True)
-    a_cut = a.clone().requires_grad_(True)
-    b_cut = b.clone().requires_grad_(True)
+    blk_coord = ((None,), bidx)
+    blkDC = gDC[blk_coord]
+    blkA = gA[blk_coord]
+    blkB = gB[blk_coord]
 
-    c_ref = LigerSiLUMulFunction.apply(a_ref, b_ref, gate_mult, down_mult)
-    c_cut = LigerSiLUMulCuteDSLFunction.apply(a_cut, b_cut, gate_mult, down_mult)
+    copy_load = cute.make_copy_atom(cute.nvgpu.CopyUniversalOp(), gA.element_type)
+    copy_store = cute.make_copy_atom(cute.nvgpu.CopyUniversalOp(), gA.element_type)
 
-    torch.testing.assert_close(c_cut.float(), c_ref.float(), atol=atol, rtol=rtol)
+    thr_load = cute.make_tiled_copy_tv(copy_load, thr_layout, val_layout).get_slice(tidx)
+    thr_store = cute.make_tiled_copy_tv(copy_store, thr_layout, val_layout).get_slice(tidx)
 
-    grad = torch.randn_like(c_ref)
-    c_ref.backward(grad)
-    c_cut.backward(grad.clone())
+    thrDC = thr_load.partition_S(blkDC)
+    thrA = thr_load.partition_S(blkA)
+    thrB = thr_load.partition_S(blkB)
+    thrDA = thr_store.partition_S(blkA)
+    thrDB = thr_store.partition_S(blkB)
 
-    torch.testing.assert_close(a_cut.grad.float(), a_ref.grad.float(), atol=atol, rtol=rtol)
-    torch.testing.assert_close(b_cut.grad.float(), b_ref.grad.float(), atol=atol, rtol=rtol)
+    frgDC = cute.make_fragment_like(thrDC)
+    frgA = cute.make_fragment_like(thrA)
+    frgB = cute.make_fragment_like(thrB)
+    frgDA = cute.make_fragment_like(thrDA)
+    frgDB = cute.make_fragment_like(thrDB)
 
+    if cutlass.const_expr(PREDICATED):
+        blkCrd = cC[blk_coord]
+        thrCrd = thr_load.partition_S(blkCrd)
+        frgPred = cute.make_rmem_tensor(thrCrd.shape, cutlass.Boolean)
+        for i in cutlass.range_constexpr(cute.size(frgPred)):
+            frgPred[i] = cute.elem_less(thrCrd[i], shape)
+        cute.copy(copy_load, thrDC, frgDC, pred=frgPred)
+        cute.copy(copy_load, thrA, frgA, pred=frgPred)
+        cute.copy(copy_load, thrB, frgB, pred=frgPred)
+    else:
+        cute.copy(copy_load, thrDC, frgDC)
+        cute.copy(copy_load, thrA, frgA)
+        cute.copy(copy_load, thrB, frgB)
 
-@pytest.mark.parametrize(
-    "shape",
-    [
-        (2, 8, 1024),
-        (9, 7, 41),
-    ],
-)
-@pytest.mark.parametrize(
-    "gate_mult, down_mult",
-    [
-        (1.0, 1.0),
-        (0.7, 1.3),
-        (1.5, 0.5),
-    ],
-)
-@pytest.mark.parametrize(
-    "dtype",
-    [
-        torch.float32,
-        pytest.param(
-            torch.bfloat16,
-            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
-        ),
-    ],
-)
-def test_cutedsl_matches_pytorch(shape, gate_mult, down_mult, dtype):
-    """Independent ground-truth check vs pure PyTorch (catches shared CuteDSL/Triton bugs)."""
-    torch.manual_seed(0)
-    atol, rtol = _tol(dtype)
-    a = torch.randn(*shape, device=device, dtype=dtype)
-    b = torch.randn(*shape, device=device, dtype=dtype)
+    dc = frgDC.load().to(cutlass.Float32)
+    a = frgA.load().to(cutlass.Float32) * gate_mult
+    b = frgB.load().to(cutlass.Float32)
 
-    a_ref = a.clone().requires_grad_(True)
-    b_ref = b.clone().requires_grad_(True)
-    a_cut = a.clone().requires_grad_(True)
-    b_cut = b.clone().requires_grad_(True)
+    sig = 1.0 / (1.0 + cute_math.exp2(-a * _LOG2E))
+    silu = a * sig
+    db = dc * silu
+    da = dc * (silu * (1.0 - sig) + sig) * b * gate_mult
 
-    y_ref = _torch_silu_mul_ref(a_ref, b_ref, gate_mult, down_mult)
-    y_cut = LigerSiLUMulCuteDSLFunction.apply(a_cut, b_cut, gate_mult, down_mult)
+    frgDA.store(da.to(gA.element_type))
+    frgDB.store(db.to(gB.element_type))
 
-    torch.testing.assert_close(y_cut.float(), y_ref.float(), atol=atol, rtol=rtol)
-
-    grad = torch.randn_like(y_ref)
-    y_ref.backward(grad)
-    y_cut.backward(grad.clone())
-
-    torch.testing.assert_close(a_cut.grad.float(), a_ref.grad.float(), atol=atol, rtol=rtol)
-    torch.testing.assert_close(b_cut.grad.float(), b_ref.grad.float(), atol=atol, rtol=rtol)
+    if cutlass.const_expr(PREDICATED):
+        cute.copy(copy_store, frgDA, thrA, pred=frgPred)
+        cute.copy(copy_store, frgDB, thrB, pred=frgPred)
+    else:
+        cute.copy(copy_store, frgDA, thrA)
+        cute.copy(copy_store, frgDB, thrB)
 
 
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
-def test_cutedsl_forward_values(dtype):
-    """Exercise the lower-level functional ``swiglu_forward`` directly."""
-    if dtype == torch.bfloat16 and not supports_bfloat16():
-        pytest.skip("bfloat16 not supported on this GPU")
-    atol, rtol = _tol(dtype)
-    a = torch.randn(128, 512, device=device, dtype=dtype)
-    b = torch.randn(128, 512, device=device, dtype=dtype)
+# ---------------------------------------------------------------------------
+# Host (jit) launchers
+# ---------------------------------------------------------------------------
+def _make_fwd(vec: int, predicated: bool):
+    @cute.jit
+    def fwd(mA, mB, mC, gate_mult: cutlass.Float32):
+        thr_layout = cute.make_layout(_NUM_THREADS, stride=vec)
+        val_layout = cute.make_layout(vec, stride=1)
+        tiler, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
 
-    _, _, c = cutedsl_forward(a.clone(), b.clone(), 1.0)
-    ref = (torch.nn.functional.silu(a.float()) * b.float()).to(dtype)
-    torch.testing.assert_close(c.float(), ref.float(), atol=atol, rtol=rtol)
+        gA = cute.zipped_divide(mA, tiler)
+        gB = cute.zipped_divide(mB, tiler)
+        gC = cute.zipped_divide(mC, tiler)
+        idC = cute.make_identity_tensor(mC.shape)
+        cC = cute.zipped_divide(idC, tiler=tiler)
 
+        _swiglu_fwd_kernel(gA, gB, gC, cC, mC.shape, thr_layout, val_layout, gate_mult, predicated).launch(
+            grid=[cute.size(gC, mode=[1]), 1, 1],
+            block=[cute.size(tv_layout, mode=[0]), 1, 1],
+        )
 
-def test_cutedsl_default_multipliers_backward_compat():
-    """Calling without multipliers must equal calling with (1.0, 1.0)."""
-    a = torch.randn(4, 16, 32, device=device, dtype=torch.float32)
-    b = torch.randn(4, 16, 32, device=device, dtype=torch.float32)
-
-    a1 = a.clone().requires_grad_(True)
-    b1 = b.clone().requires_grad_(True)
-    a2 = a.clone().requires_grad_(True)
-    b2 = b.clone().requires_grad_(True)
-
-    y_default = LigerSiLUMulCuteDSLFunction.apply(a1, b1)
-    y_explicit = LigerSiLUMulCuteDSLFunction.apply(a2, b2, 1.0, 1.0)
-
-    torch.testing.assert_close(y_default, y_explicit)
-
-    grad = torch.randn_like(y_default)
-    y_default.backward(grad.clone())
-    y_explicit.backward(grad.clone())
-
-    torch.testing.assert_close(a1.grad, a2.grad)
-    torch.testing.assert_close(b1.grad, b2.grad)
+    return fwd
 
 
-@pytest.mark.parametrize(
-    "shape",
-    [
-        (128 * 4,),  # 1-D, tile-aligned for fp32 (vec=4, tile=512)
-        (123,),  # 1-D, unaligned -> predicated
-        (3, 5, 7),  # 3-D, unaligned
-        (2, 4, 8, 16),  # 4-D, exercises shape-flatten path
-    ],
-)
-def test_cutedsl_shape_flexibility(shape):
-    """Forward + backward work for arbitrary >=1-D shapes."""
-    dtype = torch.float32
-    atol, rtol = _tol(dtype)
-    a = torch.randn(*shape, device=device, dtype=dtype)
-    b = torch.randn(*shape, device=device, dtype=dtype)
+def _make_bwd(vec: int, predicated: bool):
+    @cute.jit
+    def bwd(mDC, mA, mB, gate_mult: cutlass.Float32):
+        thr_layout = cute.make_layout(_NUM_THREADS, stride=vec)
+        val_layout = cute.make_layout(vec, stride=1)
+        tiler, tv_layout = cute.make_layout_tv(thr_layout, val_layout)
 
-    a_ref = a.clone().requires_grad_(True)
-    b_ref = b.clone().requires_grad_(True)
-    a_cut = a.clone().requires_grad_(True)
-    b_cut = b.clone().requires_grad_(True)
+        gDC = cute.zipped_divide(mDC, tiler)
+        gA = cute.zipped_divide(mA, tiler)
+        gB = cute.zipped_divide(mB, tiler)
+        idC = cute.make_identity_tensor(mA.shape)
+        cC = cute.zipped_divide(idC, tiler=tiler)
 
-    y_ref = _torch_silu_mul_ref(a_ref, b_ref)
-    y_cut = LigerSiLUMulCuteDSLFunction.apply(a_cut, b_cut)
+        _swiglu_bwd_kernel(gDC, gA, gB, cC, mA.shape, thr_layout, val_layout, gate_mult, predicated).launch(
+            grid=[cute.size(gA, mode=[1]), 1, 1],
+            block=[cute.size(tv_layout, mode=[0]), 1, 1],
+        )
 
-    assert y_cut.shape == y_ref.shape
-    torch.testing.assert_close(y_cut, y_ref, atol=atol, rtol=rtol)
+    return bwd
 
-    grad = torch.randn_like(y_ref)
-    y_ref.backward(grad)
-    y_cut.backward(grad.clone())
 
-    torch.testing.assert_close(a_cut.grad, a_ref.grad, atol=atol, rtol=rtol)
-    torch.testing.assert_close(b_cut.grad, b_ref.grad, atol=atol, rtol=rtol)
+# (dtype, vec, predicated, "fwd"|"bwd") -> compiled callable
+_COMPILE_CACHE: dict = {}
+
+
+def _vec_for_dtype(dtype: torch.dtype) -> int:
+    """Number of elements in a 128-bit vectorized access for ``dtype``."""
+    return max(1, 128 // (torch.finfo(dtype).bits))
+
+
+def _dyn(t: torch.Tensor):
+    # ``from_dlpack`` refuses tensors that require grad; the kernels operate on
+    # raw storage inside ``autograd.Function`` so detaching is safe.
+    return from_dlpack(t.detach()).mark_layout_dynamic()
+
+
+def _get_compiled(kind: str, ref: torch.Tensor, vec: int, predicated: bool):
+    key = (ref.dtype, vec, predicated, kind)
+    fn = _COMPILE_CACHE.get(key)
+    if fn is not None:
+        return fn
+    gm = cutlass.Float32(1.0)
+    if kind == "fwd":
+        fn = cute.compile(_make_fwd(vec, predicated), _dyn(ref), _dyn(ref), _dyn(ref), gm)
+    else:
+        fn = cute.compile(_make_bwd(vec, predicated), _dyn(ref), _dyn(ref), _dyn(ref), gm)
+    _COMPILE_CACHE[key] = fn
+    return fn
+
+
+# ---------------------------------------------------------------------------
+# Public functional API
+# ---------------------------------------------------------------------------
+def swiglu_forward(a, b, gate_multiplier: float = 1.0):
+    ori_shape = a.shape
+    n_cols = ori_shape[-1]
+    a = a.view(-1, n_cols).reshape(-1)
+    b = b.view(-1, n_cols).reshape(-1)
+    c = torch.empty_like(a)
+
+    numel = a.numel()
+    vec = _vec_for_dtype(a.dtype)
+    tile = _NUM_THREADS * vec
+    predicated = (numel % tile) != 0
+
+    fn = _get_compiled("fwd", a, vec, predicated)
+    fn(_dyn(a), _dyn(b), _dyn(c), cutlass.Float32(float(gate_multiplier)))
+
+    return a.view(-1, n_cols), b.view(-1, n_cols), c.view(*ori_shape)
+
+
+def swiglu_backward(a, b, dc, gate_multiplier: float = 1.0):
+    ori_shape = dc.shape
+    n_cols = ori_shape[-1]
+    dc = dc.view(-1, n_cols).reshape(-1)
+    a = a.view(-1, n_cols).reshape(-1)
+    b = b.view(-1, n_cols).reshape(-1)
+
+    numel = dc.numel()
+    vec = _vec_for_dtype(dc.dtype)
+    tile = _NUM_THREADS * vec
+    predicated = (numel % tile) != 0
+
+    fn = _get_compiled("bwd", dc, vec, predicated)
+    fn(_dyn(dc), _dyn(a), _dyn(b), cutlass.Float32(float(gate_multiplier)))
+
+    return a.view(*ori_shape), b.view(*ori_shape)
+
+
+class LigerSiLUMulCuteDSLFunction(torch.autograd.Function):
+    """CuteDSL equivalent of ``LigerSiLUMulFunction``.
+
+    Supports the same ``gate_multiplier`` / ``down_multiplier`` semantics. The
+    DTensor handling intentionally mirrors the Triton implementation.
+    """
+
+    @staticmethod
+    @ensure_contiguous
+    def forward(ctx, a, b, gate_multiplier: float = 1.0, down_multiplier: float = 1.0):
+        gate_multiplier = float(gate_multiplier)
+        down_multiplier = float(down_multiplier)
+        ctx.gate_multiplier = gate_multiplier
+        ctx.down_multiplier = down_multiplier
+
+        if isinstance(a, torch.distributed.tensor.DTensor) or isinstance(b, torch.distributed.tensor.DTensor):
+            device_mesh, placements = (
+                (a.device_mesh, a.placements)
+                if isinstance(a, torch.distributed.tensor.DTensor)
+                else (b.device_mesh, b.placements)
+            )
+            if not isinstance(a, torch.distributed.tensor.DTensor):
+                a = torch.distributed.tensor.distribute_tensor(a, device_mesh=device_mesh, placements=placements)
+            if not isinstance(b, torch.distributed.tensor.DTensor):
+                b = torch.distributed.tensor.distribute_tensor(b, device_mesh=device_mesh, placements=placements)
+            a_local, b_local, c_local = swiglu_forward(a.to_local(), b.to_local(), gate_multiplier)
+            if down_multiplier != 1.0:
+                c_local = c_local * down_multiplier
+            ctx.save_for_backward(a_local, b_local)
+            ctx.dtensor_metadata = (device_mesh, placements)
+            return torch.distributed.tensor.DTensor.from_local(c_local, device_mesh, placements)
+        else:
+            a, b, c = swiglu_forward(a, b, gate_multiplier)
+            if down_multiplier != 1.0:
+                c = c * down_multiplier
+            ctx.save_for_backward(a, b)
+            ctx.dtensor_metadata = None
+            return c
+
+    @staticmethod
+    @ensure_contiguous
+    def backward(ctx, dc):
+        a, b = ctx.saved_tensors
+        gate_multiplier = ctx.gate_multiplier
+        down_multiplier = ctx.down_multiplier
+
+        if ctx.dtensor_metadata is not None:
+            device_mesh, placements = ctx.dtensor_metadata
+            dc_local = (
+                dc.to_local()
+                if isinstance(dc, torch.distributed.tensor.DTensor)
+                else torch.distributed.tensor.distribute_tensor(dc, device_mesh=device_mesh, placements=placements)
+            )
+            if down_multiplier != 1.0:
+                dc_local = dc_local * down_multiplier
+            a_local, b_local = swiglu_backward(a, b, dc_local, gate_multiplier)
+            return (
+                torch.distributed.tensor.DTensor.from_local(a_local, device_mesh, placements),
+                torch.distributed.tensor.DTensor.from_local(b_local, device_mesh, placements),
+                None,
+                None,
+            )
+
+        if down_multiplier != 1.0:
+            dc = dc * down_multiplier
+        a, b = swiglu_backward(a, b, dc, gate_multiplier)
+        return a, b, None, None
