@@ -342,27 +342,40 @@ def test_patch_fused_wrapper_passes_tp_group_through(fake_megatron_ce):
 
 
 # ---------------------------------------------------------------------------
-# 2.2 CE TP-1 guard.
+# 2.2 CE patch is TP-size agnostic (TP>1 is supported via the new vocab-parallel kernel).
 # ---------------------------------------------------------------------------
 
 
-def test_patch_raises_on_tp_greater_than_one():
-    _install_fake_megatron_ce(tp_size=2)
+def test_patch_succeeds_when_tp_size_greater_than_one():
+    """TP>1 used to raise; with the vocab-parallel kernel it must succeed.
+
+    The patch helper no longer queries ``parallel_state.get_tensor_model_parallel_world_size``
+    — the new kernel handles any TP size — so installing a stub that reports TP=2 must
+    not block patching.
+    """
+    fused_ce, unfused_ce = _install_fake_megatron_ce(tp_size=2)
     try:
         from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
-        with pytest.raises(RuntimeError, match="tensor_model_parallel_size=1"):
-            apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
+        apply_liger_kernel_to_megatron(rms_norm=False, cross_entropy=True)
+        assert fused_ce.fused_vocab_parallel_cross_entropy.__name__ == "liger_fused_vocab_parallel_cross_entropy"
+        assert unfused_ce.vocab_parallel_cross_entropy.__name__ == "liger_vocab_parallel_cross_entropy"
     finally:
         _uninstall_fake_megatron()
 
 
-def test_patch_defers_tp_check_when_parallel_state_not_initialized():
-    """If get_tensor_model_parallel_world_size() raises, patch should still succeed."""
+def test_patch_does_not_query_parallel_state():
+    """The patch should succeed even if parallel_state would raise on query.
+
+    Previously the patch consulted ``get_tensor_model_parallel_world_size`` and had
+    fallback logic for uninitialized parallel state. The vocab-parallel kernel
+    removes the need for that query entirely — so even an aggressively broken
+    ``parallel_state`` stub must not prevent patching.
+    """
     fused_ce, unfused_ce = _install_fake_megatron_ce(tp_size=1)
 
     def raising_tp_size():
-        raise AssertionError("parallel_state not initialized")
+        raise AssertionError("parallel_state should not be queried")
 
     sys.modules["megatron.core.parallel_state"].get_tensor_model_parallel_world_size = raising_tp_size
 
@@ -881,10 +894,11 @@ def test_patched_unfused_symbol_computes_correct_loss(fake_megatron_ce):
 
 
 @pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
-def test_patched_unfused_symbol_runtime_label_smoothing_matches_pytorch(fake_megatron_ce, label_smoothing):
+def test_patched_unfused_symbol_runtime_label_smoothing_matches_megatron(fake_megatron_ce, label_smoothing):
     """The unfused wrapper's main feature beyond the fused path is honoring a runtime
-    label_smoothing arg. Verify the resulting loss actually matches
-    ``F.cross_entropy(..., label_smoothing=...)``, not just that a fresh CE instance is built."""
+    ``label_smoothing`` arg. The patched symbol routes through ``LigerMegatronCrossEntropy``
+    which uses Megatron's NeMo formula by default — equivalent to ``F.cross_entropy`` with
+    ``alpha`` rescaled to ``alpha*V/(V-1)``. Verify the patched call matches that reference."""
     _, unfused_ce = fake_megatron_ce
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
@@ -895,7 +909,9 @@ def test_patched_unfused_symbol_runtime_label_smoothing_matches_pytorch(fake_meg
     logits = torch.randn(s, b, v, device=_device, dtype=torch.float32)
     target = torch.randint(0, v, (s, b), device=_device, dtype=torch.long)
 
-    ref = _ref_loss_sbv(logits.clone(), target, label_smoothing=label_smoothing)
+    # Megatron NeMo formula at alpha is equivalent to PyTorch formula at alpha*V/(V-1).
+    alpha_ref = label_smoothing * v / (v - 1) if label_smoothing > 0 else 0.0
+    ref = _ref_loss_sbv(logits.clone(), target, label_smoothing=alpha_ref)
     got = unfused_ce.vocab_parallel_cross_entropy(
         logits.clone(),
         target,

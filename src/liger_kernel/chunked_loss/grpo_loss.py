@@ -163,17 +163,16 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             # Uses sigmoid-based soft gating instead of hard clipping
             # Reference: https://huggingface.co/papers/2511.20347
             # TRL implementation: https://github.com/huggingface/trl/blob/1bd2a52ec2d8344050af736d60cdc735181ae4b8/trl/trainer/grpo_trainer.py#L2037-L2046
-            per_token_loss = torch.empty_like(coef_1)
-            # Expand advantages to match coef_1 shape for masking
             advantages_expanded = advantages.unsqueeze(1).expand_as(coef_1)
             positive_advantages_mask = advantages_expanded > 0
 
-            # Apply different temperatures based on advantage sign
-            per_token_loss[positive_advantages_mask] = sapo_loss_fn(
-                coef_1[positive_advantages_mask], sapo_temperature_pos
-            )
-            per_token_loss[~positive_advantages_mask] = sapo_loss_fn(
-                coef_1[~positive_advantages_mask], sapo_temperature_neg
+            # torch.where over both branches rather than boolean-mask assignment:
+            # mask indexing lowers to aten.nonzero, which graph-breaks under
+            # torch.compile. sapo_loss_fn is elementwise so this is identical.
+            per_token_loss = torch.where(
+                positive_advantages_mask,
+                sapo_loss_fn(coef_1, sapo_temperature_pos),
+                sapo_loss_fn(coef_1, sapo_temperature_neg),
             )
             per_token_loss = -per_token_loss * advantages_expanded
         elif loss_type == "vespo":
