@@ -122,3 +122,16 @@ endif()
 if(LIGER_CUTE_BUILD_BINDINGS)
     add_subdirectory(csrc/bindings)
 endif()
+
+# C++ unit tests are opt-in (require gtest). Torch-free; need CUTLASS, which is
+# only found when building the core from source.
+option(LIGER_CUTE_BUILD_TESTS "Build the C++ (gtest) unit tests" OFF)
+if(LIGER_CUTE_BUILD_TESTS)
+    if(LIGER_CUTE_CORE_IMPORTED_DIR)
+        message(FATAL_ERROR
+            "LIGER_CUTE_BUILD_TESTS requires building the core from source "
+            "(CUTLASS headers); unset LIGER_CUTE_CORE_IMPORTED_DIR.")
+    endif()
+    enable_testing()
+    add_subdirectory(tests/cpp)
+endif()
