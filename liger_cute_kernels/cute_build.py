@@ -57,17 +57,32 @@ def _find_nvshmem_so() -> Path | None:
 
 
 def _nvshmem_home_candidates() -> list[Path]:
-    candidates = [Path(os.environ.get("NVSHMEM_HOME", "/usr/local/nvshmem"))]
-    spec = importlib.util.find_spec("nvidia.nvshmem")
+    candidates = [
+        Path(os.environ["NVSHMEM_HOME"]) if os.environ.get("NVSHMEM_HOME") else None,
+        Path("/usr/local/nvshmem"),
+    ]
+    try:
+        spec = importlib.util.find_spec("nvidia.nvshmem")
+    except ModuleNotFoundError:
+        spec = None
     if spec is not None:
         if spec.origin:
             candidates.append(Path(spec.origin).resolve().parent)
         for location in spec.submodule_search_locations or []:
             candidates.append(Path(location).resolve())
-    return candidates
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        resolved = candidate.expanduser().resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            out.append(resolved)
+    return out
 
 
-def _prepare_pip_nvshmem_home(build_temp: Path) -> Path | None:
+def _prepare_nvshmem_home(build_temp: Path) -> Path | None:
     for home in _nvshmem_home_candidates():
         if (home / "include" / "nvshmem.h").exists() and (
             (home / "lib" / NVSHMEM_SO).exists() or (home / "lib" / f"{NVSHMEM_SO}.3").exists()
@@ -165,7 +180,7 @@ class LckBuildExt(build_ext):
         use_prebuilt = bool(core_dir) and (Path(core_dir) / CORE_SO).exists()
 
         cmake_args = [*_cmake_base_args(), "-DLIGER_CUTE_BUILD_BINDINGS=OFF"]
-        nvshmem_home = _prepare_pip_nvshmem_home(build_temp)
+        nvshmem_home = _prepare_nvshmem_home(build_temp)
         if nvshmem_home is not None:
             cmake_args.append(f"-DNVSHMEM_HOME={nvshmem_home}")
         if use_prebuilt:

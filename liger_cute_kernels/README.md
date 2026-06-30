@@ -77,10 +77,14 @@ src/liger_kernel/ops/cute/
 ## Prerequisites
 
 - **CUDA toolkit** with `nvcc` and SM 9.0a (Hopper / `sm_90a`) support.
-- **NVSHMEM** install (host `.so`, device `.a`, headers) — point `NVSHMEM_HOME`
-  at it (default `/usr/local/nvshmem`). The lck build also auto-detects the
-  `nvidia-nvshmem-cu13` pip package layout and creates unversioned compatibility
-  symlinks for CMake when needed.
+- **NVSHMEM** install (host `.so`, device `.a`, headers). Two layouts are
+  supported:
+  - Native/system install: point `NVSHMEM_HOME` at it, or use the default
+    `/usr/local/nvshmem`.
+  - PyPI install: install `nvidia-nvshmem-cu13` (or the optional
+    `liger_cute_kernels[nvshmem-pypi]` extra). The lck build auto-detects that
+    package layout and creates unversioned compatibility symlinks for CMake when
+    needed.
 - **CUTLASS** headers (4.x) — point `CUTLASS_HOME` at the repo root (so that
   `$CUTLASS_HOME/include/cutlass/cutlass.h` and
   `$CUTLASS_HOME/tools/util/include` exist). *Not needed when linking a prebuilt
@@ -179,6 +183,20 @@ environment (no build isolation), from this module directory:
 cd liger_cute_kernels
 pip wheel . --no-deps --no-build-isolation -w dist
 # -> dist/liger_cute_kernels-0.1.0+cu130.torch2.9.1-cp312-cp312-linux_x86_64.whl
+```
+
+For a native NVSHMEM install:
+
+```bash
+NVSHMEM_HOME=/usr/local/nvshmem \
+    pip wheel . --no-deps --no-build-isolation -w dist
+```
+
+For the PyPI NVSHMEM layout:
+
+```bash
+pip install nvidia-nvshmem-cu13
+pip wheel . --no-deps --no-build-isolation -w dist
 ```
 
 The wheel is tagged with the CUDA + torch version as a PEP 440 local version
