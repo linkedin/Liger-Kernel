@@ -55,6 +55,7 @@ def liger_cross_entropy(
     return_z_loss: bool = False,
     return_token_accuracy: bool = False,
     return_predicted_tokens: bool = False,
+    inplace: bool = True,
 ):
     loss, z_loss, token_accuracy, predicted_tokens = LigerCrossEntropyFunction.apply(
         input,
@@ -68,6 +69,7 @@ def liger_cross_entropy(
         return_z_loss,
         return_token_accuracy,
         return_predicted_tokens,
+        inplace,
     )
 
     if not return_z_loss and not return_token_accuracy and not return_predicted_tokens:
