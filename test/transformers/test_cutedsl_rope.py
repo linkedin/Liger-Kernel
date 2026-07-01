@@ -58,6 +58,7 @@ if cutedsl_available:
             1e-5,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
+        (torch.float16, 1e-2, 1e-5),
     ],
 )
 @pytest.mark.parametrize("expand_position_ids", [True, False])
@@ -102,6 +103,71 @@ def test_cutedsl_matches_triton_and_hf(
     dk = torch.randn_like(hf_k)
     q_hf_grad, k_hf_grad = torch.autograd.grad((hf_q, hf_k), (q_hf, k_hf), (dq, dk), allow_unused=True)
     q_cu_grad, k_cu_grad = torch.autograd.grad((cu_q, cu_k), (q_cu, k_cu), (dq.clone(), dk.clone()), allow_unused=True)
+
+    assert torch.allclose(q_cu_grad, q_hf_grad, atol=atol, rtol=rtol)
+    assert torch.allclose(k_cu_grad, k_hf_grad, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "bsz, seq_len, num_q_heads, num_kv_heads, head_dim",
+    [
+        (1, 128, 32, 32, 64),
+        (2, 128, 32, 8, 64),
+        (1, 2048, 32, 8, 128),
+        # token-fallback head_dim (no TMA): fast path must still be correct
+        (3, 423, 73, 155, 92),
+    ],
+)
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-5, 1e-5),
+        pytest.param(
+            torch.bfloat16,
+            1e-1,
+            1e-5,
+            marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+        ),
+        (torch.float16, 1e-2, 1e-5),
+    ],
+)
+def test_cutedsl_backward_contiguous_grad(bsz, seq_len, num_q_heads, num_kv_heads, head_dim, dtype, atol, rtol):
+    """Exercise the no-copy backward fast path.
+
+    When the incoming gradient is already ``(bsz, n_head, seq, hd)``-contiguous
+    (e.g. eager attention, or any model that calls ``.contiguous()`` after RoPE),
+    ``rope_backward`` rotates it in place with the TMA kernel in ``SEQ_INNER`` mode
+    instead of materialising a token-major copy. The autograd-driven test above
+    only feeds transpose-view grads (the fallback path), so this covers the fast
+    path directly and checks numerics against HuggingFace.
+    """
+    from liger_kernel.ops.cutedsl.ops.rope import rope_backward
+
+    rotary_emb = transformers_version_dispatch(
+        "4.48.0",
+        LlamaRotaryEmbedding,
+        LlamaRotaryEmbedding,
+        before_kwargs={"dim": head_dim, "device": device},
+        after_kwargs={"config": LlamaConfig(num_kv_heads=num_kv_heads, head_dim=head_dim), "device": device},
+    )
+
+    _q = torch.randn((bsz, seq_len, num_q_heads, head_dim), device=device).transpose(1, 2).to(dtype)
+    _k = torch.randn((bsz, seq_len, num_kv_heads, head_dim), device=device).transpose(1, 2).to(dtype)
+    q_hf = _q.clone().requires_grad_(True)
+    k_hf = _k.clone().requires_grad_(True)
+
+    pos_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
+    cos, sin = rotary_emb(k_hf, pos_ids)
+
+    hf_q, hf_k = apply_rotary_pos_emb(q_hf, k_hf, cos, sin)
+
+    # A genuinely (bsz, n_head, seq, hd)-CONTIGUOUS gradient triggers the fast path.
+    dq = torch.randn(bsz, num_q_heads, seq_len, head_dim, device=device, dtype=dtype)
+    dk = torch.randn(bsz, num_kv_heads, seq_len, head_dim, device=device, dtype=dtype)
+    assert dq.is_contiguous() and dk.is_contiguous()
+
+    q_hf_grad, k_hf_grad = torch.autograd.grad((hf_q, hf_k), (q_hf, k_hf), (dq, dk), allow_unused=True)
+    q_cu_grad, k_cu_grad = rope_backward(dq.clone(), dk.clone(), cos, sin)
 
     assert torch.allclose(q_cu_grad, q_hf_grad, atol=atol, rtol=rtol)
     assert torch.allclose(k_cu_grad, k_hf_grad, atol=atol, rtol=rtol)

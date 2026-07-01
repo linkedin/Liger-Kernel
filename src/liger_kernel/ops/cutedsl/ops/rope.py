@@ -806,34 +806,37 @@ def rope_forward(q, k, cos, sin):
 
 
 def rope_backward(dq, dk, cos, sin):
-    # dq,dk arrive as (bsz, n_head, seq, hd): they are the grads of the forward
-    # outputs, which are themselves (bsz, seq, n_head, hd)-stored transpose views.
-    # Transpose back to (bsz, seq, n_head, hd) to expose that NATIVE contiguous
-    # storage for free (the following .contiguous() is then a no-op for the standard
-    # layout) and -- crucially -- return the grad as a transpose view of that same
-    # storage. Returning a (bsz, n_head, seq, hd)-contiguous grad instead mismatches
-    # the leaf's (bsz, seq, n_head, hd)-contiguous .grad buffer, forcing
-    # AccumulateGrad's add_ to run uncoalesced (~2.9x slower). Mirrors the Triton
-    # kernel exactly.
-    dq = dq.transpose(1, 2)
-    dk = dk.transpose(1, 2)
-
-    batch_size, seq_len, n_q_head, head_dim = dq.shape
-    n_kv_head = dk.shape[2]
+    # dq,dk arrive as (bsz, n_head, seq, hd) -- grads of the forward outputs.
+    #
+    # Fast path: an already-contiguous grad (eager attn, or a .contiguous() after
+    # RoPE) is head-major/seq-innermost, so rotate it in place via SEQ_INNER
+    # (kernel derives seq as row % seq_len) -- no copy, ~2-5x faster backward.
+    #
+    # Standard path (SDPA): grad is a transpose view of (bsz, seq, n_head, hd)
+    # storage. Return it as a transpose view of that same storage so AccumulateGrad
+    # stays coalesced (a head-major grad would make add_ ~2.9x slower). Like Triton.
+    batch_size, n_q_head, seq_len, head_dim = dq.shape
+    n_kv_head = dk.shape[1]
     hd_half = head_dim // 2
 
-    dq = dq.contiguous()
-    dk = dk.contiguous()
     cos = cos.contiguous()
     sin = sin.contiguous()
     cos_batch_size = cos.shape[0]
     cos_bcast = cos_batch_size == 1
-
     cos3 = cos.view(cos_batch_size, seq_len, head_dim)
     sin3 = sin.view(cos_batch_size, seq_len, head_dim)
 
-    # storage is (bsz, seq, n_head, hd): token=(b, s, :, :) -> seq NOT innermost,
-    # so cos/sin dedups across a token's heads exactly like the forward pass.
+    if dq.is_contiguous() and dk.is_contiguous() and _tma_supported(dq.dtype, head_dim):
+        # native (bsz, n_head, seq, hd) storage: seq IS innermost -> SEQ_INNER=True.
+        tvec = max(1, 128 // torch.finfo(dq.dtype).bits)
+        _apply_qk_tma(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, tvec, True, cos_bcast, seq_len, True)
+        return dq, dk
+
+    # transpose(1,2) exposes the (bsz, seq, n_head, hd) storage; .contiguous() is a
+    # no-op for the standard transpose-view grad (zero copy) and a safety net so the
+    # kernel's flat .view(-1, head_dim) stays valid for any other incoming layout.
+    dq = dq.transpose(1, 2).contiguous()
+    dk = dk.transpose(1, 2).contiguous()
     if _tma_supported(dq.dtype, head_dim):
         tvec = max(1, 128 // torch.finfo(dq.dtype).bits)
         _apply_qk_tma(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, tvec, False, cos_bcast, seq_len, True)
