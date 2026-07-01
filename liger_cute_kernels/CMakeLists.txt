@@ -40,16 +40,27 @@ the torch-free core, which is all step 3.1 of the wheel build needs." ON)
 set(LIGER_CUTE_CORE_IMPORTED_DIR "" CACHE PATH
     "Dir holding a prebuilt libliger_cute_kernels.so to link instead of building the core")
 
+# Tests-only build: compile just the torch-free C++ unit tests (which include the
+# moe device-function headers directly) against CUTLASS + CUDA + gtest. Skips
+# NVSHMEM, TVM FFI, the core library, and the bindings entirely — none are needed
+# to compile/run the header-only mlp1 kernels. This is how the mlp1 SM100 rewrite
+# is built/tested in isolation (e.g. -DLIGER_CUTE_CUDA_ARCH=100a on Blackwell).
+option(LIGER_CUTE_TESTS_ONLY
+    "Build ONLY the C++ unit tests (CUTLASS+CUDA+gtest); skip NVSHMEM/TVM-FFI/core/bindings" OFF)
+
 # ---------- Common CUDA / device dependencies (needed by core AND bindings) --
 find_package(CUDAToolkit REQUIRED)
 
-# The 'a' suffix enables architecture-accelerated features (WGMMA, TMA,
-# multicast). Strip any gencode flags a parent/toolchain may have injected,
-# then set sm_90a exclusively.
+# The 'a' suffix enables architecture-accelerated features (WGMMA/TMA/multicast
+# on sm_90a; tcgen05/UMMA on sm_100a). Override with -DLIGER_CUTE_CUDA_ARCH=100a
+# for a Blackwell build. Strip any gencode flags a parent/toolchain may have
+# injected, then set the requested arch exclusively.
+set(LIGER_CUTE_CUDA_ARCH "90a" CACHE STRING
+    "CUDA architecture for -gencode (e.g. 90a for Hopper, 100a for Blackwell)")
 set(CMAKE_CUDA_ARCHITECTURES OFF)
 string(REGEX REPLACE "-gencode[= ]+arch=compute_[0-9a-z]+,code=sm_[0-9a-z]+" "" CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
 string(STRIP "${CMAKE_CUDA_FLAGS}" CMAKE_CUDA_FLAGS)
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_90a,code=sm_90a --use_fast_math --extra-device-vectorization --fmad=true --prec-div=false --prec-sqrt=false --ptxas-options=-O3,--allow-expensive-optimizations=true")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_${LIGER_CUTE_CUDA_ARCH},code=sm_${LIGER_CUTE_CUDA_ARCH} --use_fast_math --extra-device-vectorization --fmad=true --prec-div=false --prec-sqrt=false --ptxas-options=-O3,--allow-expensive-optimizations=true")
 
 # Disable device-side assertions to avoid extern __assert_fail calls that cause
 # ptxas to serialize WGMMA instructions.
@@ -61,18 +72,22 @@ add_compile_definitions(NDEBUG)
 add_compile_definitions(NVSHMEM_ENABLE_ALL_DEVICE_INLINING=ON)
 
 # ── NVSHMEM ──────────────────────────────────────────────────────────────────
-if(NOT DEFINED NVSHMEM_HOME)
-    if(DEFINED ENV{NVSHMEM_HOME})
-        set(NVSHMEM_HOME "$ENV{NVSHMEM_HOME}")
-    else()
-        set(NVSHMEM_HOME "/usr/local/nvshmem")
+# Skipped for a tests-only build: the gtest unit tests are NVSHMEM-free.
+if(NOT LIGER_CUTE_TESTS_ONLY)
+    if(NOT DEFINED NVSHMEM_HOME)
+        if(DEFINED ENV{NVSHMEM_HOME})
+            set(NVSHMEM_HOME "$ENV{NVSHMEM_HOME}")
+        else()
+            set(NVSHMEM_HOME "/usr/local/nvshmem")
+        endif()
     endif()
+    list(APPEND CMAKE_PREFIX_PATH "${NVSHMEM_HOME}")
+    find_package(NVSHMEM REQUIRED)
 endif()
-list(APPEND CMAKE_PREFIX_PATH "${NVSHMEM_HOME}")
-find_package(NVSHMEM REQUIRED)
 
-# ── CUTLASS (header-only; compiled INTO the core, never on its ABI) ──────────
-# Only needed to COMPILE the core from source; a prebuilt/imported core does not.
+# ── CUTLASS (header-only) ────────────────────────────────────────────────────
+# Needed to COMPILE the core from source AND to build the tests (which include
+# the moe device headers directly). A prebuilt/imported core does not need it.
 if(NOT LIGER_CUTE_CORE_IMPORTED_DIR)
     if(DEFINED ENV{CUTLASS_HOME})
         set(CUTLASS_HOME "$ENV{CUTLASS_HOME}")
@@ -81,22 +96,26 @@ if(NOT LIGER_CUTE_CORE_IMPORTED_DIR)
     find_package(CUTLASS REQUIRED)
 endif()
 
-# TVM FFI headers/libs used by the in-core TVM FFI exports.
-find_program(TVM_FFI_CONFIG tvm-ffi-config REQUIRED)
-execute_process(
-    COMMAND "${TVM_FFI_CONFIG}" --cflags
-    OUTPUT_VARIABLE TVM_FFI_CFLAGS
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-execute_process(
-    COMMAND "${TVM_FFI_CONFIG}" --ldflags
-    OUTPUT_VARIABLE TVM_FFI_LDFLAGS
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-separate_arguments(TVM_FFI_CFLAGS UNIX_COMMAND "${TVM_FFI_CFLAGS}")
-separate_arguments(TVM_FFI_LDFLAGS UNIX_COMMAND "${TVM_FFI_LDFLAGS}")
+# TVM FFI headers/libs used by the in-core TVM FFI exports. Tests don't use it.
+if(NOT LIGER_CUTE_TESTS_ONLY)
+    find_program(TVM_FFI_CONFIG tvm-ffi-config REQUIRED)
+    execute_process(
+        COMMAND "${TVM_FFI_CONFIG}" --cflags
+        OUTPUT_VARIABLE TVM_FFI_CFLAGS
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    execute_process(
+        COMMAND "${TVM_FFI_CONFIG}" --ldflags
+        OUTPUT_VARIABLE TVM_FFI_LDFLAGS
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    separate_arguments(TVM_FFI_CFLAGS UNIX_COMMAND "${TVM_FFI_CFLAGS}")
+    separate_arguments(TVM_FFI_LDFLAGS UNIX_COMMAND "${TVM_FFI_LDFLAGS}")
+endif()
 
 # ---------- Targets ----------
+# The core library + bindings are skipped for a tests-only build.
+if(NOT LIGER_CUTE_TESTS_ONLY)
 if(LIGER_CUTE_CORE_IMPORTED_DIR)
     # Reuse a prebuilt core: define liger_cute_kernels as an IMPORTED target so
     # _C links the cached .so directly and the core is never recompiled.
@@ -121,4 +140,20 @@ endif()
 # Bindings are opt-in and pull in torch + pybind11.
 if(LIGER_CUTE_BUILD_BINDINGS)
     add_subdirectory(csrc/bindings)
+endif()
+endif()  # NOT LIGER_CUTE_TESTS_ONLY
+
+# C++ unit tests are opt-in (require gtest). Torch-free; they include the moe
+# device headers directly and need only CUTLASS (found above), CUDA, and gtest —
+# not the core library or NVSHMEM. Combine with LIGER_CUTE_TESTS_ONLY for a
+# standalone test build (e.g. the mlp1 SM100 rewrite on -DLIGER_CUTE_CUDA_ARCH=100a).
+option(LIGER_CUTE_BUILD_TESTS "Build the C++ (gtest) unit tests" OFF)
+if(LIGER_CUTE_BUILD_TESTS)
+    if(LIGER_CUTE_CORE_IMPORTED_DIR)
+        message(FATAL_ERROR
+            "LIGER_CUTE_BUILD_TESTS requires CUTLASS headers; unset "
+            "LIGER_CUTE_CORE_IMPORTED_DIR.")
+    endif()
+    enable_testing()
+    add_subdirectory(tests/cpp)
 endif()
