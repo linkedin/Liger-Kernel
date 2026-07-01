@@ -511,16 +511,16 @@ static int sm_count() {
 	return p.multiProcessorCount;
 }
 
-// Pick an N-split so num_m_tiles * num_splits comfortably covers the SMs
-// (target ~2 CTAs/SM), capped at num_n_tiles (max available N-parallelism).
-static int pick_num_splits(int num_m_tiles, int num_n_tiles) {
-	int sms = sm_count();
-	if (sms <= 0 || num_m_tiles <= 0) return 1;
-	int target_ctas = 2 * sms;
-	int splits = (target_ctas + num_m_tiles - 1) / num_m_tiles;  // ceil
-	if (splits < 1) splits = 1;
-	if (splits > num_n_tiles) splits = num_n_tiles;
-	return splits;
+// Candidate N-splits to sweep: the divisors of num_n_tiles, so each CTA gets an
+// equal number of n-tiles (balanced). The benchmark times every candidate and
+// reports the peak — this removes any guesswork about the best launch shape and
+// shows the effect of occupancy (small splits under-fill the SMs).
+static std::vector<int> candidate_splits(int num_n_tiles) {
+	std::vector<int> ds;
+	for (int d = 1; d <= num_n_tiles; ++d)
+		if (num_n_tiles % d == 0) ds.push_back(d);
+	if (ds.empty()) ds.push_back(1);
+	return ds;
 }
 
 static double median_ms(std::vector<float>& v) {
@@ -593,22 +593,26 @@ static void run_fused_bench(const Mlp1Shape& s, const BenchCfg& cfg) {
 	CUDA_OK(cudaFuncSetAttribute(kernel,
 		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
-	int num_splits = pick_num_splits(in.num_m_tiles, in.num_n_tiles);
-	dim3 grid(in.num_m_tiles, num_splits);
+	// Sweep candidate N-splits (only grid.y changes); report the peak.
+	dim3 grid(in.num_m_tiles, 1);
 	auto launch = [&]() {
 		kernel<<<grid, Traits::NumThreads, smem_size>>>(
 			tma_x, tma_b, tma_c, tma_z, in.d_expert_ids,
 			s.num_tokens, s.hidden_dim, in.total_n_rows,
 			in.num_m_tiles, in.num_n_tiles);
 	};
-	launch(); CUDA_OK(cudaGetLastError()); CUDA_OK(cudaDeviceSynchronize());
-
-	double ms = time_kernel_ms(cfg, launch);
-	double tf = tflops_of(s, ms);
-	printf("[fused-bench C=%-3d T=%-5d H=%d I=%d E=%d splits=%-2d] "
-	       "%8.4f ms  %8.2f TFLOPS\n",
+	double best_tf = 0.0, best_ms = 0.0; int best_split = 1;
+	for (int split : candidate_splits(in.num_n_tiles)) {
+		grid.y = split;
+		launch(); CUDA_OK(cudaGetLastError()); CUDA_OK(cudaDeviceSynchronize());
+		double ms = time_kernel_ms(cfg, launch);
+		double tf = tflops_of(s, ms);
+		if (tf > best_tf) { best_tf = tf; best_ms = ms; best_split = split; }
+	}
+	printf("[fused-bench C=%-3d T=%-5d H=%d I=%d E=%d] "
+	       "peak %7.2f TFLOPS @ %7.4f ms (splits=%-2d, %4d CTAs / %d SMs)\n",
 		Compute, s.num_tokens, s.hidden_dim, s.intermediate_dim, s.num_experts,
-		num_splits, ms, tf);
+		best_tf, best_ms, best_split, in.num_m_tiles * best_split, sm_count());
 
 	cudaFree(dZ);
 }
@@ -647,22 +651,26 @@ static void run_act_bench(const Mlp1Shape& s, const BenchCfg& cfg) {
 	CUDA_OK(cudaFuncSetAttribute(kernel,
 		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
-	int num_splits = pick_num_splits(in.num_m_tiles, in.num_n_tiles);
-	dim3 grid(in.num_m_tiles, num_splits);
+	// Sweep candidate N-splits (only grid.y changes); report the peak.
+	dim3 grid(in.num_m_tiles, 1);
 	auto launch = [&]() {
 		kernel<<<grid, Traits::NumThreads, smem_size>>>(
 			tma_x, tma_b, tma_c, tma_du, tma_dv, tma_z, in.d_expert_ids,
 			s.num_tokens, s.hidden_dim, in.total_n_rows,
 			in.num_m_tiles, in.num_n_tiles);
 	};
-	launch(); CUDA_OK(cudaGetLastError()); CUDA_OK(cudaDeviceSynchronize());
-
-	double ms = time_kernel_ms(cfg, launch);
-	double tf = tflops_of(s, ms);
-	printf("[act-bench   C=%-3d T=%-5d H=%d I=%d E=%d splits=%-2d] "
-	       "%8.4f ms  %8.2f TFLOPS\n",
+	double best_tf = 0.0, best_ms = 0.0; int best_split = 1;
+	for (int split : candidate_splits(in.num_n_tiles)) {
+		grid.y = split;
+		launch(); CUDA_OK(cudaGetLastError()); CUDA_OK(cudaDeviceSynchronize());
+		double ms = time_kernel_ms(cfg, launch);
+		double tf = tflops_of(s, ms);
+		if (tf > best_tf) { best_tf = tf; best_ms = ms; best_split = split; }
+	}
+	printf("[act-bench   C=%-3d T=%-5d H=%d I=%d E=%d] "
+	       "peak %7.2f TFLOPS @ %7.4f ms (splits=%-2d, %4d CTAs / %d SMs)\n",
 		Compute, s.num_tokens, s.hidden_dim, s.intermediate_dim, s.num_experts,
-		num_splits, ms, tf);
+		best_tf, best_ms, best_split, in.num_m_tiles * best_split, sm_count());
 
 	cudaFree(dU); cudaFree(dV); cudaFree(dZ);
 }

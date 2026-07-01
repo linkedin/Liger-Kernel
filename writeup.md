@@ -224,24 +224,30 @@ TFLOPS = 4·T·H·I / kernel_seconds
 Kernel time is the **median of 50 CUDA‑event‑timed launches** (10 warm‑up), at
 large, GPU‑saturating shapes (`H=I=4096`, `E=8`, `T` a multiple of `TileM` so the
 FLOP count is exact — no token padding). The grid is **N‑split** (`grid.y =
-num_splits`, derived from the SM count) so small M‑tile counts still fill the
-device: even `T=16384` is only 128 M‑tiles vs the B200's 148 SMs, so the extra
-N‑parallelism is needed to saturate. The benchmark is **opt‑in** via `MLP1_BENCH=1`
-— the default correctness run skips it and stays fast, and the numeric tests are
-untouched.
+num_splits`) so small M‑tile counts still fill the device: even `T=16384` is only
+128 M‑tiles vs the B200's 148 SMs, so extra N‑parallelism is needed to saturate.
+For each shape the benchmark **sweeps every divisor of `num_n_tiles`** and reports
+the **peak** — removing any guesswork about the best launch shape. The benchmark is
+**opt‑in** via `MLP1_BENCH=1` — the default correctness run skips it and stays fast,
+and the numeric tests are untouched.
 
 ### B200 (sm_100a / UMMA) — NVIDIA B200, 148 SMs
 
-| Shape (T×H×I, E=8) | Fused (ms / TFLOPS) | Fused+Act (ms / TFLOPS) |
-|--------------------|---------------------|-------------------------|
-| 2048×4096×4096     | 0.146 / **943**     | 0.180 / **762**         |
-| 4096×4096×4096     | 0.279 / **986**     | 0.356 / **772**         |
-| 8192×4096×4096     | 0.564 / **975**     | 0.717 / **767**         |
-| 16384×4096×4096    | 1.089 / **1010**    | 1.316 / **835**         |
+Peak over the split sweep (best `grid.y` shown):
 
-Fused sustains **~0.94–1.01 PFLOPS** bf16 (~42–45 % of the B200's ~2.25 PFLOPS
-dense‑bf16 peak). The act variant — which additionally stores `U'`/`V'`/`Z` and
-computes SiLU plus its derivative — sustains **~0.76–0.84 PFLOPS**.
+| Shape (T×H×I, E=8) | Fused (ms / TFLOPS / splits) | Fused+Act (ms / TFLOPS / splits) |
+|--------------------|------------------------------|----------------------------------|
+| 2048×4096×4096     | 0.140 / **983**  / 8         | 0.176 / **779**  / 8             |
+| 4096×4096×4096     | 0.254 / **1081** / 4         | 0.314 / **876**  / 32            |
+| 8192×4096×4096     | 0.504 / **1090** / 2         | 0.621 / **885**  / 2             |
+| 16384×4096×4096    | 1.084 / **1014** / 1         | 1.326 / **829**  / 8             |
+
+Fused peaks at **~1.09 PFLOPS** bf16 (~48 % of the B200's ~2.25 PFLOPS dense‑bf16
+peak); the act variant — which additionally stores `U'`/`V'`/`Z` and computes SiLU
+plus its derivative — peaks at **~0.89 PFLOPS**. The winning split almost always
+lands at **≈128 CTAs** (`num_m_tiles × splits`), i.e. **~1 CTA/SM** — these fused
+consumers are smem‑bound (one resident CTA per SM), so the best launch targets the
+SM count rather than maximal N‑parallelism.
 
 ### H100 (sm_90a / WGMMA) — run pending on Hopper hardware
 
