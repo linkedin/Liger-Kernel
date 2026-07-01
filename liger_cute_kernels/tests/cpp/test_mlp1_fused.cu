@@ -27,8 +27,10 @@
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <random>
 #include <type_traits>
 #include <vector>
@@ -483,6 +485,189 @@ static void run_act(const Mlp1Shape& s) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// TFLOPS benchmark (opt-in via MLP1_BENCH env; timing-only, no CPU ref)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Measures achieved throughput of the MLP1 fused consumers at large,
+// GPU-saturating shapes. FLOPs are counted manually as the two GEMMs
+// U = X·Bᵀ and V = X·Cᵀ (each 2·T·I·H, contracting over H); the SiLU /
+// elementwise epilogue is ignored (negligible). E-independent:
+//
+//     TFLOPS = 4·T·H·I / median_kernel_seconds / 1e12
+//
+// Timing uses CUDA events around each kernel launch (warm-up + repeat,
+// median). No CPU reference is computed here — correctness is covered by
+// the {128..384}-token tests above. The grid is N-split (grid.y =
+// num_splits) so that small M-tile counts still fill the SMs; the fused
+// and act producers/consumers fall back to blockIdx.y / gridDim.y for the
+// split identity, so no kernel change is needed.
+
+struct BenchCfg { int warmup = 10; int iters = 50; };
+
+static int sm_count() {
+	int dev = 0; cudaDeviceProp p{};
+	if (cudaGetDevice(&dev) != cudaSuccess) return 0;
+	if (cudaGetDeviceProperties(&p, dev) != cudaSuccess) return 0;
+	return p.multiProcessorCount;
+}
+
+// Pick an N-split so num_m_tiles * num_splits comfortably covers the SMs
+// (target ~2 CTAs/SM), capped at num_n_tiles (max available N-parallelism).
+static int pick_num_splits(int num_m_tiles, int num_n_tiles) {
+	int sms = sm_count();
+	if (sms <= 0 || num_m_tiles <= 0) return 1;
+	int target_ctas = 2 * sms;
+	int splits = (target_ctas + num_m_tiles - 1) / num_m_tiles;  // ceil
+	if (splits < 1) splits = 1;
+	if (splits > num_n_tiles) splits = num_n_tiles;
+	return splits;
+}
+
+static double median_ms(std::vector<float>& v) {
+	if (v.empty()) return 0.0;
+	std::sort(v.begin(), v.end());
+	size_t n = v.size();
+	return (n & 1) ? (double)v[n / 2] : 0.5 * ((double)v[n / 2 - 1] + (double)v[n / 2]);
+}
+
+static bool mlp1_bench_enabled() { return std::getenv("MLP1_BENCH") != nullptr; }
+
+// Time a launch closure: warm-up, then `iters` event-timed launches → median ms.
+template <typename LaunchFn>
+static double time_kernel_ms(const BenchCfg& cfg, LaunchFn&& launch) {
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start); cudaEventCreate(&stop);
+	for (int i = 0; i < cfg.warmup; ++i) launch();
+	if (cudaError_t e = cudaDeviceSynchronize(); e != cudaSuccess)
+		ADD_FAILURE() << "bench warmup sync: " << cudaGetErrorString(e);
+	std::vector<float> samples; samples.reserve(cfg.iters);
+	for (int i = 0; i < cfg.iters; ++i) {
+		cudaEventRecord(start);
+		launch();
+		cudaEventRecord(stop);
+		if (cudaError_t e = cudaEventSynchronize(stop); e != cudaSuccess)
+			ADD_FAILURE() << "bench event sync: " << cudaGetErrorString(e);
+		float ms = 0.f; cudaEventElapsedTime(&ms, start, stop);
+		samples.push_back(ms);
+	}
+	cudaEventDestroy(start); cudaEventDestroy(stop);
+	return median_ms(samples);
+}
+
+// FLOPs = two GEMMs (U, V), each 2·T·I·H; SiLU/elementwise ignored.
+static double tflops_of(const Mlp1Shape& s, double ms) {
+	double flops = 4.0 * (double)s.num_tokens * (double)s.hidden_dim
+	             * (double)s.intermediate_dim;
+	return flops / (ms * 1e-3) / 1e12;
+}
+
+// ── Benchmark runners (setup mirrors run_fused/run_act; no compare) ──
+
+template <int Compute>
+static void run_fused_bench(const Mlp1Shape& s, const BenchCfg& cfg) {
+	using Traits = TraitsFused;
+	Inputs in; make_inputs<Traits>(s, in, /*seed=*/1234);
+
+	int padded = in.num_m_tiles * Traits::TileM;
+	Element* dZ = nullptr;
+	cudaMalloc(&dZ, (size_t)padded * s.intermediate_dim * sizeof(Element));
+	cudaMemset(dZ, 0, (size_t)padded * s.intermediate_dim * sizeof(Element));
+
+	auto tX = make_tensor(make_gmem_ptr(in.dX.ptr),
+		make_shape(s.num_tokens, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
+	auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
+	auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
+	auto tZ = make_tensor(make_gmem_ptr(dZ),
+		make_shape(padded, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
+
+	auto tma_x = make_tma_copy(SM90_TMA_LOAD{}, tX, typename Traits::SmemLayoutX_1{});
+	auto tma_b = make_tma_copy(SM90_TMA_LOAD{}, tB, typename Traits::SmemLayoutW_1{});
+	auto tma_c = make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
+	auto tma_z = make_tma_copy(SM90_TMA_STORE{}, tZ, typename Traits::SmemLayoutStoreSlot{});
+
+	size_t smem_size = sizeof(Mlp1FusedKernelSmem<Traits, Compute>);
+	auto kernel = mlp1_fused_test_kernel<Traits, Compute,
+		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
+	CUDA_OK(cudaFuncSetAttribute(kernel,
+		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+
+	int num_splits = pick_num_splits(in.num_m_tiles, in.num_n_tiles);
+	dim3 grid(in.num_m_tiles, num_splits);
+	auto launch = [&]() {
+		kernel<<<grid, Traits::NumThreads, smem_size>>>(
+			tma_x, tma_b, tma_c, tma_z, in.d_expert_ids,
+			s.num_tokens, s.hidden_dim, in.total_n_rows,
+			in.num_m_tiles, in.num_n_tiles);
+	};
+	launch(); CUDA_OK(cudaGetLastError()); CUDA_OK(cudaDeviceSynchronize());
+
+	double ms = time_kernel_ms(cfg, launch);
+	double tf = tflops_of(s, ms);
+	printf("[fused-bench C=%-3d T=%-5d H=%d I=%d E=%d splits=%-2d] "
+	       "%8.4f ms  %8.2f TFLOPS\n",
+		Compute, s.num_tokens, s.hidden_dim, s.intermediate_dim, s.num_experts,
+		num_splits, ms, tf);
+
+	cudaFree(dZ);
+}
+
+template <int Compute>
+static void run_act_bench(const Mlp1Shape& s, const BenchCfg& cfg) {
+	using Traits = TraitsAct;
+	Inputs in; make_inputs<Traits>(s, in, /*seed=*/5678);
+
+	int padded = in.num_m_tiles * Traits::TileM;
+	size_t obytes = (size_t)padded * s.intermediate_dim * sizeof(Element);
+	Element *dU = nullptr, *dV = nullptr, *dZ = nullptr;
+	cudaMalloc(&dU, obytes); cudaMalloc(&dV, obytes); cudaMalloc(&dZ, obytes);
+	cudaMemset(dU, 0, obytes); cudaMemset(dV, 0, obytes); cudaMemset(dZ, 0, obytes);
+
+	auto tX = make_tensor(make_gmem_ptr(in.dX.ptr),
+		make_shape(s.num_tokens, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
+	auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
+	auto tC = make_tensor(make_gmem_ptr(in.dC.ptr),
+		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
+	auto mkZ = [&](Element* p) {
+		return make_tensor(make_gmem_ptr(p),
+			make_shape(padded, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
+	};
+	auto tma_x  = make_tma_copy(SM90_TMA_LOAD{},  tX, typename Traits::SmemLayoutX_1{});
+	auto tma_b  = make_tma_copy(SM90_TMA_LOAD{},  tB, typename Traits::SmemLayoutW_1{});
+	auto tma_c  = make_tma_copy(SM90_TMA_LOAD{},  tC, typename Traits::SmemLayoutW_1{});
+	auto tma_du = make_tma_copy(SM90_TMA_STORE{}, mkZ(dU), typename Traits::SmemLayoutStoreSlot{});
+	auto tma_dv = make_tma_copy(SM90_TMA_STORE{}, mkZ(dV), typename Traits::SmemLayoutStoreSlot{});
+	auto tma_z  = make_tma_copy(SM90_TMA_STORE{}, mkZ(dZ), typename Traits::SmemLayoutStoreSlot{});
+
+	size_t smem_size = sizeof(Mlp1ActKernelSmem<Traits, Compute>);
+	auto kernel = mlp1_act_test_kernel<Traits, Compute,
+		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
+	CUDA_OK(cudaFuncSetAttribute(kernel,
+		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+
+	int num_splits = pick_num_splits(in.num_m_tiles, in.num_n_tiles);
+	dim3 grid(in.num_m_tiles, num_splits);
+	auto launch = [&]() {
+		kernel<<<grid, Traits::NumThreads, smem_size>>>(
+			tma_x, tma_b, tma_c, tma_du, tma_dv, tma_z, in.d_expert_ids,
+			s.num_tokens, s.hidden_dim, in.total_n_rows,
+			in.num_m_tiles, in.num_n_tiles);
+	};
+	launch(); CUDA_OK(cudaGetLastError()); CUDA_OK(cudaDeviceSynchronize());
+
+	double ms = time_kernel_ms(cfg, launch);
+	double tf = tflops_of(s, ms);
+	printf("[act-bench   C=%-3d T=%-5d H=%d I=%d E=%d splits=%-2d] "
+	       "%8.4f ms  %8.2f TFLOPS\n",
+		Compute, s.num_tokens, s.hidden_dim, s.intermediate_dim, s.num_experts,
+		num_splits, ms, tf);
+
+	cudaFree(dU); cudaFree(dV); cudaFree(dZ);
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════
 
@@ -514,6 +699,16 @@ static const std::vector<Mlp1Shape> kShapes = {
 	{384, 256,  128, 3},   // three M-tiles, one expert each
 };
 
+// Large, GPU-saturating shapes for the TFLOPS benchmark. T is a multiple of
+// TileM (128) → no token padding, so 4·T·H·I is exact; I is a multiple of
+// TileN (128). Realistic MoE dims (H=I=4096, E=8).
+static const std::vector<Mlp1Shape> kBenchShapes = {
+	{ 2048, 4096, 4096, 8},
+	{ 4096, 4096, 4096, 8},
+	{ 8192, 4096, 4096, 8},
+	{16384, 4096, 4096, 8},
+};
+
 // ── Blackwell (Compute=100 / UMMA) — requires an sm_100 GPU at runtime ──
 TEST(Mlp1Fused, Correctness) {
 	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
@@ -537,4 +732,39 @@ TEST(Mlp1FusedSm90, Correctness) {
 TEST(Mlp1FusedActSm90, Correctness) {
 	if (!hopper_available()) GTEST_SKIP() << "requires an sm_90 (Hopper) GPU";
 	for (const auto& s : kShapes) run_act<90>(s);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// TFLOPS benchmarks — opt-in via MLP1_BENCH=1 (skipped by default so the
+// correctness run stays fast). Arch-gated like the tests above: run the
+// binary on a B200 for the Blackwell numbers, on an H100 for Hopper.
+// Filter with: --gtest_filter='*TFLOPs*'
+// ═══════════════════════════════════════════════════════════════════
+
+TEST(Mlp1Fused, TFLOPs_Blackwell) {
+	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
+	if (!mlp1_bench_enabled())  GTEST_SKIP() << "set MLP1_BENCH=1 to run the TFLOPS benchmark";
+	BenchCfg cfg;
+	for (const auto& s : kBenchShapes) run_fused_bench<100>(s, cfg);
+}
+
+TEST(Mlp1FusedAct, TFLOPs_Blackwell) {
+	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
+	if (!mlp1_bench_enabled())  GTEST_SKIP() << "set MLP1_BENCH=1 to run the TFLOPS benchmark";
+	BenchCfg cfg;
+	for (const auto& s : kBenchShapes) run_act_bench<100>(s, cfg);
+}
+
+TEST(Mlp1Fused, TFLOPs_Hopper) {
+	if (!hopper_available())   GTEST_SKIP() << "requires an sm_90 (Hopper) GPU";
+	if (!mlp1_bench_enabled()) GTEST_SKIP() << "set MLP1_BENCH=1 to run the TFLOPS benchmark";
+	BenchCfg cfg;
+	for (const auto& s : kBenchShapes) run_fused_bench<90>(s, cfg);
+}
+
+TEST(Mlp1FusedAct, TFLOPs_Hopper) {
+	if (!hopper_available())   GTEST_SKIP() << "requires an sm_90 (Hopper) GPU";
+	if (!mlp1_bench_enabled()) GTEST_SKIP() << "set MLP1_BENCH=1 to run the TFLOPS benchmark";
+	BenchCfg cfg;
+	for (const auto& s : kBenchShapes) run_act_bench<90>(s, cfg);
 }

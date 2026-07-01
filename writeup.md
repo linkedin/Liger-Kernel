@@ -210,3 +210,60 @@ cmake --build liger_cute_kernels/build100a --target test_mlp1_fused -j
 - CUTLASS's own SM100 epilogue collectives are the authoritative reference for the
   TMEM↔register copy plumbing (`flat_divide`, `make_coord(_,_)` accumulator view,
   `op_repeater` atom selection, `partition_D`‑sized register fragments).
+
+## Performance (TFLOPS)
+
+Beyond correctness, the fused consumers were benchmarked for **throughput**. FLOPs
+are counted manually as the two GEMMs `U = X·Bᵀ` and `V = X·Cᵀ` (each `2·T·I·H`,
+contracting over `H`); the SiLU / elementwise epilogue is ignored (negligible), so
+
+```
+TFLOPS = 4·T·H·I / kernel_seconds
+```
+
+Kernel time is the **median of 50 CUDA‑event‑timed launches** (10 warm‑up), at
+large, GPU‑saturating shapes (`H=I=4096`, `E=8`, `T` a multiple of `TileM` so the
+FLOP count is exact — no token padding). The grid is **N‑split** (`grid.y =
+num_splits`, derived from the SM count) so small M‑tile counts still fill the
+device: even `T=16384` is only 128 M‑tiles vs the B200's 148 SMs, so the extra
+N‑parallelism is needed to saturate. The benchmark is **opt‑in** via `MLP1_BENCH=1`
+— the default correctness run skips it and stays fast, and the numeric tests are
+untouched.
+
+### B200 (sm_100a / UMMA) — NVIDIA B200, 148 SMs
+
+| Shape (T×H×I, E=8) | Fused (ms / TFLOPS) | Fused+Act (ms / TFLOPS) |
+|--------------------|---------------------|-------------------------|
+| 2048×4096×4096     | 0.146 / **943**     | 0.180 / **762**         |
+| 4096×4096×4096     | 0.279 / **986**     | 0.356 / **772**         |
+| 8192×4096×4096     | 0.564 / **975**     | 0.717 / **767**         |
+| 16384×4096×4096    | 1.089 / **1010**    | 1.316 / **835**         |
+
+Fused sustains **~0.94–1.01 PFLOPS** bf16 (~42–45 % of the B200's ~2.25 PFLOPS
+dense‑bf16 peak). The act variant — which additionally stores `U'`/`V'`/`Z` and
+computes SiLU plus its derivative — sustains **~0.76–0.84 PFLOPS**.
+
+### H100 (sm_90a / WGMMA) — run pending on Hopper hardware
+
+The **same binary** produces the Hopper numbers; it is arch‑gated
+(`hopper_available()`), so on an H100 the Blackwell cases skip and these run
+instead. To fill this column:
+
+```
+cmake -S liger_cute_kernels -B build90a -G Ninja \
+  -DLIGER_CUTE_TESTS_ONLY=ON -DLIGER_CUTE_BUILD_TESTS=ON -DLIGER_CUTE_CUDA_ARCH=90a
+cmake --build build90a --target test_mlp1_fused -j
+MLP1_BENCH=1 ./build90a/tests/cpp/test_mlp1_fused --gtest_filter='*TFLOPs_Hopper*'
+```
+
+| Shape (T×H×I, E=8) | Fused (ms / TFLOPS) | Fused+Act (ms / TFLOPS) |
+|--------------------|---------------------|-------------------------|
+| 2048×4096×4096     | _tbd_               | _tbd_                   |
+| 4096×4096×4096     | _tbd_               | _tbd_                   |
+| 8192×4096×4096     | _tbd_               | _tbd_                   |
+| 16384×4096×4096    | _tbd_               | _tbd_                   |
+
+> These are **single‑tile MLP1 GEMM‑throughput** numbers (the fused U/V
+> projections this PR brought up), not a full‑MoE end‑to‑end figure — measured at
+> shapes that saturate the device. The `%peak` is vs the vendor dense‑bf16 rating
+> (B200 ≈ 2.25 PFLOPS, H100 ≈ 0.99 PFLOPS).
