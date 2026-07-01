@@ -15,7 +15,7 @@ from liger_kernel.utils import infer_device
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
 MAX_FUSED_SIZE = 2048 if infer_device() == "npu" else 65536 // 2
 _TORCH_VERSION = Version(torch.__version__.split("+")[0])
-_SUPPORTS_ADDM_MIXED_PRECISION_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
+_ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
 
 def fused_linear_cross_entropy_forward(
@@ -213,7 +213,7 @@ def fused_linear_cross_entropy_forward(
 
         if grad_weight is not None and input_requires_grad:
             if (
-                _SUPPORTS_ADDM_MIXED_PRECISION_OUT_DTYPE
+                _ADDMM_SUPPORTS_OUT_DTYPE
                 and grad_weight.device.type == "cuda"
                 and grad_weight.dtype == torch.float32
                 and grad_logits_chunk.t().dtype in (torch.float16, torch.bfloat16)
