@@ -23,7 +23,7 @@ else:
     from triton.language.math import tanh
 
 # log2(e): lets us emit the hardware ex2.approx instruction via e^x = 2^(x * LOG2_E)
-LOG2_E = 1.4426950408889634
+LOG2_E = tl.constexpr(1.4426950408889634)
 
 
 @triton.jit

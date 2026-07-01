@@ -1,6 +1,8 @@
 import torch
 import triton
 
+from packaging.version import Version
+
 from liger_kernel.ops.cross_entropy import liger_cross_entropy_kernel
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
@@ -12,6 +14,8 @@ from liger_kernel.utils import infer_device
 # However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
 # The optimal maximum block size depends on your hardware, your kernel, and your dtype
 MAX_FUSED_SIZE = 2048 if infer_device() == "npu" else 65536 // 2
+_TORCH_VERSION = Version(torch.__version__.split("+")[0])
+_ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
 
 def fused_linear_cross_entropy_forward(
@@ -39,7 +43,6 @@ def fused_linear_cross_entropy_forward(
         f"return_predicted_tokens must be True or False. Got: {return_predicted_tokens}"
     )
     device = _input.device
-
     input_requires_grad = _input.requires_grad
 
     # inputs have shape: BT x H
@@ -209,7 +212,21 @@ def fused_linear_cross_entropy_forward(
             grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
 
         if grad_weight is not None and input_requires_grad:
-            grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
+            if (
+                _ADDMM_SUPPORTS_OUT_DTYPE
+                and grad_weight.device.type == "cuda"
+                and grad_weight.dtype == torch.float32
+                and grad_logits_chunk.t().dtype in (torch.float16, torch.bfloat16)
+            ):
+                torch.addmm(
+                    grad_weight,
+                    grad_logits_chunk.t(),
+                    _input_chunk,
+                    out_dtype=torch.float32,
+                    out=grad_weight,
+                )
+            else:
+                grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
 
         if bias is not None and input_requires_grad:
             torch.add(
