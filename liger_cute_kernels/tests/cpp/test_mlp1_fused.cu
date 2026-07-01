@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <random>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -46,7 +47,7 @@ using namespace cute;
 using liger::Mlp1Traits;
 using liger::Mlp1FusedSmem;
 using liger::Mlp1FusedActSmem;
-using Element = cutlass::bfloat16_t;
+using Element = cutlass::bfloat16_t; 
 
 // Shape/pipeline config. TileM=128 exercises the cooperative M-split. The act
 // variant uses fewer stages to keep its three extra store buffers under the
@@ -775,4 +776,33 @@ TEST(Mlp1FusedAct, TFLOPs_Hopper) {
 	if (!mlp1_bench_enabled()) GTEST_SKIP() << "set MLP1_BENCH=1 to run the TFLOPS benchmark";
 	BenchCfg cfg;
 	for (const auto& s : kBenchShapes) run_act_bench<90>(s, cfg);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Entry point — arch-aware default filter (clean output)
+// ═══════════════════════════════════════════════════════════════════
+// By default, run only the tests that match the GPU actually present, so a
+// Blackwell box shows just the Compute=100 results with no Hopper/skip noise
+// (and vice-versa on Hopper). The TFLOPS benchmarks are added to the default
+// selection only when MLP1_BENCH is set. An explicit --gtest_filter, or
+// --gtest_list_tests (used by ctest discovery), always takes precedence.
+int main(int argc, char** argv) {
+	::testing::InitGoogleTest(&argc, argv);
+
+	const bool user_filtered = GTEST_FLAG_GET(filter) != "*";
+	const bool listing       = GTEST_FLAG_GET(list_tests);
+	if (!user_filtered && !listing) {
+		std::string f;
+		if (blackwell_available()) {
+			f = "Mlp1Fused.Correctness:Mlp1FusedAct.Correctness";
+			if (mlp1_bench_enabled())
+				f += ":Mlp1Fused.TFLOPs_Blackwell:Mlp1FusedAct.TFLOPs_Blackwell";
+		} else if (hopper_available()) {
+			f = "Mlp1FusedSm90.Correctness:Mlp1FusedActSm90.Correctness";
+			if (mlp1_bench_enabled())
+				f += ":Mlp1Fused.TFLOPs_Hopper:Mlp1FusedAct.TFLOPs_Hopper";
+		}
+		if (!f.empty()) GTEST_FLAG_SET(filter, f);
+	}
+	return RUN_ALL_TESTS();
 }

@@ -15,7 +15,7 @@ include(GoogleTest)
 # find_package(CUTLASS)). Fall back to CUTLASS_HOME include dirs otherwise.
 add_executable(test_mlp1_fused test_mlp1_fused.cu)
 target_link_libraries(test_mlp1_fused PRIVATE
-    GTest::gtest_main
+    GTest::gtest
     CUDA::cudart)
 if(TARGET CUTLASS::CUTLASS)
     target_link_libraries(test_mlp1_fused PRIVATE CUTLASS::CUTLASS)
