@@ -12,11 +12,16 @@
 // source is bf16 input/output rounding (fast_silu is exact), so a tight
 // relative tolerance holds.
 //
-// Exercises the Compute=90 (Hopper / WGMMA) path — the default selected by
-// the consumer forwarder. The Compute=100 (Blackwell / UMMA) specialization
-// is gated on __CUDA_ARCH__ >= 1000 and is not instantiated by an sm_90a
-// build; once a Blackwell build target exists, the same harness can drive it
-// by passing <Traits, 100> to the consumer.
+// Exercises the mlp1 consumers on BOTH architectures, one TEST per kernel,
+// AUTO-GATED to the running GPU so the output stays clean (only the matching
+// path's results are printed):
+//   * sm_100 (Blackwell) → Compute=100 / UMMA  (Traits::MainloopPipelineUmma)
+//   * sm_90  (Hopper)    → Compute=90  / WGMMA (Traits::MainloopPipeline)
+// Both paths share the same shapes, cpu_reference and tolerances (run_fused /
+// run_act are templated only on Compute), so neither arch is held to a looser
+// bar. The non-matching path is still compiled — the Compute=100 body is gated
+// on __CUDA_ARCH__>=1000 and the Compute=90 launcher call on __CUDA_ARCH__<1000
+// (both trap otherwise) — so one source builds cleanly for sm_90a and sm_100a.
 // ═══════════════════════════════════════════════════════════════════
 
 #include <gtest/gtest.h>
@@ -25,6 +30,7 @@
 #include <cmath>
 #include <cstdint>
 #include <random>
+#include <type_traits>
 #include <vector>
 
 #include <cute/tensor.hpp>
@@ -59,19 +65,29 @@ using TraitsAct   = Mlp1Traits<Element, /*TileM=*/128, /*TileN=*/128,
 // fused X+W1+W2 TMA pipe), mirroring src/.../moe/mlp1.cu.
 // ═══════════════════════════════════════════════════════════════════
 
-template <typename Traits>
+// Mainloop pipeline type for a Compute path: Hopper (90) uses the plain TMA
+// pipeline; Blackwell (100) uses the UMMA-aware TMA pipeline. Params /
+// PipelineState / SharedStorage alias across the two, so the launcher, producer
+// and consumer drive either one unchanged.
+template <typename Traits, int Compute>
+using MainloopPipelineFor = std::conditional_t<
+	Compute == 100,
+	typename Traits::MainloopPipelineUmma,
+	typename Traits::MainloopPipeline>;
+
+template <typename Traits, int Compute>
 struct Mlp1FusedKernelSmem {
 	Mlp1FusedSmem<Traits> tile;
-	typename Traits::MainloopPipeline::SharedStorage pipe_storage;
+	typename MainloopPipelineFor<Traits, Compute>::SharedStorage pipe_storage;
 };
 
-template <typename Traits>
+template <typename Traits, int Compute>
 struct Mlp1ActKernelSmem {
 	Mlp1FusedActSmem<Traits> tile;
-	typename Traits::MainloopPipeline::SharedStorage pipe_storage;
+	typename MainloopPipelineFor<Traits, Compute>::SharedStorage pipe_storage;
 };
 
-template <typename Traits, typename TmaLoadX, typename TmaLoadW, typename TmaStoreZ>
+template <typename Traits, int Compute, typename TmaLoadX, typename TmaLoadW, typename TmaStoreZ>
 __global__ void __launch_bounds__(Traits::NumThreads, 1)
 mlp1_fused_test_kernel(
 		__grid_constant__ TmaLoadX const tma_load_x,
@@ -83,9 +99,9 @@ mlp1_fused_test_kernel(
 		int num_m_tiles, int num_n_tiles) {
 
 	extern __shared__ char raw_smem[];
-	auto& smem = *reinterpret_cast<Mlp1FusedKernelSmem<Traits>*>(raw_smem);
+	auto& smem = *reinterpret_cast<Mlp1FusedKernelSmem<Traits, Compute>*>(raw_smem);
 
-	using Pipeline  = typename Traits::MainloopPipeline;
+	using Pipeline  = MainloopPipelineFor<Traits, Compute>;
 	using PipeState = typename Traits::PipelineState;
 
 	int warp_id = threadIdx.x / Traits::WarpSize;
@@ -93,7 +109,12 @@ mlp1_fused_test_kernel(
 	bool is_producer = (warp_id == 0);
 	bool is_consumer = (warp_id >= 4 && warp_id <= 11);
 
-	auto pipe = liger::mlp1_make_pipe<Traits>(smem.pipe_storage);
+	auto pipe = [&]() {
+		if constexpr (Compute == 100)
+			return liger::mlp1_make_pipe_umma<Traits>(smem.pipe_storage);
+		else
+			return liger::mlp1_make_pipe<Traits>(smem.pipe_storage);
+	}();
 	__syncthreads();
 
 	PipeState prod_state = cutlass::make_producer_start_state<Pipeline>();
@@ -109,16 +130,27 @@ mlp1_fused_test_kernel(
 				m, expert_n_offset, num_tokens, hidden_dim, total_n_rows,
 				num_n_tiles, num_k_tiles);
 		} else if (is_consumer) {
-			liger::mlp1_fused_consumer<Traits>(
-				pipe, cons_state, smem.tile, tma_store_z,
-				m, num_n_tiles * Traits::TileN,
-				num_m_tiles, num_n_tiles, num_k_tiles);
+			if constexpr (Compute == 100) {
+				liger::mlp1_fused_consumer<Traits, 100>(
+					pipe, cons_state, smem.tile, tma_store_z,
+					m, num_n_tiles * Traits::TileN,
+					num_m_tiles, num_n_tiles, num_k_tiles);
+			} else {
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ < 1000)
+				liger::mlp1_fused_consumer<Traits, 90>(
+					pipe, cons_state, smem.tile, tma_store_z,
+					m, num_n_tiles * Traits::TileN,
+					num_m_tiles, num_n_tiles, num_k_tiles);
+#else
+				__trap();  // Compute=90 WGMMA body is not compiled for sm_100a
+#endif
+			}
 		}
 	}
 	__syncthreads();
 }
 
-template <typename Traits, typename TmaLoadX, typename TmaLoadW, typename TmaStore>
+template <typename Traits, int Compute, typename TmaLoadX, typename TmaLoadW, typename TmaStore>
 __global__ void __launch_bounds__(Traits::NumThreads, 1)
 mlp1_act_test_kernel(
 		__grid_constant__ TmaLoadX const tma_load_x,
@@ -132,9 +164,9 @@ mlp1_act_test_kernel(
 		int num_m_tiles, int num_n_tiles) {
 
 	extern __shared__ char raw_smem[];
-	auto& smem = *reinterpret_cast<Mlp1ActKernelSmem<Traits>*>(raw_smem);
+	auto& smem = *reinterpret_cast<Mlp1ActKernelSmem<Traits, Compute>*>(raw_smem);
 
-	using Pipeline  = typename Traits::MainloopPipeline;
+	using Pipeline  = MainloopPipelineFor<Traits, Compute>;
 	using PipeState = typename Traits::PipelineState;
 
 	int warp_id = threadIdx.x / Traits::WarpSize;
@@ -142,7 +174,12 @@ mlp1_act_test_kernel(
 	bool is_producer = (warp_id == 0);
 	bool is_consumer = (warp_id >= 4 && warp_id <= 11);
 
-	auto pipe = liger::mlp1_make_pipe<Traits>(smem.pipe_storage);
+	auto pipe = [&]() {
+		if constexpr (Compute == 100)
+			return liger::mlp1_make_pipe_umma<Traits>(smem.pipe_storage);
+		else
+			return liger::mlp1_make_pipe<Traits>(smem.pipe_storage);
+	}();
 	__syncthreads();
 
 	PipeState prod_state = cutlass::make_producer_start_state<Pipeline>();
@@ -163,11 +200,23 @@ mlp1_act_test_kernel(
 				m, expert_n_offset, num_tokens, hidden_dim, total_n_rows,
 				num_n_tiles, num_k_tiles, split_idx, num_splits);
 		} else if (is_consumer) {
-			liger::mlp1_fused_act_consumer<Traits>(
-				pipe, cons_state, smem.tile,
-				tma_store_du, tma_store_dv, tma_store_z,
-				m, num_n_tiles * Traits::TileN,
-				num_m_tiles, num_n_tiles, num_k_tiles, split_idx, num_splits);
+			if constexpr (Compute == 100) {
+				liger::mlp1_fused_act_consumer<Traits, 100>(
+					pipe, cons_state, smem.tile,
+					tma_store_du, tma_store_dv, tma_store_z,
+					m, num_n_tiles * Traits::TileN,
+					num_m_tiles, num_n_tiles, num_k_tiles, split_idx, num_splits);
+			} else {
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ < 1000)
+				liger::mlp1_fused_act_consumer<Traits, 90>(
+					pipe, cons_state, smem.tile,
+					tma_store_du, tma_store_dv, tma_store_z,
+					m, num_n_tiles * Traits::TileN,
+					num_m_tiles, num_n_tiles, num_k_tiles, split_idx, num_splits);
+#else
+				__trap();  // Compute=90 WGMMA body is not compiled for sm_100a
+#endif
+			}
 		}
 	}
 	__syncthreads();
@@ -318,6 +367,7 @@ static std::vector<float> download_rows(const Element* d, int padded_tokens,
 // Variant runners
 // ═══════════════════════════════════════════════════════════════════
 
+template <int Compute>
 static void run_fused(const Mlp1Shape& s) {
 	using Traits = TraitsFused;
 	Inputs in; make_inputs<Traits>(s, in, /*seed=*/1234);
@@ -342,8 +392,8 @@ static void run_fused(const Mlp1Shape& s) {
 	auto tma_c = make_tma_copy(SM90_TMA_LOAD{}, tC, typename Traits::SmemLayoutW_1{});
 	auto tma_z = make_tma_copy(SM90_TMA_STORE{}, tZ, typename Traits::SmemLayoutStoreSlot{});
 
-	size_t smem_size = sizeof(Mlp1FusedKernelSmem<Traits>);
-	auto kernel = mlp1_fused_test_kernel<Traits,
+	size_t smem_size = sizeof(Mlp1FusedKernelSmem<Traits, Compute>);
+	auto kernel = mlp1_fused_test_kernel<Traits, Compute,
 		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
 	CUDA_OK(cudaFuncSetAttribute(kernel,
 		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
@@ -361,14 +411,15 @@ static void run_fused(const Mlp1Shape& s) {
 	auto ref = cpu_reference(in.X, in.B, in.C, in.expert_ids, s,
 		Traits::TileM, /*with_act=*/false);
 	auto e = compare(Z, ref.Z);
-	printf("[fused T=%d H=%d I=%d E=%d] mean_rel=%.3f%% max_rel=%.3f%% max_abs=%.3g\n",
-		s.num_tokens, s.hidden_dim, s.intermediate_dim, s.num_experts,
+	printf("[fused C=%-3d T=%d H=%d I=%d E=%d] mean_rel=%.3f%% max_rel=%.3f%% max_abs=%.3g\n",
+		Compute, s.num_tokens, s.hidden_dim, s.intermediate_dim, s.num_experts,
 		e.mean_rel * 100, e.max_rel * 100, e.max_abs);
 
 	EXPECT_LT(e.mean_rel, 0.01f);   // mean within 1%
 	EXPECT_LT(e.max_rel,  0.05f);   // every element within 5% (bf16 output rounding)
 }
 
+template <int Compute>
 static void run_act(const Mlp1Shape& s) {
 	using Traits = TraitsAct;
 	Inputs in; make_inputs<Traits>(s, in, /*seed=*/5678);
@@ -396,8 +447,8 @@ static void run_act(const Mlp1Shape& s) {
 	auto tma_dv = make_tma_copy(SM90_TMA_STORE{}, mkZ(dV), typename Traits::SmemLayoutStoreSlot{});
 	auto tma_z  = make_tma_copy(SM90_TMA_STORE{}, mkZ(dZ), typename Traits::SmemLayoutStoreSlot{});
 
-	size_t smem_size = sizeof(Mlp1ActKernelSmem<Traits>);
-	auto kernel = mlp1_act_test_kernel<Traits,
+	size_t smem_size = sizeof(Mlp1ActKernelSmem<Traits, Compute>);
+	auto kernel = mlp1_act_test_kernel<Traits, Compute,
 		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
 	CUDA_OK(cudaFuncSetAttribute(kernel,
 		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
@@ -419,9 +470,9 @@ static void run_act(const Mlp1Shape& s) {
 	auto eU = compare(U, ref.Up);
 	auto eV = compare(V, ref.Vp);
 	auto eZ = compare(Z, ref.Z);
-	printf("[act   T=%d H=%d I=%d E=%d] "
+	printf("[act   C=%-3d T=%d H=%d I=%d E=%d] "
 		"U' mean_rel=%.3f%% / V' %.3f%% / Z %.3f%%  (max_rel %.2f%%/%.2f%%/%.2f%%)\n",
-		s.num_tokens, s.hidden_dim, s.intermediate_dim, s.num_experts,
+		Compute, s.num_tokens, s.hidden_dim, s.intermediate_dim, s.num_experts,
 		eU.mean_rel * 100, eV.mean_rel * 100, eZ.mean_rel * 100,
 		eU.max_rel * 100, eV.max_rel * 100, eZ.max_rel * 100);
 
@@ -435,7 +486,20 @@ static void run_act(const Mlp1Shape& s) {
 // Tests
 // ═══════════════════════════════════════════════════════════════════
 
-// Skip on non-Hopper devices: the Compute=90 kernels need sm_90 (WGMMA/TMA).
+// Skip on non-Blackwell devices: the Compute=100 kernels need sm_100 (UMMA/
+// tcgen05). Built for sm_100a, the Compute=100 body is only instantiated here.
+static bool blackwell_available() {
+	int dev = 0; cudaDeviceProp p{};
+	if (cudaGetDevice(&dev) != cudaSuccess) return false;
+	if (cudaGetDeviceProperties(&p, dev) != cudaSuccess) return false;
+	return p.major == 10;
+}
+
+// Skip on non-Hopper devices: the Compute=90 kernels need sm_90 (WGMMA). Built
+// for sm_90a, the Compute=90 body is instantiated with real WGMMA; the
+// Compute=100 body traps (never launched — its test is blackwell_available()-
+// guarded). This is the standard "detect capability at runtime, else SKIP"
+// pattern for GPU-arch-specific unit tests.
 static bool hopper_available() {
 	int dev = 0; cudaDeviceProp p{};
 	if (cudaGetDevice(&dev) != cudaSuccess) return false;
@@ -450,12 +514,27 @@ static const std::vector<Mlp1Shape> kShapes = {
 	{384, 256,  128, 3},   // three M-tiles, one expert each
 };
 
+// ── Blackwell (Compute=100 / UMMA) — requires an sm_100 GPU at runtime ──
 TEST(Mlp1Fused, Correctness) {
-	if (!hopper_available()) GTEST_SKIP() << "requires an sm_90 (Hopper) GPU";
-	for (const auto& s : kShapes) run_fused(s);
+	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
+	for (const auto& s : kShapes) run_fused<100>(s);
 }
 
 TEST(Mlp1FusedAct, Correctness) {
+	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
+	for (const auto& s : kShapes) run_act<100>(s);
+}
+
+// ── Hopper (Compute=90 / WGMMA) — requires an sm_90 GPU at runtime ──
+// Same shapes, same cpu_reference, same tolerances as the Blackwell tests
+// (run_fused/run_act are shared, templated only on Compute): the Hopper path is
+// held to the identical bar — no relaxed thresholds, no bias.
+TEST(Mlp1FusedSm90, Correctness) {
 	if (!hopper_available()) GTEST_SKIP() << "requires an sm_90 (Hopper) GPU";
-	for (const auto& s : kShapes) run_act(s);
+	for (const auto& s : kShapes) run_fused<90>(s);
+}
+
+TEST(Mlp1FusedActSm90, Correctness) {
+	if (!hopper_available()) GTEST_SKIP() << "requires an sm_90 (Hopper) GPU";
+	for (const auto& s : kShapes) run_act<90>(s);
 }

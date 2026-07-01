@@ -61,6 +61,24 @@ namespace liger {
 using namespace cute;
 
 // ═══════════════════════════════════════════════════════════════════
+// TMEM → register load-op selector (SM100 / Compute=100 epilogue)
+// ═══════════════════════════════════════════════════════════════════
+// tcgen05.ld.32x32b.xN loads N 32-bit words per datapath lane per instruction.
+// The mlp1 UMMA epilogue maps one thread to one TMEM datapath row and reads an
+// EpiChunkN-wide column strip per row, so the atom's per-thread register count
+// (the "Nx" repeat, == RegNumDst) must equal EpiChunkN. Pick it at compile time
+// from EpiChunkN so both the fused (EpiChunkN=64) and act (EpiChunkN=32) tiles —
+// and any other divisor of WgTileN — get a matching load op.
+template <int EpiChunkN> struct TmemLoadOpSelector;
+template <> struct TmemLoadOpSelector<8>   { using Op = SM100_TMEM_LOAD_32dp32b8x;   };
+template <> struct TmemLoadOpSelector<16>  { using Op = SM100_TMEM_LOAD_32dp32b16x;  };
+template <> struct TmemLoadOpSelector<32>  { using Op = SM100_TMEM_LOAD_32dp32b32x;  };
+template <> struct TmemLoadOpSelector<64>  { using Op = SM100_TMEM_LOAD_32dp32b64x;  };
+template <> struct TmemLoadOpSelector<128> { using Op = SM100_TMEM_LOAD_32dp32b128x; };
+template <int EpiChunkN>
+using TmemLoadOp = typename TmemLoadOpSelector<EpiChunkN>::Op;
+
+// ═══════════════════════════════════════════════════════════════════
 // Traits
 // ═══════════════════════════════════════════════════════════════════
 
@@ -226,6 +244,40 @@ __device__ __forceinline__ auto mlp1_make_pipe(
 	pp.transaction_bytes = Traits::TmaTransBytes;
 	pp.num_producers = 1;
 	pp.num_consumers = Traits::ConsumerThreads;
+	if (is_producer) {
+		pp.role = Category::Producer;
+		pp.is_leader = (threadIdx.x == 0);
+	} else if (is_consumer) {
+		pp.role = Category::Consumer;
+	} else {
+		pp.role = Category::NonParticipant;
+	}
+	return Pipeline(storage, pp, Shape<_1, _1, _1>{},
+		cute::true_type{}, cute::true_type{});
+}
+
+// SM100 (Compute=100) mainloop pipe. Mirrors mlp1_make_pipe but builds the
+// UMMA-aware TMA pipeline (PipelineTmaUmmaAsync) whose consumer_release issues
+// the UMMA-gated smem-buffer arrival. num_consumers=1: on Blackwell the buffer
+// is released by a single umma_arrive per stage (the MMA warp), not per
+// consumer thread. Params/PipelineState/SharedStorage alias the Hopper
+// PipelineTmaAsync's, and the ctor arg pattern is identical, so the producer
+// (mlp1_fused_producer) and the Compute=100 consumer drive it unchanged.
+template <typename Traits>
+__device__ __forceinline__ auto mlp1_make_pipe_umma(
+		typename Traits::MainloopPipelineUmma::SharedStorage& storage) {
+
+	using Pipeline = typename Traits::MainloopPipelineUmma;
+	using Category = typename Pipeline::ThreadCategory;
+
+	int warp_id = threadIdx.x / Traits::WarpSize;
+	bool is_producer = (warp_id == 0);
+	bool is_consumer = (warp_id >= 4 && warp_id <= 11);
+
+	typename Pipeline::Params pp;
+	pp.transaction_bytes = Traits::TmaTransBytes;
+	pp.num_producers = 1;
+	pp.num_consumers = 1;   // UMMA: one umma_arrive per stage releases the buffer
 	if (is_producer) {
 		pp.role = Category::Producer;
 		pp.is_leader = (threadIdx.x == 0);
@@ -608,8 +660,14 @@ static __device__ __forceinline__ void run(
 	// ── TMEM allocation (consumer-owned): warp 4 allocs 2·TileN columns
 	//    (U at base, V at base+TileN). ──
 	cute::TMEM::Allocator1Sm tmem_alloc{};
-	if (is_mma_warp && cute::elect_one_sync())
+	// tcgen05.alloc is warp-synchronous (.sync.aligned) and MUST be issued by a
+	// single fully-active warp — NOT one elected thread (that deadlocks the
+	// whole warp). See CUTLASS sm100 kernels: whole mma warp allocates, then
+	// __syncwarp().
+	if (is_mma_warp) {
 		tmem_alloc.allocate(2 * TileN, &smem.tmem_base);
+		__syncwarp();
+	}
 
 	// ── Accumulator pipeline: UMMA producer (warp 4) → epilogue consumers
 	//    (all consumer warps). 1 stage — the U/V TMEM accumulators are reused
@@ -648,19 +706,30 @@ static __device__ __forceinline__ void run(
 
 	// ── Epilogue TMEM→reg copy plumbing (built once; sliced per WG-local
 	//    tid). Each epi tile is the full TileM rows × EpiChunkN cols; the
-	//    128-thread tcgen05.ld maps one thread per TMEM datapath row. ──
+	//    128-thread tcgen05.ld maps one thread per TMEM datapath row.
+	//    flat_divide (not zipped_divide) keeps the epi tile as flat (M,N)
+	//    modes, which is what make_tmem_copy's cotiled builder requires. ──
 	auto epi_tile  = make_tile(Int<TileM>{}, Int<EpiChunkN>{});
-	auto tAccU_epi = zipped_divide(tCtAccU, epi_tile);   // ((TileM,EpiChunkN),(1,TileN/EpiChunkN))
-	auto tAccV_epi = zipped_divide(tCtAccV, epi_tile);
-	auto t2r       = make_tmem_copy(SM100_TMEM_LOAD_32dp32b1x{}, tAccU_epi(_, _0{}));
+	// Extract the flat (M,N) view from the UMMA C-fragment (MMA,MMA_M,MMA_N)
+	// before tiling — matches CUTLASS's accumulators(make_coord(_,_),_0,_0).
+	auto accU_mn   = tCtAccU(make_coord(_, _), _0{}, _0{});   // (TileM,TileN)
+	auto accV_mn   = tCtAccV(make_coord(_, _), _0{}, _0{});
+	auto tAccU_epi = flat_divide(accU_mn, epi_tile);   // (TileM,EpiChunkN,1,TileN/EpiChunkN)
+	auto tAccV_epi = flat_divide(accV_mn, epi_tile);
+	auto t2r       = make_tmem_copy(TmemLoadOp<EpiChunkN>{}, tAccU_epi(_, _, _0{}, _0{}));
 	auto thr_t2r   = t2r.get_slice(tid_wg);
-	auto tTR_tAccU = thr_t2r.partition_S(tAccU_epi);     // (Cpy,nCpy,nTiles)
+	auto tTR_tAccU = thr_t2r.partition_S(tAccU_epi);     // (Cpy,Cpy_M,Cpy_N,1,nTiles)
 	auto tTR_tAccV = thr_t2r.partition_S(tAccV_epi);
 	// Within-chunk (m,n) coords for the reg → smem-slot scatter.
 	auto cChunk    = make_identity_tensor(make_shape(Int<TileM>{}, Int<EpiChunkN>{}));
-	auto tTR_cChunk = thr_t2r.partition_D(cChunk);       // (Cpy,nCpy)
-	auto tTR_rU = make_fragment_like(tTR_tAccU(_, _, _0{}));   // f32 regs (U, reused)
-	auto tTR_rV = make_fragment_like(tTR_tAccV(_, _, _0{}));   // f32 regs (V)
+	auto tTR_cChunk = thr_t2r.partition_D(cChunk);       // (Cpy,Cpy_M,Cpy_N)
+	// Register fragments sized from the DEST (partition_D) shape — per-thread
+	// (T2R,T2R_M,T2R_N). Sizing from partition_S(tmem) would wrongly include the
+	// warp-collective datapath-lane dim (the TMEM_LOAD atom distributes those
+	// lanes into per-thread registers internally). Matches CUTLASS's
+	// make_tensor<ElementAccumulator>(shape(tTR_sD)).
+	auto tTR_rU = make_tensor<float>(shape(tTR_cChunk));   // f32 regs (U, reused)
+	auto tTR_rV = make_tensor<float>(shape(tTR_cChunk));   // f32 regs (V)
 
 	int n_start  = (split_idx  >= 0) ? split_idx  : (int)blockIdx.y;
 	int n_stride = (num_splits >= 0) ? num_splits : (int)gridDim.y;
@@ -709,8 +778,8 @@ static __device__ __forceinline__ void run(
 			int chunk = wg * NChunksHalf + r;            // absolute n-chunk index
 
 			// TMEM → registers (this chunk, full TileM rows).
-			copy(t2r, tTR_tAccU(_, _, chunk), tTR_rU);
-			copy(t2r, tTR_tAccV(_, _, chunk), tTR_rV);
+			copy(t2r, tTR_tAccU(_, _, _, _0{}, chunk), tTR_rU);
+			copy(t2r, tTR_tAccV(_, _, _, _0{}, chunk), tTR_rV);
 
 			// SiLU(U)·V fused in place (overwrites the U regs) so it overlaps
 			// the prior in-flight store. The cast to Element happens at the
@@ -762,8 +831,10 @@ static __device__ __forceinline__ void run(
 		cute::tma_store_wait<0>();
 
 	// Release the alloc permit (so the next CTA can rasterize) then free TMEM.
+	// tcgen05.relinquish_alloc_permit / tcgen05.dealloc are warp-synchronous —
+	// issue from the whole mma warp, not one elected thread.
 	cutlass::arch::NamedBarrier::sync(Traits::ConsumerThreads, /*id=*/0);
-	if (is_mma_warp && cute::elect_one_sync()) {
+	if (is_mma_warp) {
 		tmem_alloc.release_allocation_lock();
 		tmem_alloc.free(tmem_base, 2 * TileN);
 	}

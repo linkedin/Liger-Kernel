@@ -428,8 +428,12 @@ static __device__ __forceinline__ void run(
 	auto tCtAccV  = cta_mma.make_fragment_C(tCgC);   // V = X·C
 
 	cute::TMEM::Allocator1Sm tmem_alloc{};
-	if (is_mma_warp && cute::elect_one_sync())
+	// tcgen05.alloc is warp-synchronous — issue from the whole mma warp, not one
+	// elected thread (see mlp1_fused.cuh Compute=100 for the rationale).
+	if (is_mma_warp) {
 		tmem_alloc.allocate(2 * TileN, &smem.tmem_base);
+		__syncwarp();
+	}
 
 	// Accumulator pipeline: UMMA producer (warp 4) → epilogue consumers. See
 	// the matching block in Mlp1FusedConsumerImpl<100> for the full rationale.
@@ -470,16 +474,21 @@ static __device__ __forceinline__ void run(
 	auto cta_tma_z = tma_store_z.get_slice(Int<0>{});
 
 	auto epi_tile  = make_tile(Int<TileM>{}, Int<EpiChunkN>{});
-	auto tAccU_epi = zipped_divide(tCtAccU, epi_tile);
-	auto tAccV_epi = zipped_divide(tCtAccV, epi_tile);
-	auto t2r       = make_tmem_copy(SM100_TMEM_LOAD_32dp32b1x{}, tAccU_epi(_, _0{}));
+	// Flat (M,N) view of the UMMA C-fragment before tiling (see mlp1_fused.cuh).
+	auto accU_mn   = tCtAccU(make_coord(_, _), _0{}, _0{});   // (TileM,TileN)
+	auto accV_mn   = tCtAccV(make_coord(_, _), _0{}, _0{});
+	auto tAccU_epi = flat_divide(accU_mn, epi_tile);   // (TileM,EpiChunkN,1,TileN/EpiChunkN)
+	auto tAccV_epi = flat_divide(accV_mn, epi_tile);
+	auto t2r       = make_tmem_copy(TmemLoadOp<EpiChunkN>{}, tAccU_epi(_, _, _0{}, _0{}));
 	auto thr_t2r   = t2r.get_slice(tid_wg);
-	auto tTR_tAccU = thr_t2r.partition_S(tAccU_epi);
+	auto tTR_tAccU = thr_t2r.partition_S(tAccU_epi);   // (Cpy,Cpy_M,Cpy_N,1,nTiles)
 	auto tTR_tAccV = thr_t2r.partition_S(tAccV_epi);
 	auto cChunk    = make_identity_tensor(make_shape(Int<TileM>{}, Int<EpiChunkN>{}));
-	auto tTR_cChunk = thr_t2r.partition_D(cChunk);
-	auto tTR_rU = make_fragment_like(tTR_tAccU(_, _, _0{}));   // f32 regs (U)
-	auto tTR_rV = make_fragment_like(tTR_tAccV(_, _, _0{}));   // f32 regs (V)
+	auto tTR_cChunk = thr_t2r.partition_D(cChunk);     // (Cpy,Cpy_M,Cpy_N)
+	// Register fragments sized from the DEST (partition_D) per-thread shape, not
+	// partition_S(tmem) (warp-collective). See mlp1_fused.cuh for the rationale.
+	auto tTR_rU = make_tensor<float>(shape(tTR_cChunk));   // f32 regs (U)
+	auto tTR_rV = make_tensor<float>(shape(tTR_cChunk));   // f32 regs (V)
 
 	int n_start  = (split_idx  >= 0) ? split_idx  : (int)blockIdx.y;
 	int n_stride = (num_splits >= 0) ? num_splits : (int)gridDim.y;
@@ -522,8 +531,8 @@ static __device__ __forceinline__ void run(
 			// outputs are derived and cast to Element inline at the smem write
 			// below — no extra register sets. Each reg's row falls in exactly
 			// one MSub slice, so this evaluates each element once.
-			copy(t2r, tTR_tAccU(_, _, chunk), tTR_rU);
-			copy(t2r, tTR_tAccV(_, _, chunk), tTR_rV);
+			copy(t2r, tTR_tAccU(_, _, _, _0{}, chunk), tTR_rU);
+			copy(t2r, tTR_tAccV(_, _, _, _0{}, chunk), tTR_rV);
 
 			CUTE_UNROLL
 			for (int ms = 0; ms < MSub; ++ms) {
@@ -587,7 +596,8 @@ static __device__ __forceinline__ void run(
 		cute::tma_store_wait<0>();
 
 	cutlass::arch::NamedBarrier::sync(Traits::ConsumerThreads, /*id=*/0);
-	if (is_mma_warp && cute::elect_one_sync()) {
+	// Warp-synchronous tcgen05 relinquish/dealloc — whole mma warp.
+	if (is_mma_warp) {
 		tmem_alloc.release_allocation_lock();
 		tmem_alloc.free(tmem_base, 2 * TileN);
 	}
