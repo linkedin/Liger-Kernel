@@ -9,11 +9,21 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-# Per-dtype (atol, rtol). bf16/fp16 are generous — the fp32-accumulated result is
-# cast to the low-precision output, so the cast dominates the error. fp32 is tight.
+# Per-dtype (atol, rtol) for the cutedsl-vs-Triton parity checks. Anchored to the Triton CE
+# suite's main-correctness bar (test_cross_entropy.py: fp32=(1e-8,1e-6), bf16=(1e-8,5e-2)),
+# loosened only where measured kernel-vs-kernel divergence requires it — this suite stresses
+# the kernels harder than Triton's does (fp16, extreme peaked logits, aux metrics):
+#   * bf16 -> Triton's exact bar; verified 0 failures (rtol dominates even under logit=50 rows).
+#   * fp32 -> loss is bit-identical; grad matches (1e-8,1e-6) except the extreme peaked-softmax
+#     rows (logit=50) in the accuracy test, where base-2 ex2.approx divergence reaches ~1.1e-6
+#     abs at sum/none scale. A 1e-5 atol floor covers that with ~10x headroom (still 10x tighter
+#     than the original 1e-4).
+#   * fp16 -> Triton has no tight fp16 bar (its only fp16 reference uses 1e-2). fp16's ~3-digit
+#     mantissa rounds near-zero grad entries a few ULPs apart (~7.6e-6 abs); the 5e-3 atol floor
+#     covers it and is still 2x tighter than Triton's fp16 reference.
 _TOL = {
-    torch.float32: (1e-4, 1e-3),
-    torch.bfloat16: (5e-3, 5e-2),
+    torch.float32: (1e-5, 1e-5),
+    torch.bfloat16: (1e-8, 5e-2),
     torch.float16: (5e-3, 5e-2),
 }
 _DTYPES = [torch.bfloat16, torch.float16, torch.float32]
