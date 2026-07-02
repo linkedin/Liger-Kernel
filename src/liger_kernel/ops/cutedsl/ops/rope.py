@@ -826,10 +826,15 @@ def rope_backward(dq, dk, cos, sin):
     cos3 = cos.view(cos_batch_size, seq_len, head_dim)
     sin3 = sin.view(cos_batch_size, seq_len, head_dim)
 
-    if dq.is_contiguous() and dk.is_contiguous() and _tma_supported(dq.dtype, head_dim):
+    if dq.is_contiguous() and dk.is_contiguous():
         # native (bsz, n_head, seq, hd) storage: seq IS innermost -> SEQ_INNER=True.
-        tvec = max(1, 128 // torch.finfo(dq.dtype).bits)
-        _apply_qk_tma(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, tvec, True, cos_bcast, seq_len, True)
+        # Both kernels rotate it in place; the token kernel indexes with the tensor's
+        # own strides, so this fast path applies even when TMA isn't supported.
+        if _tma_supported(dq.dtype, head_dim):
+            tvec = max(1, 128 // torch.finfo(dq.dtype).bits)
+            _apply_qk_tma(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, tvec, True, cos_bcast, seq_len, True)
+        else:
+            _apply_token(dq, dk, cos3, sin3, n_q_head, n_kv_head, hd_half, True, cos_bcast, seq_len, True)
         return dq, dk
 
     # transpose(1,2) exposes the (bsz, seq, n_head, hd) storage; .contiguous() is a
