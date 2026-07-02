@@ -4,6 +4,7 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.utils import infer_device_arch
 
 # Blackwell (B200) column-tiling parameters. The original one-row layout
 # (BLOCK_SIZE = next_pow2(n_cols)) is H100-tuned and leaves the backward kernel
@@ -19,13 +20,8 @@ _SWIGLU_TILE_MIN_BLOCK = 16384
 
 
 def _is_blackwell():
-    """True only on NVIDIA Blackwell (SM 10.x); tiling regresses on H100/A100."""
-    if not torch.cuda.is_available():
-        return False
-    try:
-        return torch.cuda.get_device_capability()[0] == 10
-    except Exception:
-        return False
+    """True only on NVIDIA Blackwell-family GPUs; tiling regresses on H100/A100."""
+    return infer_device_arch().startswith("blackwell")
 
 
 def _should_tile(n_cols):
