@@ -15,6 +15,7 @@ from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.ops.utils import get_npu_core_count
+from liger_kernel.ops.utils import is_dtensor
 from liger_kernel.ops.utils import set_large_grf_mode
 from liger_kernel.ops.utils import torch_to_triton_dtype
 from liger_kernel.utils import is_npu_available
@@ -442,7 +443,7 @@ class LigerModulatedRMSNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def forward(ctx, X, W, scale, shift, eps, offset=0.0, casting_mode="llama", in_place=True):
-        if isinstance(X, torch.distributed.tensor.DTensor):
+        if is_dtensor(X):
             # Match LigerRMSNormFunction: gather TP-sharded input to a local tensor.
             X = X.full_tensor()
         Y, RSTD, BLOCK_SIZE, num_warps, casting_mode, rows_per_modulation = modulated_rms_norm_forward(
@@ -475,7 +476,7 @@ class LigerModulatedRMSNormFunction(torch.autograd.Function):
     @staticmethod
     @ensure_contiguous
     def backward(ctx, dY):
-        if isinstance(dY, torch.distributed.tensor.DTensor):
+        if is_dtensor(dY):
             dY = dY.full_tensor()
         if ctx.has_weight and ctx.has_shift:
             X, W, scale, shift, RSTD = ctx.saved_tensors

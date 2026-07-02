@@ -24,6 +24,11 @@ from packaging.version import Version
 
 from liger_kernel.utils import infer_device
 
+try:
+    import torch.distributed.tensor as torch_distributed_tensor
+except (ImportError, ModuleNotFoundError):
+    torch_distributed_tensor = None
+
 
 def is_hip() -> bool:
     return torch.version.hip is not None
@@ -40,6 +45,10 @@ def ensure_contiguous(fn):
         return fn(ctx, *args, **kwargs)
 
     return wrapper
+
+
+def is_dtensor(x) -> bool:
+    return torch_distributed_tensor is not None and isinstance(x, torch_distributed_tensor.DTensor)
 
 
 def calculate_settings(n):

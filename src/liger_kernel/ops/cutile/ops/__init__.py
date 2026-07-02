@@ -27,6 +27,9 @@ from liger_kernel.ops.cutile.ops.jsd import jsd_forward
 from liger_kernel.ops.cutile.ops.layer_norm import LigerLayerNormFunction
 from liger_kernel.ops.cutile.ops.layer_norm import layer_norm_backward
 from liger_kernel.ops.cutile.ops.layer_norm import layer_norm_forward
+from liger_kernel.ops.cutile.ops.rms_norm import LigerRMSNormFunction
+from liger_kernel.ops.cutile.ops.rms_norm import rms_norm_backward
+from liger_kernel.ops.cutile.ops.rms_norm import rms_norm_forward
 
 __all__ = [
     "LigerCrossEntropyFunction",
@@ -44,4 +47,7 @@ __all__ = [
     "LigerLayerNormFunction",
     "layer_norm_backward",
     "layer_norm_forward",
+    "LigerRMSNormFunction",
+    "rms_norm_backward",
+    "rms_norm_forward",
 ]
