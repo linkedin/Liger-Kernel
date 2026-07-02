@@ -8,9 +8,9 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import compare_version
 from liger_kernel.ops.utils import element_mul_kernel
-from liger_kernel.ops.utils import get_gpu_arch
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.utils import infer_device
+from liger_kernel.utils import infer_device_arch
 from liger_kernel.utils import is_npu_available
 
 if compare_version("triton", operator.ge, "3.0.0") and not is_npu_available():
@@ -380,10 +380,14 @@ def cross_entropy_forward(
     #   Blackwell (B200, sm_100+) bf16/fp16 -> 8 (instruction-issue-bound); fp32 -> 32
     #   Hopper (H100, sm_90) and earlier    -> 32 for all dtypes (bandwidth-bound)
     #   AMD (ROCm)                          -> 16
+    # infer_device_arch() reports Blackwell parts as "blackwell" (sm_100),
+    # "blackwell_ultra" (sm_103), or "blackwell_consumer" (sm_120), so gate on the
+    # "blackwell" prefix to cover the whole generation (sm_100+).
     if is_hip():
         ce_num_warps = 16
     else:
-        ce_num_warps = 8 if (_input.element_size() == 2 and get_gpu_arch() == "blackwell") else 32
+        is_blackwell = infer_device_arch().startswith("blackwell")
+        ce_num_warps = 8 if (_input.element_size() == 2 and is_blackwell) else 32
 
     # Here we use a trick to store X_ptr gradient in X_ptr so we can save memory
     liger_cross_entropy_kernel[(n_rows,)](

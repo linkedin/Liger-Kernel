@@ -29,27 +29,6 @@ def is_hip() -> bool:
     return torch.version.hip is not None
 
 
-def get_gpu_arch() -> str:
-    """Coarse NVIDIA GPU architecture family for the active CUDA device.
-
-    Returns one of "blackwell" (sm_100+), "hopper" (sm_90), "ampere" (sm_80/86/89),
-    or "" when not on an NVIDIA CUDA device — i.e. CPU/XPU/NPU, or AMD (HIP). Note
-    ``infer_device()`` reports both NVIDIA and AMD as "cuda", so AMD is excluded here
-    via ``is_hip()`` and callers branch on it separately. Use this to pick arch-tuned
-    scheduling parameters such as ``num_warps``.
-    """
-    if is_hip() or infer_device() != "cuda":
-        return ""
-    major = torch.cuda.get_device_capability()[0]
-    if major >= 10:
-        return "blackwell"
-    if major == 9:
-        return "hopper"
-    if major == 8:
-        return "ampere"
-    return ""
-
-
 def ensure_contiguous(fn):
     @functools.wraps(fn)
     def wrapper(ctx, *args, **kwargs):
