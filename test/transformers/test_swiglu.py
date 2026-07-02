@@ -715,12 +715,12 @@ def test_swiglu_blackwell_tiled_matches_original(monkeypatch, n_rows, n_cols, ga
         return c.detach(), a_.grad.detach(), b_.grad.detach()
 
     # Original one-row kernel (gate forced off).
-    monkeypatch.setattr(swiglu_ops, "_is_blackwell", lambda: False)
+    monkeypatch.setattr(swiglu_ops, "infer_device_arch", lambda: "hopper")
     assert not swiglu_ops._should_tile(n_cols)
     c_ref, da_ref, db_ref = run()
 
     # Forced Blackwell tiled kernel (gate forced on).
-    monkeypatch.setattr(swiglu_ops, "_is_blackwell", lambda: True)
+    monkeypatch.setattr(swiglu_ops, "infer_device_arch", lambda: "blackwell")
     assert swiglu_ops._should_tile(n_cols)
     c_tiled, da_tiled, db_tiled = run()
 

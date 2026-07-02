@@ -11,7 +11,6 @@ from liger_kernel.utils import infer_device_arch
 # occupancy-starved on Blackwell for wide rows. Splitting each row into fixed
 # 1024-wide column tiles over a 2D grid raises occupancy so HBM saturates
 # (~1.63x backward at n_cols=14336, bit-exact). Tile size 1024 chosen by sweep.
-# See optimization/swiglu/report.md for the full diagnosis and numbers.
 _SWIGLU_TILE = 1024
 
 # Only tile when the original one-row block is register-heavy: next_pow2(n_cols)
@@ -19,20 +18,15 @@ _SWIGLU_TILE = 1024
 _SWIGLU_TILE_MIN_BLOCK = 16384
 
 
-def _is_blackwell():
-    """True only on NVIDIA Blackwell-family GPUs; tiling regresses on H100/A100."""
-    return infer_device_arch().startswith("blackwell")
-
-
 def _should_tile(n_cols):
     """Use the Blackwell column-tiled path only for wide-enough rows."""
-    return _is_blackwell() and triton.next_power_of_2(n_cols) >= _SWIGLU_TILE_MIN_BLOCK
+    return infer_device_arch().startswith("blackwell") and triton.next_power_of_2(n_cols) >= _SWIGLU_TILE_MIN_BLOCK
 
 
-def swiglu_tile_settings(n_cols):
+def _swiglu_tile_settings(n_cols):
     """Pick the column-tile BLOCK_SIZE and num_warps for the Blackwell 2D-grid path."""
     BLOCK_SIZE = min(_SWIGLU_TILE, triton.next_power_of_2(n_cols))
-    num_warps = 8 if BLOCK_SIZE >= 2048 else 4
+    num_warps = 4
     return BLOCK_SIZE, num_warps
 
 
@@ -154,7 +148,7 @@ def swiglu_forward(a, b, gate_multiplier: float = 1.0):
 
     if _should_tile(n_cols):
         # Blackwell (B200), wide rows: column-tiled 2D grid for higher SM occupancy.
-        BLOCK_SIZE, num_warps = swiglu_tile_settings(n_cols)
+        BLOCK_SIZE, num_warps = _swiglu_tile_settings(n_cols)
         grid = (n_rows, triton.cdiv(n_cols, BLOCK_SIZE))
         _swiglu_forward_kernel_tiled[grid](
             a,
@@ -191,7 +185,7 @@ def swiglu_backward(a, b, dc, gate_multiplier: float = 1.0):
 
     if _should_tile(n_cols):
         # Blackwell (B200), wide rows: column-tiled 2D grid for higher SM occupancy.
-        BLOCK_SIZE, num_warps = swiglu_tile_settings(n_cols)
+        BLOCK_SIZE, num_warps = _swiglu_tile_settings(n_cols)
         grid = (n_rows, triton.cdiv(n_cols, BLOCK_SIZE))
         _swiglu_backward_kernel_tiled[grid](
             dc,
