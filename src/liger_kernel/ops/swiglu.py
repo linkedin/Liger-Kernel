@@ -4,6 +4,8 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.ops.utils import is_dtensor
+from liger_kernel.ops.utils import torch_distributed_tensor
 
 
 @triton.jit
@@ -116,25 +118,25 @@ class LigerSiLUMulFunction(torch.autograd.Function):
         ctx.gate_multiplier = gate_multiplier
         ctx.down_multiplier = down_multiplier
 
-        if isinstance(a, torch.distributed.tensor.DTensor) or isinstance(b, torch.distributed.tensor.DTensor):
+        if is_dtensor(a) or is_dtensor(b):
             device_mesh, placements = (
                 (a.device_mesh, a.placements)
-                if isinstance(a, torch.distributed.tensor.DTensor)
+                if is_dtensor(a)
                 else (b.device_mesh, b.placements)
             )
 
             # Assume that full tensors are gathered before and identical across
             # the associated process groups.
-            if not isinstance(a, torch.distributed.tensor.DTensor):
-                a = torch.distributed.tensor.distribute_tensor(a, device_mesh=device_mesh, placements=placements)
-            if not isinstance(b, torch.distributed.tensor.DTensor):
-                b = torch.distributed.tensor.distribute_tensor(b, device_mesh=device_mesh, placements=placements)
+            if not is_dtensor(a):
+                a = torch_distributed_tensor.distribute_tensor(a, device_mesh=device_mesh, placements=placements)
+            if not is_dtensor(b):
+                b = torch_distributed_tensor.distribute_tensor(b, device_mesh=device_mesh, placements=placements)
             a_local, b_local, c_local = swiglu_forward(a.to_local(), b.to_local(), gate_multiplier)
             if down_multiplier != 1.0:
                 c_local = c_local * down_multiplier
             ctx.save_for_backward(a_local, b_local)
             ctx.dtensor_metadata = (device_mesh, placements)
-            return torch.distributed.tensor.DTensor.from_local(c_local, device_mesh, placements)
+            return torch_distributed_tensor.DTensor.from_local(c_local, device_mesh, placements)
         else:
             a, b, c = swiglu_forward(a, b, gate_multiplier)
             if down_multiplier != 1.0:
@@ -157,15 +159,15 @@ class LigerSiLUMulFunction(torch.autograd.Function):
             # the associated process groups.
             dc_local = (
                 dc.to_local()
-                if isinstance(dc, torch.distributed.tensor.DTensor)
-                else torch.distributed.tensor.distribute_tensor(dc, device_mesh=device_mesh, placements=placements)
+                if is_dtensor(dc)
+                else torch_distributed_tensor.distribute_tensor(dc, device_mesh=device_mesh, placements=placements)
             )
             if down_multiplier != 1.0:
                 dc_local = dc_local * down_multiplier
             a_local, b_local = swiglu_backward(a, b, dc_local, gate_multiplier)
             return (
-                torch.distributed.tensor.DTensor.from_local(a_local, device_mesh, placements),
-                torch.distributed.tensor.DTensor.from_local(b_local, device_mesh, placements),
+                torch_distributed_tensor.DTensor.from_local(a_local, device_mesh, placements),
+                torch_distributed_tensor.DTensor.from_local(b_local, device_mesh, placements),
                 None,
                 None,
             )

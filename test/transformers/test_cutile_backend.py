@@ -15,6 +15,7 @@ TRANSFORMER_MODULES = {
     "LigerGELUMulFunction": "liger_kernel.transformers.geglu",
     "LigerJSDFunction": "liger_kernel.transformers.jsd",
     "LigerLayerNormFunction": "liger_kernel.transformers.layer_norm",
+    "LigerRMSNormFunction": "liger_kernel.transformers.rms_norm",
 }
 
 pytestmark = [
