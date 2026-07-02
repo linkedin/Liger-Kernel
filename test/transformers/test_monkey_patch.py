@@ -23,6 +23,8 @@ from liger_kernel.transformers import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers import LigerQwen3MoeSwiGLUMLP
 from liger_kernel.transformers import LigerRMSNorm
 from liger_kernel.transformers import LigerSwiGLUMLP
+from liger_kernel.transformers import LigerTiledGEGLUMLP
+from liger_kernel.transformers import LigerTiledSwiGLUMLP
 from liger_kernel.transformers import monkey_patch
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
 from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
@@ -511,6 +513,98 @@ def test_apply_liger_kernel_to_instance_for_llama():
             print(dummy_model_instance)
         except Exception as e:
             pytest.fail(f"An exception occured in extra_expr: {type(e).__name__} - {e}")
+
+
+def test_apply_liger_kernel_to_instance_for_llama_with_tiled_mlp():
+    from transformers.monkey_patching import clear_patch_mapping
+
+    # Ensure any monkey patching is cleaned up for subsequent tests
+    with patch("transformers.models.llama.modeling_llama"):
+        config = transformers.models.llama.configuration_llama.LlamaConfig(
+            dtype=torch.bfloat16,
+            rms_norm_eps=1e-5,
+            hidden_size=32,
+            intermediate_size=64,
+            hidden_act="silu",
+            num_hidden_layers=2,
+        )
+        dummy_model_instance = AutoModelForCausalLM.from_config(config)
+
+        for layer in dummy_model_instance.model.layers:
+            assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerTiledSwiGLUMLP.forward)
+
+        try:
+            _apply_liger_kernel_to_instance(
+                model=dummy_model_instance,
+                rope=False,
+                rms_norm=False,
+                fused_linear_cross_entropy=False,
+                swiglu=False,
+                tiled_mlp=True,
+                tiled_mlp_num_shards=4,
+            )
+
+            for layer in dummy_model_instance.model.layers:
+                assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerTiledSwiGLUMLP.forward)
+                assert layer.mlp.num_shards == 4
+        finally:
+            clear_patch_mapping()
+
+
+def test_apply_liger_tiled_mlp_to_instance():
+    config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="silu",
+        num_hidden_layers=2,
+    )
+    model = AutoModelForCausalLM.from_config(config)
+
+    for layer in model.model.layers:
+        assert inspect.getsource(layer.mlp.forward) != inspect.getsource(LigerTiledSwiGLUMLP.forward)
+
+    monkey_patch.apply_liger_tiled_mlp(model=model, num_shards=4)
+
+    for layer in model.model.layers:
+        assert inspect.getsource(layer.mlp.forward) == inspect.getsource(LigerTiledSwiGLUMLP.forward)
+        assert layer.mlp.num_shards == 4
+
+
+def test_apply_liger_tiled_mlp_registers_supported_models():
+    from transformers.monkey_patching import clear_patch_mapping
+
+    llama_config = transformers.models.llama.configuration_llama.LlamaConfig(
+        dtype=torch.bfloat16,
+        rms_norm_eps=1e-5,
+        hidden_size=32,
+        intermediate_size=64,
+        hidden_act="silu",
+        num_hidden_layers=2,
+    )
+    gemma2_config = transformers.models.gemma2.configuration_gemma2.Gemma2Config(
+        dtype=torch.bfloat16,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=16,
+    )
+
+    try:
+        monkey_patch.apply_liger_tiled_mlp()
+
+        llama_model = AutoModelForCausalLM.from_config(llama_config)
+        gemma2_model = AutoModelForCausalLM.from_config(gemma2_config)
+
+        for layer in llama_model.model.layers:
+            assert isinstance(layer.mlp, LigerTiledSwiGLUMLP)
+        for layer in gemma2_model.model.layers:
+            assert isinstance(layer.mlp, LigerTiledGEGLUMLP)
+    finally:
+        clear_patch_mapping()
 
 
 @pytest.mark.skipif(not is_qwen3_vl_available(), reason="qwen3_vl module not available")
