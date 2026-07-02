@@ -5,7 +5,7 @@
 | RMSNorm                         | `liger_kernel.transformers.LigerRMSNorm`                    |
 | Modulated RMSNorm               | `liger_kernel.transformers.LigerModulatedRMSNorm`           |
 | LayerNorm                       | `liger_kernel.transformers.LigerLayerNorm`                  |
-| RoPE                            | `liger_kernel.transformers.liger_rotary_pos_emb`            |
+| RoPE                            | `liger_kernel.transformers.liger_rotary_pos_emb`, `liger_kernel.transformers.liger_rotary_pos_emb_thd` |
 | SwiGLU                          | `liger_kernel.transformers.LigerSwiGLUMLP`                  |
 | GeGLU                           | `liger_kernel.transformers.LigerGEGLUMLP`                   |
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
@@ -57,6 +57,7 @@ Functional API: `liger_kernel.transformers.functional.liger_modulated_rms_norm`
 RoPE (Rotary Position Embedding) enhances the positional encoding used in transformer models.
 
 The implementation allows for effective handling of positional information without incurring significant computational overhead.
+For packed THD inputs, use `liger_kernel.transformers.liger_rotary_pos_emb_thd` with query/key tensors shaped `(total_tokens, num_heads, head_dim)` and `cos`/`sin` tensors shaped `(total_tokens, head_dim)`.
 
 !!! Example "Try it out"
     You can experiment as shown in this example [here](https://colab.research.google.com/drive/1llnAdo0hc9FpxYRRnjih0l066NCp7Ylu?usp=sharing).
