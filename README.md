@@ -325,7 +325,7 @@ loss.backward()
 | RMSNorm                         | `liger_kernel.transformers.LigerRMSNorm`                    |
 | Modulated RMSNorm               | `liger_kernel.transformers.LigerModulatedRMSNorm`           |
 | LayerNorm                       | `liger_kernel.transformers.LigerLayerNorm`                  |
-| RoPE                            | `liger_kernel.transformers.liger_rotary_pos_emb`            |
+| RoPE                            | `liger_kernel.transformers.liger_rotary_pos_emb`, `liger_kernel.transformers.liger_rotary_pos_emb_thd` |
 | SwiGLU                          | `liger_kernel.transformers.LigerSwiGLUMLP`                  |
 | GeGLU                           | `liger_kernel.transformers.LigerGEGLUMLP`                   |
 | CrossEntropy                    | `liger_kernel.transformers.LigerCrossEntropyLoss`           |
