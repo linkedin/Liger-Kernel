@@ -13,7 +13,11 @@ import torch.nn.functional as F
 # suite's main-correctness bar (test_cross_entropy.py: fp32=(1e-8,1e-6), bf16=(1e-8,5e-2)),
 # loosened only where measured kernel-vs-kernel divergence requires it — this suite stresses
 # the kernels harder than Triton's does (fp16, extreme peaked logits, aux metrics):
-#   * bf16 -> Triton's exact bar; verified 0 failures (rtol dominates even under logit=50 rows).
+#   * bf16 -> Triton's rtol bar (5e-2), but rtol alone does NOT dominate on the extreme
+#     peaked-softmax rows (logit=50) in the accuracy test: those produce near-zero grad
+#     entries where bf16's ~2-digit mantissa lands a few ULPs from Triton (~8.7e-6 abs), and
+#     rtol*|ref| collapses toward zero there. A 5e-5 atol floor covers it with ~5.7x headroom
+#     and is still 100x tighter than the original 5e-3.
 #   * fp32 -> loss is bit-identical; grad matches (1e-8,1e-6) except the extreme peaked-softmax
 #     rows (logit=50) in the accuracy test, where base-2 ex2.approx divergence reaches ~1.1e-6
 #     abs at sum/none scale. A 1e-5 atol floor covers that with ~10x headroom (still 10x tighter
@@ -23,7 +27,7 @@ import torch.nn.functional as F
 #     covers it and is still 2x tighter than Triton's fp16 reference.
 _TOL = {
     torch.float32: (1e-5, 1e-5),
-    torch.bfloat16: (1e-8, 5e-2),
+    torch.bfloat16: (5e-5, 5e-2),
     torch.float16: (5e-3, 5e-2),
 }
 _DTYPES = [torch.bfloat16, torch.float16, torch.float32]
