@@ -25,6 +25,7 @@ from liger_kernel.ops import LigerQwen2VLMRopeFunction
 from liger_kernel.ops import LigerReLUSquaredFunction
 from liger_kernel.ops import LigerRMSNormFunction
 from liger_kernel.ops import LigerRopeFunction
+from liger_kernel.ops import LigerRopeTHDFunction
 from liger_kernel.ops import LigerSiLUMulFunction
 from liger_kernel.ops import LigerSoftmaxFunction
 from liger_kernel.ops import LigerSparsemaxFunction
@@ -319,6 +320,10 @@ def liger_fused_add_rms_norm(X, R, W, eps, offset: float = 0.0, casting_mode: st
 
 def liger_rope(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+
+
+def liger_rope_thd(q, k, cos, sin):
+    return LigerRopeTHDFunction.apply(q, k, cos, sin)
 
 
 def liger_swiglu(a, b):
