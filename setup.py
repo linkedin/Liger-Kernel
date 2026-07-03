@@ -36,6 +36,9 @@ def get_optional_dependencies():
     cutile_tileiras_deps = [
         "cuda-tile[tileiras]",
     ]
+    cutedsl_deps = [
+        "nvidia-cutlass-dsl",
+    ]
     dev_deps = [
         "transformers>=4.52.0",
         "matplotlib>=3.7.2",
@@ -54,6 +57,7 @@ def get_optional_dependencies():
     return {
         "cutile": cutile_deps,
         "cutile-tileiras": cutile_tileiras_deps,
+        "cutedsl": cutedsl_deps,
         "dev": dev_deps,
     }
 
