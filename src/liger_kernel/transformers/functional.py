@@ -1,3 +1,5 @@
+import math
+
 from dataclasses import dataclass
 from typing import Optional
 
@@ -29,6 +31,8 @@ from liger_kernel.ops import LigerSiLUMulFunction
 from liger_kernel.ops import LigerSoftmaxFunction
 from liger_kernel.ops import LigerSparsemaxFunction
 from liger_kernel.ops import LigerTVDLossFunction
+from liger_kernel.transformers.native_sparse_attention import native_sparse_attention
+from liger_kernel.transformers.native_sparse_attention import native_sparse_attention_kernel
 
 
 @dataclass
@@ -262,6 +266,80 @@ def liger_fused_neighborhood_attention(
         Output tensor of shape [batch_size, num_heads, seq_len, head_dim]
     """
     return LigerFusedNeighborhoodAttentionFunction.apply(query, key, value, kernel_size, dilation, scale)
+
+
+def liger_native_sparse_attention(
+    q,
+    k,
+    v,
+    gate,
+    k_cmp,
+    v_cmp,
+    *,
+    num_kv_heads: int,
+    compress_block_size: int = 32,
+    compress_stride: int = 16,
+    selection_block_size: int = 64,
+    num_selected_blocks: int = 16,
+    init_blocks: int = 1,
+    local_blocks: int = 2,
+    window_size: int = 512,
+    scale: float = None,
+    use_kernel: bool = None,
+):
+    """
+    Liger Native Sparse Attention (three gated branches: compression, selection, sliding window).
+
+    paper: https://arxiv.org/abs/2502.11089
+
+    Args:
+        q: Query tensor of shape [batch_size, num_query_heads, seq_len, head_dim]
+        k: Key tensor of shape [batch_size, num_kv_heads, seq_len, head_dim]
+        v: Value tensor of shape [batch_size, num_kv_heads, seq_len, head_dim]
+        gate: Per-head branch gates of shape [batch_size, num_query_heads, seq_len, 3] in [0, 1]
+        k_cmp: Compressed keys of shape [batch_size, num_kv_heads, num_compressed_blocks, head_dim]
+        v_cmp: Compressed values of shape [batch_size, num_kv_heads, num_compressed_blocks, head_dim]
+        num_kv_heads: Number of key/value heads (GQA); must divide num_query_heads.
+        compress_block_size: Compression block length l (default: 32)
+        compress_stride: Compression sliding stride d (default: 16)
+        selection_block_size: Selection block size l' (default: 64)
+        num_selected_blocks: Number of selected blocks n incl. forced (default: 16)
+        init_blocks: Leading blocks always selected (default: 1)
+        local_blocks: Trailing local blocks always selected (default: 2)
+        window_size: Sliding window size w (default: 512)
+        scale: Scaling factor for attention scores (default: 1 / sqrt(head_dim))
+        use_kernel: True forces the Triton kernels, False the pure-torch reference,
+            None (default) auto-selects — kernels on a non-CPU device, torch on CPU.
+
+    Returns:
+        Output tensor of shape [batch_size, num_query_heads, seq_len, head_dim]
+    """
+    if scale is None:
+        scale = 1.0 / math.sqrt(q.shape[-1])
+    if use_kernel is None:
+        use_kernel = (
+            q.device.type != "cpu"
+            and q.dtype in (torch.float16, torch.bfloat16, torch.float32)
+            and selection_block_size % 16 == 0
+        )
+    combine = native_sparse_attention_kernel if use_kernel else native_sparse_attention
+    return combine(
+        q,
+        k,
+        v,
+        gate,
+        k_cmp,
+        v_cmp,
+        num_kv_heads=num_kv_heads,
+        compress_block_size=compress_block_size,
+        compress_stride=compress_stride,
+        selection_block_size=selection_block_size,
+        num_selected_blocks=num_selected_blocks,
+        init_blocks=init_blocks,
+        local_blocks=local_blocks,
+        window_size=window_size,
+        scale=scale,
+    )
 
 
 def liger_tvd(
