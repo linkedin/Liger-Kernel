@@ -87,6 +87,12 @@ def fused_linear_cross_entropy_forward(
     # for ex: BT = 4096*4, V = 32000, H = 4096 ==> inc_factor = 8, chunk_size = 2048
     BT, H = _input.shape
     V = weight.shape[0]
+    assert V > 0, (
+        f"weight must have a non-empty vocab dimension, got weight.shape={tuple(weight.shape)}. "
+        "This usually means the weight tensor has not been materialized yet, e.g. when using "
+        "DeepSpeed ZeRO-3 and the parameter is accessed directly instead of through the module "
+        "forward (which triggers the all-gather). Gather the parameter before calling this function."
+    )
 
     # widen the transient logits budget to C x BT x H (C=1 is a memory floor, not a perf target)
     inc_factor = triton.cdiv(V, _CHUNK_MEM_CONST * H)
