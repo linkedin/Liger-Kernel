@@ -30,7 +30,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 option(LIGER_CUTE_BUILD_BINDINGS
     "Build the torch/pybind11 _C extension (requires torch). OFF builds only \
-the torch-free core, which is all step 3.1 of the wheel build needs." ON)
+the torch-free TVM FFI core used by the lck wheel." OFF)
 
 # Core-reuse knob: when set to a directory containing a prebuilt
 # libliger_cute_kernels.so, the core is NOT compiled from source — it is linked
@@ -120,5 +120,5 @@ endif()
 
 # Bindings are opt-in and pull in torch + pybind11.
 if(LIGER_CUTE_BUILD_BINDINGS)
-    add_subdirectory(csrc/bindings)
+    message(FATAL_ERROR "The legacy pybind _C bindings depended on the removed TensorView ABI. Use TVM FFI instead.")
 endif()

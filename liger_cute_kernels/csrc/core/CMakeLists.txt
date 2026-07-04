@@ -17,10 +17,14 @@ file(GLOB_RECURSE LIGER_CUTE_CORE_SOURCES
 # The recursive glob above would otherwise sweep it into the torch-free core and
 # break the build on its `#include <torch/torch.h>`. Keep it out.
 list(FILTER LIGER_CUTE_CORE_SOURCES EXCLUDE REGEX "/src/moe/tune/")
+# The legacy TensorView ABI is no longer part of libliger_cute_kernels.so.
+# Tensor-carrying entry points are exported through TVM FFI.
+list(FILTER LIGER_CUTE_CORE_SOURCES EXCLUDE REGEX "/src/tensor_view\\.cpp$")
 file(GLOB_RECURSE LIGER_CUTE_CORE_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.cuh"
 )
+list(FILTER LIGER_CUTE_CORE_HEADERS EXCLUDE REGEX "/include/liger_cute/tensor_view\\.h$")
 
 add_library(liger_cute_kernels SHARED
     ${LIGER_CUTE_CORE_SOURCES}

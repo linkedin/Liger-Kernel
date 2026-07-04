@@ -3,10 +3,9 @@
 // Compiled with separable compilation. Do NOT link liger_comm_kernels library.
 //
 // Torch-free core (liger_cute): ported from LigerCommKernels' moe_bwd.cu. The
-// device kernel + templated launcher are upstream-verbatim (namespace liger);
-// the public entry is the flat extern "C" liger_cute_moe_fused_bwd_bf16_auto ABI
-// (TensorView<N> in/out, status code, stream supplied by the binding). See
-// moe.cu's header comment for the shared infra/shim conventions.
+// device kernel + templated launcher are upstream-verbatim (namespace liger).
+// Tensor-carrying backward calls are exported through TVM FFI and lower directly
+// into MoeBwdArgs.
 #define LIGER_CUTE_BUILDING 1
 
 #include <nvshmem.h>
@@ -26,7 +25,6 @@
 
 #include "liger_cute/moe.h"
 #include "liger_cute/check.h"
-#include "liger_cute/tensor_view.h"
 #include "liger_cute/detail/status.h"
 
 #include "moe.cuh"
@@ -1705,105 +1703,3 @@ moe_bwd_list_compiled_configs() {
 }
 
 } // namespace liger
-
-// ============================================================================
-// Flat extern "C" ABI — backward (declared in liger_cute/moe.h)
-// ============================================================================
-
-namespace {
-
-using liger_cute::detail::guarded;
-
-template <int N>
-void bwd_require_dtype(const liger_cute::TensorView<N>& v, const char* name,
-                       liger_cute_dtype_t want) {
-	LIGER_CHECK(v.dtype == want, "moe_bwd: input '", name, "' must be ",
-	            liger_cute_dtype_string(want), ", got ", liger_cute_dtype_string(v.dtype));
-}
-
-}  // namespace
-
-extern "C" {
-
-liger_cute_status_t liger_cute_moe_fused_bwd_bf16_auto(
-		const liger_cute::TensorView<2> dY,
-		const liger_cute::TensorView<2> Y_fwd,
-		const liger_cute::TensorView<2> x_sorted,
-		const liger_cute::TensorView<1> token_expert_slots,
-		const liger_cute::TensorView<1> tile_expert_ids,
-		const liger_cute::TensorView<2> expert_offsets,
-		const liger_cute::TensorView<2> expert_indices,
-		const liger_cute::TensorView<2> expert_weights,
-		const liger_cute::TensorView<3> all_B,
-		const liger_cute::TensorView<3> all_C,
-		const liger_cute::TensorView<3> all_A,
-		const int num_experts,
-		const int top_k,
-		const int64_t team_handle,
-		const int64_t stream_handle,
-		const int fwd_tile_m,
-		liger_cute::TensorView<2>* dX_out,
-		liger_cute::TensorView<3>* dB_out,
-		liger_cute::TensorView<3>* dC_out,
-		liger_cute::TensorView<3>* dA_out,
-		liger_cute::TensorView<2>* dW_out) {
-	return guarded([&]() -> liger_cute_status_t {
-		const liger::MoeSymmConfig& cfg = liger::get_symm_config();
-		LIGER_CHECK(cfg.initialized,
-			"moe_fused_bwd_bf16_auto: call liger_cute_moe_configure_symmetric first");
-		LIGER_CHECK(fwd_tile_m == 64 || fwd_tile_m == 128,
-			"moe_fused_bwd_bf16_auto: fwd_tile_m must be 64 or 128, got ", fwd_tile_m);
-
-		// ── Input validation ────────────────────────────────────────────────
-		bwd_require_dtype(dY, "dY", LIGER_CUTE_DTYPE_BFLOAT16);
-		bwd_require_dtype(x_sorted, "x_sorted", LIGER_CUTE_DTYPE_BFLOAT16);
-		bwd_require_dtype(expert_weights, "expert_weights", LIGER_CUTE_DTYPE_BFLOAT16);
-		bwd_require_dtype(expert_indices, "expert_indices", LIGER_CUTE_DTYPE_INT32);
-		LIGER_CHECK(all_B.dtype == LIGER_CUTE_DTYPE_BFLOAT16 &&
-		                all_C.dtype == LIGER_CUTE_DTYPE_BFLOAT16 &&
-		                all_A.dtype == LIGER_CUTE_DTYPE_BFLOAT16,
-			"moe_fused_bwd_bf16_auto: expert weights all_B/all_C/all_A must be bf16");
-		LIGER_CHECK(top_k >= 1 && top_k <= cfg.max_top_k,
-			"moe_fused_bwd_bf16_auto: top_k (", top_k, ") out of range [1, ",
-			cfg.max_top_k, "]");
-		LIGER_CHECK(dX_out && dB_out && dC_out && dA_out && dW_out,
-			"moe_fused_bwd_bf16_auto: gradient output views must be non-null");
-
-		int device = 0;
-		if (cudaError_t e = cudaGetDevice(&device); e != cudaSuccess)
-			LIGER_FAIL_CUDA("moe_fused_bwd_bf16_auto: cudaGetDevice failed: ",
-			                cudaGetErrorString(e));
-
-		liger::MoeBwdArgs args{};
-		args.dY                = dY.data;
-		args.Y_fwd             = Y_fwd.data;
-		args.x_sorted          = x_sorted.data;
-		args.token_expert_slots = static_cast<int*>(token_expert_slots.data);
-		args.tile_expert_ids    = static_cast<int*>(tile_expert_ids.data);
-		args.expert_offsets     = static_cast<int*>(expert_offsets.data);
-		args.expert_indices     = static_cast<int*>(expert_indices.data);
-		args.expert_weights     = expert_weights.data;
-		args.all_B             = all_B.data;
-		args.all_C             = all_C.data;
-		args.all_A             = all_A.data;
-		args.num_tokens        = static_cast<int>(dY.sizes[0]);
-		args.hidden_dim        = static_cast<int>(dY.sizes[1]);
-		args.intermediate_dim  = static_cast<int>(all_B.sizes[1]);
-		args.experts_per_pe    = static_cast<int>(all_B.sizes[0]);
-		args.num_experts       = num_experts;
-		args.top_k             = top_k;
-		args.team              = static_cast<int>(team_handle);
-		args.stream            = reinterpret_cast<cudaStream_t>(stream_handle);
-		args.device            = device;
-		args.dX                = dX_out->data;
-		args.dB                = dB_out->data;
-		args.dC                = dC_out->data;
-		args.dA                = dA_out->data;
-		args.dW                = dW_out->data;
-
-		liger::moe_bwd_dispatch(args, fwd_tile_m);
-		return LIGER_CUTE_OK;
-	});
-}
-
-}  // extern "C"
