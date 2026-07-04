@@ -29,7 +29,12 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 option(LIGER_CUTE_BUILD_BINDINGS
+<<<<<<< HEAD
     "Deprecated compatibility option. The lck wheel now exposes tensor APIs through TVM FFI only." OFF)
+=======
+    "Build the torch/pybind11 _C extension (requires torch). OFF builds only \
+the torch-free TVM FFI core used by the lck wheel." OFF)
+>>>>>>> 3008029 (Remove legacy TensorView ABI from lck core)
 
 # Core-reuse knob: when set to a directory containing a prebuilt
 # libliger_cute_kernels.so, the core is NOT compiled from source — it is linked
@@ -144,7 +149,11 @@ else()
 endif()
 
 if(LIGER_CUTE_BUILD_BINDINGS)
+<<<<<<< HEAD
     message(FATAL_ERROR "LIGER_CUTE_BUILD_BINDINGS is deprecated. Tensor APIs are exposed through TVM FFI only.")
+=======
+    message(FATAL_ERROR "The legacy pybind _C bindings depended on the removed TensorView ABI. Use TVM FFI instead.")
+>>>>>>> 3008029 (Remove legacy TensorView ABI from lck core)
 endif()
 endif()  # NOT LIGER_CUTE_TESTS_ONLY
 
