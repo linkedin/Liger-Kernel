@@ -19,6 +19,8 @@ from cutlass.cutlass_dsl import dsl_user_op
 
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
 from liger_kernel.ops.utils import element_mul_kernel
+from liger_kernel.ops.utils import is_hip
+from liger_kernel.utils import infer_device_arch
 
 # Matches the Triton CE backward cap (NVIDIA-only path, so the NPU 2048 cap is irrelevant).
 _MAX_FUSED_SIZE = 65536 // 2
@@ -647,10 +649,18 @@ def _launch_ce_fwd(
     pt_ct = to_cute_tensor(pred_tok_out, assumed_align=8) if return_predicted_tokens else y_ct
     # weight is a fp32 (V,) vector when present (caller upcasts); dummy reuses int64 `y`.
     w_ct = to_cute_tensor(weight, assumed_align=4) if has_weight else y_ct
-    # warps/CTA: mirror Triton's Blackwell CE convention — 2-byte dtypes (bf16/fp16) are
-    # instruction-issue-bound -> 8 warps; fp32 is bandwidth-bound -> 32 warps. Baked into the
-    # kernel, so it's part of the compile key.
-    num_warps = 8 if x.element_size() == 2 else 32
+    # warps/CTA: mirror the Triton CE convention exactly (arch- and dtype-dependent):
+    #   Blackwell (B200, sm_100+) bf16/fp16 -> 8 (instruction-issue-bound); fp32 -> 32
+    #   Hopper (H100, sm_90) and earlier    -> 32 for all dtypes (bandwidth-bound)
+    #   AMD (ROCm)                          -> 16
+    # On Hopper the 8-warp bf16 kernel underfills the SMs and loses to the 32-warp Triton
+    # forward, so we gate the 8-warp choice on Blackwell only (matches ops/cross_entropy.py).
+    # Baked into the kernel, so it's part of the compile key.
+    if is_hip():
+        num_warps = 16
+    else:
+        is_blackwell = infer_device_arch().startswith("blackwell")
+        num_warps = 8 if (x.element_size() == 2 and is_blackwell) else 32
     key = (
         x.dtype,
         y.dtype,
