@@ -7,6 +7,7 @@ import cutlass
 import cutlass.cute as cute
 import cutlass.utils
 import torch
+import triton
 
 from cutlass import Float32
 from cutlass import Int32
@@ -17,6 +18,10 @@ from cutlass.cutlass_dsl import T
 from cutlass.cutlass_dsl import dsl_user_op
 
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
+from liger_kernel.ops.utils import element_mul_kernel
+
+# Matches the Triton CE backward cap (NVIDIA-only path, so the NPU 2048 cap is irrelevant).
+_MAX_FUSED_SIZE = 65536 // 2
 
 # log2(e) and ln(2): the online-softmax math is done in base-2 (hardware ex2.approx)
 # then converted, exactly mirroring the Triton kernel for numerical parity.
@@ -827,9 +832,23 @@ def cross_entropy_backward(_input, grad_output):
     # reduction="none": per-row upstream grad.
     if grad_output.ndim > 0:
         return _input * grad_output.unsqueeze(dim=1)
-    # reduction in {mean, sum}: scalar upstream grad. Fresh tensor (not in-place)
-    # to avoid the autograd anomalies the Triton path uses a kernel to dodge.
-    return _input * grad_output
+    # reduction in {mean, sum}: scalar upstream grad. Scale the saved gradient IN PLACE so we
+    # never materialize a second BT×V buffer (Triton-parity peak memory: 1x logits, not 2x).
+    # A raw Triton element-wise kernel is used instead of `_input *= grad_output` because an
+    # in-place torch mul on the tensor returned from forward bumps its autograd version counter
+    # and trips backward-through-backward anomalies; the raw kernel writes through the pointer
+    # without that bookkeeping — exactly how the Triton CE backward dodges the same issue.
+    BT, V = _input.shape
+    BLOCK_SIZE = min(_MAX_FUSED_SIZE, triton.next_power_of_2(V))
+    element_mul_kernel[(BT,)](
+        _input,
+        _input.stride(-2),
+        grad_output,
+        V,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=32,
+    )
+    return _input
 
 
 class LigerCrossEntropyFunction(torch.autograd.Function):
