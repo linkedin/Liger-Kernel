@@ -91,9 +91,7 @@ def fused_linear_cross_entropy_forward(
         assert torch.is_floating_point(ce_weight), (
             f"If given, weight has to be a Tensor of floating point dtype. Got: {ce_weight.dtype}"
         )
-        total_sum_non_ignore_ce_weight = torch.gather(
-            ce_weight, dim=0, index=target.masked_select(target_mask)
-        ).sum()
+        total_sum_non_ignore_ce_weight = torch.gather(ce_weight, dim=0, index=target.masked_select(target_mask)).sum()
         ce_weight_sum = ce_weight.sum()
         if ce_weight.stride(-1) != 1:
             ce_weight = ce_weight.contiguous()
