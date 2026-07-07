@@ -79,20 +79,22 @@ def fused_linear_cross_entropy_forward(
     token_accuracy_1d = torch.zeros(BT, dtype=torch.float32, device=device) if return_token_accuracy else None
     predicted_tokens_1d = torch.full((BT,), -1, dtype=torch.int64, device=device) if return_predicted_tokens else None
 
-    # TODO: evaluate how CUDA synchronization caused by .item() affects the speed
+    # Keep these reduction normalizers as 0-D device tensors (no .item()) so we don't force a
+    # device->host sync on the critical path before launching the per-chunk kernels; the kernel
+    # reads them from these pointers instead of receiving Python scalars.
     target_mask = target != ignore_index
-    total_n_non_ignore = target_mask.sum().item()
+    total_n_non_ignore = target_mask.sum()
     total_sum_non_ignore_ce_weight = total_n_non_ignore
-    ce_weight_sum = 0.0
+    ce_weight_sum = total_n_non_ignore  # dummy pointer; only read by the kernel when HAS_WEIGHT
     if ce_weight is not None:
         assert ce_weight.shape[0] == V, f"If given, weight has to be a Tensor of size V. Got: {ce_weight.shape}"
         assert torch.is_floating_point(ce_weight), (
             f"If given, weight has to be a Tensor of floating point dtype. Got: {ce_weight.dtype}"
         )
-        total_sum_non_ignore_ce_weight = (
-            torch.gather(ce_weight, dim=0, index=target.masked_select(target_mask)).sum().item()
-        )
-        ce_weight_sum = ce_weight.sum().item()
+        total_sum_non_ignore_ce_weight = torch.gather(
+            ce_weight, dim=0, index=target.masked_select(target_mask)
+        ).sum()
+        ce_weight_sum = ce_weight.sum()
         if ce_weight.stride(-1) != 1:
             ce_weight = ce_weight.contiguous()
 

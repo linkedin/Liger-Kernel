@@ -74,9 +74,9 @@ def liger_cross_entropy_kernel(
     token_accuracy_ptr: Pointer to tensor to store the per-token accuracy. No operation if RETURN_TOKEN_ACCURACY is 0.
     token_accuracy_stride (int): The stride of the token accuracy tensor.
     n_cols (int): The number of columns in the input tensor.
-    n_non_ignore (float): The number of non-ignored elements in the batch.
-    sum_non_ignore_weight (float): The sum of non-ignored target's weights in the batch.
-    weight_sum (float): The sum of weight tensor.
+    n_non_ignore: Pointer to a 0-D tensor holding the number of non-ignored elements in the batch.
+    sum_non_ignore_weight: Pointer to a 0-D tensor holding the sum of non-ignored target's weights in the batch.
+    weight_sum: Pointer to a 0-D tensor holding the sum of weight tensor.
     ignore_index (int): The index to ignore in the target.
     label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
     lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
@@ -122,6 +122,14 @@ def liger_cross_entropy_kernel(
         token_accuracy_ptr += program_id * token_accuracy_stride
     if RETURN_PREDICTED_TOKENS:
         predicted_tokens_ptr += program_id * predicted_tokens_stride
+
+    # The reduction normalizers are passed in as 0-D device tensors (pointers) rather than
+    # Python scalars so the host does not have to block on a .item() device->host sync before
+    # launching this kernel. Load them here and keep the same float semantics as before.
+    n_non_ignore = tl.load(n_non_ignore).to(tl.float32)
+    if HAS_WEIGHT:
+        sum_non_ignore_weight = tl.load(sum_non_ignore_weight).to(tl.float32)
+        weight_sum = tl.load(weight_sum).to(tl.float32)
 
     if HAS_WEIGHT:
         weight_y = tl.load(weight_ptr + y).cast(tl.float32)
@@ -352,20 +360,22 @@ def cross_entropy_forward(
     )
 
     target_mask = target != ignore_index
-    n_non_ignore = target_mask.sum().item()
+    # Keep the count as a 0-D device tensor (no .item()) so we don't force a device->host
+    # sync before launching the kernel; the kernel loads it from this pointer.
+    n_non_ignore = target_mask.sum()
     assert (target * target_mask).max() < _input.shape[-1], (
         f"Target {target.max()} is out of bounds. Expected < {_input.shape[-1]}"
     )
     assert (target * target_mask).min() >= 0, f"Target {target.min()} is out of bounds. Expected >= 0"
     sum_non_ignore_weight = n_non_ignore
-    weight_sum = 0.0
+    weight_sum = n_non_ignore  # dummy pointer; only read by the kernel when HAS_WEIGHT
     if weight is not None:
         assert weight.shape[0] == V, f"If given, weight has to be a Tensor of size V. Got: {weight.shape}"
         assert torch.is_floating_point(weight), (
             f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
         )
-        sum_non_ignore_weight = torch.gather(weight, dim=0, index=target.masked_select(target_mask)).sum().item()
-        weight_sum = weight.sum().item()
+        sum_non_ignore_weight = torch.gather(weight, dim=0, index=target.masked_select(target_mask)).sum()
+        weight_sum = weight.sum()
         # ensure weight is contiguous
         if weight.stride(-1) != 1:
             weight = weight.contiguous()
