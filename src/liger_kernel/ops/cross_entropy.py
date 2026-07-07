@@ -123,15 +123,14 @@ def liger_cross_entropy_kernel(
     if RETURN_PREDICTED_TOKENS:
         predicted_tokens_ptr += program_id * predicted_tokens_stride
 
-    # The reduction normalizers are passed in as 0-D device tensors (pointers) rather than
-    # Python scalars so the host does not have to block on a .item() device->host sync before
-    # launching this kernel. Load them here and keep the same float semantics as before.
+    # n_non_ignore, sum_non_ignore_weight and weight_sum arrive as 0-D device tensors
+    # (pointers), not Python scalars, so the host never blocks on a .item() sync before this
+    # kernel launches. The int64 count is cast to fp32 to keep the divisor precision the
+    # scalar path had.
     n_non_ignore = tl.load(n_non_ignore).to(tl.float32)
     if HAS_WEIGHT:
         sum_non_ignore_weight = tl.load(sum_non_ignore_weight).to(tl.float32)
         weight_sum = tl.load(weight_sum).to(tl.float32)
-
-    if HAS_WEIGHT:
         weight_y = tl.load(weight_ptr + y).cast(tl.float32)
 
     # Online softmax: 2 loads + 1 store (compared with 3 loads + 1 store for the safe softmax)
@@ -452,13 +451,14 @@ def cross_entropy_forward(
 
 
 def cross_entropy_backward(_input, grad_output):
-    # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
-    if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        pass
-    # If reduction is 'none'
-    elif grad_output.ndim > 0:
+    # If reduction is 'none', grad_output is a per-token vector: scale each row.
+    # (grad_output.ndim is a host-side shape check, so it does not force a sync.)
+    if grad_output.ndim > 0:
         _input = _input * grad_output.unsqueeze(dim=1)
-    # If reduction is ['mean', 'sum'], grad_output is just a scalar
+    # If reduction is ['mean', 'sum'], grad_output is just a scalar.
+    # When cross entropy is the last layer, grad_output is 1.0 and the multiply is a no-op;
+    # element_mul_kernel skips the work on-device in that case, so we avoid a host-side
+    # torch.equal() check that would force a device->host sync.
     # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
     # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
     else:

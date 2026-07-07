@@ -264,49 +264,51 @@ def fused_linear_cross_entropy_forward(
 
 
 def fused_linear_cross_entropy_backward(grad_output, grad_input, grad_weight, grad_bias):
-    # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
-    if not torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
-        # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
-        BT, H = grad_input.shape
-        n_rows = BT
-        BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
+    # If cross entropy is the last layer, grad_output is 1.0 and the multiply is a no-op.
+    # We always launch the kernels and let element_mul_kernel skip the work on-device when
+    # grad_output == 1.0, instead of a host-side torch.equal() check that would force a
+    # device->host sync.
+    # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
+    # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
+    BT, H = grad_input.shape
+    n_rows = BT
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
+
+    element_mul_kernel[(n_rows,)](
+        grad_input,
+        grad_input.stride(-2),
+        grad_output,
+        H,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=32 if not is_hip() else 16,
+    )
+
+    # handle grad_weight
+    if grad_weight is not None:
+        V, H = grad_weight.shape
+        n_rows = V
 
         element_mul_kernel[(n_rows,)](
-            grad_input,
-            grad_input.stride(-2),
+            grad_weight,
+            grad_weight.stride(-2),
             grad_output,
             H,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32 if not is_hip() else 16,
         )
 
-        # handle grad_weight
-        if grad_weight is not None:
-            V, H = grad_weight.shape
-            n_rows = V
+    if grad_bias is not None:
+        V = grad_bias.shape[0]
+        n_rows = V
 
-            element_mul_kernel[(n_rows,)](
-                grad_weight,
-                grad_weight.stride(-2),
-                grad_output,
-                H,
-                BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32 if not is_hip() else 16,
-            )
-
-        if grad_bias is not None:
-            V = grad_bias.shape[0]
-            n_rows = V
-
-            element_mul_kernel[(n_rows,)](
-                grad_bias,
-                grad_bias.stride(-1),
-                grad_output,
-                1,
-                BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32 if not is_hip() else 16,
-            )
+        element_mul_kernel[(n_rows,)](
+            grad_bias,
+            grad_bias.stride(-1),
+            grad_output,
+            1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=32 if not is_hip() else 16,
+        )
     return grad_input, grad_weight, grad_bias
 
 
