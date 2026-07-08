@@ -46,9 +46,39 @@
 #include <cutlass/pipeline/sm90_pipeline.hpp>
 #include <cutlass/arch/barrier.h>
 
+// SM100 (Blackwell / UMMA) support for the Compute=100 consumer
+// specialization in mlp2_t_fused.cuh. These headers are header-only and safe
+// to include under an sm_90a build — the tcgen05 PTX they emit is guarded by
+// CUTE_ARCH_TCGEN05_* and only the Compute=100 body (itself gated on
+// __CUDA_ARCH__ >= 1000) ever instantiates it.
+#include <cute/arch/mma_sm100_umma.hpp>
+#include <cute/atom/mma_traits_sm100.hpp>
+#include <cute/arch/tmem_allocator_sm100.hpp>
+#include <cute/arch/copy_sm100.hpp>
+#include <cute/atom/copy_traits_sm100.hpp>
+#include <cutlass/pipeline/sm100_pipeline.hpp>  // PipelineTmaUmmaAsync, PipelineUmmaAsync
+
 namespace liger {
 
 using namespace cute;
+
+// ═══════════════════════════════════════════════════════════════════
+// TMEM → register load-op selector (SM100 / Compute=100 epilogue)
+// ═══════════════════════════════════════════════════════════════════
+// tcgen05.ld.32x32b.xN loads N 32-bit words per datapath lane per instruction.
+// The mlp2_t UMMA epilogue maps one thread to one TMEM datapath row and reads
+// an EpiChunkN-wide column strip per row, so the atom's per-thread register
+// count (the "Nx" repeat, == RegNumDst) must equal EpiChunkN. Pick it at
+// compile time from EpiChunkN (default 32 for mlp2_t) so any divisor of
+// WgTileN gets a matching load op.
+template <int EpiChunkN> struct TmemLoadOpSelector;
+template <> struct TmemLoadOpSelector<8>   { using Op = SM100_TMEM_LOAD_32dp32b8x;   };
+template <> struct TmemLoadOpSelector<16>  { using Op = SM100_TMEM_LOAD_32dp32b16x;  };
+template <> struct TmemLoadOpSelector<32>  { using Op = SM100_TMEM_LOAD_32dp32b32x;  };
+template <> struct TmemLoadOpSelector<64>  { using Op = SM100_TMEM_LOAD_32dp32b64x;  };
+template <> struct TmemLoadOpSelector<128> { using Op = SM100_TMEM_LOAD_32dp32b128x; };
+template <int EpiChunkN>
+using TmemLoadOp = typename TmemLoadOpSelector<EpiChunkN>::Op;
 
 // ═══════════════════════════════════════════════════════════════════
 // Traits
@@ -135,6 +165,33 @@ struct Mlp2TTraits {
 
 	using MainloopPipeline = cutlass::PipelineTmaAsync<Stages>;
 	using PipelineState    = cutlass::PipelineState<Stages>;
+
+	// SM100 (Compute=100) pipelines — single CTA, no cluster. The mainloop
+	// pipeline is the UMMA-aware TMA pipeline (its consumer_release issues the
+	// UMMA-gated smem-buffer arrival); the accumulator pipeline hands the single
+	// TMEM accumulator from the MMA warp to the epilogue warps. See
+	// Mlp2TFusedConsumerImpl<100> in mlp2_t_fused.cuh. The Blackwell launcher
+	// must build the mainloop pipe with num_consumers=1 (one umma_arrive per
+	// stage).
+	using MainloopPipelineUmma = cutlass::PipelineTmaUmmaAsync<
+		Stages, cute::Shape<cute::_1, cute::_1, cute::_1>,
+		cute::Shape<cute::_1, cute::_1, cute::_1>>;
+	// One accumulator, reused each n-tile → AccStages=1 (no TMEM double-buffer).
+	static constexpr int AccStages = 1;
+	using AccumulatorPipeline = cutlass::PipelineUmmaAsync<AccStages>;
+
+	// SM100 UMMA TiledMMA — one 1SM tcgen05 atom spanning the whole
+	// (TileM, TileN) tile with the accumulator in TMEM. THE mlp2_t-specific
+	// choice: operand A = Z is K-major (UMMA::Major::K), operand B = A (the
+	// weight) is MN-major (UMMA::Major::MN) — mlp2_fused uses <K,K>. The B
+	// operand descriptor is produced by make_umma_desc<Major::MN> reading
+	// SmemLayoutW's (MN-contiguous, SW128) stride; SmemLayoutW stays built from
+	// Layout_MN_SW128_Atom + Step<_2,_1>, which is exactly the canonical
+	// Major-MN layout make_umma_desc<Major::MN> accepts (mma_traits_sm100.hpp).
+	using TiledMmaUmma = decltype(make_tiled_mma(
+		SM100_MMA_F16BF16_SS<Element, Element, ElementAccum,
+		                     TileM, TileN,
+		                     UMMA::Major::K, UMMA::Major::MN>{}));
 
 	static constexpr int TmaTransBytesZ =
 		static_cast<int>(size(SmemLayoutZ_1{}) * sizeof(Element));
