@@ -85,7 +85,7 @@ def test_routing_metadata_invariants(T, E, K):
     logits = torch.randn(T, E, device=device)
     top_k_index = torch.topk(logits, K, dim=-1).indices.to(torch.int32)
 
-    expert_freq, expert_freq_offset, x_gather_idx, s_scatter_idx, s_rev_scatter_idx, _, _ = compute_routing_metadata(
+    expert_freq, expert_freq_offset, x_gather_idx, s_scatter_idx, s_rev_scatter_idx, *_ = compute_routing_metadata(
         top_k_index, E
     )
 
@@ -208,3 +208,90 @@ def test_K_equals_E():
     out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     ref = _reference_moe_forward(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-4)
+
+
+def test_inference_no_grad_path():
+    """No input requires grad → the fast inference path (no pre_act store) must
+    produce the same output as the training path."""
+    T, E, H, intermediate_dim, K = 256, 8, 128, 64, 2
+    dtype = torch.float32
+    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
+
+    with torch.no_grad():
+        out_infer = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
+
+    x2 = x.clone().requires_grad_(True)
+    out_train = LigerFusedMoEFunction.apply(x2, gate_up_proj, down_proj, top_k_index, top_k_weights)
+    torch.testing.assert_close(out_infer, out_train, atol=1e-5, rtol=1e-5)
+
+
+def test_retain_graph_second_backward():
+    """Default mode: backward twice over the same graph (retain_graph) must work
+    and produce identical gradients (no in-place clobbering of saved tensors)."""
+    T, E, H, intermediate_dim, K = 64, 4, 64, 32, 2
+    dtype = torch.float32
+    x, gate_up_proj, down_proj, top_k_index, top_k_weights = _make_inputs(T, E, H, intermediate_dim, K, dtype, device)
+    x = x.requires_grad_(True)
+    out = LigerFusedMoEFunction.apply(x, gate_up_proj, down_proj, top_k_index, top_k_weights)
+    out.sum().backward(retain_graph=True)
+    g1 = x.grad.clone()
+    x.grad = None
+    out.sum().backward()
+    torch.testing.assert_close(x.grad, g1)
+
+
+_MEM_EFFICIENT_SUBPROCESS_SCRIPT = """
+import torch
+import torch.nn as nn
+
+from liger_kernel.ops import LigerFusedMoEFunction
+
+from test.transformers.test_fused_moe import _make_inputs, _reference_moe_forward
+
+device = "cuda"
+T, E, H, intermediate_dim, K = 128, 4, 64, 32, 2
+x, gup, dn, idx, wts = _make_inputs(T, E, H, intermediate_dim, K, torch.float32, device)
+
+x1, gup1, dn1, wts1 = (t.detach().clone().requires_grad_(True) for t in (x, gup, dn, wts))
+x2, gup2, dn2, wts2 = (t.detach().clone().requires_grad_(True) for t in (x, gup, dn, wts))
+
+ref = _reference_moe_forward(x1, gup1, dn1, idx, wts1)
+ref.sum().backward()
+out = LigerFusedMoEFunction.apply(x2, gup2, dn2, idx, wts2)
+out.sum().backward(retain_graph=True)
+
+torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-4)
+for a, b in [(x2, x1), (gup2, gup1), (dn2, dn1), (wts2, wts1)]:
+    torch.testing.assert_close(a.grad, b.grad, atol=3e-3, rtol=1e-2)
+
+# in-place mode: a second backward over the same graph must raise, not corrupt
+try:
+    out.sum().backward()
+except RuntimeError as e:
+    assert "modified by an inplace operation" in str(e), e
+else:
+    raise AssertionError("second backward did not raise in memory-efficient mode")
+print("MEM_EFFICIENT_OK")
+"""
+
+
+@pytest.mark.skipif(device != "cuda", reason="subprocess script assumes cuda")
+def test_memory_efficient_mode():
+    """LIGER_FUSED_MOE_MEMORY_EFFICIENT=1 (import-time flag → subprocess):
+    gradients must match the reference, and a second backward must raise (SwiGLU
+    backward runs in place over the saved pre-activations, guarded by a version
+    bump)."""
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ, LIGER_FUSED_MOE_MEMORY_EFFICIENT="1")
+    result = subprocess.run(
+        [sys.executable, "-c", _MEM_EFFICIENT_SUBPROCESS_SCRIPT],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "MEM_EFFICIENT_OK" in result.stdout
