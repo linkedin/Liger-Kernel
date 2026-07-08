@@ -25,3 +25,6 @@ uv.lock
 benchmark/visualizations
 .vscode/
 .coverage
+
+liger_cute_kernels/build100a/
+liger_cute_kernels/build90a/
