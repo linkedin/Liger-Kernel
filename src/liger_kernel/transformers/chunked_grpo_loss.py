@@ -64,9 +64,7 @@ def chunked_triton_grpo_loss(
     if loss_type not in _SUPPORTED_LOSS_TYPES:
         raise ValueError(f"Unsupported loss_type '{loss_type}' for chunked Triton GRPO loss.")
     if importance_sampling_level not in ("token", "sequence"):
-        raise ValueError(
-            f"importance_sampling_level must be 'token' or 'sequence', got {importance_sampling_level}"
-        )
+        raise ValueError(f"importance_sampling_level must be 'token' or 'sequence', got {importance_sampling_level}")
     if delta is not None and loss_type not in _PPO_CLIP_LOSS_TYPES:
         raise ValueError(f"delta (two-sided clipping) is not supported for loss_type='{loss_type}'.")
     if beta != 0.0 and ref_logp is None:
@@ -106,9 +104,7 @@ def chunked_triton_grpo_loss(
         is_clipped = torch.zeros_like(coef_1)
     else:  # standard PPO clipping: grpo / bnpo / dr_grpo / dapo / luspo
         coef_2 = torch.clamp(coef_1, 1 - eps_low, 1 + eps_high)
-        is_clipped = (((coef_1 < 1 - eps_low) & (adv < 0)) | ((coef_1 > 1 + eps_high) & (adv > 0))).to(
-            logp.dtype
-        )
+        is_clipped = (((coef_1 < 1 - eps_low) & (adv < 0)) | ((coef_1 > 1 + eps_high) & (adv > 0))).to(logp.dtype)
         if delta is not None:
             coef_1 = torch.clamp(coef_1, max=delta)
         per_token_loss = -torch.min(coef_1 * adv, coef_2 * adv)

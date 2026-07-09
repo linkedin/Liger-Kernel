@@ -163,13 +163,9 @@ CONFIGS = {
     "dr_grpo_token": dict(
         loss_type="dr_grpo", importance_sampling_level="token", beta=0.0, use_old=True, use_max_len=True
     ),
-    "cispo_token": dict(
-        loss_type="cispo", importance_sampling_level="token", beta=0.0, use_old=True, eps_high=4.0
-    ),
+    "cispo_token": dict(loss_type="cispo", importance_sampling_level="token", beta=0.0, use_old=True, eps_high=4.0),
     "sapo_token": dict(loss_type="sapo", importance_sampling_level="token", beta=0.0, use_old=True),
-    "dapo_token_delta": dict(
-        loss_type="dapo", importance_sampling_level="token", beta=0.0, use_old=True, delta=4.0
-    ),
+    "dapo_token_delta": dict(loss_type="dapo", importance_sampling_level="token", beta=0.0, use_old=True, delta=4.0),
     "dapo_seq_vllm_ratio": dict(
         loss_type="dapo", importance_sampling_level="sequence", beta=0.0, use_old=True, use_vllm_ratio=True
     ),
@@ -516,9 +512,7 @@ def test_edge_shapes_and_dtypes(batch, seq_len, vocab, dtype):
     hidden.grad = None
     weight.grad = None
     logits = (hidden @ weight.t())[:, :-1, :]
-    loss_ref = torch_grpo_loss_from_logits(
-        logits, old, None, completion_ids, advantages, mask, **kwargs
-    )
+    loss_ref = torch_grpo_loss_from_logits(logits, old, None, completion_ids, advantages, mask, **kwargs)
     loss_ref.backward()
     rel = abs(loss.item() - loss_ref.item()) / max(abs(loss_ref.item()), 1e-6)
     assert rel < 2e-2, f"loss {loss.item():.6f} vs ref {loss_ref.item():.6f}"
@@ -539,8 +533,10 @@ def test_zero_mask_and_extreme_scale():
         hidden = (torch.randn(batch, seq_len, HIDDEN_SIZE, device=device) * scale).to(torch.bfloat16)
         weight = (torch.randn(vocab, HIDDEN_SIZE, device=device) * scale).to(torch.bfloat16)
         ids = torch.randint(0, vocab, (batch, seq_len), device=device)
-        mask = torch.zeros(batch, seq_len, device=device) if mask_mode == "zeros" else torch.ones(
-            batch, seq_len, device=device
+        mask = (
+            torch.zeros(batch, seq_len, device=device)
+            if mask_mode == "zeros"
+            else torch.ones(batch, seq_len, device=device)
         )
         adv = torch.randn(batch, device=device)
         loss, _ = chunked_triton_grpo_loss(

@@ -44,6 +44,8 @@ _NUM_STAGES_FP32 = 2
 
 def _num_stages(dtype: torch.dtype) -> int:
     return _NUM_STAGES_FP32 if dtype == torch.float32 else _NUM_STAGES
+
+
 # Sequence-chunk size for the backward grad_logits buffer
 # (4096 x 248320 bf16 ~= 1.9 GiB).
 _BWD_SEQ_CHUNK = 4096
