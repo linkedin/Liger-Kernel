@@ -443,7 +443,130 @@ def test_end_results_odd_vocab():
 
 
 # ---------------------------------------------------------------------------
-# 4. bitwise determinism
+# 4. edge shapes, dtypes, and extreme values
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len, vocab, dtype",
+    [
+        (1, 1, 256, torch.bfloat16),  # single token
+        (1, 100, 8192, torch.bfloat16),  # N below one row tile (BM=128)
+        (1, 129, 8192, torch.bfloat16),  # one over a row tile
+        (1, 4097, 8192, torch.bfloat16),  # one over the backward chunk (4096)
+        (3, 2731, 8192, torch.bfloat16),  # ragged multi-chunk (N=8193)
+        (3, 77, 250, torch.bfloat16),  # vocab smaller than the vocab tile (BN=256)
+        (3, 77, 251, torch.bfloat16),  # prime vocab
+        (2, 33, 2, torch.bfloat16),  # degenerate two-token vocab
+        (64, 3, 8192, torch.bfloat16),  # wide batch, tiny sequences
+        (4, 512, 50257, torch.float16),
+        (4, 512, 50257, torch.float32),  # needs the 2-stage fp32 SMEM config
+        (3, 77, 250, torch.float32),  # fp32 + sub-tile vocab
+    ],
+)
+def test_edge_shapes_and_dtypes(batch, seq_len, vocab, dtype):
+    set_seed(7)
+    hidden = (torch.randn(batch, seq_len + 1, HIDDEN_SIZE, device=device) * 0.02).to(dtype)
+    weight = (torch.randn(vocab, HIDDEN_SIZE, device=device) * 0.02).to(dtype)
+    completion_ids = torch.randint(0, vocab, (batch, seq_len), device=device)
+    # pin some targets to the vocab boundaries (exercises tail masking)
+    completion_ids[:, 0] = 0
+    completion_ids[:, -1] = vocab - 1
+    lengths = torch.randint(max(seq_len // 2, 1), seq_len + 1, (batch,), device=device)
+    mask = (torch.arange(seq_len, device=device).unsqueeze(0) < lengths.unsqueeze(1)).float()
+    advantages = torch.randn(batch, device=device)
+
+    hidden2d = hidden[:, :-1, :].reshape(-1, HIDDEN_SIZE).contiguous()
+    ids_flat = completion_ids.reshape(-1)
+    logp, lse = chunked_selective_log_softmax_with_lse(hidden2d, weight, ids_flat, 1.0)
+    logp_ref, lse_ref = fp32_logp_lse(hidden2d, weight, ids_flat, 1.0)
+    atol = 1e-2 if dtype != torch.float32 else 1e-3
+    assert torch.allclose(logp, logp_ref, atol=atol, rtol=1e-3)
+    assert torch.allclose(lse, lse_ref, atol=atol, rtol=1e-3)
+
+    old = logp_ref.view(batch, seq_len) + torch.randn(batch, seq_len, device=device) * 0.3
+    kwargs = dict(
+        temperature=1.0,
+        beta=0.0,
+        eps_low=0.2,
+        eps_high=0.2,
+        loss_type="dapo",
+        max_completion_length=None,
+        importance_sampling_level="sequence",
+        delta=None,
+        use_bias_correction_kl=False,
+        num_items_in_batch=mask.sum(),
+        vllm_is_ratio=None,
+    )
+    hidden.requires_grad_(True)
+    weight.requires_grad_(True)
+    loss, _ = chunked_triton_grpo_loss(
+        hidden[:, :-1, :].contiguous(),
+        weight,
+        old,
+        None,
+        completion_ids,
+        advantages,
+        mask,
+        reduce=True,
+        **kwargs,
+    )
+    loss.backward()
+    gh, gw = hidden.grad.float().flatten().clone(), weight.grad.float().flatten().clone()
+    hidden.grad = None
+    weight.grad = None
+    logits = (hidden @ weight.t())[:, :-1, :]
+    loss_ref = torch_grpo_loss_from_logits(
+        logits, old, None, completion_ids, advantages, mask, **kwargs
+    )
+    loss_ref.backward()
+    rel = abs(loss.item() - loss_ref.item()) / max(abs(loss_ref.item()), 1e-6)
+    assert rel < 2e-2, f"loss {loss.item():.6f} vs ref {loss_ref.item():.6f}"
+    for got, ref in ((gh, hidden.grad), (gw, weight.grad)):
+        ref = ref.float().flatten()
+        if got.norm() == 0 and ref.norm() == 0:
+            continue
+        cos = torch.nn.functional.cosine_similarity(got, ref, dim=0).item()
+        assert cos > 0.999, f"grad cosine {cos:.6f}"
+    hidden.requires_grad_(False)
+    weight.requires_grad_(False)
+
+
+def test_zero_mask_and_extreme_scale():
+    set_seed(8)
+    batch, seq_len, vocab = 4, 256, 8192
+    for mask_mode, scale in (("zeros", 0.02), ("ones", 5.0)):
+        hidden = (torch.randn(batch, seq_len, HIDDEN_SIZE, device=device) * scale).to(torch.bfloat16)
+        weight = (torch.randn(vocab, HIDDEN_SIZE, device=device) * scale).to(torch.bfloat16)
+        ids = torch.randint(0, vocab, (batch, seq_len), device=device)
+        mask = torch.zeros(batch, seq_len, device=device) if mask_mode == "zeros" else torch.ones(
+            batch, seq_len, device=device
+        )
+        adv = torch.randn(batch, device=device)
+        loss, _ = chunked_triton_grpo_loss(
+            hidden,
+            weight,
+            None,
+            None,
+            ids,
+            adv,
+            mask,
+            temperature=1.0,
+            beta=0.0,
+            eps_low=0.2,
+            eps_high=0.2,
+            loss_type="dapo",
+            importance_sampling_level="sequence",
+            reduce=True,
+            num_items_in_batch=mask.sum(),
+        )
+        assert torch.isfinite(loss), f"non-finite loss with mask={mask_mode}, scale={scale}"
+        if mask_mode == "zeros":
+            assert loss.item() == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 5. bitwise determinism
 # ---------------------------------------------------------------------------
 
 

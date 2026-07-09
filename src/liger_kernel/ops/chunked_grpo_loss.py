@@ -37,6 +37,13 @@ _BN = 256
 _BK = 64
 _NUM_WARPS = 8
 _NUM_STAGES = 3
+# fp32 inputs double the tile footprint; 3 stages exceeds sm_103's 228 KB SMEM
+# (needs ~288 KB), so drop to 2 pipeline stages for fp32.
+_NUM_STAGES_FP32 = 2
+
+
+def _num_stages(dtype: torch.dtype) -> int:
+    return _NUM_STAGES_FP32 if dtype == torch.float32 else _NUM_STAGES
 # Sequence-chunk size for the backward grad_logits buffer
 # (4096 x 248320 bf16 ~= 1.9 GiB).
 _BWD_SEQ_CHUNK = 4096
@@ -208,7 +215,7 @@ class ChunkedSelectiveLogPFunction(torch.autograd.Function):
             BN=_BN,
             BK=_BK,
             num_warps=_NUM_WARPS,
-            num_stages=_NUM_STAGES,
+            num_stages=_num_stages(hidden.dtype),
         )
         ctx.save_for_backward(hidden, weight, targets, lse)
         ctx.temperature = temperature
@@ -251,7 +258,7 @@ class ChunkedSelectiveLogPFunction(torch.autograd.Function):
                 BN=_BN,
                 BK=_BK,
                 num_warps=_NUM_WARPS,
-                num_stages=_NUM_STAGES,
+                num_stages=_num_stages(hidden.dtype),
             )
             gl = buf[:n]
             torch.matmul(gl, weight, out=grad_hidden[row0 : row0 + n])
@@ -290,7 +297,7 @@ def chunked_selective_log_softmax_with_lse(hidden, weight, targets, temperature=
         BN=_BN,
         BK=_BK,
         num_warps=_NUM_WARPS,
-        num_stages=_NUM_STAGES,
+        num_stages=_num_stages(hidden.dtype),
     )
     return logp, lse
 
