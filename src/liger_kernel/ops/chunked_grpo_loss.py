@@ -221,13 +221,24 @@ class ChunkedSelectiveLogPFunction(torch.autograd.Function):
         )
         ctx.save_for_backward(hidden, weight, targets, lse)
         ctx.temperature = temperature
+        # Record dims at forward time: under sharded training (ZeRO-3 / FSDP) the
+        # weight tensor's storage may be repartitioned between forward and backward,
+        # so its shape cannot be re-read in backward.
+        ctx.vocab_size = v
         return logp
 
     @staticmethod
     def backward(ctx, grad_logp):
         hidden, weight, targets, lse = ctx.saved_tensors
         n_tokens, h = hidden.shape
-        v = weight.shape[0]
+        v = ctx.vocab_size
+        if weight.numel() != v * h:
+            raise RuntimeError(
+                f"lm_head weight is not materialized in backward (numel={weight.numel()}, expected {v * h}). "
+                "Under ZeRO-3/FSDP the fused loss must be invoked inside the weight-owning module's forward "
+                "(e.g. via forward redirection through lm_head) so the sharding wrapper re-gathers it for the "
+                "backward window."
+            )
         even_v = v % _BN == 0
         grad_logp = grad_logp.contiguous()
 
