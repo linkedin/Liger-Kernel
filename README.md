@@ -202,7 +202,27 @@ cuTile is an optional CUDA-only DSL implementation. After installing the `cutile
 LIGER_KERNEL_IMPL=cutile python your_script.py
 ```
 
-`LIGER_KERNEL_IMPL` selects an opt-in implementation registered with Liger (currently `cutile`). Selecting one on an unsupported device, or without the required dependencies installed, raises an error.
+`LIGER_KERNEL_IMPL` selects an opt-in implementation registered with Liger
+(currently `cutile`, `cutedsl`, or `flydsl`). Selecting one on an unsupported
+device, or without the required dependencies installed, raises an error.
+
+### Optional: FlyDSL (ROCm / AMD)
+
+[FlyDSL](https://github.com/ROCm/FlyDSL) is an optional AMD-oriented Python DSL +
+MLIR compiler. Install the extra, then select it explicitly:
+
+```bash
+pip install -e ".[flydsl]"
+LIGER_KERNEL_IMPL=flydsl python your_script.py
+```
+
+Initial FlyDSL ops live under `src/liger_kernel/ops/flydsl/` (starting with
+fused cross-entropy and fused linear cross-entropy). Unimplemented ops fall
+back to the default Triton kernels.
+
+CuteDSL (`LIGER_KERNEL_IMPL=cutedsl`) and cuTile (`LIGER_KERNEL_IMPL=cutile`)
+likewise provide fused linear cross-entropy with the same BT-chunking pattern
+so peak logits memory stays at `chunk×V` rather than `BT×V`.
 
 
 ## Getting Started
