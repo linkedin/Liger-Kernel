@@ -10,6 +10,7 @@ projects gradients back to H. Chunk sizing matches Triton FLCE / PyTorch
 import torch
 
 from liger_kernel.ops.flydsl.ops.cross_entropy import launch_ce_on_logits
+from liger_kernel.ops.flydsl.ops.cross_entropy import make_norm
 from liger_kernel.ops.flydsl.ops.utils import next_power_of_2
 from liger_kernel.ops.utils import amp_custom_bwd
 from liger_kernel.ops.utils import amp_custom_fwd
@@ -85,14 +86,20 @@ def fused_linear_cross_entropy_forward(
         grad_weight = None
         grad_bias = None
 
-    loss_1d = torch.zeros(BT, dtype=_input.dtype, device=device)
-    z_loss_1d = torch.zeros(BT, dtype=_input.dtype, device=device) if return_z_loss else None
+    # fp32 accumulators: these hold per-row losses that are summed below, and a
+    # 16-bit buffer overflows once BT * loss exceeds the dtype range (fp16 caps at
+    # 65504). Triton FLCE and the cutedsl backend use fp32 here for the same reason.
+    loss_1d = torch.zeros(BT, dtype=torch.float32, device=device)
+    z_loss_1d = torch.zeros(BT, dtype=torch.float32, device=device) if return_z_loss else None
 
-    # Keep the non-ignore count on-device — no .item()/.tolist() D2H sync. The CE
-    # kernel always runs with inv_n=1 (sum-style); mean reduction is applied below
-    # by scaling loss/grads with a device reciprocal.
+    # Keep the non-ignore count on-device — no .item()/.tolist() D2H sync. The
+    # reciprocal is passed to the kernel as a tensor, so the mean is folded into
+    # the loss and the logits gradient *inside* the kernel. Everything derived
+    # from the logits gradient (grad_input/weight/bias) is therefore already
+    # normalized, and no post-hoc rescale pass is needed.
     target_mask = target != ignore_index
     n_non_ignore = target_mask.sum()
+    norm = make_norm(n_non_ignore, reduction, device)
 
     target_i32 = target.to(torch.int32)
 
@@ -114,8 +121,7 @@ def fused_linear_cross_entropy_forward(
             logits_chunk,
             target_chunk,
             loss_slice,
-            inv_n_loss=1.0,
-            inv_n_z=1.0,
+            norm,
             ignore_index=ignore_index,
             has_grad=input_requires_grad,
             lse_square_scale=lse_square_scale,
@@ -141,24 +147,14 @@ def fused_linear_cross_entropy_forward(
                 else:
                     grad_bias += gb
 
+    # The kernel already applied inv_n to both the loss and the logits gradient,
+    # so there is nothing left to rescale here.
     if reduction == "none":
         loss = loss_1d
         z_loss = z_loss_1d if return_z_loss else None
     else:
         loss = torch.sum(loss_1d)
         z_loss = torch.sum(z_loss_1d) if return_z_loss else None
-        if reduction == "mean":
-            inv = torch.reciprocal(n_non_ignore.to(torch.float32).clamp(min=1.0))
-            loss = loss * inv.to(dtype=loss.dtype)
-            if z_loss is not None:
-                z_loss = z_loss * inv.to(dtype=z_loss.dtype)
-            if input_requires_grad:
-                scale = inv.to(dtype=grad_input.dtype)
-                grad_input = grad_input * scale
-                if grad_weight is not None:
-                    grad_weight = grad_weight * scale.to(dtype=grad_weight.dtype)
-                if grad_bias is not None:
-                    grad_bias = grad_bias * scale.to(dtype=grad_bias.dtype)
 
     if grad_weight is not None:
         grad_weight = grad_weight.to(weight.dtype)
@@ -250,7 +246,7 @@ class LigerFusedLinearCrossEntropyFunction(torch.autograd.Function):
             del grad_output3
         if ctx.return_predicted_tokens:
             del grad_output4
-        (grad_input, grad_weight, grad_bias) = ctx.saved_tensors
+        grad_input, grad_weight, grad_bias = ctx.saved_tensors
         grad_input, grad_weight, grad_bias = fused_linear_cross_entropy_backward(
             grad_output, grad_input, grad_weight, grad_bias
         )
