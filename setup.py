@@ -39,6 +39,9 @@ def get_optional_dependencies():
     cutedsl_deps = [
         "nvidia-cutlass-dsl",
     ]
+    flydsl_deps = [
+        "flydsl",
+    ]
     dev_deps = [
         "transformers>=4.52.0",
         "matplotlib>=3.7.2",
@@ -58,6 +61,7 @@ def get_optional_dependencies():
         "cutile": cutile_deps,
         "cutile-tileiras": cutile_tileiras_deps,
         "cutedsl": cutedsl_deps,
+        "flydsl": flydsl_deps,
         "dev": dev_deps,
     }
 
