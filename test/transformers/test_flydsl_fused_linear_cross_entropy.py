@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from test.utils import assert_verbose_allclose
 from test.utils import set_seed
@@ -439,3 +440,51 @@ def test_liger_kernel_impl_flydsl_selects_flce():
     proc = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip().startswith("liger_kernel.ops.flydsl.")
+
+
+# =============================================================================
+# E. reduction="none" with a per-token upstream gradient
+# =============================================================================
+@cuda_required
+@hip_preferred
+@pytest.mark.parametrize("bias", [False, True], ids=["no_bias", "bias"])
+def test_flce_reduction_none_per_token_grad_output(bias):
+    """reduction="none" must honour a *per-token* grad_output.
+
+    grad_weight is a sum over tokens, so the upstream weight has to be folded into
+    each row of the logits gradient *before* that sum. Scaling the already-summed
+    grad_weight afterwards cannot reproduce it.
+
+    The other tests only ever call ``loss.backward(torch.ones_like(loss))``, where
+    the scaling is a no-op, which hides this. Here grad_output is non-uniform.
+    """
+    set_seed()
+    BT, H, V = 64, 32, 256
+    base = torch.randn(BT, H, device="cuda", dtype=torch.float32) * 0.1
+    weight = torch.randn(V, H, device="cuda", dtype=torch.float32) * 0.1
+    b = torch.randn(V, device="cuda", dtype=torch.float32) * 0.1 if bias else None
+    target = torch.randint(0, V, (BT,), device="cuda", dtype=torch.long)
+    grad_output = torch.rand(BT, device="cuda", dtype=torch.float32) + 0.5
+
+    def torch_ref():
+        x = base.clone().requires_grad_(True)
+        w = weight.clone().requires_grad_(True)
+        bb = b.clone().requires_grad_(True) if bias else None
+        loss = F.cross_entropy(F.linear(x, w, bb), target, reduction="none")
+        loss.backward(grad_output)
+        return x.grad, w.grad, (bb.grad if bias else None)
+
+    def flydsl():
+        x = base.clone().requires_grad_(True)
+        w = weight.clone().requires_grad_(True)
+        bb = b.clone().requires_grad_(True) if bias else None
+        loss, _, _, _ = _apply(_flydsl_flce(), x, w, target, bb, reduction="none")
+        loss.backward(grad_output)
+        return x.grad, w.grad, (bb.grad if bias else None)
+
+    ref = _run_or_skip(torch_ref)
+    out = _run_or_skip(flydsl)
+    _assert_close(out[0], ref[0], 1e-4, 1e-4, "grad_input")
+    _assert_close(out[1], ref[1], 1e-4, 1e-4, "grad_weight")
+    if bias:
+        _assert_close(out[2], ref[2], 1e-4, 1e-4, "grad_bias")
