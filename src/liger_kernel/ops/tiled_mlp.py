@@ -78,19 +78,27 @@ class LigerTiledMLPFunction(torch.autograd.Function):
 
         x_shards = list(torch.chunk(x, chunks=shards, dim=0))
 
+        # Recompute every shard first, then run a single backward over all of them.
+        # Per-shard backward is incompatible with FSDP: the first shard's backward
+        # triggers resharding, so later shards recompute against flat local shards.
+        all_outputs = []
+        all_incoming_grads = []
+        shard_offset = 0
         for i, x_shard in enumerate(x_shards):
             x_shard.requires_grad_(x_requires_grad)
 
-            # if seqlen is not exactly divisible by shards the last step will be shorter than shard_step
             shard_step = x_shards[i].shape[0]
-            shard_offset = i * x_shards[0].shape[0]
-
-            x_shard.grad = x_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
             incoming_grad_shard = incoming_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
 
+            x_shard.grad = x_grad.narrow(0, shard_offset, shard_step).view_as(x_shard)
+
             with torch.enable_grad():
-                output = fn(mlp_module, x_shard)
-            torch.autograd.backward(output, incoming_grad_shard)
+                all_outputs.append(fn(mlp_module, x_shard))
+            all_incoming_grads.append(incoming_grad_shard)
+
+            shard_offset += shard_step
+
+        torch.autograd.backward(all_outputs, all_incoming_grads)
 
         # unflatten
         x_grad = x_grad.view(x_shape_orig)
