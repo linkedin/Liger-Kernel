@@ -56,9 +56,39 @@
 #include <cutlass/pipeline/sm90_pipeline.hpp>
 #include <cutlass/arch/barrier.h>
 
+// SM100 (Blackwell / UMMA) support for the Compute=100 consumer
+// specialization (mlp5_fused.cuh). These headers are header-only and safe to
+// include under an sm_90a build — the tcgen05 PTX they emit is guarded by
+// CUTE_ARCH_TCGEN05_* and only the Compute=100 body (itself gated on
+// __CUDA_ARCH__ >= 1000) ever instantiates it.
+#include <cute/arch/mma_sm100_umma.hpp>
+#include <cute/atom/mma_traits_sm100.hpp>
+#include <cute/arch/tmem_allocator_sm100.hpp>
+#include <cute/arch/copy_sm100.hpp>
+#include <cute/atom/copy_traits_sm100.hpp>
+#include <cutlass/pipeline/sm100_pipeline.hpp>  // PipelineTmaUmmaAsync, PipelineUmmaAsync
+
 namespace liger {
 
 using namespace cute;
+
+// ═══════════════════════════════════════════════════════════════════
+// TMEM → register load-op selector (SM100 / Compute=100 epilogue)
+// ═══════════════════════════════════════════════════════════════════
+// tcgen05.ld.32x32b.xN loads N 32-bit words per datapath lane per instruction.
+// The mlp5 UMMA epilogue maps one thread to one TMEM datapath row and reads an
+// EpiChunkN-wide column strip per row, so the atom's per-thread register count
+// (the "Nx" repeat, == RegNumDst) must equal EpiChunkN. mlp5's default epilogue
+// chunk width is 64 (the widest of the ported consumers) → …64x. Pick it at
+// compile time from EpiChunkN so any divisor of WgTileN gets a matching op.
+template <int EpiChunkN> struct TmemLoadOpSelector;
+template <> struct TmemLoadOpSelector<8>   { using Op = SM100_TMEM_LOAD_32dp32b8x;   };
+template <> struct TmemLoadOpSelector<16>  { using Op = SM100_TMEM_LOAD_32dp32b16x;  };
+template <> struct TmemLoadOpSelector<32>  { using Op = SM100_TMEM_LOAD_32dp32b32x;  };
+template <> struct TmemLoadOpSelector<64>  { using Op = SM100_TMEM_LOAD_32dp32b64x;  };
+template <> struct TmemLoadOpSelector<128> { using Op = SM100_TMEM_LOAD_32dp32b128x; };
+template <int EpiChunkN>
+using TmemLoadOp = typename TmemLoadOpSelector<EpiChunkN>::Op;
 
 // ═══════════════════════════════════════════════════════════════════
 // Traits
@@ -135,6 +165,21 @@ struct Mlp5Traits {
 	using MainloopPipeline = cutlass::PipelineTmaAsync<Stages>;
 	using PipelineState    = cutlass::PipelineState<Stages>;
 
+	// SM100 (Compute=100) pipelines — single CTA, no cluster. The mainloop
+	// pipeline is the UMMA-aware TMA pipeline (its consumer_release issues the
+	// UMMA-gated smem-buffer arrival); the accumulator pipeline hands the single
+	// TMEM accumulator from the MMA warp to the epilogue warps. See
+	// Mlp5FusedConsumerImpl<100> in mlp5_fused.cuh. The Blackwell launcher must
+	// build the mainloop pipe with num_consumers=1 (one umma_arrive per stage).
+	using MainloopPipelineUmma = cutlass::PipelineTmaUmmaAsync<
+		Stages, cute::Shape<cute::_1, cute::_1, cute::_1>,
+		cute::Shape<cute::_1, cute::_1, cute::_1>>;
+	// One accumulator, reused each n-tile → AccStages=1 (no TMEM double-buffer).
+	// The single accumulator carries the cross-phase sum dU·B (phase 1) +
+	// dV·C (phase 2) across the whole 2·num_k_tiles mainloop.
+	static constexpr int AccStages = 1;
+	using AccumulatorPipeline = cutlass::PipelineUmmaAsync<AccStages>;
+
 	static constexpr int TmaTransBytesZ =
 		static_cast<int>(size(SmemLayoutZ_1{}) * sizeof(Element));
 	static constexpr int TmaTransBytesW =
@@ -166,6 +211,14 @@ struct Mlp5Smem {
 	alignas(128) Element store_buf[2 * smem_store_size];
 
 	typename Traits::MainloopPipeline::SharedStorage pipe_storage;
+
+	// SM100 (Compute=100) only: landing slot for tcgen05.alloc's granted TMEM
+	// base address, plus the accumulator pipeline's barrier storage (UMMA→
+	// epilogue handoff). The Hopper (Compute=90) path never touches these, and
+	// keeping them here leaves the fused-consumer signature identical across
+	// Compute values (TMEM/pipeline stay consumer-owned).
+	alignas(16) uint32_t tmem_base;
+	alignas(16) typename Traits::AccumulatorPipeline::SharedStorage acc_pipe;
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -188,6 +241,40 @@ __device__ __forceinline__ auto mlp5_make_pipe(
 	pp.num_producers = 1;
 	// Both consumer WGs (cooperative) consume each pipe slot.
 	pp.num_consumers = Traits::ConsumerThreads;
+	if (is_producer) {
+		pp.role = Category::Producer;
+		pp.is_leader = (threadIdx.x == 0);
+	} else if (is_consumer) {
+		pp.role = Category::Consumer;
+	} else {
+		pp.role = Category::NonParticipant;
+	}
+	return Pipeline(storage, pp, Shape<_1, _1, _1>{},
+		cute::true_type{}, cute::true_type{});
+}
+
+// SM100 (Compute=100) mainloop pipe. Mirrors mlp5_make_pipe but builds the
+// UMMA-aware TMA pipeline (PipelineTmaUmmaAsync) whose consumer_release issues
+// the UMMA-gated smem-buffer arrival. num_consumers=1: on Blackwell the buffer
+// is released by a single umma_arrive per stage (the MMA warp), not per
+// consumer thread. Params/PipelineState/SharedStorage alias the Hopper
+// PipelineTmaAsync's, and the ctor arg pattern is identical, so the producer
+// (mlp5_fused_producer) and the Compute=100 consumer drive it unchanged.
+template <typename Traits>
+__device__ __forceinline__ auto mlp5_make_pipe_umma(
+		typename Traits::MainloopPipelineUmma::SharedStorage& storage) {
+
+	using Pipeline = typename Traits::MainloopPipelineUmma;
+	using Category = typename Pipeline::ThreadCategory;
+
+	int warp_id = threadIdx.x / Traits::WarpSize;
+	bool is_producer = (warp_id == 0);
+	bool is_consumer = (warp_id >= 4 && warp_id <= 11);
+
+	typename Pipeline::Params pp;
+	pp.transaction_bytes = Traits::TmaTransBytes;
+	pp.num_producers = 1;
+	pp.num_consumers = 1;   // UMMA: one umma_arrive per stage releases the buffer
 	if (is_producer) {
 		pp.role = Category::Producer;
 		pp.is_leader = (threadIdx.x == 0);
