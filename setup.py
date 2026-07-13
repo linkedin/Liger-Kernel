@@ -38,6 +38,7 @@ def get_optional_dependencies():
     ]
     cutedsl_deps = [
         "nvidia-cutlass-dsl",
+        "quack-kernels~=0.5.0",
     ]
     dev_deps = [
         "transformers>=4.52.0",
