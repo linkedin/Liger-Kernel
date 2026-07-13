@@ -31,7 +31,10 @@
 #include "moe_bwd.cuh"
 #include "moe_symm_config.cuh"
 #include "moe_launch.h"         // MoeFwdArgs / MoeBwdArgs (shared with the tuner)
+#include "moe_utils.cuh"
 #include "moe_fwd_bwd_tune_configs.hpp"
+#include "moe_dispatch_configs_sm90.cuh"
+#include "moe_dispatch_configs_sm100.cuh"
 #include "mlp_comms_bwd.cuh"
 #include "tile_iterator_bwd.cuh"
 #include "dispatch.cuh"
@@ -43,6 +46,13 @@
 using namespace cute;
 
 namespace liger {
+
+// 0 = build every dispatch family (developer fallback). CMake sets this to 90
+// for Hopper builds and 100 for Blackwell builds so normal native builds do not
+// instantiate kernels for hardware that cannot run in that binary.
+#ifndef LIGER_CUTE_DISPATCH_COMPUTE
+#define LIGER_CUTE_DISPATCH_COMPUTE 0
+#endif
 
 // External symbol: moe_configure_symmetric (defined in moe.cu) is reused.
 // MoeSymmConfig + get_symm_config() now come from the shared header (included
@@ -116,7 +126,8 @@ template <
 	// kSubTiles = CommTileM_/Traits1::TileM sub-tiles of GemmTileM rows per
 	// 128-wide comm slot (mirrors the forward). Default == TileM1_ → kSubTiles=1
 	// → bit-identical to the old coupled path.
-	int CommTileM_      = 128>
+	int CommTileM_      = 128,
+	int Compute_        = 90>
 struct MoeBwdConfig {
 	using Element  = Element_;
 	using Traits1  = Mlp1Traits <Element, TileM1_, TileN1_, TileK1_, Stages1_, EpiChunkN1_>;   // Phase 1a
@@ -142,6 +153,7 @@ struct MoeBwdConfig {
 	static constexpr int kTileM         = CommTileM_;       // comm tile (128)
 	static constexpr int kGemmTileM     = Traits1::TileM;   // Phase-1 gemm tile (64/128)
 	static constexpr int kSubTiles      = CommTileM_ / Traits1::TileM;  // 1 or 2
+	static constexpr int kCompute       = Compute_;
 	static constexpr int kNumThreads    = 384;
 
 	static_assert(CommTileM_ % Traits1::TileM == 0,
@@ -161,7 +173,7 @@ struct MoeBwdConfig {
 	// bytes for autotuner-scale E and num_pes; relying on the kernel's
 	// cudaFuncSetAttribute call to surface any overflow.
 	static constexpr size_t kSmemBytes  =
-		sizeof(MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5>);
+		sizeof(MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Compute_>);
 	static constexpr size_t kSmemBudget = 228 * 1024;
 	static_assert(kSmemBytes <= kSmemBudget,
 		"MoE fused bwd kernel smem footprint exceeds H100 228 KiB cap — "
@@ -652,9 +664,9 @@ moe_bwd_kernel(
 	// ── Phase 4: MLP_bwd with comm overlap ───────────────────────────
 	{
 		extern __shared__ char raw_smem[];
-		auto& smem = *reinterpret_cast<MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5>*>(raw_smem);
+		auto& smem = *reinterpret_cast<MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Config::kCompute>*>(raw_smem);
 
-		size_t offsets_region = sizeof(MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5>);
+		size_t offsets_region = sizeof(MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Config::kCompute>);
 		offsets_region = (offsets_region + sizeof(int) - 1) & ~(sizeof(int) - 1);
 		smem.comm.remote_offsets = reinterpret_cast<int*>(raw_smem + offsets_region);
 
@@ -706,7 +718,7 @@ moe_bwd_kernel(
 
 			moe_fused_bwd<Traits1, Traits2T, Traits3, Traits4, Traits5,
 				kCommNumStages, kNSplit, Config::kNSplit2, Config::kSubBatch,
-				Config::kSubTiles, FusedIter>(
+				Config::kSubTiles, Config::kCompute, FusedIter>(
 				smem, fused_iter,
 				tma_load_x, tma_load_b_fwd, tma_load_c_fwd,
 				tma_store_z, tma_store_u, tma_store_v,
@@ -1248,7 +1260,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 	int sort_num_warps = kNumThreads / 32;
 	size_t smem_sort   = sort_num_warps * num_experts * sizeof(int);
 
-	size_t smem_mlp = sizeof(MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5>);
+	size_t smem_mlp = sizeof(MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Config::kCompute>);
 	smem_mlp = (smem_mlp + sizeof(int) - 1) & ~(sizeof(int) - 1);
 	smem_mlp += num_pes * (experts_per_pe + 1) * sizeof(int);  // remote_offsets
 
@@ -1389,7 +1401,8 @@ template <
 	int EpiChunkN1, int EpiChunkN25, int EpiChunkN34,
 	int CommNumStages,
 	int TileM,            // COMM tile (staging/semaphores/NC); must match FWD's TileM. 64 or 128.
-	int GemmTileM = TileM>  // Phase-1 GEMM tile (mlp1a/mlp2t/mlp5) ∈ {64,128}; default == comm.
+	int GemmTileM = TileM, // Phase-1 GEMM tile (mlp1a/mlp2t/mlp5) ∈ {64,128}; default == comm.
+	int Compute = 90>
 void
 moe_bwd_fwd_bf16_tuned(const MoeBwdArgs& a) {
 	// NC paired with TileM (mirrors moe.cu's moe_fused_fwd_bf16):
@@ -1417,40 +1430,50 @@ moe_bwd_fwd_bf16_tuned(const MoeBwdArgs& a) {
 		CommNumStages,
 		/*NC_=*/4,
 		/*SubBatch_=*/2,
-		/*CommTileM_=*/128>;                                          // comm tile fixed at 128
+		/*CommTileM_=*/128,                                           // comm tile fixed at 128
+		/*Compute_=*/Compute>;
 	moe_bwd_fwd_bf16<Config>(a);
 }
 
 // Emit one explicit instantiation per X-macro entry. 15-arg _G core takes an
 // explicit GemmTileM (comm tile = TM, gemm tile = GTM); 14-arg shim defaults
 // GemmTileM to the comm TM (coupled, == today).
-#define LIGER_MOE_BWD_INSTANTIATE_G(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM) \
+#define LIGER_MOE_BWD_INSTANTIATE_G_C(Compute, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM) \
 	template void \
 		moe_bwd_fwd_bf16_tuned< \
-			NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM>( \
+			NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM, Compute>( \
 			const MoeBwdArgs&);
-#define LIGER_MOE_BWD_INSTANTIATE(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
-	LIGER_MOE_BWD_INSTANTIATE_G(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, TM)
+#define LIGER_MOE_BWD_INSTANTIATE_C(Compute, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+	LIGER_MOE_BWD_INSTANTIATE_G_C(Compute, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, TM)
+#define LIGER_MOE_BWD_INSTANTIATE_G_SM90(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM) \
+	LIGER_MOE_BWD_INSTANTIATE_G_C(90, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM)
+#define LIGER_MOE_BWD_INSTANTIATE_SM90(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+	LIGER_MOE_BWD_INSTANTIATE_C(90, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)
+#define LIGER_MOE_BWD_INSTANTIATE_G_SM100(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM) \
+	LIGER_MOE_BWD_INSTANTIATE_G_C(100, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM)
+#define LIGER_MOE_BWD_INSTANTIATE_SM100(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+	LIGER_MOE_BWD_INSTANTIATE_C(100, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)
 
-LIGER_MOE_BWD_TUNE_CONFIGS(LIGER_MOE_BWD_INSTANTIATE)
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 90
+LIGER_MOE_BWD_DISPATCH_CONFIGS_SM90(LIGER_MOE_BWD_INSTANTIATE_SM90, LIGER_MOE_BWD_INSTANTIATE_G_SM90)
+#endif
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 100
+LIGER_MOE_BWD_DISPATCH_CONFIGS_SM100(LIGER_MOE_BWD_INSTANTIATE_SM100, LIGER_MOE_BWD_INSTANTIATE_G_SM100)
+#endif
 
-// Experimental BWD comm/gemm-decouple configs — moe_bwd.cu-local (15th col =
-// GemmTileM). comm=128 (col-14 TM) / gemm=64 twins of the TM128 NS8/NS6 tuned
-// rows, so LIGER_MOE_BWD_FORCE_CONFIG can A/B the Phase-1 sub-tiling at
-// identical comm settings. Mirror the FWD EXTRA-config pattern.
-#define LIGER_MOE_BWD_EXTRA_CONFIGS(X) \
-	X(8, 8, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128, 64) \
-	X(6, 6, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128, 64)
-
-LIGER_MOE_BWD_EXTRA_CONFIGS(LIGER_MOE_BWD_INSTANTIATE_G)
-
-#undef LIGER_MOE_BWD_INSTANTIATE
+#undef LIGER_MOE_BWD_INSTANTIATE_SM100
+#undef LIGER_MOE_BWD_INSTANTIATE_G_SM100
+#undef LIGER_MOE_BWD_INSTANTIATE_SM90
+#undef LIGER_MOE_BWD_INSTANTIATE_G_SM90
+#undef LIGER_MOE_BWD_INSTANTIATE_C
+#undef LIGER_MOE_BWD_INSTANTIATE_G_C
 
 // ── Runtime dispatch table for tuned-config lookup ────────────────────
 
 using MoeBwdFwdFn = void (*)(const MoeBwdArgs&);
 
 struct DispatchEntryBwd {
+	int Compute;
 	int NSplit, NSplit2;
 	int TileN1, TileK1, Stages1;
 	int TileM3, TileN3, TileK3, Stages3;
@@ -1461,20 +1484,34 @@ struct DispatchEntryBwd {
 	MoeBwdFwdFn fn;
 };
 
-#define LIGER_MOE_BWD_DISPATCH_ENTRY_G(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM) \
-	{ NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM, \
-	  &moe_bwd_fwd_bf16_tuned<NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM> },
-#define LIGER_MOE_BWD_DISPATCH_ENTRY(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
-	LIGER_MOE_BWD_DISPATCH_ENTRY_G(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, TM)
+#define LIGER_MOE_BWD_DISPATCH_ENTRY_G_C(Compute, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM) \
+	{ Compute, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM, \
+	  &moe_bwd_fwd_bf16_tuned<NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM, Compute> },
+#define LIGER_MOE_BWD_DISPATCH_ENTRY_C(Compute, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+	LIGER_MOE_BWD_DISPATCH_ENTRY_G_C(Compute, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, TM)
+#define LIGER_MOE_BWD_DISPATCH_ENTRY_G_SM90(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM) \
+	LIGER_MOE_BWD_DISPATCH_ENTRY_G_C(90, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM)
+#define LIGER_MOE_BWD_DISPATCH_ENTRY_SM90(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+	LIGER_MOE_BWD_DISPATCH_ENTRY_C(90, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)
+#define LIGER_MOE_BWD_DISPATCH_ENTRY_G_SM100(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM) \
+	LIGER_MOE_BWD_DISPATCH_ENTRY_G_C(100, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM)
+#define LIGER_MOE_BWD_DISPATCH_ENTRY_SM100(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+	LIGER_MOE_BWD_DISPATCH_ENTRY_C(100, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)
 
 static const DispatchEntryBwd kDispatchTableBwd[] = {
-	LIGER_MOE_BWD_TUNE_CONFIGS(LIGER_MOE_BWD_DISPATCH_ENTRY)
-	LIGER_MOE_BWD_EXTRA_CONFIGS(LIGER_MOE_BWD_DISPATCH_ENTRY_G)
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 90
+	LIGER_MOE_BWD_DISPATCH_CONFIGS_SM90(LIGER_MOE_BWD_DISPATCH_ENTRY_SM90, LIGER_MOE_BWD_DISPATCH_ENTRY_G_SM90)
+#endif
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 100
+	LIGER_MOE_BWD_DISPATCH_CONFIGS_SM100(LIGER_MOE_BWD_DISPATCH_ENTRY_SM100, LIGER_MOE_BWD_DISPATCH_ENTRY_G_SM100)
+#endif
 };
-#undef LIGER_MOE_BWD_DISPATCH_ENTRY
-#undef LIGER_MOE_BWD_DISPATCH_ENTRY_G
-#undef LIGER_MOE_BWD_EXTRA_CONFIGS
-#undef LIGER_MOE_BWD_INSTANTIATE_G
+#undef LIGER_MOE_BWD_DISPATCH_ENTRY_SM100
+#undef LIGER_MOE_BWD_DISPATCH_ENTRY_G_SM100
+#undef LIGER_MOE_BWD_DISPATCH_ENTRY_SM90
+#undef LIGER_MOE_BWD_DISPATCH_ENTRY_G_SM90
+#undef LIGER_MOE_BWD_DISPATCH_ENTRY_C
+#undef LIGER_MOE_BWD_DISPATCH_ENTRY_G_C
 static constexpr int kNumDispatchEntriesBwd =
 	sizeof(kDispatchTableBwd) / sizeof(kDispatchTableBwd[0]);
 
@@ -1492,6 +1529,7 @@ namespace liger {
 // of the dispatch code (validity check, dispatch-entry match) was written
 // against this struct and is reused unchanged.
 struct TunedConfigBwd {
+	int Compute;
 	int TK, TKE, D, I;
 	int NSplit, NSplit2;
 	int TileN1, TileK1, Stages1;
@@ -1504,8 +1542,9 @@ struct TunedConfigBwd {
 
 // Project a TunedConfigFwdBwd row down to its bwd template params. The tuned
 // table has no GemmTileM column, so the auto path keeps gemm == comm (TileM).
-static TunedConfigBwd project_bwd(const TunedConfigFwdBwd& c) {
+static TunedConfigBwd project_bwd(const TunedConfigFwdBwd& c, int compute) {
 	return TunedConfigBwd{
+		compute,
 		c.TK, c.TKE, c.D, c.I,
 		c.Bwd_NSplit, c.Bwd_NSplit2,
 		c.Bwd_TileN1, c.Bwd_TileK1, c.Bwd_Stages1,
@@ -1520,7 +1559,8 @@ static TunedConfigBwd project_bwd(const TunedConfigFwdBwd& c) {
 static const DispatchEntryBwd* find_dispatch_entry_bwd(const TunedConfigBwd& c) {
 	for (int i = 0; i < kNumDispatchEntriesBwd; ++i) {
 		const auto& e = kDispatchTableBwd[i];
-		if (e.NSplit == c.NSplit && e.NSplit2 == c.NSplit2 &&
+		if (e.Compute == c.Compute &&
+		    e.NSplit == c.NSplit && e.NSplit2 == c.NSplit2 &&
 		    e.TileN1 == c.TileN1 && e.TileK1 == c.TileK1 && e.Stages1 == c.Stages1 &&
 		    e.TileM3 == c.TileM3 && e.TileN3 == c.TileN3 && e.TileK3 == c.TileK3 &&
 		    e.Stages3 == c.Stages3 &&
@@ -1537,6 +1577,10 @@ static const DispatchEntryBwd* find_dispatch_entry_bwd(const TunedConfigBwd& c) 
 // Structural divisibility checks on (D, I) for a given tuned config.
 // Mirrors the constraint list in moe_fwd_bwd_tune_configs.hpp.
 static bool tuned_config_valid_bwd(int D, int I, const TunedConfigBwd& c) {
+	// The current Blackwell UMMA MLP1/MLP1-act consumers only support the
+	// 128-row comm tile. Keep mirrored SM90 TileM=64 tuning rows out of SM100
+	// auto-dispatch until that TMEM epilogue layout is implemented.
+	if (c.Compute == 100 && c.TileM != 128) return false;
 	if (D % c.TileK1 != 0)        return false;  // mlp1/mlp2_t/mlp5 K
 	if (D % (2 * c.TileN1) != 0)  return false;  // mlp5 N (= TileN2)
 	if (D % c.TileM3 != 0)        return false;  // mlp3 M, mlp4 N
@@ -1548,6 +1592,23 @@ static bool tuned_config_valid_bwd(int D, int I, const TunedConfigBwd& c) {
 	int num_n_tiles_1 = I / c.TileN1;
 	if (num_n_tiles_1 < c.NSplit) return false;
 	return true;
+}
+
+static bool find_tuned_table_bwd(int compute, int n_pes,
+                                 const TunedConfigFwdBwd** table,
+                                 int* table_n) {
+	const TunedConfigFwdBwdTable* tables =
+		(n_pes <= 1) ? kTunedConfigTablesSingle : kTunedConfigTablesMulti;
+	const int tables_n =
+		(n_pes <= 1) ? kNumTunedConfigTablesSingle : kNumTunedConfigTablesMulti;
+	for (int i = 0; i < tables_n; ++i) {
+		if (tables[i].Compute == compute) {
+			*table = tables[i].configs;
+			*table_n = tables[i].count;
+			return *table_n > 0;
+		}
+	}
+	return false;
 }
 
 // Nearest-neighbor lookup in log-space (TK, TKE, D, I), where TK = T*top_k
@@ -1564,14 +1625,14 @@ static bool tuned_config_valid_bwd(int D, int I, const TunedConfigBwd& c) {
 // Out-param API instead of pointer-into-static-array because each candidate
 // TunedConfigBwd is projected on the fly from kTunedConfigsFwdBwd (no stable
 // address). Returns true when a valid config was found.
-static bool find_nearest_tuned_bwd(int TK, int TKE, int D, int I,
+static bool find_nearest_tuned_bwd(int compute, int TK, int TKE, int D, int I,
                                    int fwd_tile_m, int n_pes,
                                    TunedConfigBwd* out) {
 	// World-size class: single-GPU (n_pes <= 1) and multi-GPU tables are tuned
 	// and stored separately (mirrors find_nearest_tuned on the fwd side).
-	const TunedConfigFwdBwd* table = (n_pes <= 1) ? kTunedConfigsSingle : kTunedConfigsMulti;
-	const int table_n = (n_pes <= 1) ? kNumTunedConfigsSingle : kNumTunedConfigsMulti;
-	if (table_n == 0) return false;
+	const TunedConfigFwdBwd* table = nullptr;
+	int table_n = 0;
+	if (!find_tuned_table_bwd(compute, n_pes, &table, &table_n)) return false;
 	bool found = false;
 	double best_dist = 1e30;
 	double lTK  = std::log((double)TK);
@@ -1579,7 +1640,7 @@ static bool find_nearest_tuned_bwd(int TK, int TKE, int D, int I,
 	double lD   = std::log((double)D);
 	double lI   = std::log((double)I);
 	for (int i = 0; i < table_n; ++i) {
-		TunedConfigBwd c = project_bwd(table[i]);
+		TunedConfigBwd c = project_bwd(table[i], compute);
 		// No fwd/bwd TileM match required: the comm tile is fixed at 128 for
 		// both directions, so tile_expert_ids / x_sorted / expert_offsets align
 		// regardless of each direction's GEMM tile. (fwd_tile_m retained for ABI
@@ -1632,9 +1693,11 @@ void moe_bwd_dispatch(const MoeBwdArgs& a, int fwd_tile_m) {
 	const int n_pes = nvshmem_team_n_pes(a.team);
 	const int E_local = (n_pes > 0) ? std::max(1, num_experts / n_pes) : num_experts;
 	const int TKE = TK / E_local;
+	const int compute = moe_detect_compute_dispatch_key(a.device, "moe_fused_bwd_bf16_auto");
 
 	if (const char* s = std::getenv("LIGER_MOE_BWD_FORCE_CONFIG")) {
 		TunedConfigBwd tc{};
+		tc.Compute = compute;
 		tc.GemmTileM = -1;  // sentinel → default to comm TileM after parse
 		int n = std::sscanf(s, "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
 			&tc.NSplit, &tc.NSplit2,
@@ -1658,8 +1721,9 @@ void moe_bwd_dispatch(const MoeBwdArgs& a, int fwd_tile_m) {
 	}
 
 	TunedConfigBwd tc{};
-	LIGER_CHECK(find_nearest_tuned_bwd(TK, TKE, D, I, fwd_tile_m, n_pes, &tc),
-		"moe_bwd_fwd_bf16_auto: no valid tuned config for shape (T=", T,
+	LIGER_CHECK(find_nearest_tuned_bwd(compute, TK, TKE, D, I, fwd_tile_m, n_pes, &tc),
+		"moe_bwd_fwd_bf16_auto: no valid tuned config for compute=", compute,
+		" shape (T=", T,
 		" K=", top_k, " TK=", TK, " TKE=", TKE, " D=", D, " I=", I,
 		" fwd_tile_m=", fwd_tile_m,
 		"). Either moe_fwd_bwd_tuning_configs.cuh has no entry with TileM=",
@@ -1669,7 +1733,8 @@ void moe_bwd_dispatch(const MoeBwdArgs& a, int fwd_tile_m) {
 
 	const DispatchEntryBwd* de = find_dispatch_entry_bwd(tc);
 	LIGER_CHECK(de != nullptr,
-		"moe_bwd_fwd_bf16_auto: tuned config (NS=", tc.NSplit,
+		"moe_bwd_fwd_bf16_auto: tuned config (Compute=", tc.Compute,
+		" NS=", tc.NSplit,
 		" NS2=", tc.NSplit2,
 		" TN1=", tc.TileN1, "/", tc.TileK1, "/", tc.Stages1,
 		" TM3=", tc.TileM3, " TN3=", tc.TileN3, "/", tc.TileK3,
@@ -1684,16 +1749,16 @@ void moe_bwd_dispatch(const MoeBwdArgs& a, int fwd_tile_m) {
 	de->fn(a);
 }
 
-// Returns the compiled bwd config table as a list of 13-tuples
-// (NSplit, NSplit2, TileN1, TileK1, Stages1, TileM3, TileN3, TileK3,
+// Returns the compiled bwd config table as a list of 14-tuples
+// (Compute, NSplit, NSplit2, TileN1, TileK1, Stages1, TileM3, TileN3, TileK3,
 //  Stages3, EpiChunkN1, EpiChunkN25, EpiChunkN34, CommNumStages).
-std::vector<std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int>>
+std::vector<std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int>>
 moe_bwd_list_compiled_configs() {
-	std::vector<std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int>> out;
+	std::vector<std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int>> out;
 	out.reserve(kNumDispatchEntriesBwd);
 	for (int i = 0; i < kNumDispatchEntriesBwd; ++i) {
 		const auto& e = kDispatchTableBwd[i];
-		out.emplace_back(e.NSplit, e.NSplit2,
+		out.emplace_back(e.Compute, e.NSplit, e.NSplit2,
 			e.TileN1, e.TileK1, e.Stages1,
 			e.TileM3, e.TileN3, e.TileK3, e.Stages3,
 			e.EpiChunkN1, e.EpiChunkN25, e.EpiChunkN34,

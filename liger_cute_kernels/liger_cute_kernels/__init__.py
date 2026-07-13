@@ -6,12 +6,11 @@ extension and its support libraries side by side::
 
     liger_cute_kernels/
       __init__.py
-      _C.*.so                    # pybind shim (links libtorch)
       libliger_cute_kernels.so   # torch-free CUTLASS + NVSHMEM core
       libnvshmem_host.so         # bundled nvshmem
 
 The Python API loads the core through TVM FFI, so the runtime boundary is the
-torch-free core ABI rather than a Torch/pybind extension.
+torch-free core ABI rather than a Torch extension.
 
 Consumers should go through ``liger_kernel.ops.cute`` rather than importing this
 package directly.

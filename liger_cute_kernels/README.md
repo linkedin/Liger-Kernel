@@ -45,11 +45,11 @@ liger_cute_kernels/             # ← standalone native build module (repo root)
 ├── cute_build.py               # build_core() helper + LckBuildExt
 ├── liger_cute_kernels/         # the lck wheel's package source
 │   ├── __init__.py             # (.so are added here at build time)
-│   ├── tvm_ffi.py              # Python facade matching the old _C API
+│   ├── tvm_ffi.py              # Python facade over the TVM FFI exports
 │   └── tvm_ffi_bindings.cpp    # TVM FFI C++ exports compiled into the core
 ├── test/                       # the lck package's own unit tests
 │   └── test_moe_bindings.py
-├── CMakeLists.txt              # core with TVM FFI exports (+ legacy bindings opt-in)
+├── CMakeLists.txt              # core with TVM FFI exports
 ├── cmake/
 │   ├── FindNVSHMEM.cmake
 │   └── FindCUTLASS.cmake        # locates main + tools/util/include
@@ -57,17 +57,14 @@ liger_cute_kernels/             # ← standalone native build module (repo root)
     ├── core/                   # → libliger_cute_kernels.so (torch-free)
     │   ├── include/liger_cute/
     │   │   ├── {liger_cute.h, export.h}     # flat extern "C" ABI (C-parseable)
-    │   │   ├── {check.h, tensor_view.h, moe.h}  # C++-only core surface
+    │   │   ├── {check.h, moe.h}             # core control/config surface
     │   │   └── detail/symmetric_memory.h    # core-internal (nvshmem+STL); not ABI
     │   ├── src/                 # *.{cu,cpp} compiled INTO the core …
     │   │   └── moe/             #   … fused MoE kernels (moe.cu, moe_bwd.cu, mlp*.cu)
     │   │       └── tune/        # standalone offline autotuner — NOT a core source
     │   │           ├── CMakeLists.txt        #   its own project; links torch
     │   │           └── tune_moe_fwd_bwd.cu   #   (excluded from the core glob)
-    │   └── liger_cute.version   # exports only liger_cute_*
-    └── bindings/               # legacy _C (torch + pybind11)
-        ├── bindings.cpp
-        └── tensor_view_conversion.h   # torch::Tensor <-> TensorView<N>
+    │   └── liger_cute.version   # exports only liger_cute_* and __tvm_ffi_*
 
 src/liger_kernel/ops/cute/
 └── __init__.py                 # runtime entry point: liger_kernel.ops.cute
@@ -215,7 +212,7 @@ optionally the matching lck wheel.
 
 | Option | Default | Effect |
 |---|---|---|
-| `LIGER_CUTE_BUILD_BINDINGS` | `ON` | Legacy CMake option for the torch/pybind11 `_C` extension. Wheel builds set this OFF; the runtime Python API now uses TVM FFI. |
+| `LIGER_CUTE_BUILD_BINDINGS` | `OFF` | Deprecated compatibility option. Leave OFF; tensor APIs are exposed through TVM FFI only. |
 | `LIGER_CUTE_CORE_IMPORTED_DIR` | *(empty)* | Dir holding a prebuilt `libliger_cute_kernels.so`. When set, the core is linked as an imported library (not compiled) and CUTLASS is not required. |
 | `LIGER_CUTE_STATIC_LIBSTDCXX` | `ON` | Statically link libstdc++/libgcc into the core so its internal C++ ABI is invisible to consumers. |
 | `NVSHMEM_HOME` | `/usr/local/nvshmem` | NVSHMEM install root (also read from the env var). |

@@ -17,11 +17,11 @@ Phase 3.1 — build the torch-free core (no torch required)::
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import subprocess
 import sys
-import importlib.util
 
 from pathlib import Path
 

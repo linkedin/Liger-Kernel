@@ -382,7 +382,7 @@ __device__ __forceinline__ void mlp5_producer(
 
 // ── Consumer (nested) ───────────────────────────────────────────────
 
-template <typename Traits, typename Pipeline, typename TmaStoreDX>
+template <typename Traits, int Compute = 90, typename Pipeline, typename TmaStoreDX>
 __device__ __forceinline__ void mlp5_consumer(
 		Pipeline& pipe,
 		typename Traits::PipelineState& state,
@@ -393,6 +393,7 @@ __device__ __forceinline__ void mlp5_consumer(
 		int num_n_tiles,
 		int num_k_tiles) {
 
+	(void)Compute;
 	using Element = typename Traits::Element;
 	typename Traits::TiledMma tiled_mma;
 	int tid_in_mma = threadIdx.x - Traits::WarpGroupSize;

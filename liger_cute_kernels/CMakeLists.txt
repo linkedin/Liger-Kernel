@@ -29,8 +29,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 option(LIGER_CUTE_BUILD_BINDINGS
-    "Build the torch/pybind11 _C extension (requires torch). OFF builds only \
-the torch-free TVM FFI core used by the lck wheel." OFF)
+    "Deprecated compatibility option. The lck wheel now exposes tensor APIs through TVM FFI only." OFF)
 
 # Core-reuse knob: when set to a directory containing a prebuilt
 # libliger_cute_kernels.so, the core is NOT compiled from source — it is linked
@@ -61,6 +60,13 @@ set(CMAKE_CUDA_ARCHITECTURES OFF)
 string(REGEX REPLACE "-gencode[= ]+arch=compute_[0-9a-z]+,code=sm_[0-9a-z]+" "" CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
 string(STRIP "${CMAKE_CUDA_FLAGS}" CMAKE_CUDA_FLAGS)
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_${LIGER_CUTE_CUDA_ARCH},code=sm_${LIGER_CUTE_CUDA_ARCH} --use_fast_math --extra-device-vectorization --fmad=true --prec-div=false --prec-sqrt=false --ptxas-options=-O3,--allow-expensive-optimizations=true")
+if(LIGER_CUTE_CUDA_ARCH MATCHES "^90")
+    add_compile_definitions(LIGER_CUTE_DISPATCH_COMPUTE=90)
+elseif(LIGER_CUTE_CUDA_ARCH MATCHES "^100")
+    add_compile_definitions(LIGER_CUTE_DISPATCH_COMPUTE=100)
+else()
+    add_compile_definitions(LIGER_CUTE_DISPATCH_COMPUTE=0)
+endif()
 
 # Disable device-side assertions to avoid extern __assert_fail calls that cause
 # ptxas to serialize WGMMA instructions.
@@ -118,7 +124,7 @@ endif()
 if(NOT LIGER_CUTE_TESTS_ONLY)
 if(LIGER_CUTE_CORE_IMPORTED_DIR)
     # Reuse a prebuilt core: define liger_cute_kernels as an IMPORTED target so
-    # _C links the cached .so directly and the core is never recompiled.
+    # consumers link the cached .so directly and the core is never recompiled.
     set(_imported_core "${LIGER_CUTE_CORE_IMPORTED_DIR}/libliger_cute_kernels.so")
     if(NOT EXISTS "${_imported_core}")
         message(FATAL_ERROR "LIGER_CUTE_CORE_IMPORTED_DIR set but no core at ${_imported_core}")
@@ -137,9 +143,8 @@ else()
     add_subdirectory(csrc/core)
 endif()
 
-# Bindings are opt-in and pull in torch + pybind11.
 if(LIGER_CUTE_BUILD_BINDINGS)
-    message(FATAL_ERROR "The legacy pybind _C bindings depended on the removed TensorView ABI. Use TVM FFI instead.")
+    message(FATAL_ERROR "LIGER_CUTE_BUILD_BINDINGS is deprecated. Tensor APIs are exposed through TVM FFI only.")
 endif()
 endif()  # NOT LIGER_CUTE_TESTS_ONLY
 

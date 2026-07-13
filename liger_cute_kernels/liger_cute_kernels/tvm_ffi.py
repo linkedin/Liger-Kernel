@@ -1,8 +1,7 @@
 """TVM FFI facade for the LigerCute native core.
 
-This module mirrors the subset of the old ``liger_cute_kernels._C`` Python API
-used by ``liger_kernel.ops.cute`` while loading through TVM FFI instead of a
-Torch/pybind extension.
+This module is the Python facade used by ``liger_kernel.ops.cute``. It loads the
+torch-free native core through TVM FFI and passes tensors through DLPack views.
 """
 
 from __future__ import annotations

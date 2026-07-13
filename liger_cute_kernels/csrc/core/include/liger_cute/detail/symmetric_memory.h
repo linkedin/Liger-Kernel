@@ -4,8 +4,8 @@
 // and uses STL freely. It is compiled only into liger_cute_kernels.so, where
 // libstdc++ is linked statically and all non-liger_cute_* symbols are hidden,
 // so the std::map/std::stack/std::string instantiations here stay local and
-// never reach the boundary. The binding TU (_C) MUST NOT include this header —
-// it only ever sees the flat liger_cute_* entry points in moe.h.
+// never reach the boundary. Frontends must use the flat liger_cute_* control
+// entry points or the TVM FFI facade rather than including this header.
 //
 // Ported from LigerCommKernels' utils/buffer_pool.cuh; the torch-free change is
 // TORCH_CHECK/abort -> LIGER_CHECK (throws liger_cute::Error, caught at the

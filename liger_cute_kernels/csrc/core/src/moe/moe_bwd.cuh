@@ -28,9 +28,9 @@ using namespace cute;
 // ═══════════════════════════════════════════════════════════════════
 
 template <typename Traits1, typename Traits2T, typename Traits3,
-          typename Traits4, typename Traits5>
+          typename Traits4, typename Traits5, int Compute = 90>
 struct MoeBwdSmem {
-	MlpFusedBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5> mlp;
+	MlpFusedBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Compute> mlp;
 	CommSmem comm;
 };
 
@@ -45,6 +45,7 @@ template <typename Traits1, typename Traits2T, typename Traits3,
           // silu/mlp5) steps through SubTiles GemmTileM-row sub-tiles per 128-wide
           // comm staging slot; the mlp3/4 ratios use Traits1::TileM (= GemmTileM).
           int SubTiles,
+          int Compute = 90,
           typename FusedIter,
           // Phase 1 TMA
           typename TmaLoadX, typename TmaLoadW1,
@@ -67,7 +68,7 @@ template <typename Traits1, typename Traits2T, typename Traits3,
           typename TmaLoadDYT3R = TmaLoadDYT3,
           typename TmaLoadXT4R = TmaLoadXT4>
 __device__ __forceinline__ void moe_fused_bwd(
-		MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5>& smem,
+		MoeBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Compute>& smem,
 		FusedIter& iter,
 		// Phase 1 TMA (local)
 		TmaLoadX const& tma_load_x, TmaLoadW1 const& tma_load_b_fwd,
@@ -193,7 +194,7 @@ __device__ __forceinline__ void moe_fused_bwd(
 	// interpolation). SubTiles=1 → Traits1::TileM/TileK, unchanged.
 	constexpr int kEfkbStride4Remote = Traits1::TileM * SubTiles / Traits4::TileK;
 	mlp_fused_bwd_dual<
-		Traits1, Traits2T, Traits3, Traits4, Traits5, NSplit2, SubBatch, SubTiles>(
+		Traits1, Traits2T, Traits3, Traits4, Traits5, NSplit2, SubBatch, SubTiles, Compute>(
 		smem.mlp, iter, remote_active,
 		kEfkbStride4Remote,
 		// Phase 1 shared weights/intermediates

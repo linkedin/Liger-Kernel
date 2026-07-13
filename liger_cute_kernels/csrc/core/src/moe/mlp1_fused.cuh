@@ -184,6 +184,12 @@ struct Mlp1Traits {
 	static constexpr int NumThreads      = 384;
 };
 
+template <typename Traits, int Compute>
+using Mlp1MainloopPipelineFor = cute::conditional_t<
+	Compute == 100,
+	typename Traits::MainloopPipelineUmma,
+	typename Traits::MainloopPipeline>;
+
 // ═══════════════════════════════════════════════════════════════════
 // Expert weight pointers (device-side)
 // ═══════════════════════════════════════════════════════════════════

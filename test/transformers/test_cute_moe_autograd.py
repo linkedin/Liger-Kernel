@@ -173,8 +173,8 @@ def _make_inputs(rank, world_size):
 
 
 def _autograd_worker(rank, world_size, init_file):
-    from liger_cute_kernels import tvm_ffi
     from liger_cute_kernels import nvshmem
+    from liger_cute_kernels import tvm_ffi
 
     from liger_kernel.ops.cute.ops import LigerExpertParallelFusedMoEFunction
     from liger_kernel.ops.cute.ops import moe_fused

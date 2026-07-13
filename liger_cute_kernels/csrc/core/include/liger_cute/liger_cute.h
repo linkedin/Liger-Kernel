@@ -1,11 +1,10 @@
 // liger_cute.h — public ABI of liger_cute_kernels.so.
 //
-// This is the ONLY surface the torch/pybind binding sees. It is intentionally a
-// flat `extern "C"` interface: raw pointers, fixed-width ints, enums, POD
-// structs, and a cudaStream_t. No std:: types, no C++ classes, no exceptions
-// cross this boundary, which is what makes the .so ABI-agnostic across torch
-// wheels (see export.h). CUTLASS/CuTe usage lives entirely behind it in the
-// .cu/.cpp translation units.
+// This is the stable C control surface. Tensor-carrying entry points are exposed
+// through TVM FFI. The C boundary stays a flat `extern "C"` interface: raw
+// pointers, fixed-width ints, enums, POD structs, and no exceptions, which is
+// what makes the .so ABI-agnostic across torch wheels (see export.h).
+// CUTLASS/CuTe usage lives entirely behind it in the .cu/.cpp translation units.
 //
 // NOTE: harness stage — the status type + shared error string live here; the
 // MoE entry points are in moe.h and the NVSHMEM bootstrap/team/comm-schedule

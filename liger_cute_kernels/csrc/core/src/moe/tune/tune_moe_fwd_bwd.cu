@@ -21,7 +21,8 @@
 //
 // Run with: srun --mpi=pmi2 --ntasks=N ./tune_moe_fwd_bwd
 // Output:   ../src/liger_comm_kernels/moe/moe_fwd_bwd_tuning_configs.cuh
-//           (override with LIGER_MOE_FWDBWD_TUNED_OUTPUT=/path)
+//           (override with LIGER_MOE_FWDBWD_TUNED_OUTPUT=/path/to/*_sm90.cuh
+//            or /path/to/*_sm100.cuh matching the detected GPU)
 
 #include <torch/torch.h>
 #include <c10/cuda/CUDACachingAllocator.h>
@@ -45,8 +46,17 @@
 #include <cutlass/numeric_types.h>
 
 #include "moe_fwd_bwd_tune_configs.hpp"   // X-macro config menus (../, on the include path)
+#include "moe_dispatch_configs_sm90.cuh"
+#include "moe_dispatch_configs_sm100.cuh"
+#include "moe_utils.cuh"
 #include "moe_launch.h"                    // liger::MoeFwdArgs / MoeBwdArgs (../)
 #include "liger_cute/nvshmem.h"            // flat ABI: init_pmi / finalize / pool clear
+
+// 0 = build every dispatch family (developer fallback). CMake sets this to 90
+// for Hopper builds and 100 for Blackwell builds.
+#ifndef LIGER_CUTE_DISPATCH_COMPUTE
+#define LIGER_CUTE_DISPATCH_COMPUTE 0
+#endif
 
 // ── Minimal NVSHMEM host-API surface ────────────────────────────────
 //
@@ -82,7 +92,7 @@ template <
 	int TileN2, int TileK2, int Stages2,
 	int ZBufferSlots, int CommNumStages,
 	int EpiChunkN1 = 64, int EpiChunkN2 = 64,
-	int TileM = 128, int GemmTileM = TileM>
+	int TileM = 128, int GemmTileM = TileM, int Compute = 90>
 void moe_fused_fwd_bf16(const MoeFwdArgs& a);
 
 template <
@@ -91,7 +101,7 @@ template <
 	int TileM3, int TileN3, int TileK3, int Stages3,
 	int EpiChunkN1, int EpiChunkN25, int EpiChunkN34,
 	int CommNumStages,
-	int TileM, int GemmTileM = TileM>
+	int TileM, int GemmTileM = TileM, int Compute = 90>
 void moe_bwd_fwd_bf16_tuned(const MoeBwdArgs& a);
 
 } // namespace liger
@@ -102,6 +112,7 @@ using MoeFwdFn = void (*)(const liger::MoeFwdArgs&);
 
 struct TunerEntryFwd {
 	const char* name;
+	int Compute;
 	int NSplit;
 	int TileN1, TileK1, Stages1, EpiChunkN1;
 	int TileN2, TileK2, Stages2, EpiChunkN2;
@@ -110,20 +121,31 @@ struct TunerEntryFwd {
 	MoeFwdFn fn;
 };
 
-#define LIGER_MOE_FWD_REGISTRY_ENTRY(NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM) \
+#define LIGER_MOE_FWD_REGISTRY_ENTRY_C(Compute, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM) \
 	{                                                                                                \
 		"NS" #NSplit "_TM" #TM "_TN1-" #TN1 "/" #TK1 "/" #S1 "/EC" #EC1                              \
 		"_TN2-" #TN2 "/" #TK2 "/" #S2 "/EC" #EC2                                                     \
 		"_ZB" #ZBuf "_CS" #CStages,                                                                  \
-		NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM,                             \
+		Compute, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM,                    \
 		&liger::moe_fused_fwd_bf16<                                                                  \
-			NSplit, cutlass::bfloat16_t, TN1, TK1, S1, TN2, TK2, S2, ZBuf, CStages, EC1, EC2, TM>    \
+			NSplit, cutlass::bfloat16_t, TN1, TK1, S1, TN2, TK2, S2, ZBuf, CStages, EC1, EC2, TM, TM, Compute> \
 	},
+#define LIGER_MOE_FWD_REGISTRY_ENTRY_SM90(NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM) \
+	LIGER_MOE_FWD_REGISTRY_ENTRY_C(90, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM)
+#define LIGER_MOE_FWD_REGISTRY_ENTRY_SM100(NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM) \
+	LIGER_MOE_FWD_REGISTRY_ENTRY_C(100, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM)
 
 static const TunerEntryFwd kRegistryFwd[] = {
-	LIGER_MOE_TUNE_CONFIGS(LIGER_MOE_FWD_REGISTRY_ENTRY)
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 90
+	LIGER_MOE_TUNE_CONFIGS(LIGER_MOE_FWD_REGISTRY_ENTRY_SM90)
+#endif
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 100
+	LIGER_MOE_TUNE_CONFIGS(LIGER_MOE_FWD_REGISTRY_ENTRY_SM100)
+#endif
 };
-#undef LIGER_MOE_FWD_REGISTRY_ENTRY
+#undef LIGER_MOE_FWD_REGISTRY_ENTRY_SM100
+#undef LIGER_MOE_FWD_REGISTRY_ENTRY_SM90
+#undef LIGER_MOE_FWD_REGISTRY_ENTRY_C
 
 static constexpr int kNumFwdConfigs =
 	sizeof(kRegistryFwd) / sizeof(kRegistryFwd[0]);
@@ -134,6 +156,7 @@ using MoeBwdFwdFn = void (*)(const liger::MoeBwdArgs&);
 
 struct TunerEntryBwd {
 	const char* name;
+	int Compute;
 	int NSplit, NSplit2;
 	int TileN1, TileK1, Stages1;
 	int TileM3, TileN3, TileK3, Stages3;
@@ -143,21 +166,32 @@ struct TunerEntryBwd {
 	MoeBwdFwdFn fn;
 };
 
-#define LIGER_MOE_BWD_REGISTRY_ENTRY(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+#define LIGER_MOE_BWD_REGISTRY_ENTRY_C(Compute, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
 	{                                                                                                \
 		"NS" #NS "_NS2-" #NS2                                                                        \
 		"_TN1-" #TN1 "/" #TK1 "/" #S1                                                                \
 		"_TM3-" #TM3 "_TN3-" #TN3 "/" #TK3 "/" #S3                                                   \
 		"_EN1-" #EN1 "_EN25-" #EN25 "_EN34-" #EN34 "_CS" #CS "_TM" #TM,                              \
-		NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM,                           \
+		Compute, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM,                  \
 		&liger::moe_bwd_fwd_bf16_tuned<                                                              \
-			NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM>                       \
+			NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, TM, Compute>          \
 	},
+#define LIGER_MOE_BWD_REGISTRY_ENTRY_SM90(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+	LIGER_MOE_BWD_REGISTRY_ENTRY_C(90, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)
+#define LIGER_MOE_BWD_REGISTRY_ENTRY_SM100(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+	LIGER_MOE_BWD_REGISTRY_ENTRY_C(100, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)
 
 static const TunerEntryBwd kRegistryBwd[] = {
-	LIGER_MOE_BWD_TUNE_CONFIGS(LIGER_MOE_BWD_REGISTRY_ENTRY)
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 90
+	LIGER_MOE_BWD_TUNE_CONFIGS(LIGER_MOE_BWD_REGISTRY_ENTRY_SM90)
+#endif
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 100
+	LIGER_MOE_BWD_TUNE_CONFIGS(LIGER_MOE_BWD_REGISTRY_ENTRY_SM100)
+#endif
 };
-#undef LIGER_MOE_BWD_REGISTRY_ENTRY
+#undef LIGER_MOE_BWD_REGISTRY_ENTRY_SM100
+#undef LIGER_MOE_BWD_REGISTRY_ENTRY_SM90
+#undef LIGER_MOE_BWD_REGISTRY_ENTRY_C
 
 static constexpr int kNumBwdConfigs =
 	sizeof(kRegistryBwd) / sizeof(kRegistryBwd[0]);
@@ -482,6 +516,7 @@ static PairResult run_pair(
 // ── Collector for winning (fwd, bwd) pair per shape ──────────────────
 
 struct TunedRow {
+	int Compute;
 	int TK, TKE, D, I;  // TK = T * top_k (M-axis); TKE = TK / E_local where
 	                    // E_local = E / n_pes (per-LOCAL-expert avg K-range
 	                    // — each PE only walks its own experts in mlp3/mlp4
@@ -492,64 +527,69 @@ struct TunedRow {
 };
 static std::vector<TunedRow> g_tuned_rows;
 
-// Tuning-time PE count, set in main(). Selects which world-size CLASS the
-// generated table populates: n_pes == 1 → single-GPU class (kTunedConfigsSingle),
-// n_pes > 1 → multi-GPU class (kTunedConfigsMulti). Each class lives in its own
-// generated header so a single-GPU sweep and an 8-GPU sweep don't clobber each
-// other; the umbrella moe_fwd_bwd_tuning_configs.cuh includes both.
+// Tuning-time PE count and compute capability, set in main(). Together they
+// select the generated subtable target: single-vs-multi wrapper, then sm90-vs-
+// sm100 subtable. The umbrella moe_fwd_bwd_tuning_configs.cuh includes all
+// world-size/compute subtables.
 static int g_tuner_n_pes = 0;
+static int g_tuner_compute = 0;
+
+static const char* tuned_output_compute_suffix() {
+	return (g_tuner_compute == 100) ? "_sm100.cuh" : "_sm90.cuh";
+}
+
+static bool ends_with(const char* s, const char* suffix) {
+	if (!s || !suffix) return false;
+	const size_t n = std::strlen(s);
+	const size_t m = std::strlen(suffix);
+	return n >= m && std::strcmp(s + n - m, suffix) == 0;
+}
 
 static void dump_tuned_configs() {
 	const bool single = (g_tuner_n_pes <= 1);
 	const char* cls = single ? "Single" : "Multi";  // array/count name suffix
+	const char* compute_suffix = (g_tuner_compute == 100) ? "Sm100" : "Sm90";
 	const char* default_path = single
-		? "moe_fwd_bwd_tuning_configs_single.cuh"
-		: "moe_fwd_bwd_tuning_configs_multi.cuh";
+		? ((g_tuner_compute == 100)
+			? "moe_fwd_bwd_tuning_configs_single_sm100.cuh"
+			: "moe_fwd_bwd_tuning_configs_single_sm90.cuh")
+		: ((g_tuner_compute == 100)
+			? "moe_fwd_bwd_tuning_configs_multi_sm100.cuh"
+			: "moe_fwd_bwd_tuning_configs_multi_sm90.cuh");
 	const char* env = getenv("LIGER_MOE_FWDBWD_TUNED_OUTPUT");
 	const char* out_path = env ? env : default_path;
+	const char* required_suffix = tuned_output_compute_suffix();
+	if (!ends_with(out_path, required_suffix)) {
+		fprintf(stderr,
+		        "Refusing to write tuned config for sm_%d to '%s'. Output path "
+		        "must end with '%s' so each compute capability only updates its "
+		        "matching subtable header.\n",
+		        g_tuner_compute, out_path, required_suffix);
+		std::exit(1);
+	}
 	std::ofstream f(out_path);
 	if (!f) {
 		fprintf(stderr, "Failed to open tuned config header for write: %s\n", out_path);
 		return;
 	}
-	const std::string arr   = std::string("kTunedConfigs") + cls;
-	const std::string count = std::string("kNumTunedConfigs") + cls;
+	const std::string arr   = std::string("kTunedConfigs") + cls + compute_suffix;
+	const std::string count = std::string("kNumTunedConfigs") + cls + compute_suffix;
 	f << "#pragma once\n\n"
 	  << "// Auto-generated by benchmarks/tune_moe_fwd_bwd — do not edit by hand.\n"
 	  << "// World-size CLASS: " << (single ? "single-GPU (n_pes == 1)" : "multi-GPU (n_pes > 1)")
+	  << "; compute capability: sm_" << g_tuner_compute
 	  << "; tuned at n_pes=" << g_tuner_n_pes << ".\n"
 	  << "// Key (TK, TKE, D, I): TK = T*top_k (total routed tokens),\n"
 	  << "// TKE = TK / E_local where E_local = E / n_pes (per-LOCAL-expert\n"
 	  << "// avg K-range — affects mlp3/mlp4 bwd perf since each PE only\n"
-	  << "// walks its own experts). n_pes is the tuning-time PE count;\n"
+	  << "// walks its own experts). Deployment lookup selects this subtable by Compute;\n"
+	  << "// n_pes is the tuning-time PE count;\n"
 	  << "// deployment lookup should compute TKE the same way.\n"
 	  << "// Each row pairs the best fwd template with the best bwd template for\n"
 	  << "// that shape. The COMM tile is fixed at 128 for both directions;\n"
 	  << "// Fwd_TileM / Bwd_TileM are the per-direction GEMM tiles and may differ.\n"
-	  << "// Written incrementally; a partial file means the tuner crashed.\n"
-	  << "// This file is included via the umbrella moe_fwd_bwd_tuning_configs.cuh;\n"
-	  << "// do not include it directly (the struct is shared across both classes).\n\n"
-	  << "#ifndef LIGER_TUNED_CONFIG_FWDBWD_STRUCT_DEFINED\n"
-	  << "#define LIGER_TUNED_CONFIG_FWDBWD_STRUCT_DEFINED\n"
-	  << "namespace liger {\n\n"
-	  << "struct TunedConfigFwdBwd {\n"
-	  << "\tint TK, TKE, D, I;  // shape key\n"
-	  << "\t// Fwd template (fwd template fields).\n"
-	  << "\tint Fwd_NSplit;\n"
-	  << "\tint Fwd_TileN1, Fwd_TileK1, Fwd_Stages1, Fwd_EpiChunkN1;\n"
-	  << "\tint Fwd_TileN2, Fwd_TileK2, Fwd_Stages2, Fwd_EpiChunkN2;\n"
-	  << "\tint Fwd_ZBufferSlots, Fwd_CommNumStages;\n"
-	  << "\t// Bwd template (bwd template fields).\n"
-	  << "\tint Bwd_NSplit, Bwd_NSplit2;\n"
-	  << "\tint Bwd_TileN1, Bwd_TileK1, Bwd_Stages1;\n"
-	  << "\tint Bwd_TileM3, Bwd_TileN3, Bwd_TileK3, Bwd_Stages3;\n"
-	  << "\tint Bwd_EpiChunkN1, Bwd_EpiChunkN25, Bwd_EpiChunkN34;\n"
-	  << "\tint Bwd_CommNumStages;\n"
-	  << "\tint Fwd_TileM, Bwd_TileM;  // per-direction GEMM tile ∈ {64, 128}; comm tile = 128\n"
-	  << "\tfloat fwd_ms, bwd_ms, combined_ms;  // per-shape best timings\n"
-	  << "};\n\n"
-	  << "} // namespace liger\n"
-	  << "#endif // LIGER_TUNED_CONFIG_FWDBWD_STRUCT_DEFINED\n\n"
+	  << "// Written incrementally; a partial file means the tuner crashed.\n\n"
+	  << "#include \"moe_fwd_bwd_tuning_config_types.cuh\"\n\n"
 	  << "namespace liger {\n\n";
 	if (g_tuned_rows.empty()) {
 		f << "static const TunedConfigFwdBwd " << arr << "[1] = {{\n"
@@ -607,9 +647,11 @@ static void tune_shape(
 	// fwd and bwd timed together must agree on TileM).
 	std::vector<int> fwd_candidates, bwd_candidates;
 	for (int ci = 0; ci < kNumFwdConfigs; ++ci)
-		if (fwd_shape_valid(D, I, kRegistryFwd[ci])) fwd_candidates.push_back(ci);
+		if (kRegistryFwd[ci].Compute == g_tuner_compute &&
+		    fwd_shape_valid(D, I, kRegistryFwd[ci])) fwd_candidates.push_back(ci);
 	for (int ci = 0; ci < kNumBwdConfigs; ++ci)
-		if (bwd_shape_valid(D, I, kRegistryBwd[ci])) bwd_candidates.push_back(ci);
+		if (kRegistryBwd[ci].Compute == g_tuner_compute &&
+		    bwd_shape_valid(D, I, kRegistryBwd[ci])) bwd_candidates.push_back(ci);
 
 	// Optional: force a specific TileM (e.g. MOE_FWDBWD_TUNE_TILEM=128) to
 	// inspect a single bucket. Filters both fwd and bwd candidates so only
@@ -905,6 +947,7 @@ static void tune_shape(
 		// their INDEPENDENT winning buckets (may differ in GEMM tile).
 		const int E_local = epp > 0 ? epp : 1;
 		g_tuned_rows.push_back({
+			kRegistryFwd[bucket[best_fwd_b].fwd_ci].Compute,
 			T * K, (T * K) / E_local, D, I,
 			bucket[best_fwd_b].fwd_ci, bucket[best_bwd_b].bwd_ci,
 			bucket[best_fwd_b].fwd_ms, bucket[best_bwd_b].bwd_ms,
@@ -932,6 +975,19 @@ int main(int argc, char** argv) {
 	int n_pes = nvshmem_team_n_pes(team);
 	cudaSetDevice(pe);
 	g_tuner_n_pes = n_pes;  // selects single- vs multi-GPU config class on dump
+	int dev = 0;
+	cudaGetDevice(&dev);
+	g_tuner_compute = moe_detect_compute_dispatch_key_noexcept(dev);
+	if (g_tuner_compute <= 0) {
+		if (pe == 0) {
+			int unsupported = -g_tuner_compute;
+			printf("Error: unsupported CUDA compute capability sm_%d. "
+			       "Supported compute capabilities are sm_90 (Hopper) and sm_100 (Blackwell).\n",
+			       unsupported);
+		}
+		(void)liger_cute_nvshmem_finalize();
+		return 1;
+	}
 
 	// Sweep matches tune_moe_bwd.cu (the more restrictive of the two
 	// existing tuners — T=16384 trips an unspecified launch failure on
@@ -1108,8 +1164,9 @@ int main(int argc, char** argv) {
 		fprintf(stderr,
 			"WARNING: MOE_FWDBWD_TUNE_SKIP_GENERIC=1 will overwrite the default\n"
 			"  output .cuh with named-shape rows only — generic-sweep rows from\n"
-			"  the previous run will be LOST. Set LIGER_MOE_FWDBWD_TUNED_OUTPUT=/path\n"
-			"  to redirect, then merge manually. Continuing in 3 seconds...\n");
+			"  the previous run will be LOST. Set LIGER_MOE_FWDBWD_TUNED_OUTPUT\n"
+			"  to a path ending in %s to redirect, then merge manually. Continuing in 3 seconds...\n",
+			tuned_output_compute_suffix());
 		std::this_thread::sleep_for(std::chrono::seconds(3));
 	}
 
@@ -1176,8 +1233,7 @@ int main(int argc, char** argv) {
 			hidden_sweep.front(), hidden_sweep.back(),
 			kMinIntermediate);
 		printf("Class: %s (tuned at n_pes=%d)\n",
-			n_pes <= 1 ? "SINGLE-GPU (kTunedConfigsSingle)"
-			           : "MULTI-GPU (kTunedConfigsMulti)", n_pes);
+			n_pes <= 1 ? "SINGLE-GPU" : "MULTI-GPU", n_pes);
 		printf("Output: ../src/liger_comm_kernels/moe/moe_fwd_bwd_tuning_configs_%s.cuh\n\n",
 			n_pes <= 1 ? "single" : "multi");
 		printf("%-7s %-6s %-6s  result\n", "T", "D", "I");

@@ -39,7 +39,16 @@ find_package(CUDAToolkit REQUIRED)
 set(CMAKE_CUDA_ARCHITECTURES OFF)
 string(REGEX REPLACE "-gencode[= ]+arch=compute_[0-9a-z]+,code=sm_[0-9a-z]+" "" CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
 string(STRIP "${CMAKE_CUDA_FLAGS}" CMAKE_CUDA_FLAGS)
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_90a,code=sm_90a --use_fast_math --extra-device-vectorization --fmad=true --prec-div=false --prec-sqrt=false --ptxas-options=-O3,--allow-expensive-optimizations=true")
+set(LIGER_CUTE_CUDA_ARCH "90a" CACHE STRING
+    "CUDA architecture for -gencode (e.g. 90a for Hopper, 100a for Blackwell)")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_${LIGER_CUTE_CUDA_ARCH},code=sm_${LIGER_CUTE_CUDA_ARCH} --use_fast_math --extra-device-vectorization --fmad=true --prec-div=false --prec-sqrt=false --ptxas-options=-O3,--allow-expensive-optimizations=true")
+if(LIGER_CUTE_CUDA_ARCH MATCHES "^90")
+    add_compile_definitions(LIGER_CUTE_DISPATCH_COMPUTE=90)
+elseif(LIGER_CUTE_CUDA_ARCH MATCHES "^100")
+    add_compile_definitions(LIGER_CUTE_DISPATCH_COMPUTE=100)
+else()
+    add_compile_definitions(LIGER_CUTE_DISPATCH_COMPUTE=0)
+endif()
 
 add_compile_definitions(NDEBUG)
 add_compile_definitions(NVSHMEM_ENABLE_ALL_DEVICE_INLINING=ON)
@@ -90,7 +99,6 @@ add_executable(tune_moe_fwd_bwd
     "${_MOE}/moe_bwd.cu"
     "${_CORESRC}/nvshmem.cu"
     "${_CORESRC}/liger_cute.cu"
-    "${_CORESRC}/tensor_view.cpp"
 )
 
 set_target_properties(tune_moe_fwd_bwd PROPERTIES
