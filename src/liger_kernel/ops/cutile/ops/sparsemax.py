@@ -8,80 +8,50 @@ import torch
 from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 from liger_kernel.ops.utils import ensure_contiguous
 
-# 20 bisections give fp32-scale tau precision (~1e-6 relative interval).
-_BSEARCH_ITER = 20
 
-
-def _select_block_size(n_cols: int) -> int:
-    return min(_next_power_of_2(n_cols), 4096)
-
-
+# Exact sparsemax threshold (Martins & Astudillo 2016, Alg. 1), matching the Triton kernel:
+# on the descending-sorted row z, find support size k = max{ j : z_(j) > (cssv_j - 1)/j },
+# then tau = (sum_{i<=k} z_(i) - 1)/k. The whole row lives in one BLOCK_SIZE tile so ct.cumsum
+# gives the running prefix sum. Uses ct.gather/ct.scatter (not ct.load/ct.store): the cuTile
+# compiler currently rejects a kernel combining ct.load with cumsum + a reduction + broadcast.
 @ct.kernel(occupancy=4)
-def _sparsemax_bsearch_kernel_ct(
+def _sparsemax_fwd_kernel_ct(
     y_output,
     x_input,
+    x_sorted,  # row-wise descending sort of x_input (fp32), produced by torch.sort
     N_COLS: ct.Constant[int],
-    BLOCK_SIZE: ct.Constant[int],
-    BSEARCH_ITER: ct.Constant[int],
+    BLOCK_SIZE: ct.Constant[int],  # = next_pow2(N_COLS): whole row in one tile for the cumsum
 ):
     row_idx = ct.bid(0)
-    n_chunks = (N_COLS + BLOCK_SIZE - 1) // BLOCK_SIZE
+    col_idx = ct.arange(BLOCK_SIZE, dtype=ct.int32)
+    one_b = ct.full((BLOCK_SIZE,), 1.0, ct.float32)
+    zero_b = ct.full((BLOCK_SIZE,), 0.0, ct.float32)
+    valid_mask = col_idx < N_COLS
+    valid_f = ct.astype(valid_mask, ct.float32)
 
-    x_max = ct.full((1,), -1e38, dtype=ct.float32)
+    z_sorted = ct.astype(
+        ct.gather(x_sorted, (row_idx, col_idx), check_bounds=True, padding_value=0.0),
+        ct.float32,
+    )
+    # Masked entries (col >= N_COLS) contribute 0 to the prefix sum / are excluded from support.
+    z_valid = z_sorted * valid_f
+    cssv = ct.cumsum(z_valid, 0)
+    r = ct.astype(col_idx, ct.float32) + one_b
+    t_vec = (cssv - one_b) / r
+    support = (z_sorted > t_vec) & valid_mask  # bool, matches Triton's `(z > t_vec) & mask`
 
-    for ci in range(n_chunks):
-        col_idx = ct.arange(BLOCK_SIZE, dtype=ct.int32) + ci * BLOCK_SIZE
-        x_tile = ct.astype(
-            ct.gather(x_input, (row_idx, col_idx), check_bounds=True, padding_value=-1e38),
-            ct.float32,
-        )
-        x_max = ct.maximum(x_max, ct.max(x_tile, 0, keepdims=True))
+    # k as an int32 count (matches Triton's tl.sum(support.to(tl.int32))), clamped to >= 1.
+    k_int = ct.maximum(ct.sum(ct.astype(support, ct.int32), 0, keepdims=True), ct.full((1,), 1, ct.int32))
+    k = ct.astype(k_int, ct.float32)
+    s = ct.sum(ct.where(support, z_sorted, zero_b), 0, keepdims=True)
+    tau = (s - ct.full((1,), 1.0, ct.float32)) / k
 
-    # tau_lo = x_max - 1 is the tightest universally-valid lower bound:
-    # f(x_max - 1) = sum_{x > x_max - 1}(x - (x_max - 1)) >= (x_max - (x_max - 1)) = 1.
-    # Using (sum_x - 1)/n_cols breaks when some entries are large-negative mask sentinels
-    # (e.g. -1e9): the lower bound falls below the true tau on rows with few finite entries,
-    # and the bisection range becomes too wide for 20 iterations to converge precisely.
-    tau_lo = x_max - ct.full((1,), 1.0, ct.float32)
-    tau_hi = x_max
-
-    one = ct.full((1,), 1.0, ct.float32)
-    half = ct.full((1,), 0.5, ct.float32)
-
-    for _ in range(BSEARCH_ITER):
-        tau_mid = half * (tau_lo + tau_hi)
-        f = ct.full((1,), 0.0, ct.float32)
-
-        for ci in range(n_chunks):
-            col_idx = ct.arange(BLOCK_SIZE, dtype=ct.int32) + ci * BLOCK_SIZE
-            x_tile = ct.astype(
-                ct.gather(x_input, (row_idx, col_idx), check_bounds=True, padding_value=-1e38),
-                ct.float32,
-            )
-            valid_mask = ct.astype(col_idx < N_COLS, ct.float32)
-            in_supp = ct.astype(x_tile > tau_mid, ct.float32) * valid_mask
-            f = f + ct.sum(in_supp * (x_tile - tau_mid), 0, keepdims=True)
-
-        tau_lo = ct.where(f >= one, tau_mid, tau_lo)
-        tau_hi = ct.where(f < one, tau_mid, tau_hi)
-
-    tau = half * (tau_lo + tau_hi)
-
-    zero = ct.full((BLOCK_SIZE,), 0.0, ct.float32)
-    for ci in range(n_chunks):
-        col_idx = ct.arange(BLOCK_SIZE, dtype=ct.int32) + ci * BLOCK_SIZE
-        x_tile = ct.astype(
-            ct.gather(x_input, (row_idx, col_idx), check_bounds=True, padding_value=0.0),
-            ct.float32,
-        )
-        y_tile = ct.maximum(x_tile - tau, zero)
-        ct.scatter(y_output, (row_idx, col_idx), ct.astype(y_tile, y_output.dtype), check_bounds=True)
-
-
-# Low-occupancy variant for large N (>16384): at high occupancy 7×128KB/SM thrashes L2;
-# occ=2 keeps each row resident in L2 across bisection passes. Generated via replace_hints
-# from the same kernel definition to avoid duplicating ~60 lines of bisection code.
-_sparsemax_bsearch_kernel_large_ct = _sparsemax_bsearch_kernel_ct.replace_hints(occupancy=2)
+    x_row = ct.astype(
+        ct.gather(x_input, (row_idx, col_idx), check_bounds=True, padding_value=0.0),
+        ct.float32,
+    )
+    y = ct.maximum(x_row - tau, ct.full((BLOCK_SIZE,), 0.0, ct.float32))
+    ct.scatter(y_output, (row_idx, col_idx), ct.astype(y, y_output.dtype), check_bounds=True)
 
 
 @ct.kernel
@@ -124,21 +94,27 @@ def _sparsemax_bwd_kernel_ct(
 
 
 def _sparsemax_forward(x: torch.Tensor, dim: int):
+    """Exact, sort-based sparsemax forward — numerically matches the Triton implementation.
+
+    Mirrors the Triton path: sort each row descending (torch.sort), then one kernel computes
+    the exact threshold tau via prefix sums and applies max(x - tau, 0). The whole row must fit
+    in one tile (BLOCK = next_pow2(n_cols)) so ct.cumsum yields the running prefix sum.
+    """
     if dim < 0:
         dim += x.dim()
     x_sw = x.transpose(dim, -1).contiguous()
     n_cols = x_sw.size(-1)
     n_rows = x_sw.numel() // n_cols
     x_flat = x_sw.view(n_rows, n_cols)
+    x_sorted = torch.sort(x_flat.float(), dim=-1, descending=True).values
 
-    BLOCK_SIZE = _select_block_size(n_cols)
+    BLOCK_SIZE = _next_power_of_2(n_cols)  # whole row in one tile (required for the cumsum)
     out_flat = torch.empty_like(x_flat)
-    kernel = _sparsemax_bsearch_kernel_large_ct if n_cols > 16384 else _sparsemax_bsearch_kernel_ct
     ct.launch(
         torch.cuda.current_stream(),
         (n_rows, 1, 1),
-        kernel,
-        (out_flat, x_flat, int(n_cols), int(BLOCK_SIZE), int(_BSEARCH_ITER)),
+        _sparsemax_fwd_kernel_ct,
+        (out_flat, x_flat, x_sorted, int(n_cols), int(BLOCK_SIZE)),
     )
 
     return out_flat.view_as(x_sw).transpose(dim, -1).contiguous(), out_flat
@@ -150,7 +126,7 @@ def _sparsemax_backward(grad_out: torch.Tensor, out_flat: torch.Tensor, dim: int
     n_rows = grad_sw.numel() // n_cols
     go_flat = grad_sw.view(n_rows, n_cols).contiguous()
 
-    BLOCK_SIZE = _select_block_size(n_cols)
+    BLOCK_SIZE = min(_next_power_of_2(n_cols), 4096)
     dx_flat = torch.empty_like(go_flat)
     ct.launch(
         torch.cuda.current_stream(),
