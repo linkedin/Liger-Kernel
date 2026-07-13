@@ -9,11 +9,10 @@ from liger_kernel.ops.cutile.ops.utils import _next_power_of_2
 from liger_kernel.ops.utils import ensure_contiguous
 
 
-# Exact sparsemax threshold (Martins & Astudillo 2016, Alg. 1), matching the Triton kernel:
+# Exact sparsemax threshold (Martins & Astudillo 2016, Alg. 1):
 # on the descending-sorted row z, find support size k = max{ j : z_(j) > (cssv_j - 1)/j },
 # then tau = (sum_{i<=k} z_(i) - 1)/k. The whole row lives in one BLOCK_SIZE tile so ct.cumsum
-# gives the running prefix sum. Uses ct.gather/ct.scatter (not ct.load/ct.store): the cuTile
-# compiler currently rejects a kernel combining ct.load with cumsum + a reduction + broadcast.
+# gives the running prefix sum.
 @ct.kernel(occupancy=4)
 def _sparsemax_fwd_kernel_ct(
     y_output,
@@ -38,9 +37,9 @@ def _sparsemax_fwd_kernel_ct(
     cssv = ct.cumsum(z_valid, 0)
     r = ct.astype(col_idx, ct.float32) + one_b
     t_vec = (cssv - one_b) / r
-    support = (z_sorted > t_vec) & valid_mask  # bool, matches Triton's `(z > t_vec) & mask`
+    support = (z_sorted > t_vec) & valid_mask
 
-    # k as an int32 count (matches Triton's tl.sum(support.to(tl.int32))), clamped to >= 1.
+    # Support size k, clamped to >= 1.
     k_int = ct.maximum(ct.sum(ct.astype(support, ct.int32), 0, keepdims=True), ct.full((1,), 1, ct.int32))
     k = ct.astype(k_int, ct.float32)
     s = ct.sum(ct.where(support, z_sorted, zero_b), 0, keepdims=True)
@@ -94,11 +93,11 @@ def _sparsemax_bwd_kernel_ct(
 
 
 def _sparsemax_forward(x: torch.Tensor, dim: int):
-    """Exact, sort-based sparsemax forward — numerically matches the Triton implementation.
+    """Exact, sort-based sparsemax forward.
 
-    Mirrors the Triton path: sort each row descending (torch.sort), then one kernel computes
-    the exact threshold tau via prefix sums and applies max(x - tau, 0). The whole row must fit
-    in one tile (BLOCK = next_pow2(n_cols)) so ct.cumsum yields the running prefix sum.
+    Sort each row descending (torch.sort), then one kernel computes the exact threshold tau
+    via prefix sums and applies max(x - tau, 0). The whole row must fit in one tile
+    (BLOCK = next_pow2(n_cols)) so ct.cumsum yields the running prefix sum.
     """
     if dim < 0:
         dim += x.dim()
