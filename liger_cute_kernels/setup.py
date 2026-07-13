@@ -37,7 +37,8 @@ setup(
     version=f"{BASE_VERSION}+{lck_local_version()}",
     description="Native CUTLASS + NVSHMEM MoE kernels (lck) for liger_kernel.ops.cute",
     python_requires=">=3.9",
-    install_requires=["torch", "apache-tvm-ffi", "nvidia-nvshmem-cu13"],
+    install_requires=["torch", "apache-tvm-ffi"],
+    extras_require={"nvshmem-pypi": ["nvidia-nvshmem-cu13"]},
     # Self-contained package: its __init__.py is packaged by build_py and the
     # .so are placed beside it by LckBuildExt. The ext module also makes this a
     # platform wheel (cpXY/abi/platform tags).

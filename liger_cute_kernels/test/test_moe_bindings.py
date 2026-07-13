@@ -11,7 +11,7 @@ binding *surface* that already exists:
   * a failed ``LIGER_CHECK`` in the torch-free core propagates across the
     ``extern "C"`` boundary (status code + thread-local message) and surfaces as
     a Python ``RuntimeError`` carrying that message,
-  * the torch::Tensor -> TensorView marshalling runs (dtype validation fires).
+  * the TVM FFI TensorView validation runs (dtype validation fires).
 
 The whole module is skipped unless the compiled ``liger_cute_kernels`` package
 is importable (build it via this module's README.md). Tests that need device
@@ -84,15 +84,15 @@ def test_configure_symmetric_topology_mismatch_raises(tvm_ffi_module):
 
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA tensors")
 def test_fwd_rejects_wrong_dtype(tvm_ffi_module):
-    # Forward expects bf16 X; a float32 X must trip the dtype LIGER_CHECK, which
-    # runs before any symmetric allocation (so no NVSHMEM runtime is required).
+    # Forward expects bf16 X; a float32 X must trip TVM FFI dtype validation,
+    # which runs before any symmetric allocation (so no NVSHMEM runtime is required).
     tvm_ffi_module.moe_configure_symmetric(**_CFG)
     T, D, E, K = 16, _CFG["hidden_dim"], _CFG["max_num_experts"], _CFG["max_top_k"]
     X = torch.randn(T, D, dtype=torch.float32, device="cuda")  # wrong dtype on purpose
     expert_indices = torch.zeros(T, K, dtype=torch.int32, device="cuda")
     expert_weights = torch.zeros(T, K, dtype=torch.bfloat16, device="cuda")
     B = torch.zeros(E, D, D, dtype=torch.bfloat16, device="cuda")
-    with pytest.raises(RuntimeError, match="must be bfloat16"):
+    with pytest.raises(RuntimeError, match="float32 vs\\. bfloat16.*X"):
         tvm_ffi_module.moe_fused_fwd_bf16(
             X, expert_indices, expert_weights, B, B, B, num_experts=E, top_k=K, team_handle=0
         )

@@ -2,12 +2,10 @@
 //
 // Ported from LigerCommKernels' moe.cu. The device kernels and the templated
 // host launcher are upstream-verbatim (namespace liger, internal to the .so);
-// only the boundary changed: the public entry points are the flat extern "C"
-// liger_cute_moe_* ABI (declared in liger_cute/moe.h) taking TensorView<N> and
-// returning liger_cute_status_t. torch::Tensor never appears here — the binding
-// (_C) marshals torch <-> TensorView and supplies the CUDA stream. Infra
-// (BufferPool / SymmetricMemoryStack / comm schedule) comes from the shared
-// liger_cute::detail headers via the buffer_pool.cuh / nvshmem_helpers.cuh shims.
+// only the boundary changed: the remaining public entry points here are flat
+// extern "C" control/configuration APIs. Tensor-carrying MoE calls are exposed
+// through TVM FFI and lower directly into the internal MoeFwdArgs/MoeBwdArgs
+// launch bundles. torch::Tensor never appears here.
 #define LIGER_CUTE_BUILDING 1
 
 #include <nvshmem.h>
@@ -27,7 +25,6 @@
 
 #include "liger_cute/moe.h"
 #include "liger_cute/check.h"
-#include "liger_cute/tensor_view.h"
 #include "liger_cute/detail/status.h"
 #include "liger_cute/detail/comm_schedule.cuh"
 
@@ -1598,34 +1595,12 @@ moe_list_compiled_configs() {
 }  // namespace liger
 
 // ============================================================================
-// Flat extern "C" ABI (declared in liger_cute/moe.h)
+// Flat extern "C" control ABI (declared in liger_cute/moe.h)
 // ============================================================================
-//
-// Each entry validates inputs with LIGER_CHECK, marshals TensorView<N> into the
-// internal liger:: launchers, and converts any thrown liger_cute::Error into a
-// liger_cute_status_t via detail::guarded(). No exception crosses the boundary.
 
 namespace {
 
 using liger_cute::detail::guarded;
-
-constexpr int kABITileM = 128;  // fixed comm tile (WGMMA); also the symm padding unit
-
-// Fill a TensorView<N> to alias `data` with the given shape + dtype.
-template <int N>
-void set_view(liger_cute::TensorView<N>* v, void* data,
-              const int64_t (&sizes)[N], liger_cute_dtype_t dtype) {
-	v->data = data;
-	for (int i = 0; i < N; ++i) v->sizes[i] = sizes[i];
-	v->dtype = dtype;
-}
-
-template <int N>
-void require_dtype(const liger_cute::TensorView<N>& v, const char* name,
-                   liger_cute_dtype_t want) {
-	LIGER_CHECK(v.dtype == want, "moe: input '", name, "' must be ",
-	            liger_cute_dtype_string(want), ", got ", liger_cute_dtype_string(v.dtype));
-}
 
 }  // namespace
 
@@ -1663,110 +1638,5 @@ liger_cute_status_t liger_cute_moe_pop_fwd(void) {
 		return LIGER_CUTE_OK;
 	});
 }
-
-liger_cute_status_t liger_cute_moe_fused_fwd_bf16_auto(
-		const liger_cute::TensorView<2> X,
-		const liger_cute::TensorView<2> expert_indices,
-		const liger_cute::TensorView<2> expert_weights,
-		const liger_cute::TensorView<3> all_B,
-		const liger_cute::TensorView<3> all_C,
-		const liger_cute::TensorView<3> all_A,
-		const int num_experts,
-		const int top_k,
-		const int64_t team_handle,
-		const int64_t stream_handle,
-		liger_cute::TensorView<2>* Y_out,
-		liger_cute::TensorView<1>* token_expert_slots_out,
-		liger_cute::TensorView<1>* tile_expert_ids_out,
-		liger_cute::TensorView<2>* x_sorted_out_symm,
-		liger_cute::TensorView<2>* y_buf_out_symm,
-		liger_cute::TensorView<2>* all_expert_offsets_out_symm,
-		int* chosen_tile_m_out) {
-	return guarded([&]() -> liger_cute_status_t {
-		const liger::MoeSymmConfig& cfg = liger::get_symm_config();
-		LIGER_CHECK(cfg.initialized,
-			"moe_fused_fwd_bf16_auto: call liger_cute_moe_configure_symmetric first");
-
-		// ── Input validation ────────────────────────────────────────────────
-		require_dtype(X, "X", LIGER_CUTE_DTYPE_BFLOAT16);
-		require_dtype(expert_indices, "expert_indices", LIGER_CUTE_DTYPE_INT32);
-		require_dtype(expert_weights, "expert_weights", LIGER_CUTE_DTYPE_BFLOAT16);
-		LIGER_CHECK(all_B.dtype == LIGER_CUTE_DTYPE_BFLOAT16 &&
-		                all_C.dtype == LIGER_CUTE_DTYPE_BFLOAT16 &&
-		                all_A.dtype == LIGER_CUTE_DTYPE_BFLOAT16,
-			"moe_fused_fwd_bf16_auto: expert weights all_B/all_C/all_A must be bf16");
-
-		const int64_t num_tokens = X.sizes[0];
-		const int64_t hidden_dim = X.sizes[1];
-		const int64_t intermediate_dim = all_B.sizes[1];
-		const int64_t experts_per_pe   = all_B.sizes[0];
-		LIGER_CHECK(hidden_dim == cfg.hidden_dim,
-			"moe_fused_fwd_bf16_auto: X hidden_dim (", hidden_dim,
-			") != configured hidden_dim (", cfg.hidden_dim, ")");
-		LIGER_CHECK(num_experts == cfg.max_num_experts,
-			"moe_fused_fwd_bf16_auto: num_experts (", num_experts,
-			") != configured max_num_experts (", cfg.max_num_experts, ")");
-		LIGER_CHECK(top_k >= 1 && top_k <= cfg.max_top_k,
-			"moe_fused_fwd_bf16_auto: top_k (", top_k, ") out of range [1, ",
-			cfg.max_top_k, "]");
-		LIGER_CHECK(expert_indices.sizes[0] == num_tokens && expert_indices.sizes[1] == top_k,
-			"moe_fused_fwd_bf16_auto: expert_indices must be [num_tokens, top_k]");
-		LIGER_CHECK(num_tokens * top_k <= cfg.max_total_slots,
-			"moe_fused_fwd_bf16_auto: num_tokens*top_k (", num_tokens * top_k,
-			") exceeds configured capacity (", cfg.max_total_slots, ")");
-		LIGER_CHECK(Y_out && token_expert_slots_out && tile_expert_ids_out &&
-		                x_sorted_out_symm && y_buf_out_symm &&
-		                all_expert_offsets_out_symm && chosen_tile_m_out,
-			"moe_fused_fwd_bf16_auto: output views must be non-null");
-
-		int device = 0;
-		if (cudaError_t e = cudaGetDevice(&device); e != cudaSuccess)
-			LIGER_FAIL_CUDA("moe_fused_fwd_bf16_auto: cudaGetDevice failed: ",
-			                cudaGetErrorString(e));
-
-		// ── Build the launch bundle and dispatch ─────────────────────────────
-		void* x_sorted = nullptr;
-		void* y_buf = nullptr;
-		void* all_expert_offsets = nullptr;
-
-		liger::MoeFwdArgs args{};
-		args.X                = X.data;
-		args.expert_indices   = static_cast<const int*>(expert_indices.data);
-		args.expert_weights   = expert_weights.data;
-		args.all_B            = all_B.data;
-		args.all_C            = all_C.data;
-		args.all_A            = all_A.data;
-		args.num_tokens       = static_cast<int>(num_tokens);
-		args.hidden_dim       = static_cast<int>(hidden_dim);
-		args.intermediate_dim = static_cast<int>(intermediate_dim);
-		args.experts_per_pe   = static_cast<int>(experts_per_pe);
-		args.num_experts      = num_experts;
-		args.top_k            = top_k;
-		args.team             = static_cast<int>(team_handle);
-		args.stream           = reinterpret_cast<cudaStream_t>(stream_handle);
-		args.device           = device;
-		args.Y                = Y_out->data;
-		args.token_expert_slots = static_cast<int*>(token_expert_slots_out->data);
-		args.tile_expert_ids    = static_cast<int*>(tile_expert_ids_out->data);
-		args.x_sorted_out           = &x_sorted;
-		args.y_buf_out              = &y_buf;
-		args.all_expert_offsets_out = &all_expert_offsets;
-
-		liger::moe_fused_fwd_dispatch(args, chosen_tile_m_out);
-
-		// Alias the persistent symmetric buffers as the *_out_symm views (shapes
-		// use the configured max; storage is owned by the symmetric stack).
-		const int64_t symm_slots = cfg.max_total_slots;
-		const int64_t xy_shape[2]  = {symm_slots, cfg.hidden_dim};
-		const int64_t off_shape[2] = {cfg.num_pes, cfg.max_num_experts + 1};
-		set_view<2>(x_sorted_out_symm, x_sorted, xy_shape, LIGER_CUTE_DTYPE_BFLOAT16);
-		set_view<2>(y_buf_out_symm, y_buf, xy_shape, LIGER_CUTE_DTYPE_BFLOAT16);
-		set_view<2>(all_expert_offsets_out_symm, all_expert_offsets, off_shape,
-		            LIGER_CUTE_DTYPE_INT32);
-		return LIGER_CUTE_OK;
-	});
-}
-
-// liger_cute_moe_fused_bwd_bf16_auto is defined in moe_bwd.cu.
 
 }  // extern "C"
