@@ -31,7 +31,7 @@ using namespace cute;
 // Fused shared memory
 // ═══════════════════════════════════════════════════════════════════
 
-template <typename Traits1, typename Traits2>
+template <typename Traits1, typename Traits2, int Compute = 90>
 struct MlpFusedSmem {
 	union {
 		Mlp1FusedSmem<Traits1> mlp1;
@@ -40,7 +40,7 @@ struct MlpFusedSmem {
 
 	// Pipeline barrier storage — persistent across phases.
 	// Both phases use a single fused pipe (one mbarrier per stage).
-	typename Traits1::MainloopPipeline::SharedStorage p1_pipe;
+	typename Mlp1MainloopPipelineFor<Traits1, Compute>::SharedStorage p1_pipe;
 	typename Traits2::MainloopPipeline::SharedStorage p2_pipe;
 };
 
@@ -85,11 +85,12 @@ template <typename Traits1, typename Traits2,
           // (into 2 Z regions), then mlp2 runs both. The comm semaphores stay
           // 128-wide; only the TMA + wgmma granularity is finer. 1 → unchanged.
           int SubTiles = 1,
+          int Compute = 90,
           typename TileIter,
           typename TmaLoadX, typename TmaLoadW1, typename TmaStoreZ,
           typename TmaLoadZ, typename TmaLoadW2, typename TmaStoreY>
 __device__ __forceinline__ void mlp_fused_fwd(
-		MlpFusedSmem<Traits1, Traits2>& smem,
+		MlpFusedSmem<Traits1, Traits2, Compute>& smem,
 		TileIter& iter,
 		// MLP1 TMA descriptors
 		TmaLoadX  const& tma_load_x,
@@ -145,7 +146,12 @@ __device__ __forceinline__ void mlp_fused_fwd(
 	// ── Prologue: construct all pipelines once ──────────
 	// Pipeline constructors set per-thread role (Producer / Consumer /
 	// NonParticipant) so warps 1-3 can safely skip the MLP body below.
-	auto p1_pipe = mlp1_make_pipe<Traits1>(smem.p1_pipe);
+	auto p1_pipe = [&]() {
+		if constexpr (Compute == 100)
+			return mlp1_make_pipe_umma<Traits1>(smem.p1_pipe);
+		else
+			return mlp1_make_pipe<Traits1>(smem.p1_pipe);
+	}();
 	auto p2_pipe = mlp2_make_pipe<Traits2>(smem.p2_pipe);
 
 	if (warp_id >= 1 && warp_id <= 3) {
@@ -218,7 +224,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 			}
 
 			if (warp_id >= 4 && warp_id <= 11) {
-				mlp1_fused_consumer<Traits1>(
+				mlp1_fused_consumer<Traits1, Compute>(
 					p1_pipe, p1_cons_state,
 					smem.mlp1, tma_store_z, z_m, dims.intermediate_dim,
 					num_z_m_tiles, dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
@@ -273,7 +279,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 			}
 
 			if (warp_id >= 4 && warp_id <= 11) {
-				mlp2_fused_consumer<Traits2>(
+				mlp2_fused_consumer<Traits2, Compute>(
 					p2_pipe, p2_cons_state,
 					smem.mlp2, y_desc,
 					y_coord, dims.hidden_dim,

@@ -69,7 +69,7 @@ static constexpr int kBwdSubBatchMax = 8;   // upper bound for the per-group sav
 // ═══════════════════════════════════════════════════════════════════
 
 template <typename Traits1, typename Traits2T, typename Traits3,
-          typename Traits4, typename Traits5>
+          typename Traits4, typename Traits5, int Compute = 90>
 struct MlpFusedBwdSmem {
 	union {
 		Mlp1FusedActSmem<Traits1> mlp1;     // TileM=128 cooperative-M-split
@@ -85,7 +85,7 @@ struct MlpFusedBwdSmem {
 
 	// Phase 1a, 1b', 1d: single fused pipe each (1c silu_bwd is
 	// elementwise gmem→gmem, no pipe).
-	typename Traits1::MainloopPipeline::SharedStorage pa_pipe;
+	typename Mlp1MainloopPipelineFor<Traits1, Compute>::SharedStorage pa_pipe;
 	typename Traits2T::MainloopPipeline::SharedStorage pb_pipe;
 	typename Traits5::MainloopPipeline::SharedStorage pd_pipe;
 
@@ -306,10 +306,10 @@ mlp_bwd_resume_state(uint32_t count, bool is_producer) {
 	return s;
 }
 
-template <typename Traits1, typename TmaLoadX, typename TmaLoadW1,
+template <typename Traits1, int Compute = 90, typename TmaLoadX, typename TmaLoadW1,
           typename TmaStoreU, typename TmaStoreV, typename TmaStoreZ>
 __device__ __forceinline__ void mlp_bwd_run_phase_1a(
-		typename Traits1::MainloopPipeline& pa_pipe,
+		Mlp1MainloopPipelineFor<Traits1, Compute>& pa_pipe,
 		uint32_t& pa_count,
 		Mlp1FusedActSmem<Traits1>& smem_mlp1,
 		TmaLoadX  const& tma_load_x,
@@ -323,7 +323,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1a(
 		int split_idx = -1, int num_splits = -1) {
 	int ns = (split_idx  >= 0) ? split_idx  : (int)blockIdx.y;
 	int nc = (num_splits >= 0) ? num_splits : (int)gridDim.y;
-	auto s = mlp_bwd_resume_state<typename Traits1::MainloopPipeline>(
+	auto s = mlp_bwd_resume_state<Mlp1MainloopPipelineFor<Traits1, Compute>>(
 		pa_count, warp_id == 0);
 	if (warp_id == 0)
 		mlp1_fused_act_producer<Traits1>(pa_pipe, s,
@@ -333,7 +333,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1a(
 			dims.num_n_tiles_1, dims.num_k_tiles_1,
 			ns, nc);
 	if (warp_id >= 4)
-		mlp1_fused_act_consumer<Traits1>(pa_pipe, s,
+		mlp1_fused_act_consumer<Traits1, Compute>(pa_pipe, s,
 			smem_mlp1, tma_store_du, tma_store_dv, tma_store_z,
 			m, dims.intermediate_dim, dims.num_m_tiles,
 			dims.num_n_tiles_1, dims.num_k_tiles_1,
@@ -341,7 +341,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1a(
 	pa_count = s.count();
 }
 
-template <typename Traits2T, typename TmaLoadDY, typename TmaLoadW2T,
+template <typename Traits2T, int Compute = 90, typename TmaLoadDY, typename TmaLoadW2T,
           typename TmaStoreDZ>
 __device__ __forceinline__ void mlp_bwd_run_phase_1b(
 		typename Traits2T::MainloopPipeline& pb_pipe,
@@ -366,7 +366,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1b(
 			dims.num_n_tiles_2t, dims.num_k_tiles_2t,
 			ns, nc);
 	if (warp_id >= 4)
-		mlp2_t_fused_consumer<Traits2T>(pb_pipe, s,
+		mlp2_t_fused_consumer<Traits2T, Compute>(pb_pipe, s,
 			smem_mlp2t, tma_store_dz,
 			m, dims.intermediate_dim, dims.num_m_tiles,
 			dims.num_n_tiles_2t, dims.num_k_tiles_2t,
@@ -374,7 +374,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1b(
 	pb_count = s.count();
 }
 
-template <typename Traits5, typename TmaLoadDU, typename TmaLoadDV,
+template <typename Traits5, int Compute = 90, typename TmaLoadDU, typename TmaLoadDV,
           typename TmaLoadB, typename TmaLoadC, typename TmaStoreDX>
 __device__ __forceinline__ void mlp_bwd_run_phase_1d(
 		typename Traits5::MainloopPipeline& pd_pipe,
@@ -402,7 +402,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_1d(
 			dims.num_n_tiles_5, dims.num_k_tiles_5,
 			ns, nc);
 	if (warp_id >= 4)
-		mlp5_fused_consumer<Traits5>(pd_pipe, s,
+		mlp5_fused_consumer<Traits5, Compute>(pd_pipe, s,
 			smem_mlp5, tma_store_dx,
 			m, dims.hidden_dim,
 			dims.num_m_tiles, dims.num_n_tiles_5, dims.num_k_tiles_5,
@@ -460,7 +460,7 @@ __device__ __forceinline__ void mlp_bwd_phase_2_build_ranges(
 	cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 }
 
-template <typename Traits1, typename Traits4, int NSplit2,
+template <typename Traits1, typename Traits4, int NSplit2, int Compute = 90,
           typename TmaLoadXT4, typename TmaLoaddUT4, typename TmaLoaddVT4,
           typename TmaReduceDB, typename TmaReduceDC>
 __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
@@ -554,7 +554,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 			cell_start, cell_stride,
 			batch_kb_start, batch_kb_end, k_split_4, ring_kb);
 	if (warp_id >= 4)
-		mlp4_consumer<Traits4>(
+		mlp4_consumer<Traits4, Compute>(
 			p4_pipe, s,
 			smem_mlp4, tma_reduce_db, tma_reduce_dc,
 			k_starts, k_ends, experts_per_pe,
@@ -567,7 +567,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp4(
 	p4_count = s.count();
 }
 
-template <typename Traits1, typename Traits3, int NSplit2,
+template <typename Traits1, typename Traits3, int NSplit2, int Compute = 90,
           typename TmaLoadDYT3, typename TmaLoadZT3, typename TmaReduceDA>
 __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 		typename Traits3::MainloopPipeline& p3_pipe,
@@ -652,7 +652,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 			cell_start, cell_stride,
 			batch_kb_start, batch_kb_end, k_split_3, ring_kb);
 	if (warp_id >= 4)
-		mlp3_consumer<Traits3>(
+		mlp3_consumer<Traits3, Compute>(
 			p3_pipe, s,
 			smem_mlp3, tma_reduce_da,
 			k_starts, k_ends, experts_per_pe,
@@ -685,6 +685,7 @@ __device__ __forceinline__ void mlp_bwd_run_phase_2_mlp3(
 template <typename Traits1, typename Traits2T, typename Traits3,
           typename Traits4, typename Traits5,
           int NSplit2,
+          int Compute = 90,
           typename TileIter,
           typename TmaLoadX, typename TmaLoadW1,
           typename TmaStoreZ, typename TmaStoreDU, typename TmaStoreDV,
@@ -696,8 +697,8 @@ template <typename Traits1, typename Traits2T, typename Traits3,
           typename TmaLoadXT4, typename TmaLoaddUT4, typename TmaLoaddVT4,
           typename TmaReduceDB, typename TmaReduceDC>
 __device__ __forceinline__ void mlp_fused_bwd_run_batches(
-		MlpFusedBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5>& smem,
-		typename Traits1::MainloopPipeline&  pa_pipe,
+		MlpFusedBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Compute>& smem,
+		Mlp1MainloopPipelineFor<Traits1, Compute>& pa_pipe,
 		typename Traits2T::MainloopPipeline& pb_pipe,
 		typename Traits5::MainloopPipeline&  pd_pipe,
 		typename Traits3::MainloopPipeline&  p3_pipe,
@@ -764,7 +765,7 @@ __device__ __forceinline__ void mlp_fused_bwd_run_batches(
 			saved_expert = expert;
 			has_tile = true;
 
-			mlp_bwd_run_phase_1a<Traits1>(
+			mlp_bwd_run_phase_1a<Traits1, Compute>(
 				pa_pipe, pa_count, smem.mlp1,
 				tma_load_x, tma_load_b_fwd, tma_load_c_fwd,
 				tma_store_du, tma_store_dv, tma_store_z,
@@ -772,7 +773,7 @@ __device__ __forceinline__ void mlp_fused_bwd_run_batches(
 			cutlass::arch::NamedBarrier::sync(kMlpBwdBarrierThreads, kMlpBarrierId);
 
 			iter.acquire_dy();
-			mlp_bwd_run_phase_1b<Traits2T>(
+			mlp_bwd_run_phase_1b<Traits2T, Compute>(
 				pb_pipe, pb_count, smem.mlp2t,
 				tma_load_dy, tma_load_a_col, tma_store_dz,
 				warp_id, m, expert, dims);
@@ -793,7 +794,7 @@ __device__ __forceinline__ void mlp_fused_bwd_run_batches(
 		// Phase 1d: dX = dU@B + dV@C
 		if (has_tile) {
 			iter.acquire_dst();
-			mlp_bwd_run_phase_1d<Traits5>(
+			mlp_bwd_run_phase_1d<Traits5, Compute>(
 				pd_pipe, pd_count, smem.mlp5,
 				tma_load_du, tma_load_dv, tma_load_b_col, tma_load_c_col,
 				tma_store_dx,
@@ -851,7 +852,7 @@ __device__ __forceinline__ void mlp_fused_bwd_run_batches(
 			global_barrier.wait();
 
 		if (bk_tiles > 0)
-			mlp_bwd_run_phase_2_mlp4<Traits1, Traits4, NSplit2>(
+			mlp_bwd_run_phase_2_mlp4<Traits1, Traits4, NSplit2, Compute>(
 				p4_pipe, p4_count, smem.mlp4,
 				bufs.expert_k_starts, bufs.expert_k_ends,
 				tma_load_xt4, tma_load_dut4, tma_load_dvt4,
@@ -864,7 +865,7 @@ __device__ __forceinline__ void mlp_fused_bwd_run_batches(
 			iter.release_src(threadIdx.x);
 
 		if (bk_tiles > 0)
-			mlp_bwd_run_phase_2_mlp3<Traits1, Traits3, NSplit2>(
+			mlp_bwd_run_phase_2_mlp3<Traits1, Traits3, NSplit2, Compute>(
 				p3_pipe, p3_count, smem.mlp3,
 				bufs.expert_k_starts, bufs.expert_k_ends,
 				tma_load_dyt3, tma_load_zt3, tma_reduce_da,
@@ -905,6 +906,7 @@ template <typename Traits1, typename Traits2T, typename Traits3,
           //                belonging to experts N and N+1 (mis-attribution).
           int EfkbStride3 = 1,
           int EfkbStride4 = 1,
+          int Compute = 90,
           typename TileIter,
           // Phase 1 TMA descriptors
           typename TmaLoadX, typename TmaLoadW1,
@@ -918,7 +920,7 @@ template <typename Traits1, typename Traits2T, typename Traits3,
           typename TmaLoadXT4, typename TmaLoaddUT4, typename TmaLoaddVT4,
           typename TmaReduceDB, typename TmaReduceDC>
 __device__ __forceinline__ void mlp_fused_bwd(
-		MlpFusedBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5>& smem,
+		MlpFusedBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Compute>& smem,
 		TileIter& iter,
 		// Phase 1 TMA
 		TmaLoadX const& tma_load_x, TmaLoadW1 const& tma_load_b_fwd,
@@ -977,7 +979,12 @@ __device__ __forceinline__ void mlp_fused_bwd(
 	// 2-mlp3, 2-mlp4) use a single cooperative fused pipe each; phase
 	// 1b additionally uses a tiny scale-load aux pipe (Stages=1) to
 	// carry the silu-bwd coefficients U'/V' produced by mlp1.
-	auto pa_pipe       = mlp1_make_pipe<Traits1>(smem.pa_pipe);
+	auto pa_pipe = [&]() {
+		if constexpr (Compute == 100)
+			return mlp1_make_pipe_umma<Traits1>(smem.pa_pipe);
+		else
+			return mlp1_make_pipe<Traits1>(smem.pa_pipe);
+	}();
 	auto pb_pipe       = mlp2_t_make_pipe<Traits2T>(smem.pb_pipe);
 	auto pd_pipe       = mlp5_make_pipe<Traits5>(smem.pd_pipe);
 
@@ -1067,7 +1074,7 @@ __device__ __forceinline__ void mlp_fused_bwd(
 
 	mlp_fused_bwd_run_batches<
 		Traits1, Traits2T, Traits3, Traits4, Traits5,
-		NSplit2>(
+		NSplit2, Compute>(
 		smem, pa_pipe, pb_pipe, pd_pipe, p3_pipe, p4_pipe,
 		pa_count, pb_count, pd_count, p3_count, p4_count,
 		iter,
@@ -1108,6 +1115,7 @@ template <typename Traits1, typename Traits2T, typename Traits3,
           // tile_expert_ids replicated SubTiles× (the K-block count is invariant).
           // 1 → unchanged single-tile path.
           int SubTiles = 1,
+          int Compute = 90,
           typename FusedIter,
           // Shared TMA (Phase 1 weights, Phase 1d B/C, Phase 2 reduce + Z/U/V)
           typename TmaLoadW1, typename TmaStoreZ, typename TmaStoreDU,
@@ -1123,7 +1131,7 @@ template <typename Traits1, typename Traits2T, typename Traits3,
           typename TmaLoadX, typename TmaLoadDY, typename TmaStoreDX,
           typename TmaLoadDYT3, typename TmaLoadXT4>
 __device__ __forceinline__ void mlp_fused_bwd_dual(
-		MlpFusedBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5>& smem,
+		MlpFusedBwdSmem<Traits1, Traits2T, Traits3, Traits4, Traits5, Compute>& smem,
 		FusedIter& iter,
 		bool remote_active,
 		int efkb_stride_4_remote,
@@ -1193,7 +1201,12 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 
 	// Build pipelines ONCE (smem barriers initialized in one place — the
 	// remote pass picks up smem-barrier phase from where local left off).
-	auto pa_pipe = mlp1_make_pipe<Traits1>(smem.pa_pipe);
+	auto pa_pipe = [&]() {
+		if constexpr (Compute == 100)
+			return mlp1_make_pipe_umma<Traits1>(smem.pa_pipe);
+		else
+			return mlp1_make_pipe<Traits1>(smem.pa_pipe);
+	}();
 	auto pb_pipe = mlp2_t_make_pipe<Traits2T>(smem.pb_pipe);
 	auto pd_pipe = mlp5_make_pipe<Traits5>(smem.pd_pipe);
 
@@ -1334,7 +1347,7 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 				// num_m_tiles / num_tokens so the buffer tensor shapes match.
 				// Acquire/release of the comm slot stays once per 128 tile.
 				for (int sub = 0; sub < SubTiles; ++sub) {
-					mlp_bwd_run_phase_1a<Traits1>(
+					mlp_bwd_run_phase_1a<Traits1, Compute>(
 						pa_pipe, pa_count, smem.mlp1,
 						tma_load_x_remote, tma_load_b_fwd, tma_load_c_fwd,
 						tma_store_du, tma_store_dv, tma_store_z,
@@ -1346,7 +1359,7 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 
 				iter.acquire_dy();
 				for (int sub = 0; sub < SubTiles; ++sub) {
-					mlp_bwd_run_phase_1b<Traits2T>(
+					mlp_bwd_run_phase_1b<Traits2T, Compute>(
 						pb_pipe, pb_count, smem.mlp2t,
 						tma_load_dy_remote, tma_load_a_col, tma_store_dz,
 						warp_id, m * SubTiles + sub, expert, gemm_dims, split, num_splits);
@@ -1382,7 +1395,7 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 			if (has_tile) {
 				iter.acquire_dst();
 				for (int sub = 0; sub < SubTiles; ++sub) {
-					mlp_bwd_run_phase_1d<Traits5>(
+					mlp_bwd_run_phase_1d<Traits5, Compute>(
 						pd_pipe, pd_count, smem.mlp5,
 						tma_load_du, tma_load_dv, tma_load_b_col, tma_load_c_col,
 						tma_store_dx_remote,
@@ -1435,7 +1448,7 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 		}
 
 		if (bk_tiles > 0)
-			mlp_bwd_run_phase_2_mlp4<Traits1, Traits4, NSplit2>(
+			mlp_bwd_run_phase_2_mlp4<Traits1, Traits4, NSplit2, Compute>(
 				p4_pipe, p4_count, smem.mlp4,
 				remote_bufs.expert_k_starts, remote_bufs.expert_k_ends,
 				tma_load_xt4_remote, tma_load_dut4, tma_load_dvt4,
@@ -1452,7 +1465,7 @@ __device__ __forceinline__ void mlp_fused_bwd_dual(
 		}
 
 		if (bk_tiles > 0)
-			mlp_bwd_run_phase_2_mlp3<Traits1, Traits3, NSplit2>(
+			mlp_bwd_run_phase_2_mlp3<Traits1, Traits3, NSplit2, Compute>(
 				p3_pipe, p3_count, smem.mlp3,
 				remote_bufs.expert_k_starts, remote_bufs.expert_k_ends,
 				tma_load_dyt3_remote, tma_load_zt3, tma_reduce_da,

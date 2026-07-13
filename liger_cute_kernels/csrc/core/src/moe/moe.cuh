@@ -45,10 +45,10 @@ inline constexpr const char* kSymmKeyAllExpertOffsets = "all_expert_offsets";
 // MoE shared memory — union of MLP smem + comm smem
 // ═══════════════════════════════════════════════════════════════════
 
-template <typename Traits1, typename Traits2>
+template <typename Traits1, typename Traits2, int Compute = 90>
 struct MoeSmem {
 	// MLP shared memory (fused phase 1 + 2 with pipeline barriers).
-	MlpFusedSmem<Traits1, Traits2> mlp;
+	MlpFusedSmem<Traits1, Traits2, Compute> mlp;
 
 	// Comm shared memory (total_tiles count + remote_offsets pointer).
 	CommSmem comm;
@@ -67,11 +67,12 @@ template <typename Traits1, typename Traits2,
           // through SubTiles sub-tiles of Traits1::TileM (=GemmTileM) rows per
           // 128-wide comm staging slot. 1 → unchanged single-tile path.
           int SubTiles,
+          int Compute = 90,
           typename LocalIter, typename RemoteIter,
           typename TmaLoadX, typename TmaLoadW1, typename TmaStoreZ,
           typename TmaLoadZ, typename TmaLoadW2, typename TmaStoreY>
 __device__ __forceinline__ void moe_fused_fwd(
-		MoeSmem<Traits1, Traits2>& smem,
+		MoeSmem<Traits1, Traits2, Compute>& smem,
 		LocalIter& local_iter,
 		// Remote-phase comm pointers (no CommBuffers — keeps MLP register scope clean)
 		int* src_ready,
@@ -185,7 +186,7 @@ __device__ __forceinline__ void moe_fused_fwd(
 	// num_tokens = total staging rows = remote_num_m_tiles COMM tiles × CommTileM.
 	// CommTileM = Traits1::TileM (=GemmTileM) × SubTiles. num_m_tiles passed is the
 	// COMM tile count; mlp_fused_fwd scales it by SubTiles for the GEMM sub-tiles.
-	mlp_fused_fwd<Traits1, Traits2, ZBufferSlots, SubTiles>(
+	mlp_fused_fwd<Traits1, Traits2, ZBufferSlots, SubTiles, Compute>(
 		smem.mlp, remote_iter,
 		tma_load_x_remote, tma_load_b, tma_load_c, tma_store_z,
 		tma_load_z, tma_load_a, tma_store_y_remote,

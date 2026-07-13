@@ -318,7 +318,7 @@ __device__ __forceinline__ void mlp2_t_producer(
 // Cooperative 2-WG Consumer — M-split, single acc per WG
 // ═══════════════════════════════════════════════════════════════════
 
-template <typename Traits, typename Pipeline, typename TmaStoreY>
+template <typename Traits, int Compute = 90, typename Pipeline, typename TmaStoreY>
 __device__ __forceinline__ void mlp2_t_consumer(
 		Pipeline& pipe,
 		typename Traits::PipelineState& state,
@@ -329,6 +329,7 @@ __device__ __forceinline__ void mlp2_t_consumer(
 		int num_n_tiles,
 		int num_k_tiles) {
 
+	(void)Compute;
 	using Element = typename Traits::Element;
 	typename Traits::TiledMma tiled_mma;
 	int tid_in_mma = threadIdx.x - Traits::WarpGroupSize;   // 0..255

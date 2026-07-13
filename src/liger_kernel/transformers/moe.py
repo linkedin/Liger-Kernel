@@ -24,7 +24,7 @@ import torch.nn as nn
 
 # Import the backend autograd op eagerly so a missing/unbuildable backend
 # sub-package surfaces immediately as a clear error at import time. The op module
-# loads the native ``liger_cute_kernels._C`` extension at its own import, which
+# loads the native ``liger_cute_kernels.tvm_ffi`` facade at its own import, which
 # raises ImportError when the lck wheel is absent.
 try:
     from liger_kernel.ops.cute.ops.moe import moe_fused

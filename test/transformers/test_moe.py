@@ -176,8 +176,8 @@ def _make_inputs(rank, world_size):
 
 
 def _module_worker(rank, world_size, init_file):
-    from liger_cute_kernels import _C
     from liger_cute_kernels import nvshmem
+    from liger_cute_kernels import tvm_ffi
 
     from liger_kernel.transformers.moe import LigerExpertParallelFusedMoe
 
@@ -191,7 +191,7 @@ def _module_worker(rank, world_size, init_file):
     )
     nvshmem.init_from_pg()
     try:
-        _C.moe_configure_symmetric(
+        tvm_ffi.moe_configure_symmetric(
             max_tokens=_T,
             hidden_dim=_D,
             max_num_experts=_E,

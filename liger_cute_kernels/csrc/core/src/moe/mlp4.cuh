@@ -499,6 +499,7 @@ struct Mlp4ConsumerImpl;
 template <>
 struct Mlp4ConsumerImpl<90> {
 template <typename Traits,
+          int Compute = 90,
           typename Pipeline, typename SmemType,
           typename TmaReduceAddDB, typename TmaReduceAddDC>
 static __device__ __forceinline__ void run(
@@ -521,6 +522,7 @@ static __device__ __forceinline__ void run(
 		int batch_kb_end,
 		int k_split) {
 
+	(void)Compute;
 	using Element = typename Traits::Element;
 	typename Traits::TiledMma tiled_mma;
 
