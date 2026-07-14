@@ -427,13 +427,7 @@ static __device__ __forceinline__ void run(
 	auto tCtAccU  = cta_mma.make_fragment_C(tCgC);   // U = X·B
 	auto tCtAccV  = cta_mma.make_fragment_C(tCgC);   // V = X·C
 
-	cute::TMEM::Allocator1Sm tmem_alloc{};
-	// tcgen05.alloc is warp-synchronous — issue from the whole mma warp, not one
-	// elected thread (see mlp1_fused.cuh Compute=100 for the rationale).
-	if (is_mma_warp) {
-		tmem_alloc.allocate(2 * TileN, &smem.tmem_base);
-		__syncwarp();
-	}
+	// TMEM is allocated by the outer fused/standalone launcher once per CTA.
 
 	// Accumulator pipeline: UMMA producer (warp 4) → epilogue consumers. See
 	// the matching block in Mlp1FusedConsumerImpl<100> for the full rationale.
@@ -596,11 +590,6 @@ static __device__ __forceinline__ void run(
 		cute::tma_store_wait<0>();
 
 	cutlass::arch::NamedBarrier::sync(Traits::ConsumerThreads, /*id=*/0);
-	// Warp-synchronous tcgen05 relinquish/dealloc — whole mma warp.
-	if (is_mma_warp) {
-		tmem_alloc.release_allocation_lock();
-		tmem_alloc.free(tmem_base, 2 * TileN);
-	}
 #else
 	__trap();
 #endif

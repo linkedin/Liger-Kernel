@@ -47,7 +47,7 @@ struct Mlp2TFusedSmem {
 	// base address, plus the accumulator pipeline's barrier storage (UMMA→
 	// epilogue handoff). The Hopper (Compute=90) path never touches these, and
 	// keeping them here leaves the consumer signature identical across Compute
-	// values (TMEM/pipeline stay consumer-owned).
+	// values (TMEM base is externally owned; the acc pipeline lives here).
 	alignas(16) uint32_t tmem_base;
 	alignas(16) typename Traits::AccumulatorPipeline::SharedStorage acc_pipe;
 
@@ -451,17 +451,7 @@ static __device__ __forceinline__ void run(
 	auto tCgC     = cta_mma.partition_C(cAccFull);
 	auto tCtAcc   = cta_mma.make_fragment_C(tCgC);
 
-	// ── TMEM allocation (consumer-owned): warp 4 allocs TileN columns for the
-	//    ONE (TileM,TileN) accumulator (single acc, not 2·TileN). ──
-	cute::TMEM::Allocator1Sm tmem_alloc{};
-	// tcgen05.alloc is warp-synchronous (.sync.aligned) and MUST be issued by a
-	// single fully-active warp — NOT one elected thread (that deadlocks the
-	// whole warp). See CUTLASS sm100 kernels: whole mma warp allocates, then
-	// __syncwarp().
-	if (is_mma_warp) {
-		tmem_alloc.allocate(TileN, &smem.tmem_base);
-		__syncwarp();
-	}
+	// TMEM is allocated by the outer fused/standalone launcher once per CTA.
 
 	// ── Accumulator pipeline: UMMA producer (warp 4) → epilogue consumers
 	//    (all consumer warps). 1 stage — the TMEM accumulator is reused each
@@ -594,14 +584,9 @@ static __device__ __forceinline__ void run(
 	if (store_in_flight)
 		cute::tma_store_wait<0>();
 
-	// Release the alloc permit (so the next CTA can rasterize) then free TMEM.
-	// tcgen05.relinquish_alloc_permit / tcgen05.dealloc are warp-synchronous —
-	// issue from the whole mma warp, not one elected thread.
+	// Keep the final consumer barrier so the outer launcher can safely free TMEM
+	// after this consumer returns.
 	cutlass::arch::NamedBarrier::sync(Traits::ConsumerThreads, /*id=*/0);
-	if (is_mma_warp) {
-		tmem_alloc.release_allocation_lock();
-		tmem_alloc.free(tmem_base, TileN);
-	}
 #else
 	// The Compute=100 specialization is never dispatched on non-SM100 targets
 	// (host picks Compute=90 there). Trap if it is ever reached.

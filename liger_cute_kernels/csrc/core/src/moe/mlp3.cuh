@@ -32,6 +32,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 #include "models.cuh"
+#include "tmem_load_op.cuh"
 
 #include <cute/tensor.hpp>
 #include <cute/algorithm/gemm.hpp>
@@ -45,7 +46,7 @@
 // the Compute=100 body (itself gated on __CUDA_ARCH__ >= 1000) instantiates it.
 #include <cute/arch/mma_sm100_umma.hpp>
 #include <cute/atom/mma_traits_sm100.hpp>
-#include <cute/arch/tmem_allocator_sm100.hpp>
+
 #include <cute/arch/copy_sm100.hpp>
 #include <cute/atom/copy_traits_sm100.hpp>
 #include <cutlass/pipeline/sm100_pipeline.hpp>  // PipelineTmaUmmaAsync, PipelineUmmaAsync
@@ -54,24 +55,18 @@ namespace liger {
 
 using namespace cute;
 
-// ═══════════════════════════════════════════════════════════════════
-// TMEM → register load-op selector (SM100 / Compute=100 epilogue)
-// ═══════════════════════════════════════════════════════════════════
-// tcgen05.ld.32x32b.xN loads N 32-bit words per datapath lane per instruction.
-// The mlp3 UMMA epilogue maps one thread to one TMEM datapath row and reads an
-// EpiChunkN-wide column strip per row, so the atom's per-thread register count
-// (the "Nx" repeat, == RegNumDst) must equal EpiChunkN. mlp3's epilogue chunk
-// width is 64 → …64x. Pick it at compile time from EpiChunkN so any divisor of
-// WgTileN gets a matching op. (Same table as mlp5.cuh; the two headers are
-// never co-included in a single TU — each test compiles its own header.)
-template <int EpiChunkN> struct TmemLoadOpSelector;
-template <> struct TmemLoadOpSelector<8>   { using Op = SM100_TMEM_LOAD_32dp32b8x;   };
-template <> struct TmemLoadOpSelector<16>  { using Op = SM100_TMEM_LOAD_32dp32b16x;  };
-template <> struct TmemLoadOpSelector<32>  { using Op = SM100_TMEM_LOAD_32dp32b32x;  };
-template <> struct TmemLoadOpSelector<64>  { using Op = SM100_TMEM_LOAD_32dp32b64x;  };
-template <> struct TmemLoadOpSelector<128> { using Op = SM100_TMEM_LOAD_32dp32b128x; };
-template <int EpiChunkN>
-using TmemLoadOp = typename TmemLoadOpSelector<EpiChunkN>::Op;
+template <typename Element, typename ElementAccum, int TileM, int TileN, bool Valid = (TileM == 64 || TileM == 128)>
+struct Mlp3UmmaTiledMmaSelector {
+	using type = void;
+};
+
+template <typename Element, typename ElementAccum, int TileM, int TileN>
+struct Mlp3UmmaTiledMmaSelector<Element, ElementAccum, TileM, TileN, true> {
+	using type = decltype(make_tiled_mma(
+		SM100_MMA_F16BF16_SS<Element, Element, ElementAccum,
+		                     TileM, TileN,
+		                     UMMA::Major::MN, UMMA::Major::MN>{}));
+};
 
 // ═══════════════════════════════════════════════════════════════════
 // Traits
@@ -157,10 +152,8 @@ struct Mlp3Traits {
 	// exactly matching SmemLayoutDYT / SmemLayoutZ (both Layout_MN_SW128_Atom +
 	// Step<_2,_1,_3>). make_umma_desc<Major::MN> reads the MN-contiguous stride
 	// from each smem layout, so no transpose is needed (cf. mlp2_t's <K,MN>).
-	using TiledMmaUmma = decltype(make_tiled_mma(
-		SM100_MMA_F16BF16_SS<Element, Element, ElementAccum,
-		                     TileM, TileN,
-		                     UMMA::Major::MN, UMMA::Major::MN>{}));
+	using TiledMmaUmma = typename Mlp3UmmaTiledMmaSelector<
+		Element, ElementAccum, TileM, TileN>::type;
 
 	static constexpr int TmaTransBytesDYT =
 		static_cast<int>(size(SmemLayoutDYT_1{}) * sizeof(Element));
@@ -192,6 +185,12 @@ struct Mlp3Traits {
 		Shape<Int<AtomTileM>, Int<EpiChunkN>>,
 		Stride<Int<EpiChunkN>, _1>>;
 };
+
+template <typename Traits, int Compute>
+using Mlp3MainloopPipelineFor = cute::conditional_t<
+	Compute == 100,
+	typename Traits::MainloopPipelineUmma,
+	typename Traits::MainloopPipeline>;
 
 // ═══════════════════════════════════════════════════════════════════
 // Shared Memory
@@ -239,6 +238,8 @@ struct Mlp3FusedSmem {
 	alignas(128) Element smem_DYT[smem_DYT_size];
 	alignas(128) Element smem_Z[smem_Z_size];
 	alignas(128) Element store_buf[2 * smem_store_size];
+	alignas(16) uint32_t tmem_base;
+	alignas(16) typename Traits::AccumulatorPipeline::SharedStorage acc_pipe;
 
 	CUTE_DEVICE Element* DYT_data() { return &smem_DYT[0]; }
 	CUTE_DEVICE Element* Z_data()   { return &smem_Z[0]; }
@@ -498,8 +499,8 @@ static __device__ __forceinline__ void run(
 		int batch_kb_end,
 		int k_split) {
 
-	(void)Compute;
-	using Element = typename Traits::Element;
+		(void)Compute;
+		using Element = typename Traits::Element;
 	typename Traits::TiledMma tiled_mma;
 
 	const int my_wg = (threadIdx.x / Traits::WarpGroupSize) - 1;     // 0 or 1
@@ -810,6 +811,8 @@ static __device__ __forceinline__ void run(
 	auto tCgC     = cta_mma.partition_C(cAccFull);
 	auto tCtAcc   = cta_mma.make_fragment_C(tCgC);
 
+	// TMEM is allocated by the outer fused/standalone launcher once per CTA.
+
 	// ── Accumulator pipeline: UMMA producer (warp 4) → epilogue consumers (all
 	//    consumer warps). 1 stage — the TMEM acc is reused each (cell, walk).
 	//    producer_commit issues the UMMA-gated "acc ready" arrival; one elected
@@ -1003,6 +1006,7 @@ static __device__ __forceinline__ void run(
 	}
 	if (store_in_flight)
 		cute::tma_store_wait<0>();
+	cutlass::arch::NamedBarrier::sync(Traits::ConsumerThreads, /*id=*/0);
 #else
 	// Never dispatched on non-SM100 targets (host picks Compute=90 there).
 	__trap();

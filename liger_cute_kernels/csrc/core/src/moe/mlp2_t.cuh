@@ -39,6 +39,7 @@
 
 #include "models.cuh"
 #include "math.cuh"
+#include "tmem_load_op.cuh"
 
 #include <cute/tensor.hpp>
 #include <cute/algorithm/gemm.hpp>
@@ -53,7 +54,7 @@
 // __CUDA_ARCH__ >= 1000) ever instantiates it.
 #include <cute/arch/mma_sm100_umma.hpp>
 #include <cute/atom/mma_traits_sm100.hpp>
-#include <cute/arch/tmem_allocator_sm100.hpp>
+
 #include <cute/arch/copy_sm100.hpp>
 #include <cute/atom/copy_traits_sm100.hpp>
 #include <cutlass/pipeline/sm100_pipeline.hpp>  // PipelineTmaUmmaAsync, PipelineUmmaAsync
@@ -61,24 +62,6 @@
 namespace liger {
 
 using namespace cute;
-
-// ═══════════════════════════════════════════════════════════════════
-// TMEM → register load-op selector (SM100 / Compute=100 epilogue)
-// ═══════════════════════════════════════════════════════════════════
-// tcgen05.ld.32x32b.xN loads N 32-bit words per datapath lane per instruction.
-// The mlp2_t UMMA epilogue maps one thread to one TMEM datapath row and reads
-// an EpiChunkN-wide column strip per row, so the atom's per-thread register
-// count (the "Nx" repeat, == RegNumDst) must equal EpiChunkN. Pick it at
-// compile time from EpiChunkN (default 32 for mlp2_t) so any divisor of
-// WgTileN gets a matching load op.
-template <int EpiChunkN> struct TmemLoadOpSelector;
-template <> struct TmemLoadOpSelector<8>   { using Op = SM100_TMEM_LOAD_32dp32b8x;   };
-template <> struct TmemLoadOpSelector<16>  { using Op = SM100_TMEM_LOAD_32dp32b16x;  };
-template <> struct TmemLoadOpSelector<32>  { using Op = SM100_TMEM_LOAD_32dp32b32x;  };
-template <> struct TmemLoadOpSelector<64>  { using Op = SM100_TMEM_LOAD_32dp32b64x;  };
-template <> struct TmemLoadOpSelector<128> { using Op = SM100_TMEM_LOAD_32dp32b128x; };
-template <int EpiChunkN>
-using TmemLoadOp = typename TmemLoadOpSelector<EpiChunkN>::Op;
 
 // ═══════════════════════════════════════════════════════════════════
 // Traits
@@ -206,6 +189,12 @@ struct Mlp2TTraits {
 	static constexpr int ConsumerThreads = NumConsumers * WarpGroupSize;
 	static constexpr int NumThreads      = 384;
 };
+
+template <typename Traits, int Compute>
+using Mlp2TMainloopPipelineFor = cute::conditional_t<
+	Compute == 100,
+	typename Traits::MainloopPipelineUmma,
+	typename Traits::MainloopPipeline>;
 
 // ═══════════════════════════════════════════════════════════════════
 // Shared Memory

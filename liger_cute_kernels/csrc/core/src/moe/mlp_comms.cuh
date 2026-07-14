@@ -636,6 +636,7 @@ __host__ __device__ __forceinline__ bool get_pe_is_local(
 // store type so the same object the wrapper passes as tma_store_y populates it.
 template <typename TmaStoreY>
 struct PeerYStoreDescs {
+	int enabled = 1;
 	TmaStoreY desc[kGetMaxPes];  // index by (TileInfo::pe % gpus_per_node)
 };
 
@@ -677,6 +678,23 @@ __device__ __forceinline__ void do_get(
 	// all dispatch writes on all PEs are complete.
 
 	int slot = xc + src_pipe.producer_stage() * MC;
+
+	if (info.pe == bufs.my_pe()) {
+		int chunk = src_tile_elems / kWarpsPerTile;
+		int offset = chunk_idx * chunk;
+		auto* local_tokens = static_cast<Element*>(bufs.local_tokens);
+		Element* remote_base = local_tokens + info.token_offset * bufs.hidden_dim;
+		Element* local_base = src_staging + slot * src_tile_elems;
+		for (int i = lane; i < chunk; i += 32) {
+			local_base[offset + i] = remote_base[offset + i];
+		}
+		if (bufs.tile_expert_ids && chunk_idx == 0 && lane == 0) {
+			bufs.tile_expert_ids[slot] = info.expert;
+		}
+		__syncwarp();
+		src_pipe.producer_release(lane);
+		return;
+	}
 
 	// Locality of this tile's source PE (same-host NVLink vs cross-host IB).
 	// Pure arithmetic; gates the TMA get path below. The MLP's release_dst
@@ -806,6 +824,13 @@ __device__ __forceinline__ void do_put(
 		int slot = xc + dst_pipe.consumer_stage() * MC;
 		Element* local_base = dst_staging + slot * dst_tile_elems;
 		Element* remote_base = local_output + info.token_offset * bufs.hidden_dim;
+		if (info.pe == bufs.my_pe()) {
+			for (int i = lane; i < chunk; i += 32) {
+				remote_base[offset + i] = local_base[offset + i];
+			}
+			dst_pipe.consumer_release(lane);
+			return;
+		}
 		int global_pe = nvshmem_team_translate_pe(bufs.team(), info.pe, NVSHMEM_TEAM_WORLD);
 		nvshmemx_putmem_warp(remote_base + offset, local_base + offset,
 			my_bytes, global_pe);

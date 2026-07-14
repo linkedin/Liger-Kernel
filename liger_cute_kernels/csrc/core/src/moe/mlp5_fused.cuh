@@ -386,13 +386,7 @@ static __device__ __forceinline__ void run(
 	auto tCgC     = cta_mma.partition_C(cAccFull);
 	auto tCtAcc   = cta_mma.make_fragment_C(tCgC);
 
-	// ── TMEM base: the allocation is owned by the LAUNCHER (once per CTA,
-	//    around the persistent m-loop) — NOT here. The mlp5 2D grid makes each
-	//    CTA process multiple m-tiles, so a per-m-tile tcgen05.alloc/relinquish
-	//    would try to allocate after the permit was already relinquished
-	//    ("phase invalid during alloc" guardrail trap). The launcher allocs
-	//    TileN columns before the m-loop, publishes smem.tmem_base via
-	//    __syncthreads, and frees after; we just consume it below. ──
+	// TMEM is allocated by the outer fused/standalone launcher once per CTA.
 
 	// ── Accumulator pipeline: UMMA producer (warp 4) → epilogue consumers
 	//    (all consumer warps). 1 stage — the TMEM accumulator is reused each

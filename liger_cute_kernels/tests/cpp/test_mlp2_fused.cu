@@ -33,6 +33,7 @@
 #include <vector>
 
 #include <cute/tensor.hpp>
+#include <cute/arch/tmem_allocator_sm100.hpp>
 #include <cute/atom/copy_traits_sm90_tma.hpp>
 #include <cutlass/numeric_types.h>
 
@@ -103,6 +104,16 @@ mlp2_fused_test_kernel(
 		else
 			return liger::mlp2_make_pipe<Traits>(smem.pipe_storage);
 	}();
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+	cute::TMEM::Allocator1Sm tmem_alloc{};
+	if constexpr (Compute == 100) {
+		constexpr int kTmemColumns = Traits::TileN;
+		if (warp_id == 4) {
+			tmem_alloc.allocate(kTmemColumns, &smem.tile.tmem_base);
+			__syncwarp();
+		}
+	}
+#endif
 	__syncthreads();
 
 	PipeState prod_state = cutlass::make_producer_start_state<Pipeline>();
@@ -136,6 +147,15 @@ mlp2_fused_test_kernel(
 		}
 	}
 	__syncthreads();
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+	if constexpr (Compute == 100) {
+		constexpr int kTmemColumns = Traits::TileN;
+		if (warp_id == 4) {
+			tmem_alloc.release_allocation_lock();
+			tmem_alloc.free(smem.tile.tmem_base, kTmemColumns);
+		}
+	}
+#endif
 }
 
 // ═══════════════════════════════════════════════════════════════════
