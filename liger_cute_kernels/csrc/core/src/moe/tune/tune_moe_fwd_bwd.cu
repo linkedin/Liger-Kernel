@@ -72,6 +72,10 @@ int   nvshmem_team_n_pes(nvshmem_team_t team);
 int   nvshmem_team_sync(nvshmem_team_t team);
 }
 
+static inline void tuner_team_sync(nvshmem_team_t team, int n_pes) {
+	if (n_pes > 1) nvshmem_team_sync(team);
+}
+
 // ── Forward declarations of the internal launchers (defined in moe.cu /
 // moe_bwd.cu, compiled into this binary — the core .so hides them, so the
 // tuner builds the kernel sources itself with default visibility). The
@@ -140,7 +144,7 @@ static const TunerEntryFwd kRegistryFwd[] = {
 	LIGER_MOE_TUNE_CONFIGS(LIGER_MOE_FWD_REGISTRY_ENTRY_SM90)
 #endif
 #if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 100
-	LIGER_MOE_TUNE_CONFIGS(LIGER_MOE_FWD_REGISTRY_ENTRY_SM100)
+	LIGER_MOE_FWD_TUNE_CONFIGS_TM128(LIGER_MOE_FWD_REGISTRY_ENTRY_SM100)
 #endif
 };
 #undef LIGER_MOE_FWD_REGISTRY_ENTRY_SM100
@@ -186,7 +190,7 @@ static const TunerEntryBwd kRegistryBwd[] = {
 	LIGER_MOE_BWD_TUNE_CONFIGS(LIGER_MOE_BWD_REGISTRY_ENTRY_SM90)
 #endif
 #if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 100
-	LIGER_MOE_BWD_TUNE_CONFIGS(LIGER_MOE_BWD_REGISTRY_ENTRY_SM100)
+	LIGER_MOE_BWD_TUNE_CONFIGS_SM100(LIGER_MOE_BWD_REGISTRY_ENTRY_SM100)
 #endif
 };
 #undef LIGER_MOE_BWD_REGISTRY_ENTRY_SM100
@@ -315,7 +319,7 @@ static bool run_pair_once(
 		const torch::Tensor& expert_weights,
 		const torch::Tensor& all_B, const torch::Tensor& all_C,
 		const torch::Tensor& all_A,
-		int E, int K, nvshmem_team_t team, int pe,
+		int E, int K, nvshmem_team_t team, int pe, int n_pes,
 		bool* saw_oom,
 		const char* step,
 		cudaEvent_t* fwd_start_ev = nullptr,
@@ -381,7 +385,7 @@ static bool run_pair_once(
 	// fwd_stop AFTER the drain keeps timing attribution correct: fwd cost
 	// includes its comm tail, and bwd = bwd_stop - fwd_stop measures BWD alone.
 	cudaDeviceSynchronize();
-	nvshmem_team_sync(team);
+	tuner_team_sync(team, n_pes);
 	if (fwd_stop_ev) cudaEventRecord(*fwd_stop_ev);
 
 	bool bwd_failed = false;
@@ -437,7 +441,7 @@ static PairResult run_pair(
 		const torch::Tensor& expert_weights,
 		const torch::Tensor& all_B, const torch::Tensor& all_C,
 		const torch::Tensor& all_A,
-		int E, int K, nvshmem_team_t team, int pe) {
+		int E, int K, nvshmem_team_t team, int pe, int n_pes) {
 
 	if (pe == 0 && getenv("MOE_FWDBWD_TUNE_VERBOSE")) {
 		fprintf(stderr, "  trying FWD=%s × BWD=%s\n", fwd_e.name, bwd_e.name);
@@ -447,24 +451,24 @@ static PairResult run_pair(
 	// Settle outstanding async traffic from the previous pair before
 	// starting (mirrors tune_moe_bwd.cu's per-pair sync).
 	cudaDeviceSynchronize();
-	nvshmem_team_sync(team);
+	tuner_team_sync(team, n_pes);
 
 	bool saw_oom = false;
 
 	// Sanity launch — surfaces template-specific runtime errors before
 	// we commit to the timing loop.
 	if (run_pair_once(fwd_e, bwd_e, X, dY, expert_indices, expert_weights,
-	                  all_B, all_C, all_A, E, K, team, pe, &saw_oom, "sanity"))
+	                  all_B, all_C, all_A, E, K, team, pe, n_pes, &saw_oom, "sanity"))
 		return {-1.0f, -1.0f, -1.0f, saw_oom};
 	if (check_after(fwd_e.name, bwd_e.name, "sanity", pe))
 		return {-1.0f, -1.0f, -1.0f, false};
-	nvshmem_team_sync(team);
+	tuner_team_sync(team, n_pes);
 
 	constexpr int kWarmup = 3;
 	constexpr int kIters  = 5;
 	for (int i = 0; i < kWarmup; ++i) {
 		if (run_pair_once(fwd_e, bwd_e, X, dY, expert_indices, expert_weights,
-		                  all_B, all_C, all_A, E, K, team, pe, &saw_oom, "warmup"))
+		                  all_B, all_C, all_A, E, K, team, pe, n_pes, &saw_oom, "warmup"))
 			return {-1.0f, -1.0f, -1.0f, saw_oom};
 		if (check_after(fwd_e.name, bwd_e.name, "warmup", pe))
 			return {-1.0f, -1.0f, -1.0f, false};
@@ -472,7 +476,7 @@ static PairResult run_pair(
 		// async launches race torch's allocator activity against the
 		// kernel's in-flight NVSHMEM puts).
 		cudaDeviceSynchronize();
-		nvshmem_team_sync(team);
+		tuner_team_sync(team, n_pes);
 	}
 
 	cudaEvent_t fwd_start, fwd_stop, bwd_stop;
@@ -482,9 +486,9 @@ static PairResult run_pair(
 	float total_fwd_ms = 0, total_bwd_ms = 0;
 	for (int i = 0; i < kIters; ++i) {
 		cudaDeviceSynchronize();
-		nvshmem_team_sync(team);
+		tuner_team_sync(team, n_pes);
 		if (run_pair_once(fwd_e, bwd_e, X, dY, expert_indices, expert_weights,
-		                  all_B, all_C, all_A, E, K, team, pe, &saw_oom, "timing",
+		                  all_B, all_C, all_A, E, K, team, pe, n_pes, &saw_oom, "timing",
 		                  &fwd_start, &fwd_stop, &bwd_stop)) {
 			cudaEventDestroy(fwd_start);
 			cudaEventDestroy(fwd_stop);
@@ -749,7 +753,7 @@ static void tune_shape(
 		expert_weights = torch::softmax(std::get<0>(topk), /*dim=*/1).to(torch::kBFloat16).contiguous();
 		cudaDeviceSynchronize();
 
-		nvshmem_team_sync(team);
+		tuner_team_sync(team, n_pes);
 	} catch (const std::exception& ex) {
 		if (pe == 0) {
 			printf("%-7d %-6d %-6d  SKIP (input alloc failed: %s)\n",
@@ -821,9 +825,9 @@ static void tune_shape(
 			int fi = fwd_by_tm[b][i];
 			auto r = run_pair(kRegistryFwd[fi], kRegistryBwd[default_bwd],
 				X, dY, expert_indices, expert_weights,
-				all_B, all_C, all_A, E, K, team, pe);
+				all_B, all_C, all_A, E, K, team, pe, n_pes);
 			cudaDeviceSynchronize();
-			nvshmem_team_sync(team);
+			tuner_team_sync(team, n_pes);
 			if (r.oom) { shape_oom = true; break; }
 			if (r.fwd_ms > 0 && r.fwd_ms < bucket[b].fwd_ms) {
 				bucket[b].fwd_ms = r.fwd_ms;
@@ -846,9 +850,9 @@ static void tune_shape(
 			int bi = bwd_by_tm[b][i];
 			auto r = run_pair(kRegistryFwd[seed_fwd], kRegistryBwd[bi],
 				X, dY, expert_indices, expert_weights,
-				all_B, all_C, all_A, E, K, team, pe);
+				all_B, all_C, all_A, E, K, team, pe, n_pes);
 			cudaDeviceSynchronize();
-			nvshmem_team_sync(team);
+			tuner_team_sync(team, n_pes);
 			if (r.oom) { shape_oom = true; break; }
 			if (r.bwd_ms > 0 && r.bwd_ms < bucket[b].bwd_ms) {
 				bucket[b].bwd_ms = r.bwd_ms;
@@ -969,7 +973,26 @@ int main(int argc, char** argv) {
 
 	const char* procid = getenv("SLURM_PROCID");
 	if (procid) cudaSetDevice(atoi(procid));
-	(void)liger_cute_nvshmem_init_pmi();
+	const bool has_pmi =
+		procid || getenv("PMI_RANK") || getenv("PMIX_RANK") ||
+		getenv("OMPI_COMM_WORLD_RANK");
+	auto nvshmem_status = LIGER_CUTE_OK;
+	if (has_pmi) {
+		nvshmem_status = liger_cute_nvshmem_init_pmi();
+	}
+	if (!has_pmi || nvshmem_status != LIGER_CUTE_OK) {
+		// Standalone single-GPU tuning pods often do not run under PMI/Slurm.
+		// Fall back to the unique-id bootstrap for that case; multi-rank tuning
+		// should still be launched with PMI so ranks receive a shared ID.
+		size_t uid_nbytes = 0;
+		nvshmem_status = liger_cute_nvshmem_uniqueid_nbytes(&uid_nbytes);
+		if (nvshmem_status != LIGER_CUTE_OK) return 1;
+		std::vector<unsigned char> uid(uid_nbytes);
+		nvshmem_status = liger_cute_nvshmem_get_uniqueid(uid.data());
+		if (nvshmem_status != LIGER_CUTE_OK) return 1;
+		nvshmem_status = liger_cute_nvshmem_init_with_uniqueid(0, 1, uid.data());
+		if (nvshmem_status != LIGER_CUTE_OK) return 1;
+	}
 	nvshmem_team_t team = NVSHMEM_TEAM_WORLD;
 	int pe    = nvshmem_team_my_pe(team);
 	int n_pes = nvshmem_team_n_pes(team);
@@ -977,7 +1000,7 @@ int main(int argc, char** argv) {
 	g_tuner_n_pes = n_pes;  // selects single- vs multi-GPU config class on dump
 	int dev = 0;
 	cudaGetDevice(&dev);
-	g_tuner_compute = moe_detect_compute_dispatch_key_noexcept(dev);
+	g_tuner_compute = liger::moe_detect_compute_dispatch_key_noexcept(dev);
 	if (g_tuner_compute <= 0) {
 		if (pe == 0) {
 			int unsupported = -g_tuner_compute;
@@ -1006,12 +1029,15 @@ int main(int argc, char** argv) {
 	//
 	// MOE_FWDBWD_TUNE_E=N overrides to a single E_local value (also in
 	// local terms — set N=2 to pin every synthetic shape at E_local=2).
+	// Generic-sweep top_k (fixed at 2 for the synthetic shapes). Per-model
+	// top_k for named shapes is pinned in the NamedShape table below.
+	const int K = 2;
 	std::vector<int> expert_sweep_local = {1, 2, 4, 8};
 	const char* e_env = getenv("MOE_FWDBWD_TUNE_E");
 	if (e_env) expert_sweep_local = {atoi(e_env)};
 	expert_sweep_local.erase(
 		std::remove_if(expert_sweep_local.begin(), expert_sweep_local.end(),
-			[](int e) { return e <= 0; }),
+			[K](int e) { return e <= 0 || e < K; }),
 		expert_sweep_local.end());
 	if (expert_sweep_local.empty()) {
 		if (pe == 0)
@@ -1019,9 +1045,6 @@ int main(int argc, char** argv) {
 		(void)liger_cute_nvshmem_finalize();
 		return 1;
 	}
-	// Generic-sweep top_k (fixed at 2 for the synthetic shapes). Per-model
-	// top_k for named shapes is pinned in the NamedShape table below.
-	const int K = 2;
 
 	// Named model shapes — pinned to each model's real (E, top_k) so the
 	// tuner sees the exact deployment shape rather than a synthetic E. Every
@@ -1213,8 +1236,8 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
-	int max_tokens = *std::max_element(token_sweep.begin(), token_sweep.end());
-	int max_hidden = *std::max_element(hidden_sweep.begin(), hidden_sweep.end());
+	int max_tokens = t_env ? std::atoi(t_env) : *std::max_element(token_sweep.begin(), token_sweep.end());
+	int max_hidden = d_env ? std::atoi(d_env) : *std::max_element(hidden_sweep.begin(), hidden_sweep.end());
 
 	// Single-host tuner: N=1 hosts, M=n_pes GPUs.
 	liger::moe_configure_symmetric(max_tokens, max_hidden, max_E, max_K, n_pes,
@@ -1263,7 +1286,7 @@ int main(int argc, char** argv) {
 						if (t_env && T != atoi(t_env)) continue;
 						tune_shape(T, D, I, E, K, pe, n_pes, team);
 						cudaDeviceSynchronize();
-						nvshmem_team_sync(team);
+						tuner_team_sync(team, n_pes);
 					}
 					if (pe == 0) printf("\n");
 				}
@@ -1294,7 +1317,7 @@ int main(int argc, char** argv) {
 						s.name, E_local_s, E_s);
 				tune_shape(s.T, s.D, s.I, E_s, 2, pe, n_pes, team);
 				cudaDeviceSynchronize();
-				nvshmem_team_sync(team);
+				tuner_team_sync(team, n_pes);
 			}
 
 			// (b) Real model config (after env override).
@@ -1325,7 +1348,7 @@ int main(int argc, char** argv) {
 			}
 			tune_shape(s.T, s.D, s.I, E_eff, K_eff, pe, n_pes, team);
 			cudaDeviceSynchronize();
-			nvshmem_team_sync(team);
+			tuner_team_sync(team, n_pes);
 		}
 	}
 

@@ -128,6 +128,19 @@ __device__ __forceinline__ void moe_fused_fwd(
 	MlpFwdCtaBarrier x_barrier(&dims.phase_counter[col],
 		NSplit);
 
+	if (num_pes == 1) {
+		mlp_fused_fwd<Traits1, Traits2, ZBufferSlots, SubTiles, Compute,
+			LocalIter, TmaLoadX, TmaLoadW1, TmaStoreZ, TmaLoadZ, TmaLoadW2, TmaStoreY>(
+			smem.mlp, local_iter,
+			tma_load_x, tma_load_b, tma_load_c, tma_store_z,
+			tma_load_z, tma_load_a, tma_store_y,
+			dims,
+			dims.y_buf_m_tiles * Traits1::TileM * SubTiles, dims.y_buf_m_tiles, x_barrier,
+			local_expert_start, col, grid_x, split, NSplit,
+			/*y_peer_desc=*/nullptr);
+		return;
+	}
+
 	// UNIFIED PATH: the local MLP pass has been removed. The comm-side
 	// TileIterator now enumerates LOCAL experts (p=0) alongside remote ones,
 	// and the get warp stages local X from local symmetric memory (do_get

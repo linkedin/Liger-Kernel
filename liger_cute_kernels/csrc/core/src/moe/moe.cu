@@ -35,6 +35,7 @@
 #include "moe_fwd_bwd_tune_configs.hpp"
 #include "moe_dispatch_configs_sm90.cuh"
 #include "moe_dispatch_configs_sm100.cuh"
+#include "tma_copy_atom.cuh"
 #include "radix_sort.cuh"
 #include "dispatch.cuh"
 #include "combine.cuh"
@@ -391,13 +392,15 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	// Output Y -- symmetric, local MLP writes here, remote PEs put here.
 	b.y_buf = reinterpret_cast<Element*>(sym_stack.put(kSymmKeyYBuf));
 	size_t actual_y_bytes = static_cast<size_t>(total_slots) * hidden_dim * sizeof(Element);
-	cudaMemsetAsync(b.y_buf, 0, actual_y_bytes, stream);
+	if (cudaError_t e = cudaMemsetAsync(b.y_buf, 0, actual_y_bytes, stream); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(y_buf) failed: ", cudaGetErrorString(e));
 
 	// Phase counters.
 	size_t counter_bytes = grid_x * sizeof(int);
 	b.phase_counter = reinterpret_cast<int*>(
 		pool.get_device("moe_phase_counter", counter_bytes));
-	cudaMemsetAsync(b.phase_counter, 0, counter_bytes, stream);
+	if (cudaError_t e = cudaMemsetAsync(b.phase_counter, 0, counter_bytes, stream); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(phase_counter) failed: ", cudaGetErrorString(e));
 
 	// Flat staging list — L = grid_x * kCommNumStages slots, each
 	// holding TileM rows × hidden_dim columns.
@@ -425,10 +428,14 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	b.src_consumed = static_cast<int*>(pool.get_device("moe_src_consumed", sig_bytes));
 	b.dst_ready    = static_cast<int*>(pool.get_device("moe_dst_ready",    sig_bytes));
 	b.dst_consumed = static_cast<int*>(pool.get_device("moe_dst_consumed", sig_bytes));
-	cudaMemsetAsync(b.src_ready,    0, sig_bytes, stream);
-	cudaMemsetAsync(b.src_consumed, 0, sig_bytes, stream);
-	cudaMemsetAsync(b.dst_ready,    0, sig_bytes, stream);
-	cudaMemsetAsync(b.dst_consumed, 0, sig_bytes, stream);
+	if (cudaError_t e = cudaMemsetAsync(b.src_ready, 0, sig_bytes, stream); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(src_ready) failed: ", cudaGetErrorString(e));
+	if (cudaError_t e = cudaMemsetAsync(b.src_consumed, 0, sig_bytes, stream); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(src_consumed) failed: ", cudaGetErrorString(e));
+	if (cudaError_t e = cudaMemsetAsync(b.dst_ready, 0, sig_bytes, stream); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(dst_ready) failed: ", cudaGetErrorString(e));
+	if (cudaError_t e = cudaMemsetAsync(b.dst_consumed, 0, sig_bytes, stream); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(dst_consumed) failed: ", cudaGetErrorString(e));
 
 	// Per-slot expert IDs — one entry per flat slot.
 	size_t eid_bytes = (size_t)comm_l * sizeof(int);
@@ -490,9 +497,11 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	// Per-tile expert IDs for MLP — caller-owned torch tensor.
 	b.mlp_tile_expert_ids = mlp_tile_expert_ids_ptr;
 
-	cudaMemsetAsync(b.cta_done, 0, num_blocks * sizeof(int), stream);
-	cudaMemsetAsync(b.sorted_token_ids, 0xff,
-		max_sorted_slots * sizeof(int), stream);
+	if (cudaError_t e = cudaMemsetAsync(b.cta_done, 0, num_blocks * sizeof(int), stream); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(cta_done) failed: ", cudaGetErrorString(e));
+	if (cudaError_t e = cudaMemsetAsync(b.sorted_token_ids, 0xff,
+			max_sorted_slots * sizeof(int), stream); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(sorted_token_ids) failed: ", cudaGetErrorString(e));
 
 	return b;
 }
@@ -598,7 +607,7 @@ moe_fused_kernel(
 	__threadfence_system();  // device-scope (NVLink-only build; IB needs system scope)
 
 	// Signal all PEs that dispatch (and broadcast) are complete.
-	if (threadIdx.x == 0) nvshmem_quiet();
+	if (p.comm.num_pes() > 1 && threadIdx.x == 0) nvshmem_quiet();
 	__syncthreads();
 	p.comm.pe_sync.signal_dispatch(pe_barrier);
 
@@ -644,7 +653,10 @@ moe_fused_kernel(
 		// Run the prologue unconditionally so every launched CTA has total_tiles
 		// initialized; the MLP/GEMM path still gates on GEMM-grid membership
 		// (flat_id < n_gemm) below.
-		nvshmem_comm_prologue<kTileM, kNC, kNSplit>(smem.comm, p.comm);
+		const bool use_comm_path = p.comm.num_pes() > 1;
+		if (use_comm_path) {
+			nvshmem_comm_prologue<kTileM, kNC, kNSplit>(smem.comm, p.comm);
+		}
 		__syncthreads();
 
 		// Diverge: comm warps handle NVSHMEM, MLP warps handle compute.
@@ -653,14 +665,14 @@ moe_fused_kernel(
 		int warp_id = threadIdx.x / 32;
 		bool is_comm_warp = (warp_id >= kCommFwdWarpStart && warp_id <= kCommFwdWarpEnd);
 
-		if (is_comm_warp) {
+		if (use_comm_path && is_comm_warp) {
 			// Comm warps: dedicated get/put — full CommBuffers access. Self-gate
 			// on the precomputed comm tile count — no GEMM coupling, so a
 			// comm-only CTA (no local GEMM work) still drives its comm tiles.
 			if (smem.comm.total_tiles > 0) {
 				nvshmem_comm_main<Element, kTileM, kCommNumStages, kNC, kNSplit>(
 					smem.comm, p.comm, &get_descs, get_bounce);
-				nvshmem_quiet();
+				if (p.comm.num_pes() > 1) nvshmem_quiet();
 			}
 		} else if (flat_id < n_gemm) {
 			// MLP warps: no CommBuffers in scope. Gap CTAs (flat_id >= n_gemm)
@@ -693,7 +705,7 @@ moe_fused_kernel(
 				local_m_tiles * kTileM, local_m_tiles,
 				col, grid_x, /*split=*/flat_id % kNSplit,
 				local_e_start,
-				/*y_peer_desc=*/peer_y.desc);
+				/*y_peer_desc=*/peer_y.enabled ? peer_y.desc : nullptr);
 		}
 
 		__threadfence();
@@ -801,6 +813,8 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	using Element  = typename Config::Element;
 	using Traits1  = typename Config::Traits1;
 	using Traits2  = typename Config::Traits2;
+	using TmaLoadAtom = TmaLoadAtomForCompute<Compute>;
+	using TmaStoreAtom = TmaStoreAtomForCompute<Compute>;
 	constexpr int kTileM      = Config::kTileM;
 	constexpr int kNumThreads = Config::kNumThreads;
 
@@ -883,9 +897,18 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 		max_total_slots, num_m_tiles_in,
 		token_expert_slots_ptr,
 		tile_expert_ids_ptr);
+	if (cudaError_t e = cudaGetLastError(); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_fwd: CUDA error before TMA descriptor setup: ", cudaGetErrorString(e));
 
 	// Final combine output [T, D] — caller-owned (binding-allocated) Y buffer.
 	Element* output_ptr = reinterpret_cast<Element*>(a.Y);
+	Element* y_buf_ptr = buf.y_buf;
+	if (num_pes == 1) {
+		size_t actual_y_bytes = static_cast<size_t>(max_total_slots) * hidden_dim * sizeof(Element);
+		y_buf_ptr = reinterpret_cast<Element*>(pool.get_device("moe_y_buf_single_pe", actual_y_bytes));
+		if (cudaError_t e = cudaMemsetAsync(y_buf_ptr, 0, actual_y_bytes, stream); e != cudaSuccess)
+			LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(y_buf_single_pe) failed: ", cudaGetErrorString(e));
+	}
 
 	auto& scfg = get_symm_config();
 
@@ -915,7 +938,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	p.comm.expert_offsets      = buf.expert_offsets;
 	p.comm.sorted_token_ids    = buf.sorted_token_ids;
 	p.comm.local_tokens        = buf.x_sorted;
-	p.comm.local_output        = buf.y_buf;
+	p.comm.local_output        = y_buf_ptr;
 	p.comm.tile_expert_ids     = buf.tile_expert_ids;
 	p.comm.all_expert_offsets  = buf.all_expert_offsets;
 	p.comm.pe_sync.dispatch_done = buf.dispatch_done;
@@ -957,7 +980,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	// below the tma_load_c block for the rationale. B and C in particular
 	// are large: their row count = experts_per_pe · intermediate_dim,
 	// times hidden_dim → exceeds INT_MAX at production shapes.
-	auto tma_load_x = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_x = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.x_sorted)),
 			make_shape(static_cast<int64_t>(max_total_slots),
 			           static_cast<int64_t>(hidden_dim)),
@@ -966,13 +989,13 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 
 	auto* ptr_B = reinterpret_cast<Element const*>(a.all_B);
 	auto* ptr_C = reinterpret_cast<Element const*>(a.all_C);
-	auto tma_load_b = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_b = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(ptr_B),
 			make_shape(static_cast<int64_t>(total_n_rows_1),
 			           static_cast<int64_t>(hidden_dim)),
 			make_stride(static_cast<int64_t>(hidden_dim), Int<1>{})),
 		typename Traits1::SmemLayoutW_1{});
-	auto tma_load_c = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_c = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(ptr_C),
 			make_shape(static_cast<int64_t>(total_n_rows_1),
 			           static_cast<int64_t>(hidden_dim)),
@@ -988,14 +1011,14 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	// ZBuf=16 at intermediate_dim=16384 wraps to a negative stride and
 	// IMAs the kernel. Casting one operand promotes the multiply to
 	// int64_t; we cast both to be safe across CUTE versions.
-	auto tma_store_z = make_tma_copy(SM90_TMA_STORE{},
+	auto tma_store_z = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(buf.z_buf),
 			make_shape(static_cast<int64_t>(buf.z_rows),
 			           static_cast<int64_t>(intermediate_dim)),
 			make_stride(static_cast<int64_t>(intermediate_dim), Int<1>{})),
 		typename Traits1::SmemLayoutStoreSlot{});
 
-	auto tma_load_z = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_z = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.z_buf)),
 			make_shape(static_cast<int64_t>(buf.z_rows),
 			           static_cast<int64_t>(intermediate_dim)),
@@ -1003,15 +1026,15 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 		typename Traits2::SmemLayoutZ_1{});
 
 	auto* ptr_A = reinterpret_cast<Element const*>(a.all_A);
-	auto tma_load_a = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_a = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(ptr_A),
 			make_shape(static_cast<int64_t>(total_n_rows_2),
 			           static_cast<int64_t>(intermediate_dim)),
 			make_stride(static_cast<int64_t>(intermediate_dim), Int<1>{})),
 		typename Traits2::SmemLayoutW_1{});
 
-	auto tma_store_y = make_tma_copy(SM90_TMA_STORE{},
-		make_tensor(make_gmem_ptr(buf.y_buf),
+	auto tma_store_y = make_tma_copy(TmaStoreAtom{},
+		make_tensor(make_gmem_ptr(y_buf_ptr),
 			make_shape(static_cast<int64_t>(max_total_slots),
 			           static_cast<int64_t>(hidden_dim)),
 			make_stride(static_cast<int64_t>(hidden_dim), Int<1>{})),
@@ -1026,14 +1049,14 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	int mc_remote = num_blocks / Config::kNC;
 	int remote_total_rows = mc_remote * Config::kCommNumStages * kTileM;
 
-	auto tma_load_x_remote = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_x_remote = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.src_staging)),
 			make_shape(static_cast<int64_t>(remote_total_rows),
 			           static_cast<int64_t>(hidden_dim)),
 			make_stride(static_cast<int64_t>(hidden_dim), Int<1>{})),
 		typename Traits1::SmemLayoutX_1{});
 
-	auto tma_store_y_remote = make_tma_copy(SM90_TMA_STORE{},
+	auto tma_store_y_remote = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(buf.dst_staging),
 			make_shape(static_cast<int64_t>(remote_total_rows),
 			           static_cast<int64_t>(hidden_dim)),
@@ -1096,6 +1119,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	// base pointer differs (the peer's y_buf). For single-PE the only peer is
 	// self → desc[my_pe%gpus_per_node] == tma_store_y.
 	PeerYStoreDescs<decltype(tma_store_y)> peer_y{};
+	peer_y.enabled = 1;
 	for (int tp = 0; tp < num_pes; ++tp) {
 		bool same_host = (tp / gpus_per_node) == (my_pe / gpus_per_node);
 		if (!same_host) continue;  // cross-host peers keep the dst_staging+putmem path
@@ -1104,7 +1128,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 		LIGER_CHECK(py != nullptr,
 			"direct-to-peer Y store: nvshmem_ptr(y_buf, same-host pe ", tp,
 			") is null (no P2P) — unsupported for this build");
-		peer_y.desc[tp % gpus_per_node] = make_tma_copy(SM90_TMA_STORE{},
+		peer_y.desc[tp % gpus_per_node] = make_tma_copy(TmaStoreAtom{},
 			make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(py)),
 				make_shape(static_cast<int64_t>(max_total_slots),
 				           static_cast<int64_t>(hidden_dim)),
@@ -1115,7 +1139,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	// TMA descriptor for the final combine output [num_tokens, hidden_dim].
 	// Box shape matches combine_tokens_tma's WG tile: 32 tokens × 256 hidden.
 	auto* ptr_combine_out = output_ptr;
-	auto tma_store_y_combine = make_tma_copy(SM90_TMA_STORE{},
+	auto tma_store_y_combine = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(ptr_combine_out),
 			make_shape(static_cast<int64_t>(num_tokens),
 			           static_cast<int64_t>(hidden_dim)),
@@ -1152,8 +1176,10 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 		decltype(tma_load_z), decltype(tma_load_a), decltype(tma_store_y),
 		decltype(tma_store_y_combine)>;
 
-	cudaFuncSetAttribute(kernel_fn,
-		cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+	if (cudaError_t e = cudaFuncSetAttribute(kernel_fn,
+			cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_fwd: cudaFuncSetAttribute(MaxDynamicSharedMemorySize=", smem_size,
+			") failed: ", cudaGetErrorString(e));
 
 	// Reset per-call buffers in a single fused-memset kernel — one CTA per
 	// region. Replaces 11 cudaMemsetAsync calls that would otherwise
@@ -1248,6 +1274,10 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 		tma_load_x_remote, tma_store_y_remote,
 		tma_store_y_combine,
 		mlp_dims, p, get_descs, peer_y);
+	if (cudaError_t e = cudaGetLastError(); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_fwd: kernel launch failed for grid=", grid.x,
+			" threads=", kNumThreads, " smem=", smem_size, ": ",
+			cudaGetErrorString(e));
 
 	// Post-launch global barrier: ensures all NVSHMEM operations (tile puts,
 	// signal ops) across all PEs are complete before any PE starts the next
@@ -1257,14 +1287,16 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	// Stream-ordered variant — capturable into a CUDA graph. The host-side
 	// nvshmem_team_sync(team) would do an internal cudaStreamSynchronize and
 	// therefore fail with "operation not permitted when stream is capturing".
-	nvshmemx_barrier_on_stream(team, stream);
+	if (num_pes > 1) {
+		nvshmemx_barrier_on_stream(team, stream);
+	}
 
 	// Hand the persistent symmetric buffers back to the ABI wrapper so it can
 	// alias them as the *_out_symm views (shapes use the static MoeSymmConfig
 	// max; the views do NOT own the storage — SymmetricMemoryStack does). Y and
 	// the two sort outputs were written in place into the caller-owned buffers.
 	*a.x_sorted_out            = buf.x_sorted;
-	*a.y_buf_out               = buf.y_buf;
+	*a.y_buf_out               = y_buf_ptr;
 	*a.all_expert_offsets_out  = buf.all_expert_offsets;
 }
 

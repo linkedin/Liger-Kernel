@@ -40,6 +40,7 @@
 #include "dispatch.cuh"
 #include "dispatch_bwd.cuh"
 #include "combine_bwd.cuh"
+#include "tma_copy_atom.cuh"
 #include "radix_sort.cuh"
 #include "buffer_pool.cuh"  // shim: liger:: aliases of liger_cute::detail infra
 
@@ -700,7 +701,6 @@ moe_bwd_kernel(
 		// but still run Phase 2 + every barrier via moe_fused_bwd.
 		int flat_id     = (int)blockIdx.x;
 		bool gemm_active = flat_id < mlp_dims.n_gemm;
-		int col_id      = flat_id / kNSplit;
 
 		if (is_comm_warp) {
 			if (gemm_active && smem.comm.total_tiles > 0) {
@@ -712,8 +712,8 @@ moe_bwd_kernel(
 			// MLP warps. The fused iter is initialized for the staging ring
 			// inside moe_fused_bwd (init_remote); every tile — local or remote —
 			// flows through that staging path, so there is no local sub-iter to
-			// seed here. Gap CTAs (col_id ≥ grid_x) get no Phase-1 tiles;
-			// moe_fused_bwd gates Phase 1 on gemm_active.
+			// seed here. Gap CTAs skip Phase 1; moe_fused_bwd gates it on
+			// gemm_active.
 			FusedIter fused_iter;
 
 			moe_fused_bwd<Traits1, Traits2T, Traits3, Traits4, Traits5,
@@ -802,7 +802,9 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 	using Traits3  = typename Config::Traits3;
 	using Traits4  = typename Config::Traits4;
 	using Traits5  = typename Config::Traits5;
-
+	using TmaLoadAtom = TmaLoadAtomForCompute<Config::kCompute>;
+	using TmaStoreAtom = TmaStoreAtomForCompute<Config::kCompute>;
+	using TmaReduceAddAtom = TmaReduceAddAtomForCompute<Config::kCompute>;
 	constexpr int kTileM      = Config::kTileM;
 	constexpr int kNumThreads = Config::kNumThreads;
 	constexpr int kNSplit     = Config::kNSplit;
@@ -1071,114 +1073,114 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 	// (See mlp_bwd.cu for the full pattern; here we mirror it but the
 	// "X" tensor is the symmetric x_sorted and "dY" is the symmetric
 	// dy_sorted, both of shape [max_total_slots, hidden_dim].)
-	auto tma_load_x = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_x = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(pX), make_shape(max_total_slots, hidden_dim),
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits1::SmemLayoutX_1{});
 
-	auto tma_load_b_fwd = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_b_fwd = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(pB), make_shape(total_n_rows_1, hidden_dim),
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits1::SmemLayoutW_1{});
-	auto tma_load_c_fwd = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_c_fwd = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(pC), make_shape(total_n_rows_1, hidden_dim),
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits1::SmemLayoutW_1{});
 
-	auto tma_store_z = make_tma_copy(SM90_TMA_STORE{},
+	auto tma_store_z = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(buf.z_buf), make_shape(max_total_slots, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits1::SmemLayoutStoreSlot{});
-	auto tma_store_u = make_tma_copy(SM90_TMA_STORE{},
+	auto tma_store_u = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(buf.du_buf), make_shape(max_total_slots, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits1::SmemLayoutStoreSlot{});
-	auto tma_store_v = make_tma_copy(SM90_TMA_STORE{},
+	auto tma_store_v = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(buf.dv_buf), make_shape(max_total_slots, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits1::SmemLayoutStoreSlot{});
 
-	auto tma_load_dy = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_dy = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(pDY), make_shape(max_total_slots, hidden_dim),
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits2T::SmemLayoutZ_1{});
-	auto tma_load_a_col = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_a_col = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(pA),
 			make_shape(intermediate_dim, total_k_cols_2),
 			make_stride(Int<1>{}, intermediate_dim)),
 		typename Traits2T::SmemLayoutW_1{});
 	// One TMA box per sub-tile; consumer issues NSub stores per outer N-tile.
-	auto tma_store_dz = make_tma_copy(SM90_TMA_STORE{},
+	auto tma_store_dz = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(buf.dz_buf),
 			make_shape(max_total_slots, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits2T::SmemLayoutStore_1{});
 
-	auto tma_load_du = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_du = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.du_buf)),
 			make_shape(max_total_slots, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits5::SmemLayoutZ_1{});
-	auto tma_load_dv = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_dv = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dv_buf)),
 			make_shape(max_total_slots, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits5::SmemLayoutZ_1{});
-	auto tma_load_b_col = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_b_col = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(pB),
 			make_shape(hidden_dim, total_n_rows_1),
 			make_stride(Int<1>{}, hidden_dim)),
 		typename Traits5::SmemLayoutW_1{});
-	auto tma_load_c_col = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_c_col = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(pC),
 			make_shape(hidden_dim, total_n_rows_1),
 			make_stride(Int<1>{}, hidden_dim)),
 		typename Traits5::SmemLayoutW_1{});
 	// dX TMA: split-N store (TileN_half boxes per Mlp5::SmemLayoutStore_1).
-	auto tma_store_dx = make_tma_copy(SM90_TMA_STORE{},
+	auto tma_store_dx = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(pDX),
 			make_shape(max_total_slots, hidden_dim),
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits5::SmemLayoutStore_1{});
 
 	// Phase 2 TMAs.
-	auto tma_load_dyt3 = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_dyt3 = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(pDY),
 			make_shape(hidden_dim, max_total_slots),
 			make_stride(Int<1>{}, hidden_dim)),
 		typename Traits3::SmemLayoutDYT_1{});
-	auto tma_load_zt3 = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_zt3 = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.z_buf)),
 			make_shape(intermediate_dim, max_total_slots),
 			make_stride(Int<1>{}, intermediate_dim)),
 		typename Traits3::SmemLayoutZ_1{});
-	auto tma_reduce_da = make_tma_copy(SM90_TMA_REDUCE_ADD{},
+	auto tma_reduce_da = make_tma_copy(TmaReduceAddAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dA)),
 			make_shape(total_k_cols_2, intermediate_dim),
 			make_stride(intermediate_dim, Int<1>{})),
 		typename Traits3::SmemLayoutStore{});
 
-	auto tma_load_xt4 = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_xt4 = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(pX),
 			make_shape(hidden_dim, max_total_slots),
 			make_stride(Int<1>{}, hidden_dim)),
 		typename Traits4::SmemLayoutX_1{});
-	auto tma_load_dut4 = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_dut4 = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.du_buf)),
 			make_shape(intermediate_dim, max_total_slots),
 			make_stride(Int<1>{}, intermediate_dim)),
 		typename Traits4::SmemLayoutA_1{});
-	auto tma_load_dvt4 = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_dvt4 = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dv_buf)),
 			make_shape(intermediate_dim, max_total_slots),
 			make_stride(Int<1>{}, intermediate_dim)),
 		typename Traits4::SmemLayoutA_1{});
-	auto tma_reduce_db = make_tma_copy(SM90_TMA_REDUCE_ADD{},
+	auto tma_reduce_db = make_tma_copy(TmaReduceAddAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dB)),
 			make_shape(total_n_rows_1, hidden_dim),
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits4::SmemLayoutStore{});
-	auto tma_reduce_dc = make_tma_copy(SM90_TMA_REDUCE_ADD{},
+	auto tma_reduce_dc = make_tma_copy(TmaReduceAddAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element*>(a.dC)),
 			make_shape(total_n_rows_1, hidden_dim),
 			make_stride(hidden_dim, Int<1>{})),
@@ -1187,18 +1189,18 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 	// Remote (staging) TMAs — buffers cover L = MC · CommNumStages slots,
 	// each TileM rows tall. MC = (grid.x · NSplit) / NC.
 	int remote_total_rows = mc_remote * Config::kCommNumStages * kTileM;
-	auto tma_load_x_remote = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_x_remote = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.x_staging)),
 			make_shape(remote_total_rows, hidden_dim),
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits1::SmemLayoutX_1{});
-	auto tma_load_dy_remote = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_dy_remote = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dy_staging)),
 			make_shape(remote_total_rows, hidden_dim),
 			make_stride(hidden_dim, Int<1>{})),
 		typename Traits2T::SmemLayoutZ_1{});
 	// Remote dX TMA: split-N store (matches local tma_store_dx).
-	auto tma_store_dx_remote = make_tma_copy(SM90_TMA_STORE{},
+	auto tma_store_dx_remote = make_tma_copy(TmaStoreAtom{},
 		make_tensor(make_gmem_ptr(buf.dx_staging),
 			make_shape(remote_total_rows, hidden_dim),
 			make_stride(hidden_dim, Int<1>{})),
@@ -1209,12 +1211,12 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 	// point at LOCAL dy_sorted/x_sorted), so dA/dB/dC for cross-PE-routed
 	// tokens used the wrong rows. These descriptors pull from the same
 	// staging buffers that Phase 1/2 of the remote pass already use.
-	auto tma_load_dyt3_remote = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_dyt3_remote = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.dy_staging)),
 			make_shape(hidden_dim, remote_total_rows),
 			make_stride(Int<1>{}, hidden_dim)),
 		typename Traits3::SmemLayoutDYT_1{});
-	auto tma_load_xt4_remote = make_tma_copy(SM90_TMA_LOAD{},
+	auto tma_load_xt4_remote = make_tma_copy(TmaLoadAtom{},
 		make_tensor(make_gmem_ptr(reinterpret_cast<Element const*>(buf.x_staging)),
 			make_shape(hidden_dim, remote_total_rows),
 			make_stride(Int<1>{}, hidden_dim)),
@@ -1250,10 +1252,6 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 		if (ok) ok = make_get_tma_map_bwd(get_descs_bwd.dst_dy_staging_desc,
 			buf.dy_staging, hidden_dim, remote_total_rows);
 		get_descs_bwd.enabled = ok ? 1 : 0;
-		// A/B toggle: LIGER_GET_TMA_BWD=0 forces the getmem layout at the same
-		// config (no bounce smem), isolating the bwd TMA mechanism on the pod.
-		if (const char* e = std::getenv("LIGER_GET_TMA_BWD"))
-			if (e[0] == '0') get_descs_bwd.enabled = 0;
 	}
 
 	// ── Smem sizing ─────────────────────────────────────────────────
@@ -1350,8 +1348,12 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 	// du_buf / dv_buf / dz_buf / z_buf memsets above.
 	size_t comm_eid_bytes =
 		static_cast<size_t>(comm_l_local) * sizeof(int);
-	cudaMemsetAsync(buf.tile_expert_ids_x,  0xff, comm_eid_bytes, stream);
-	cudaMemsetAsync(buf.tile_expert_ids_dy, 0xff, comm_eid_bytes, stream);
+	if (cudaError_t e = cudaMemsetAsync(buf.tile_expert_ids_x, 0xff, comm_eid_bytes, stream); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_bwd: cudaMemsetAsync(tile_expert_ids_x) failed: ", cudaGetErrorString(e));
+	if (cudaError_t e = cudaMemsetAsync(buf.tile_expert_ids_dy, 0xff, comm_eid_bytes, stream); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_bwd: cudaMemsetAsync(tile_expert_ids_dy) failed: ", cudaGetErrorString(e));
+	if (cudaError_t e = cudaGetLastError(); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_bwd: CUDA error before kernel launch: ", cudaGetErrorString(e));
 
 	kernel_fn<<<grid, kNumThreads, smem_size, stream>>>(
 		tma_load_x, tma_load_b_fwd, tma_load_c_fwd,
@@ -1363,6 +1365,10 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 		tma_load_x_remote, tma_load_dy_remote, tma_store_dx_remote,
 		tma_load_dyt3_remote, tma_load_xt4_remote,
 		mlp_dims, mlp_bufs, p, get_descs_bwd);
+	if (cudaError_t e = cudaGetLastError(); e != cudaSuccess)
+		LIGER_FAIL_CUDA("moe_bwd: kernel launch failed for grid=", grid.x,
+			" threads=", kNumThreads, " smem=", smem_size, ": ",
+			cudaGetErrorString(e));
 
 	// Post-kernel stream-ordered barrier: mirrors the fwd wrapper. The
 	// kernel's PeSync wait_mlp guarantees this PE has received peer
@@ -1373,7 +1379,9 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 	// see a stale value if bwd's older signal arrives after a newer
 	// one. Forcing host-side completion here serialises remote
 	// signal delivery against the next captured kernel.
-	nvshmemx_barrier_on_stream(team, stream);
+	if (num_pes > 1) {
+		nvshmemx_barrier_on_stream(team, stream);
+	}
 }
 
 // ============================================================================
@@ -1581,6 +1589,7 @@ static bool tuned_config_valid_bwd(int D, int I, const TunedConfigBwd& c) {
 	// 128-row comm tile. Keep mirrored SM90 TileM=64 tuning rows out of SM100
 	// auto-dispatch until that TMEM epilogue layout is implemented.
 	if (c.Compute == 100 && c.TileM != 128) return false;
+	if (c.Compute == 100 && (c.TileM3 != 128 || c.TileN3 != 256)) return false;
 	if (D % c.TileK1 != 0)        return false;  // mlp1/mlp2_t/mlp5 K
 	if (D % (2 * c.TileN1) != 0)  return false;  // mlp5 N (= TileN2)
 	if (D % c.TileM3 != 0)        return false;  // mlp3 M, mlp4 N

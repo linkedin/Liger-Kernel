@@ -41,7 +41,8 @@ struct MlpFusedSmem {
 	// Pipeline barrier storage — persistent across phases.
 	// Both phases use a single fused pipe (one mbarrier per stage).
 	typename Mlp1MainloopPipelineFor<Traits1, Compute>::SharedStorage p1_pipe;
-	typename Traits2::MainloopPipeline::SharedStorage p2_pipe;
+	typename Mlp2MainloopPipelineFor<Traits2, Compute>::SharedStorage p2_pipe;
+	alignas(16) uint32_t tmem_base;
 };
 
 static constexpr int kMlpBarrierId      = 14;
@@ -128,9 +129,9 @@ __device__ __forceinline__ void mlp_fused_fwd(
 		// staging path only (standalone mlp.cu callers have no peer descriptors).
 		const TmaStoreY* y_peer_desc = nullptr) {
 
-	using Pipeline1 = typename Traits1::MainloopPipeline;
+	using Pipeline1 = Mlp1MainloopPipelineFor<Traits1, Compute>;
 	using PipeState1 = typename Traits1::PipelineState;
-	using Pipeline2 = typename Traits2::MainloopPipeline;
+	using Pipeline2 = Mlp2MainloopPipelineFor<Traits2, Compute>;
 	using PipeState2 = typename Traits2::PipelineState;
 
 	int warp_id = threadIdx.x / Traits1::WarpSize;
@@ -152,7 +153,12 @@ __device__ __forceinline__ void mlp_fused_fwd(
 		else
 			return mlp1_make_pipe<Traits1>(smem.p1_pipe);
 	}();
-	auto p2_pipe = mlp2_make_pipe<Traits2>(smem.p2_pipe);
+	auto p2_pipe = [&]() {
+		if constexpr (Compute == 100)
+			return mlp2_make_pipe_umma<Traits2>(smem.p2_pipe);
+		else
+			return mlp2_make_pipe<Traits2>(smem.p2_pipe);
+	}();
 
 	if (warp_id >= 1 && warp_id <= 3) {
 		return;
@@ -161,6 +167,17 @@ __device__ __forceinline__ void mlp_fused_fwd(
 	// Sync MLP warps only (excludes comm warps 1-3 which may be in
 	// nvshmem_comm_main when called from moe_fused_fwd).
 	cutlass::arch::NamedBarrier::sync(kMlpBarrierThreads, kMlpBarrierId);
+
+	cute::TMEM::Allocator1Sm tmem_alloc{};
+	if constexpr (Compute == 100) {
+		constexpr int kTmemColumns = (2 * Traits1::TileN > Traits2::TileN)
+			? 2 * Traits1::TileN : Traits2::TileN;
+		if (warp_id == 4) {
+			tmem_alloc.allocate(kTmemColumns, &smem.tmem_base);
+			__syncwarp();
+		}
+		cutlass::arch::NamedBarrier::sync(kMlpBarrierThreads, kMlpBarrierId);
+	}
 
 	// Z buffer: [grid_x, ZBufferSlots, SubTiles, GemmTileM, intermediate_dim].
 	// Indexed in GemmTileM-row tiles: SubTiles Z regions per comm-tile slot so
@@ -197,7 +214,6 @@ __device__ __forceinline__ void mlp_fused_fwd(
 	while (iter.has_next()) {
 		// Barrier: ensure previous phase 2 is done before reusing smem union.
 		cutlass::arch::NamedBarrier::sync(kMlpBarrierThreads, kMlpBarrierId);
-
 		iter.acquire_src();
 		auto tile = iter.next();
 
@@ -214,6 +230,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 		for (int sub = 0; sub < SubTiles; ++sub) {
 			int x_mt = tile.y_m * SubTiles + sub;
 			int z_m  = z_m_base + sub;
+			if constexpr (Compute == 100) smem.mlp1.tmem_base = smem.tmem_base;
 			if (warp_id == 0) {
 				mlp1_fused_producer<Traits1>(
 					p1_pipe, p1_state,
@@ -268,6 +285,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 		for (int sub = 0; sub < SubTiles; ++sub) {
 			int z_m     = z_m_base + sub;
 			int y_coord = y_base * SubTiles + sub;
+			if constexpr (Compute == 100) smem.mlp2.tmem_base = smem.tmem_base;
 			if (warp_id == 0) {
 				mlp2_fused_producer<Traits2>(
 					p2_pipe, p2_state,
@@ -303,6 +321,16 @@ __device__ __forceinline__ void mlp_fused_fwd(
 		iter.release_dst(threadIdx.x);
 
 		tile_iter++;
+	}
+
+	if constexpr (Compute == 100) {
+		constexpr int kTmemColumns = (2 * Traits1::TileN > Traits2::TileN)
+			? 2 * Traits1::TileN : Traits2::TileN;
+		cutlass::arch::NamedBarrier::sync(kMlpBarrierThreads, kMlpBarrierId);
+		if (warp_id == 4) {
+			tmem_alloc.release_allocation_lock();
+			tmem_alloc.free(smem.tmem_base, kTmemColumns);
+		}
 	}
 }
 

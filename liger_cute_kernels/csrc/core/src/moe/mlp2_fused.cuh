@@ -35,6 +35,7 @@
 
 #include "models.cuh"
 #include "math.cuh"
+#include "tmem_load_op.cuh"
 
 #include <cute/tensor.hpp>
 #include <cute/algorithm/gemm.hpp>
@@ -49,7 +50,7 @@
 // __CUDA_ARCH__ >= 1000) ever instantiates it.
 #include <cute/arch/mma_sm100_umma.hpp>
 #include <cute/atom/mma_traits_sm100.hpp>
-#include <cute/arch/tmem_allocator_sm100.hpp>
+
 #include <cute/arch/copy_sm100.hpp>
 #include <cute/atom/copy_traits_sm100.hpp>
 #include <cutlass/pipeline/sm100_pipeline.hpp>  // PipelineTmaUmmaAsync, PipelineUmmaAsync
@@ -57,24 +58,6 @@
 namespace liger {
 
 using namespace cute;
-
-// ═══════════════════════════════════════════════════════════════════
-// TMEM → register load-op selector (SM100 / Compute=100 epilogue)
-// ═══════════════════════════════════════════════════════════════════
-// tcgen05.ld.32x32b.xN loads N 32-bit words per datapath lane per instruction.
-// The mlp2 UMMA epilogue maps one thread to one TMEM datapath row and reads an
-// EpiChunkN-wide column strip per row, so the atom's per-thread register count
-// (the "Nx" repeat, == RegNumDst) must equal EpiChunkN. Pick it at compile time
-// from EpiChunkN (default 32 for mlp2_fused) so any divisor of WgTileN gets a
-// matching load op.
-template <int EpiChunkN> struct TmemLoadOpSelector;
-template <> struct TmemLoadOpSelector<8>   { using Op = SM100_TMEM_LOAD_32dp32b8x;   };
-template <> struct TmemLoadOpSelector<16>  { using Op = SM100_TMEM_LOAD_32dp32b16x;  };
-template <> struct TmemLoadOpSelector<32>  { using Op = SM100_TMEM_LOAD_32dp32b32x;  };
-template <> struct TmemLoadOpSelector<64>  { using Op = SM100_TMEM_LOAD_32dp32b64x;  };
-template <> struct TmemLoadOpSelector<128> { using Op = SM100_TMEM_LOAD_32dp32b128x; };
-template <int EpiChunkN>
-using TmemLoadOp = typename TmemLoadOpSelector<EpiChunkN>::Op;
 
 // ═══════════════════════════════════════════════════════════════════
 // Traits
@@ -175,6 +158,12 @@ struct Mlp2Traits {
 	static constexpr int NumThreads      = 384;
 };
 
+template <typename Traits, int Compute>
+using Mlp2MainloopPipelineFor = cute::conditional_t<
+	Compute == 100,
+	typename Traits::MainloopPipelineUmma,
+	typename Traits::MainloopPipeline>;
+
 // ═══════════════════════════════════════════════════════════════════
 // Fused MLP2 shared memory — no pipeline storage (managed externally)
 // ═══════════════════════════════════════════════════════════════════
@@ -194,9 +183,9 @@ struct Mlp2FusedSmem {
 
 	// SM100 (Compute=100) only: landing slot for tcgen05.alloc's granted TMEM
 	// base address, plus the accumulator pipeline's barrier storage (UMMA→
-	// epilogue handoff). The Hopper (Compute=90) path never touches these, and
-	// keeping them here leaves the consumer signature identical across Compute
-	// values (TMEM/pipeline stay consumer-owned).
+	// epilogue handoff). The Hopper (Compute=90) path never touches these;
+	// SM100 launchers allocate/free TMEM outside the consumer and publish the
+	// base here.
 	alignas(16) uint32_t tmem_base;
 	alignas(16) typename Traits::AccumulatorPipeline::SharedStorage acc_pipe;
 
@@ -594,18 +583,7 @@ static __device__ __forceinline__ void run(
 	auto tCgC     = cta_mma.partition_C(cAccFull);
 	auto tCtAcc   = cta_mma.make_fragment_C(tCgC);
 
-	// ── TMEM allocation (consumer-owned): warp 4 allocs TileN columns for the
-	//    ONE (TileM,TileN) accumulator (== WgTileN for the M-split config; NOT
-	//    2·TileN — mlp2_fused has a single accumulator, unlike mlp1's U/V). ──
-	cute::TMEM::Allocator1Sm tmem_alloc{};
-	// tcgen05.alloc is warp-synchronous (.sync.aligned) and MUST be issued by a
-	// single fully-active warp — NOT one elected thread (that deadlocks the
-	// whole warp). See CUTLASS sm100 kernels: whole mma warp allocates, then
-	// __syncwarp().
-	if (is_mma_warp) {
-		tmem_alloc.allocate(TileN, &smem.tmem_base);
-		__syncwarp();
-	}
+	// TMEM is allocated by the outer fused/standalone launcher once per CTA.
 
 	// ── Accumulator pipeline: UMMA producer (warp 4) → epilogue consumers
 	//    (all consumer warps). 1 stage — the TMEM accumulator is reused each
@@ -748,14 +726,9 @@ static __device__ __forceinline__ void run(
 	if (store_in_flight)
 		cute::tma_store_wait<0>();
 
-	// Release the alloc permit (so the next CTA can rasterize) then free TMEM.
-	// tcgen05.relinquish_alloc_permit / tcgen05.dealloc are warp-synchronous —
-	// issue from the whole mma warp, not one elected thread.
+	// Keep the final consumer barrier so the outer launcher can safely free TMEM
+	// after this consumer returns.
 	cutlass::arch::NamedBarrier::sync(Traits::ConsumerThreads, /*id=*/0);
-	if (is_mma_warp) {
-		tmem_alloc.release_allocation_lock();
-		tmem_alloc.free(tmem_base, TileN);
-	}
 #else
 	// The Compute=100 specialization is never dispatched on non-SM100 targets
 	// (host picks Compute=90 there). Trap if it is ever reached.
