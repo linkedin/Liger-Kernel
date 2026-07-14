@@ -3107,8 +3107,6 @@ def apply_liger_kernel_to_qwen3_5(
     if cross_entropy:
         from transformers.loss.loss_utils import nn
 
-        from liger_kernel.transformers.cross_entropy import liger_cross_entropy
-
         nn.functional.cross_entropy = liger_cross_entropy
 
     if fused_linear_cross_entropy:

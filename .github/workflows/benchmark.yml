@@ -117,7 +117,7 @@ jobs:
           
       - name: Run benchmarks on GPU
         run: |
-          modal run dev.modal.benchmarks
+          modal run -m dev.modal.benchmarks
         
        # Step 5: Checkout gh-pages branch in a subfolderAdd commentMore actions
       - name: Checkout gh-pages
