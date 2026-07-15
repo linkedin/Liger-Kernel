@@ -150,6 +150,7 @@ pip install -e ".[dev]" --extra-index-url https://triton-ascend.osinfra.cn/pypi/
 - `transformers >= 4.x`: Required if you plan to use the transformers models patching APIs. The specific model you are working will dictate the minimum version of transformers.
 - `cuda-tile`: Required when enabling the optional cuTile backend on CUDA. Use this when your environment already provides CUDA Toolkit 13.1 or newer, or an existing tileiras compiler installation.
 - `cuda-tile[tileiras]`: Required when enabling the optional cuTile backend with the tileiras compiler installed directly into your Python environment.
+- `nvidia-cutlass-dsl`: Required when enabling the optional CuTe DSL backend on CUDA (the CUDA-only Python DSL shipped with NVIDIA CUTLASS, `import cutlass.cute`). Targets Hopper (SM90) and Blackwell (SM100/SM110).
 
 > **Note:**
 > Our kernels inherit the full spectrum of hardware compatibility offered by [Triton](https://github.com/triton-lang/triton).
@@ -192,6 +193,9 @@ pip install -e ".[cutile]"
 # Or install cuTile with the optional tileiras compiler
 pip install -e ".[cutile-tileiras]"
 
+# Setup CuTe DSL (NVIDIA CUTLASS Python DSL) Dependencies
+pip install -e ".[cutedsl]"
+
 ```
 
 ### Enable cuTile Backend
@@ -202,7 +206,18 @@ cuTile is an optional CUDA-only DSL implementation. After installing the `cutile
 LIGER_KERNEL_IMPL=cutile python your_script.py
 ```
 
-`LIGER_KERNEL_IMPL` selects an opt-in implementation registered with Liger (currently `cutile`). Selecting one on an unsupported device, or without the required dependencies installed, raises an error.
+`LIGER_KERNEL_IMPL` selects an opt-in implementation registered with Liger (currently `cutile` and `cutedsl`). Selecting one on an unsupported device, or without the required dependencies installed, raises an error.
+
+### Enable CuTe DSL Backend
+
+CuTe DSL is the optional, CUDA-only Python DSL shipped with NVIDIA CUTLASS (`import cutlass.cute`), targeting Hopper (SM90) and Blackwell (SM100/SM110). After installing the `cutedsl` extra, enable it explicitly:
+
+```bash
+pip install "liger-kernel[cutedsl]"
+LIGER_KERNEL_IMPL=cutedsl python your_script.py
+```
+
+It currently provides genuine `cutlass.cute` implementations of **RMSNorm** and **cross entropy**. Any op without a CuTe DSL kernel transparently falls back to the default Triton kernel, so selecting the backend is always safe. Selecting it on a non-CUDA device, or without `nvidia-cutlass-dsl` installed, raises an error.
 
 
 ## Getting Started

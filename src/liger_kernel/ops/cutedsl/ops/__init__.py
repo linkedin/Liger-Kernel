@@ -14,9 +14,15 @@ except ImportError as exc:
 from liger_kernel.ops.cutedsl.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.cutedsl.ops.cross_entropy import cross_entropy_backward
 from liger_kernel.ops.cutedsl.ops.cross_entropy import cross_entropy_forward
+from liger_kernel.ops.cutedsl.ops.rms_norm import LigerRMSNormFunction
+from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_backward
+from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_forward
 
 __all__ = [
     "LigerCrossEntropyFunction",
     "cross_entropy_backward",
     "cross_entropy_forward",
+    "LigerRMSNormFunction",
+    "rms_norm_backward",
+    "rms_norm_forward",
 ]
