@@ -20,7 +20,7 @@ def infer_comm_backend():
     """
     if torch.distributed.is_nccl_available():
         # Works for Nvidia
-        # TODO: nccl may not work for AMD decices that may require use of rccl.
+        # TODO: nccl may not work for AMD devices that may require use of rccl.
         return "nccl"
     elif is_npu_available():
         # Use Ascend NPU if available (torch.npu)

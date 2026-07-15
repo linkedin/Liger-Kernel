@@ -155,7 +155,7 @@ def _rms_norm_backward_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    dx = (1 / RMS) * [dy * (w + offset - (1 / N) * (1 / RMS^2) * ((dy * (w + offset)) dot x) * x]. * means element-wise multiplication, whileas dot means dot product
+    dx = (1 / RMS) * [dy * (w + offset - (1 / N) * (1 / RMS^2) * ((dy * (w + offset)) dot x) * x]. * means element-wise multiplication, whereas dot means dot product
     dw = sum(dy * (x / RMS)). summation over BxT dimension
     """
 
@@ -187,7 +187,7 @@ def _rms_norm_backward_kernel(
 
         X_row = X_row.to(tl.float32)
 
-        # Different bacward graphs for different casting modes
+        # Different backward graphs for different casting modes
         if casting_mode == _CASTING_MODE_LLAMA:
             if elementwise_affine:
                 m = (dY_row * W_row).to(tl.float32)
@@ -333,7 +333,7 @@ def _block_rms_norm_backward_kernel(
     BLOCK_ROW: tl.constexpr,
 ):
     """
-    dx = (1 / RMS) * [dy * (w + offset - (1 / N) * (1 / RMS^2) * ((dy * (w + offset)) dot x) * x]. * means element-wise multiplication, whileas dot means dot product
+    dx = (1 / RMS) * [dy * (w + offset - (1 / N) * (1 / RMS^2) * ((dy * (w + offset)) dot x) * x]. * means element-wise multiplication, whereas dot means dot product
     dw = sum(dy * (x / RMS)). summation over BxT dimension
     """
 
@@ -368,7 +368,7 @@ def _block_rms_norm_backward_kernel(
 
         X_row = X_row.to(tl.float32)
 
-        # Different bacward graphs for different casting modes
+        # Different backward graphs for different casting modes
         if casting_mode == _CASTING_MODE_LLAMA:
             if elementwise_affine:
                 m = (dY_row * W_row[None, :]).to(tl.float32)
@@ -610,7 +610,7 @@ class LigerRMSNormFunction(torch.autograd.Function):
     - 'none': no casting is done. The computation is done in the original dtype. This saves memory and is slightly faster, but has more error w.r.t. the original implementation.
 
     `in_place` option means whether to in_place modify dY to store dX. This is default to `True` to save memory. However, under certain cases, it can produce incorrect inputs.
-        For example, gemma2 uses two rmsnorm sequentially with residual in between. The resesidual part needs dY so it cannot be modified in-place.
+        For example, gemma2 uses two rmsnorm sequentially with residual in between. The residual part needs dY so it cannot be modified in-place.
         Therefore, for the patching of RMSNorm in gemma2, we set `in_place` to `False`
     """
 
