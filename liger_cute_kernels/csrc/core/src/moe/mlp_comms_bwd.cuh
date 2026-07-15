@@ -305,19 +305,6 @@ __device__ __forceinline__ void do_get_bwd(
 	Element* local_tile  = staging_base + slot * tile_elems;
 	Element* remote_tile = remote_base + info.token_offset * bufs.hidden_dim;
 
-	if (info.pe == bufs.my_pe) {
-		for (int i = lane; i < chunk; i += 32) {
-			local_tile[offset + i] = remote_tile[offset + i];
-		}
-		__syncwarp();
-		if (tile_expert_ids_dst != nullptr && chunk_idx == 0 && lane == 0) {
-			tile_expert_ids_dst[slot] = info.expert;
-		}
-		__threadfence();
-		src_pipe.producer_release(lane);
-		return;
-	}
-
 	// Fast path: NVLink P2P → all 2·NC warps cooperate, each copying its
 	// chunk with direct int4 loads. IB path: one whole-tile getmem issued
 	// by a single warp, chosen round-robin across IB tiles only (ib_seq
@@ -395,15 +382,6 @@ __device__ __forceinline__ void do_put_bwd(
 	Element* remote_tile = remote_dx + info.token_offset * bufs.hidden_dim;
 
 	int global_pe = nvshmem_team_translate_pe(bufs.team, info.pe, NVSHMEM_TEAM_WORLD);
-
-	if (info.pe == bufs.my_pe) {
-		for (int i = lane; i < chunk; i += 32) {
-			remote_tile[offset + i] = local_tile[offset + i];
-		}
-		__syncwarp();
-		dst_pipe.consumer_release(lane);
-		return;
-	}
 
 	// NVLink P2P peers keep the cooperative split; IB peers send the whole
 	// tile as one RDMA issued by a single put warp, round-robin over IB
