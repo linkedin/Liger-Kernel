@@ -6,6 +6,7 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import compare_version
+from liger_kernel.ops.utils import device_context
 from liger_kernel.ops.utils import ensure_contiguous
 from liger_kernel.utils import is_npu_available
 
@@ -94,15 +95,16 @@ def geglu_forward(a, b):
 
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-    _geglu_tanh_forward_kernel[(n_rows,)](
-        a,
-        b,
-        c,
-        c.stride(-2),
-        n_cols=n_cols,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-    )
+    with device_context(a.device):
+        _geglu_tanh_forward_kernel[(n_rows,)](
+            a,
+            b,
+            c,
+            c.stride(-2),
+            n_cols=n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
     return a, b, c.view(*ori_shape)
 
 
@@ -114,15 +116,16 @@ def geglu_backward(a, b, dc):
 
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-    _geglu_tanh_backward_kernel[(n_rows,)](
-        dc,
-        a,
-        b,
-        dc.stride(-2),
-        n_cols=n_cols,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
-    )
+    with device_context(a.device):
+        _geglu_tanh_backward_kernel[(n_rows,)](
+            dc,
+            a,
+            b,
+            dc.stride(-2),
+            n_cols=n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
 
     return a.view(*ori_shape), b.view(*ori_shape)
 

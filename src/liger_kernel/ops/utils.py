@@ -14,6 +14,7 @@ import functools
 import importlib
 import operator
 
+from contextlib import contextmanager
 from typing import Callable
 
 import torch
@@ -29,6 +30,27 @@ def is_hip() -> bool:
     return torch.version.hip is not None
 
 
+@contextmanager
+def device_context(device):
+    device = torch.device(device)
+    backend = getattr(torch, device.type, None)
+    if backend is not None and hasattr(backend, "device"):
+        with backend.device(device):
+            yield
+    else:
+        yield
+
+
+def _get_first_tensor_device(args, kwargs):
+    for arg in args:
+        if isinstance(arg, torch.Tensor):
+            return arg.device
+    for value in kwargs.values():
+        if isinstance(value, torch.Tensor):
+            return value.device
+    return None
+
+
 def ensure_contiguous(fn):
     @functools.wraps(fn)
     def wrapper(ctx, *args, **kwargs):
@@ -37,7 +59,11 @@ def ensure_contiguous(fn):
 
         args = [maybe_to_contiguous(arg) for arg in args]
         kwargs = {k: maybe_to_contiguous(v) for k, v in kwargs.items()}
-        return fn(ctx, *args, **kwargs)
+        device = _get_first_tensor_device(args, kwargs)
+        if device is None:
+            return fn(ctx, *args, **kwargs)
+        with device_context(device):
+            return fn(ctx, *args, **kwargs)
 
     return wrapper
 
