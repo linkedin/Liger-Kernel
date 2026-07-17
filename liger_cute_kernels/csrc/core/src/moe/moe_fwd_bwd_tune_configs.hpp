@@ -210,6 +210,18 @@
 	X(16, 16, 128, 64, 4, 128, 256, 64, 2, 32, 64, 64, 3, 128) \
 	X(16, 16, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128)
 
+// Llama Scout experiment compile menu: keep BWD pruned for fast FWD-only
+// diagnostic rebuilds. The FWD menus above stay enabled so named-model FWD
+// campaigns can dispatch all 35 tuned rows.
+#undef LIGER_MOE_BWD_TUNE_CONFIGS_TM64
+#undef LIGER_MOE_BWD_TUNE_CONFIGS_TM128
+
+#define LIGER_MOE_BWD_TUNE_CONFIGS_TM64(X)
+
+#define LIGER_MOE_BWD_TUNE_CONFIGS_TM128(X) \
+	X(8, 4, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128) \
+	X(8, 8, 128, 64, 4, 256, 128, 64, 2, 32, 64, 64, 3, 128)
+
 // ── Direction unions (whole menu per direction; fed to the .cu files) ─
 #define LIGER_MOE_TUNE_CONFIGS(X) \
 	LIGER_MOE_FWD_TUNE_CONFIGS_TM64(X) \

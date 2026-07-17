@@ -83,6 +83,8 @@ struct StagePipe {
 	int* consumed;    // consumer signals, producer waits
 	int  stride;      // step in slots between consecutive logical stages
 	bool is_leader;
+	int num_producers;
+	int num_consumers;
 
 	int prod_count;
 	int cons_count;
@@ -99,12 +101,21 @@ struct StagePipe {
 		consumed = consumed_;
 		stride = stride_;
 		is_leader = is_leader_;
+		num_producers = NumProducers;
+		num_consumers = NumConsumers;
 		prod_count = 0;
 		cons_count = 0;
 		for (int i = 0; i < NumStages; ++i) {
 			prod_expected[i] = 0;
 			cons_expected[i] = 0;
 		}
+	}
+
+	__device__ void init(int* ready_, int* consumed_, bool is_leader_,
+	                     int stride_, int num_producers_, int num_consumers_) {
+		init(ready_, consumed_, is_leader_, stride_);
+		num_producers = num_producers_;
+		num_consumers = num_consumers_;
 	}
 
 	// ── Producer side ───────────────────────────────────────
@@ -131,7 +142,7 @@ struct StagePipe {
 			__syncwarp();
 			__threadfence();
 		}
-		prod_expected[s] += NumConsumers;
+		prod_expected[s] += num_consumers;
 	}
 
 	// Signal that data has been written to this slot.
@@ -169,13 +180,13 @@ struct StagePipe {
 		int s = consumer_stage();
 		if (is_leader) {
 			cuda::atomic_ref<int, cuda::thread_scope_device> r(ready[s * stride]);
-			while (r.load(cuda::memory_order_relaxed) < cons_expected[s] + NumProducers) {}
+			while (r.load(cuda::memory_order_relaxed) < cons_expected[s] + num_producers) {}
 		}
 		__syncwarp();
 		// Device-scope: the put warp observes dst_staging (Y), already flushed
 		// to HBM by the MLP's system-scope release_dst. Observe is GPU-internal.
 		__threadfence();
-		cons_expected[s] += NumProducers;
+		cons_expected[s] += num_producers;
 	}
 
 	// Signal that this slot has been consumed and is free.
@@ -207,11 +218,61 @@ struct CommSmem {
 	// mlp_global_barrier requires every CTA to make the same enter/skip
 	// decision, so per-CTA per_cta_tiles can't be the gate.
 	int global_total;
+	int runtime_nsplit;
+	int runtime_n_gemm;
+	int runtime_grid_x;
 
 	// Pre-fetched remote expert offsets, assigned to dynamic smem at runtime.
 	// Layout: [num_pes][experts_per_pe + 1]
 	int* remote_offsets;
 };
+
+__device__ __forceinline__ int select_runtime_nsplit_from_tiles(
+		int total_tiles, int num_n_tiles_1, int num_n_tiles_2,
+		int num_k_tiles_1, int num_k_tiles_2,
+		int num_blocks, int static_nsplit) {
+	if (total_tiles <= 0) return 2;
+	constexpr int candidates[5] = {2, 4, 6, 8, 16};
+	int best_ns = static_nsplit;
+	long long best_cost = -1;
+	long long best_waste = -1;
+	int best_n_gemm = -1;
+	long long phase1_weight = 2LL * num_k_tiles_1;  // gate + up
+	long long phase2_weight = (long long)num_k_tiles_2;
+	#pragma unroll
+	for (int i = 0; i < 5; ++i) {
+		int ns = candidates[i];
+		if (ns > num_blocks) continue;
+		int n_gemm = (num_blocks / ns) * ns;
+		int ms = n_gemm / ns;
+		if (ms <= 0) continue;
+		int m_waves = (total_tiles + ms - 1) / ms;
+		int n1_waves = (num_n_tiles_1 + ns - 1) / ns;
+		int n2_waves = (num_n_tiles_2 + ns - 1) / ns;
+
+		long long phase_cost = phase1_weight * n1_waves
+		                     + phase2_weight * n2_waves;
+		long long cost = (long long)m_waves * phase_cost;
+		long long phase1_waste =
+			(long long)m_waves * ms * n1_waves * ns
+			- (long long)total_tiles * num_n_tiles_1;
+		long long phase2_waste =
+			(long long)m_waves * ms * n2_waves * ns
+			- (long long)total_tiles * num_n_tiles_2;
+		long long waste = phase1_weight * phase1_waste
+		                + phase2_weight * phase2_waste;
+		if (best_cost < 0 ||
+		    cost < best_cost ||
+		    (cost == best_cost && waste < best_waste) ||
+		    (cost == best_cost && waste == best_waste && n_gemm > best_n_gemm)) {
+			best_cost = cost;
+			best_waste = waste;
+			best_n_gemm = n_gemm;
+			best_ns = ns;
+		}
+	}
+	return best_ns;
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // PeSync — device-level phase synchronization
@@ -566,9 +627,9 @@ struct GetBounce {
 	static constexpr int kTotalBytes    = kPerWarpStride * kNumGetWarpsFwd;
 };
 
-template <typename Element, int TileM, int K, int NC, int N_SPLIT>
+template <typename Element, int TileM, int K, int NC>
 __device__ __forceinline__ void do_get(
-		StagePipe<K, kNumGetWarpsFwd * NC, N_SPLIT>& src_pipe,
+		StagePipe<K, kNumGetWarpsFwd * NC, 1>& src_pipe,
 		const CommBuffers& bufs,
 		const TileInfo& info,
 		Element* src_staging,  // base of flat staging buffer
@@ -693,9 +754,9 @@ __device__ __forceinline__ void do_get(
 	src_pipe.producer_release(lane);
 }
 
-template <typename Element, int TileM, int K, int NC, int N_SPLIT>
+template <typename Element, int TileM, int K, int NC>
 __device__ __forceinline__ void do_put(
-		StagePipe<K, N_SPLIT, kNumPutWarpsFwd * NC>& dst_pipe,
+		StagePipe<K, 1, kNumPutWarpsFwd * NC>& dst_pipe,
 		const CommBuffers& bufs,
 		const TileInfo& info,
 		Element* dst_staging,
@@ -818,10 +879,11 @@ __device__ __forceinline__ void broadcast_expert_offsets(
 // Called by all threads — comm warps do the work, others pass through.
 // Must be followed by __syncthreads() before nvshmem_comm_main.
 
-template <int TileM, int NC = 2, int N_SPLIT = NC>
+template <int TileM, int NC = 2>
 __device__ __forceinline__ void nvshmem_comm_prologue(
 		CommSmem& smem,
-		const CommBuffers& bufs) {
+		const CommBuffers& bufs,
+		int static_nsplit) {
 
 	int warp_id = threadIdx.x / 32;
 	if (warp_id < kCommWarpStart || warp_id > kCommWarpEnd)
@@ -840,6 +902,10 @@ __device__ __forceinline__ void nvshmem_comm_prologue(
 		if (is_leader) {
 			smem.total_tiles = 0;
 			smem.per_cta_tiles = 0;
+			smem.global_total = 0;
+			smem.runtime_nsplit = static_nsplit;
+			smem.runtime_n_gemm = bufs.n_gemm;
+			smem.runtime_grid_x = bufs.n_gemm / static_nsplit;
 		}
 		__syncwarp();
 		return;
@@ -898,13 +964,23 @@ __device__ __forceinline__ void nvshmem_comm_prologue(
 	iter.init(xc, MC);
 	int comm_count = iter.total_tiles;
 
-	// MLP count: this column's workload, stride grid_x.
-	iter.init(cta_id / N_SPLIT, bufs.n_gemm / N_SPLIT);
+	// Grid-wide total tile count (start=0, stride=1 → all tiles once).
+	iter.init(0, 1);
+	int global_count = iter.total_tiles;
+
+	// Default static-NS MLP count; moe_fused_kernel overwrites this after it
+	// selects a runtime NS using MLP N-tile divisibility.
+	int static_grid_x = bufs.n_gemm / static_nsplit;
+	iter.init(cta_id / static_nsplit, static_grid_x);
 	int mlp_count = iter.total_tiles;
 
 	if (is_leader) {
 		smem.total_tiles   = comm_count;  // read by comm_main
 		smem.per_cta_tiles = mlp_count;   // read by MLP iterator
+		smem.global_total  = global_count;
+		smem.runtime_nsplit = static_nsplit;
+		smem.runtime_n_gemm = bufs.n_gemm;
+		smem.runtime_grid_x = static_grid_x;
 	}
 	__syncwarp();
 }
@@ -939,7 +1015,7 @@ __device__ __forceinline__ void nvshmem_comm_prologue(
 // getter blocks in producer_acquire once its NumStages-slot subset is
 // pending MLP consumption, and the putter blocks in consumer_acquire
 // until MLP releases a dst slot.
-template <typename Element, int TileM, int NumStages, int NC, int N_SPLIT>
+template <typename Element, int TileM, int NumStages, int NC>
 __device__ __forceinline__ void nvshmem_comm_main(
 		CommSmem& smem,
 		const CommBuffers& bufs,
@@ -990,6 +1066,7 @@ __device__ __forceinline__ void nvshmem_comm_main(
 
 	int my_total = iter.total_tiles;
 	if (my_total == 0) return;
+	int runtime_nsplit = smem.runtime_nsplit;
 
 	auto* src_staging_base = static_cast<Element*>(bufs.src_staging);
 	auto* dst_staging_base = static_cast<Element*>(bufs.dst_staging);
@@ -1006,13 +1083,14 @@ __device__ __forceinline__ void nvshmem_comm_main(
 		// NumProducers = N_SPLIT (GEMM CTAs produce Y), NumConsumers =
 		// kNumPutWarpsFwd·NC (2 put warps × NC CTAs per ring).
 		const int put_local_idx = (warp_id == kCommPutWarp) ? 0 : 1;
-		StagePipe<K, N_SPLIT, kNumPutWarpsFwd * NC> dst_pipe;
-		dst_pipe.init(bufs.dst_ready + xc, bufs.dst_consumed + xc, is_leader, MC);
+		StagePipe<K, 1, kNumPutWarpsFwd * NC> dst_pipe;
+		dst_pipe.init(bufs.dst_ready + xc, bufs.dst_consumed + xc, is_leader, MC,
+			runtime_nsplit, kNumPutWarpsFwd * NC);
 
 		int ib_seq = 0;  // advances only on IB tiles (inside do_put)
 		for (int i = 0; i < my_total; ++i) {
 			TileInfo info = iter.next();
-			do_put<Element, TileM, K, NC, N_SPLIT>(
+			do_put<Element, TileM, K, NC>(
 				dst_pipe, bufs, info,
 				dst_staging_base, tile_elems, xc, MC, yc, ib_seq, lane,
 				put_local_idx, get_descs);
@@ -1022,14 +1100,15 @@ __device__ __forceinline__ void nvshmem_comm_main(
 
 		// NumProducers = kNumGetWarpsFwd·NC (= NC: one get warp × NC CTAs),
 		// NumConsumers = N_SPLIT (all GEMM CTAs consume cooperatively).
-		StagePipe<K, kNumGetWarpsFwd * NC, N_SPLIT> src_pipe;
-		src_pipe.init(bufs.src_ready + xc, bufs.src_consumed + xc, is_leader, MC);
+		StagePipe<K, kNumGetWarpsFwd * NC, 1> src_pipe;
+		src_pipe.init(bufs.src_ready + xc, bufs.src_consumed + xc, is_leader, MC,
+			kNumGetWarpsFwd * NC, runtime_nsplit);
 		char* bounce_warp = get_bounce;  // single warp → slice 0
 
 		int ib_seq = 0;  // advances only on IB tiles (inside do_get)
 		for (int i = 0; i < my_total; ++i) {
 			TileInfo info = iter.next();
-			do_get<Element, TileM, K, NC, N_SPLIT>(
+			do_get<Element, TileM, K, NC>(
 				src_pipe, bufs, info,
 				src_staging_base, tile_elems, xc, MC, chunk_idx, ib_seq, lane,
 				get_descs, bounce_warp);

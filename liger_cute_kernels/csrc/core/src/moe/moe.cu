@@ -88,7 +88,6 @@ using liger_cute::detail::init_comm_schedule;
 // All other parameters are exposed for autotuning.
 
 template <
-    int NSplit_         = 2,
     typename Element_   = bfloat16_t,
     int TileM_          = 128,
     int TileN1_         = 128,
@@ -101,7 +100,7 @@ template <
     int EpiChunkN2_     = 64,
     int ZBufferSlots_   = 4,
     int CommNumStages_  = 2,
-    int NC_             = NSplit_,
+    int NC_             = 4,
     // GemmTileM_ decouples the GEMM compute tile (mlp1/mlp2 wgmma + TMA) from
     // the COMM staging tile (TileM_). TileM_ is the comm tile — staging ring
     // slots, per-tile semaphores, NC, sort/dispatch — and is fixed at 128.
@@ -136,7 +135,6 @@ struct MoeFusedConfig {
         "MoE fused fwd kernel smem footprint exceeds 224 KiB budget — "
         "reduce TileN/TileK/Stages for this config");
 
-    static constexpr int kNSplit        = NSplit_;
     static constexpr int kNC            = NC_;
     static constexpr int kZBufferSlots  = ZBufferSlots_;
     static constexpr int kCommNumStages = CommNumStages_;
@@ -158,7 +156,7 @@ struct MoeFusedConfig {
     // Iterators operate on the COMM tile (kTileM): staging slots / semaphores
     // are 128-wide regardless of the GEMM sub-tile size.
     using LocalIter  = LocalMlpTileIterator<Element, kTileM>;
-    using RemoteIter = RemoteMlpTileIterator<Element, kCommNumStages, kNSplit, kNC, kTileM>;
+    using RemoteIter = RemoteMlpTileIterator<Element, kCommNumStages, kNC, kTileM>;
 };
 
 // ============================================================================
@@ -377,7 +375,8 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	// z_rows · intermediate_dim · 2 = ~4.4 GB which overflows int32 if
 	// the multiply happens in int (b.z_rows and intermediate_dim are
 	// both int). Cast first so the entire product is in size_t.
-	int z_m_tiles = grid_x * kZBufferSlots;
+	int max_runtime_grid_x = (num_blocks + 1) / 2;  // min candidate NS = 2
+	int z_m_tiles = max_runtime_grid_x * kZBufferSlots;
 	b.z_rows = z_m_tiles * kTileM;
 	size_t z_bytes = static_cast<size_t>(b.z_rows) * intermediate_dim * sizeof(Element);
 	b.z_buf = reinterpret_cast<Element*>(pool.get_device("moe_z_buf", z_bytes));
@@ -392,7 +391,7 @@ static MoeBuffers<Config> allocate_moe_buffers(
 		LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(y_buf) failed: ", cudaGetErrorString(e));
 
 	// Phase counters.
-	size_t counter_bytes = grid_x * sizeof(int);
+	size_t counter_bytes = max_runtime_grid_x * sizeof(int);
 	b.phase_counter = reinterpret_cast<int*>(
 		pool.get_device("moe_phase_counter", counter_bytes));
 	if (cudaError_t e = cudaMemsetAsync(b.phase_counter, 0, counter_bytes, stream); e != cudaSuccess)
@@ -520,6 +519,7 @@ moe_fused_kernel(
 		__grid_constant__ TmaStoreYCombine const tma_store_y_combine,
 		__grid_constant__ MlpDims   const mlp_dims,
 		__grid_constant__ MoeParams<Config> const p,
+		__grid_constant__ int       const static_nsplit,
 		__grid_constant__ GetTmaDescs const get_descs,
 		__grid_constant__ PeerYStoreDescs<TmaStoreY> const peer_y) {
 
@@ -532,7 +532,6 @@ moe_fused_kernel(
 	constexpr int kNumThreads    = Config::kNumThreads;
 	constexpr int kZBufferSlots  = Config::kZBufferSlots;
 	constexpr int kCommNumStages = Config::kCommNumStages;
-	constexpr int kNSplit        = Config::kNSplit;
 	constexpr int kNC            = Config::kNC;
 
 	// -- Sort ----------------------------------------------------------------
@@ -605,12 +604,13 @@ moe_fused_kernel(
 
 		// Flat-grid logical coordinates for this CTA. GEMM and comm gate to
 		// the first n_gemm = floor_NS CTAs (the comm↔MLP staging ring needs
-		// grid_x = n_gemm/NSplit and MC = n_gemm/NC consistent); the gap CTAs
+		// grid_x = n_gemm/static_nsplit and MC = n_gemm/NC consistent); the gap CTAs
 		// [n_gemm, num_blocks) fall through to the shared pe_barrier only.
 		int flat_id      = blockIdx.x;
 		int n_gemm       = p.comm.n_gemm;
-		int grid_x       = n_gemm / kNSplit;
-		int col          = flat_id / kNSplit;
+		int grid_x       = n_gemm / static_nsplit;
+		int col          = flat_id / static_nsplit;
+		int runtime_nsplit = static_nsplit;
 
 		// gemm_active removed: comm warps self-gate on their precomputed tile
 		// count (smem.comm.total_tiles) so a CTA can do comm-only work without
@@ -618,11 +618,35 @@ moe_fused_kernel(
 		// Run the prologue unconditionally so every launched CTA has total_tiles
 		// initialized; the MLP/GEMM path still gates on GEMM-grid membership
 		// (flat_id < n_gemm) below.
-		const bool use_comm_path = p.comm.num_pes() > 1;
-		if (use_comm_path) {
-			nvshmem_comm_prologue<kTileM, kNC, kNSplit>(smem.comm, p.comm);
+		nvshmem_comm_prologue<kTileM, kNC>(smem.comm, p.comm, static_nsplit);
+		__syncthreads();
+
+		if (threadIdx.x == 0) {
+			int total_m_tiles = smem.comm.global_total;
+			runtime_nsplit = select_runtime_nsplit_from_tiles(
+				total_m_tiles,
+				mlp_dims.num_n_tiles_1,
+				mlp_dims.num_n_tiles_2,
+				mlp_dims.num_k_tiles_1,
+				mlp_dims.num_k_tiles_2,
+				(int)gridDim.x,
+				static_nsplit);
+			n_gemm = ((int)gridDim.x / runtime_nsplit) * runtime_nsplit;
+			grid_x = n_gemm / runtime_nsplit;
+			col = flat_id / runtime_nsplit;
+			int mlp_count = 0;
+			if (flat_id < n_gemm && col < total_m_tiles)
+				mlp_count = (total_m_tiles - 1 - col) / grid_x + 1;
+			smem.comm.per_cta_tiles = mlp_count;
+			smem.comm.runtime_nsplit = runtime_nsplit;
+			smem.comm.runtime_n_gemm = n_gemm;
+			smem.comm.runtime_grid_x = grid_x;
 		}
 		__syncthreads();
+		runtime_nsplit = smem.comm.runtime_nsplit;
+		n_gemm = smem.comm.runtime_n_gemm;
+		grid_x = smem.comm.runtime_grid_x;
+		col = flat_id / runtime_nsplit;
 
 		// Diverge: comm warps handle NVSHMEM, MLP warps handle compute.
 		// Separate scopes prevent CommBuffers from inflating MLP register budget.
@@ -630,12 +654,12 @@ moe_fused_kernel(
 		int warp_id = threadIdx.x / 32;
 		bool is_comm_warp = (warp_id >= kCommFwdWarpStart && warp_id <= kCommFwdWarpEnd);
 
-		if (use_comm_path && is_comm_warp) {
+		if (is_comm_warp) {
 			// Comm warps: dedicated get/put — full CommBuffers access. Self-gate
 			// on the precomputed comm tile count — no GEMM coupling, so a
 			// comm-only CTA (no local GEMM work) still drives its comm tiles.
 			if (smem.comm.total_tiles > 0) {
-				nvshmem_comm_main<Element, kTileM, kCommNumStages, kNC, kNSplit>(
+				nvshmem_comm_main<Element, kTileM, kCommNumStages, kNC>(
 					smem.comm, p.comm, &get_descs, get_bounce);
 			}
 		} else if (flat_id < n_gemm) {
@@ -655,7 +679,7 @@ moe_fused_kernel(
 				local_m_tiles, p.comm.hidden_dim,
 				/*col_stride=*/grid_x, /*start_col=*/col, local_tile_off);
 
-			moe_fused_fwd<Traits1, Traits2, kZBufferSlots, kCommNumStages, kNSplit, kNC,
+			moe_fused_fwd<Traits1, Traits2, kZBufferSlots, kCommNumStages, kNC,
 				Config::kSubTiles, Config::kCompute, LocalIter, RemoteIter>(
 				smem, local_iter,
 				p.comm.src_ready, p.comm.src_consumed,
@@ -667,7 +691,7 @@ moe_fused_kernel(
 				tma_load_x_remote, tma_store_y_remote,
 				mlp_dims,
 				local_m_tiles * kTileM, local_m_tiles,
-				col, grid_x, /*split=*/flat_id % kNSplit,
+				col, grid_x, /*split=*/flat_id % runtime_nsplit, runtime_nsplit,
 				local_e_start,
 				/*y_peer_desc=*/peer_y.enabled ? peer_y.desc : nullptr);
 		}
@@ -710,7 +734,6 @@ moe_fused_kernel(
 // (MoeFwdFn) while every tuned config is a distinct template instantiation.
 
 template <
-    int NSplit         = 2,
     typename Element_  = bfloat16_t,
     int TileN1         = 128,
     int TileK1         = 64,
@@ -719,14 +742,14 @@ template <
     int TileK2         = 64,
     int Stages2        = 4,
     int ZBufferSlots   = 4,
-    int CommNumStages  = 1,    // = NSplit/NC for the default NSplit=2, NC=2
+    int CommNumStages  = 1,
     int EpiChunkN1     = 64,   // mlp1 epilogue chunk; must divide TileN1
     int EpiChunkN2     = 64,   // mlp2 epilogue chunk; must divide TileN2
     int TileM          = 128,  // COMM tile (staging/semaphores/NC); 128
     int GemmTileM      = TileM, // GEMM tile ∈ {64,128}; default == comm (no sub-tiling)
     int Compute        = 90>
 void
-moe_fused_fwd_bf16(const MoeFwdArgs& a) {
+moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit) {
 
 	// Unpack the POD argument bundle into the names the upstream body uses.
 	const int num_experts = a.num_experts;
@@ -735,22 +758,22 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	cudaStream_t stream   = a.stream;
 
 	// NC = number of cooperating comm CTAs per (xc, yc) tile. With the
-	// ticket-based GEMM-side iterator, NSplit and NC no longer need to
+	// ticket-based GEMM-side iterator, runtime NS and NC no longer need to
 	// share a divisibility relationship — the only runtime requirement
 	// is NC | (gridDim.x · gridDim.y) so MC is integer.
 	//
 	// Wrapper param order (10 "core" args + trailing EpiChunkN + TileM):
-	//   NSplit, Element, TN1, TK1, S1, TN2, TK2, S2, ZBuf, CS,
+	//   Element, TN1, TK1, S1, TN2, TK2, S2, ZBuf, CS,
 	//   EpiChunkN1, EpiChunkN2, TileM
 	// MoeFusedConfig interleaves TileM/EpiChunkN inside each phase:
-	//   NSplit, Element, TileM, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2,
+	//   Element, TileM, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2,
 	//   ZBuf, CS, NC
 	// The remapping happens here. TileM is shared by MLP1 and MLP2.
 	//
 	// NC choice (verified via bench_mlp_comms BW sweep):
 	//   - TileM=128: NC=4 gives ~2× the comm bandwidth of NC=2 because
 	//     4 cooperating comm CTAs split each tile, deepening the comm
-	//     pipeline (more in-flight slots = MC = grid.x·NSplit/NC).
+	//     pipeline (more in-flight slots = grid.x/NC).
 	//   - TileM=64:  NC=2 already matches NC=4 throughput because tiles
 	//     are half-size, so twice as many flow through the same pipeline.
 	// COMM tile is FIXED at 128 (NC=4) for EVERY config. This keeps the
@@ -760,7 +783,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	// cross-PE get/put). `TileM` is now purely the GEMM-tile knob: it flows to
 	// GemmTileM (which defaults to TileM), so a "TM64" config = comm128/gemm64.
 	using Config = MoeFusedConfig<
-		NSplit, Element_, /*CommTileM=*/128,
+		Element_, /*CommTileM=*/128,
 		TileN1, TileK1, Stages1, EpiChunkN1,
 		TileN2, TileK2, Stages2, EpiChunkN2,
 		ZBufferSlots, CommNumStages,
@@ -806,9 +829,9 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	int num_n_tiles_1  = intermediate_dim / Traits1::TileN;
 	int num_n_tiles_2  = hidden_dim / Traits2::TileN;
 
-	// Relaxed: NSplit > num_n_tiles is allowed; CTAs whose blockIdx.y >=
-	// num_n_tiles run empty inner loops but still drive their TMA-load /
-	// store mbarriers so the pipeline stays balanced across the column.
+	// Relaxed: runtime NS > num_n_tiles is allowed; surplus split CTAs run
+	// empty inner loops but still drive their TMA-load/store mbarriers so the
+	// pipeline stays balanced across the column.
 
 	int total_n_rows_1 = experts_per_pe * intermediate_dim;
 	int total_n_rows_2 = experts_per_pe * hidden_dim;
@@ -816,22 +839,21 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	int num_pes = nvshmem_team_n_pes(team);
 	int my_pe   = nvshmem_team_my_pe(team);
 
-	// Grid — flat 1-D launch (replaces the old 2-D (grid_x, NSplit)).
+	// Grid — flat 1-D launch. static_nsplit only seeds n_gemm/grid_x before
+	// the kernel selects the runtime split from the actual routed tile count.
 	//
 	// GEMM and comm gate to the first n_gemm = floor_NS CTAs: the comm↔MLP
-	// staging ring couples producer and consumer (it needs grid_x = n_gemm/NSplit
+	// staging ring couples producer and consumer (it needs grid_x = n_gemm/static_nsplit
 	// and MC = n_gemm/NC to be consistent), so they share one count. The
 	// sort/dispatch/combine grid-stride phases and the cross-CTA pe_barrier use
-	// ALL num_blocks launched CTAs. num_blocks keeps the most SMs while landing
-	// on a multiple of NSplit OR NC (= num_sms - min(num_sms%NSplit, num_sms%NC));
-	// the gap CTAs [n_gemm, num_blocks) fall through GEMM/comm (idle warps) and
-	// only contribute to the grid-stride phases.
+	// ALL num_blocks launched CTAs. The runtime selector may choose a different
+	// NS inside the kernel and rewrites n_gemm/grid_x consistently for MLP.
 	int num_sms;
 	cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, a.device);
-	int floor_ns   = num_sms - num_sms % NSplit;
+	int floor_ns   = num_sms - num_sms % static_nsplit;
 	int floor_nc   = num_sms - num_sms % Config::kNC;
 	int n_gemm     = floor_ns;                                   // GEMM/comm-active CTAs
-	int grid_x     = n_gemm / NSplit;                            // logical GEMM columns
+	int grid_x     = n_gemm / static_nsplit;                     // initial logical GEMM columns
 	int num_blocks = (floor_ns > floor_nc) ? floor_ns : floor_nc; // launched CTAs
 	dim3 grid(num_blocks);
 
@@ -859,12 +881,6 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	// Final combine output [T, D] — caller-owned (binding-allocated) Y buffer.
 	Element* output_ptr = reinterpret_cast<Element*>(a.Y);
 	Element* y_buf_ptr = buf.y_buf;
-	if (num_pes == 1) {
-		size_t actual_y_bytes = static_cast<size_t>(max_total_slots) * hidden_dim * sizeof(Element);
-		y_buf_ptr = reinterpret_cast<Element*>(pool.get_device("moe_y_buf_single_pe", actual_y_bytes));
-		if (cudaError_t e = cudaMemsetAsync(y_buf_ptr, 0, actual_y_bytes, stream); e != cudaSuccess)
-			LIGER_FAIL_CUDA("moe_fwd: cudaMemsetAsync(y_buf_single_pe) failed: ", cudaGetErrorString(e));
-	}
 
 	auto& scfg = get_symm_config();
 
@@ -1180,7 +1196,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 
 		FusedMemsetArgs ma{};
 		fused_memset_add(ma, buf.phase_counter,
-			grid_x * sizeof(int), 0x00);
+			((num_blocks + 1) / 2) * sizeof(int), 0x00);
 		fused_memset_add(ma, buf.cta_counter,
 			sizeof(int), 0x00);
 		fused_memset_add(ma, buf.cta_done,
@@ -1226,7 +1242,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 		tma_load_z, tma_load_a, tma_store_y,
 		tma_load_x_remote, tma_store_y_remote,
 		tma_store_y_combine,
-		mlp_dims, p, get_descs, peer_y);
+		mlp_dims, p, static_nsplit, get_descs, peer_y);
 	if (cudaError_t e = cudaGetLastError(); e != cudaSuccess)
 		LIGER_FAIL_CUDA("moe_fwd: kernel launch failed for grid=", grid.x,
 			" threads=", kNumThreads, " smem=", smem_size, ": ",
@@ -1253,52 +1269,9 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	*a.all_expert_offsets_out  = buf.all_expert_offsets;
 }
 
-// ============================================================================
-// Explicit instantiations
-// ============================================================================
-//
-// Add more entries here as autotuning identifies better configs for specific
-// (hidden_dim, intermediate_dim, num_experts) shapes.
-
-// X-macro signature (12 args): NSplit, TN1, TK1, S1, EpiChunkN1,
-//                               TN2, TK2, S2, EpiChunkN2, ZBuf, CStages, TileM.
-// EpiChunkN1/EpiChunkN2/TileM are appended to the wrapper template's tail
-// (positions 11, 12, 13); the wrapper itself remaps them into MoeFusedConfig's
-// interleaved slot order. TileM ∈ {64, 128} is shared by MLP1 and MLP2.
-// 13-arg core: explicit GemmTileM (comm tile = TileM, gemm tile = GemmTileM).
-#define LIGER_MOE_INSTANTIATE_G_C(Compute, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM, GemmTileM) \
-	template void \
-		moe_fused_fwd_bf16< \
-			NSplit, bfloat16_t, TN1, TK1, S1, TN2, TK2, S2, ZBuf, CStages, EC1, EC2, TileM, GemmTileM, Compute>( \
-			const MoeFwdArgs&);
-#define LIGER_MOE_INSTANTIATE_C(Compute, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM) \
-	LIGER_MOE_INSTANTIATE_G_C(Compute, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM, TileM)
-#define LIGER_MOE_INSTANTIATE_G_SM90(NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM, GemmTileM) \
-	LIGER_MOE_INSTANTIATE_G_C(90, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM, GemmTileM)
-#define LIGER_MOE_INSTANTIATE_SM90(NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM) \
-	LIGER_MOE_INSTANTIATE_C(90, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM)
-#define LIGER_MOE_INSTANTIATE_G_SM100(NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM, GemmTileM) \
-	LIGER_MOE_INSTANTIATE_G_C(100, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM, GemmTileM)
-#define LIGER_MOE_INSTANTIATE_SM100(NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM) \
-	LIGER_MOE_INSTANTIATE_C(100, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM)
-
-#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 90
-LIGER_MOE_FWD_DISPATCH_CONFIGS_SM90(LIGER_MOE_INSTANTIATE_SM90, LIGER_MOE_INSTANTIATE_G_SM90)
-#endif
-#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 100
-LIGER_MOE_FWD_DISPATCH_CONFIGS_SM100(LIGER_MOE_INSTANTIATE_SM100, LIGER_MOE_INSTANTIATE_G_SM100)
-#endif
-
-#undef LIGER_MOE_INSTANTIATE_SM100
-#undef LIGER_MOE_INSTANTIATE_G_SM100
-#undef LIGER_MOE_INSTANTIATE_SM90
-#undef LIGER_MOE_INSTANTIATE_G_SM90
-#undef LIGER_MOE_INSTANTIATE_C
-#undef LIGER_MOE_INSTANTIATE_G_C
-
 // ── Runtime dispatch table for tuned-config lookup ────────────────────
 
-using MoeFwdFn = void (*)(const MoeFwdArgs&);
+using MoeFwdFn = void (*)(const MoeFwdArgs&, int static_nsplit);
 
 struct DispatchEntry {
 	int Compute;
@@ -1314,7 +1287,7 @@ struct DispatchEntry {
 // 13-arg core: explicit GemmTileM. 12-arg shim sets GemmTileM = comm TileM.
 #define LIGER_MOE_DISPATCH_ENTRY_G_C(Compute, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM, GemmTileM) \
 	{ Compute, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM, GemmTileM, \
-	  &moe_fused_fwd_bf16<NSplit, bfloat16_t, TN1, TK1, S1, TN2, TK2, S2, ZBuf, CStages, EC1, EC2, TileM, GemmTileM, Compute> },
+	  &moe_fused_fwd_bf16<bfloat16_t, TN1, TK1, S1, TN2, TK2, S2, ZBuf, CStages, EC1, EC2, TileM, GemmTileM, Compute> },
 #define LIGER_MOE_DISPATCH_ENTRY_C(Compute, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM) \
 	LIGER_MOE_DISPATCH_ENTRY_G_C(Compute, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM, TileM)
 #define LIGER_MOE_DISPATCH_ENTRY_G_SM90(NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TileM, GemmTileM) \
@@ -1573,7 +1546,7 @@ void moe_fused_fwd_dispatch(const MoeFwdArgs& a, int* chosen_tile_m) {
 		LIGER_CHECK(de != nullptr,
 			"LIGER_MOE_FORCE_CONFIG=", s, " is not in the compiled dispatch "
 			"table. Add it to LIGER_MOE_TUNE_CONFIGS in moe_fwd_bwd_tune_configs.hpp.");
-		de->fn(a);
+		de->fn(a, tc.NSplit);
 		*chosen_tile_m = tc.TileM;
 		return;
 	}
@@ -1599,7 +1572,7 @@ void moe_fused_fwd_dispatch(const MoeFwdArgs& a, int* chosen_tile_m) {
 		") is not in the compiled dispatch table. "
 		"Add it to LIGER_MOE_TUNE_CONFIGS in moe_fwd_bwd_tune_configs.hpp.");
 
-	de->fn(a);
+	de->fn(a, tc.NSplit);
 	*chosen_tile_m = tc.TileM;
 }
 

@@ -90,14 +90,13 @@ void moe_configure_symmetric(
 void moe_pop_fwd();
 
 template <
-	int NSplit,
 	typename Element_,
 	int TileN1, int TileK1, int Stages1,
 	int TileN2, int TileK2, int Stages2,
 	int ZBufferSlots, int CommNumStages,
 	int EpiChunkN1 = 64, int EpiChunkN2 = 64,
 	int TileM = 128, int GemmTileM = TileM, int Compute = 90>
-void moe_fused_fwd_bf16(const MoeFwdArgs& a);
+void moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit);
 
 template <
 	int NSplit, int NSplit2,
@@ -112,7 +111,7 @@ void moe_bwd_fwd_bf16_tuned(const MoeBwdArgs& a);
 
 // ── Fwd registry — generated from LIGER_MOE_TUNE_CONFIGS ─────────────
 
-using MoeFwdFn = void (*)(const liger::MoeFwdArgs&);
+using MoeFwdFn = void (*)(const liger::MoeFwdArgs&, int static_nsplit);
 
 struct TunerEntryFwd {
 	const char* name;
@@ -132,7 +131,7 @@ struct TunerEntryFwd {
 		"_ZB" #ZBuf "_CS" #CStages,                                                                  \
 		Compute, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM,                    \
 		&liger::moe_fused_fwd_bf16<                                                                  \
-			NSplit, cutlass::bfloat16_t, TN1, TK1, S1, TN2, TK2, S2, ZBuf, CStages, EC1, EC2, TM, TM, Compute> \
+			cutlass::bfloat16_t, TN1, TK1, S1, TN2, TK2, S2, ZBuf, CStages, EC1, EC2, TM, TM, Compute> \
 	},
 #define LIGER_MOE_FWD_REGISTRY_ENTRY_SM90(NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM) \
 	LIGER_MOE_FWD_REGISTRY_ENTRY_C(90, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM)
@@ -360,7 +359,7 @@ static bool run_pair_once(
 		fa.token_expert_slots = tok_slots.data_ptr<int>();
 		fa.tile_expert_ids    = tile_ids.data_ptr<int>();
 		fa.x_sorted_out = &x_sorted; fa.y_buf_out = &y_buf; fa.all_expert_offsets_out = &all_off;
-		fwd_e.fn(fa);
+		fwd_e.fn(fa, fwd_e.NSplit);
 	} catch (const std::exception& ex) {
 		const char* msg = ex.what();
 		if (msg && (std::strstr(msg, "out of memory") ||
