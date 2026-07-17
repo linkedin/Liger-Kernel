@@ -1,13 +1,16 @@
 # Chunked DPO Loss: (batch × sequence)-level chunking with in-place gradient accumulation
 
-This document explains the design and rationale behind `LigerChunkedLinearPreferenceBase` /
-`LigerChunkedLinearDPOLoss` and the `ChunkMatmul` autograd function
-(commits `b442602` and `cf8d269`).
+This document explains the design and rationale behind
+[`LigerChunkedLinearPreferenceBase`](https://github.com/cyr0930/Liger-Kernel/blob/feat/chunked_dpo/src/liger_kernel/chunked_loss/chunked_linear_preference.py#L36) /
+[`LigerChunkedLinearDPOLoss`](https://github.com/cyr0930/Liger-Kernel/blob/feat/chunked_dpo/src/liger_kernel/chunked_loss/dpo_loss.py#L55)
+and the [`ChunkMatmul`](https://github.com/cyr0930/Liger-Kernel/blob/feat/chunked_dpo/src/liger_kernel/chunked_loss/chunked_linear_preference.py#L8)
+autograd function (commits [`b442602`](https://github.com/cyr0930/Liger-Kernel/commit/b44260260d4197924b0915a5f3180b4208526d4f)
+and [`cf8d269`](https://github.com/cyr0930/Liger-Kernel/commit/cf8d269c88539586d0d9829c87757cb0d82736a4)).
 
 ## Problem
 
-The upstream `LigerFusedLinearPreferenceBase` chunks the DPO loss along the **batch**
-dimension over chosen/rejected pairs. Each chunk therefore still contains the full
+The upstream [`LigerFusedLinearPreferenceBase`](https://github.com/cyr0930/Liger-Kernel/blob/main/src/liger_kernel/chunked_loss/fused_linear_preference.py)
+chunks the DPO loss along the **batch** dimension over chosen/rejected pairs. Each chunk therefore still contains the full
 sequence length, and its logits are of shape `(chunk_B, T, V)`.
 
 In the typical DPO regime — long sequences, small effective batch — a "chunk" is
@@ -15,8 +18,9 @@ essentially the whole batch, so batch-level chunking degenerates into gradient
 accumulation and does **not** reduce the peak memory footprint at the end of the
 forward path (the logit / log-softmax part).
 
-The FLCE trick (chunk over `B·T` and backprop each chunk immediately) does not transfer
-naively to DPO: cross-entropy is a linear sum over tokens, but the DPO loss is
+The FLCE trick (chunk over `B·T` and backprop each chunk immediately; see the
+[Liger-Kernel technical report](https://openreview.net/forum?id=36SjAIT42G)) does not transfer
+naively to [DPO](https://arxiv.org/abs/2305.18290): cross-entropy is a linear sum over tokens, but the DPO loss is
 **nonlinear in the sequence-level log-probabilities**, so the loss — and therefore
 backward — cannot start until every chunk's contribution to the sequence logps exists.
 
@@ -135,5 +139,5 @@ from two sources:
    single in-place accumulator.
 
 The remaining floor is the retained per-chunk logits in forward (visible as a
-"staircase" in a memory snapshot); removing it would require a two-pass /
+"staircase" in a [memory snapshot](https://pytorch.org/docs/stable/torch_cuda_memory.html)); removing it would require a two-pass /
 recomputation design, since DPO forces all sequence logps to exist before backward.
