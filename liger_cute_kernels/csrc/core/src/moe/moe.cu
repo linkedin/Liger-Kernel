@@ -226,11 +226,7 @@ struct MoeBuffers {
 
 	// All PEs' expert offsets -- symmetric.
 	int* all_expert_offsets;
-	// PeSync buffers -- symmetric, monotonic.
-	uint64_t* dispatch_done;      // [num_pes]
-	uint64_t* mlp_done;           // [num_pes]
 	int* cta_counter;             // [1] device memory — shared monotonic
-	uint64_t* iter_counter;       // [1] device memory — global iteration counter
 
 	// Sort buffers.
 	int* tile_expert_counts;
@@ -444,34 +440,9 @@ static MoeBuffers<Config> allocate_moe_buffers(
 	// All PEs' expert offsets (symmetric). Use max experts for stable sizing.
 	b.all_expert_offsets = static_cast<int*>(sym_stack.put(kSymmKeyAllExpertOffsets));
 
-	// PeSync signals (symmetric) + iteration counter (device).
-	// All three are monotonic across kernel launches and NEVER reset
-	// per-call: signal_phase SETs the slot to iter+1, wait_phase reads
-	// >= iter+1. Because every PE runs the same sequence of launches in
-	// lockstep, iter_counter stays in sync across PEs and the previous
-	// call's residual value (= N) is exactly one less than the new
-	// target (= N+1), so wait_until correctly blocks until the peer's
-	// current-call signal arrives.
-	//
-	// Resetting these per call would create a host/peer race: this PE's
-	// cudaMemsetAsync of its own local symmetric memory can clobber a
-	// signal_op that the peer's in-kernel signal_phase has just written
-	// over the network, and wait_dispatch would then spin on a wiped
-	// slot forever. Leaving them monotonic eliminates that race.
-	//
-	// All three buffers are zero-initialized on first allocation by
-	// BufferPool::get_device / get_symmetric, so the first launch sees
-	// slot = 0 and target = 1 → wait blocks correctly.
-	size_t pe_sig_bytes = scfg.num_pes * sizeof(uint64_t);
-	b.dispatch_done = static_cast<uint64_t*>(
-		pool.get_symmetric("moe_dispatch_done", pe_sig_bytes));
-	b.mlp_done = static_cast<uint64_t*>(
-		pool.get_symmetric("moe_mlp_done", pe_sig_bytes));
-	// CTA counters (device memory -- reset after each use by signal_phase).
+	// CTA counter for local all-CTA barriers around NVSHMEM collectives.
 	b.cta_counter = static_cast<int*>(
 		pool.get_device("moe_cta_counter", sizeof(int)));
-	b.iter_counter = static_cast<uint64_t*>(
-		pool.get_device("moe_fwd_iter_counter", sizeof(uint64_t)));
 
 	// Sort buffers -- use scfg max sizes to avoid reallocation across configs.
 	int max_sorted_slots = scfg.max_total_slots;
@@ -606,13 +577,7 @@ moe_fused_kernel(
 	// reads are L2-coherent, so single-host never exercised this.
 	__threadfence_system();  // device-scope (NVLink-only build; IB needs system scope)
 
-	// Signal all PEs that dispatch (and broadcast) are complete.
-	if (p.comm.num_pes() > 1 && threadIdx.x == 0) nvshmem_quiet();
-	__syncthreads();
-	p.comm.pe_sync.signal_dispatch(pe_barrier);
-
-	// Wait for all remote PEs' dispatch to complete.
-	p.comm.pe_sync.wait_dispatch();
+	p.comm.pe_sync.barrier_all(pe_barrier);
 
 	// -- MLP (local + remote) ------------------------------------------------
 	{
@@ -672,7 +637,6 @@ moe_fused_kernel(
 			if (smem.comm.total_tiles > 0) {
 				nvshmem_comm_main<Element, kTileM, kCommNumStages, kNC, kNSplit>(
 					smem.comm, p.comm, &get_descs, get_bounce);
-				if (p.comm.num_pes() > 1) nvshmem_quiet();
 			}
 		} else if (flat_id < n_gemm) {
 			// MLP warps: no CommBuffers in scope. Gap CTAs (flat_id >= n_gemm)
@@ -710,8 +674,7 @@ moe_fused_kernel(
 
 		__threadfence();
 		__syncthreads();
-		p.comm.pe_sync.signal_mlp(pe_barrier);
-		p.comm.pe_sync.wait_mlp();
+		p.comm.pe_sync.barrier_all(pe_barrier);
 	}
 
 	// -- Combine --------------------------------------------------------------
@@ -736,13 +699,6 @@ moe_fused_kernel(
 			p.top_k);
 	}
 
-	// -- Advance iteration counter (very last device op) ---------------------
-	// CTA 0 thread 0 atomically bumps the global iteration counter so the
-	// NEXT kernel launch / graph replay reads a fresh, monotonic value.
-	// Safe: every CTA has finished its iteration() reads above (the last
-	// reads happen inside signal_mlp/wait_mlp, which are gated by the same
-	// cross-CTA barrier() that synchronises with this CTA).
-	p.comm.pe_sync.advance_iteration_counter();
 }
 
 // ============================================================================
@@ -941,10 +897,7 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	p.comm.local_output        = y_buf_ptr;
 	p.comm.tile_expert_ids     = buf.tile_expert_ids;
 	p.comm.all_expert_offsets  = buf.all_expert_offsets;
-	p.comm.pe_sync.dispatch_done = buf.dispatch_done;
-	p.comm.pe_sync.mlp_done      = buf.mlp_done;
 	p.comm.pe_sync.cta_counter   = buf.cta_counter;
-	p.comm.pe_sync.iter_counter  = buf.iter_counter;
 	p.comm.pe_sync.num_pes       = num_pes;
 	p.comm.pe_sync.my_pe         = my_pe;
 	p.comm.pe_sync.team          = team;
@@ -1287,9 +1240,9 @@ moe_fused_fwd_bf16(const MoeFwdArgs& a) {
 	// Stream-ordered variant — capturable into a CUDA graph. The host-side
 	// nvshmem_team_sync(team) would do an internal cudaStreamSynchronize and
 	// therefore fail with "operation not permitted when stream is capturing".
-	if (num_pes > 1) {
-		nvshmemx_barrier_on_stream(team, stream);
-	}
+	//if (num_pes > 1) {
+	//	nvshmemx_barrier_on_stream(team, stream);
+	//}
 
 	// Hand the persistent symmetric buffers back to the ABI wrapper so it can
 	// alias them as the *_out_symm views (shapes use the static MoeSymmConfig

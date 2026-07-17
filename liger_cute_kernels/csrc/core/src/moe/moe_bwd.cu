@@ -255,14 +255,11 @@ struct MoeBwdBuffers {
 	Element* dy_sorted;
 	Element* dx_sorted;
 
-	// Symmetric: PE-sync counters + offsets.
-	uint64_t* dispatch_done;
-	uint64_t* mlp_done;
+	// Symmetric offsets.
 	int*      expert_offsets_sym;        // for sort
 
 	// Device-only.
 	int*     cta_counter;
-	uint64_t* iter_counter;              // [1] global iteration counter
 	int*     phase_counter;              // mlp_bwd uses this
 	int*     barrier_counter;            // mlp_global_barrier
 	Element* z_buf;                      // [total_slots, I]
@@ -344,10 +341,6 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 		pool.get_symmetric("moe_sort_offsets",
 			(scfg.max_num_experts + 1) * sizeof(int)));
 
-	size_t pe_sig_bytes = scfg.num_pes * sizeof(uint64_t);
-	b.dispatch_done = static_cast<uint64_t*>(pool.get_symmetric("moe_bwd_dispatch_done", pe_sig_bytes));
-	b.mlp_done      = static_cast<uint64_t*>(pool.get_symmetric("moe_bwd_mlp_done",      pe_sig_bytes));
-
 	// ── Device-only ──────────────────────────────────────
 	b.cta_counter     = static_cast<int*>(pool.get_device("moe_bwd_cta_counter",   sizeof(int)));
 	b.phase_counter   = static_cast<int*>(pool.get_device("moe_bwd_phase_counter", grid_x * sizeof(int)));
@@ -355,22 +348,6 @@ static MoeBwdBuffers<Config> allocate_moe_bwd_buffers(
 	cudaMemsetAsync(b.cta_counter,     0, sizeof(int),                stream);
 	cudaMemsetAsync(b.phase_counter,   0, grid_x * sizeof(int),       stream);
 	cudaMemsetAsync(b.barrier_counter, 0, sizeof(int),                stream);
-
-	// Global iteration counter (device memory) + PE-sync signal arrays
-	// (symmetric, allocated above). All three are monotonic across
-	// kernel launches and NEVER reset per-call. Because every PE runs
-	// the same sequence of launches in lockstep, iter_counter stays in
-	// sync across PEs and the previous call's residual signal value
-	// (= N) is exactly one less than the new target (= N+1), so
-	// wait_phase correctly blocks until the peer's current-call signal
-	// arrives. Resetting these per call would create a host/peer race:
-	// this PE's cudaMemsetAsync of its local symmetric memory can
-	// clobber a signal_op that the peer's kernel has just written over
-	// the network, and wait_dispatch / wait_mlp would then spin
-	// forever. All three buffers are zero-initialized on first
-	// allocation by BufferPool::get_device / get_symmetric.
-	b.iter_counter = static_cast<uint64_t*>(
-		pool.get_device("moe_bwd_iter_counter", sizeof(uint64_t)));
 
 	size_t intermediate_bytes =
 		static_cast<size_t>(total_slots) * intermediate_dim * sizeof(Element);
@@ -596,9 +573,6 @@ moe_bwd_kernel(
 	constexpr int kNC            = Config::kNC;
 
 	// Target-based cross-CTA barrier — single instance per kernel call.
-	// Used by both PeSync::signal_dispatch / signal_mlp below. Must be
-	// constructed once and reused so the per-CTA target accumulates
-	// monotonically across every signal_phase call.
 	SyncThreadsCtaCounterBarrier pe_barrier(p.comm.pe_sync.cta_counter,
 		(int)gridDim.x * (int)gridDim.y);
 
@@ -659,8 +633,7 @@ moe_bwd_kernel(
 	__threadfence_system();
 	__syncthreads();
 
-	p.comm.pe_sync.signal_dispatch(pe_barrier);
-	p.comm.pe_sync.wait_dispatch();
+	p.comm.pe_sync.barrier_all(pe_barrier);
 
 	// ── Phase 4: MLP_bwd with comm overlap ───────────────────────────
 	{
@@ -738,8 +711,7 @@ moe_bwd_kernel(
 
 		__threadfence();
 		__syncthreads();
-		p.comm.pe_sync.signal_mlp(pe_barrier);
-		p.comm.pe_sync.wait_mlp();
+		p.comm.pe_sync.barrier_all(pe_barrier);
 	}
 
 	// ── Phase 5: Reverse-dispatch — dx_sorted → dX_out (gather-sum) ──
@@ -751,10 +723,6 @@ moe_bwd_kernel(
 		p.num_tokens,
 		p.top_k);
 
-	// Advance iteration counter — last device op. CTA 0 thread 0 atomicAdds.
-	// Cross-CTA barriers in signal_mlp/wait_mlp above ensure every CTA has
-	// finished its iteration() reads before this fires.
-	p.comm.pe_sync.advance_iteration_counter();
 }
 
 // ============================================================================
@@ -824,6 +792,10 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 
 	int num_pes = nvshmem_team_n_pes(team);
 	int my_pe   = nvshmem_team_my_pe(team);
+	int local_gpus = 0;
+	cudaGetDeviceCount(&local_gpus);
+	int gpus_per_node =
+		(local_gpus > 0 && num_pes % local_gpus == 0) ? local_gpus : num_pes;
 
 	int num_sms;
 	cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, a.device);
@@ -925,10 +897,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 	// is a bwd-only mirror gated by release_dy).
 	p.comm.tile_expert_ids   = buf.tile_expert_ids_x;
 	p.comm.all_expert_offsets = a.expert_offsets;
-	p.comm.pe_sync.dispatch_done = buf.dispatch_done;
-	p.comm.pe_sync.mlp_done      = buf.mlp_done;
 	p.comm.pe_sync.cta_counter   = buf.cta_counter;
-	p.comm.pe_sync.iter_counter  = buf.iter_counter;
 	p.comm.pe_sync.num_pes       = num_pes;
 	p.comm.pe_sync.my_pe         = my_pe;
 	p.comm.pe_sync.team          = team;
@@ -1228,6 +1197,8 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 	// P2P + divisible hidden_dim + bounce smem fit (checked after smem sizing).
 	GetTmaDescsBwd get_descs_bwd{};
 	get_descs_bwd.enabled = 0;
+	get_descs_bwd.gpus_per_node = gpus_per_node;
+	get_descs_bwd.my_pe = my_pe;
 	size_t get_bounce_bytes_bwd = (size_t)liger::GetBounceBwd<Element>::kTotalBytes;
 	{
 		// The single get warp's row band is TileM/NC; the small TMA box height
@@ -1235,16 +1206,19 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 		// at TileM=128; larger NC (band < 16) disables the path.
 		constexpr int kRowBandBwd = Config::kTileM / Config::kNC;
 		bool ok = (hidden_dim % liger::kGetKChunk == 0)
-			&& (num_pes <= liger::kGetMaxPes)
+			&& (gpus_per_node <= liger::kGetMaxPes)
 			&& (kRowBandBwd % liger::kGetBoxRowsBwd == 0);
-		for (int tp = 0; ok && tp < num_pes; ++tp) {
+		int host_start = (my_pe / gpus_per_node) * gpus_per_node;
+		for (int local_peer = 0; ok && local_peer < gpus_per_node; ++local_peer) {
+			int tp = host_start + local_peer;
+			if (tp >= num_pes) { ok = false; break; }
 			int gpe = nvshmem_team_translate_pe(team, tp, NVSHMEM_TEAM_WORLD);
 			void* px_peer  = nvshmem_ptr(p.comm_bwd.remote_x,  gpe);  // peer x_sorted
 			void* pdy_peer = nvshmem_ptr(p.comm_bwd.remote_dy, gpe);  // peer dy_sorted
 			if (px_peer == nullptr || pdy_peer == nullptr) { ok = false; break; }
-			ok = make_get_tma_map_bwd(get_descs_bwd.src_x_desc[tp], px_peer,
+			ok = make_get_tma_map_bwd(get_descs_bwd.src_x_desc[local_peer], px_peer,
 				hidden_dim, max_total_slots);
-			if (ok) ok = make_get_tma_map_bwd(get_descs_bwd.src_dy_desc[tp], pdy_peer,
+			if (ok) ok = make_get_tma_map_bwd(get_descs_bwd.src_dy_desc[local_peer], pdy_peer,
 				hidden_dim, max_total_slots);
 		}
 		if (ok) ok = make_get_tma_map_bwd(get_descs_bwd.dst_x_staging_desc,
@@ -1272,7 +1246,10 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a) {
 		if (mlp_with_bounce <= (size_t)Config::kSmemBudget) smem_mlp = mlp_with_bounce;
 		else get_descs_bwd.enabled = 0;
 	}
-	mlp_dims.tma_get_enabled = get_descs_bwd.enabled;
+	// Unified BWD comm layout always uses one get warp and two put warps.
+	// get_descs_bwd.enabled only controls whether same-host tiles use TMA;
+	// remote/unsupported tiles fall back inside do_get_bwd_tma.
+	mlp_dims.tma_get_enabled = 1;
 
 	size_t smem_size = std::max(smem_sort, smem_mlp);
 

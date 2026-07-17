@@ -214,42 +214,11 @@ struct CommSmem {
 };
 
 // ═══════════════════════════════════════════════════════════════════
-// PeSync — device-level phase synchronization with monotonic counters
+// PeSync — device-level phase synchronization
 // ═══════════════════════════════════════════════════════════════════
-//
-// Single monotonic CTA counter with modular check for cross-CTA barriers.
-// Two remote signal arrays (dispatch_done, mlp_done) for PE-level sync.
-//
-// Protocol per kernel call:
-//   1. barrier(): after sort — cross-CTA visibility of sorted_token_ids
-//   2. signal_dispatch(): barrier + signal dispatch_done to remote PEs
-//   3. wait_dispatch(): wait for remote dispatch_done signals
-//   4. signal_mlp(): barrier + signal mlp_done to remote PEs
-//   5. wait_mlp(): wait for remote mlp_done signals
-//   6. advance_iteration_counter() at the very end of the kernel —
-//      CTA 0 thread 0 atomically increments the global iteration counter.
-//
-// The iteration counter lives in device memory (allocated from the
-// buffer pool). Every CTA reads it via signal_phase / wait_phase;
-// exactly one CTA increments it at the very end. The cross-CTA
-// barrier()s upstream of the end ensure no CTA is still reading
-// `iter_counter` when the atomicAdd fires. The motivation for moving
-// the counter from a host atomic to GPU memory is CUDA graph
-// capture: a captured kernel replays the SAME launch on every replay,
-// so a host-set iteration value would be baked in and never increase
-// across replays — breaking the wait-until-greater-or-equal protocol.
-// A GPU-resident counter that the kernel itself atomicAdds at the end
-// gets re-evaluated on every replay, producing a fresh monotonic
-// target each time.
-//
-// Host calls nvshmemx_barrier_on_stream(team, stream) after each
-// kernel for safety.
 
 struct PeSync {
-	uint64_t* dispatch_done;     // [num_pes] symmetric — monotonic
-	uint64_t* mlp_done;          // [num_pes] symmetric — monotonic
 	int* cta_counter;            // [1] device memory — shared monotonic counter
-	uint64_t* iter_counter;      // [1] device memory — global iteration counter
 	int num_pes;
 	int my_pe;
 	nvshmem_team_t team;
@@ -265,78 +234,15 @@ struct PeSync {
 		b.wait();
 	}
 
-	// Load the current iteration value. All callers must see the same
-	// value within a single kernel — guaranteed because
-	// advance_iteration_counter() runs only at the very end, after the
-	// barrier()s that enclose every signal/wait phase.
-	__device__ uint64_t iteration() const {
-		return *iter_counter;
-	}
-
-	// ── signal_phase: barrier + remote PE signal ────────
-	// Cross-CTA barrier, then CTA 0 signals remote PEs.
-	__device__ void signal_phase(SyncThreadsCtaCounterBarrier& b,
-	                             uint64_t* signal) const {
+	__device__ void barrier_all(SyncThreadsCtaCounterBarrier& b) const {
 		b.wait();
-
-		// CTA 0: signal remote PEs.
 		int cta_id = blockIdx.x + blockIdx.y * gridDim.x;
-		if (cta_id == 0 && threadIdx.x == 0) {
-			uint64_t target = iteration() + 1;
-			for (int pe_ = 1; pe_ < num_pes; ++pe_) {
-				// Route through g_dest_table to follow the canonical comm
-				// schedule; constant-cache lookup is broadcast-friendly.
-				int team_pe = liger::g_dest_table[(liger::comm_slot_of(my_pe) + pe_) % num_pes];
-				int global_pe = nvshmem_team_translate_pe(team, team_pe, NVSHMEM_TEAM_WORLD);
-				nvshmemx_signal_op(&signal[my_pe], target,
-					NVSHMEM_SIGNAL_SET, global_pe);
-			}
-			signal[my_pe] = target;
+		if (cta_id == 0) {
+			if (num_pes > 1 && threadIdx.x == 0)
+				nvshmem_barrier(team);
+			__syncthreads();
 		}
-		__syncthreads();
-	}
-
-	// ── wait_phase: wait for all remote PEs' signal ─────
-	__device__ void wait_phase(uint64_t* signal) const {
-		uint64_t target = iteration() + 1;
-		if (threadIdx.x == 0) {
-			for (int pe_ = 1; pe_ < num_pes; ++pe_) {
-				int pe = liger::g_dest_table[(liger::comm_slot_of(my_pe) + pe_) % num_pes];
-				nvshmem_uint64_wait_until(&signal[pe], NVSHMEM_CMP_GE, target);
-			}
-		}
-		__syncthreads();
-	}
-
-	// ── advance_iteration_counter: end-of-kernel atomic bump ──────────
-	// Called once at the very end of the kernel by CTA 0 thread 0 only.
-	// Increments the global iteration counter so the NEXT kernel launch
-	// (or graph replay) reads a fresh value. Cross-CTA barriers earlier
-	// in the kernel guarantee every CTA has finished using iteration()
-	// before this fires.
-	__device__ void advance_iteration_counter() const {
-		int cta_id = blockIdx.x + blockIdx.y * gridDim.x;
-		if (cta_id == 0 && threadIdx.x == 0) {
-			atomicAdd(reinterpret_cast<unsigned long long*>(iter_counter), 1ULL);
-		}
-	}
-
-	// ── Convenience wrappers ────────────────────────────
-
-	__device__ void signal_dispatch(SyncThreadsCtaCounterBarrier& b) const {
-		signal_phase(b, dispatch_done);
-	}
-
-	__device__ void wait_dispatch() const {
-		wait_phase(dispatch_done);
-	}
-
-	__device__ void signal_mlp(SyncThreadsCtaCounterBarrier& b) const {
-		signal_phase(b, mlp_done);
-	}
-
-	__device__ void wait_mlp() const {
-		wait_phase(mlp_done);
+		b.wait();
 	}
 };
 
@@ -442,17 +348,24 @@ struct TileIterator {
 		// PEs (p=1..num_pes-1). Unified path: local experts are staged by the
 		// comm get warp from local symmetric memory just like remote tiles, so
 		// the separate local MLP pass is gone (see moe.cuh moe_fused_fwd).
-		int global_total = 0;
-		for (int e = 0; e < experts_per_pe; ++e) {
-			for (int p = 0; p < num_pes; ++p) {
-				int pe = liger::g_dest_table[(liger::comm_slot_of(my_pe) + p) % num_pes];
-				int rs = remote_offsets[pe * offsets_stride + e];
-				int re = remote_offsets[pe * offsets_stride + e + 1];
-				global_total += (re - rs) / TileM;
-			}
+		int lane = threadIdx.x & 31;
+		int local_total = 0;
+		int n_experts = experts_per_pe * num_pes;
+		for (int idx = lane; idx < n_experts; idx += 32) {
+			int e = idx / num_pes;
+			int p = idx - e * num_pes;
+			int pe = liger::g_dest_table[(liger::comm_slot_of(my_pe) + p) % num_pes];
+			int rs = remote_offsets[pe * offsets_stride + e];
+			int re = remote_offsets[pe * offsets_stride + e + 1];
+			local_total += (re - rs) / TileM;
 		}
-		for (int t = start; t < global_total; t += stride)
-			total_tiles++;
+		#pragma unroll
+		for (int delta = 16; delta > 0; delta >>= 1) {
+			local_total += __shfl_down_sync(0xffffffff, local_total, delta);
+		}
+		int global_total = __shfl_sync(0xffffffff, local_total, 0);
+		if (start < global_total)
+			total_tiles = (global_total - 1 - start) / stride + 1;
 
 		// Find the starting position: walk the flat tile space
 		// to find where start lands.
@@ -762,8 +675,18 @@ __device__ __forceinline__ void do_get(
 	Element* remote_base = local_tokens + info.token_offset * bufs.hidden_dim;
 	Element* local_base = src_staging + slot * src_tile_elems;
 	int global_pe = nvshmem_team_translate_pe(bufs.team(), info.pe, NVSHMEM_TEAM_WORLD);
-	nvshmemx_getmem_warp(local_base + offset, remote_base + offset,
-		(size_t)chunk * sizeof(Element), global_pe);
+	bool is_ib = descs != nullptr && !is_local;
+	if (is_ib) {
+		int turn = ib_seq % kWarpsPerTile;
+		if (chunk_idx == turn) {
+			nvshmemx_getmem_warp(local_base, remote_base,
+				(size_t)src_tile_elems * sizeof(Element), global_pe);
+		}
+		ib_seq++;
+	} else {
+		nvshmemx_getmem_warp(local_base + offset, remote_base + offset,
+			(size_t)chunk * sizeof(Element), global_pe);
+	}
 	if (bufs.tile_expert_ids && chunk_idx == 0 && lane == 0) {
 		bufs.tile_expert_ids[slot] = info.expert;
 	}
@@ -808,8 +731,19 @@ __device__ __forceinline__ void do_put(
 		Element* local_base = dst_staging + slot * dst_tile_elems;
 		Element* remote_base = local_output + info.token_offset * bufs.hidden_dim;
 		int global_pe = nvshmem_team_translate_pe(bufs.team(), info.pe, NVSHMEM_TEAM_WORLD);
-		nvshmemx_putmem_warp(remote_base + offset, local_base + offset,
-			my_bytes, global_pe);
+		bool is_ib = descs != nullptr;
+		if (is_ib) {
+			int turn = ib_seq % kWarpsPerTile;
+			int warp_idx = yc * kNumPutWarpsFwd + put_local_idx;
+			if (warp_idx == turn) {
+				nvshmemx_putmem_warp(remote_base, local_base,
+					(size_t)dst_tile_elems * sizeof(Element), global_pe);
+			}
+			ib_seq++;
+		} else {
+			nvshmemx_putmem_warp(remote_base + offset, local_base + offset,
+				my_bytes, global_pe);
+		}
 	}
 
 	dst_pipe.consumer_release(lane);
