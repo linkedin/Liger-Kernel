@@ -4,13 +4,13 @@ namespace liger {
 
 struct TunedConfigFwdBwd {
 	int TK, TKE, D, I;  // shape key
-	// Fwd template (fwd template fields).
-	int Fwd_NSplit;
+	// Fwd template fields. Runtime NS is selected in-kernel.
 	int Fwd_TileN1, Fwd_TileK1, Fwd_Stages1, Fwd_EpiChunkN1;
 	int Fwd_TileN2, Fwd_TileK2, Fwd_Stages2, Fwd_EpiChunkN2;
 	int Fwd_ZBufferSlots, Fwd_CommNumStages;
-	// Bwd template (bwd template fields).
-	int Bwd_NSplit, Bwd_NSplit2;
+	// Bwd template fields. Phase-1 runtime NS is selected in-kernel; NS2
+	// remains static for MLP3/MLP4.
+	int Bwd_NSplit2;
 	int Bwd_TileN1, Bwd_TileK1, Bwd_Stages1;
 	int Bwd_TileM3, Bwd_TileN3, Bwd_TileK3, Bwd_Stages3;
 	int Bwd_EpiChunkN1, Bwd_EpiChunkN25, Bwd_EpiChunkN34;

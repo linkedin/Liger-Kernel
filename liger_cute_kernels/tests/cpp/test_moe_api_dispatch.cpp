@@ -38,18 +38,18 @@ DLDevice cpu_device() { return DLDevice{kDLCPU, 0}; }
 
 struct FwdConfig {
 	int compute;
-	int ns, tn1, tk1, s1, ec1, tn2, tk2, s2, ec2, zb, cs, tm, gtm;
+	int tn1, tk1, s1, ec1, tn2, tk2, s2, ec2, zb, cs, tm, gtm;
 };
 
 struct BwdConfig {
 	int compute;
-	int ns, ns2, tn1, tk1, s1, tm3, tn3, tk3, s3, en1, en25, en34, cs, tm, gtm;
+	int ns2, tn1, tk1, s1, tm3, tn3, tk3, s3, en1, en25, en34, cs, tm, gtm;
 };
 
-#define FWD_CONFIG_C(C, NS, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZB, CS, TM) \
-	FwdConfig{C, NS, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZB, CS, TM, TM},
-#define FWD_CONFIG_G_C(C, NS, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZB, CS, TM, GTM) \
-	FwdConfig{C, NS, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZB, CS, TM, GTM},
+#define FWD_CONFIG_C(C, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZB, CS, TM) \
+	FwdConfig{C, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZB, CS, TM, TM},
+#define FWD_CONFIG_G_C(C, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZB, CS, TM, GTM) \
+	FwdConfig{C, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZB, CS, TM, GTM},
 #define FWD_CONFIG_SM90(...) FWD_CONFIG_C(90, __VA_ARGS__)
 #define FWD_CONFIG_G_SM90(...) FWD_CONFIG_G_C(90, __VA_ARGS__)
 #define FWD_CONFIG_SM100(...) FWD_CONFIG_C(100, __VA_ARGS__)
@@ -57,8 +57,12 @@ struct BwdConfig {
 
 std::vector<FwdConfig> all_fwd_configs() {
 	return {
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 90
 		LIGER_MOE_FWD_DISPATCH_CONFIGS_SM90(FWD_CONFIG_SM90, FWD_CONFIG_G_SM90)
+#endif
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 100
 		LIGER_MOE_FWD_DISPATCH_CONFIGS_SM100(FWD_CONFIG_SM100, FWD_CONFIG_G_SM100)
+#endif
 	};
 }
 
@@ -69,10 +73,10 @@ std::vector<FwdConfig> all_fwd_configs() {
 #undef FWD_CONFIG_C
 #undef FWD_CONFIG_G_C
 
-#define BWD_CONFIG_C(C, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
-	BwdConfig{C, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, TM},
-#define BWD_CONFIG_G_C(C, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM) \
-	BwdConfig{C, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM},
+#define BWD_CONFIG_C(C, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+	BwdConfig{C, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, TM},
+#define BWD_CONFIG_G_C(C, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM) \
+	BwdConfig{C, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, GTM},
 #define BWD_CONFIG_SM90(...) BWD_CONFIG_C(90, __VA_ARGS__)
 #define BWD_CONFIG_G_SM90(...) BWD_CONFIG_G_C(90, __VA_ARGS__)
 #define BWD_CONFIG_SM100(...) BWD_CONFIG_C(100, __VA_ARGS__)
@@ -80,8 +84,12 @@ std::vector<FwdConfig> all_fwd_configs() {
 
 std::vector<BwdConfig> all_bwd_configs() {
 	return {
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 90
 		LIGER_MOE_BWD_DISPATCH_CONFIGS_SM90(BWD_CONFIG_SM90, BWD_CONFIG_G_SM90)
+#endif
+#if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 100
 		LIGER_MOE_BWD_DISPATCH_CONFIGS_SM100(BWD_CONFIG_SM100, BWD_CONFIG_G_SM100)
+#endif
 	};
 }
 
@@ -94,7 +102,7 @@ std::vector<BwdConfig> all_bwd_configs() {
 
 std::string force_string(const FwdConfig& c) {
 	std::ostringstream os;
-	os << c.ns << ',' << c.tn1 << ',' << c.tk1 << ',' << c.s1 << ',' << c.ec1
+	os << c.tn1 << ',' << c.tk1 << ',' << c.s1 << ',' << c.ec1
 	   << ',' << c.tn2 << ',' << c.tk2 << ',' << c.s2 << ',' << c.ec2
 	   << ',' << c.zb << ',' << c.cs << ',' << c.tm << ',' << c.gtm;
 	return os.str();
@@ -102,7 +110,7 @@ std::string force_string(const FwdConfig& c) {
 
 std::string force_string(const BwdConfig& c) {
 	std::ostringstream os;
-	os << c.ns << ',' << c.ns2 << ',' << c.tn1 << ',' << c.tk1 << ',' << c.s1
+	os << c.ns2 << ',' << c.tn1 << ',' << c.tk1 << ',' << c.s1
 	   << ',' << c.tm3 << ',' << c.tn3 << ',' << c.tk3 << ',' << c.s3
 	   << ',' << c.en1 << ',' << c.en25 << ',' << c.en34 << ',' << c.cs
 	   << ',' << c.tm << ',' << c.gtm;

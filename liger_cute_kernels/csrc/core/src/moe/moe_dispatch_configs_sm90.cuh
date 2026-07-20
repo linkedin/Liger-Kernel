@@ -4,7 +4,7 @@
 
 // SM90 / Hopper dispatch config set. The action macros receive the same row
 // shapes as the base tuning menus:
-//   FWD: X(NS, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZB, CS, TM)
+//   FWD: X(TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZB, CS, TM)
 //        XG(..., GTM) for explicit comm/gemm decoupling.
 //   BWD: X(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)
 //        XG(..., GTM) for explicit comm/gemm decoupling.

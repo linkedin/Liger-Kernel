@@ -195,9 +195,9 @@ struct CommBuffersBwd {
 // band in kGetBoxRowsBwd-tall sub-bands × kGetKChunk-wide column boxes.
 // chunk_idx == yc (the CTA's slot within its NC-cooperating group); with
 // kNumGetWarpsBwd == 1 the per-warp row band is TileM/NC.
-template <typename Element, int TileM, int K, int NC, int NSplit>
+template <typename Element, int TileM, int K, int NC>
 __device__ __forceinline__ void do_get_bwd_tma(
-		StagePipe<K, kNumGetWarpsBwd * NC, NSplit>& src_pipe,
+		StagePipe<K, kNumGetWarpsBwd * NC, 1>& src_pipe,
 		const CommBuffersBwd& bufs,
 		const TileInfo& info,
 		Element* remote_base,
@@ -309,9 +309,9 @@ __device__ __forceinline__ void do_get_bwd_tma(
 // The write happens AFTER the getmem completes and BEFORE producer_release,
 // so it is part of the slot's atomic publish: any consumer that's seen
 // producer_release sees both the getmem'd staging bytes AND the expert id.
-template <typename Element, int TileM, int K, int NC, int NSplit>
+template <typename Element, int TileM, int K, int NC>
 __device__ __forceinline__ void do_get_bwd(
-		StagePipe<K, kNumGetWarpsPerCta * NC, NSplit>& src_pipe,
+		StagePipe<K, kNumGetWarpsPerCta * NC, 1>& src_pipe,
 		const CommBuffersBwd& bufs,
 		const TileInfo& info,
 		Element* remote_base,
@@ -389,10 +389,10 @@ __device__ __forceinline__ void do_get_bwd(
 // byte-for-byte unchanged. The TMA-rebalanced caller passes num_put_warps=2
 // and put_local_idx ∈ {0,1} so the tile is split 2·NC ways across warps 2+3.
 // NumConsumers in the pipe type is cosmetic here (the consumer side never
-// reads it); both callers can use StagePipe<K, NSplit, NC>.
-template <typename Element, int TileM, int K, int NC, int NSplit>
+// reads it); both callers use a StagePipe with runtime producer counts.
+template <typename Element, int TileM, int K, int NC>
 __device__ __forceinline__ void do_put_bwd(
-		StagePipe<K, NSplit, NC>& dst_pipe,
+		StagePipe<K, 1, NC>& dst_pipe,
 		const CommBuffersBwd& bufs,
 		const TileInfo& info,
 		Element* dx_staging,      // base of flat [L][TileM][hidden_dim]
@@ -450,10 +450,69 @@ __device__ __forceinline__ void do_put_bwd(
 // Runs on warps 2-3 (kCommWarpStart..kCommWarpEnd). Grid is 2D
 // (gridDim.x, NSplit).
 
-template <int TileM, int NC = 2, int N_SPLIT = NC>
+__device__ __forceinline__ int select_runtime_nsplit_bwd_from_tiles(
+		int total_tiles,
+		int num_n_tiles_1, int num_n_tiles_2t, int num_n_tiles_5,
+		int num_k_tiles_1, int num_k_tiles_2t, int num_k_tiles_5,
+		int experts_per_pe,
+		int num_blocks, int static_nsplit) {
+	if (total_tiles <= 0) return static_nsplit;
+	constexpr int candidates[5] = {2, 4, 6, 8, 16};
+	int best_ns = static_nsplit;
+	long long best_cost = -1;
+	long long best_waste = -1;
+	int best_n_gemm = -1;
+	long long w1  = 2LL * num_k_tiles_1;   // mlp1 recomputes gate + up
+	long long w2t = (long long)num_k_tiles_2t;
+	long long w5  = 2LL * num_k_tiles_5;   // mlp5 computes dU@B + dV@C
+	#pragma unroll
+	for (int i = 0; i < 5; ++i) {
+		int ns = candidates[i];
+		if (ns > num_blocks) continue;
+		int n_gemm = (num_blocks / ns) * ns;
+		int ms = n_gemm / ns;
+		if (ms <= 0) continue;
+		int m_waves = (total_tiles + ms - 1) / ms;
+		int n1_waves  = (num_n_tiles_1  + ns - 1) / ns;
+		int n2t_waves = (num_n_tiles_2t + ns - 1) / ns;
+		int n5_waves  = (num_n_tiles_5  + ns - 1) / ns;
+		long long phase_cost = w1 * n1_waves + w2t * n2t_waves + w5 * n5_waves;
+		long long cost = (long long)m_waves * phase_cost;
+		int min_n_tiles = min(num_n_tiles_1, min(num_n_tiles_2t, num_n_tiles_5));
+		bool fragmented_experts = (experts_per_pe >= 8) && (min_n_tiles <= 8);
+		if (fragmented_experts && ns < 4) {
+			long long frag = ((long long)experts_per_pe * 1024LL)
+				/ (long long)max(total_tiles, 1);
+			cost += (cost * frag) / 128LL;
+		}
+		long long waste1 =
+			(long long)m_waves * ms * n1_waves * ns
+			- (long long)total_tiles * num_n_tiles_1;
+		long long waste2t =
+			(long long)m_waves * ms * n2t_waves * ns
+			- (long long)total_tiles * num_n_tiles_2t;
+		long long waste5 =
+			(long long)m_waves * ms * n5_waves * ns
+			- (long long)total_tiles * num_n_tiles_5;
+		long long waste = w1 * waste1 + w2t * waste2t + w5 * waste5;
+		if (best_cost < 0 ||
+		    cost < best_cost ||
+		    (cost == best_cost && waste < best_waste) ||
+		    (cost == best_cost && waste == best_waste && n_gemm > best_n_gemm)) {
+			best_cost = cost;
+			best_waste = waste;
+			best_n_gemm = n_gemm;
+			best_ns = ns;
+		}
+	}
+	return best_ns;
+}
+
+template <int TileM, int NC = 2>
 __device__ __forceinline__ void nvshmem_comm_prologue_bwd(
 		CommSmem& smem,
-		const CommBuffersBwd& bufs) {
+		const CommBuffersBwd& bufs,
+		int static_nsplit) {
 
 	int warp_id = threadIdx.x / 32;
 	if (warp_id < kCommWarpStart || warp_id > kCommWarpEnd)
@@ -472,6 +531,9 @@ __device__ __forceinline__ void nvshmem_comm_prologue_bwd(
 			smem.total_tiles   = 0;
 			smem.per_cta_tiles = 0;
 			smem.global_total  = 0;
+			smem.runtime_nsplit = static_nsplit;
+			smem.runtime_n_gemm = bufs.n_gemm;
+			smem.runtime_grid_x = bufs.n_gemm / static_nsplit;
 		}
 		__threadfence_block();
 		__syncwarp();
@@ -497,16 +559,15 @@ __device__ __forceinline__ void nvshmem_comm_prologue_bwd(
 	__syncwarp();
 
 	// Flat 1-D launch: cta_id = flat_id = blockIdx.x (gridDim.y == 1).
-	// Comm/GEMM index off n_gemm (= floor_NS), NOT the launched grid size:
-	//   MC     = n_gemm / NC          (comm ring columns)
-	//   grid_x = n_gemm / N_SPLIT     (MLP columns)
-	// CTAs with flat_id >= n_gemm are GEMM/comm gap CTAs; the caller gates
-	// them off (they still run Phase 2 + grid-stride phases).
+	// Comm uses all NC-complete launched CTAs, decoupled from the MLP runtime
+	// NS. MLP count below is only the static-seed default; moe_bwd_kernel
+	// overwrites it after selecting runtime NS from the actual tile count.
 	int cta_id = blockIdx.x * gridDim.y + blockIdx.y;
+	int n_comm = (gridDim.x / NC) * NC;
 	int xc = cta_id / NC;
-	int MC = bufs.n_gemm / NC;
-	int grid_x = bufs.n_gemm / N_SPLIT;
-	int mlp_col = cta_id / N_SPLIT;
+	int MC = n_comm / NC;
+	int grid_x = bufs.n_gemm / static_nsplit;
+	int mlp_col = cta_id / static_nsplit;
 
 	TileIterator<TileM> iter;
 	iter.remote_offsets = smem.remote_offsets;
@@ -533,6 +594,9 @@ __device__ __forceinline__ void nvshmem_comm_prologue_bwd(
 		smem.total_tiles   = comm_count;   // read by comm_main_bwd
 		smem.per_cta_tiles = mlp_count;    // read by MLP iterator
 		smem.global_total  = grid_total;   // read by moe_fused_bwd gate
+		smem.runtime_nsplit = static_nsplit;
+		smem.runtime_n_gemm = bufs.n_gemm;
+		smem.runtime_grid_x = grid_x;
 	}
 	// Block-scope fence so the leader's smem writes above are visible
 	// to all threads in this CTA (including MLP warps that early-
@@ -555,8 +619,7 @@ __device__ __forceinline__ void nvshmem_comm_prologue_bwd(
 // NumConsumers = NSplit; put pipe uses NumProducers = NSplit,
 // NumConsumers = NC.
 
-template <typename Element, int TileM, int NumStages,
-          int NC = 2, int NSplit = 2>
+template <typename Element, int TileM, int NumStages, int NC = 2>
 __device__ __forceinline__ void nvshmem_comm_main_bwd(
 		CommSmem& smem,
 		const CommBuffersBwd& bufs,
@@ -579,12 +642,12 @@ __device__ __forceinline__ void nvshmem_comm_main_bwd(
 
 	// Flat 1-D launch: cta_id = flat_id = blockIdx.x (gridDim.y == 1).
 	int cta_id = blockIdx.x * gridDim.y + blockIdx.y;
+	int n_comm = (gridDim.x / NC) * NC;
+	if (cta_id >= n_comm) return;
 	int xc = cta_id / NC;
 	int yc = cta_id % NC;
-	// MC = n_gemm / NC (ring columns). n_gemm = floor_NS ≤ num_blocks; the
-	// launched grid (gridDim.x) over-covers it with gap CTAs, so MC must be
-	// derived from n_gemm, not gridDim.
-	int MC = bufs.n_gemm / NC;
+	int MC = n_comm / NC;
+	int runtime_nsplit = smem.runtime_nsplit;
 
 	int total = smem.total_tiles;
 	if (total == 0) return;
@@ -612,13 +675,13 @@ __device__ __forceinline__ void nvshmem_comm_main_bwd(
 	// do_get_bwd_tma chooses per tile: same-host TMA, P2P fallback, or IB
 	// whole-tile round-robin. This keeps X(t), dY(t), X(t+1), ... in one loop.
 	if (warp_id == kCommBwdGetWarp0) {
-		StagePipe<K, kNumGetWarpsBwd * NC, NSplit> x_pipe;
+		StagePipe<K, kNumGetWarpsBwd * NC, 1> x_pipe;
 		x_pipe.init(bufs.x_src_ready + xc, bufs.x_src_consumed + xc,
-		            is_leader, MC);
+		            is_leader, MC, kNumGetWarpsBwd * NC, runtime_nsplit);
 
-		StagePipe<K, kNumGetWarpsBwd * NC, NSplit> dy_pipe;
+		StagePipe<K, kNumGetWarpsBwd * NC, 1> dy_pipe;
 		dy_pipe.init(bufs.dy_src_ready + xc, bufs.dy_src_consumed + xc,
-		             is_leader, MC);
+		             is_leader, MC, kNumGetWarpsBwd * NC, runtime_nsplit);
 
 		int chunk_idx = yc;  // kNumGetWarpsBwd == 1
 		// Exactly one writer per tile per pipe: warp 1 (kCommBwdGetWarp0),
@@ -640,14 +703,14 @@ __device__ __forceinline__ void nvshmem_comm_main_bwd(
 		for (int i = 0; i < my_total; ++i) {
 			TileInfo info = iter.next();
 
-			do_get_bwd_tma<Element, TileM, K, NC, NSplit>(
+			do_get_bwd_tma<Element, TileM, K, NC>(
 				x_pipe, bufs, info, remote_x_base, x_staging, tile_elems,
 				xc, MC, chunk_idx, ib_seq, lane, x_expert_dst, descs,
 				descs ? descs->src_x_desc : nullptr,
 				descs ? &descs->dst_x_staging_desc : nullptr,
 				get_bounce);
 
-			do_get_bwd_tma<Element, TileM, K, NC, NSplit>(
+			do_get_bwd_tma<Element, TileM, K, NC>(
 				dy_pipe, bufs, info, remote_dy_base, dy_staging, tile_elems,
 				xc, MC, chunk_idx, ib_seq, lane, dy_expert_dst, descs,
 				descs ? descs->src_dy_desc : nullptr,
@@ -655,16 +718,16 @@ __device__ __forceinline__ void nvshmem_comm_main_bwd(
 				get_bounce);
 		}
 	} else {  // warps 2 + 3 → two symmetric dX put warps
-		StagePipe<K, NSplit, NC> dst_pipe;
+		StagePipe<K, 1, NC> dst_pipe;
 		dst_pipe.init(bufs.dst_ready + xc, bufs.dst_consumed + xc,
-		              is_leader, MC);
+		              is_leader, MC, runtime_nsplit, kNumPutWarpsBwd * NC);
 
 		int put_local_idx = (warp_id == kCommBwdGetWarp1) ? 0 : 1;
 		int chunk_idx = yc;
 		int ib_seq = 0;  // advances only on IB tiles (inside do_put_bwd)
 		for (int i = 0; i < my_total; ++i) {
 			TileInfo info = iter.next();
-			do_put_bwd<Element, TileM, K, NC, NSplit>(
+			do_put_bwd<Element, TileM, K, NC>(
 				dst_pipe, bufs, info,
 				dx_staging, tile_elems, xc, MC, chunk_idx, ib_seq, lane,
 				kNumPutWarpsBwd, put_local_idx);

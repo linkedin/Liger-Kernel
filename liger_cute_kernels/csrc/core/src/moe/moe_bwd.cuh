@@ -40,7 +40,7 @@ struct MoeBwdSmem {
 
 template <typename Traits1, typename Traits2T, typename Traits3,
           typename Traits4, typename Traits5,
-          int CommNumStages, int NSplit, int NSplit2, int SubBatch,
+          int CommNumStages, int NSplit2, int SubBatch,
           // SubTiles = CommTileM / GemmTileM ∈ {1,2}. >1 → Phase-1 (mlp1a/mlp2t/
           // silu/mlp5) steps through SubTiles GemmTileM-row sub-tiles per 128-wide
           // comm staging slot; the mlp3/4 ratios use Traits1::TileM (= GemmTileM).
@@ -109,7 +109,12 @@ __device__ __forceinline__ void moe_fused_bwd(
 		const int* remote_tile_expert_ids_dy,
 		// Dims + buffers
 		const MlpBwdDims& dims,
-		const MlpBwdBufs<typename Traits1::Element>& bufs) {
+		const MlpBwdBufs<typename Traits1::Element>& bufs,
+		int col,
+		int grid_x,
+		int split,
+		int runtime_nsplit,
+		bool gemm_active) {
 
 	// Target-based barriers — constructed ONCE so the per-CTA target
 	// counters accumulate monotonically across:
@@ -117,17 +122,13 @@ __device__ __forceinline__ void moe_fused_bwd(
 	// Constructing a fresh barrier per wait() resets target=0 and is racy.
 	// Flat 1-D launch coordinates. blockIdx.x = flat_id ∈ [0, num_blocks).
 	//   global_barrier counts ALL launched CTAs (num_blocks = gridDim.x).
-	//   x_barrier is per logical Phase-1 column (col), stride NSplit.
+	//   x_barrier is per logical Phase-1 column (col), stride runtime_nsplit.
 	int flat_id     = (int)blockIdx.x;
-	int col         = flat_id / NSplit;
-	int split       = flat_id % NSplit;
-	int grid_x      = dims.grid_x;
-	bool gemm_active = flat_id < dims.n_gemm;
 
 	MlpBwdCtaBarrier global_barrier(bufs.barrier_counter,
 		(int)gridDim.x * (int)gridDim.y);
 	MlpBwdCtaBarrier x_barrier(&dims.phase_counter[col],
-		NSplit);
+		runtime_nsplit);
 
 	// Initialize the fused iter's remote sub-iter from comm pipe pointers.
 	// (Local sub-iter was init'd by the caller in moe_bwd_kernel.) Comm warps
@@ -143,6 +144,7 @@ __device__ __forceinline__ void moe_fused_bwd(
 		dy_src_ready, dy_src_consumed,
 		dst_ready,    dst_consumed,
 		/*is_leader=*/(threadIdx.x == 0),
+		runtime_nsplit,
 			/*tma_enabled=*/(dims.tma_get_enabled != 0));
 
 	// Remote dims override: num_tokens / num_m_tiles use the staging-
@@ -210,7 +212,7 @@ __device__ __forceinline__ void moe_fused_bwd(
 		tma_load_dyt3_remote, tma_load_xt4_remote,
 		remote_dims, remote_bufs,
 		global_barrier, x_barrier,
-		flat_id, col, grid_x, split, /*num_splits=*/NSplit, gemm_active);
+		flat_id, col, grid_x, split, /*num_splits=*/runtime_nsplit, gemm_active);
 }
 
 } // namespace liger
