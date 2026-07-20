@@ -126,8 +126,7 @@ struct LocalMlpTileIteratorBwd {
 // required. The only host-side correctness requirement is that NC
 // evenly divides gridDim.x · gridDim.y so MC is integer.
 
-template <typename Element, int NumStages,
-          int N_SPLIT = 2, int NC = N_SPLIT, int TileM = 128>
+template <typename Element, int NumStages, int NC = 2, int TileM = 128>
 struct RemoteMlpTileIteratorBwd {
 	// Slot's producer/consumer counts. RUNTIME (not constexpr) because the
 	// comm warp layout switches on the TMA-GET enable flag:
@@ -140,9 +139,10 @@ struct RemoteMlpTileIteratorBwd {
 
 	const int* tile_expert_ids;  // [L] — comm writes expert id at slot index
 	int total_tiles;
-	int m_base;       // logical column (flat_id / NSplit) — tile-seq start
-	int col_stride;   // grid_x = n_gemm / N_SPLIT (column stride)
+	int m_base;       // logical column (flat_id / runtime NS) — tile-seq start
+	int col_stride;   // grid_x = n_gemm / runtime NS (column stride)
 	int ring_len;     // L = MC · NumStages, set at init
+	int num_splits;
 
 	int* x_src_ready;
 	int* x_src_consumed;
@@ -169,6 +169,7 @@ struct RemoteMlpTileIteratorBwd {
 	                     int* dy_src_ready_, int* dy_src_consumed_,
 	                     int* dst_ready_, int* dst_consumed_,
 	                     bool is_leader_,
+	                     int runtime_nsplit_,
 	                     bool tma_enabled_ = false) {
 		// Producer/consumer counts follow the comm-side warp layout, which is
 		// chosen by the same tma_enabled flag (see nvshmem_comm_main_bwd).
@@ -177,13 +178,14 @@ struct RemoteMlpTileIteratorBwd {
 		tile_expert_ids = tile_expert_ids_;
 		total_tiles = total_tiles_;
 		m_base = m_base_;
+		num_splits = runtime_nsplit_;
 		idx = 0;
 
 		int n_gemm = (n_gemm_ >= 0) ? n_gemm_
 		                            : ((int)gridDim.x * (int)gridDim.y);
-		col_stride = n_gemm / N_SPLIT;
-		// L = MC · NumStages, MC = n_gemm / NC.
-		int mc = n_gemm / NC;
+		col_stride = n_gemm / num_splits;
+		// L = MC · NumStages, MC = launched NC-complete comm columns.
+		int mc = (int)gridDim.x / NC;
 		ring_len = mc * NumStages;
 
 		x_src_ready    = x_src_ready_;
@@ -316,10 +318,9 @@ struct RemoteMlpTileIteratorBwd {
 // wrapper exists only to keep a stable iterator type at the moe_fused_bwd /
 // mlp_fused_bwd_dual call sites.
 
-template <typename Element, int NumStages,
-          int N_SPLIT = 2, int NC = N_SPLIT, int TileM = 128>
+template <typename Element, int NumStages, int NC = 2, int TileM = 128>
 struct FusedMlpTileIteratorBwd {
-	RemoteMlpTileIteratorBwd<Element, NumStages, N_SPLIT, NC, TileM> remote;
+	RemoteMlpTileIteratorBwd<Element, NumStages, NC, TileM> remote;
 
 	__device__ void init_remote(const int* tile_expert_ids,
 	                             int total_tiles,
@@ -329,10 +330,11 @@ struct FusedMlpTileIteratorBwd {
 	                             int* dy_src_ready, int* dy_src_consumed,
 	                             int* dst_ready, int* dst_consumed,
 	                             bool is_leader,
+	                             int runtime_nsplit,
 	                             bool tma_enabled = false) {
 		remote.init(tile_expert_ids, total_tiles, m_base, n_gemm,
 			x_src_ready, x_src_consumed, dy_src_ready, dy_src_consumed,
-			dst_ready, dst_consumed, is_leader, tma_enabled);
+			dst_ready, dst_consumed, is_leader, runtime_nsplit, tma_enabled);
 	}
 
 	// All accessors forward to the remote sub-iterator (local pass removed).

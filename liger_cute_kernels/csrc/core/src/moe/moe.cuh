@@ -61,7 +61,6 @@ struct MoeSmem {
 template <typename Traits1, typename Traits2,
           int ZBufferSlots,
           int CommNumStages,
-          int NSplit,
           int NC,
           // kSubTiles = CommTileM / GemmTileM ∈ {1,2}. >1 means the GEMM steps
           // through SubTiles sub-tiles of Traits1::TileM (=GemmTileM) rows per
@@ -108,7 +107,8 @@ __device__ __forceinline__ void moe_fused_fwd(
 		// replace every blockIdx.x / gridDim.x / gridDim.y read below.
 		int col,
 		int grid_x,
-		int split,            // this CTA's N-split index = flat_id % NSplit
+		int split,            // this CTA's N-split index = flat_id % runtime_nsplit
+		int runtime_nsplit,
 		int local_expert_start = 0,
 		// Direct-to-peer Y store: per-peer TMA descriptors over
 		// nvshmem_ptr(local_output, peer). Gated per-tile on is_local downstream.
@@ -126,20 +126,7 @@ __device__ __forceinline__ void moe_fused_fwd(
 	// and the second mlp_fused_fwd would see counter > target on
 	// its very first poll and exit without actually waiting.
 	MlpFwdCtaBarrier x_barrier(&dims.phase_counter[col],
-		NSplit);
-
-	if (num_pes == 1) {
-		mlp_fused_fwd<Traits1, Traits2, ZBufferSlots, SubTiles, Compute,
-			LocalIter, TmaLoadX, TmaLoadW1, TmaStoreZ, TmaLoadZ, TmaLoadW2, TmaStoreY>(
-			smem.mlp, local_iter,
-			tma_load_x, tma_load_b, tma_load_c, tma_store_z,
-			tma_load_z, tma_load_a, tma_store_y,
-			dims,
-			dims.y_buf_m_tiles * Traits1::TileM * SubTiles, dims.y_buf_m_tiles, x_barrier,
-			local_expert_start, col, grid_x, split, NSplit,
-			/*y_peer_desc=*/nullptr);
-		return;
-	}
+		runtime_nsplit);
 
 	// UNIFIED PATH: the local MLP pass has been removed. The comm-side
 	// TileIterator now enumerates LOCAL experts (p=0) alongside remote ones,
@@ -166,10 +153,8 @@ __device__ __forceinline__ void moe_fused_fwd(
 	// cover the full L. No divisibility relationship is required between
 	// NC, NSplit and CommNumStages (runtime: NC must divide gridDim.x ·
 	// gridDim.y so MC is integer).
-	// n_gemm = grid_x · NSplit = floor_NS — the GEMM/comm-active CTA count.
-	// RemoteIter derives its own grid_x and MC from this + compile-time
-	// NSplit/NC (flat launch: gridDim is no longer the logical grid).
-	int n_gemm = grid_x * NSplit;
+	// n_gemm = grid_x · runtime_nsplit — the GEMM/comm-active CTA count.
+	int n_gemm = grid_x * runtime_nsplit;
 	RemoteIter remote_iter;
 	remote_iter.init(
 		// remote_offsets in SMEM drives the embedded walker (null → no derivation).
@@ -179,7 +164,8 @@ __device__ __forceinline__ void moe_fused_fwd(
 		n_gemm,
 		src_ready, src_consumed,
 		dst_ready, dst_consumed,
-		is_leader);
+		is_leader,
+		runtime_nsplit);
 
 	// Remote MLP dimensions: TMA descriptors cover the full flat staging
 	// list = MC · CommNumStages · TileM rows. MC = gridDim.x / NC — MUST match
@@ -205,7 +191,7 @@ __device__ __forceinline__ void moe_fused_fwd(
 		tma_load_z, tma_load_a, tma_store_y_remote,
 		dims,
 		remote_num_m_tiles * Traits1::TileM * SubTiles, remote_num_m_tiles, x_barrier,
-		/*local_expert_start=*/0, col, grid_x, split, NSplit,
+		/*local_expert_start=*/0, col, grid_x, split, runtime_nsplit,
 		/*y_peer_desc=*/y_peer_desc);
 }
 

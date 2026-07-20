@@ -2,7 +2,7 @@
 //
 // Shared by moe.cu (forward), moe_bwd.cu (backward), and the offline tuner
 // (src/moe/tune/tune_moe_fwd_bwd.cu). The templated launchers
-//   liger::moe_fused_fwd_bf16<Config>(const MoeFwdArgs&)
+//   liger::moe_fused_fwd_bf16<Config>(const MoeFwdArgs&, int static_nsplit)
 //   liger::moe_bwd_fwd_bf16_tuned<...>(const MoeBwdArgs&)
 // take these structs; the extern "C" ABI wrappers and the tuner both build them.
 //

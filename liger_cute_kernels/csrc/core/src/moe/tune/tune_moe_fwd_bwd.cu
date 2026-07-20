@@ -90,34 +90,35 @@ void moe_configure_symmetric(
 void moe_pop_fwd();
 
 template <
-	int NSplit,
 	typename Element_,
 	int TileN1, int TileK1, int Stages1,
 	int TileN2, int TileK2, int Stages2,
 	int ZBufferSlots, int CommNumStages,
 	int EpiChunkN1 = 64, int EpiChunkN2 = 64,
 	int TileM = 128, int GemmTileM = TileM, int Compute = 90>
-void moe_fused_fwd_bf16(const MoeFwdArgs& a);
+void moe_fused_fwd_bf16(const MoeFwdArgs& a, int static_nsplit);
 
 template <
-	int NSplit, int NSplit2,
+	int NSplit2,
 	int TileN1, int TileK1, int Stages1,
 	int TileM3, int TileN3, int TileK3, int Stages3,
 	int EpiChunkN1, int EpiChunkN25, int EpiChunkN34,
 	int CommNumStages,
 	int TileM, int GemmTileM = TileM, int Compute = 90>
-void moe_bwd_fwd_bf16_tuned(const MoeBwdArgs& a);
+void moe_bwd_fwd_bf16_tuned(const MoeBwdArgs& a, int static_nsplit);
 
 } // namespace liger
 
 // ── Fwd registry — generated from LIGER_MOE_TUNE_CONFIGS ─────────────
 
-using MoeFwdFn = void (*)(const liger::MoeFwdArgs&);
+#define LIGER_MOE_TUNE_STR2(x) #x
+#define LIGER_MOE_TUNE_STR(x) LIGER_MOE_TUNE_STR2(x)
+
+using MoeFwdFn = void (*)(const liger::MoeFwdArgs&, int static_nsplit);
 
 struct TunerEntryFwd {
 	const char* name;
 	int Compute;
-	int NSplit;
 	int TileN1, TileK1, Stages1, EpiChunkN1;
 	int TileN2, TileK2, Stages2, EpiChunkN2;
 	int ZBufferSlots, CommNumStages;
@@ -125,19 +126,21 @@ struct TunerEntryFwd {
 	MoeFwdFn fn;
 };
 
-#define LIGER_MOE_FWD_REGISTRY_ENTRY_C(Compute, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM) \
+#define LIGER_MOE_FWD_RUNTIME_NS_SEED 8
+
+#define LIGER_MOE_FWD_REGISTRY_ENTRY_C(Compute, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM) \
 	{                                                                                                \
-		"NS" #NSplit "_TM" #TM "_TN1-" #TN1 "/" #TK1 "/" #S1 "/EC" #EC1                              \
+		"NSrt" LIGER_MOE_TUNE_STR(LIGER_MOE_FWD_RUNTIME_NS_SEED) "_TM" #TM "_TN1-" #TN1 "/" #TK1 "/" #S1 "/EC" #EC1 \
 		"_TN2-" #TN2 "/" #TK2 "/" #S2 "/EC" #EC2                                                     \
 		"_ZB" #ZBuf "_CS" #CStages,                                                                  \
-		Compute, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM,                    \
+		Compute, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM,                             \
 		&liger::moe_fused_fwd_bf16<                                                                  \
-			NSplit, cutlass::bfloat16_t, TN1, TK1, S1, TN2, TK2, S2, ZBuf, CStages, EC1, EC2, TM, TM, Compute> \
+			cutlass::bfloat16_t, TN1, TK1, S1, TN2, TK2, S2, ZBuf, CStages, EC1, EC2, TM, TM, Compute> \
 	},
-#define LIGER_MOE_FWD_REGISTRY_ENTRY_SM90(NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM) \
-	LIGER_MOE_FWD_REGISTRY_ENTRY_C(90, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM)
-#define LIGER_MOE_FWD_REGISTRY_ENTRY_SM100(NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM) \
-	LIGER_MOE_FWD_REGISTRY_ENTRY_C(100, NSplit, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM)
+#define LIGER_MOE_FWD_REGISTRY_ENTRY_SM90(TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM) \
+	LIGER_MOE_FWD_REGISTRY_ENTRY_C(90, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM)
+#define LIGER_MOE_FWD_REGISTRY_ENTRY_SM100(TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM) \
+	LIGER_MOE_FWD_REGISTRY_ENTRY_C(100, TN1, TK1, S1, EC1, TN2, TK2, S2, EC2, ZBuf, CStages, TM)
 
 static const TunerEntryFwd kRegistryFwd[] = {
 #if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 90
@@ -150,18 +153,19 @@ static const TunerEntryFwd kRegistryFwd[] = {
 #undef LIGER_MOE_FWD_REGISTRY_ENTRY_SM100
 #undef LIGER_MOE_FWD_REGISTRY_ENTRY_SM90
 #undef LIGER_MOE_FWD_REGISTRY_ENTRY_C
+#undef LIGER_MOE_FWD_RUNTIME_NS_SEED
 
 static constexpr int kNumFwdConfigs =
 	sizeof(kRegistryFwd) / sizeof(kRegistryFwd[0]);
 
 // ── Bwd registry — generated from LIGER_MOE_BWD_TUNE_CONFIGS ─────────
 
-using MoeBwdFwdFn = void (*)(const liger::MoeBwdArgs&);
+using MoeBwdFwdFn = void (*)(const liger::MoeBwdArgs&, int static_nsplit);
 
 struct TunerEntryBwd {
 	const char* name;
 	int Compute;
-	int NSplit, NSplit2;
+	int NSplit2;
 	int TileN1, TileK1, Stages1;
 	int TileM3, TileN3, TileK3, Stages3;
 	int EpiChunkN1, EpiChunkN25, EpiChunkN34;
@@ -170,20 +174,22 @@ struct TunerEntryBwd {
 	MoeBwdFwdFn fn;
 };
 
-#define LIGER_MOE_BWD_REGISTRY_ENTRY_C(Compute, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+#define LIGER_MOE_BWD_RUNTIME_NS_SEED 8
+
+#define LIGER_MOE_BWD_REGISTRY_ENTRY_C(Compute, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
 	{                                                                                                \
-		"NS" #NS "_NS2-" #NS2                                                                        \
+		"NSrt" LIGER_MOE_TUNE_STR(LIGER_MOE_BWD_RUNTIME_NS_SEED) "_NS2-" #NS2                       \
 		"_TN1-" #TN1 "/" #TK1 "/" #S1                                                                \
 		"_TM3-" #TM3 "_TN3-" #TN3 "/" #TK3 "/" #S3                                                   \
 		"_EN1-" #EN1 "_EN25-" #EN25 "_EN34-" #EN34 "_CS" #CS "_TM" #TM,                              \
-		Compute, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM,                  \
+		Compute, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM,                     \
 		&liger::moe_bwd_fwd_bf16_tuned<                                                              \
-			NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, TM, Compute>          \
+			NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM, TM, Compute>              \
 	},
-#define LIGER_MOE_BWD_REGISTRY_ENTRY_SM90(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
-	LIGER_MOE_BWD_REGISTRY_ENTRY_C(90, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)
-#define LIGER_MOE_BWD_REGISTRY_ENTRY_SM100(NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
-	LIGER_MOE_BWD_REGISTRY_ENTRY_C(100, NS, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)
+#define LIGER_MOE_BWD_REGISTRY_ENTRY_SM90(NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+	LIGER_MOE_BWD_REGISTRY_ENTRY_C(90, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)
+#define LIGER_MOE_BWD_REGISTRY_ENTRY_SM100(NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM) \
+	LIGER_MOE_BWD_REGISTRY_ENTRY_C(100, NS2, TN1, TK1, S1, TM3, TN3, TK3, S3, EN1, EN25, EN34, CS, TM)
 
 static const TunerEntryBwd kRegistryBwd[] = {
 #if LIGER_CUTE_DISPATCH_COMPUTE == 0 || LIGER_CUTE_DISPATCH_COMPUTE == 90
@@ -196,6 +202,9 @@ static const TunerEntryBwd kRegistryBwd[] = {
 #undef LIGER_MOE_BWD_REGISTRY_ENTRY_SM100
 #undef LIGER_MOE_BWD_REGISTRY_ENTRY_SM90
 #undef LIGER_MOE_BWD_REGISTRY_ENTRY_C
+#undef LIGER_MOE_TUNE_STR
+#undef LIGER_MOE_TUNE_STR2
+#undef LIGER_MOE_BWD_RUNTIME_NS_SEED
 
 static constexpr int kNumBwdConfigs =
 	sizeof(kRegistryBwd) / sizeof(kRegistryBwd[0]);
@@ -239,8 +248,6 @@ static bool bwd_shape_valid(int D, int I, const TunerEntryBwd& e) {
 	if (I % e.TileK1 != 0)        return false;
 	if (I % e.TileK3 != 0)        return false;
 	if (D % 8 != 0 || I % 8 != 0) return false;
-	int num_n_tiles_1 = I / e.TileN1;
-	if (num_n_tiles_1 < e.NSplit) return false;
 
 	// Phase-2 cooperative layout (#102) supports only (256,128)/(128,256).
 	if (!((e.TileM3 == 256 && e.TileN3 == 128) ||
@@ -360,7 +367,7 @@ static bool run_pair_once(
 		fa.token_expert_slots = tok_slots.data_ptr<int>();
 		fa.tile_expert_ids    = tile_ids.data_ptr<int>();
 		fa.x_sorted_out = &x_sorted; fa.y_buf_out = &y_buf; fa.all_expert_offsets_out = &all_off;
-		fwd_e.fn(fa);
+		fwd_e.fn(fa, /*static_nsplit=*/8);
 	} catch (const std::exception& ex) {
 		const char* msg = ex.what();
 		if (msg && (std::strstr(msg, "out of memory") ||
@@ -409,7 +416,7 @@ static bool run_pair_once(
 		ba.num_experts = E; ba.top_k = K; ba.team = team; ba.stream = stream; ba.device = device;
 		ba.dX = dX.data_ptr(); ba.dB = dB.data_ptr(); ba.dC = dC.data_ptr();
 		ba.dA = dA.data_ptr(); ba.dW = dW.data_ptr();
-		bwd_e.fn(ba);
+		bwd_e.fn(ba, /*static_nsplit=*/8);
 	} catch (const std::exception& ex) {
 		const char* msg = ex.what();
 		if (msg && (std::strstr(msg, "out of memory") ||
@@ -598,11 +605,10 @@ static void dump_tuned_configs() {
 	if (g_tuned_rows.empty()) {
 		f << "static const TunedConfigFwdBwd " << arr << "[1] = {{\n"
 		  << "\t/*TK=*/0, /*TKE=*/0, /*D=*/0, /*I=*/0,\n"
-		  << "\t/*Fwd_NSplit=*/0,\n"
 		  << "\t/*Fwd_TileN1=*/0, /*Fwd_TileK1=*/0, /*Fwd_Stages1=*/0, /*Fwd_EpiChunkN1=*/0,\n"
 		  << "\t/*Fwd_TileN2=*/0, /*Fwd_TileK2=*/0, /*Fwd_Stages2=*/0, /*Fwd_EpiChunkN2=*/0,\n"
 		  << "\t/*Fwd_ZBufferSlots=*/0, /*Fwd_CommNumStages=*/0,\n"
-		  << "\t/*Bwd_NSplit=*/0, /*Bwd_NSplit2=*/0,\n"
+		  << "\t/*Bwd_NSplit2=*/0,\n"
 		  << "\t/*Bwd_TileN1=*/0, /*Bwd_TileK1=*/0, /*Bwd_Stages1=*/0,\n"
 		  << "\t/*Bwd_TileM3=*/0, /*Bwd_TileN3=*/0, /*Bwd_TileK3=*/0, /*Bwd_Stages3=*/0,\n"
 		  << "\t/*Bwd_EpiChunkN1=*/0, /*Bwd_EpiChunkN25=*/0, /*Bwd_EpiChunkN34=*/0,\n"
@@ -616,19 +622,29 @@ static void dump_tuned_configs() {
 		for (const auto& r : g_tuned_rows) {
 			const auto& fe = kRegistryFwd[r.fwd_ci];
 			const auto& be = kRegistryBwd[r.bwd_ci];
+			auto strip_runtime_ns = [](std::string name) {
+				if (name.rfind("NSrt", 0) == 0) {
+					auto pos = name.find('_');
+					if (pos != std::string::npos) name.erase(0, pos + 1);
+				} else if (name.rfind("NS", 0) == 0) {
+					auto pos = name.find('_');
+					if (pos != std::string::npos) name.erase(0, pos + 1);
+				}
+				return name;
+			};
 			f << "\t{" << r.TK << ", " << r.TKE << ", " << r.D << ", " << r.I << ", "
-			  << fe.NSplit << ", "
 			  << fe.TileN1 << ", " << fe.TileK1 << ", " << fe.Stages1 << ", " << fe.EpiChunkN1 << ", "
 			  << fe.TileN2 << ", " << fe.TileK2 << ", " << fe.Stages2 << ", " << fe.EpiChunkN2 << ", "
 			  << fe.ZBufferSlots << ", " << fe.CommNumStages << ", "
-			  << be.NSplit << ", " << be.NSplit2 << ", "
+			  << be.NSplit2 << ", "
 			  << be.TileN1 << ", " << be.TileK1 << ", " << be.Stages1 << ", "
 			  << be.TileM3 << ", " << be.TileN3 << ", " << be.TileK3 << ", " << be.Stages3 << ", "
 			  << be.EpiChunkN1 << ", " << be.EpiChunkN25 << ", " << be.EpiChunkN34 << ", "
 			  << be.CommNumStages << ", "
 			  << fe.TileM << ", " << be.TileM << ", "
 			  << r.fwd_ms << "f, " << r.bwd_ms << "f, " << r.combined_ms << "f"
-			  << "},  // FWD=" << fe.name << " | BWD=" << be.name << "\n";
+			  << "},  // FWD=" << strip_runtime_ns(fe.name)
+			  << " | BWD=" << strip_runtime_ns(be.name) << "\n";
 		}
 		f << "};\n\n"
 		  << "static constexpr int " << count << " =\n"
@@ -912,20 +928,20 @@ static void tune_shape(
 				printf("%-7d %-6d %-6d  [%s] "
 				       "LB[min=%lld/%.1f%% max=%lld/%.1f%% imb=%.2fx]  "
 				       "fwd=%6.2fms/%5.0fTF  bwd=%6.2fms/%5.0fTF  "
-				       "combined=%6.2fms/%5.0fTF  [TM%d FWD=NS%d BWD=NS%d/NS2-%d]\n",
+				       "combined=%6.2fms/%5.0fTF  [TM%d FWD=runtimeNS BWD=runtimeNS/NS2-%d]\n",
 					T, D, I, tag,
 					(long long)lb_min, 100.0 * lb_min / ((double)T * K),
 					(long long)lb_max, 100.0 * lb_max / ((double)T * K),
 					lb_imbalance,
 					fwd_ms, fwd_tf, bwd_ms, bwd_tf, combined_ms, com_tf,
-					fe.TileM, fe.NSplit, be.NSplit, be.NSplit2);
+					fe.TileM, be.NSplit2);
 			} else {
 				printf("%-7d %-6d %-6d  [%s]                                          "
 				       "fwd=%6.2fms/%5.0fTF  bwd=%6.2fms/%5.0fTF  "
-				       "combined=%6.2fms/%5.0fTF  [TM%d FWD=NS%d BWD=NS%d/NS2-%d]\n",
+				       "combined=%6.2fms/%5.0fTF  [TM%d FWD=runtimeNS BWD=runtimeNS/NS2-%d]\n",
 					T, D, I, tag,
 					fwd_ms, fwd_tf, bwd_ms, bwd_tf, combined_ms, com_tf,
-					fe.TileM, fe.NSplit, be.NSplit, be.NSplit2);
+					fe.TileM, be.NSplit2);
 			}
 		};
 		print_bucket("BEST-COMBINED", best_b, /*with_lb=*/true);

@@ -274,8 +274,8 @@ struct LocalFlatMlpTileIterator {
 // gridDim.y) / NC is the M-tile count produced per comm pipeline stage.
 //
 // Producer/consumer counts per slot (unchanged from comm side):
-//   src: 2·NC get warps produce, N_SPLIT GEMM CTAs consume.
-//   dst: N_SPLIT GEMM CTAs produce, NC put warps consume.
+//   src: 2·NC get warps produce, runtime NS GEMM CTAs consume.
+//   dst: runtime NS GEMM CTAs produce, NC put warps consume.
 //
 // ── Ring walk ──────────────────────────────────────────────────────
 // Each column blockIdx.x walks its tile sequence with stride gridDim.x
@@ -296,20 +296,19 @@ struct LocalFlatMlpTileIterator {
 //                  outstanding put to drain, skip the spin)
 //   release_dst(): atomic increment dst_ready[slot] by 1 (per CTA)
 //
-// With N_SPLIT CTAs cooperating per column, each contributes one
+// With runtime NS CTAs cooperating per column, each contributes one
 // atomic per release, so src_consumed and dst_ready advance by
-// N_SPLIT per consumed/produced tile — exactly what the comm-side
-// StagePipe expects (NumConsumers = N_SPLIT on src, NumProducers =
-// N_SPLIT on dst).
+// runtime NS per consumed/produced tile — exactly what the comm-side
+// StagePipe expects.
 //
 // ── Decoupling from comm-side constants ────────────────────────────
 // Because the ticket comes from the global tile index (not a
-// per-CTA cyclic counter), NumStages, N_SPLIT and NC need not share
+// per-CTA cyclic counter), NumStages, runtime NS and NC need not share
 // any divisibility relationship. The only correctness requirement is
 // that NC evenly divides gridDim.x · gridDim.y so MC is integer
 // (host-side concern, not a template constraint).
 
-template <typename Element, int NumStages, int N_SPLIT = 2, int NC = N_SPLIT, int TileM = 128>
+template <typename Element, int NumStages, int NC = 2, int TileM = 128>
 struct RemoteMlpTileIterator {
 	// Slot's producer/consumer counts (compile-time, used for ticket math).
 	// FWD steady-state GET uses kNumGetWarpsFwd active warps/CTA (the TMA path
@@ -330,11 +329,12 @@ struct RemoteMlpTileIterator {
 	int cur_is_local;            // cached per-tile fence-scope predicate
 
 	int total_tiles;
-	int m_base;       // logical column index (flat_id / N_SPLIT) — column's
+	int m_base;       // logical column index (flat_id / runtime NS) — column's
 	                  // tile-sequence start
-	int col_stride;   // logical grid_x (= n_gemm / N_SPLIT) — tile-sequence
+	int col_stride;   // logical grid_x (= n_gemm / runtime NS) — tile-sequence
 	                  // stride; NOT gridDim.x under the flat-grid launch
 	int ring_len;     // L = MC · NumStages, set at init
+	int num_splits;
 
 	int* src_ready;
 	int* src_consumed;
@@ -361,13 +361,12 @@ struct RemoteMlpTileIterator {
 	                     int n_gemm_,
 	                     int* src_ready_, int* src_consumed_,
 	                     int* dst_ready_, int* dst_consumed_,
-	                     bool is_leader_) {
+	                     bool is_leader_,
+	                     int runtime_nsplit_) {
 		total_tiles = total_tiles_;
 		m_base = m_base_;
-		// Flat-grid launch: derive the logical grid from the GEMM-active CTA
-		// count (n_gemm = floor_NS) and compile-time N_SPLIT/NC instead of
-		// gridDim. col_stride = grid_x, MC = n_gemm / NC.
-		col_stride = n_gemm_ / N_SPLIT;
+		num_splits = runtime_nsplit_;
+		col_stride = n_gemm_ / num_splits;
 		idx = 0;
 
 		// L = MC · NumStages, MC = n_gemm / NC.
@@ -463,7 +462,7 @@ struct RemoteMlpTileIterator {
 	}
 
 	// Signal that this CTA has consumed the tile at cur_slot. Per
-	// tile (column-of-N_SPLIT CTAs), src_consumed advances by N_SPLIT.
+	// tile (column-of-runtime-NS CTAs), src_consumed advances by runtime NS.
 	__device__ void release_src(int lane) {
 		__threadfence();
 		if (lane == 0) {
@@ -486,7 +485,7 @@ struct RemoteMlpTileIterator {
 	}
 
 	// Signal that Y is ready in cur_slot for the comm put. Per tile,
-	// dst_ready advances by N_SPLIT.
+	// dst_ready advances by runtime NS.
 	__device__ void release_dst(int lane) {
 		// Direct-store change: for same-host (cur_is_local) tiles the GEMM now
 		// TMA-stores Y straight into the peer's symmetric local_output, and the
