@@ -1,4 +1,4 @@
-.PHONY: test test-cov checkstyle test-convergence all serve build clean
+.PHONY: test test-verbose checkstyle test-convergence all serve build clean
 
 
 all: checkstyle test test-convergence
@@ -9,13 +9,14 @@ test:
 		--ignore=test/convergence \
 		test/
 
-# Command to run pytest for correctness tests with coverage reporting
-test-cov:
+# Command to run pytest for correctness tests with coverage reporting and full test-duration breakdown
+test-verbose:
 	python -m pytest --disable-warnings \
 		--cov=src/liger_kernel \
 		--cov-report=term-missing \
 		--cov-report=html \
 		--cov-config=pyproject.toml \
+		--durations=0 \
 		--ignore=test/convergence \
 		test/
 
