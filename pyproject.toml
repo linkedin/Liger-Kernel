@@ -24,13 +24,6 @@ pythonpath = ["src", "."]
 asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"
-addopts = [
-    "--cov=src/liger_kernel",
-    "--cov-report=term-missing",
-    "--cov-report=html",
-    "--cov-config=pyproject.toml",
-    "--durations=0"
-]
 python_files = "test_*.py"
 testpaths = ["test/"]
 
