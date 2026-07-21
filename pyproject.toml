@@ -24,9 +24,6 @@ pythonpath = ["src", "."]
 asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"
-addopts = [
-    "--durations=0"
-]
 python_files = "test_*.py"
 testpaths = ["test/"]
 
