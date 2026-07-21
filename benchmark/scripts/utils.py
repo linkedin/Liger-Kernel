@@ -450,9 +450,22 @@ def run_benchmarks(
 
                 benchmark_data_list.append(benchmark_run_data)
 
+    # Output routing for comparison runs.
+    # LIGER_BENCH_TARGET selects the destination CSV (e.g. "cutile" -> all_benchmark_data_cutile.csv).
+    # LIGER_BENCH_PROVIDER_TAG renames the "liger" provider in this run (e.g. "liger_cutile") so
+    # multiple implementations can coexist in one CSV without colliding on the dedup key.
+    target = os.environ.get("LIGER_BENCH_TARGET", "").strip().lower()
+    provider_tag = os.environ.get("LIGER_BENCH_PROVIDER_TAG", "").strip().lower()
+
+    if provider_tag:
+        for bd in benchmark_data_list:
+            if bd.kernel_provider == "liger":
+                bd.kernel_provider = provider_tag
+
     print_benchmark_data(benchmark_data_list)
 
-    update_benchmark_data_csv(benchmark_data_list=benchmark_data_list, overwrite=overwrite)
+    file_name = f"all_benchmark_data_{target}.csv" if target else "all_benchmark_data.csv"
+    update_benchmark_data_csv(benchmark_data_list=benchmark_data_list, filename=file_name, overwrite=overwrite)
 
 
 def parse_benchmark_script_args():

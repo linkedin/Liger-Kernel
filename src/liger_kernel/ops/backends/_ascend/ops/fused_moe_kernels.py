@@ -5,7 +5,27 @@
 import triton
 import triton.language as tl
 
-# Routing metadata: histogram -> prefix sum -> scatter.
+# ---------------------------------------------------------------------------
+# Tile sizes (fixed — Ascend launch grid must stay below ~32K programs)
+# ---------------------------------------------------------------------------
+
+ASCEND_GEMM_BLOCK_N = 192
+ASCEND_GEMM_BLOCK_K = 64
+
+ASCEND_MAX_GRID_PROGRAMS = 32768
+ASCEND_BWD_BLOCK_N = ASCEND_GEMM_BLOCK_N
+
+ASCEND_TOKEN_GATHER_BLOCK_H = 128
+ASCEND_TOKEN_GATHER_BLOCK_K = 8
+
+ASCEND_DW_BLOCK_M = 128
+ASCEND_DW_BLOCK_N = 240
+ASCEND_DW_BLOCK_K = 32
+
+
+# ---------------------------------------------------------------------------
+# Routing metadata: histogram → prefix sum → scatter
+# ---------------------------------------------------------------------------
 
 
 @triton.jit
@@ -20,10 +40,13 @@ def _moe_router_histogram_kernel(
     K: tl.constexpr,
     E_POW2: tl.constexpr,
 ):
-    """Count per-expert assignments for each token tile."""
+    """Count per-expert assignments for each token tile.
+
+    Ascend: 2-D block loads + batched atomic_add with safe expert indices.
+    A 1-D flatten path can fault on vector-core UB/D-cache under long MoE runs.
+    """
     tile_id = tl.program_id(0)
 
-    # Zero this tile's column before counting — partial_sum is not pre-cleared.
     e_offs = tl.arange(0, E_POW2)
     tl.store(
         partial_sum_ptr + e_offs * n_tiles + tile_id,
@@ -31,15 +54,28 @@ def _moe_router_histogram_kernel(
         mask=e_offs < E,
     )
 
-    FLAT: tl.constexpr = TOKENS_PER_TILE * K_POW2
-    offs = tl.arange(0, FLAT)
-    ti = offs // K_POW2
-    ki = offs % K_POW2
-    tok = tile_id * TOKENS_PER_TILE + ti
-    m = (tok < T) & (ki < K)
-    sk = tl.minimum(ki, K - 1)
-    eid = tl.load(topk_indices_ptr + tok * K + sk, mask=m, other=0)
-    tl.atomic_add(partial_sum_ptr + eid * n_tiles + tile_id, 1, mask=m)
+    tok_offs = tile_id * TOKENS_PER_TILE + tl.arange(0, TOKENS_PER_TILE)
+    k_offs = tl.arange(0, K_POW2)
+    tok_mask = tok_offs < T
+    load_mask = tok_mask[:, None] & (k_offs[None, :] < K)
+    safe_k = tl.minimum(k_offs, K - 1)
+    expert_ids = tl.load(
+        topk_indices_ptr + tok_offs[:, None] * K + safe_k[None, :],
+        mask=load_mask,
+        other=-1,
+    )
+
+    flat_experts = tl.reshape(expert_ids, [TOKENS_PER_TILE * K_POW2])
+    flat_mask = tl.reshape(load_mask, [TOKENS_PER_TILE * K_POW2])
+    in_bounds = (flat_experts >= 0) & (flat_experts < E)
+    valid = flat_mask & in_bounds
+    safe_experts = tl.where(valid, flat_experts, 0)
+
+    tl.atomic_add(
+        partial_sum_ptr + safe_experts * n_tiles + tile_id,
+        tl.full([TOKENS_PER_TILE * K_POW2], 1, dtype=tl.int32),
+        mask=valid,
+    )
 
 
 @triton.jit
@@ -90,7 +126,7 @@ def _moe_router_prefix_sum_kernel(
 @triton.jit
 def _moe_router_scatter_kernel(
     s_scatter_idx_ptr,  # (TK,) int32 — output: sorted_pos → flat (t,k) index
-    s_reverse_scatter_idx_ptr,  # (TK,) int32 — output: flat (t,k) → sorted_pos
+    s_reverse_scatter_idx_ptr,  # (TK,) int32 — output: flat (t,k) → sorted pos
     x_gather_idx_ptr,  # (TK,) int32 — output: sorted_pos → token index t
     tile_row_start_ptr,  # (num_m_tiles,) int32 — output: absolute row_start per M-tile
     tile_expert_ptr,  # (num_m_tiles,) int32 — output: expert index per M-tile
@@ -101,69 +137,73 @@ def _moe_router_scatter_kernel(
     n_tiles,
     expert_offs_ptr,  # (E,) int32 — expert_start_idx[0:E] from K2
     expert_tile_offset_ptr,  # (E,) int32 — expert_tile_offset[0:E] from K2
-    rank_scratch_ptr,  # (n_tiles, E) int32 — must be zeroed before launch
     E: tl.constexpr,
     K_POW2: tl.constexpr,
     K: tl.constexpr,
     TOKENS_PER_BLOCK: tl.constexpr,
     BLOCK_M_TOKEN: tl.constexpr,
 ):
-    """Scatter routing indices into expert-sorted order."""
+    """Scatter routing indices into expert-sorted order.
+
+    Ascend: tl.sort is unavailable, so ranks are assigned via vectorized
+    per-expert cumsum instead of per-element atomic ranks.
+    """
     BLOCK_SIZE: tl.constexpr = TOKENS_PER_BLOCK * K_POW2
+    BLOCK_E: tl.constexpr = 8
     IS_POW2_K: tl.constexpr = K == K_POW2
     tl.static_assert(BLOCK_SIZE <= 32768)
 
     pid_m = tl.program_id(0)
     base = pid_m * BLOCK_SIZE
+    local_offs = tl.arange(0, BLOCK_SIZE)
 
-    for i in tl.range(0, BLOCK_SIZE):
-        if IS_POW2_K:
-            gi = base + i
-            valid = gi < TK
-            expert_i = tl.load(topk_indices_ptr + gi, mask=valid, other=0).to(tl.int32)
-            entry_idx = gi.to(tl.int32)
-            token_i = (gi // K).to(tl.int32)
-        else:
-            token_i_local = i // K_POW2
-            k_slot = i % K_POW2
-            token_i = (pid_m * TOKENS_PER_BLOCK + token_i_local).to(tl.int32)
-            valid = (token_i < T) & (k_slot < K)
-            sk = tl.minimum(k_slot, K - 1)
-            expert_i = tl.load(topk_indices_ptr + token_i * K + sk, mask=valid, other=0).to(tl.int32)
-            entry_idx = (token_i * K + sk).to(tl.int32)
+    if IS_POW2_K:
+        gi = base + local_offs
+        valid = gi < TK
+        expert_i = tl.load(topk_indices_ptr + gi, mask=valid, other=-1).to(tl.int32)
+        entry_idx = gi.to(tl.int32)
+        token_i = (gi // K).to(tl.int32)
+    else:
+        token_i_local = local_offs // K_POW2
+        k_slot = local_offs % K_POW2
+        token_i = (pid_m * TOKENS_PER_BLOCK + token_i_local).to(tl.int32)
+        valid = (token_i < T) & (k_slot < K)
+        sk = tl.minimum(k_slot, K - 1)
+        expert_i = tl.load(topk_indices_ptr + token_i * K + sk, mask=valid, other=-1).to(tl.int32)
+        entry_idx = (token_i * K + sk).to(tl.int32)
 
-        # For invalid slots, issue a no-op atomic to a safe in-bounds expert.
-        expert_safe = tl.where(valid, expert_i, 0)
-        delta = valid.to(tl.int32)
+    in_bounds = (expert_i >= 0) & (expert_i < E)
+    valid = valid & in_bounds
 
-        r = tl.atomic_add(rank_scratch_ptr + pid_m * E + expert_safe, delta).to(tl.int32)
+    n_e_blocks = (E + BLOCK_E - 1) // BLOCK_E
+    for e_block in tl.range(n_e_blocks):
+        for e_local in tl.static_range(BLOCK_E):
+            e = e_block * BLOCK_E + e_local
+            if e < E:
+                e_mask = valid & (expert_i == e)
+                within_expert_rank = tl.cumsum(e_mask.to(tl.int32), 0) - 1
+                tile_prefix = tl.load(partial_sum_ptr + pid_m + e * n_tiles)
+                expert_start = tl.load(expert_offs_ptr + e).to(tl.int32)
+                within_expert = tile_prefix + within_expert_rank
+                s_rev = expert_start + within_expert
 
-        within_expert = tl.load(partial_sum_ptr + pid_m + expert_safe * n_tiles, mask=valid, other=0) + r
-        expert_start = tl.load(expert_offs_ptr + expert_safe, mask=valid, other=0).to(tl.int32)
-        s_rev = expert_start + within_expert
+                is_tile_start = (within_expert % BLOCK_M_TOKEN) == 0
+                t_within = within_expert // BLOCK_M_TOKEN
+                tile_base = tl.load(expert_tile_offset_ptr + e).to(tl.int32)
+                flat_tile_idx = tile_base + t_within
+                tl.store(tile_row_start_ptr + flat_tile_idx, s_rev, mask=e_mask & is_tile_start)
+                tl.store(tile_expert_ptr + flat_tile_idx, e, mask=e_mask & is_tile_start)
 
-        is_tile_start = (within_expert % BLOCK_M_TOKEN) == 0
-        t_within = within_expert // BLOCK_M_TOKEN
-        tile_base = tl.load(expert_tile_offset_ptr + expert_safe, mask=valid & is_tile_start, other=0).to(tl.int32)
-        flat_tile_idx = tile_base + t_within
-        tl.store(tile_row_start_ptr + flat_tile_idx, s_rev, mask=valid & is_tile_start)
-        tl.store(tile_expert_ptr + flat_tile_idx, expert_safe, mask=valid & is_tile_start)
-
-        tl.store(s_reverse_scatter_idx_ptr + entry_idx, s_rev, mask=valid)
-        tl.store(s_scatter_idx_ptr + s_rev, entry_idx, mask=valid)
-        tl.store(x_gather_idx_ptr + s_rev, token_i, mask=valid)
-
-
-def _get_gemm_autotune_configs():
-    return [
-        triton.Config({"BLOCK_N": 192, "BLOCK_K": 64}, num_warps=4, num_stages=2),
-    ]
+                tl.store(s_reverse_scatter_idx_ptr + entry_idx, s_rev, mask=e_mask)
+                tl.store(s_scatter_idx_ptr + s_rev, entry_idx, mask=e_mask)
+                tl.store(x_gather_idx_ptr + s_rev, token_i, mask=e_mask)
 
 
-@triton.autotune(
-    configs=_get_gemm_autotune_configs(),
-    key=["H_dim", "I_dim"],
-)
+# ---------------------------------------------------------------------------
+# Forward GEMM: up-proj + SwiGLU, down-proj
+# ---------------------------------------------------------------------------
+
+
 @triton.jit
 def _fused_up_proj_swiglu_kernel(
     x_ptr,  # (T, H)
@@ -189,81 +229,68 @@ def _fused_up_proj_swiglu_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
-    """Grid: (num_m_tiles, ceil(I/BLOCK_N)).
-    pid_m selects M-tile via tile_row_start/tile_expert; pid_n selects N-tile."""
+    """Grid: (num_m_tiles,). One CTA per M-tile; N-tiles iterated in-kernel.
+
+    Ascend: 1D grid avoids exceeding the ~32K launch limit at large T.
+    """
     pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
     expert_idx = tl.load(tile_expert_ptr + pid_m)
-    n_start = pid_n * BLOCK_N
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
 
     m_offs = tl.arange(0, BLOCK_M)
-    n_offs = tl.arange(0, BLOCK_N)
     k_offs = tl.arange(0, BLOCK_K)
 
     row_offs = row_start + m_offs
     row_mask = row_offs < expert_end
-
-    acc_gate = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    acc_up = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-
-    n_idx = n_start + n_offs
-    n_mask = n_idx < I_dim
     token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0)
-    for k in tl.range(0, H_dim, BLOCK_K):
-        k_idx = k + k_offs
-        k_mask = k_idx < H_dim
 
-        x_ptrs = x_ptr + token_idx[:, None] * stride_x_T + k_idx[None, :] * stride_x_H
-        # Keep bf16 for dot operands → tensor cores. acc stays fp32 for precision.
-        x_tile = tl.load(
-            x_ptrs,
-            mask=row_mask[:, None] & k_mask[None, :],
-            other=0.0,
-            eviction_policy="evict_first",  # token rows not reused; free L2 for weights
-        )
+    for n_start in tl.range(0, I_dim, BLOCK_N):
+        n_offs = tl.arange(0, BLOCK_N)
+        n_idx = n_start + n_offs
+        n_mask = n_idx < I_dim
 
-        w_mask = n_mask[:, None] & k_mask[None, :]
-        w_gate_ptrs = (
-            gate_up_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_N + k_idx[None, :] * stride_w_K
-        )
-        w_gate = tl.load(
-            w_gate_ptrs,
-            mask=w_mask,
-            other=0.0,
-        )
-        acc_gate += tl.dot(x_tile, tl.trans(w_gate))
+        acc_gate = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+        acc_up = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
-        w_up_ptrs = w_gate_ptrs + I_dim * stride_w_N
-        w_up = tl.load(
-            w_up_ptrs,
-            mask=w_mask,
-            other=0.0,
-        )
+        for k in tl.range(0, H_dim, BLOCK_K):
+            k_idx = k + k_offs
+            k_mask = k_idx < H_dim
 
-        acc_up += tl.dot(x_tile, tl.trans(w_up))
+            x_ptrs = x_ptr + token_idx[:, None] * stride_x_T + k_idx[None, :] * stride_x_H
+            x_tile = tl.load(
+                x_ptrs,
+                mask=row_mask[:, None] & k_mask[None, :],
+                other=0.0,
+            )
 
-    out_mask = row_mask[:, None] & n_mask[None, :]
+            w_mask = n_mask[:, None] & k_mask[None, :]
+            w_gate_ptrs = (
+                gate_up_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_N + k_idx[None, :] * stride_w_K
+            )
+            w_gate = tl.load(w_gate_ptrs, mask=w_mask, other=0.0)
+            acc_gate += tl.dot(x_tile, tl.trans(w_gate))
 
-    pre_gate_ptrs = pre_act_ptr + row_offs[:, None] * stride_pre_TK + n_idx[None, :] * stride_pre_N
-    pre_up_ptrs = pre_gate_ptrs + I_dim * stride_pre_N
-    tl.store(pre_gate_ptrs, acc_gate.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
-    tl.store(pre_up_ptrs, acc_up.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
+            w_up_ptrs = w_gate_ptrs + I_dim * stride_w_N
+            w_up = tl.load(w_up_ptrs, mask=w_mask, other=0.0)
+            acc_up += tl.dot(x_tile, tl.trans(w_up))
 
-    sig_gate = tl.sigmoid(acc_gate)
-    silu_gate = acc_gate * sig_gate
-    a_out = silu_gate * acc_up
+        out_mask = row_mask[:, None] & n_mask[None, :]
 
-    post_ptrs = post_act_ptr + row_offs[:, None] * stride_post_TK + n_idx[None, :] * stride_post_N
-    tl.store(post_ptrs, a_out.to(post_act_ptr.dtype.element_ty), mask=out_mask)
+        pre_gate_ptrs = pre_act_ptr + row_offs[:, None] * stride_pre_TK + n_idx[None, :] * stride_pre_N
+        pre_up_ptrs = pre_gate_ptrs + I_dim * stride_pre_N
+        tl.store(pre_gate_ptrs, acc_gate.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
+        tl.store(pre_up_ptrs, acc_up.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
+
+        sig_gate = tl.sigmoid(acc_gate)
+        silu_gate = acc_gate * sig_gate
+        a_out = silu_gate * acc_up
+
+        post_ptrs = post_act_ptr + row_offs[:, None] * stride_post_TK + n_idx[None, :] * stride_post_N
+        tl.store(post_ptrs, a_out.to(post_act_ptr.dtype.element_ty), mask=out_mask)
 
 
-@triton.autotune(
-    configs=_get_gemm_autotune_configs(),
-    key=["H_dim", "I_dim"],
-)
 @triton.jit
 def _fused_down_proj_kernel(
     post_act_ptr,  # (TK, I)
@@ -285,12 +312,9 @@ def _fused_down_proj_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
-    """Grid: (num_m_tiles,).
-    Each CTA processes one M-tile and iterates over N-tiles in-kernel.
+    """Grid: (num_m_tiles,). One CTA per M-tile; N-tiles iterated in-kernel.
 
-    Ascend: Triton enforces total grid programs < 65536. With large MoE shapes,
-    a 2D grid (num_m_tiles, ceil(H/BLOCK_N)) can hit that limit exactly.
-    Collapsing to 1D avoids the limit without changing math.
+    Ascend: 1D grid avoids exceeding Triton's <65536 program limit at large T.
     """
     pid_m = tl.program_id(0)
 
@@ -303,7 +327,7 @@ def _fused_down_proj_kernel(
 
     row_offs = row_start + m_offs
     row_mask = row_offs < expert_end
-    # Preload A tile once per K-slice; reused across N-tiles.
+
     for n_start in tl.range(0, H_dim, BLOCK_N):
         n_offs = tl.arange(0, BLOCK_N)
         n_idx = n_start + n_offs
@@ -315,15 +339,10 @@ def _fused_down_proj_kernel(
             k_mask = k_idx < I_dim
 
             a_ptrs = post_act_ptr + row_offs[:, None] * stride_post_TK + k_idx[None, :] * stride_post_I
-            # Keep bf16 for dot operands → tensor cores. acc stays fp32.
             a_tile = tl.load(a_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
             w_ptrs = down_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_H + k_idx[None, :] * stride_w_I
-            w_tile = tl.load(
-                w_ptrs,
-                mask=n_mask[:, None] & k_mask[None, :],
-                other=0.0,
-            )
+            w_tile = tl.load(w_ptrs, mask=n_mask[:, None] & k_mask[None, :], other=0.0)
 
             acc += tl.dot(a_tile, tl.trans(w_tile))
 
@@ -331,22 +350,15 @@ def _fused_down_proj_kernel(
         tl.store(Y_ptrs, acc.to(Y_ptr.dtype.element_ty), mask=row_mask[:, None] & n_mask[None, :])
 
 
-def _get_token_gather_autotune_configs():
-    return [
-        triton.Config({"BLOCK_H": 128, "BLOCK_K": 8}, num_warps=4, num_stages=4),
-        triton.Config({"BLOCK_H": 256, "BLOCK_K": 8}, num_warps=4, num_stages=4),
-        triton.Config({"BLOCK_H": 256, "BLOCK_K": 16}, num_warps=4, num_stages=4),
-    ]
+# ---------------------------------------------------------------------------
+# Token aggregation
+# ---------------------------------------------------------------------------
 
 
-@triton.autotune(
-    configs=_get_token_gather_autotune_configs(),
-    key=["H_dim", "K_dim", "w_is_None"],
-)
 @triton.jit
 def _token_gather_weighted_sum_kernel(
     Y_ptr,  # (TK, H)
-    w_ptr,  # (TK,) routing weights, or None when w_is_None=True
+    w_ptr,  # (TK,) routing weights; unused when w_is_None=True
     s_rev_ptr,  # (TK,) int32 s_reverse_scatter_idx: flat(t,k) → sorted position
     out_ptr,  # (T, H)
     H_dim: tl.constexpr,
@@ -357,45 +369,55 @@ def _token_gather_weighted_sum_kernel(
     stride_out_H: tl.constexpr,
     BLOCK_H: tl.constexpr,
     BLOCK_K: tl.constexpr,
-    w_is_None: tl.constexpr,  # True → unweighted gather-sum (used for dx backward)
+    w_is_None: tl.constexpr,  # True → unweighted gather-sum (backward dx)
 ):
-    """One CTA per token. Gathers K expert outputs, reduces with routing weights
-    (forward) or without weights (backward dx via _token_broadcast_backward).
+    """One CTA per token. Gathers K expert outputs and reduces along K.
 
-    Ascend: avoid uint32 index tensors — BiShengHIR rejects uint32→i64 casts on pointers.
+    Ascend: avoid uint32 index tensors; use a dedicated path when K=1.
     """
     t = tl.program_id(0)
+    IS_K1: tl.constexpr = K_dim == 1
 
     for h_tile in tl.static_range(triton.cdiv(H_dim, BLOCK_H)):
         h_idx = h_tile * BLOCK_H + tl.arange(0, BLOCK_H)
         h_mask = h_idx < H_dim
-        acc = tl.zeros([BLOCK_H], dtype=tl.float32)
 
-        for k_tile in tl.range(triton.cdiv(K_dim, BLOCK_K)):
-            k_offs = k_tile * BLOCK_K + tl.arange(0, BLOCK_K)
-            k_mask = k_offs < K_dim
-
-            flat_idx = t * K_dim + k_offs
-            perm_idx = tl.load(s_rev_ptr + flat_idx, mask=k_mask, other=0)
-
-            y_ptrs = Y_ptr + perm_idx[:, None] * stride_Y_TK + h_idx[None, :] * stride_Y_H
-            y_vals = tl.load(y_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0).to(tl.float32)
-
+        if IS_K1:
+            perm_idx = tl.load(s_rev_ptr + t)
+            y_ptrs = Y_ptr + perm_idx * stride_Y_TK + h_idx * stride_Y_H
+            y_vals = tl.load(y_ptrs, mask=h_mask, other=0.0).to(tl.float32)
             if w_is_None:
-                acc += tl.sum(y_vals, axis=0)
+                acc = y_vals
             else:
-                w_vals = tl.load(w_ptr + flat_idx, mask=k_mask, other=0.0).to(tl.float32)
-                acc += tl.sum(y_vals * w_vals[:, None], axis=0)
+                w_val = tl.load(w_ptr + t).to(tl.float32)
+                acc = y_vals * w_val
+        else:
+            acc = tl.zeros([BLOCK_H], dtype=tl.float32)
+            for k_tile in tl.range(triton.cdiv(K_dim, BLOCK_K)):
+                k_offs = k_tile * BLOCK_K + tl.arange(0, BLOCK_K)
+                k_mask = k_offs < K_dim
+
+                flat_idx = t * K_dim + k_offs
+                perm_idx = tl.load(s_rev_ptr + flat_idx, mask=k_mask, other=0)
+
+                y_ptrs = Y_ptr + perm_idx[:, None] * stride_Y_TK + h_idx[None, :] * stride_Y_H
+                y_vals = tl.load(y_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0).to(tl.float32)
+
+                if w_is_None:
+                    acc += tl.sum(y_vals, axis=0)
+                else:
+                    w_vals = tl.load(w_ptr + flat_idx, mask=k_mask, other=0.0).to(tl.float32)
+                    acc += tl.sum(y_vals * w_vals[:, None], axis=0)
 
         out_ptrs = out_ptr + t * stride_out_T + h_idx * stride_out_H
         tl.store(out_ptrs, acc.to(out_ptr.dtype.element_ty), mask=h_mask)
 
 
-@triton.autotune(
-    configs=_get_gemm_autotune_configs(),
-    key=["H_dim", "I_dim"],
-    reset_to_zero=["dS_ptr"],  # autotune runs multiple configs; atomic_add accumulates, so reset between runs
-)
+# ---------------------------------------------------------------------------
+# Backward: down-proj, weight grads, input grads
+# ---------------------------------------------------------------------------
+
+
 @triton.jit
 def _moe_bwd_down_proj_kernel(
     dO_ptr,  # (T, H)   — ∂L/∂O, upstream gradient
@@ -428,8 +450,10 @@ def _moe_bwd_down_proj_kernel(
     BLOCK_K: tl.constexpr,
 ):
     """Grid: (num_m_tiles, ceil(I/BLOCK_N)).
-    Accumulates dA' = dO @ W2^T (dO stays in registers), recomputes y1 from
-    pre_act, applies SwiGLU backward, writes d_pre_act, weighted_act, and dS."""
+
+    Recomputes dA' = dO @ W2^T, applies SwiGLU backward, and writes d_pre_act,
+    weighted_act, and dS. Caller chunks the M dimension when the grid overflows.
+    """
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
@@ -499,13 +523,6 @@ def _moe_bwd_down_proj_kernel(
     tl.store(dup_ptrs, dup.to(d_pre_act_ptr.dtype.element_ty), mask=out_mask)
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_M": 128, "BLOCK_N": 240, "BLOCK_K": 32}, num_warps=4, num_stages=2),
-    ],
-    key=["H_dim", "I_dim"],
-    reset_to_zero=["dW2_ptr"],
-)
 @triton.jit
 def _moe_bwd_dW2_kernel(
     weighted_act_ptr,  # (TK, I) — s_k * y1 from backward down-proj kernel
@@ -526,8 +543,7 @@ def _moe_bwd_dW2_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
-    """dW2[e, h, i] += sum_t weighted_act[t, i] * dout[token(t), h] for tokens in e.
-    Grid: (E * ceil(I/BLOCK_M), ceil(H/BLOCK_N)). Early exit for empty experts."""
+    """dW2[e, h, i] += sum_t weighted_act[t, i] * dout[token(t), h]. Early exit for empty experts."""
     pid0 = tl.program_id(0)
     pid1 = tl.program_id(1)
 
@@ -577,10 +593,6 @@ def _moe_bwd_dW2_kernel(
     tl.store(dW2_ptrs, acc.to(dW2_ptr.dtype.element_ty), mask=h_mask[:, None] & i_mask[None, :])
 
 
-@triton.autotune(
-    configs=_get_gemm_autotune_configs(),
-    key=["H_dim", "I_dim"],
-)
 @triton.jit
 def _moe_bwd_dX_expanded_kernel(
     d_pre_act_ptr,  # (TK, 2*I)
@@ -602,13 +614,7 @@ def _moe_bwd_dX_expanded_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
-    """Grid: (num_m_tiles,).
-    dx_expanded[sorted_pos] = d_gate @ W1_gate^T + d_up @ W1_up^T.
-    No atomics — rows are unique per CTA in sorted space.
-
-    Ascend: collapse the 2D grid to avoid hitting Triton's <65536 grid limit
-    on large (num_m_tiles, ceil(H/BLOCK_N)) products.
-    """
+    """Grid: (num_m_tiles,). dx_expanded[sorted_pos] = d_gate @ W1_gate^T + d_up @ W1_up^T."""
     pid_m = tl.program_id(0)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
@@ -620,6 +626,7 @@ def _moe_bwd_dX_expanded_kernel(
 
     row_offs = row_start + m_offs
     row_mask = row_offs < expert_end
+
     for n_start in tl.range(0, H_dim, BLOCK_N):
         n_offs = tl.arange(0, BLOCK_N)
         h_idx = n_start + n_offs
@@ -650,20 +657,12 @@ def _moe_bwd_dX_expanded_kernel(
                 + h_idx[None, :] * stride_w_K
             )
             w_up = tl.load(w_up_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
-
             acc += tl.dot(d_up, w_up)
 
         dxe_ptrs = dx_expanded_ptr + row_offs[:, None] * stride_dxe_TK + h_idx[None, :] * stride_dxe_H
         tl.store(dxe_ptrs, acc.to(dx_expanded_ptr.dtype.element_ty), mask=row_mask[:, None] & h_mask[None, :])
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_M": 128, "BLOCK_N": 240, "BLOCK_K": 32}, num_warps=4, num_stages=2),
-    ],
-    key=["H_dim", "I_dim"],
-    reset_to_zero=["dW1_ptr"],
-)
 @triton.jit
 def _moe_bwd_dW1_kernel(
     x_ptr,  # (T, H)
@@ -684,8 +683,7 @@ def _moe_bwd_dW1_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
-    """dW1[e, n, h] += sum_t X[token(t), h] * d_pre_act[t, n], where n in [0, 2I).
-    Grid: (E * ceil(H/BLOCK_M), ceil(2I/BLOCK_N)). Early exit for empty experts."""
+    """dW1[e, n, h] += sum_t X[token(t), h] * d_pre_act[t, n], n in [0, 2I). Early exit for empty experts."""
     pid0 = tl.program_id(0)
     pid1 = tl.program_id(1)
 

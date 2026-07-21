@@ -86,7 +86,6 @@ def _rms_norm_forward_kernel_no_tiling(
             X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
             mask=block_mask,
             other=0.0,
-            eviction_policy="evict_first",
         )
 
         # Compute sum_square for all rows
@@ -193,7 +192,7 @@ def _rms_norm_forward_kernel_tiled(
             col_offsets = col_start + offsets
             mask = col_offsets < n_cols
 
-            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0, eviction_policy="evict_first")
+            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0)
 
             if casting_mode == _CASTING_MODE_LLAMA or casting_mode == _CASTING_MODE_GEMMA:
                 X_block = X_block.to(tl.float32)
@@ -216,7 +215,7 @@ def _rms_norm_forward_kernel_tiled(
             mask = col_offsets < n_cols
 
             # Load X_block
-            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0, cache_modifier=".ca")
+            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0)
 
             if elementwise_affine:
                 W_block = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
@@ -313,13 +312,11 @@ def _rms_norm_backward_kernel_no_tiling(
             dY_ptr + row_idx[:, None] * dY_row_stride + col_offsets[None, :],
             mask=block_mask,
             other=0.0,
-            eviction_policy="evict_first",
         )
         X_rows = tl.load(
             X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
             mask=block_mask,
             other=0.0,
-            eviction_policy="evict_first",
         )
 
         # Load rstd for all rows in the block
@@ -428,14 +425,14 @@ def _rms_norm_backward_kernel_tiled(
             col_offsets = col_start + offsets
             mask = col_offsets < n_cols
 
-            dY_block = tl.load(dY_row_ptr + col_offsets, mask=mask, other=0.0, eviction_policy="evict_first")
-            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0, eviction_policy="evict_first")
+            dY_block = tl.load(dY_row_ptr + col_offsets, mask=mask, other=0.0)
+            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0)
 
             # Convert to fp32 for computation
             X_block = X_block.to(tl.float32)
 
             if elementwise_affine:
-                W_block = tl.load(W_ptr + col_offsets, mask=mask, other=0.0, eviction_policy="evict_first")
+                W_block = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
                 W_offset = W_block + offset
 
                 # Compute m based on casting mode
