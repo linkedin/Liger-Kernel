@@ -49,21 +49,18 @@ namespace liger {
 // runs on warps 1-3.
 
 static constexpr int kCommBwdGetWarp0  = 1;
-static constexpr int kCommBwdGetWarp1  = 2;
-static constexpr int kCommBwdPutWarp   = 3;
+static constexpr int kCommBwdGetWarp1  = 2;  // prologue compatibility only
+static constexpr int kCommBwdPutWarp   = 2;
 static constexpr int kCommBwdWarpStart = kCommBwdGetWarp0;
 static constexpr int kCommBwdWarpEnd   = kCommBwdPutWarp;
 
 // ── TMA-GET (NVLink) warp rebalance ─────────────────────────────────
-// Mirrors the fwd #111 layout: when the TMA-GET path is enabled, ONE warp
-// saturates the per-SM TMA unit, so warp 1 alone does both the X and dY
-// gets (issue-bound DMA) and warps 2+3 become symmetric dX put warps.
-// When TMA is disabled (IB, odd shapes, or smem doesn't fit the bounce),
-// the kernel keeps the original 2-get + 1-put getmem layout — so tight
-// configs never regress. The MLP-side iterator picks producer/consumer
+// Mirrors the fwd #111 layout: one warp saturates the TMA GET path, so warp 1
+// gets X+dY and warp 2 puts dX. Warp 3 enters the MLP-side branch and exits
+// there for Compute != 100. The MLP-side iterator picks producer/consumer
 // counts from the same runtime tma_enabled flag.
 static constexpr int kNumGetWarpsBwd = 1;  // TMA mode: 1 get warp (X+dY)
-static constexpr int kNumPutWarpsBwd = 2;  // TMA mode: 2 put warps (dX)
+static constexpr int kNumPutWarpsBwd = 1;  // TMA mode: 1 put warp (dX)
 
 // ═══════════════════════════════════════════════════════════════════
 // GetTmaDescsBwd — raw CUtensorMap descriptors for the bwd TMA GET
@@ -634,7 +631,7 @@ __device__ __forceinline__ void nvshmem_comm_main_bwd(
 	constexpr int K = NumStages;
 
 	int warp_id = threadIdx.x / 32;
-	if (warp_id < kCommBwdWarpStart || warp_id > kCommBwdWarpEnd)
+	if (warp_id != kCommBwdGetWarp0 && warp_id != kCommBwdPutWarp)
 		return;
 
 	int lane = threadIdx.x % 32;
@@ -671,7 +668,7 @@ __device__ __forceinline__ void nvshmem_comm_main_bwd(
 	auto* remote_x_base  = static_cast<Element*>(bufs.remote_x);
 	auto* remote_dy_base = static_cast<Element*>(bufs.remote_dy);
 
-	// Unified layout: warp 1 gets X then dY for each tile; warps 2+3 put dX.
+	// Unified layout: warp 1 gets X then dY for each tile; warp 2 puts dX.
 	// do_get_bwd_tma chooses per tile: same-host TMA, P2P fallback, or IB
 	// whole-tile round-robin. This keeps X(t), dY(t), X(t+1), ... in one loop.
 	if (warp_id == kCommBwdGetWarp0) {
@@ -717,12 +714,12 @@ __device__ __forceinline__ void nvshmem_comm_main_bwd(
 				descs ? &descs->dst_dy_staging_desc : nullptr,
 				get_bounce);
 		}
-	} else {  // warps 2 + 3 → two symmetric dX put warps
+	} else {  // warp 2 → dX put warp
 		StagePipe<K, 1, NC> dst_pipe;
 		dst_pipe.init(bufs.dst_ready + xc, bufs.dst_consumed + xc,
 		              is_leader, MC, runtime_nsplit, kNumPutWarpsBwd * NC);
 
-		int put_local_idx = (warp_id == kCommBwdGetWarp1) ? 0 : 1;
+		int put_local_idx = 0;
 		int chunk_idx = yc;
 		int ib_seq = 0;  // advances only on IB tiles (inside do_put_bwd)
 		for (int i = 0; i < my_total; ++i) {

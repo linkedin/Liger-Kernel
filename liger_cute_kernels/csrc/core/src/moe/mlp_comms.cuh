@@ -535,12 +535,9 @@ static constexpr int kNumGetWarpsPerCta = 2;  // shared w/ bwd — do NOT change
 // drain (kPutW); only the steady-state FWD producer count drops to this.
 static constexpr int kNumGetWarpsFwd = 1;
 
-// FWD-only put-warp count. The get warp freed by the TMA path (above) joins
-// the put side: warps 2+3 are two symmetric put warps. putmem is warp-LD/ST
-// (thread-bound) so 2 warps ≈ 2× put BW. Each puts 1/(kNumPutWarpsFwd·NC) of
-// a tile and drives the dst pipe; RemoteMlpTileIterator's NumConsumersDst and
-// the dst StagePipe NumConsumers both follow this.
-static constexpr int kNumPutWarpsFwd = 2;
+// FWD-only put-warp count. Keep one active put warp on Hopper; the freed warp
+// enters the MLP-side branch and exits there for Compute != 100.
+static constexpr int kNumPutWarpsFwd = 1;
 
 // Range of warps participating in fwd comm (used by callers to filter
 // MLP vs comm warps).
@@ -1030,7 +1027,7 @@ __device__ __forceinline__ void nvshmem_comm_main(
 	constexpr int K = NumStages;
 
 	int warp_id = threadIdx.x / 32;
-	if (warp_id < kCommFwdWarpStart || warp_id > kCommFwdWarpEnd)
+	if (warp_id != kCommGetWarp0 && warp_id != kCommPutWarp)
 		return;
 
 	int lane = threadIdx.x % 32;
@@ -1071,18 +1068,14 @@ __device__ __forceinline__ void nvshmem_comm_main(
 	auto* src_staging_base = static_cast<Element*>(bufs.src_staging);
 	auto* dst_staging_base = static_cast<Element*>(bufs.dst_staging);
 
-	// Warp roles (FWD, TMA GET): warp 1 = single TMA get warp; warps 2+3 =
-	// two symmetric put warps. The TMA GET saturates with one warp (DMA
-	// engine, issue-bound), so the freed get warp moves to the put side —
-	// putmem is warp-LD/ST (thread-bound), so 2 put warps ≈ 2× put BW. The
-	// old cooperative last-tile drain is GONE: every tile is now split across
-	// kNumPutWarpsFwd·NC put warps that each drive the dst pipe directly.
-	if (warp_id == kCommPutWarp || warp_id == kCommGetWarp1) {
-		// Two put warps per CTA. put_local_idx ∈ {0,1}; each puts its
+	// Warp roles (FWD, TMA GET): warp 1 = single TMA get warp; warp 3 =
+	// single put warp. Warp 2 is deliberately not a comm warp in this variant.
+	if (warp_id == kCommPutWarp) {
+		// One put warp per CTA. put_local_idx is 0; it puts its
 		// 1/(kNumPutWarpsFwd·NC) slice and independently drives the pipe.
 		// NumProducers = N_SPLIT (GEMM CTAs produce Y), NumConsumers =
-		// kNumPutWarpsFwd·NC (2 put warps × NC CTAs per ring).
-		const int put_local_idx = (warp_id == kCommPutWarp) ? 0 : 1;
+		// kNumPutWarpsFwd·NC.
+		const int put_local_idx = 0;
 		StagePipe<K, 1, kNumPutWarpsFwd * NC> dst_pipe;
 		dst_pipe.init(bufs.dst_ready + xc, bufs.dst_consumed + xc, is_leader, MC,
 			runtime_nsplit, kNumPutWarpsFwd * NC);
@@ -1095,7 +1088,7 @@ __device__ __forceinline__ void nvshmem_comm_main(
 				dst_staging_base, tile_elems, xc, MC, yc, ib_seq, lane,
 				put_local_idx, get_descs);
 		}
-	} else {  // warp_id == kCommGetWarp0 — the single TMA get warp
+	} else if (warp_id == kCommGetWarp0) {  // single TMA get warp
 		const int chunk_idx = yc;  // kNumGetWarpsFwd == 1 → yc·1 + 0
 
 		// NumProducers = kNumGetWarpsFwd·NC (= NC: one get warp × NC CTAs),

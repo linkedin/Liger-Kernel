@@ -701,7 +701,7 @@ moe_bwd_kernel(
 		bool gemm_active = flat_id < n_gemm;
 
 		int warp_id = threadIdx.x / 32;
-		bool is_comm_warp = (warp_id >= kCommBwdWarpStart && warp_id <= kCommBwdWarpEnd);
+		bool is_comm_warp = (warp_id == kCommBwdGetWarp0 || warp_id == kCommBwdPutWarp);
 
 		if (is_comm_warp) {
 			if (smem.comm.total_tiles > 0) {
