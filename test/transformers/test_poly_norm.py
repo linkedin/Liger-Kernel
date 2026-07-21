@@ -99,7 +99,7 @@ class NaivePolyNorm(nn.Module):
         (torch.float32, 3e-4, 1e-6),
         pytest.param(
             torch.bfloat16,
-            1.0,
+            6e-1,
             5e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
