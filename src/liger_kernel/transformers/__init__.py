@@ -81,6 +81,7 @@ if TYPE_CHECKING:
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_qwen3_vl_moe  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_smollm3  # noqa: F401
     from liger_kernel.transformers.monkey_patch import apply_liger_kernel_to_smolvlm  # noqa: F401
+    from liger_kernel.transformers.monkey_patch import apply_liger_tiled_mlp  # noqa: F401
 
 
 # Check if 'transformers' is installed
@@ -160,6 +161,7 @@ def __getattr__(name: str):
         "apply_liger_kernel_to_hunyuan_v1_moe",
         "apply_liger_kernel_to_deepseek_v4",
         "apply_liger_kernel_to_exaone4",
+        "apply_liger_tiled_mlp",
     }
 
     if name in monkey_patch_symbols:
@@ -251,5 +253,6 @@ if _TRANSFORMERS_AVAILABLE:
             "apply_liger_kernel_to_hunyuan_v1_moe",
             "apply_liger_kernel_to_deepseek_v4",
             "apply_liger_kernel_to_exaone4",
+            "apply_liger_tiled_mlp",
         ]
     )
