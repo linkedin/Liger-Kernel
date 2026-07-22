@@ -111,7 +111,13 @@ mlp1_fused_test_kernel(
 	int warp_id = threadIdx.x / Traits::WarpSize;
 	int num_k_tiles = hidden_dim / Traits::TileK;
 	bool is_producer = (warp_id == 0);
-	bool is_consumer = (warp_id >= 4 && warp_id <= 11);
+	// Warp specialisation is compile-time via Compute (no runtime bool → no
+	// register cost): on Blackwell (Compute=100) MLP1 uses warp 3 for the
+	// epilogue-free UMMA and warps 4..11 as two epilogue warpgroups; the Hopper
+	// (Compute=90) WGMMA consumer keys off warps 4..11 and leaves warp 3 idle.
+	constexpr bool warp3            = (Compute == 100);
+	constexpr int  kFirstConsumerWarp = warp3 ? 3 : 4;
+	bool is_consumer = (warp_id >= kFirstConsumerWarp && warp_id <= 11);
 
 	auto pipe = [&]() {
 		if constexpr (Compute == 100)
@@ -122,7 +128,7 @@ mlp1_fused_test_kernel(
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	cute::TMEM::Allocator1Sm tmem_alloc{};
 	if constexpr (Compute == 100) {
-		constexpr int kTmemColumns = 2 * Traits::TileN;
+		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
 		if (warp_id == 4) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tile.tmem_base);
 			__syncwarp();
@@ -145,13 +151,14 @@ mlp1_fused_test_kernel(
 				num_n_tiles, num_k_tiles);
 		} else if (is_consumer) {
 			if constexpr (Compute == 100) {
-				liger::mlp1_fused_consumer<Traits, 100>(
+				// warp3 (compile-time) selects the warp-3 dual-WG epilogue.
+				liger::mlp1_fused_consumer<Traits, 100, warp3>(
 					pipe, cons_state, smem.tile, tma_store_z,
 					m, num_n_tiles * Traits::TileN,
 					num_m_tiles, num_n_tiles, num_k_tiles);
 			} else {
 #if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ < 1000)
-				liger::mlp1_fused_consumer<Traits, 90>(
+				liger::mlp1_fused_consumer<Traits, 90, /*Warp3=*/false>(
 					pipe, cons_state, smem.tile, tma_store_z,
 					m, num_n_tiles * Traits::TileN,
 					num_m_tiles, num_n_tiles, num_k_tiles);
@@ -164,7 +171,7 @@ mlp1_fused_test_kernel(
 	__syncthreads();
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	if constexpr (Compute == 100) {
-		constexpr int kTmemColumns = 2 * Traits::TileN;
+		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
 		if (warp_id == 4) {
 			tmem_alloc.release_allocation_lock();
 			tmem_alloc.free(smem.tile.tmem_base, kTmemColumns);
@@ -206,7 +213,7 @@ mlp1_act_test_kernel(
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	cute::TMEM::Allocator1Sm tmem_alloc{};
 	if constexpr (Compute == 100) {
-		constexpr int kTmemColumns = 2 * Traits::TileN;
+		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
 		if (warp_id == 4) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tile.tmem_base);
 			__syncwarp();
@@ -255,7 +262,7 @@ mlp1_act_test_kernel(
 	__syncthreads();
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	if constexpr (Compute == 100) {
-		constexpr int kTmemColumns = 2 * Traits::TileN;
+		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
 		if (warp_id == 4) {
 			tmem_alloc.release_allocation_lock();
 			tmem_alloc.free(smem.tile.tmem_base, kTmemColumns);
@@ -394,8 +401,31 @@ static void make_inputs(const Mlp1Shape& s, Inputs& in, unsigned seed) {
 		in.num_m_tiles * sizeof(int), cudaMemcpyHostToDevice);
 }
 
-// Download a bf16 device output (padded to num_m_tiles*TileM rows) and return
-// the first num_tokens rows as floats.
+// Fast inputs for the TFLOPS benchmarks only. Kernel timing is data-independent
+// (dense GEMM), so we skip make_inputs' multi-GB host RNG fill + bf16 upload —
+// which for the huge named-model shapes (e.g. Mixtral-8x22B: E·I·H ≈ 8·16384·
+// 6144 ≈ 0.8 B elems per weight) costs several GB of host RAM and seconds of
+// mt19937 per call. Here we cudaMalloc the device weights directly and memset a
+// small uniform bf16 pattern (0x3C3C ≈ 0.0114). NOT for correctness runs.
+template <typename Traits>
+static void make_bench_inputs(const Mlp1Shape& s, Inputs& in) {
+	in.num_m_tiles  = (s.num_tokens + Traits::TileM - 1) / Traits::TileM;
+	in.num_n_tiles  = s.intermediate_dim / Traits::TileN;
+	in.total_n_rows = s.num_experts * s.intermediate_dim;
+	auto dev_fill = [](DevBf16& d, size_t n) {
+		d.n = n;
+		CUDA_OK(cudaMalloc(&d.ptr, n * sizeof(Element)));
+		CUDA_OK(cudaMemset(d.ptr, 0x3C, n * sizeof(Element)));  // bf16 ≈ 0.0114
+	};
+	dev_fill(in.dX, (size_t)s.num_tokens  * s.hidden_dim);
+	dev_fill(in.dB, (size_t)in.total_n_rows * s.hidden_dim);
+	dev_fill(in.dC, (size_t)in.total_n_rows * s.hidden_dim);
+	in.expert_ids.resize(in.num_m_tiles);
+	for (int m = 0; m < in.num_m_tiles; ++m) in.expert_ids[m] = m % s.num_experts;
+	CUDA_OK(cudaMalloc(&in.d_expert_ids, in.num_m_tiles * sizeof(int)));
+	CUDA_OK(cudaMemcpy(in.d_expert_ids, in.expert_ids.data(),
+		in.num_m_tiles * sizeof(int), cudaMemcpyHostToDevice));
+}
 static std::vector<float> download_rows(const Element* d, int padded_tokens,
                                         int num_tokens, int inter) {
 	std::vector<Element> hb((size_t)padded_tokens * inter);
@@ -606,7 +636,7 @@ static double tflops_of(const Mlp1Shape& s, double ms) {
 template <int Compute>
 static void run_fused_bench(const Mlp1Shape& s, const BenchCfg& cfg) {
 	using Traits = TraitsFused;
-	Inputs in; make_inputs<Traits>(s, in, /*seed=*/1234);
+	Inputs in; make_bench_inputs<Traits>(s, in);
 
 	int padded = in.num_m_tiles * Traits::TileM;
 	Element* dZ = nullptr;
@@ -660,7 +690,7 @@ static void run_fused_bench(const Mlp1Shape& s, const BenchCfg& cfg) {
 template <int Compute>
 static void run_act_bench(const Mlp1Shape& s, const BenchCfg& cfg) {
 	using Traits = TraitsAct;
-	Inputs in; make_inputs<Traits>(s, in, /*seed=*/5678);
+	Inputs in; make_bench_inputs<Traits>(s, in);
 
 	int padded = in.num_m_tiles * Traits::TileM;
 	size_t obytes = (size_t)padded * s.intermediate_dim * sizeof(Element);
@@ -757,6 +787,23 @@ static const std::vector<Mlp1Shape> kBenchShapes = {
 	{16384, 4096, 4096, 8},
 };
 
+// ── Named-model (H, I) perf grid for MLP1 Forward Up/Gate — real per-expert
+// dims (moe_intermediate_size from public HF config.json), T=8192, E=8. Drives
+// the Mlp1FusedModels.TFLOPs_Blackwell micro-benchmark and the end-to-end MoE
+// benchmark harness (pipeline.md §7). No standalone correctness gate: a
+// per-element max_rel bound is inappropriate for large-I BF16 (near-zero SiLU
+// outputs blow up max_rel while mean_rel stays ~0.08%); the MOP correctness
+// gate is Mlp1Fused.Correctness.
+static const std::vector<Mlp1Shape> kModelBenchShapes = {
+	{ 8192, 2048,   768, 8},   // Qwen3-30B-A3B
+	{ 8192, 4096,  1536, 8},   // Qwen3-235B-A22B
+	{ 8192, 2048,   512, 8},   // Qwen3.5-35B-A3B
+	{ 8192, 3072,  1024, 8},   // Qwen3.5-122B-A10B
+	{ 8192, 4096, 14336, 8},   // Mixtral-8x7B
+	{ 8192, 6144, 16384, 8},   // Mixtral-8x22B
+	{ 8192, 5120,  8192, 8},   // Llama-4-Scout-17B-16E
+};
+
 // ── Blackwell (Compute=100 / UMMA) — requires an sm_100 GPU at runtime ──
 TEST(Mlp1Fused, Correctness) {
 	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
@@ -783,6 +830,82 @@ TEST(Mlp1FusedActSm90, Correctness) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Register-spill guard — cudaFuncGetAttributes on the COMPILED kernels.
+//
+// `localSizeBytes > 0` means the compiler spilled registers to (slow) local
+// memory — a silent perf cliff under __launch_bounds__(NumThreads,1). The
+// warp-config change (warp-3 UMMA + dual-WG epilogue, AccStages=2) shifts
+// register pressure, so this gate catches a spill regression at test time
+// (no launch needed — attributes are a compile-time property of the kernel).
+// Also reports regs/thread so pressure can be watched even when it doesn't
+// yet spill. Note: localSizeBytes counts spills AND any explicit local arrays;
+// these MLP1 kernels use none, so >0 == spill here. For the exact spill-store/
+// load byte split, build with nvcc --ptxas-options=-v.
+// ═══════════════════════════════════════════════════════════════════
+template <int Compute>
+static void check_fused_spill() {
+	using Traits = TraitsFused;
+	// A small valid shape — only the descriptor TYPES drive the instantiation
+	// we query; the values are irrelevant to the compiled register footprint.
+	const Mlp1Shape s{128, 512, 256, 1};
+	Inputs in; make_inputs<Traits>(s, in, /*seed=*/1);
+	int padded = in.num_m_tiles * Traits::TileM;
+	Element* dZ = nullptr;
+	CUDA_OK(cudaMalloc(&dZ, (size_t)padded * s.intermediate_dim * sizeof(Element)));
+	auto tX = make_tensor(make_gmem_ptr(in.dX.ptr),
+		make_shape(s.num_tokens, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
+	auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
+	auto tZ = make_tensor(make_gmem_ptr(dZ),
+		make_shape(padded, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
+	auto tma_x = make_tma_copy(SM90_TMA_LOAD{},  tX, typename Traits::SmemLayoutX_1{});
+	auto tma_b = make_tma_copy(SM90_TMA_LOAD{},  tB, typename Traits::SmemLayoutW_1{});
+	auto tma_z = make_tma_copy(SM90_TMA_STORE{}, tZ, typename Traits::SmemLayoutStoreSlot{});
+	auto kernel = mlp1_fused_test_kernel<Traits, Compute,
+		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
+	cudaFuncAttributes a{};
+	CUDA_OK(cudaFuncGetAttributes(&a, kernel));
+	cudaFree(dZ);
+	printf("[spill fused C=%d] regs/thread=%d  local(spill)=%ld B  static_smem=%ld B  maxthreads/blk=%d\n",
+		Compute, a.numRegs, (long)a.localSizeBytes, (long)a.sharedSizeBytes, a.maxThreadsPerBlock);
+	EXPECT_EQ(a.localSizeBytes, 0) << "MLP1 fused kernel spills registers to local memory";
+}
+
+template <int Compute>
+static void check_act_spill() {
+	using Traits = TraitsAct;
+	const Mlp1Shape s{128, 512, 256, 1};
+	Inputs in; make_inputs<Traits>(s, in, /*seed=*/1);
+	int padded = in.num_m_tiles * Traits::TileM;
+	Element* dZ = nullptr;
+	CUDA_OK(cudaMalloc(&dZ, (size_t)padded * s.intermediate_dim * sizeof(Element)));
+	auto tX = make_tensor(make_gmem_ptr(in.dX.ptr),
+		make_shape(s.num_tokens, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
+	auto tB = make_tensor(make_gmem_ptr(in.dB.ptr),
+		make_shape(in.total_n_rows, s.hidden_dim), make_stride(s.hidden_dim, Int<1>{}));
+	auto tZ = make_tensor(make_gmem_ptr(dZ),
+		make_shape(padded, s.intermediate_dim), make_stride(s.intermediate_dim, Int<1>{}));
+	auto tma_x = make_tma_copy(SM90_TMA_LOAD{},  tX, typename Traits::SmemLayoutX_1{});
+	auto tma_b = make_tma_copy(SM90_TMA_LOAD{},  tB, typename Traits::SmemLayoutW_1{});
+	auto tma_z = make_tma_copy(SM90_TMA_STORE{}, tZ, typename Traits::SmemLayoutStoreSlot{});
+	auto kernel = mlp1_act_test_kernel<Traits, Compute,
+		decltype(tma_x), decltype(tma_b), decltype(tma_z)>;
+	cudaFuncAttributes a{};
+	CUDA_OK(cudaFuncGetAttributes(&a, kernel));
+	cudaFree(dZ);
+	printf("[spill act   C=%d] regs/thread=%d  local(spill)=%ld B  static_smem=%ld B  maxthreads/blk=%d\n",
+		Compute, a.numRegs, (long)a.localSizeBytes, (long)a.sharedSizeBytes, a.maxThreadsPerBlock);
+	EXPECT_EQ(a.localSizeBytes, 0) << "MLP1 act kernel spills registers to local memory";
+}
+
+// No register spilling on Blackwell (warp-3 UMMA + dual-WG epilogue kernels).
+TEST(Mlp1Fused, NoRegisterSpill) {
+	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
+	check_fused_spill<100>();
+	check_act_spill<100>();
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // TFLOPS benchmarks — opt-in via MLP1_BENCH=1 (skipped by default so the
 // correctness run stays fast). Arch-gated like the tests above: run the
 // binary on a B200 for the Blackwell numbers, on an H100 for Hopper.
@@ -794,6 +917,17 @@ TEST(Mlp1Fused, TFLOPs_Blackwell) {
 	if (!mlp1_bench_enabled())  GTEST_SKIP() << "set MLP1_BENCH=1 to run the TFLOPS benchmark";
 	BenchCfg cfg;
 	for (const auto& s : kBenchShapes) run_fused_bench<100>(s, cfg);
+}
+
+// ── Named-model (H, I) perf grid — MLP1 Forward Up/Gate ──
+// TFLOPS at each model's real (H, I), T=8192, E normalized to 8. No standalone
+// correctness gate here (see kModelBenchShapes note); Mlp1Fused.Correctness is
+// the MOP correctness gate.
+TEST(Mlp1FusedModels, TFLOPs_Blackwell) {
+	if (!blackwell_available()) GTEST_SKIP() << "requires an sm_100 (Blackwell) GPU";
+	if (!mlp1_bench_enabled())  GTEST_SKIP() << "set MLP1_BENCH=1 to run the TFLOPS benchmark";
+	BenchCfg cfg;
+	for (const auto& s : kModelBenchShapes) run_fused_bench<100>(s, cfg);
 }
 
 TEST(Mlp1FusedAct, TFLOPs_Blackwell) {
@@ -833,7 +967,7 @@ int main(int argc, char** argv) {
 	if (!user_filtered && !listing) {
 		std::string f;
 		if (blackwell_available()) {
-			f = "Mlp1Fused.Correctness:Mlp1FusedAct.Correctness";
+			f = "Mlp1Fused.Correctness:Mlp1FusedAct.Correctness:Mlp1Fused.NoRegisterSpill";
 			if (mlp1_bench_enabled())
 				f += ":Mlp1Fused.TFLOPs_Blackwell:Mlp1FusedAct.TFLOPs_Blackwell";
 		} else if (hopper_available()) {
