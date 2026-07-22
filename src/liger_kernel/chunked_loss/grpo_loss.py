@@ -74,8 +74,17 @@ def sapo_loss_fn(importance_ratio: torch.Tensor, temperature: float) -> torch.Te
     return sigmoid_smoothed_loss * 4 / temperature
 
 
-def clip_coef_fn(coef, epsilon_low, epsilon_high, loss_type):
-    if loss_type == "cispo":
+def clip_coef_fn(coef, epsilon_low, epsilon_high, loss_type, advantages=None):
+    if loss_type == "gmpo":
+        positive_advantages = advantages.unsqueeze(1) >= 0
+        clipped_coef = torch.where(
+            positive_advantages,
+            torch.minimum(coef, torch.as_tensor(epsilon_high, device=coef.device, dtype=coef.dtype)),
+            torch.maximum(coef, torch.as_tensor(-epsilon_low, device=coef.device, dtype=coef.dtype)),
+        )
+        is_lower_clipped = coef < -epsilon_low
+        is_upper_clipped = coef > epsilon_high
+    elif loss_type == "cispo":
         # CISPO: clip and detach the importance weights
         upper_bound = epsilon_high
         lower_bound = None
@@ -108,7 +117,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         epsilon_low=0.2,
         epsilon_high=0.2,
         beta=0.04,
-        loss_type="dapo",  # ["grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo", "vespo"]
+        loss_type="dapo",  # ["grpo", "gmpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo", "vespo"]
         max_completion_length=None,  # Required for dr_grpo
         importance_sampling_level="token",  # ["token", "sequence"] - new parameter for GSPO
         sapo_temperature_pos=1.0,  # Temperature for positive advantages in SAPO
@@ -125,7 +134,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
         # Validate sequence-level + loss_type combinations
-        if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo", "vespo"):
+        if importance_sampling_level == "sequence" and loss_type in ("gmpo", "cispo", "sapo", "vespo"):
             raise ValueError(
                 f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'. "
                 f"Use importance_sampling_level='token' instead."
@@ -150,11 +159,18 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
                 "and 'sequence'."
             )
 
-        # From here, log_importance_weights (and all subsequent tensors, coef_1, coef_2, etc.) shape depends on
-        # importance_sampling_level: "token" level: (B, T); "sequence" level: (B, 1)
-        coef_1 = torch.exp(log_importance_weights)
-        coef_2, is_lower_clipped, is_upper_clipped = clip_coef_fn(coef_1, epsilon_low, epsilon_high, loss_type)
-        if loss_type == "cispo":
+        # GMPO coefficients are log-domain; all other loss types use ratio-domain coefficients.
+        coef_1 = log_importance_weights if loss_type == "gmpo" else torch.exp(log_importance_weights)
+        coef_2, is_lower_clipped, is_upper_clipped = clip_coef_fn(
+            coef_1, epsilon_low, epsilon_high, loss_type, advantages=advantages
+        )
+
+        if loss_type == "gmpo":
+            token_counts = attention_mask.sum(-1).clamp(min=1.0)
+            mean_log_ratio = (coef_2 * attention_mask).sum(-1) / token_counts
+            sample_ratio = torch.exp(mean_log_ratio)
+            per_token_loss = (-advantages.unsqueeze(1) * sample_ratio.unsqueeze(1)).expand_as(attention_mask)
+        elif loss_type == "cispo":
             # CISPO: clip and detach the importance weights, multiply by log probs
             # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2030
             per_token_loss = -coef_2 * advantages.unsqueeze(1) * per_token_logps
@@ -202,27 +218,26 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
 
         # Apply vLLM importance sampling correction BEFORE adding KL penalty
         # VESPO folds this correction into phi_seq (in log space), so we skip it here.
-        if vllm_is_ratio is not None and loss_type != "vespo":
+        if vllm_is_ratio is not None and loss_type not in ("gmpo", "vespo"):
             per_token_loss = per_token_loss * vllm_is_ratio
 
         if beta != 0.0:
             # Compute KL penalty (approximates KL[per_token_logps, ref_per_token_logps])
             kl_div = k3_loss_fn(ref_per_token_logps, per_token_logps)
             if use_bias_correction_kl:
-                # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= coef_1.
+                # Importance-sampling-corrected KL (DeepSeek-V3.2): kl *= unclipped importance ratio.
                 # Use exp(log_importance_weights) so the ratio's shape matches
                 # importance_sampling_level (token: (B, T); sequence: (B, 1)),
                 # mirroring TRL's ``per_token_kl * coef_1`` (un-clamped, before delta).
                 kl_div = kl_div * torch.exp(log_importance_weights)
-            # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
 
         # Note: We normalize by the number of tokens in the batch (using full_attention_mask),
         # which is consistent with the DAPO loss implementation (https://arxiv.org/html/2503.14476v1)
         # and TRL GRPO implementation
         # (https://github.com/huggingface/trl/blob/e751a16df56e70190fb94bed4a2035eec3303777/trl/trainer/grpo_trainer.py#L966)
-        if loss_type == "grpo" or loss_type == "sapo":
-            # Average per-sequence loss (SAPO uses same normalization as GRPO)
+        if loss_type in ("grpo", "gmpo", "sapo"):
+            # Average per-sequence loss (GMPO and SAPO use the same normalization as GRPO)
             loss = (
                 (per_token_loss * attention_mask).sum(-1) / torch.clamp(attention_mask.sum(-1), min=1.0)
             ).sum() / full_attention_mask.shape[0]
@@ -250,7 +265,6 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         metrics = []
         if beta != 0.0:
             metrics.append(((kl_div * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)))
-
         # Adjust clipping metric calculation based on importance sampling level
         if importance_sampling_level == "token":
             is_clipped = (is_lower_clipped & (advantages.unsqueeze(1) < 0)) | (
@@ -316,8 +330,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             ref_weight (torch.Tensor, optional): Reference model weight tensor. Shape: (vocab_size, hidden_size)
             ref_bias (torch.Tensor, optional): Reference model bias tensor. Shape: (vocab_size,)
             beta (float): Weight for the KL penalty
-            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo").
+            loss_type (str): Type of loss calculation ("grpo", "gmpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo").
                 Defaults to "dapo".
+                GMPO treats epsilon_low/high as log-space bounds ``[-epsilon_low, +epsilon_high]``.
             max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
             importance_sampling_level (str): Level of importance sampling ("token" or "sequence"). Defaults to "token".
             sapo_temperature_pos (float): Temperature for positive advantages in SAPO. Defaults to 1.0.
@@ -332,7 +347,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             torch.Tensor: Computed loss
         """
         # Validate before entering torch.compile boundary
-        if importance_sampling_level == "sequence" and loss_type in ("cispo", "sapo", "vespo"):
+        if importance_sampling_level == "sequence" and loss_type in ("gmpo", "cispo", "sapo", "vespo"):
             raise ValueError(
                 f"Sequence-level importance sampling is not supported for loss_type='{loss_type}'. "
                 f"Use importance_sampling_level='token' instead."
@@ -447,9 +462,10 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             chunk_size (int): Size of chunks for processing.
             epsilon_low (float): Lower bound for the importance sampling ratio.
             epsilon_high (float): Upper bound for the importance sampling ratio.
-            loss_type (str): Type of loss calculation ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo").
+            loss_type (str): Type of loss calculation ("grpo", "gmpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo").
                 Defaults to "dapo". For "cispo", epsilon_high is typically larger (e.g. 5.0) and
                 epsilon_low is unused. For "sapo", uses soft gating instead of hard clipping.
+                GMPO treats epsilon_low/high as log-space bounds ``[-epsilon_low, +epsilon_high]``.
             max_completion_length (int, optional): Maximum completion length, required for "dr_grpo". Defaults to None.
             importance_sampling_level (str): Level of importance sampling ("token" or "sequence"). Defaults to "token".
             sapo_temperature_pos (float): Temperature for positive advantages in SAPO. Defaults to 1.0.
