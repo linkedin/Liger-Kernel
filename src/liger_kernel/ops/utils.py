@@ -122,6 +122,12 @@ def element_mul_kernel(
     # Load the gradient output value
     grad_output = tl.load(grad_output_ptr)
 
+    # Multiplying by 1.0 is a no-op (e.g. when cross entropy is the last layer and
+    # grad_output is 1.0). Skip the read/write traffic here, on-device, so callers do
+    # not need a host-side `grad_output == 1.0` check that would force a device->host sync.
+    if grad_output == 1.0:
+        return
+
     # Perform the element-wise multiplication
     for i in range(0, n_cols, BLOCK_SIZE):
         X_offsets = i + tl.arange(0, BLOCK_SIZE)

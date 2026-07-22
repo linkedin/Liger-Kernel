@@ -74,9 +74,9 @@ def liger_cross_entropy_kernel(
     token_accuracy_ptr: Pointer to tensor to store the per-token accuracy. No operation if RETURN_TOKEN_ACCURACY is 0.
     token_accuracy_stride (int): The stride of the token accuracy tensor.
     n_cols (int): The number of columns in the input tensor.
-    n_non_ignore (float): The number of non-ignored elements in the batch.
-    sum_non_ignore_weight (float): The sum of non-ignored target's weights in the batch.
-    weight_sum (float): The sum of weight tensor.
+    n_non_ignore: Pointer to a 0-D tensor holding the number of non-ignored elements in the batch.
+    sum_non_ignore_weight: Pointer to a 0-D tensor holding the sum of non-ignored target's weights in the batch.
+    weight_sum: Pointer to a 0-D tensor holding the sum of weight tensor.
     ignore_index (int): The index to ignore in the target.
     label_smoothing (float): The amount of smoothing when computing the loss, where 0.0 means no smoothing.
     lse_square_scale (float): The scaler of (logsumexp(_input)) ^ 2 adding to the loss for the stability of training.
@@ -123,7 +123,14 @@ def liger_cross_entropy_kernel(
     if RETURN_PREDICTED_TOKENS:
         predicted_tokens_ptr += program_id * predicted_tokens_stride
 
+    # n_non_ignore, sum_non_ignore_weight and weight_sum arrive as 0-D device tensors
+    # (pointers), not Python scalars, so the host never blocks on a .item() sync before this
+    # kernel launches. The int64 count is cast to fp32 to keep the divisor precision the
+    # scalar path had.
+    n_non_ignore = tl.load(n_non_ignore).to(tl.float32)
     if HAS_WEIGHT:
+        sum_non_ignore_weight = tl.load(sum_non_ignore_weight).to(tl.float32)
+        weight_sum = tl.load(weight_sum).to(tl.float32)
         weight_y = tl.load(weight_ptr + y).cast(tl.float32)
 
     # Online softmax: 2 loads + 1 store (compared with 3 loads + 1 store for the safe softmax)
@@ -352,20 +359,22 @@ def cross_entropy_forward(
     )
 
     target_mask = target != ignore_index
-    n_non_ignore = target_mask.sum().item()
+    # Keep the count as a 0-D device tensor (no .item()) so we don't force a device->host
+    # sync before launching the kernel; the kernel loads it from this pointer.
+    n_non_ignore = target_mask.sum()
     assert (target * target_mask).max() < _input.shape[-1], (
         f"Target {target.max()} is out of bounds. Expected < {_input.shape[-1]}"
     )
     assert (target * target_mask).min() >= 0, f"Target {target.min()} is out of bounds. Expected >= 0"
     sum_non_ignore_weight = n_non_ignore
-    weight_sum = 0.0
+    weight_sum = n_non_ignore  # dummy pointer; only read by the kernel when HAS_WEIGHT
     if weight is not None:
         assert weight.shape[0] == V, f"If given, weight has to be a Tensor of size V. Got: {weight.shape}"
         assert torch.is_floating_point(weight), (
             f"If given, weight has to be a Tensor of floating point dtype. Got: {weight.dtype}"
         )
-        sum_non_ignore_weight = torch.gather(weight, dim=0, index=target.masked_select(target_mask)).sum().item()
-        weight_sum = weight.sum().item()
+        sum_non_ignore_weight = torch.gather(weight, dim=0, index=target.masked_select(target_mask)).sum()
+        weight_sum = weight.sum()
         # ensure weight is contiguous
         if weight.stride(-1) != 1:
             weight = weight.contiguous()
@@ -442,13 +451,14 @@ def cross_entropy_forward(
 
 
 def cross_entropy_backward(_input, grad_output):
-    # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
-    if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        pass
-    # If reduction is 'none'
-    elif grad_output.ndim > 0:
+    # If reduction is 'none', grad_output is a per-token vector: scale each row.
+    # (grad_output.ndim is a host-side shape check, so it does not force a sync.)
+    if grad_output.ndim > 0:
         _input = _input * grad_output.unsqueeze(dim=1)
-    # If reduction is ['mean', 'sum'], grad_output is just a scalar
+    # If reduction is ['mean', 'sum'], grad_output is just a scalar.
+    # When cross entropy is the last layer, grad_output is 1.0 and the multiply is a no-op;
+    # element_mul_kernel skips the work on-device in that case, so we avoid a host-side
+    # torch.equal() check that would force a device->host sync.
     # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
     # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
     else:

@@ -79,20 +79,20 @@ def fused_linear_cross_entropy_forward(
     token_accuracy_1d = torch.zeros(BT, dtype=torch.float32, device=device) if return_token_accuracy else None
     predicted_tokens_1d = torch.full((BT,), -1, dtype=torch.int64, device=device) if return_predicted_tokens else None
 
-    # TODO: evaluate how CUDA synchronization caused by .item() affects the speed
+    # Keep these reduction normalizers as 0-D device tensors (no .item()) so we don't force a
+    # device->host sync on the critical path before launching the per-chunk kernels; the kernel
+    # reads them from these pointers instead of receiving Python scalars.
     target_mask = target != ignore_index
-    total_n_non_ignore = target_mask.sum().item()
+    total_n_non_ignore = target_mask.sum()
     total_sum_non_ignore_ce_weight = total_n_non_ignore
-    ce_weight_sum = 0.0
+    ce_weight_sum = total_n_non_ignore  # dummy pointer; only read by the kernel when HAS_WEIGHT
     if ce_weight is not None:
         assert ce_weight.shape[0] == V, f"If given, weight has to be a Tensor of size V. Got: {ce_weight.shape}"
         assert torch.is_floating_point(ce_weight), (
             f"If given, weight has to be a Tensor of floating point dtype. Got: {ce_weight.dtype}"
         )
-        total_sum_non_ignore_ce_weight = (
-            torch.gather(ce_weight, dim=0, index=target.masked_select(target_mask)).sum().item()
-        )
-        ce_weight_sum = ce_weight.sum().item()
+        total_sum_non_ignore_ce_weight = torch.gather(ce_weight, dim=0, index=target.masked_select(target_mask)).sum()
+        ce_weight_sum = ce_weight.sum()
         if ce_weight.stride(-1) != 1:
             ce_weight = ce_weight.contiguous()
 
@@ -270,49 +270,51 @@ def fused_linear_cross_entropy_forward(
 
 
 def fused_linear_cross_entropy_backward(grad_output, grad_input, grad_weight, grad_bias):
-    # If cross entropy is the last layer, grad_output is 1.0. Skip the mul to save time
-    if not torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
-        # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
-        # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
-        BT, H = grad_input.shape
-        n_rows = BT
-        BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
+    # If cross entropy is the last layer, grad_output is 1.0 and the multiply is a no-op.
+    # We always launch the kernels and let element_mul_kernel skip the work on-device when
+    # grad_output == 1.0, instead of a host-side torch.equal() check that would force a
+    # device->host sync.
+    # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place
+    # for gradient storage and backward multiple times causes anomalies with PyTorch but not with Triton.
+    BT, H = grad_input.shape
+    n_rows = BT
+    BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(H))
+
+    element_mul_kernel[(n_rows,)](
+        grad_input,
+        grad_input.stride(-2),
+        grad_output,
+        H,
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=32 if not is_hip() else 16,
+    )
+
+    # handle grad_weight
+    if grad_weight is not None:
+        V, H = grad_weight.shape
+        n_rows = V
 
         element_mul_kernel[(n_rows,)](
-            grad_input,
-            grad_input.stride(-2),
+            grad_weight,
+            grad_weight.stride(-2),
             grad_output,
             H,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=32 if not is_hip() else 16,
         )
 
-        # handle grad_weight
-        if grad_weight is not None:
-            V, H = grad_weight.shape
-            n_rows = V
+    if grad_bias is not None:
+        V = grad_bias.shape[0]
+        n_rows = V
 
-            element_mul_kernel[(n_rows,)](
-                grad_weight,
-                grad_weight.stride(-2),
-                grad_output,
-                H,
-                BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32 if not is_hip() else 16,
-            )
-
-        if grad_bias is not None:
-            V = grad_bias.shape[0]
-            n_rows = V
-
-            element_mul_kernel[(n_rows,)](
-                grad_bias,
-                grad_bias.stride(-1),
-                grad_output,
-                1,
-                BLOCK_SIZE=BLOCK_SIZE,
-                num_warps=32 if not is_hip() else 16,
-            )
+        element_mul_kernel[(n_rows,)](
+            grad_bias,
+            grad_bias.stride(-1),
+            grad_output,
+            1,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=32 if not is_hip() else 16,
+        )
     return grad_input, grad_weight, grad_bias
 
 
