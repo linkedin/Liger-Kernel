@@ -325,7 +325,7 @@ def test_ce_forward_only_matches_triton(dtype):
 @pytest.mark.parametrize("dtype", _DTYPES, ids=_DTYPE_IDS)
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
 def test_ce_not_last_layer_grad_matches_triton(reduction, dtype):
-    """grad_output != 1.0 (scalar): exercises the `_input * grad_output` backward branch."""
+    """grad_output != 1.0 (scalar): exercises the in-place CuTe DSL scale kernel."""
     set_seed()
     BT, V = 256, 4096
     base = torch.randn(BT, V, device="cuda", dtype=torch.float32)

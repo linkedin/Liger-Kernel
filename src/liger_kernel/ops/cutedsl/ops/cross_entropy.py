@@ -7,7 +7,6 @@ import cutlass
 import cutlass.cute as cute
 import cutlass.utils
 import torch
-import triton
 
 from cutlass import Float32
 from cutlass import Int32
@@ -18,12 +17,8 @@ from cutlass.cutlass_dsl import T
 from cutlass.cutlass_dsl import dsl_user_op
 
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
-from liger_kernel.ops.utils import element_mul_kernel
 from liger_kernel.ops.utils import is_hip
 from liger_kernel.utils import infer_device_arch
-
-# Matches the Triton CE backward cap (NVIDIA-only path, so the NPU 2048 cap is irrelevant).
-_MAX_FUSED_SIZE = 65536 // 2
 
 # log2(e) and ln(2): the online-softmax math is done in base-2 (hardware ex2.approx)
 # then converted, exactly mirroring the Triton kernel for numerical parity.
@@ -77,6 +72,7 @@ _NUM_STAGES = 4
 # kernel bakes. V/BT are dynamic so one compile serves all shapes. REQUIRED: without it the
 # @cute.jit host fn recompiles on every call (~30 ms that dwarfs the kernel).
 _compile_cache = {}
+_scale_compile_cache = {}
 
 # Per-call host overhead is constant (~25 us): it doesn't scale with BT/V, so it dominates small
 # shapes and vanishes at scale. Cache the CUstream wrapper keyed on torch's raw stream handle so
@@ -147,6 +143,42 @@ def _advance(idx, n: cutlass.Constexpr):
     if const_expr(n & (n - 1) == 0):
         return (idx + 1) & (n - 1)
     return idx + 1 if idx < n - 1 else 0
+
+
+# =============================================================================
+# Backward scale kernel
+# =============================================================================
+@cute.kernel
+def _scale_in_place_kernel(mX: cute.Tensor, mScale: cute.Tensor):
+    tid, _, _ = cute.arch.thread_idx()
+    row, _, _ = cute.arch.block_idx()
+    V = mX.shape[1]
+    scale = mScale[0].to(Float32)
+
+    for i in cutlass.range(0, cute.ceil_div(V, 256)):
+        col = tid + i * 256
+        if col < V:
+            value = mX[row, col].to(Float32) * scale
+            mX[row, col] = value.to(mX.element_type)
+
+
+@cute.jit
+def _scale_in_place_host(mX: cute.Tensor, mScale: cute.Tensor, stream: cuda.CUstream = None):
+    _scale_in_place_kernel(mX, mScale).launch(
+        grid=[mX.shape[0], 1, 1],
+        block=[256, 1, 1],
+        stream=stream,
+    )
+
+
+def _scale_in_place(x, scale):
+    x_ct = to_cute_tensor(x)
+    scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=2)
+    stream = _cute_stream()
+    key = (x.dtype, scale.dtype)
+    if key not in _scale_compile_cache:
+        _scale_compile_cache[key] = cute.compile(_scale_in_place_host, x_ct, scale_ct, stream)
+    _scale_compile_cache[key](x_ct, scale_ct, stream)
 
 
 # =============================================================================
@@ -844,20 +876,9 @@ def cross_entropy_backward(_input, grad_output):
         return _input * grad_output.unsqueeze(dim=1)
     # reduction in {mean, sum}: scalar upstream grad. Scale the saved gradient IN PLACE so we
     # never materialize a second BT×V buffer (Triton-parity peak memory: 1x logits, not 2x).
-    # A raw Triton element-wise kernel is used instead of `_input *= grad_output` because an
-    # in-place torch mul on the tensor returned from forward bumps its autograd version counter
-    # and trips backward-through-backward anomalies; the raw kernel writes through the pointer
-    # without that bookkeeping — exactly how the Triton CE backward dodges the same issue.
-    BT, V = _input.shape
-    BLOCK_SIZE = min(_MAX_FUSED_SIZE, triton.next_power_of_2(V))
-    element_mul_kernel[(BT,)](
-        _input,
-        _input.stride(-2),
-        grad_output,
-        V,
-        BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=32,
-    )
+    # A raw CuTe DSL kernel is used instead of `_input *= grad_output` because the torch op
+    # bumps the forward output's autograd version counter and breaks repeated backward.
+    _scale_in_place(_input, grad_output)
     return _input
 
 
