@@ -1,4 +1,4 @@
-.PHONY: test checkstyle test-convergence all serve build clean
+.PHONY: test test-verbose checkstyle test-convergence all serve build clean
 
 
 all: checkstyle test test-convergence
@@ -6,8 +6,17 @@ all: checkstyle test test-convergence
 # Command to run pytest for correctness tests
 test:
 	python -m pytest --disable-warnings \
+		--ignore=test/convergence \
+		test/
+
+# Command to run pytest for correctness tests with coverage reporting and full test-duration breakdown
+test-verbose:
+	python -m pytest --disable-warnings \
 		--cov=src/liger_kernel \
 		--cov-report=term-missing \
+		--cov-report=html \
+		--cov-config=pyproject.toml \
+		--durations=0 \
 		--ignore=test/convergence \
 		test/
 
@@ -28,13 +37,13 @@ checkstyle:
 # Command to run pytest for convergence tests
 # We have to explicitly set HF_DATASETS_OFFLINE=1, or dataset will silently try to send metrics and timeout (80s) https://github.com/huggingface/datasets/blob/37a603679f451826cfafd8aae00738b01dcb9d58/src/datasets/load.py#L286
 test-convergence:
-	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/fp32/test_mini_models.py
-	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/fp32/test_mini_models_multimodal.py
-	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/fp32/test_mini_models_with_logits.py
-
-	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/bf16/test_mini_models.py
-	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/bf16/test_mini_models_multimodal.py
-	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings test/convergence/bf16/test_mini_models_with_logits.py
+	HF_DATASETS_OFFLINE=1 python -m pytest --disable-warnings \
+		test/convergence/fp32/test_mini_models.py \
+		test/convergence/fp32/test_mini_models_multimodal.py \
+		test/convergence/fp32/test_mini_models_with_logits.py \
+		test/convergence/bf16/test_mini_models.py \
+		test/convergence/bf16/test_mini_models_multimodal.py \
+		test/convergence/bf16/test_mini_models_with_logits.py
 
 # Command to run all benchmark scripts and update benchmarking data file
 # By default this doesn't overwrite existing data for the same benchmark experiment

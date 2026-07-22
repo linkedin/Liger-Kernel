@@ -1,21 +1,23 @@
-"""Run a kernel benchmark twice (Triton + CuTe-DSL) and merge results into one CSV.
+"""Run a kernel benchmark with Triton and CuTe DSL backends into one CSV.
 
-Workflow:
-    python scripts/run_cutedsl_compare.py --kernel cross_entropy [benchmark args...]
+Usage (from ``benchmark/scripts``)::
 
-This driver spawns the per-kernel benchmark script in two subprocesses with
-different env vars, so all series (liger_triton / liger_cutedsl / torch) land in
-`benchmark/data/all_benchmark_data_cutedsl.csv` under distinct `kernel_provider`
-values, ready for direct plotting via:
+    python run_cutedsl_compare.py --kernel cross_entropy [benchmark args...]
+    python run_cutedsl_compare.py --kernel rms_norm --source h100 [benchmark args...]
 
-    python ../benchmarks_visualizer.py \
-        --kernel-name <name> --metric-name speed \
-        --data-file data/all_benchmark_data_cutedsl.csv
+Backend selection is process-global and happens at import time, so this driver
+spawns the underlying benchmark script twice:
 
-CuTe-DSL (``cutedsl``) is the CUDA-only Python DSL shipped with NVIDIA CUTLASS
-(``import cutlass.cute``), targeting Hopper (SM90) / Blackwell (SM100/SM110). It
-is opt-in via ``LIGER_KERNEL_IMPL=cutedsl``; the benchmark script's ``liger``
-provider then dispatches to the CuTe-DSL kernel with no script changes needed.
+  * baseline: ``LIGER_KERNEL_IMPL`` unset
+  * CuTe DSL: ``LIGER_KERNEL_IMPL=cutedsl``
+
+``LIGER_BENCH_PROVIDER_TAG`` keeps the ``liger_triton`` and ``liger_cutedsl``
+rows distinct. Runs are sequential because the CSV writer performs an unlocked
+read-modify-write.
+
+For backward compatibility, cross-entropy without ``--source`` writes
+``all_benchmark_data_cutedsl.csv``. Other runs use a kernel-specific target,
+such as ``all_benchmark_data_cutedsl_rms_norm_h100.csv``.
 """
 
 import argparse
@@ -23,21 +25,24 @@ import os
 import subprocess
 import sys
 
-CUTEDSL_ENABLED_KERNELS = [
-    "cross_entropy",
-]
+CUTEDSL_ENABLED_KERNELS = ["cross_entropy", "rms_norm"]
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare Triton vs CuTe-DSL Liger kernels in one CSV.",
+        description="Compare Triton and CuTe DSL Liger kernels in one CSV.",
         # Unknown args are forwarded to the underlying benchmark script.
     )
     parser.add_argument(
         "--kernel",
-        required=True,
+        default="rms_norm",
         choices=CUTEDSL_ENABLED_KERNELS,
-        help="Kernel to compare. Must have a CuTe-DSL (cutedsl) backend.",
+        help="Kernel to compare. Must have a CuTe DSL backend.",
+    )
+    parser.add_argument(
+        "--source",
+        default="",
+        help="Optional label (for example, 'h100' or 'b200') appended to the CSV target name.",
     )
     args, passthrough = parser.parse_known_args()
 
@@ -47,16 +52,20 @@ def main():
         print(f"error: benchmark script not found: {bench_script}", file=sys.stderr)
         sys.exit(1)
 
-    # Both runs target the same _cutedsl.csv; provider_tag disambiguates the
-    # "liger" rows so they don't overwrite each other on the dedup key.
+    source = args.source.strip().lower()
+    if args.kernel == "cross_entropy" and not source:
+        target = "cutedsl"
+    else:
+        target = f"cutedsl_{args.kernel}" + (f"_{source}" if source else "")
+
     runs = [
         ("triton baseline", {"LIGER_KERNEL_IMPL": "", "LIGER_BENCH_PROVIDER_TAG": "liger_triton"}),
         ("cutedsl", {"LIGER_KERNEL_IMPL": "cutedsl", "LIGER_BENCH_PROVIDER_TAG": "liger_cutedsl"}),
     ]
 
     for label, run_env in runs:
-        print(f"\n========== {args.kernel}: {label} ==========\n", flush=True)
-        env = {**os.environ, "LIGER_BENCH_TARGET": "cutedsl", **run_env}
+        print(f"\n========== {args.kernel} [{source or 'default'}]: {label} ==========\n", flush=True)
+        env = {**os.environ, "LIGER_BENCH_TARGET": target, **run_env}
         result = subprocess.run(
             [sys.executable, bench_script, *passthrough],
             env=env,
@@ -65,6 +74,8 @@ def main():
         if result.returncode != 0:
             print(f"error: {label} run failed with exit code {result.returncode}", file=sys.stderr)
             sys.exit(result.returncode)
+
+    print(f"\nWrote merged results to benchmark/data/all_benchmark_data_{target}.csv", flush=True)
 
 
 if __name__ == "__main__":
