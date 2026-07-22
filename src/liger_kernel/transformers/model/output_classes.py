@@ -25,6 +25,13 @@ except Exception:
     _Gemma4CausalLMOutputWithPast = None
 
 try:
+    from transformers.models.gemma4_unified.modeling_gemma4_unified import (
+        Gemma4UnifiedCausalLMOutputWithPast as _Gemma4UnifiedCausalLMOutputWithPast,
+    )
+except Exception:
+    _Gemma4UnifiedCausalLMOutputWithPast = None
+
+try:
     from transformers.models.glm4v_moe.modeling_glm4v_moe import (
         Glm4vMoeCausalLMOutputWithPast as _Glm4vMoeCausalLMOutputWithPast,
     )
@@ -117,6 +124,14 @@ if _Gemma4CausalLMOutputWithPast is not None:
 
     @dataclass
     class LigerGemma4CausalLMOutputWithPast(_Gemma4CausalLMOutputWithPast):
+        token_accuracy: Optional[torch.FloatTensor] = None
+        predicted_tokens: Optional[torch.LongTensor] = None
+
+
+if _Gemma4UnifiedCausalLMOutputWithPast is not None:
+
+    @dataclass
+    class LigerGemma4UnifiedCausalLMOutputWithPast(_Gemma4UnifiedCausalLMOutputWithPast):
         token_accuracy: Optional[torch.FloatTensor] = None
         predicted_tokens: Optional[torch.LongTensor] = None
 
