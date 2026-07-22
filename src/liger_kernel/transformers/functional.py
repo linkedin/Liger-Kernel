@@ -21,6 +21,7 @@ from liger_kernel.ops import LigerMHCPreFunction
 from liger_kernel.ops import LigerModulatedRMSNormFunction
 from liger_kernel.ops import LigerMultiTokenAttentionFunction
 from liger_kernel.ops import LigerPolyNormFunction
+from liger_kernel.ops import LigerQkNormRopeFunction
 from liger_kernel.ops import LigerQwen2VLMRopeFunction
 from liger_kernel.ops import LigerReLUSquaredFunction
 from liger_kernel.ops import LigerRMSNormFunction
@@ -286,6 +287,10 @@ def liger_layer_norm(X, W, B, eps):
 
 def liger_qwen2vl_mrope(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
     return LigerQwen2VLMRopeFunction.apply(q, k, cos, sin, mrope_section, unsqueeze_dim)
+
+
+def liger_qk_norm_rope(q, k, q_weight, k_weight, cos, sin, eps):
+    return LigerQkNormRopeFunction.apply(q, k, q_weight, k_weight, cos, sin, eps)
 
 
 def liger_relu_squared(x):

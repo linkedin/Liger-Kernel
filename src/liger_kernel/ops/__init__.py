@@ -76,6 +76,9 @@ from liger_kernel.ops.multi_token_attention import LigerMultiTokenAttentionFunct
 from liger_kernel.ops.poly_norm import LigerPolyNormFunction  # noqa: F401
 from liger_kernel.ops.poly_norm import poly_norm_backward  # noqa: F401
 from liger_kernel.ops.poly_norm import poly_norm_forward  # noqa: F401
+from liger_kernel.ops.qk_norm_rope import LigerQkNormRopeFunction  # noqa: F401
+from liger_kernel.ops.qk_norm_rope import qk_norm_rope_backward  # noqa: F401
+from liger_kernel.ops.qk_norm_rope import qk_norm_rope_forward  # noqa: F401
 from liger_kernel.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction  # noqa: F401
 from liger_kernel.ops.relu_squared import LigerReLUSquaredFunction  # noqa: F401
 from liger_kernel.ops.relu_squared import relu_squared_backward  # noqa: F401
