@@ -18,7 +18,7 @@ cd Liger-Kernel
 ```
 2. **Install Dependencies and Editable Package**
 ```
-pip install . -e[dev]
+pip install -e ".[dev]"
 ```
 If encounter error `no matches found: .[dev]`, please use
 ```
