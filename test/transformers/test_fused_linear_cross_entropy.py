@@ -1022,3 +1022,73 @@ def test_correctness_with_predicted_tokens(B, T, H, V, reduction, dtype, bias, i
     # Verify backward still works
     result.loss.backward()
     assert _input.grad is not None
+
+
+@pytest.mark.parametrize(
+    "B, T, H, V",
+    [
+        (2, 16, 32, 64),
+        (1, 32, 64, 128),
+    ],
+)
+@pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize(
+    "dtype, atol, rtol",
+    [
+        (torch.float32, 1e-4, 1e-4),
+    ],
+)
+def test_correctness_reduction_none_per_token_grad_output(B, T, H, V, bias, dtype, atol, rtol):
+    """reduction="none" must honour a *per-token* upstream gradient.
+
+    With ``reduction="none"`` the loss is a per-token vector, so ``backward()``
+    receives a per-token ``grad_output``. The chain rule then requires
+
+        dL/dW = sum_i grad_output[i] * (g_i outer x_i)
+
+    i.e. the upstream weight has to be applied to each row of the logits gradient
+    *before* it is summed into ``grad_weight`` / ``grad_bias``. Scaling the
+    already-summed result afterwards cannot reproduce this.
+
+    Regression test: previously ``element_mul_kernel`` loaded ``grad_output`` as a
+    scalar, so every gradient was multiplied by ``grad_output[0]``. A uniform
+    ``grad_output`` (e.g. ``torch.ones``) hides the bug, so this test uses a
+    non-uniform one.
+    """
+    set_seed(42)
+    BT = B * T
+
+    _input = torch.randn(BT, H, device=device, dtype=dtype) * 0.1
+    weight = torch.randn(V, H, device=device, dtype=dtype) * 0.1
+    bias_t = torch.randn(V, device=device, dtype=dtype) * 0.1 if bias else None
+    target = torch.randint(0, V, (BT,), device=device, dtype=torch.long)
+    # a genuinely non-uniform per-token upstream gradient
+    grad_output = torch.rand(BT, device=device, dtype=dtype) + 0.5
+
+    def torch_ref():
+        x = _input.clone().requires_grad_(True)
+        w = weight.clone().requires_grad_(True)
+        b = bias_t.clone().requires_grad_(True) if bias else None
+        logits = torch.nn.functional.linear(x, w, b)
+        loss = torch.nn.functional.cross_entropy(logits, target, reduction="none")
+        loss.backward(grad_output)
+        return loss, x.grad, w.grad, (b.grad if bias else None)
+
+    def liger():
+        x = _input.clone().requires_grad_(True)
+        w = weight.clone().requires_grad_(True)
+        b = bias_t.clone().requires_grad_(True) if bias else None
+        loss, _, _, _ = LigerFusedLinearCrossEntropyFunction.apply(
+            x, w, target, b, None, -100, 0.0, 0.0, "none", None, False, None, False, False, False
+        )
+        loss.backward(grad_output)
+        return loss, x.grad, w.grad, (b.grad if bias else None)
+
+    ref_loss, ref_gx, ref_gw, ref_gb = torch_ref()
+    lig_loss, lig_gx, lig_gw, lig_gb = liger()
+
+    assert_verbose_allclose(lig_loss, ref_loss, atol=atol, rtol=rtol)
+    assert_verbose_allclose(lig_gx, ref_gx, atol=atol, rtol=rtol)
+    assert_verbose_allclose(lig_gw, ref_gw, atol=atol, rtol=rtol)
+    if bias:
+        assert_verbose_allclose(lig_gb, ref_gb, atol=atol, rtol=rtol)
