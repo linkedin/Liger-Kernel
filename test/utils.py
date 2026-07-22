@@ -535,6 +535,20 @@ def revert_liger_kernel_to_gemma4_unified_text(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_gemma4_unified(model_config: MiniModelConfig):
+    """Revert all Liger kernel patches applied to Gemma4 Unified multimodal model."""
+
+    from transformers.models.gemma4_unified import modeling_gemma4_unified
+
+    # Reloading modeling_gemma4_unified resets Gemma4UnifiedRMSNorm /
+    # Gemma4UnifiedTextMLP / Gemma4UnifiedForConditionalGeneration.forward,
+    # which is the surface the multimodal patch touches (the encoder-free
+    # vision/audio embedders live in the same module).
+    importlib.reload(modeling_gemma4_unified)
+    model_config.model_class = modeling_gemma4_unified.Gemma4UnifiedForConditionalGeneration
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_gemma3(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Gemma3.

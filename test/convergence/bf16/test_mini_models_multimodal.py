@@ -14,6 +14,7 @@ from transformers.models.siglip.configuration_siglip import SiglipVisionConfig
 
 from liger_kernel.transformers import apply_liger_kernel_to_gemma3
 from liger_kernel.transformers import apply_liger_kernel_to_gemma4
+from liger_kernel.transformers import apply_liger_kernel_to_gemma4_unified
 from liger_kernel.transformers import apply_liger_kernel_to_internvl
 from liger_kernel.transformers import apply_liger_kernel_to_llama4
 from liger_kernel.transformers import apply_liger_kernel_to_llava
@@ -42,6 +43,7 @@ from test.utils import multimodal_collate_fn
 from test.utils import require_deterministic
 from test.utils import revert_liger_kernel_to_gemma3
 from test.utils import revert_liger_kernel_to_gemma4
+from test.utils import revert_liger_kernel_to_gemma4_unified
 from test.utils import revert_liger_kernel_to_internvl
 from test.utils import revert_liger_kernel_to_llama4
 from test.utils import revert_liger_kernel_to_llava
@@ -226,6 +228,21 @@ try:
     GEMMA4_AVAILABLE = True
 except ImportError:
     GEMMA4_AVAILABLE = False
+
+try:
+    # Gemma4 Unified multimodal requires transformers>=5.10.0
+    from transformers.models.gemma4_unified.configuration_gemma4_unified import Gemma4UnifiedConfig
+    from transformers.models.gemma4_unified.configuration_gemma4_unified import Gemma4UnifiedTextConfig
+    from transformers.models.gemma4_unified.configuration_gemma4_unified import Gemma4UnifiedVisionConfig
+    from transformers.models.gemma4_unified.feature_extraction_gemma4_unified import Gemma4UnifiedAudioFeatureExtractor
+    from transformers.models.gemma4_unified.image_processing_gemma4_unified import Gemma4UnifiedImageProcessor
+    from transformers.models.gemma4_unified.modeling_gemma4_unified import Gemma4UnifiedForConditionalGeneration
+    from transformers.models.gemma4_unified.processing_gemma4_unified import Gemma4UnifiedProcessor
+    from transformers.models.gemma4_unified.video_processing_gemma4_unified import Gemma4UnifiedVideoProcessor
+
+    GEMMA4_UNIFIED_AVAILABLE = True
+except ImportError:
+    GEMMA4_UNIFIED_AVAILABLE = False
 
 try:
     from transformers.models.llama4.configuration_llama4 import Llama4Config
@@ -582,6 +599,54 @@ if GEMMA4_AVAILABLE:
                 position_embedding_size=1024,
             ),
             audio_config=None,  # Audio out of scope (vision/audio tower follow-up PR)
+            image_token_id=5,  # matches tokenizer "5": "<image_soft_token>"
+            boi_token_id=4,  # matches tokenizer "4": "<start_of_image>"
+            eoi_token_id=6,  # matches tokenizer "6": "<end_of_image>"
+            video_token_id=7,  # dummy, video not tested
+            boa_token_id=4,  # dummy, audio not tested
+            eoa_token_index=6,  # dummy, audio not tested
+            attn_implementation="eager",
+        ),
+    )
+
+if GEMMA4_UNIFIED_AVAILABLE:
+    MINI_MODEL_SETUPS["mini_gemma4_unified"] = MiniModelConfig(
+        liger_kernel_patch_func=functools.partial(
+            apply_liger_kernel_to_gemma4_unified, fused_linear_cross_entropy=False
+        ),
+        liger_kernel_patch_revert_func=revert_liger_kernel_to_gemma4_unified,
+        model_class=Gemma4UnifiedForConditionalGeneration,
+        mini_model_config=Gemma4UnifiedConfig(
+            text_config=Gemma4UnifiedTextConfig(
+                vocab_size=32000,  # 262144
+                hidden_size=1024,  # 3840
+                intermediate_size=2048,  # 15360
+                num_hidden_layers=4,  # 48
+                num_attention_heads=4,  # 16
+                num_key_value_heads=2,  # 8
+                head_dim=128,  # 256
+                global_head_dim=128,  # 512 — mini-sized to match head_dim
+                rms_norm_eps=1e-6,
+                use_cache=True,
+                tie_word_embeddings=True,
+                attention_bias=False,
+                attention_dropout=0.0,
+                # Defaults on 12B. Unlike gemma4 (omni) there are no PLE / MoE
+                # fields on the unified text config.
+                num_kv_shared_layers=0,
+                use_double_wide_mlp=False,
+            ),
+            # Encoder-free vision embedder (no AutoModel tower). patch_size and
+            # pooling_kernel_size are pinned by Gemma4UnifiedImageProcessor
+            # defaults, which emit raw patches of dim
+            # (patch_size * pooling_kernel_size)^2 * 3 = 6912.
+            vision_config=Gemma4UnifiedVisionConfig(
+                patch_size=16,
+                pooling_kernel_size=3,
+                mm_embed_dim=256,  # 3840
+                output_proj_dims=256,  # must equal mm_embed_dim
+            ),
+            audio_config=None,  # Audio out of scope (mirrors mini_gemma4)
             image_token_id=5,  # matches tokenizer "5": "<image_soft_token>"
             boi_token_id=4,  # matches tokenizer "4": "<start_of_image>"
             eoi_token_id=6,  # matches tokenizer "6": "<end_of_image>"
@@ -1294,6 +1359,34 @@ def create_processor(model_name: str):
         image_processor = Gemma3ImageProcessor()
         return Gemma3Processor(image_processor=image_processor, tokenizer=fast_tokenizer)
 
+    elif model_name.startswith("mini_gemma4_unified"):
+        # Must precede the broader "mini_gemma4" prefix check below.
+        tokenizer_config = load_tokenizer_config(
+            os.path.join(
+                FAKE_CONFIGS_PATH,
+                "Google/Gemma4Unified/gemma-4-12B-it/tokenizer_config.json",
+            )
+        )
+        tokenizer_base = train_bpe_tokenizer(
+            [
+                token.content
+                for key, token in sorted(
+                    tokenizer_config["added_tokens_decoder"].items(),
+                    key=lambda x: int(x[0]),
+                )
+            ]
+        )
+        fast_tokenizer = GemmaTokenizer(tokenizer_object=tokenizer_base, **tokenizer_config)
+        # Audio/video processors constructed with defaults; the convergence
+        # path only feeds image+text, so the audio/video branches in
+        # Gemma4UnifiedProcessor.__call__ are not exercised.
+        return Gemma4UnifiedProcessor(
+            feature_extractor=Gemma4UnifiedAudioFeatureExtractor(),
+            image_processor=Gemma4UnifiedImageProcessor(),
+            tokenizer=fast_tokenizer,
+            video_processor=Gemma4UnifiedVideoProcessor(),
+        )
+
     elif model_name.startswith("mini_gemma4"):
         tokenizer_config = load_tokenizer_config(
             os.path.join(
@@ -1769,6 +1862,25 @@ def run_mini_model_multimodal(
                 pytest.mark.skipif(
                     not GEMMA4_AVAILABLE,
                     reason="Gemma4 not available in this version of transformers",
+                ),
+            ],
+        ),
+        pytest.param(
+            "mini_gemma4_unified",
+            32,
+            1e-5,
+            torch.bfloat16,
+            5e-2,
+            5e-2,
+            1e-1,
+            1e-1,
+            1e-2,
+            1e-2,
+            marks=[
+                pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
+                pytest.mark.skipif(
+                    not GEMMA4_UNIFIED_AVAILABLE,
+                    reason="Gemma4 Unified not available in this version of transformers",
                 ),
             ],
         ),
