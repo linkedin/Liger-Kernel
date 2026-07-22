@@ -8,6 +8,7 @@ from test.utils import assert_verbose_allclose
 from test.utils import set_seed
 
 from liger_kernel.ops import LigerFusedLinearCrossEntropyFunction
+from liger_kernel.ops.fused_linear_cross_entropy import fused_linear_cross_entropy_forward
 from liger_kernel.transformers.functional import CrossEntropyOutput
 from liger_kernel.transformers.functional import liger_fused_linear_cross_entropy
 from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
@@ -1022,3 +1023,22 @@ def test_correctness_with_predicted_tokens(B, T, H, V, reduction, dtype, bias, i
     # Verify backward still works
     result.loss.backward()
     assert _input.grad is not None
+
+
+def test_empty_weight_raises_clear_error():
+    """
+    Regression test for https://github.com/linkedin/Liger-Kernel/issues/767
+
+    When `weight` has a vocab dimension of 0 (e.g. accessing a DeepSpeed ZeRO-3
+    partitioned parameter directly, before it has been gathered), the chunking
+    math used to divide by `inc_factor = cdiv(V, H)`, which is 0 when V is 0.
+    This raised a cryptic `ZeroDivisionError` deep inside triton. We now raise a
+    clear, actionable error instead.
+    """
+    H = 16
+    weight = torch.randn(0, H)
+    _input = torch.randn(4, H, requires_grad=True)
+    target = torch.randint(0, 10, (4,))
+
+    with pytest.raises(AssertionError, match="non-empty vocab dimension"):
+        fused_linear_cross_entropy_forward(_input, weight, target)
