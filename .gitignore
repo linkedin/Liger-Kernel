@@ -32,3 +32,5 @@ liger_cute_kernels/build90a/
 # Local design / process writeup docs (kept locally, not tracked)
 blackwell_port/
 writeup*.md
+evals
+pipeline.md

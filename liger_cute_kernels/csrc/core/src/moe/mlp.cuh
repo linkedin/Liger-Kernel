@@ -170,8 +170,9 @@ __device__ __forceinline__ void mlp_fused_fwd(
 
 	cute::TMEM::Allocator1Sm tmem_alloc{};
 	if constexpr (Compute == 100) {
-		constexpr int kTmemColumns = (2 * Traits1::TileN > Traits2::TileN)
-			? 2 * Traits1::TileN : Traits2::TileN;
+		constexpr int kMlp1Cols = Traits1::AccStages * (2 * Traits1::TileN);
+		constexpr int kTmemColumns = (kMlp1Cols > Traits2::TileN)
+			? kMlp1Cols : Traits2::TileN;
 		if (warp_id == 4) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tmem_base);
 			__syncwarp();
@@ -240,8 +241,19 @@ __device__ __forceinline__ void mlp_fused_fwd(
 					dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
 			}
 
+			// Fused MoE CTA warp map: warp 0 = TMA, warps 1..3 = NVSHMEM comm
+			// (warp 3 = put), warps 4..11 = MLP GEMM consumers. Warp 3 is a comm
+			// warp here, so the fused MLP1 keeps the ORIGINAL warp-4 UMMA design
+			// (single-warp UMMA + warps 4..11 epilogue). The warp-3 dual-WG
+			// rewrite is used ONLY by the isolated MLP1 kernel (no comm warps),
+			// so it neither frees warp 3 from comm nor changes the shared MLP
+			// barrier count — MLP2 and the rest of the fused pipeline are
+			// untouched. Compile-time flag (no register cost). Enabling warp-3
+			// here would require the comm-warp + barrier migration (pipeline.md
+			// §5) — intentionally out of scope.
+			constexpr bool kMlp1FusedWarp3 = false;  // fused path: warp 3 is a comm warp
 			if (warp_id >= 4 && warp_id <= 11) {
-				mlp1_fused_consumer<Traits1, Compute>(
+				mlp1_fused_consumer<Traits1, Compute, kMlp1FusedWarp3>(
 					p1_pipe, p1_cons_state,
 					smem.mlp1, tma_store_z, z_m, dims.intermediate_dim,
 					num_z_m_tiles, dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
@@ -324,8 +336,9 @@ __device__ __forceinline__ void mlp_fused_fwd(
 	}
 
 	if constexpr (Compute == 100) {
-		constexpr int kTmemColumns = (2 * Traits1::TileN > Traits2::TileN)
-			? 2 * Traits1::TileN : Traits2::TileN;
+		constexpr int kMlp1Cols = Traits1::AccStages * (2 * Traits1::TileN);
+		constexpr int kTmemColumns = (kMlp1Cols > Traits2::TileN)
+			? kMlp1Cols : Traits2::TileN;
 		cutlass::arch::NamedBarrier::sync(kMlpBarrierThreads, kMlpBarrierId);
 		if (warp_id == 4) {
 			tmem_alloc.release_allocation_lock();
