@@ -520,6 +520,21 @@ def revert_liger_kernel_to_gemma4(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_gemma4_unified_text(model_config: MiniModelConfig):
+    """Revert all Liger kernel patches applied to Gemma4 Unified text model."""
+
+    from transformers.models.gemma4_unified import modeling_gemma4_unified
+
+    # Only modeling_gemma4_unified needs reloading: the class-level swaps
+    # (Gemma4UnifiedRMSNorm, Gemma4UnifiedTextMLP) are reassignments on this
+    # module, and reloading resets them to the original HF classes.
+    importlib.reload(modeling_gemma4_unified)
+
+    model_config.model_class = modeling_gemma4_unified.Gemma4UnifiedForCausalLM
+
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_gemma3(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to Gemma3.
