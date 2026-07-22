@@ -2516,6 +2516,14 @@ def run_mini_model(
             marks=[
                 pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
                 pytest.mark.skipif(not NEMOTRON_AVAILABLE, reason="Nemotron not available"),
+                pytest.mark.xfail(
+                    condition=not IS_TRANSFORMERS_V5_OR_LATER,
+                    reason=(
+                        "On transformers<5.0.0 NemotronModel.forward() lacks the universal **kwargs, so the "
+                        "harness's accum_dtype kwarg raises TypeError; **kwargs was added in the v5.0.0 rework."
+                    ),
+                    strict=False,
+                ),
             ],
         ),
     ],
