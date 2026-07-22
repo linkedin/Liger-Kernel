@@ -325,7 +325,7 @@ def test_ce_forward_only_matches_triton(dtype):
 @pytest.mark.parametrize("dtype", _DTYPES, ids=_DTYPE_IDS)
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
 def test_ce_not_last_layer_grad_matches_triton(reduction, dtype):
-    """grad_output != 1.0 (scalar): exercises the `_input * grad_output` backward branch."""
+    """grad_output != 1.0 (scalar): exercises the in-place CuTe DSL scale kernel."""
     set_seed()
     BT, V = 256, 4096
     base = torch.randn(BT, V, device="cuda", dtype=torch.float32)
@@ -359,17 +359,27 @@ def test_ce_noncontiguous_input_matches_triton(dtype):
 
 # =============================================================================
 # B. Warp-count selection (white-box on the compile cache): the streaming kernel bakes
-#    num_warps per dtype, mirroring the Triton CE Blackwell convention — 8 warps for 2-byte
-#    dtypes (instruction-issue-bound), 32 for fp32 (bandwidth-bound). num_warps is the last
-#    element of the compile-cache key.
+#    num_warps per dtype AND arch, mirroring the Triton CE convention exactly —
+#    Blackwell (sm_100+) bf16/fp16 -> 8 (instruction-issue-bound), fp32 -> 32; Hopper
+#    (sm_90) and earlier -> 32 for all dtypes (bandwidth-bound); AMD (ROCm) -> 16.
+#    num_warps is the last element of the compile-cache key.
 # =============================================================================
 @cuda_required
 @pytest.mark.parametrize(
-    "dtype, expected_warps",
-    [(torch.bfloat16, 8), (torch.float16, 8), (torch.float32, 32)],
+    "dtype",
+    [torch.bfloat16, torch.float16, torch.float32],
     ids=["bf16", "fp16", "fp32"],
 )
-def test_num_warps_matches_dtype_convention(dtype, expected_warps):
+def test_num_warps_matches_dtype_convention(dtype):
+    from liger_kernel.ops.utils import is_hip
+    from liger_kernel.utils import infer_device_arch
+
+    if is_hip():
+        expected_warps = 16
+    else:
+        is_blackwell = infer_device_arch().startswith("blackwell")
+        expected_warps = 8 if (dtype in (torch.bfloat16, torch.float16) and is_blackwell) else 32
+
     mod = _cutedsl_ce_module()
     base = torch.randn(64, 4096, device="cuda", dtype=torch.float32)
     target = torch.randint(0, 4096, (64,), device="cuda", dtype=torch.long)

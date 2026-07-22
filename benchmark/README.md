@@ -149,3 +149,38 @@ The benchmarking system is designed to provide a **consistent, low-boilerplate w
 4. View results
    - Generated plots will be saved in `benchmark/visualizations/`
    - Filenames include the sweep mode when specified (e.g. `geglu_speed_full_model_config.png`)
+
+### Comparing kernel backends (Triton vs CuTile / CuTe-DSL)
+
+Some kernels have an alternative backend (a different DSL on the same CUDA
+device) that is opt-in via the `LIGER_KERNEL_IMPL` environment variable:
+
+* **CuTile** (`LIGER_KERNEL_IMPL=cutile`) — for `cross_entropy`, `fused_linear_jsd`,
+  `geglu`, `jsd`, `layer_norm`.
+* **CuTe-DSL** (`LIGER_KERNEL_IMPL=cutedsl`) — for `cross_entropy`.
+
+To benchmark a kernel's Triton and alternative backend **side by side in one
+CSV**, use the corresponding compare driver. It runs the standard
+`benchmark_<kernel>.py` twice — once on Triton, once on the alternative — and
+tags the `liger` provider for each run (`liger_triton` / `liger_cutile` /
+`liger_cutedsl`) so both land in a dedicated CSV without colliding.
+
+```bash
+cd benchmark/scripts
+
+# Triton vs CuTile (writes data/all_benchmark_data_cutile.csv)
+python run_cutile_compare.py --kernel cross_entropy [--model llama_3_8b] [--overwrite]
+
+# Triton vs CuTe-DSL (writes data/all_benchmark_data_cutedsl.csv)
+python run_cutedsl_compare.py --kernel cross_entropy [--overwrite]
+```
+
+Any extra args (`--model`, `--sweep-mode`, `--bt`, `--overwrite`) are forwarded
+to the underlying benchmark script. Plot the merged CSV by pointing the
+visualizer at it with `--data-file`:
+
+```bash
+python ../benchmarks_visualizer.py \
+    --kernel-name cross_entropy --metric-name speed \
+    --data-file data/all_benchmark_data_cutedsl.csv
+```

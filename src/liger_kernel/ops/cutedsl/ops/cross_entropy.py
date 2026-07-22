@@ -17,6 +17,8 @@ from cutlass.cutlass_dsl import T
 from cutlass.cutlass_dsl import dsl_user_op
 
 from liger_kernel.ops.cutedsl.ops.utils import to_cute_tensor
+from liger_kernel.ops.utils import is_hip
+from liger_kernel.utils import infer_device_arch
 
 # log2(e) and ln(2): the online-softmax math is done in base-2 (hardware ex2.approx)
 # then converted, exactly mirroring the Triton kernel for numerical parity.
@@ -70,6 +72,7 @@ _NUM_STAGES = 4
 # kernel bakes. V/BT are dynamic so one compile serves all shapes. REQUIRED: without it the
 # @cute.jit host fn recompiles on every call (~30 ms that dwarfs the kernel).
 _compile_cache = {}
+_scale_compile_cache = {}
 
 # Per-call host overhead is constant (~25 us): it doesn't scale with BT/V, so it dominates small
 # shapes and vanishes at scale. Cache the CUstream wrapper keyed on torch's raw stream handle so
@@ -140,6 +143,53 @@ def _advance(idx, n: cutlass.Constexpr):
     if const_expr(n & (n - 1) == 0):
         return (idx + 1) & (n - 1)
     return idx + 1 if idx < n - 1 else 0
+
+
+# =============================================================================
+# Backward scale kernel
+# =============================================================================
+@cute.kernel
+def _scale_in_place_kernel(mX: cute.Tensor, mScale: cute.Tensor):
+    tid, _, _ = cute.arch.thread_idx()
+    row, _, _ = cute.arch.block_idx()
+    scale = mScale[0].to(Float32)
+
+    gX = mX[row, None]
+    V = gX.shape[0]
+    gX = cute.make_tensor(
+        cute.make_ptr(mX.element_type, gX.iterator.toint(), cute.AddressSpace.gmem, assumed_align=16),
+        cute.make_layout((V,)),
+    )
+    VEC = const_expr(128 // gX.element_type.width)
+    gXv = cute.tiled_divide(gX, (VEC,))
+    num_vec = V // VEC
+    x_frag = cute.make_rmem_tensor((VEC,), gX.element_type)
+
+    for i in cutlass.range(0, cute.ceil_div(num_vec, 1024)):
+        vec_idx = tid + i * 1024
+        if vec_idx < num_vec:
+            cute.autovec_copy(gXv[None, vec_idx], x_frag)
+            x_frag.store((x_frag.load().to(Float32) * scale).to(gX.element_type))
+            cute.autovec_copy(x_frag, gXv[None, vec_idx])
+
+
+@cute.jit
+def _scale_in_place_host(mX: cute.Tensor, mScale: cute.Tensor, stream: cuda.CUstream = None):
+    _scale_in_place_kernel(mX, mScale).launch(
+        grid=[mX.shape[0], 1, 1],
+        block=[1024, 1, 1],
+        stream=stream,
+    )
+
+
+def _scale_in_place(x, scale):
+    x_ct = to_cute_tensor(x)
+    scale_ct = to_cute_tensor(scale.reshape(1), assumed_align=2)
+    stream = _cute_stream()
+    key = (x.dtype, scale.dtype)
+    if key not in _scale_compile_cache:
+        _scale_compile_cache[key] = cute.compile(_scale_in_place_host, x_ct, scale_ct, stream)
+    _scale_compile_cache[key](x_ct, scale_ct, stream)
 
 
 # =============================================================================
@@ -642,10 +692,18 @@ def _launch_ce_fwd(
     pt_ct = to_cute_tensor(pred_tok_out, assumed_align=8) if return_predicted_tokens else y_ct
     # weight is a fp32 (V,) vector when present (caller upcasts); dummy reuses int64 `y`.
     w_ct = to_cute_tensor(weight, assumed_align=4) if has_weight else y_ct
-    # warps/CTA: mirror Triton's Blackwell CE convention — 2-byte dtypes (bf16/fp16) are
-    # instruction-issue-bound -> 8 warps; fp32 is bandwidth-bound -> 32 warps. Baked into the
-    # kernel, so it's part of the compile key.
-    num_warps = 8 if x.element_size() == 2 else 32
+    # warps/CTA: mirror the Triton CE convention exactly (arch- and dtype-dependent):
+    #   Blackwell (B200, sm_100+) bf16/fp16 -> 8 (instruction-issue-bound); fp32 -> 32
+    #   Hopper (H100, sm_90) and earlier    -> 32 for all dtypes (bandwidth-bound)
+    #   AMD (ROCm)                          -> 16
+    # On Hopper the 8-warp bf16 kernel underfills the SMs and loses to the 32-warp Triton
+    # forward, so we gate the 8-warp choice on Blackwell only (matches ops/cross_entropy.py).
+    # Baked into the kernel, so it's part of the compile key.
+    if is_hip():
+        num_warps = 16
+    else:
+        is_blackwell = infer_device_arch().startswith("blackwell")
+        num_warps = 8 if (x.element_size() == 2 and is_blackwell) else 32
     key = (
         x.dtype,
         y.dtype,
@@ -827,9 +885,12 @@ def cross_entropy_backward(_input, grad_output):
     # reduction="none": per-row upstream grad.
     if grad_output.ndim > 0:
         return _input * grad_output.unsqueeze(dim=1)
-    # reduction in {mean, sum}: scalar upstream grad. Fresh tensor (not in-place)
-    # to avoid the autograd anomalies the Triton path uses a kernel to dodge.
-    return _input * grad_output
+    # reduction in {mean, sum}: scalar upstream grad. Scale the saved gradient IN PLACE so we
+    # never materialize a second BT×V buffer (Triton-parity peak memory: 1x logits, not 2x).
+    # A raw CuTe DSL kernel is used instead of `_input *= grad_output` because the torch op
+    # bumps the forward output's autograd version counter and breaks repeated backward.
+    _scale_in_place(_input, grad_output)
+    return _input
 
 
 class LigerCrossEntropyFunction(torch.autograd.Function):
