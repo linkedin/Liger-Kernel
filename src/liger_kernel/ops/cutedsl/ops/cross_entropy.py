@@ -152,21 +152,32 @@ def _advance(idx, n: cutlass.Constexpr):
 def _scale_in_place_kernel(mX: cute.Tensor, mScale: cute.Tensor):
     tid, _, _ = cute.arch.thread_idx()
     row, _, _ = cute.arch.block_idx()
-    V = mX.shape[1]
     scale = mScale[0].to(Float32)
 
-    for i in cutlass.range(0, cute.ceil_div(V, 256)):
-        col = tid + i * 256
-        if col < V:
-            value = mX[row, col].to(Float32) * scale
-            mX[row, col] = value.to(mX.element_type)
+    gX = mX[row, None]
+    V = gX.shape[0]
+    gX = cute.make_tensor(
+        cute.make_ptr(mX.element_type, gX.iterator.toint(), cute.AddressSpace.gmem, assumed_align=16),
+        cute.make_layout((V,)),
+    )
+    VEC = const_expr(128 // gX.element_type.width)
+    gXv = cute.tiled_divide(gX, (VEC,))
+    num_vec = V // VEC
+    x_frag = cute.make_rmem_tensor((VEC,), gX.element_type)
+
+    for i in cutlass.range(0, cute.ceil_div(num_vec, 1024)):
+        vec_idx = tid + i * 1024
+        if vec_idx < num_vec:
+            cute.autovec_copy(gXv[None, vec_idx], x_frag)
+            x_frag.store((x_frag.load().to(Float32) * scale).to(gX.element_type))
+            cute.autovec_copy(x_frag, gXv[None, vec_idx])
 
 
 @cute.jit
 def _scale_in_place_host(mX: cute.Tensor, mScale: cute.Tensor, stream: cuda.CUstream = None):
     _scale_in_place_kernel(mX, mScale).launch(
         grid=[mX.shape[0], 1, 1],
-        block=[256, 1, 1],
+        block=[1024, 1, 1],
         stream=stream,
     )
 
