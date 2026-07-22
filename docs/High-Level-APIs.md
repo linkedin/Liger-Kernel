@@ -28,6 +28,9 @@ You can also use the Patching APIs to use the kernels for a specific model archi
 |-------------|--------------------------------------------------------------|-------------------------------------------------------------------------|
 | LLaMA 2 & 3 | `liger_kernel.transformers.apply_liger_kernel_to_llama`      | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | LLaMA 3.2-Vision | `liger_kernel.transformers.apply_liger_kernel_to_mllama` | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
+| LFM2 | `liger_kernel.transformers.apply_liger_kernel_to_lfm2` | RoPE, RMSNorm, SwiGLU, ShortConv, CrossEntropyLoss, FusedLinearCrossEntropy |
+| LFM2MoE | `liger_kernel.transformers.apply_liger_kernel_to_lfm2_moe` | RoPE, RMSNorm, SwiGLU, ShortConv, FusedMoE, MoERouter, CrossEntropyLoss, FusedLinearCrossEntropy |
+| LFM2VL | `liger_kernel.transformers.apply_liger_kernel_to_lfm2_vl` | SigLIP2 LayerNorm, RoPE, RMSNorm, SwiGLU, ShortConv, CrossEntropyLoss, FusedLinearCrossEntropy |
 | Mistral     | `liger_kernel.transformers.apply_liger_kernel_to_mistral`    | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Mixtral     | `liger_kernel.transformers.apply_liger_kernel_to_mixtral`    | RoPE, RMSNorm, SwiGLU, CrossEntropyLoss, FusedLinearCrossEntropy        |
 | Gemma1      | `liger_kernel.transformers.apply_liger_kernel_to_gemma`      | RoPE, RMSNorm, GeGLU, CrossEntropyLoss, FusedLinearCrossEntropy         |
@@ -57,6 +60,24 @@ You can also use the Patching APIs to use the kernels for a specific model archi
         show_signature: true
 
 ::: liger_kernel.transformers.apply_liger_kernel_to_mixtral
+    options:
+      extra:
+        show_docstring: true
+        show_signature: true
+
+::: liger_kernel.transformers.apply_liger_kernel_to_lfm2
+    options:
+      extra:
+        show_docstring: true
+        show_signature: true
+
+::: liger_kernel.transformers.apply_liger_kernel_to_lfm2_moe
+    options:
+      extra:
+        show_docstring: true
+        show_signature: true
+
+::: liger_kernel.transformers.apply_liger_kernel_to_lfm2_vl
     options:
       extra:
         show_docstring: true

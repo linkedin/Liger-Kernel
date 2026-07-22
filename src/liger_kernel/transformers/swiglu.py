@@ -77,6 +77,47 @@ class LigerExperts(nn.Module):
         return out.view(orig_shape)
 
 
+class LigerLfm2SwiGLUMLP(nn.Module):
+    """LFM2 SwiGLU MLP using the fused SiLU-multiply kernel.
+
+    LFM2 names its projections w1, w3, and w2 and computes
+    w2(silu(w1(x)) * w3(x)). Its configuration also adjusts the dense
+    intermediate size before module construction, so that calculation must be
+    preserved when the class is patched before model initialization.
+    """
+
+    def __init__(self, config, intermediate_size=None):
+        super().__init__()
+        if intermediate_size is None:
+            intermediate_size = config.intermediate_size
+            if getattr(config, "block_auto_adjust_ff_dim", False):
+                intermediate_size = int(2 * intermediate_size / 3)
+                if config.block_ffn_dim_multiplier is not None:
+                    intermediate_size = int(config.block_ffn_dim_multiplier * intermediate_size)
+                    intermediate_size = config.block_multiple_of * (
+                        (intermediate_size + config.block_multiple_of - 1) // config.block_multiple_of
+                    )
+
+        self.w1 = nn.Linear(config.hidden_size, intermediate_size, bias=False)
+        self.w3 = nn.Linear(config.hidden_size, intermediate_size, bias=False)
+        self.w2 = nn.Linear(intermediate_size, config.hidden_size, bias=False)
+
+    def forward(self, x):
+        return self.w2(LigerSiLUMulFunction.apply(self.w1(x), self.w3(x)))
+
+
+class LigerLfm2MoeExperts(LigerExperts):
+    """LFM2-MoE expert tensors using Liger's fused grouped MoE kernel."""
+
+    def __init__(self, config):
+        nn.Module.__init__(self)
+        self.num_experts = config.num_experts
+        self.hidden_dim = config.hidden_size
+        self.intermediate_dim = config.moe_intermediate_size
+        self.gate_up_proj = nn.Parameter(torch.empty(self.num_experts, 2 * self.intermediate_dim, self.hidden_dim))
+        self.down_proj = nn.Parameter(torch.empty(self.num_experts, self.hidden_dim, self.intermediate_dim))
+
+
 class LigerPhi3SwiGLUMLP(nn.Module):
     """
     Patch Phi3MLP to use LigerSiLUMulFunction
