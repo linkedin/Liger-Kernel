@@ -187,7 +187,7 @@ def _rms_norm_backward_kernel(
 
         X_row = X_row.to(tl.float32)
 
-        # Different bacward graphs for different casting modes
+        # Different backward graphs for different casting modes
         if casting_mode == _CASTING_MODE_LLAMA:
             if elementwise_affine:
                 m = (dY_row * W_row).to(tl.float32)
