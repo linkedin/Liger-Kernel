@@ -139,6 +139,11 @@ def _patch_layer_norm_module(module, eps=1e-6):
 
 
 def _patch_swiglu_module(module, liger_module):
+    if liger_module is LigerLfm2MoeExperts:
+        module.has_gate = True
+        module.has_bias = False
+        module.is_transposed = False
+        _bind_method_to_module(module, "_apply_gate", LigerLfm2MoeExperts._apply_gate)
     _bind_method_to_module(module, "forward", liger_module.forward)
     _bind_method_to_module(module, "_get_name", lambda self: liger_module.__name__)
 

@@ -96,6 +96,12 @@ def test_apply_liger_kernel_to_lfm2_moe_instance():
     assert inspect.getsource(sparse_layer.feed_forward.experts.forward) == inspect.getsource(
         LigerLfm2MoeExperts.forward
     )
+    assert sparse_layer.feed_forward.experts.has_gate
+    assert not sparse_layer.feed_forward.experts.has_bias
+    assert not sparse_layer.feed_forward.experts.is_transposed
+    assert inspect.getsource(sparse_layer.feed_forward.experts._apply_gate) == inspect.getsource(
+        LigerLfm2MoeExperts._apply_gate
+    )
     assert inspect.getsource(sparse_layer.feed_forward.route_tokens_to_experts) == inspect.getsource(
         liger_lfm2_moe_route_tokens_to_experts
     )

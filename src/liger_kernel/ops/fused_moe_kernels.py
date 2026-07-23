@@ -8,16 +8,28 @@
 # inspired by the SonicMoE paper (arXiv:2512.14080), ported to portable Triton
 # (no Hopper-specific WGMMA/TMA) for general GPU support.
 
+import inspect
 import os
 
 import triton
 import triton.language as tl
+
+from liger_kernel.ops.utils import is_hip
 
 # LIGER_FUSED_MOE_AUTOTUNE=0 pins each kernel to one config, skipping Triton's
 # `do_bench` loop whose per-config working sets can OOM (see issue #1246). Must
 # be set before importing liger_kernel. Temporary escape hatch until triton's
 # autotuner handles such errors itself.
 _AUTOTUNE_DISABLED = os.environ.get("LIGER_FUSED_MOE_AUTOTUNE", "1").lower() in ("0", "false", "no")
+_AUTOTUNE_SUPPORTS_DISK_CACHE = "cache_results" in inspect.signature(triton.autotune).parameters
+
+
+def _autotune(*args, **kwargs):
+    """Persist selected configs when supported, without raising on older Triton."""
+    if _AUTOTUNE_SUPPORTS_DISK_CACHE:
+        kwargs["cache_results"] = True
+    return triton.autotune(*args, **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Routing metadata overview
@@ -314,6 +326,8 @@ def _moe_router_scatter_kernel(
 
 def _get_gemm_autotune_configs():
     if _AUTOTUNE_DISABLED:
+        if is_hip():
+            return [triton.Config({"BLOCK_N": 64, "BLOCK_K": 32}, num_warps=4, num_stages=2)]
         return [triton.Config({"BLOCK_N": 128, "BLOCK_K": 64}, num_warps=8, num_stages=2)]
     configs = []
     for bn in [64, 128]:
@@ -333,6 +347,8 @@ def _get_gemm_autotune_configs():
 def _get_dW_autotune_configs():
     """Configs for backward weight-grad kernels (dW1, dW2): include BLOCK_M sweep."""
     if _AUTOTUNE_DISABLED:
+        if is_hip():
+            return [triton.Config({"BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 16}, num_warps=4, num_stages=2)]
         return [triton.Config({"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 32}, num_warps=8, num_stages=2)]
     return [
         triton.Config({"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk}, num_warps=nw, num_stages=2)
@@ -349,7 +365,7 @@ def _get_dW_autotune_configs():
 # ---------------------------------------------------------------------------
 
 
-@triton.autotune(
+@_autotune(
     configs=_get_gemm_autotune_configs(),
     key=["H_dim", "I_dim"],
 )
@@ -458,7 +474,7 @@ def _fused_up_proj_swiglu_kernel(
 # ---------------------------------------------------------------------------
 
 
-@triton.autotune(
+@_autotune(
     configs=_get_gemm_autotune_configs(),
     key=["H_dim", "I_dim"],
 )
@@ -545,7 +561,7 @@ def _get_token_gather_autotune_configs():
     return configs
 
 
-@triton.autotune(
+@_autotune(
     configs=_get_token_gather_autotune_configs(),
     key=["H_dim", "K_dim", "w_is_None"],
 )
@@ -602,7 +618,7 @@ def _token_gather_weighted_sum_kernel(
 # ---------------------------------------------------------------------------
 
 
-@triton.autotune(
+@_autotune(
     configs=_get_gemm_autotune_configs(),
     key=["H_dim", "I_dim"],
     reset_to_zero=["dS_ptr"],  # autotune runs multiple configs; atomic_add accumulates, so reset between runs
@@ -719,7 +735,7 @@ def _moe_bwd_down_proj_kernel(
 # ---------------------------------------------------------------------------
 
 
-@triton.autotune(
+@_autotune(
     configs=_get_dW_autotune_configs(),
     key=["H_dim", "I_dim"],
     reset_to_zero=["dW2_ptr"],
@@ -799,7 +815,7 @@ def _moe_bwd_dW2_kernel(
 # ---------------------------------------------------------------------------
 
 
-@triton.autotune(
+@_autotune(
     configs=_get_gemm_autotune_configs(),
     key=["H_dim", "I_dim"],
 )
@@ -884,7 +900,7 @@ def _moe_bwd_dX_expanded_kernel(
 # ---------------------------------------------------------------------------
 
 
-@triton.autotune(
+@_autotune(
     configs=_get_dW_autotune_configs(),
     key=["H_dim", "I_dim"],
     reset_to_zero=["dW1_ptr"],
