@@ -16,6 +16,7 @@ from liger_kernel.utils import infer_device
 MAX_FUSED_SIZE = 2048 if infer_device() == "npu" else 65536 // 2
 _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
+_HIP_MAX_LOGITS_CHUNK_BYTES = 128 * 1024 * 1024
 
 
 def fused_linear_cross_entropy_forward(
@@ -58,6 +59,16 @@ def fused_linear_cross_entropy_forward(
 
     inc_factor = triton.cdiv(V, H)  # (V + H - 1) // H
     chunk_size = triton.next_power_of_2(triton.cdiv(BT, inc_factor))  # (BT + inc_factor - 1) // inc_factor
+    if is_hip() and H >= 1024:
+        # Very small M dimensions underutilize ROCm GEMMs. Use up to 128 MiB of
+        # temporary logits for large hidden states to increase arithmetic
+        # intensity while retaining the main memory benefit of not
+        # materializing all BT x V logits. Preserve the existing chunking for
+        # smaller models, where changing accumulation order can be significant.
+        max_chunk_rows = _HIP_MAX_LOGITS_CHUNK_BYTES // (V * _input.element_size())
+        if max_chunk_rows > 0:
+            performance_chunk_size = 1 << (max_chunk_rows.bit_length() - 1)
+            chunk_size = min(BT, max(chunk_size, performance_chunk_size))
     num_chunks = triton.cdiv(BT, chunk_size)  # (BT + chunk_size - 1) // chunk_size
 
     grad_input = torch.zeros_like(_input, device=device)

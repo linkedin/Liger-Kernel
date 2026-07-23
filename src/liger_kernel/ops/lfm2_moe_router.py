@@ -66,8 +66,11 @@ def _lfm2_moe_router_backward(
     norm_topk_prob: tl.constexpr,
     TOP_K: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    BLOCK_EXPERTS: tl.constexpr,
 ):
     token = tl.program_id(0)
+    expert_offsets = tl.arange(0, BLOCK_EXPERTS)
+    expert_mask = expert_offsets < n_experts
     k_offsets = tl.arange(0, BLOCK_K)
     mask = k_offsets < TOP_K
     offsets = token * TOP_K + k_offsets
@@ -87,7 +90,19 @@ def _lfm2_moe_router_backward(
         grad_probabilities = routed_scaling_factor * grad_weights
 
     grad_logits = grad_probabilities * probabilities * (1.0 - probabilities)
-    tl.store(grad_router_logits + token * stride_token + experts, grad_logits, mask=mask)
+    dense_grad_logits = tl.sum(
+        tl.where(
+            expert_offsets[:, None] == experts[None, :],
+            grad_logits[None, :],
+            0.0,
+        ),
+        axis=1,
+    )
+    tl.store(
+        grad_router_logits + token * stride_token + expert_offsets,
+        dense_grad_logits,
+        mask=expert_mask,
+    )
 
 
 class LigerLfm2MoeRouterFunction(torch.autograd.Function):
@@ -135,7 +150,7 @@ class LigerLfm2MoeRouterFunction(torch.autograd.Function):
     def backward(ctx, grad_selected_experts, grad_routing_weights):
         router_logits, selected_experts = ctx.saved_tensors
         n_tokens = selected_experts.shape[0]
-        grad_router_logits = torch.zeros(
+        grad_router_logits = torch.empty(
             (n_tokens, ctx.n_experts), dtype=router_logits.dtype, device=router_logits.device
         )
         _lfm2_moe_router_backward[(n_tokens,)](
@@ -150,5 +165,6 @@ class LigerLfm2MoeRouterFunction(torch.autograd.Function):
             norm_topk_prob=ctx.norm_topk_prob,
             TOP_K=ctx.top_k,
             BLOCK_K=triton.next_power_of_2(ctx.top_k),
+            BLOCK_EXPERTS=triton.next_power_of_2(ctx.n_experts),
         )
         return grad_router_logits, None, None, None, None

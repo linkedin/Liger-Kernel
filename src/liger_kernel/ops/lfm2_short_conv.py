@@ -119,30 +119,34 @@ def _short_conv_weight_backward(
     stride_t,
     stride_h,
     K: tl.constexpr,
+    HAS_BIAS: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
-    hidden_kernel = tl.program_id(0)
+    hidden = tl.program_id(0)
     chunk = tl.program_id(1)
-    hidden = hidden_kernel // K
-    kernel_idx = hidden_kernel % K
     batch_token = chunk * BLOCK + tl.arange(0, BLOCK)
     mask = batch_token < batch_tokens
     batch = batch_token // seq_len
     output_time = batch_token % seq_len
-    source_time = output_time + kernel_idx - (K - 1)
-    source_mask = mask & (source_time >= 0)
-
     output_offset = batch_token * hidden_size + hidden
     output_base = batch * stride_b + output_time * stride_t + hidden * stride_h
-    source = batch * stride_b + source_time * stride_t + hidden * stride_h
     grad_y = tl.load(grad_output + output_offset, mask=mask, other=0.0).to(tl.float32)
     gate_c = tl.load(bcx + output_base + hidden_size * stride_h, mask=mask, other=0.0).to(tl.float32)
-    gate_b = tl.load(bcx + source, mask=source_mask, other=0.0).to(tl.float32)
-    value = tl.load(bcx + source + 2 * hidden_size * stride_h, mask=source_mask, other=0.0).to(tl.float32)
     grad_conv = grad_y * gate_c
-    partial_offset = hidden_kernel * n_chunks + chunk
-    tl.store(weight_partials + partial_offset, tl.sum(grad_conv * gate_b * value, axis=0))
-    tl.store(bias_partials + partial_offset, tl.sum(grad_conv, axis=0))
+
+    # One program handles all taps for a hidden channel, reusing grad_y and
+    # gate_c and reducing the launch grid by K.
+    for kernel_idx in range(K):
+        source_time = output_time + kernel_idx - (K - 1)
+        source_mask = mask & (source_time >= 0)
+        source = batch * stride_b + source_time * stride_t + hidden * stride_h
+        gate_b = tl.load(bcx + source, mask=source_mask, other=0.0).to(tl.float32)
+        value = tl.load(bcx + source + 2 * hidden_size * stride_h, mask=source_mask, other=0.0).to(tl.float32)
+        partial_offset = (hidden * K + kernel_idx) * n_chunks + chunk
+        tl.store(weight_partials + partial_offset, tl.sum(grad_conv * gate_b * value, axis=0))
+
+    if HAS_BIAS:
+        tl.store(bias_partials + hidden * n_chunks + chunk, tl.sum(grad_conv, axis=0))
 
 
 class LigerLfm2ShortConvFunction(torch.autograd.Function):
@@ -159,7 +163,7 @@ class LigerLfm2ShortConvFunction(torch.autograd.Function):
 
         output = torch.empty((batch_size, seq_len, hidden_size), dtype=bcx.dtype, device=bcx.device)
         n_elements = output.numel()
-        _short_conv_forward[(triton.cdiv(n_elements, 256),)](
+        _short_conv_forward[(triton.cdiv(n_elements, 512),)](
             bcx,
             weight,
             bias,
@@ -174,7 +178,7 @@ class LigerLfm2ShortConvFunction(torch.autograd.Function):
             weight.stride(2),
             K=weight.shape[2],
             HAS_BIAS=bias is not None,
-            BLOCK=256,
+            BLOCK=512,
         )
         saved_bias = bias if bias is not None else torch.empty(0, dtype=bcx.dtype, device=bcx.device)
         ctx.save_for_backward(bcx, weight, saved_bias)
@@ -191,7 +195,7 @@ class LigerLfm2ShortConvFunction(torch.autograd.Function):
         n_elements = batch_size * seq_len * hidden_size
 
         grad_bcx = torch.empty_like(bcx)
-        _short_conv_input_backward[(triton.cdiv(n_elements, 256),)](
+        _short_conv_input_backward[(triton.cdiv(n_elements, 512),)](
             grad_output,
             bcx,
             weight,
@@ -207,15 +211,19 @@ class LigerLfm2ShortConvFunction(torch.autograd.Function):
             weight.stride(2),
             K=kernel_size,
             HAS_BIAS=ctx.has_bias,
-            BLOCK=256,
+            BLOCK=512,
         )
 
         batch_tokens = batch_size * seq_len
         n_chunks = triton.cdiv(batch_tokens, 256)
         partial_shape = (hidden_size * kernel_size, n_chunks)
         weight_partials = torch.empty(partial_shape, dtype=torch.float32, device=bcx.device)
-        bias_partials = torch.empty_like(weight_partials)
-        _short_conv_weight_backward[(hidden_size * kernel_size, n_chunks)](
+        bias_partials = (
+            torch.empty((hidden_size, n_chunks), dtype=torch.float32, device=bcx.device)
+            if ctx.has_bias
+            else weight_partials
+        )
+        _short_conv_weight_backward[(hidden_size, n_chunks)](
             grad_output,
             bcx,
             weight_partials,
@@ -228,10 +236,11 @@ class LigerLfm2ShortConvFunction(torch.autograd.Function):
             bcx.stride(1),
             bcx.stride(2),
             K=kernel_size,
+            HAS_BIAS=ctx.has_bias,
             BLOCK=256,
         )
         grad_weight = weight_partials.sum(1).reshape(hidden_size, 1, kernel_size).to(weight.dtype)
         grad_bias = None
         if ctx.has_bias:
-            grad_bias = bias_partials.reshape(hidden_size, kernel_size, n_chunks)[:, 0].sum(1).to(bias.dtype)
+            grad_bias = bias_partials.sum(1).to(bias.dtype)
         return grad_bcx, grad_weight, grad_bias

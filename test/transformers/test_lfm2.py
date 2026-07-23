@@ -104,10 +104,19 @@ def test_apply_liger_kernel_to_lfm2_moe_instance():
 
 
 @pytest.mark.skipif(not HAS_LFM2_VL, reason="lfm2_vl module not available")
-def test_apply_liger_kernel_to_lfm2_vl_instance():
+@pytest.mark.parametrize(
+    ("hip", "layer_norm", "expected_liger_layer_norm"),
+    [
+        (True, None, False),
+        (False, None, True),
+        (True, True, True),
+    ],
+)
+def test_apply_liger_kernel_to_lfm2_vl_instance(monkeypatch, hip, layer_norm, expected_liger_layer_norm):
     from transformers.models.lfm2_vl.configuration_lfm2_vl import Lfm2VlConfig
     from transformers.models.lfm2_vl.modeling_lfm2_vl import Lfm2VlForConditionalGeneration
 
+    from liger_kernel.transformers import monkey_patch
     from liger_kernel.transformers.model.lfm2_vl import lce_forward as lfm2_vl_lce_forward
 
     text_config = _lfm2_config().to_dict()
@@ -130,7 +139,8 @@ def test_apply_liger_kernel_to_lfm2_vl_instance():
         downsample_factor=2,
     )
     model = Lfm2VlForConditionalGeneration(config)
-    _apply_liger_kernel_to_instance(model)
+    monkeypatch.setattr(monkey_patch, "is_hip", lambda: hip)
+    monkey_patch.apply_liger_kernel_to_lfm2_vl(model=model, layer_norm=layer_norm)
 
     assert inspect.getsource(model.forward) == inspect.getsource(lfm2_vl_lce_forward)
     language_model = model.model.language_model
@@ -139,11 +149,12 @@ def test_apply_liger_kernel_to_lfm2_vl_instance():
         assert inspect.getsource(layer.feed_forward.forward) == inspect.getsource(LigerLfm2SwiGLUMLP.forward)
 
     vision_model = getattr(model.model.vision_tower, "vision_model", model.model.vision_tower)
-    assert vision_model.post_layernorm._get_name() == "LigerLayerNorm"
+    expected_layer_norm_name = "LigerLayerNorm" if expected_liger_layer_norm else "LayerNorm"
+    assert vision_model.post_layernorm._get_name() == expected_layer_norm_name
     for layer in vision_model.encoder.layers:
-        assert layer.layer_norm1._get_name() == "LigerLayerNorm"
-        assert layer.layer_norm2._get_name() == "LigerLayerNorm"
-    assert model.model.multi_modal_projector.layer_norm._get_name() == "LigerLayerNorm"
+        assert layer.layer_norm1._get_name() == expected_layer_norm_name
+        assert layer.layer_norm2._get_name() == expected_layer_norm_name
+    assert model.model.multi_modal_projector.layer_norm._get_name() == expected_layer_norm_name
 
 
 @pytest.mark.skipif(not HAS_LFM2, reason="lfm2 module not available")

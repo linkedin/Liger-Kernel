@@ -19,10 +19,10 @@ device = infer_device()
 
 
 class _ShortConv(nn.Module):
-    def __init__(self, hidden_size, kernel_size, dtype, use_liger):
+    def __init__(self, hidden_size, kernel_size, dtype, use_liger, bias_enabled):
         super().__init__()
         self.weight = nn.Parameter(torch.randn(hidden_size, 1, kernel_size, device=device, dtype=dtype) * 0.02)
-        self.bias = nn.Parameter(torch.zeros(hidden_size, device=device, dtype=dtype))
+        self.bias = nn.Parameter(torch.zeros(hidden_size, device=device, dtype=dtype)) if bias_enabled else None
         self.use_liger = use_liger
 
     def forward(self, bcx):
@@ -52,9 +52,9 @@ def setup_lfm2_short_conv(input: SingleBenchmarkRunInput):
         requires_grad=True,
     )
     if input.kernel_provider == "liger":
-        layer = _ShortConv(hidden_size, cfg["kernel_size"], dtype, use_liger=True)
+        layer = _ShortConv(hidden_size, cfg["kernel_size"], dtype, use_liger=True, bias_enabled=cfg["bias_enabled"])
     elif input.kernel_provider == "huggingface":
-        layer = _ShortConv(hidden_size, cfg["kernel_size"], dtype, use_liger=False)
+        layer = _ShortConv(hidden_size, cfg["kernel_size"], dtype, use_liger=False, bias_enabled=cfg["bias_enabled"])
     else:
         raise ValueError(f"Invalid provider: {input.kernel_provider} for LFM2 short convolution")
     return bcx, layer
@@ -69,7 +69,7 @@ if __name__ == "__main__":
             setup_fn=setup_lfm2_short_conv,
             model_keys=["hidden_size", "dtype"],
             probe_provider="huggingface",
-            extra_configs={"bsz": 1, "kernel_size": 3},
+            extra_configs={"bsz": 1, "kernel_size": 3, "bias_enabled": False},
             probe_dim="T",
             bt=args.bt,
             overwrite=args.overwrite,
@@ -82,7 +82,7 @@ if __name__ == "__main__":
             model=model,
             setup_fn=setup_lfm2_short_conv,
             model_keys=["hidden_size", "dtype"],
-            extra_configs={"bsz": 1, "kernel_size": 3},
+            extra_configs={"bsz": 1, "kernel_size": 3, "bias_enabled": False},
             scale_dim="T",
             x_label="total tokens",
             probe_provider="huggingface",
