@@ -392,7 +392,7 @@ struct Mlp1FusedConsumerImpl;
 
 template <>
 struct Mlp1FusedConsumerImpl<90> {
-template <typename Traits, typename Pipeline, typename TmaStoreZ, bool Warp3 = true>
+template <typename Traits, typename Pipeline, typename TmaStoreZ>
 static __device__ __forceinline__ void run(
 		Pipeline& pipe,
 		typename Traits::PipelineState& state,
@@ -597,7 +597,7 @@ static __device__ __forceinline__ void run(
 
 template <>
 struct Mlp1FusedConsumerImpl<100> {
-template <typename Traits, typename Pipeline, typename TmaStoreZ, bool Warp3 = true>
+template <typename Traits, typename Pipeline, typename TmaStoreZ>
 static __device__ __forceinline__ void run(
 		Pipeline& pipe,
 		typename Traits::PipelineState& state,
@@ -611,182 +611,6 @@ static __device__ __forceinline__ void run(
 		int split_idx,
 		int num_splits) {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
-	// ══════════════════════════════════════════════════════════════════════
-	// Structure A (fused MoE path — Warp3=false): warp 4 is the epilogue-free
-	// UMMA producer, the single aligned warpgroup (warps 8..11) is the epilogue
-	// consumer, warps 5..7 idle. This is the proven rev/pipe double-buffered
-	// variant that ships in moe.cu (comm warps 1..3 + MLP warps 0,4..11, 288-thr
-	// barrier). Kept intact for the fused kernel until the comm warpgroups are
-	// re-laid-out; see pipeline.md "Fused-path migration".
-	// ══════════════════════════════════════════════════════════════════════
-	if constexpr (!Warp3) {
-		using Element = typename Traits::Element;
-		constexpr int TileM     = Traits::TileM;
-		constexpr int TileN     = Traits::TileN;
-		constexpr int EpiChunkN = Traits::EpiChunkN;
-		constexpr int AtomTileM = Traits::AtomTileM;     // 64-row TMA store tile
-		static_assert(TileN % EpiChunkN == 0, "EpiChunkN must divide TileN");
-		constexpr int NChunks     = TileN / EpiChunkN;   // n-chunks (dedicated epi WG)
-		constexpr int MSub        = TileM / AtomTileM;   // 1 (TileM=64) or 2 (TileM=128)
-
-		const int  warp_id        = threadIdx.x / Traits::WarpSize;
-		const bool is_mma_warp    = (warp_id == 4);                      // first warp of WG1
-		const bool is_epilogue_wg = (warp_id >= 8 && warp_id <= 11);     // aligned 128-thread WG
-		const int  epi_tid        = threadIdx.x - 8 * Traits::WarpSize;  // 0..127 for epilogue
-		const int  tmem_copy_tid  = is_epilogue_wg ? epi_tid : 0;
-		const bool is_epi_leader  = (epi_tid == 0);
-		const int  epi_barrier_id = 2;
-
-		auto tiled_mma = make_tiled_mma(
-			SM100_MMA_F16BF16_SS<Element, Element, float, TileM, TileN,
-			                     UMMA::Major::K, UMMA::Major::K>{});
-		auto cta_mma = tiled_mma.get_slice(0);
-
-		auto sX  = make_tensor(make_smem_ptr(smem.X_data()),  typename Traits::SmemLayoutX{});
-		auto sW1 = make_tensor(make_smem_ptr(smem.W1_data()), typename Traits::SmemLayoutW{});
-		auto sW2 = make_tensor(make_smem_ptr(smem.W2_data()), typename Traits::SmemLayoutW{});
-
-		auto cAccFull = make_identity_tensor(make_shape(Int<TileM>{}, Int<TileN>{}));
-		auto tCgC     = cta_mma.partition_C(cAccFull);
-		auto tCtAccU  = cta_mma.make_fragment_C(tCgC);
-		auto tCtAccV  = cta_mma.make_fragment_C(tCgC);
-
-		using AccPipe = typename Traits::AccumulatorPipeline;
-		typename AccPipe::Params acc_params;
-		acc_params.role = is_mma_warp ? AccPipe::ThreadCategory::Producer
-		                : (is_epilogue_wg ? AccPipe::ThreadCategory::Consumer
-		                                  : AccPipe::ThreadCategory::NonParticipant);
-		acc_params.producer_arv_count = 1;
-		acc_params.consumer_arv_count = 1;
-		acc_params.initializing_warp  = 4;
-		AccPipe acc_pipe(smem.acc_pipe, acc_params,
-			cute::Shape<cute::_1, cute::_1, cute::_1>{});
-		auto acc_prod_state = cutlass::make_producer_start_state<AccPipe>();
-		typename AccPipe::PipelineState acc_cons_state;
-
-		cutlass::arch::NamedBarrier::sync(Traits::ConsumerThreads, /*id=*/0);
-		const uint32_t tmem_base = smem.tmem_base;
-		tCtAccU.data() = tmem_base;
-		tCtAccV.data() = tmem_base + uint32_t(TileN);
-
-		Element* my_store_ptr = smem.store_buf;
-		auto sStore = make_tensor(make_smem_ptr(my_store_ptr),
-			typename Traits::SmemLayoutStoreSlot{});
-
-		auto mZ = tma_store_z.get_tma_tensor(
-			make_shape(static_cast<int64_t>(num_z_m_tiles) * TileM,
-			           static_cast<int64_t>(intermediate_dim)));
-		auto cta_tma_z = tma_store_z.get_slice(Int<0>{});
-
-		auto epi_tile  = make_tile(Int<TileM>{}, Int<EpiChunkN>{});
-		auto accU_mn   = tCtAccU(make_coord(_, _), _0{}, _0{});
-		auto tAccU_epi = flat_divide(accU_mn, epi_tile);
-		auto t2r       = make_tmem_copy(TmemLoadOp<EpiChunkN>{}, tAccU_epi(_, _, _0{}, _0{}));
-		auto thr_t2r   = t2r.get_slice(tmem_copy_tid);
-		auto cChunk    = make_identity_tensor(make_shape(Int<TileM>{}, Int<EpiChunkN>{}));
-		auto tTR_cChunk = thr_t2r.partition_D(cChunk);
-		auto tTR_rU = make_tensor<float>(shape(tTR_cChunk));
-		auto tTR_rV = make_tensor<float>(shape(tTR_cChunk));
-
-		int n_start  = (split_idx  >= 0) ? split_idx  : (int)blockIdx.y;
-		int n_stride = (num_splits >= 0) ? num_splits : (int)gridDim.y;
-		bool store_in_flight = false;
-
-		for (int n = n_start; n < num_n_tiles; n += n_stride) {
-			if (is_mma_warp) {
-				acc_pipe.producer_acquire(acc_prod_state);
-				int acc_stage = acc_prod_state.index();
-				uint32_t stage_base = tmem_base + uint32_t(acc_stage * (2 * TileN));
-				tCtAccU.data() = stage_base;
-				tCtAccV.data() = stage_base + uint32_t(TileN);
-				for (int k = 0; k < num_k_tiles; ++k) {
-					pipe.consumer_wait(state);
-					auto tCsX  = cta_mma.partition_A(sX (_, _, state.index()));
-					auto tCsW1 = cta_mma.partition_B(sW1(_, _, state.index()));
-					auto tCsW2 = cta_mma.partition_B(sW2(_, _, state.index()));
-					auto tCrX  = cta_mma.make_fragment_A(tCsX);
-					auto tCrW1 = cta_mma.make_fragment_B(tCsW1);
-					auto tCrW2 = cta_mma.make_fragment_B(tCsW2);
-					CUTE_UNROLL
-					for (int kb = 0; kb < size<2>(tCrX); ++kb) {
-						tiled_mma.accumulate_ = (k == 0 && kb == 0)
-							? UMMA::ScaleOut::Zero : UMMA::ScaleOut::One;
-						gemm(tiled_mma, tCrX(_, _, kb), tCrW1(_, _, kb), tCtAccU);
-						gemm(tiled_mma, tCrX(_, _, kb), tCrW2(_, _, kb), tCtAccV);
-					}
-					pipe.consumer_release(state);
-					++state;
-				}
-				acc_pipe.producer_commit(acc_prod_state);
-				++acc_prod_state;
-			}
-
-			if (is_epilogue_wg) {
-				acc_pipe.consumer_wait(acc_cons_state);
-				int acc_stage = acc_cons_state.index();
-				uint32_t stage_base = tmem_base + uint32_t(acc_stage * (2 * TileN));
-				tCtAccU.data() = stage_base;
-				tCtAccV.data() = stage_base + uint32_t(TileN);
-				auto accU_mn_stage   = tCtAccU(make_coord(_, _), _0{}, _0{});
-				auto accV_mn_stage   = tCtAccV(make_coord(_, _), _0{}, _0{});
-				auto tAccU_epi_stage = flat_divide(accU_mn_stage, epi_tile);
-				auto tAccV_epi_stage = flat_divide(accV_mn_stage, epi_tile);
-				auto tTR_tAccU       = thr_t2r.partition_S(tAccU_epi_stage);
-				auto tTR_tAccV       = thr_t2r.partition_S(tAccV_epi_stage);
-
-				CUTE_UNROLL
-				for (int chunk = 0; chunk < NChunks; ++chunk) {
-					copy(t2r, tTR_tAccU(_, _, _, _0{}, chunk), tTR_rU);
-					copy(t2r, tTR_tAccV(_, _, _, _0{}, chunk), tTR_rV);
-					CUTE_UNROLL
-					for (int i = 0; i < size(tTR_rU); ++i)
-						tTR_rU(i) = fast_silu(tTR_rU(i)) * tTR_rV(i);
-					CUTE_UNROLL
-					for (int ms = 0; ms < MSub; ++ms) {
-						if (store_in_flight)
-							cute::tma_store_wait<0>();
-						cutlass::arch::NamedBarrier::sync(Traits::WarpGroupSize, epi_barrier_id);
-						CUTE_UNROLL
-						for (int i = 0; i < size(tTR_rU); ++i) {
-							int m_row = get<0>(tTR_cChunk(i));
-							int n_col = get<1>(tTR_cChunk(i));
-							if (m_row >= ms * AtomTileM && m_row < (ms + 1) * AtomTileM)
-								sStore(m_row - ms * AtomTileM, n_col) =
-									static_cast<Element>(tTR_rU(i));
-						}
-						cutlass::arch::NamedBarrier::sync(Traits::WarpGroupSize, epi_barrier_id);
-						if (is_epi_leader) {
-							cute::tma_store_fence();
-							int m_tile_idx = MSub * z_m + ms;
-							int n_tile_idx = n * (TileN / EpiChunkN) + chunk;
-							auto gZ = local_tile(mZ,
-								make_tile(Int<AtomTileM>{}, Int<EpiChunkN>{}),
-								make_coord(m_tile_idx, n_tile_idx));
-							copy(tma_store_z, cta_tma_z.partition_S(sStore),
-								cta_tma_z.partition_D(gZ));
-							cute::tma_store_arrive();
-						}
-						store_in_flight = true;
-					}
-				}
-
-				cutlass::arch::NamedBarrier::sync(Traits::WarpGroupSize, epi_barrier_id);
-				if (is_epi_leader)
-					acc_pipe.consumer_release(acc_cons_state);
-				++acc_cons_state;
-			}
-		}
-		if (is_epilogue_wg && store_in_flight)
-			cute::tma_store_wait<0>();
-		cutlass::arch::NamedBarrier::sync(Traits::ConsumerThreads, /*id=*/0);
-		return;
-	}
-	// ══════════════════════════════════════════════════════════════════════
-	// Structure B (standalone MOP-test path — Warp3=true, default): warp 3 is
-	// the epilogue-free UMMA producer; warps 4..11 are two aligned epilogue
-	// warpgroups that split TileN. The user's target Blackwell layout — see the
-	// header comment above and pipeline.md.
-	// ══════════════════════════════════════════════════════════════════════
 	using Element = typename Traits::Element;
 	constexpr int TileM     = Traits::TileM;
 	constexpr int TileN     = Traits::TileN;
@@ -1033,7 +857,7 @@ static __device__ __forceinline__ void run(
 // pass mlp1_fused_consumer<Traits, 100>(...) to select the Blackwell path.
 // ───────────────────────────────────────────────────────────────────
 
-template <typename Traits, int Compute = 90, bool Warp3 = true,
+template <typename Traits, int Compute = 90,
           typename Pipeline, typename TmaStoreZ>
 __device__ __forceinline__ void mlp1_fused_consumer(
 		Pipeline& pipe,
@@ -1047,7 +871,7 @@ __device__ __forceinline__ void mlp1_fused_consumer(
 		int num_k_tiles,
 		int split_idx = -1,
 		int num_splits = -1) {
-	Mlp1FusedConsumerImpl<Compute>::template run<Traits, Pipeline, TmaStoreZ, Warp3>(
+	Mlp1FusedConsumerImpl<Compute>::template run<Traits, Pipeline, TmaStoreZ>(
 		pipe, state, smem, tma_store_z, z_m, intermediate_dim,
 		num_z_m_tiles, num_n_tiles, num_k_tiles, split_idx, num_splits);
 }

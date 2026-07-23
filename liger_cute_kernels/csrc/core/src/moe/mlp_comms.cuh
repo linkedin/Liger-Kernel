@@ -515,7 +515,7 @@ struct TileIterator {
 // Prologue + bwd use warps 2-3 only (kept for backward compatibility
 // with the bwd path that has not been migrated to the 2-getter layout).
 static constexpr int kCommWarpStart    = 2;
-static constexpr int kCommWarpEnd      = 3;
+static constexpr int kCommWarpEnd      = 2;
 static constexpr int kCommWarpsPerCta  = kCommWarpEnd - kCommWarpStart + 1;  // 2
 static constexpr int kCommThreadStart  = kCommWarpStart * 32;
 
@@ -523,9 +523,8 @@ static constexpr int kCommThreadStart  = kCommWarpStart * 32;
 //   warp 1 → get warp 0
 //   warp 2 → get warp 1 (also prologue leader)
 //   warp 3 → put warp
-static constexpr int kCommGetWarp0     = 1;
-static constexpr int kCommGetWarp1     = 2;
-static constexpr int kCommPutWarp      = 3;
+static constexpr int kCommGetWarp     = 1;
+static constexpr int kCommPutWarp      = 2;
 static constexpr int kNumGetWarpsPerCta = 2;  // shared w/ bwd — do NOT change
 
 // FWD-only active get-warp count. With the TMA GET (DMA engine, issue-bound
@@ -541,7 +540,7 @@ static constexpr int kNumPutWarpsFwd = 1;
 
 // Range of warps participating in fwd comm (used by callers to filter
 // MLP vs comm warps).
-static constexpr int kCommFwdWarpStart = kCommGetWarp0;
+static constexpr int kCommFwdWarpStart = kCommGetWarp;
 static constexpr int kCommFwdWarpEnd   = kCommPutWarp;
 
 // Get side has kNumGetWarpsPerCta × NC warps per tile (chunk =
@@ -1027,7 +1026,7 @@ __device__ __forceinline__ void nvshmem_comm_main(
 	constexpr int K = NumStages;
 
 	int warp_id = threadIdx.x / 32;
-	if (warp_id != kCommGetWarp0 && warp_id != kCommPutWarp)
+	if (warp_id != kCommGetWarp && warp_id != kCommPutWarp)
 		return;
 
 	int lane = threadIdx.x % 32;
@@ -1088,7 +1087,7 @@ __device__ __forceinline__ void nvshmem_comm_main(
 				dst_staging_base, tile_elems, xc, MC, yc, ib_seq, lane,
 				put_local_idx, get_descs);
 		}
-	} else if (warp_id == kCommGetWarp0) {  // single TMA get warp
+	} else if (warp_id == kCommGetWarp) {  // single TMA get warp
 		const int chunk_idx = yc;  // kNumGetWarpsFwd == 1 → yc·1 + 0
 
 		// NumProducers = kNumGetWarpsFwd·NC (= NC: one get warp × NC CTAs),

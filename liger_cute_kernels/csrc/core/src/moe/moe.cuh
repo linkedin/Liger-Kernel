@@ -125,7 +125,7 @@ __device__ __forceinline__ void moe_fused_fwd(
 	// would reset target=0 per call while the counter keeps growing,
 	// and the second mlp_fused_fwd would see counter > target on
 	// its very first poll and exit without actually waiting.
-	MlpFwdCtaBarrier x_barrier(&dims.phase_counter[col],
+	MlpFwdCtaBarrierT<Compute> x_barrier(&dims.phase_counter[col],
 		runtime_nsplit);
 
 	// UNIFIED PATH: the local MLP pass has been removed. The comm-side

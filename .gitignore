@@ -26,8 +26,8 @@ benchmark/visualizations
 .vscode/
 .coverage
 
-liger_cute_kernels/build100a/
-liger_cute_kernels/build90a/
+liger_cute_kernels/build*
+
 
 # Local design / process writeup docs (kept locally, not tracked)
 blackwell_port/
