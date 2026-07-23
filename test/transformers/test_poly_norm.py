@@ -91,11 +91,16 @@ class NaivePolyNorm(nn.Module):
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
-        (torch.float32, 1e-4, 1e-6),
+        # atol/rtol are slightly looser than test_correctness_functional's because weight.grad and
+        # bias.grad here are sum() reductions over bs*sl*hd (up to ~524k) near-canceling terms. Triton's
+        # and PyTorch's reductions accumulate in different (non-associative) orders, so their results can
+        # differ from each other by a bit more than machine-precision-tight tolerances, even though both
+        # are individually close to the true (higher-precision) gradient.
+        (torch.float32, 3e-4, 1e-6),
         pytest.param(
             torch.bfloat16,
-            2e-1,
-            2e-2,
+            6e-1,
+            5e-2,
             marks=pytest.mark.skipif(not supports_bfloat16(), reason="bfloat16 not supported on this GPU"),
         ),
     ],
