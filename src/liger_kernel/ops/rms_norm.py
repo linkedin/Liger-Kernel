@@ -51,6 +51,13 @@ except Exception:
 _CASTING_MODE_NONE: tl.constexpr = tl.constexpr(-1)
 _CASTING_MODE_LLAMA: tl.constexpr = tl.constexpr(0)
 _CASTING_MODE_GEMMA: tl.constexpr = tl.constexpr(1)
+# Min flattened rows to dispatch to the block-row path; lowered from the original
+# 32768 (4096*8). At >=4096 rows the full fwd+bwd pass is faster on the block-row
+# kernels for hidden<=512; forward-only can be marginally slower near the boundary.
+_BLOCK_ROW_MIN_ROWS = 4096
+# Max BLOCK_SIZE (i.e. hidden size) for the block-row path; raised from 256 to 512 since
+# block-row also wins at hidden=512. Larger hidden sizes stay on the single-row path.
+_BLOCK_ROW_MAX_BLOCK_SIZE = 512
 
 
 @triton.jit
@@ -450,7 +457,7 @@ def rms_norm_forward(X, W, eps, offset, casting_mode, row_mode):
     kernel_args = {}
     if X.device.type == "xpu":
         set_large_grf_mode(kernel_args)
-    if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
+    if BLOCK_SIZE > _BLOCK_ROW_MAX_BLOCK_SIZE or n_rows < _BLOCK_ROW_MIN_ROWS or row_mode:
         _rms_norm_forward_kernel[(n_rows,)](
             Y,
             Y.stride(0),
@@ -531,7 +538,7 @@ def rms_norm_backward(dY, X, W, RSTD, offset, casting_mode, BLOCK_SIZE, num_warp
     if X.device.type == "xpu":
         set_large_grf_mode(kernel_args)
 
-    if BLOCK_SIZE > 256 or n_rows < 4096 * 8 or row_mode:
+    if BLOCK_SIZE > _BLOCK_ROW_MAX_BLOCK_SIZE or n_rows < _BLOCK_ROW_MIN_ROWS or row_mode:
         _rms_norm_backward_kernel[grid](
             dY,
             dY.stride(0),
