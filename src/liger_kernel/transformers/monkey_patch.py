@@ -11,11 +11,14 @@ import transformers
 from packaging import version
 from transformers import PreTrainedModel
 
+from liger_kernel.ops.utils import is_hip
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 from liger_kernel.transformers.functional import liger_cross_entropy
 from liger_kernel.transformers.geglu import LigerGEGLUMLP
 from liger_kernel.transformers.geglu import LigerGEGLUMLPForGemma4
 from liger_kernel.transformers.layer_norm import LigerLayerNorm
+from liger_kernel.transformers.lfm2_moe_router import liger_lfm2_moe_route_tokens_to_experts
+from liger_kernel.transformers.lfm2_short_conv import liger_lfm2_short_conv_forward
 from liger_kernel.transformers.model.falcon_h1 import lce_forward as falcon_h1_lce_forward
 from liger_kernel.transformers.model.gemma import lce_forward as gemma_lce_forward
 from liger_kernel.transformers.model.gemma2 import lce_forward as gemma2_lce_forward
@@ -36,6 +39,8 @@ from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from liger_kernel.transformers.rope import liger_rotary_pos_emb_vision
 from liger_kernel.transformers.swiglu import LigerBlockSparseTop2MLP
 from liger_kernel.transformers.swiglu import LigerExperts
+from liger_kernel.transformers.swiglu import LigerLfm2MoeExperts
+from liger_kernel.transformers.swiglu import LigerLfm2SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerPhi3SwiGLUMLP
 from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
 
@@ -134,6 +139,11 @@ def _patch_layer_norm_module(module, eps=1e-6):
 
 
 def _patch_swiglu_module(module, liger_module):
+    if liger_module is LigerLfm2MoeExperts:
+        module.has_gate = True
+        module.has_bias = False
+        module.is_transposed = False
+        _bind_method_to_module(module, "_apply_gate", LigerLfm2MoeExperts._apply_gate)
     _bind_method_to_module(module, "forward", liger_module.forward)
     _bind_method_to_module(module, "_get_name", lambda self: liger_module.__name__)
 
@@ -3530,6 +3540,212 @@ def apply_liger_kernel_to_exaone4(
                 _patch_rms_norm_module(decoder_layer.self_attn.k_norm, in_place=False)
 
 
+def _patch_lfm2_base_model(
+    base_model,
+    rms_norm: bool,
+    swiglu: bool,
+    short_conv: bool,
+    fused_moe: bool = True,
+    fused_moe_router: bool = True,
+) -> None:
+    if rms_norm:
+        _patch_rms_norm_module(base_model.embedding_norm)
+
+    for decoder_layer in base_model.layers:
+        feed_forward = decoder_layer.feed_forward
+        if hasattr(feed_forward, "experts"):
+            if swiglu and fused_moe:
+                _patch_swiglu_module(feed_forward.experts, LigerLfm2MoeExperts)
+            if fused_moe_router:
+                _bind_method_to_module(feed_forward, "route_tokens_to_experts", liger_lfm2_moe_route_tokens_to_experts)
+        elif swiglu:
+            _patch_swiglu_module(feed_forward, LigerLfm2SwiGLUMLP)
+
+        if short_conv and hasattr(decoder_layer, "conv"):
+            _bind_method_to_module(decoder_layer.conv, "forward", liger_lfm2_short_conv_forward)
+
+        if rms_norm:
+            _patch_rms_norm_module(decoder_layer.operator_norm)
+            _patch_rms_norm_module(decoder_layer.ffn_norm)
+            if hasattr(decoder_layer, "self_attn"):
+                _patch_rms_norm_module(decoder_layer.self_attn.q_layernorm)
+                _patch_rms_norm_module(decoder_layer.self_attn.k_layernorm)
+
+
+def apply_liger_kernel_to_lfm2(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    short_conv: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """Apply Liger kernels to Hugging Face LFM2 models."""
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.lfm2 import modeling_lfm2
+    from transformers.models.lfm2.modeling_lfm2 import Lfm2Model
+
+    if rope:
+        modeling_lfm2.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_lfm2.Lfm2RMSNorm = LigerRMSNorm
+    if swiglu:
+        modeling_lfm2.Lfm2MLP = LigerLfm2SwiGLUMLP
+    if short_conv:
+        modeling_lfm2.Lfm2ShortConv.forward = liger_lfm2_short_conv_forward
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(qwen2_lce_forward, model)
+        else:
+            modeling_lfm2.Lfm2ForCausalLM.forward = qwen2_lce_forward
+
+    if model is not None:
+        base_model: Lfm2Model = getattr(model, model.base_model_prefix, model)
+        _patch_lfm2_base_model(base_model, rms_norm=rms_norm, swiglu=swiglu, short_conv=short_conv)
+
+
+def apply_liger_kernel_to_lfm2_moe(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    fused_moe: bool = True,
+    fused_moe_router: bool = True,
+    short_conv: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """Apply Liger kernels to Hugging Face LFM2-MoE models."""
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.lfm2_moe import modeling_lfm2_moe
+    from transformers.models.lfm2_moe.modeling_lfm2_moe import Lfm2MoeModel
+
+    if rope:
+        modeling_lfm2_moe.apply_rotary_pos_emb = liger_rotary_pos_emb
+    if rms_norm:
+        modeling_lfm2_moe.Lfm2MoeRMSNorm = LigerRMSNorm
+    if swiglu:
+        modeling_lfm2_moe.Lfm2MoeMLP = LigerLfm2SwiGLUMLP
+    if fused_moe:
+        modeling_lfm2_moe.Lfm2MoeExperts = LigerLfm2MoeExperts
+    if fused_moe_router:
+        modeling_lfm2_moe.Lfm2MoeSparseMoeBlock.route_tokens_to_experts = liger_lfm2_moe_route_tokens_to_experts
+    if short_conv:
+        modeling_lfm2_moe.Lfm2MoeShortConv.forward = liger_lfm2_short_conv_forward
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(qwen2_lce_forward, model)
+        else:
+            modeling_lfm2_moe.Lfm2MoeForCausalLM.forward = qwen2_lce_forward
+
+    if model is not None:
+        base_model: Lfm2MoeModel = getattr(model, model.base_model_prefix, model)
+        _patch_lfm2_base_model(
+            base_model,
+            rms_norm=rms_norm,
+            swiglu=swiglu,
+            short_conv=short_conv,
+            fused_moe=fused_moe,
+            fused_moe_router=fused_moe_router,
+        )
+        if fused_moe:
+            for decoder_layer in base_model.layers:
+                if hasattr(decoder_layer.feed_forward, "experts"):
+                    _patch_swiglu_module(decoder_layer.feed_forward.experts, LigerLfm2MoeExperts)
+
+
+def apply_liger_kernel_to_lfm2_vl(
+    rope: bool = True,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    layer_norm: Optional[bool] = None,
+    rms_norm: bool = True,
+    swiglu: bool = True,
+    short_conv: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """Apply Liger kernels to LFM2-VL's LFM2 decoder and SigLIP2 tower.
+
+    LayerNorm defaults to disabled on ROCm, where PyTorch's implementation is
+    faster for the SigLIP2 shapes, and enabled on other accelerators.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+    if layer_norm is None:
+        layer_norm = not is_hip()
+
+    from transformers.models.lfm2_vl import modeling_lfm2_vl
+    from transformers.models.lfm2_vl.modeling_lfm2_vl import Lfm2VlForConditionalGeneration
+    from transformers.models.siglip2 import modeling_siglip2
+    from transformers.models.siglip2.modeling_siglip2 import Siglip2VisionModel
+
+    from liger_kernel.transformers.model.lfm2_vl import lce_forward as lfm2_vl_lce_forward
+
+    if layer_norm and model is None:
+        modeling_siglip2.nn.LayerNorm = LigerLayerNorm
+
+    apply_liger_kernel_to_lfm2(
+        rope=rope,
+        cross_entropy=False,
+        fused_linear_cross_entropy=False,
+        rms_norm=rms_norm,
+        swiglu=swiglu,
+        short_conv=short_conv,
+    )
+
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+    if fused_linear_cross_entropy:
+        if model is not None:
+            model.forward = MethodType(lfm2_vl_lce_forward, model)
+        else:
+            modeling_lfm2_vl.Lfm2VlForConditionalGeneration.forward = lfm2_vl_lce_forward
+
+    if model is not None:
+        if not isinstance(model, Lfm2VlForConditionalGeneration):
+            raise TypeError("model must be an Lfm2VlForConditionalGeneration instance")
+
+        apply_liger_kernel_to_lfm2(
+            rope=rope,
+            cross_entropy=False,
+            fused_linear_cross_entropy=False,
+            rms_norm=rms_norm,
+            swiglu=swiglu,
+            model=model.model.language_model,
+            short_conv=short_conv,
+        )
+
+        if layer_norm:
+            projector_norm = model.model.multi_modal_projector.layer_norm
+            if projector_norm is not None:
+                _patch_layer_norm_module(projector_norm)
+
+            vision_tower: Siglip2VisionModel = model.model.vision_tower
+            vision_model = getattr(vision_tower, "vision_model", vision_tower)
+            _patch_layer_norm_module(vision_model.post_layernorm)
+            for encoder_layer in vision_model.encoder.layers:
+                _patch_layer_norm_module(encoder_layer.layer_norm1)
+                _patch_layer_norm_module(encoder_layer.layer_norm2)
+
+
 # Model type corresponds to the keys defined in transformers/models/auto/modeling_auto.py
 MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "deepseek_v4": apply_liger_kernel_to_deepseek_v4,
@@ -3544,6 +3760,9 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "glm4v_moe": apply_liger_kernel_to_glm4v_moe,
     "gpt_oss": apply_liger_kernel_to_gpt_oss,
     "internvl": apply_liger_kernel_to_internvl,
+    "lfm2": apply_liger_kernel_to_lfm2,
+    "lfm2_moe": apply_liger_kernel_to_lfm2_moe,
+    "lfm2_vl": apply_liger_kernel_to_lfm2_vl,
     "llama": apply_liger_kernel_to_llama,
     "llama4_text": apply_liger_kernel_to_llama4,
     "llama4": apply_liger_kernel_to_llama4,
