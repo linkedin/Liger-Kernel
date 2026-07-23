@@ -25,6 +25,7 @@ from utils import run_memory_benchmark
 from utils import run_speed_benchmark
 
 from liger_kernel.ops import LigerFusedMoEFunction
+from liger_kernel.ops.fused_moe import _pick_block_m_token
 from liger_kernel.utils import get_total_gpu_memory
 from liger_kernel.utils import infer_device
 
@@ -133,12 +134,11 @@ def bench_memory_fused_moe(input: SingleBenchmarkRunInput) -> SingleBenchmarkRun
 
 
 def _warmup_liger(T, E, H, intermediate_dim, K, dtype, sweep_dim):
-    """Run one full fwd+bwd to exhaust Triton autotune for (H, intermediate_dim).
+    """Run one full fwd+bwd to exhaust Triton autotune for one autotune key.
 
-    Triton autotune key is (H_dim, I_dim), so a single call is sufficient to
-    cache the best config for all subsequent calls with the same H and intermediate_dim.
-    For the num_experts sweep we also call this once per E value to warm up
-    CUDA caches for each expert count before do_bench starts timing.
+    The GEMM autotune key is (H_dim, I_dim, BLOCK_M[, USE_TMA]) where BLOCK_M is
+    picked adaptively from tokens-per-expert, so the caller warms one
+    representative point per distinct BLOCK_M bucket of the sweep.
     """
     warmup_input = SingleBenchmarkRunInput(
         x=T if sweep_dim == "T" else E,
@@ -221,34 +221,6 @@ if __name__ == "__main__":
     peak_bytes = estimate_kernel_peak_memory(probe_fn=_probe)
     kernel_bpt = peak_bytes // probe_T
 
-    # Pre-warm Liger's Triton autotune before benchmarks start.
-    #
-    # Autotune key is (H_dim, I_dim) — one warmup per (H, intermediate_dim) pair is sufficient
-    # to cache the best config for the entire sweep.
-    #
-    # For num_tokens sweep: one pass with the model's base T is enough.
-    # For num_experts sweep: one pass per E value in EXPERT_SWEEP_VALUES to also
-    #   warm up CUDA caches for each expert count, since weight tensor sizes differ.
-    print(f"Pre-warming Liger autotune (H={H}, intermediate_dim={intermediate_dim})...")
-
-    if args.sweep_dim == "num_tokens":
-        _warmup_liger(probe_T, E, H, intermediate_dim, K, dtype, sweep_dim="T")
-    else:  # num_experts
-        for e_val in EXPERT_SWEEP_VALUES:
-            print(f"  warmup E={e_val}...")
-            _warmup_liger(probe_T, e_val, H, intermediate_dim, K, dtype, sweep_dim="E")
-
-    if device == "cuda":
-        torch.cuda.synchronize()
-    elif device == "npu":
-        torch.npu.synchronize()
-    elif device == "xpu":
-        torch.xpu.synchronize()
-    else:
-        torch.cpu.synchronize()
-
-    print("Autotune warmup complete.\n")
-
     if args.sweep_dim == "num_tokens":
         # Derive a memory-safe upper bound for T from the probe measurement.
         # Target 40% GPU memory utilisation to leave headroom for framework overhead.
@@ -283,6 +255,37 @@ if __name__ == "__main__":
             }
         ]
         x_name, x_label = "E", "num_experts"
+
+    # Pre-warm Liger's Triton autotune before benchmarks start.
+    #
+    # The GEMM autotune key includes the adaptive BLOCK_M (a function of tokens per
+    # expert), so warm one representative x-value per distinct BLOCK_M bucket.
+    # For the num_experts sweep this also warms CUDA caches per expert count.
+    print(f"Pre-warming Liger autotune (H={H}, intermediate_dim={intermediate_dim})...")
+
+    if args.sweep_dim == "num_tokens":
+        warmed = set()
+        for t_val in x_values:
+            bucket = _pick_block_m_token(t_val * K, E)
+            if bucket not in warmed:
+                print(f"  warmup T={t_val} (BLOCK_M={bucket})...")
+                _warmup_liger(t_val, E, H, intermediate_dim, K, dtype, sweep_dim="T")
+                warmed.add(bucket)
+    else:  # num_experts
+        for e_val in EXPERT_SWEEP_VALUES:
+            print(f"  warmup E={e_val}...")
+            _warmup_liger(probe_T, e_val, H, intermediate_dim, K, dtype, sweep_dim="E")
+
+    if device == "cuda":
+        torch.cuda.synchronize()
+    elif device == "npu":
+        torch.npu.synchronize()
+    elif device == "xpu":
+        torch.xpu.synchronize()
+    else:
+        torch.cpu.synchronize()
+
+    print("Autotune warmup complete.\n")
 
     common_configs = {
         "kernel_name": "fused_moe",

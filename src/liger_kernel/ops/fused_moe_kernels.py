@@ -5,19 +5,55 @@
 #   Copyright 2025 Wentao Guo, Mayank Mishra, Xinle Cheng, Ion Stoica, Tri Dao
 #
 # Grouped GEMM kernels and backward kernels are new Triton implementations
-# inspired by the SonicMoE paper (arXiv:2512.14080), ported to portable Triton
-# (no Hopper-specific WGMMA/TMA) for general GPU support.
+# inspired by the SonicMoE paper (arXiv:2512.14080). Expert-weight loads use TMA
+# tensor descriptors on Hopper+ when eligible (USE_TMA), with a portable
+# pointer-load path for other GPUs and non-16B-aligned shapes.
 
 import os
 
 import triton
 import triton.language as tl
 
+from liger_kernel.utils import infer_device_arch
+
 # LIGER_FUSED_MOE_AUTOTUNE=0 pins each kernel to one config, skipping Triton's
 # `do_bench` loop whose per-config working sets can OOM (see issue #1246). Must
 # be set before importing liger_kernel. Temporary escape hatch until triton's
 # autotuner handles such errors itself.
 _AUTOTUNE_DISABLED = os.environ.get("LIGER_FUSED_MOE_AUTOTUNE", "1").lower() in ("0", "false", "no")
+
+# LIGER_FUSED_MOE_MEMORY_EFFICIENT=1 (must be set before import): backward writes
+# SwiGLU gradients in place over the saved pre-activations and skips the (TK, I)
+# weighted_act buffer. See liger_kernel.ops.fused_moe for details. Read at import
+# because it decides the autotuner's restore_value list: when the in-place alias is
+# active, tuning runs must restore pre_act between configs; when it is not, the
+# restore's copy_() would needlessly version-bump a saved tensor and break
+# retain_graph double-backward for everyone.
+_MEMORY_EFFICIENT = os.environ.get("LIGER_FUSED_MOE_MEMORY_EFFICIENT", "0").lower() in ("1", "true", "yes")
+
+
+def _is_blackwell_datacenter() -> bool:
+    """True on sm100/sm103 (B200/B300 class) — the parts with tcgen05 MMA + TMEM.
+
+    Used to extend (never replace) the autotune config spaces: TMEM accumulators
+    make wide-N tiles cheap there, and tcgen05 MMAs are issued by a single warp
+    so num_warps=4 competes with 8. Deliberately excludes consumer Blackwell
+    (sm120, "blackwell_consumer"): it has neither TMEM nor 228 KB smem, so the
+    wide-tile configs would only waste tuning time as OutOfResources skips.
+
+    Only called from the autotuners' early_config_prune hooks (i.e. at first
+    kernel launch), NOT at import: infer_device_arch() initializes CUDA, and
+    importing liger_kernel must stay side-effect-free for fork-based workers.
+    """
+    return infer_device_arch() in ("blackwell", "blackwell_ultra")
+
+
+def _blackwell_config(kwargs, num_warps, num_stages):
+    """A triton.Config that the prune hooks drop on non-sm100/sm103 devices."""
+    cfg = triton.Config(kwargs, num_warps=num_warps, num_stages=num_stages)
+    cfg.liger_blackwell_only = True
+    return cfg
+
 
 # ---------------------------------------------------------------------------
 # Routing metadata overview
@@ -314,7 +350,7 @@ def _moe_router_scatter_kernel(
 
 def _get_gemm_autotune_configs():
     if _AUTOTUNE_DISABLED:
-        return [triton.Config({"BLOCK_N": 128, "BLOCK_K": 64}, num_warps=8, num_stages=2)]
+        return [triton.Config({"BLOCK_N": 128, "BLOCK_K": 64, "GROUP_M": 8}, num_warps=8, num_stages=2)]
     configs = []
     for bn in [64, 128]:
         for bk in [32, 64]:
@@ -322,25 +358,130 @@ def _get_gemm_autotune_configs():
                 for ns in [2, 3, 4, 5]:
                     configs.append(
                         triton.Config(
-                            {"BLOCK_N": bn, "BLOCK_K": bk},
+                            {"BLOCK_N": bn, "BLOCK_K": bk, "GROUP_M": 8},
                             num_warps=nw,
                             num_stages=ns,
                         )
                     )
+    # Wider tiles for compute-bound large-T shapes (H100 has 228 KB smem).
+    for bn, bk, nw, ns in [
+        (256, 32, 8, 3),
+        (256, 64, 8, 2),
+        (256, 64, 8, 3),
+        (256, 64, 8, 4),
+        (128, 128, 8, 2),
+        (128, 128, 8, 3),
+        (128, 128, 4, 3),
+        (256, 128, 8, 2),
+    ]:
+        configs.append(triton.Config({"BLOCK_N": bn, "BLOCK_K": bk, "GROUP_M": 8}, num_warps=nw, num_stages=ns))
+    # sm100/sm103 extras (B300-measured), pruned away at launch on other archs:
+    # TMEM holds the fp32 accumulator, so BN=256 with deep pipelines wins where
+    # Hopper would spill registers — a gathered-GEMM probe hit 1103 TFLOPS at
+    # BN=256/BK=64/ns=3 vs 808 at the Hopper-favored BN=128/BK=64/ns=4.
+    # GROUP_M=16 probes exploit the 132 MB L2 (H100: 50 MB). Configs that exceed
+    # smem fail compile and are skipped by the autotuner (OutOfResources → inf).
+    for bn, bk, nw, ns in [
+        (256, 64, 4, 3),
+        (256, 64, 4, 4),
+        (256, 64, 8, 5),
+        (256, 128, 8, 3),
+        (256, 128, 4, 2),
+        (128, 128, 8, 4),
+        (128, 128, 4, 4),
+        (256, 32, 4, 4),
+    ]:
+        configs.append(_blackwell_config({"BLOCK_N": bn, "BLOCK_K": bk, "GROUP_M": 8}, num_warps=nw, num_stages=ns))
+    for bn, bk, nw, ns in [
+        (256, 64, 8, 3),
+        (128, 64, 8, 4),
+    ]:
+        configs.append(_blackwell_config({"BLOCK_N": bn, "BLOCK_K": bk, "GROUP_M": 16}, num_warps=nw, num_stages=ns))
     return configs
 
 
 def _get_dW_autotune_configs():
     """Configs for backward weight-grad kernels (dW1, dW2): include BLOCK_M sweep."""
     if _AUTOTUNE_DISABLED:
-        return [triton.Config({"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 32}, num_warps=8, num_stages=2)]
-    return [
-        triton.Config({"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk}, num_warps=nw, num_stages=2)
+        return [triton.Config({"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 32, "GROUP_M": 4}, num_warps=8, num_stages=2)]
+    configs = [
+        triton.Config({"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk, "GROUP_M": 4}, num_warps=nw, num_stages=ns)
         for bm in [64, 128]
-        for bn in [64, 128]
-        for bk in [16, 32]
+        for bn in [64, 128, 256]
+        for bk in [32, 64]
         for nw in [4, 8]
+        for ns in [2, 3]
     ]
+    # sm100/sm103 extras (B300-measured, +22-26% backward at TK/E >= 512 together
+    # with the TPE_BUCKET key), pruned away at launch on other archs: deep-K
+    # (BK=128) reads token rows in fewer longer bursts (neutral on H100 per E13),
+    # ns=4 pipelines are free with TMEM accumulators, GROUP_M=8 halves re-reads
+    # of the per-expert row window in the larger L2.
+    for bm, bn, bk, gm, nw, ns in [
+        (128, 256, 128, 4, 8, 2),
+        (128, 256, 128, 4, 8, 3),
+        (128, 256, 64, 4, 8, 4),
+        (128, 256, 64, 4, 4, 3),
+        (128, 128, 128, 4, 8, 3),
+        (128, 256, 64, 8, 8, 3),
+        (128, 128, 64, 8, 8, 3),
+        (64, 256, 128, 4, 8, 3),
+    ]:
+        configs.append(
+            _blackwell_config({"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk, "GROUP_M": gm}, num_warps=nw, num_stages=ns)
+        )
+    return configs
+
+
+def _make_tile_prune(n_extent_of, m_extent_of=None):
+    """Shape/arch-aware early config pruning.
+
+    Drops (a) tiles wider than the (padded) problem — cuts first-run
+    compile+tune cost dramatically for small shapes (e.g. unit tests) — and
+    (b) the Blackwell-datacenter-only configs when not on sm100/sm103, keeping
+    other architectures' search spaces exactly as tuned on H100. Falls back to
+    the full list if pruning would empty it.
+    """
+
+    def prune(configs, nargs, **kwargs):
+        args = {**nargs, **kwargs}
+        if not _is_blackwell_datacenter():
+            configs = [c for c in configs if not getattr(c, "liger_blackwell_only", False)]
+        n_extent = triton.next_power_of_2(max(64, n_extent_of(args)))
+        m_extent = triton.next_power_of_2(max(64, m_extent_of(args))) if m_extent_of is not None else None
+        pruned = [
+            c
+            for c in configs
+            if c.kwargs["BLOCK_N"] <= n_extent and (m_extent is None or c.kwargs.get("BLOCK_M", 0) <= m_extent)
+        ]
+        return pruned or configs
+
+    return prune
+
+
+# N-extent per kernel family (the dimension BLOCK_N tiles over).
+_prune_gemm_n_is_I = _make_tile_prune(lambda a: a["I_dim"])
+_prune_gemm_n_is_H = _make_tile_prune(lambda a: a["H_dim"])
+_prune_dW2 = _make_tile_prune(lambda a: a["H_dim"], lambda a: a["I_dim"])
+_prune_dW1 = _make_tile_prune(lambda a: 2 * a["I_dim"], lambda a: a["H_dim"])
+
+
+@triton.jit
+def _grouped_pid_swizzle(pid, num_pid_m, NUM_PID_N: tl.constexpr, GROUP_M: tl.constexpr):
+    """L2-friendly CTA remap (triton matmul-tutorial style).
+
+    Flat 1D pid → (pid_m, pid_n) such that GROUP_M consecutive m-tiles are
+    visited for every n before advancing: CTAs resident together then share
+    both the x rows of those m-tiles and the (expert) weight n-tiles in L2.
+    m-tiles are expert-major (sorted), so a group usually stays inside one expert.
+    """
+    num_pid_in_group = GROUP_M * NUM_PID_N
+    group_id = pid // num_pid_in_group
+    first_pid_m = group_id * GROUP_M
+    group_size_m = tl.minimum(num_pid_m - first_pid_m, GROUP_M)
+    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
+    pid_n = (pid % num_pid_in_group) // group_size_m
+    return pid_m, pid_n
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +492,8 @@ def _get_dW_autotune_configs():
 
 @triton.autotune(
     configs=_get_gemm_autotune_configs(),
-    key=["H_dim", "I_dim"],
+    key=["H_dim", "I_dim", "BLOCK_M", "USE_TMA", "STORE_PREACT"],
+    prune_configs_by={"early_config_prune": _prune_gemm_n_is_I},
 )
 @triton.jit
 def _fused_up_proj_swiglu_kernel(
@@ -361,8 +503,10 @@ def _fused_up_proj_swiglu_kernel(
     expert_start_ptr,  # (E+1,) int32
     tile_row_start_ptr,  # (num_m_tiles,) int32 — row_start per M-tile
     tile_expert_ptr,  # (num_m_tiles,) int32 — expert index per M-tile
+    total_tiles_ptr,  # (1,) int32 — actual number of m-tiles (device scalar)
     pre_act_ptr,  # (TK, 2*I)  pre-SwiGLU activations [saved for backward]
     post_act_ptr,  # (TK, I)    post-SwiGLU activations
+    w_rows,  # E * 2*I — rows of the flattened (E*2I, H) weight view (TMA)
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_x_T,
@@ -377,11 +521,22 @@ def _fused_up_proj_swiglu_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+    USE_TMA: tl.constexpr,
+    STORE_PREACT: tl.constexpr,
 ):
-    """Grid: (num_m_tiles, ceil(I/BLOCK_N)).
-    pid_m selects M-tile via tile_row_start/tile_expert; pid_n selects N-tile."""
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
+    """Grid: 1D (num_m_tiles_max * ceil(I/BLOCK_N),), L2-swizzled into (pid_m, pid_n).
+    pid_m selects M-tile via tile_row_start/tile_expert; pid_n selects N-tile.
+    Grid is an upper bound; CTAs past the actual tile count exit early.
+    USE_TMA: weight tiles load through a TMA descriptor over the flattened
+    (E*2I, H) view — async bulk copies that bypass L1 and free LSU issue slots.
+    STORE_PREACT=False (inference): skip writing the (TK, 2I) pre-activation."""
+    pid = tl.program_id(0)
+    NUM_PID_N: tl.constexpr = (I_dim + BLOCK_N - 1) // BLOCK_N
+    num_pid_m = tl.load(total_tiles_ptr)
+    if pid >= num_pid_m * NUM_PID_N:
+        return
+    pid_m, pid_n = _grouped_pid_swizzle(pid, num_pid_m, NUM_PID_N, GROUP_M)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
     # int64 prevents expert_idx * stride_w_E overflow at large E*I*H (see #1246).
@@ -402,6 +557,16 @@ def _fused_up_proj_swiglu_kernel(
 
     n_idx = n_start + n_offs
     n_mask = n_idx < I_dim
+    if USE_TMA:
+        w_desc = tl.make_tensor_descriptor(
+            gate_up_proj_ptr,
+            shape=[w_rows, H_dim],
+            strides=[stride_w_N, 1],
+            block_shape=[BLOCK_N, BLOCK_K],
+        )
+        # Row of this expert's gate block in the flattened view. OOB rows at the
+        # tail expert zero-fill; garbage lanes are masked at the store.
+        w_row0 = (expert_idx * (2 * I_dim)).to(tl.int32) + n_start
     # int64 prevents token_idx * stride_T overflow at large T*H (see #1246).
     token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=row_mask, other=0).to(tl.int64)
     for k in tl.range(0, H_dim, BLOCK_K):
@@ -417,32 +582,39 @@ def _fused_up_proj_swiglu_kernel(
             eviction_policy="evict_first",  # token rows not reused; free L2 for weights
         )
 
-        w_mask = n_mask[:, None] & k_mask[None, :]
-        w_gate_ptrs = (
-            gate_up_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_N + k_idx[None, :] * stride_w_K
-        )
-        w_gate = tl.load(
-            w_gate_ptrs,
-            mask=w_mask,
-            other=0.0,
-        )
-        acc_gate = tl.dot(x_tile, tl.trans(w_gate), acc=acc_gate)
+        if USE_TMA:
+            w_gate = w_desc.load([w_row0, k])
+            acc_gate = tl.dot(x_tile, tl.trans(w_gate), acc=acc_gate)
+            w_up = w_desc.load([w_row0 + I_dim, k])
+            acc_up = tl.dot(x_tile, tl.trans(w_up), acc=acc_up)
+        else:
+            w_mask = n_mask[:, None] & k_mask[None, :]
+            w_gate_ptrs = (
+                gate_up_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_N + k_idx[None, :] * stride_w_K
+            )
+            w_gate = tl.load(
+                w_gate_ptrs,
+                mask=w_mask,
+                other=0.0,
+            )
+            acc_gate = tl.dot(x_tile, tl.trans(w_gate), acc=acc_gate)
 
-        w_up_ptrs = w_gate_ptrs + I_dim * stride_w_N
-        w_up = tl.load(
-            w_up_ptrs,
-            mask=w_mask,
-            other=0.0,
-        )
+            w_up_ptrs = w_gate_ptrs + I_dim * stride_w_N
+            w_up = tl.load(
+                w_up_ptrs,
+                mask=w_mask,
+                other=0.0,
+            )
 
-        acc_up = tl.dot(x_tile, tl.trans(w_up), acc=acc_up)
+            acc_up = tl.dot(x_tile, tl.trans(w_up), acc=acc_up)
 
     out_mask = row_mask[:, None] & n_mask[None, :]
 
-    pre_gate_ptrs = pre_act_ptr + row_offs[:, None] * stride_pre_TK + n_idx[None, :] * stride_pre_N
-    pre_up_ptrs = pre_gate_ptrs + I_dim * stride_pre_N
-    tl.store(pre_gate_ptrs, acc_gate.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
-    tl.store(pre_up_ptrs, acc_up.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
+    if STORE_PREACT:
+        pre_gate_ptrs = pre_act_ptr + row_offs[:, None] * stride_pre_TK + n_idx[None, :] * stride_pre_N
+        pre_up_ptrs = pre_gate_ptrs + I_dim * stride_pre_N
+        tl.store(pre_gate_ptrs, acc_gate.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
+        tl.store(pre_up_ptrs, acc_up.to(pre_act_ptr.dtype.element_ty), mask=out_mask)
 
     sig_gate = tl.sigmoid(acc_gate)
     silu_gate = acc_gate * sig_gate
@@ -460,7 +632,8 @@ def _fused_up_proj_swiglu_kernel(
 
 @triton.autotune(
     configs=_get_gemm_autotune_configs(),
-    key=["H_dim", "I_dim"],
+    key=["H_dim", "I_dim", "BLOCK_M", "USE_TMA"],
+    prune_configs_by={"early_config_prune": _prune_gemm_n_is_H},
 )
 @triton.jit
 def _fused_down_proj_kernel(
@@ -469,7 +642,9 @@ def _fused_down_proj_kernel(
     expert_start_ptr,  # (E+1,) int32
     tile_row_start_ptr,  # (num_m_tiles,) int32
     tile_expert_ptr,  # (num_m_tiles,) int32
+    total_tiles_ptr,  # (1,) int32 — actual number of m-tiles (device scalar)
     Y_ptr,  # (TK, H)
+    w_rows,  # E * H — rows of the flattened (E*H, I) weight view (TMA)
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_post_TK,
@@ -482,11 +657,17 @@ def _fused_down_proj_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+    USE_TMA: tl.constexpr,
 ):
-    """Grid: (num_m_tiles, ceil(H/BLOCK_N)).
+    """Grid: 1D (num_m_tiles_max * ceil(H/BLOCK_N),), L2-swizzled into (pid_m, pid_n).
     Each CTA: one (BLOCK_M, BLOCK_N) tile of Y = post_act @ down_proj[e]^T."""
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
+    pid = tl.program_id(0)
+    NUM_PID_N: tl.constexpr = (H_dim + BLOCK_N - 1) // BLOCK_N
+    num_pid_m = tl.load(total_tiles_ptr)
+    if pid >= num_pid_m * NUM_PID_N:
+        return
+    pid_m, pid_n = _grouped_pid_swizzle(pid, num_pid_m, NUM_PID_N, GROUP_M)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
     # int64 prevents expert_idx * stride_w_E overflow at large E*I*H (see #1246).
@@ -506,6 +687,15 @@ def _fused_down_proj_kernel(
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
+    if USE_TMA:
+        w_desc = tl.make_tensor_descriptor(
+            down_proj_ptr,
+            shape=[w_rows, I_dim],
+            strides=[stride_w_H, 1],
+            block_shape=[BLOCK_N, BLOCK_K],
+        )
+        w_row0 = (expert_idx * H_dim).to(tl.int32) + n_start
+
     for k in tl.range(0, I_dim, BLOCK_K):
         k_idx = k + k_offs
         k_mask = k_idx < I_dim
@@ -514,12 +704,15 @@ def _fused_down_proj_kernel(
         # Keep bf16 for dot operands → tensor cores. acc stays fp32.
         a_tile = tl.load(a_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
-        w_ptrs = down_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_H + k_idx[None, :] * stride_w_I
-        w_tile = tl.load(
-            w_ptrs,
-            mask=n_mask[:, None] & k_mask[None, :],
-            other=0.0,
-        )
+        if USE_TMA:
+            w_tile = w_desc.load([w_row0, k])
+        else:
+            w_ptrs = down_proj_ptr + expert_idx * stride_w_E + n_idx[:, None] * stride_w_H + k_idx[None, :] * stride_w_I
+            w_tile = tl.load(
+                w_ptrs,
+                mask=n_mask[:, None] & k_mask[None, :],
+                other=0.0,
+            )
 
         acc = tl.dot(a_tile, tl.trans(w_tile), acc=acc)
 
@@ -537,7 +730,9 @@ def _get_token_gather_autotune_configs():
     if _AUTOTUNE_DISABLED:
         return [triton.Config({"BLOCK_H": 128, "BLOCK_K": 4}, num_warps=4, num_stages=4)]
     configs = []
-    for bh in [64, 128, 256, 512]:
+    # BLOCK_H=1024 rows help on Blackwell (HBM3e rewards longer contiguous
+    # vectors; B300 sustains 6.4 TB/s vs H100's 3.3) and are harmless elsewhere.
+    for bh in [64, 128, 256, 512, 1024]:
         for bk in [1, 2, 4, 8, 16]:
             for nw in [4, 8]:
                 if bk * bh <= 32768:
@@ -565,35 +760,36 @@ def _token_gather_weighted_sum_kernel(
     BLOCK_K: tl.constexpr,
     w_is_None: tl.constexpr,  # True → unweighted gather-sum (used for dx backward)
 ):
-    """One CTA per token. Gathers K expert outputs, reduces with routing weights
-    (forward) or without weights (backward dx via _token_broadcast_backward)."""
+    """Grid: (T, ceil(H/BLOCK_H)) — 2D so small-T launches still fill the GPU.
+    Each CTA gathers K expert rows for one (token, H-tile) and reduces with routing
+    weights (forward) or without weights (backward dx)."""
     # int64 prevents t * stride_out_T overflow at large T*H (see #1246).
     t = tl.program_id(0).to(tl.int64)
+    h_tile = tl.program_id(1)
 
-    for h_tile in tl.static_range(triton.cdiv(H_dim, BLOCK_H)):
-        h_idx = (h_tile * BLOCK_H + tl.arange(0, BLOCK_H)).to(tl.uint32)
-        h_mask = h_idx < H_dim
-        acc = tl.zeros([BLOCK_H], dtype=tl.float32)
+    h_idx = (h_tile * BLOCK_H + tl.arange(0, BLOCK_H)).to(tl.uint32)
+    h_mask = h_idx < H_dim
+    acc = tl.zeros([BLOCK_H], dtype=tl.float32)
 
-        for k_tile in tl.range(triton.cdiv(K_dim, BLOCK_K)):
-            k_offs = (k_tile * BLOCK_K + tl.arange(0, BLOCK_K)).to(tl.uint32)
-            k_mask = k_offs < K_dim
+    for k_tile in tl.range(triton.cdiv(K_dim, BLOCK_K)):
+        k_offs = (k_tile * BLOCK_K + tl.arange(0, BLOCK_K)).to(tl.uint32)
+        k_mask = k_offs < K_dim
 
-            flat_idx = t * K_dim + k_offs
-            # int64 prevents perm_idx * stride overflow when TK is large (see #1246).
-            perm_idx = tl.load(s_rev_ptr + flat_idx, mask=k_mask, other=0).to(tl.int64)
+        flat_idx = t * K_dim + k_offs
+        # int64 prevents perm_idx * stride overflow when TK is large (see #1246).
+        perm_idx = tl.load(s_rev_ptr + flat_idx, mask=k_mask, other=0).to(tl.int64)
 
-            y_ptrs = Y_ptr + perm_idx[:, None] * stride_Y_TK + h_idx[None, :] * stride_Y_H
-            y_vals = tl.load(y_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0).to(tl.float32)
+        y_ptrs = Y_ptr + perm_idx[:, None] * stride_Y_TK + h_idx[None, :] * stride_Y_H
+        y_vals = tl.load(y_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0).to(tl.float32)
 
-            if w_is_None:
-                acc += tl.sum(y_vals, axis=0)
-            else:
-                w_vals = tl.load(w_ptr + flat_idx, mask=k_mask, other=0.0).to(tl.float32)
-                acc += tl.sum(y_vals * w_vals[:, None], axis=0)
+        if w_is_None:
+            acc += tl.sum(y_vals, axis=0)
+        else:
+            w_vals = tl.load(w_ptr + flat_idx, mask=k_mask, other=0.0).to(tl.float32)
+            acc += tl.sum(y_vals * w_vals[:, None], axis=0)
 
-        out_ptrs = out_ptr + t * stride_out_T + h_idx * stride_out_H
-        tl.store(out_ptrs, acc.to(out_ptr.dtype.element_ty), mask=h_mask)
+    out_ptrs = out_ptr + t * stride_out_T + h_idx * stride_out_H
+    tl.store(out_ptrs, acc.to(out_ptr.dtype.element_ty), mask=h_mask)
 
 
 # ---------------------------------------------------------------------------
@@ -604,8 +800,14 @@ def _token_gather_weighted_sum_kernel(
 
 @triton.autotune(
     configs=_get_gemm_autotune_configs(),
-    key=["H_dim", "I_dim"],
+    key=["H_dim", "I_dim", "BLOCK_M", "USE_TMA"],
     reset_to_zero=["dS_ptr"],  # autotune runs multiple configs; atomic_add accumulates, so reset between runs
+    # Memory-efficient mode aliases d_pre_act onto pre_act (in-place), so tuning
+    # runs must restore pre_act between configs. In default mode the restore is
+    # skipped: its copy_() would version-bump a saved tensor on every tuning run
+    # and spuriously break retain_graph double-backward.
+    restore_value=["pre_act_ptr"] if _MEMORY_EFFICIENT else [],
+    prune_configs_by={"early_config_prune": _prune_gemm_n_is_I},
 )
 @triton.jit
 def _moe_bwd_down_proj_kernel(
@@ -618,9 +820,11 @@ def _moe_bwd_down_proj_kernel(
     expert_start_ptr,  # (E+1,)   int32
     tile_row_start_ptr,  # (num_m_tiles,) int32
     tile_expert_ptr,  # (num_m_tiles,) int32
-    d_pre_act_ptr,  # (TK, 2I) — output: ∂L/∂z = [dgate, dup]
-    weighted_act_ptr,  # (TK, I)  — output: s_k * y1 (for dW2 kernel)
-    dS_ptr,  # (TK,)    — output: ∂L/∂s_k, indexed by flat (t,k)
+    total_tiles_ptr,  # (1,) int32 — actual number of m-tiles (device scalar)
+    d_pre_act_ptr,  # (TK, 2I) — output: ∂L/∂z = [dgate, dup]; MAY ALIAS pre_act_ptr
+    weighted_act_ptr,  # (TK, I)  — output: s_k * y1 (for dW2 kernel); unused if not WRITE_WACT
+    dS_ptr,  # (TK,) fp32 — output: ∂L/∂s_k, indexed by flat (t,k)
+    w_rows,  # E * H — rows of the flattened (E*H, I) weight view (TMA)
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_dO_T,
@@ -637,12 +841,21 @@ def _moe_bwd_down_proj_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+    USE_TMA: tl.constexpr,
+    WRITE_WACT: tl.constexpr,  # False in memory-efficient mode (dW2 recomputes s_k*y1)
 ):
-    """Grid: (num_m_tiles, ceil(I/BLOCK_N)).
+    """Grid: 1D (num_m_tiles_max * ceil(I/BLOCK_N),), L2-swizzled into (pid_m, pid_n).
     Accumulates dA' = dO @ W2^T (dO stays in registers), recomputes y1 from
-    pre_act, applies SwiGLU backward, writes d_pre_act, weighted_act, and dS."""
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
+    pre_act, applies SwiGLU backward, writes d_pre_act (in-place over pre_act —
+    each (row, n) element is read and written by exactly the same CTA), dS, and
+    optionally weighted_act."""
+    pid = tl.program_id(0)
+    NUM_PID_N: tl.constexpr = (I_dim + BLOCK_N - 1) // BLOCK_N
+    num_pid_m = tl.load(total_tiles_ptr)
+    if pid >= num_pid_m * NUM_PID_N:
+        return
+    pid_m, pid_n = _grouped_pid_swizzle(pid, num_pid_m, NUM_PID_N, GROUP_M)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
     # int64 prevents expert_idx * stride_w_E overflow at large E*I*H (see #1246).
@@ -668,6 +881,14 @@ def _moe_bwd_down_proj_kernel(
     weights = tl.load(topk_weights_ptr + flat_tk_idx, mask=row_mask, other=0.0).to(tl.float32)
 
     # K-loop: accumulate dA' = dO @ W2^T (unscaled; scale once after loop).
+    if USE_TMA:
+        w_desc = tl.make_tensor_descriptor(
+            down_proj_ptr,
+            shape=[w_rows, I_dim],
+            strides=[stride_w_H, 1],
+            block_shape=[BLOCK_K, BLOCK_N],
+        )
+        w_row0 = (expert_idx * H_dim).to(tl.int32)
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     for k in tl.range(0, H_dim, BLOCK_K):
         k_idx = k + k_offs
@@ -676,8 +897,11 @@ def _moe_bwd_down_proj_kernel(
         dO_ptrs = dO_ptr + token_idx[:, None] * stride_dO_T + k_idx[None, :] * stride_dO_H
         dO_tile = tl.load(dO_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
-        w_ptrs = down_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_H + n_idx[None, :] * stride_w_I
-        w_tile = tl.load(w_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
+        if USE_TMA:
+            w_tile = w_desc.load([w_row0 + k, n_start])
+        else:
+            w_ptrs = down_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_H + n_idx[None, :] * stride_w_I
+            w_tile = tl.load(w_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
         acc = tl.dot(dO_tile, w_tile, acc=acc)
 
     # Epilogue: recompute y1 = silu(gate) * up from saved pre_act.
@@ -690,14 +914,16 @@ def _moe_bwd_down_proj_kernel(
     silu_gate = gate * sig_gate
     y1 = silu_gate * up  # (BLOCK_M, BLOCK_N)
 
-    # Write weighted_act = s_k * y1 for dW2.
-    wact_ptrs = weighted_act_ptr + row_offs[:, None] * stride_wact_TK + n_idx[None, :] * stride_wact_I
-    tl.store(wact_ptrs, (weights[:, None] * y1).to(weighted_act_ptr.dtype.element_ty), mask=out_mask)
+    if WRITE_WACT:
+        # Write weighted_act = s_k * y1 for dW2.
+        wact_ptrs = weighted_act_ptr + row_offs[:, None] * stride_wact_TK + n_idx[None, :] * stride_wact_I
+        tl.store(wact_ptrs, (weights[:, None] * y1).to(weighted_act_ptr.dtype.element_ty), mask=out_mask)
 
     # dS: ∂L/∂s_k = sum_I((dO @ W2^T) * y1) — accumulate across all N-tiles.
     # IMPORTANT: use atomic_add, not store — the grid has ceil(I/BLOCK_N) N-tiles per
     # M-tile, each contributing a partial sum over its I-chunk.  tl.store would
     # overwrite previous tiles, leaving only the last chunk's contribution.
+    # dS buffer is fp32: bf16 atomics would round every partial contribution.
     dS_partial = tl.sum(acc * y1, axis=1)
     tl.atomic_add(dS_ptr + flat_tk_idx, dS_partial, mask=row_mask)
 
@@ -721,12 +947,15 @@ def _moe_bwd_down_proj_kernel(
 
 @triton.autotune(
     configs=_get_dW_autotune_configs(),
-    key=["H_dim", "I_dim"],
-    reset_to_zero=["dW2_ptr"],
+    key=["H_dim", "I_dim", "RECOMPUTE_WACT", "TPE_BUCKET"],
+    prune_configs_by={"early_config_prune": _prune_dW2},
 )
 @triton.jit
 def _moe_bwd_dW2_kernel(
-    weighted_act_ptr,  # (TK, I) — s_k * y1 from backward down-proj kernel
+    weighted_act_ptr,  # (TK, I) — s_k * y1 from backward down-proj kernel (or dummy)
+    pre_act_ptr,  # (TK, 2I) — saved [gate, up]; used when RECOMPUTE_WACT
+    s_scatter_idx_ptr,  # (TK,)  — sorted_pos → flat (t,k) index (RECOMPUTE_WACT only)
+    topk_weights_ptr,  # (TK,)   — s_k in flat (t,k) order (RECOMPUTE_WACT only)
     dout_ptr,  # (T, H)  — upstream gradient (gathered by x_gather_idx)
     x_gather_idx_ptr,  # (TK,)   — sorted_pos → original token index
     expert_start_ptr,  # (E+1,)  int32
@@ -735,6 +964,8 @@ def _moe_bwd_dW2_kernel(
     I_dim: tl.constexpr,
     stride_wact_TK,
     stride_wact_I: tl.constexpr,
+    stride_pre_TK,
+    stride_pre_N: tl.constexpr,
     stride_dout_T,
     stride_dout_H: tl.constexpr,
     stride_dW2_E,
@@ -743,25 +974,33 @@ def _moe_bwd_dW2_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+    RECOMPUTE_WACT: tl.constexpr,  # True → recompute s_k*y1 from pre_act (no wact buffer)
+    TPE_BUCKET: tl.constexpr = 0,  # tokens-per-expert bucket; autotune key only (unused in body)
 ):
-    """dW2[e, h, i] += sum_t weighted_act[t, i] * dout[token(t), h] for tokens in e.
-    Grid: (E * ceil(I/BLOCK_M), ceil(H/BLOCK_N)). Early exit for empty experts."""
-    pid0 = tl.program_id(0)
-    pid1 = tl.program_id(1)
+    """dW2[e, h, i] = sum_t (s_k*y1)[t, i] * dout[token(t), h] for tokens in e.
+    s_k*y1 either read from the materialized weighted_act buffer, or (memory-
+    efficient mode) recomputed on the fly from pre_act — in that case this kernel
+    MUST run before _moe_bwd_down_proj_kernel overwrites pre_act in place.
+    Grid: 1D (E * ceil(I/BLOCK_M) * ceil(H/BLOCK_N),), expert-major so all tiles of
+    one expert are resident together: its activation/dO rows stay in L2 instead of
+    being re-read from HBM per tile. Empty experts store zeros (no separate memset)."""
+    pid = tl.program_id(0)
 
     N_M_TILES: tl.constexpr = (I_dim + BLOCK_M - 1) // BLOCK_M
+    N_N_TILES: tl.constexpr = (H_dim + BLOCK_N - 1) // BLOCK_N
+    TILES_PER_E: tl.constexpr = N_M_TILES * N_N_TILES
     # int64 prevents expert_idx * stride_dW_E overflow at large E*I*H (see #1246).
-    expert_idx = (pid0 // N_M_TILES).to(tl.int64)
-    m_tile = pid0 % N_M_TILES
+    expert_idx = (pid // TILES_PER_E).to(tl.int64)
+    local = pid % TILES_PER_E
+    m_tile, n_tile = _grouped_pid_swizzle(local, N_M_TILES, N_N_TILES, GROUP_M)
 
     expert_start = tl.load(expert_start_ptr + expert_idx)
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
     M_e = expert_end - expert_start
-    if M_e == 0:
-        return
 
     m_start = m_tile * BLOCK_M
-    n_start = pid1 * BLOCK_N
+    n_start = n_tile * BLOCK_N
 
     m_offs = tl.arange(0, BLOCK_M)
     n_offs = tl.arange(0, BLOCK_N)
@@ -779,8 +1018,21 @@ def _moe_bwd_dW2_kernel(
         k_mask = k_idx < M_e
         row_offs = (expert_start + k_idx).to(tl.int64)
 
-        wact_ptrs = weighted_act_ptr + row_offs[None, :] * stride_wact_TK + i_idx[:, None] * stride_wact_I
-        wact_tile = tl.load(wact_ptrs, mask=k_mask[None, :] & i_mask[:, None], other=0.0)
+        if RECOMPUTE_WACT:
+            # Recompute s_k * y1 = s_k * silu(gate) * up from saved pre_act.
+            load_mask = k_mask[None, :] & i_mask[:, None]
+            gate_ptrs = pre_act_ptr + row_offs[None, :] * stride_pre_TK + i_idx[:, None] * stride_pre_N
+            up_ptrs = gate_ptrs + I_dim * stride_pre_N
+            gate = tl.load(gate_ptrs, mask=load_mask, other=0.0).to(tl.float32)
+            up = tl.load(up_ptrs, mask=load_mask, other=0.0).to(tl.float32)
+            flat_tk_idx = tl.load(s_scatter_idx_ptr + row_offs, mask=k_mask, other=0)
+            weights = tl.load(topk_weights_ptr + flat_tk_idx, mask=k_mask, other=0.0).to(tl.float32)
+            y1w = gate * tl.sigmoid(gate) * up * weights[None, :]
+            # Cast to the activation dtype so numerics match the buffer path.
+            wact_tile = y1w.to(dout_ptr.dtype.element_ty)
+        else:
+            wact_ptrs = weighted_act_ptr + row_offs[None, :] * stride_wact_TK + i_idx[:, None] * stride_wact_I
+            wact_tile = tl.load(wact_ptrs, mask=k_mask[None, :] & i_mask[:, None], other=0.0)
 
         # int64 prevents token_idx * stride_T overflow at large T*H (see #1246).
         token_idx = tl.load(x_gather_idx_ptr + row_offs, mask=k_mask, other=0).to(tl.int64)
@@ -801,7 +1053,8 @@ def _moe_bwd_dW2_kernel(
 
 @triton.autotune(
     configs=_get_gemm_autotune_configs(),
-    key=["H_dim", "I_dim"],
+    key=["H_dim", "I_dim", "BLOCK_M", "USE_TMA"],
+    prune_configs_by={"early_config_prune": _prune_gemm_n_is_H},
 )
 @triton.jit
 def _moe_bwd_dX_expanded_kernel(
@@ -810,7 +1063,9 @@ def _moe_bwd_dX_expanded_kernel(
     expert_start_ptr,  # (E+1,) int32
     tile_row_start_ptr,  # (num_m_tiles,) int32
     tile_expert_ptr,  # (num_m_tiles,) int32
+    total_tiles_ptr,  # (1,) int32 — actual number of m-tiles (device scalar)
     dx_expanded_ptr,  # (TK, H) — output: clean write, indexed by sorted_pos
+    w_rows,  # E * 2*I — rows of the flattened (E*2I, H) weight view (TMA)
     H_dim: tl.constexpr,
     I_dim: tl.constexpr,
     stride_d_pre_TK,
@@ -823,12 +1078,19 @@ def _moe_bwd_dX_expanded_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+    USE_TMA: tl.constexpr,
 ):
-    """Grid: (num_m_tiles, ceil(H/BLOCK_N)).
-    dx_expanded[sorted_pos] = d_gate @ W1_gate^T + d_up @ W1_up^T.
+    """Grid: 1D (num_m_tiles_max * ceil(H/BLOCK_N),), L2-swizzled into (pid_m, pid_n).
+    dx_expanded[sorted_pos] = d_pre_act @ W1[e] — a single GEMM over K = 2I
+    (d_pre_act columns and W1[e] rows share the same [gate; up] ordering).
     No atomics — rows are unique per CTA in sorted space."""
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
+    pid = tl.program_id(0)
+    NUM_PID_N: tl.constexpr = (H_dim + BLOCK_N - 1) // BLOCK_N
+    num_pid_m = tl.load(total_tiles_ptr)
+    if pid >= num_pid_m * NUM_PID_N:
+        return
+    pid_m, pid_n = _grouped_pid_swizzle(pid, num_pid_m, NUM_PID_N, GROUP_M)
 
     row_start = tl.load(tile_row_start_ptr + pid_m)
     # int64 prevents expert_idx * stride_w_E overflow at large E*I*H (see #1246).
@@ -848,31 +1110,38 @@ def _moe_bwd_dX_expanded_kernel(
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
-    for k in tl.range(0, I_dim, BLOCK_K):
+    if USE_TMA:
+        w_desc = tl.make_tensor_descriptor(
+            gate_up_proj_ptr,
+            shape=[w_rows, H_dim],
+            strides=[stride_w_N, 1],
+            block_shape=[BLOCK_K, BLOCK_N],
+        )
+        w_row0 = (expert_idx * (2 * I_dim)).to(tl.int32)
+
+    # dx = d_pre_act @ W1[e] as ONE GEMM over K = 2I: d_pre_act columns and
+    # W1[e] rows share the same [gate; up] ordering, so the gate/up split the
+    # forward kernel needs (separate outputs) was never needed here.
+    # This also avoids a Triton 3.7.1 miscompile on sm103 (B300): two tl.dot
+    # calls chained through ONE accumulator in a K-loop produce wrong results
+    # under the tcgen05 MMA path for most tile configs (single-dot loops and
+    # two-accumulator loops are unaffected).
+    for k in tl.range(0, 2 * I_dim, BLOCK_K):
         k_idx = k + k_offs
-        k_mask = k_idx < I_dim
+        k_mask = k_idx < 2 * I_dim
 
-        d_gate_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + k_idx[None, :] * stride_d_pre_N
-        d_gate = tl.load(d_gate_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
+        d_pre_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + k_idx[None, :] * stride_d_pre_N
+        d_pre = tl.load(d_pre_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
 
-        w_gate_ptrs = (
-            gate_up_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_N + h_idx[None, :] * stride_w_K
-        )
-        w_gate = tl.load(w_gate_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
-        acc = tl.dot(d_gate, w_gate, acc=acc)
+        if USE_TMA:
+            w_tile = w_desc.load([w_row0 + k, n_start])
+        else:
+            w_ptrs = (
+                gate_up_proj_ptr + expert_idx * stride_w_E + k_idx[:, None] * stride_w_N + h_idx[None, :] * stride_w_K
+            )
+            w_tile = tl.load(w_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
 
-        d_up_ptrs = d_pre_act_ptr + row_offs[:, None] * stride_d_pre_TK + (I_dim + k_idx)[None, :] * stride_d_pre_N
-        d_up = tl.load(d_up_ptrs, mask=row_mask[:, None] & k_mask[None, :], other=0.0)
-
-        w_up_ptrs = (
-            gate_up_proj_ptr
-            + expert_idx * stride_w_E
-            + (I_dim + k_idx)[:, None] * stride_w_N
-            + h_idx[None, :] * stride_w_K
-        )
-        w_up = tl.load(w_up_ptrs, mask=k_mask[:, None] & h_mask[None, :], other=0.0)
-
-        acc = tl.dot(d_up, w_up, acc=acc)
+        acc = tl.dot(d_pre, w_tile, acc=acc)
 
     dxe_ptrs = dx_expanded_ptr + row_offs[:, None] * stride_dxe_TK + h_idx[None, :] * stride_dxe_H
     tl.store(dxe_ptrs, acc.to(dx_expanded_ptr.dtype.element_ty), mask=row_mask[:, None] & h_mask[None, :])
@@ -886,8 +1155,8 @@ def _moe_bwd_dX_expanded_kernel(
 
 @triton.autotune(
     configs=_get_dW_autotune_configs(),
-    key=["H_dim", "I_dim"],
-    reset_to_zero=["dW1_ptr"],
+    key=["H_dim", "I_dim", "TPE_BUCKET"],
+    prune_configs_by={"early_config_prune": _prune_dW1},
 )
 @triton.jit
 def _moe_bwd_dW1_kernel(
@@ -908,25 +1177,29 @@ def _moe_bwd_dW1_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+    TPE_BUCKET: tl.constexpr = 0,  # tokens-per-expert bucket; autotune key only (unused in body)
 ):
-    """dW1[e, n, h] += sum_t X[token(t), h] * d_pre_act[t, n], where n in [0, 2I).
-    Grid: (E * ceil(H/BLOCK_M), ceil(2I/BLOCK_N)). Early exit for empty experts."""
-    pid0 = tl.program_id(0)
-    pid1 = tl.program_id(1)
+    """dW1[e, n, h] = sum_t X[token(t), h] * d_pre_act[t, n], where n in [0, 2I).
+    Grid: 1D (E * ceil(H/BLOCK_M) * ceil(2I/BLOCK_N),), expert-major so all tiles of
+    one expert are resident together: its x/d_pre_act rows stay in L2 instead of
+    being re-read from HBM per tile. Empty experts store zeros (no separate memset)."""
+    pid = tl.program_id(0)
 
     N_M_TILES: tl.constexpr = (H_dim + BLOCK_M - 1) // BLOCK_M
+    N_N_TILES: tl.constexpr = (2 * I_dim + BLOCK_N - 1) // BLOCK_N
+    TILES_PER_E: tl.constexpr = N_M_TILES * N_N_TILES
     # int64 prevents expert_idx * stride_dW_E overflow at large E*I*H (see #1246).
-    expert_idx = (pid0 // N_M_TILES).to(tl.int64)
-    m_tile = pid0 % N_M_TILES
+    expert_idx = (pid // TILES_PER_E).to(tl.int64)
+    local = pid % TILES_PER_E
+    m_tile, n_tile = _grouped_pid_swizzle(local, N_M_TILES, N_N_TILES, GROUP_M)
 
     expert_start = tl.load(expert_start_ptr + expert_idx)
     expert_end = tl.load(expert_start_ptr + expert_idx + 1)
     M_e = expert_end - expert_start
-    if M_e == 0:
-        return
 
     m_start = m_tile * BLOCK_M
-    n_start = pid1 * BLOCK_N
+    n_start = n_tile * BLOCK_N
 
     m_offs = tl.arange(0, BLOCK_M)
     n_offs = tl.arange(0, BLOCK_N)
