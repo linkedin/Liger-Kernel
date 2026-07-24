@@ -15,6 +15,9 @@ except ImportError as exc:
 from liger_kernel.ops.cutile.ops.cross_entropy import LigerCrossEntropyFunction
 from liger_kernel.ops.cutile.ops.cross_entropy import cross_entropy_backward
 from liger_kernel.ops.cutile.ops.cross_entropy import cross_entropy_forward
+from liger_kernel.ops.cutile.ops.dyt import LigerDyTFunction
+from liger_kernel.ops.cutile.ops.fused_add_rms_norm import LigerFusedAddRMSNormFunction
+from liger_kernel.ops.cutile.ops.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyFunction
 from liger_kernel.ops.cutile.ops.fused_linear_jsd import LigerFusedLinearJSDFunction
 from liger_kernel.ops.cutile.ops.fused_linear_jsd import fused_linear_jsd_backward
 from liger_kernel.ops.cutile.ops.fused_linear_jsd import fused_linear_jsd_forward
@@ -24,6 +27,7 @@ from liger_kernel.ops.cutile.ops.geglu import geglu_forward
 from liger_kernel.ops.cutile.ops.group_norm import LigerGroupNormFunction
 from liger_kernel.ops.cutile.ops.group_norm import group_norm_backward
 from liger_kernel.ops.cutile.ops.group_norm import group_norm_forward
+from liger_kernel.ops.cutile.ops.grpo_loss import GrpoLossFunction
 from liger_kernel.ops.cutile.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.cutile.ops.jsd import jsd_backward
 from liger_kernel.ops.cutile.ops.jsd import jsd_forward
@@ -33,11 +37,15 @@ from liger_kernel.ops.cutile.ops.layer_norm import layer_norm_backward
 from liger_kernel.ops.cutile.ops.layer_norm import layer_norm_forward
 from liger_kernel.ops.cutile.ops.llama4_rope import LigerLlama4RopeFunction
 from liger_kernel.ops.cutile.ops.multi_token_attention import LigerMultiTokenAttentionFunction
+from liger_kernel.ops.cutile.ops.poly_norm import LigerPolyNormFunction
 from liger_kernel.ops.cutile.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
+from liger_kernel.ops.cutile.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.cutile.ops.rope import LigerRopeFunction
 from liger_kernel.ops.cutile.ops.rope import rope_backward
 from liger_kernel.ops.cutile.ops.rope import rope_forward
+from liger_kernel.ops.cutile.ops.softmax import LigerSoftmaxFunction
 from liger_kernel.ops.cutile.ops.sparsemax import LigerSparsemaxFunction
+from liger_kernel.ops.cutile.ops.swiglu import LigerSiLUMulFunction
 from liger_kernel.ops.cutile.ops.tiled_mlp import LigerTiledMLPFunction
 from liger_kernel.ops.cutile.ops.tiled_mlp import apply_tiled_mlp
 
@@ -45,6 +53,9 @@ __all__ = [
     "LigerCrossEntropyFunction",
     "cross_entropy_backward",
     "cross_entropy_forward",
+    "LigerDyTFunction",
+    "LigerFusedAddRMSNormFunction",
+    "LigerFusedLinearCrossEntropyFunction",
     "LigerFusedLinearJSDFunction",
     "fused_linear_jsd_backward",
     "fused_linear_jsd_forward",
@@ -52,6 +63,7 @@ __all__ = [
     "geglu_backward",
     "geglu_forward",
     "LigerGroupNormFunction",
+    "GrpoLossFunction",
     "group_norm_backward",
     "group_norm_forward",
     "LigerJSDFunction",
@@ -63,11 +75,15 @@ __all__ = [
     "layer_norm_forward",
     "LigerLlama4RopeFunction",
     "LigerMultiTokenAttentionFunction",
+    "LigerPolyNormFunction",
     "LigerQwen2VLMRopeFunction",
+    "LigerRMSNormFunction",
     "LigerRopeFunction",
     "rope_backward",
     "rope_forward",
+    "LigerSoftmaxFunction",
     "LigerSparsemaxFunction",
+    "LigerSiLUMulFunction",
     "LigerTiledMLPFunction",
     "apply_tiled_mlp",
 ]
