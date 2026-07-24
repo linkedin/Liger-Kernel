@@ -73,7 +73,8 @@ src/liger_kernel/ops/cute/
 
 ## Prerequisites
 
-- **CUDA toolkit** with `nvcc` and SM 9.0a (Hopper / `sm_90a`) support.
+- **CUDA toolkit** with `nvcc` and either SM 9.0a (Hopper / `sm_90a`) or
+  SM 10.0a (Blackwell / `sm_100a`) support.
 - **NVSHMEM** install (host `.so`, device `.a`, headers). Two layouts are
   supported:
   - Native/system install: point `NVSHMEM_HOME` at it, or use the default
@@ -87,7 +88,13 @@ src/liger_kernel/ops/cute/
   `$CUTLASS_HOME/tools/util/include` exist). *Not needed when linking a prebuilt
   core.*
 - **CMake ≥ 3.24**; **Ninja** recommended.
-- For the TVM FFI exports only: **apache-tvm-ffi** at runtime.
+- **apache-tvm-ffi** at build and runtime. CMake uses `tvm-ffi-config` to
+  compile the TVM FFI exports, and `liger_cute_kernels/tvm_ffi.py` uses the
+  Python `tvm_ffi` loader at runtime:
+
+  ```bash
+  python -m pip install apache-tvm-ffi
+  ```
 
 Build commands below are run from the **repository root**; the CMake project is
 the `liger_cute_kernels/` module directory.
@@ -104,6 +111,16 @@ cmake -S liger_cute_kernels -B build/core \
       -DCMAKE_BUILD_TYPE=Release -GNinja
 cmake --build build/core --target liger_cute_kernels -j
 # -> build/core/csrc/core/libliger_cute_kernels.so
+```
+
+Build for Blackwell by overriding the CUDA architecture:
+
+```bash
+cmake -S liger_cute_kernels -B build/core-sm100 \
+      -DLIGER_CUTE_BUILD_BINDINGS=OFF \
+      -DLIGER_CUTE_CUDA_ARCH=100a \
+      -DCMAKE_BUILD_TYPE=Release -GNinja
+cmake --build build/core-sm100 --target liger_cute_kernels -j
 ```
 
 Or from Python (with `liger_cute_kernels/` on `sys.path`):
@@ -178,6 +195,7 @@ environment (no build isolation), from this module directory:
 
 ```bash
 cd liger_cute_kernels
+python -m pip install apache-tvm-ffi
 pip wheel . --no-deps --no-build-isolation -w dist
 # -> dist/liger_cute_kernels-0.1.0+cu130.torch2.9.1-cp312-cp312-linux_x86_64.whl
 ```
@@ -208,12 +226,48 @@ LIGER_CUTE_CORE_DIR=/abs/dir-with-core \
 Install order at the consumer side: the `liger_kernel` wheel first, then
 optionally the matching lck wheel.
 
+## Source-tree Python verification
+
+The Python facade is intentionally thin: it imports the external `tvm_ffi`
+package and loads `liger_cute_kernels/libliger_cute_kernels.so` from beside
+`liger_cute_kernels/tvm_ffi.py`. In a source checkout, `pytest` skips the Python
+tests until both pieces exist. To run those tests without installing a wheel,
+build the core and stage the shared libraries into the package directory:
+
+```bash
+cd liger_cute_kernels
+python -m pip install apache-tvm-ffi
+
+cmake -S . -B build/core \
+      -DLIGER_CUTE_BUILD_BINDINGS=OFF \
+      -DCMAKE_BUILD_TYPE=Release -GNinja
+cmake --build build/core --target liger_cute_kernels -j
+
+cp build/core/csrc/core/libliger_cute_kernels.so liger_cute_kernels/
+cp "${NVSHMEM_HOME:-/usr/local/nvshmem}"/lib/libnvshmem_host.so* liger_cute_kernels/
+cp "${NVSHMEM_HOME:-/usr/local/nvshmem}"/lib/nvshmem_bootstrap_uid.so* liger_cute_kernels/ 2>/dev/null || true
+
+python - <<'PY'
+import liger_cute_kernels.tvm_ffi as tvm_ffi
+print(tvm_ffi.is_available())
+print(tvm_ffi.uniqueid_nbytes())
+PY
+
+python -m pytest -q test
+```
+
+Alternatively, install the built wheel; it stages the core and NVSHMEM host
+libraries into the package automatically.
+
 ## CMake options
 
 | Option | Default | Effect |
 |---|---|---|
 | `LIGER_CUTE_BUILD_BINDINGS` | `OFF` | Deprecated compatibility option. Leave OFF; tensor APIs are exposed through TVM FFI only. |
 | `LIGER_CUTE_CORE_IMPORTED_DIR` | *(empty)* | Dir holding a prebuilt `libliger_cute_kernels.so`. When set, the core is linked as an imported library (not compiled) and CUTLASS is not required. |
+| `LIGER_CUTE_CUDA_ARCH` | `90a` | CUDA target architecture. Use `100a` for Blackwell / B200. |
+| `LIGER_CUTE_BUILD_TESTS` | `OFF` | Build the C++ gtest tests. |
+| `LIGER_CUTE_TESTS_ONLY` | `OFF` | Build only tests; skips NVSHMEM/TVM FFI/core packaging. |
 | `LIGER_CUTE_STATIC_LIBSTDCXX` | `ON` | Statically link libstdc++/libgcc into the core so its internal C++ ABI is invisible to consumers. |
 | `NVSHMEM_HOME` | `/usr/local/nvshmem` | NVSHMEM install root (also read from the env var). |
 | `CUTLASS_HOME` | *(env)* | CUTLASS repo root (read from the env var; only needed to compile the core). |
@@ -221,8 +275,8 @@ optionally the matching lck wheel.
 Standard CMake flags also apply: `-DCMAKE_BUILD_TYPE=Release`, `-GNinja`,
 `-DPython_EXECUTABLE=...`.
 
-CUDA architecture is fixed to `sm_90a` (Hopper, with WGMMA/TMA/multicast) in
-`CMakeLists.txt`.
+CUDA architecture defaults to `sm_90a` (Hopper, with WGMMA/TMA/multicast) and
+is configurable with `-DLIGER_CUTE_CUDA_ARCH=100a` for Blackwell.
 
 ## Environment variables
 
