@@ -9,5 +9,6 @@ requires = [
     "cmake>=3.24",
     "ninja",
     "torch",
+    "apache-tvm-ffi",
 ]
 build-backend = "setuptools.build_meta"
