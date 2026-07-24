@@ -452,15 +452,20 @@ def run_benchmarks(
 
     # Output routing for comparison runs.
     # LIGER_BENCH_TARGET selects the destination CSV (e.g. "cutile" -> all_benchmark_data_cutile.csv).
-    # LIGER_BENCH_PROVIDER_TAG renames the "liger" provider in this run (e.g. "liger_cutile") so
+    # LIGER_BENCH_PROVIDER_TAG renames Liger providers in this run (e.g. "liger_cutile") so
     # multiple implementations can coexist in one CSV without colliding on the dedup key.
+    # The tag replaces the leading "liger" of each provider, preserving any suffix so
+    # benchmarks with several Liger providers (e.g. fused_add_rms_norm's
+    # "liger_fused_add_rms_norm" and "liger_rms_norm") stay distinct:
+    #   "liger"                   -> "liger_cutile"
+    #   "liger_fused_add_rms_norm" -> "liger_cutile_fused_add_rms_norm"
     target = os.environ.get("LIGER_BENCH_TARGET", "").strip().lower()
     provider_tag = os.environ.get("LIGER_BENCH_PROVIDER_TAG", "").strip().lower()
 
     if provider_tag:
         for bd in benchmark_data_list:
-            if bd.kernel_provider == "liger":
-                bd.kernel_provider = provider_tag
+            if bd.kernel_provider == "liger" or bd.kernel_provider.startswith("liger_"):
+                bd.kernel_provider = provider_tag + bd.kernel_provider[len("liger") :]
 
     print_benchmark_data(benchmark_data_list)
 
