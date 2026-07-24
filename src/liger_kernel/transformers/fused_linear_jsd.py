@@ -15,6 +15,7 @@ class LigerFusedLinearJSD(torch.nn.Module):
         jsd_beta (float): coefficient beta of generalized JSD in the interval [0, 1]. It implements forward/reverse KL when beta equals 0 and 1 respectively. Default: `0.5`
         ignore_index (int): The index to ignore in the target. Default: `-100`
         temperature (float): temperature in softmax function to control the output probability distribution. Default: `1.0`
+        accum_dtype (torch.dtype): the dtype of intermediate result buffers for weight gradient accumulations. Default: `None`
 
     Shape:
         - student_input: :math:`(BT, H)`, where B is batch size, T is sequence length, H is hidden dimension.
@@ -68,12 +69,19 @@ class LigerFusedLinearJSD(torch.nn.Module):
     ```
     """
 
-    def __init__(self, jsd_beta=0.5, ignore_index=-100, temperature=1.0):
+    def __init__(
+        self,
+        jsd_beta=0.5,
+        ignore_index=-100,
+        temperature=1.0,
+        accum_dtype: Optional[torch.dtype] = None,
+    ):
         super().__init__()
         assert temperature != 0, "temperature cannot be 0."
         self.jsd_beta = jsd_beta
         self.temperature = temperature
         self.ignore_index = ignore_index
+        self.accum_dtype = accum_dtype
 
     def forward(
         self,
@@ -92,4 +100,5 @@ class LigerFusedLinearJSD(torch.nn.Module):
             self.jsd_beta,
             self.ignore_index,
             self.temperature,
+            self.accum_dtype,
         )

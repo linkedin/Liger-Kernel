@@ -254,7 +254,8 @@ def test_correctness_with_ignore_index(B, T, H, V, scalar, dtype, beta, ignore_i
     ],
 )
 @pytest.mark.parametrize("temperature, beta, ignore_index", [(1.0, 0.5, -100), (2.0, 0.1, 42)])
-def test_correctness_functional(B, T, H, V, scalar, dtype, beta, ignore_index, temperature, atol, rtol):
+@pytest.mark.parametrize("accum_dtype", [None, torch.float32])
+def test_correctness_functional(B, T, H, V, scalar, dtype, beta, ignore_index, temperature, accum_dtype, atol, rtol):
     # init the linear in all FusedLinearJSDs with the same weights
     _weight = torch.rand(V, H // 2, device=device, dtype=dtype)
     _weight1 = _weight.detach().clone().requires_grad_(True)
@@ -284,6 +285,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, beta, ignore_index, t
         jsd_beta=beta,
         ignore_index=ignore_index,
         temperature=temperature,
+        accum_dtype=accum_dtype,
     )
     output2 = LigerFusedLinearJSDFunction.apply(
         _input2,
@@ -294,6 +296,7 @@ def test_correctness_functional(B, T, H, V, scalar, dtype, beta, ignore_index, t
         beta,
         ignore_index,
         temperature,
+        accum_dtype,
     )
 
     assert_verbose_allclose(output1, output2, atol=atol, rtol=rtol)
