@@ -652,7 +652,7 @@ moe_fused_kernel(
 		// Separate scopes prevent CommBuffers from inflating MLP register budget.
 		// Fwd uses warps 1-3 (2 getters + 1 putter).
 		int warp_id = threadIdx.x / 32;
-		bool is_comm_warp = (warp_id == kCommGetWarp0 || warp_id == kCommPutWarp);
+		bool is_comm_warp = (warp_id == kCommGetWarp || warp_id == kCommPutWarp);
 
 		if (is_comm_warp) {
 			// Comm warps: dedicated get/put — full CommBuffers access. Self-gate

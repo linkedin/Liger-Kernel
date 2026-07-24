@@ -115,8 +115,7 @@ mlp1_fused_test_kernel(
 	// register cost): on Blackwell (Compute=100) MLP1 uses warp 3 for the
 	// epilogue-free UMMA and warps 4..11 as two epilogue warpgroups; the Hopper
 	// (Compute=90) WGMMA consumer keys off warps 4..11 and leaves warp 3 idle.
-	constexpr bool warp3            = (Compute == 100);
-	constexpr int  kFirstConsumerWarp = warp3 ? 3 : 4;
+	constexpr int  kFirstConsumerWarp = (Compute == 100) ? 3 : 4;
 	bool is_consumer = (warp_id >= kFirstConsumerWarp && warp_id <= 11);
 
 	auto pipe = [&]() {
@@ -151,14 +150,14 @@ mlp1_fused_test_kernel(
 				num_n_tiles, num_k_tiles);
 		} else if (is_consumer) {
 			if constexpr (Compute == 100) {
-				// warp3 (compile-time) selects the warp-3 dual-WG epilogue.
-				liger::mlp1_fused_consumer<Traits, 100, warp3>(
+				// Blackwell: warp-3 UMMA + dual-WG (warps 4-11) epilogue.
+				liger::mlp1_fused_consumer<Traits, 100>(
 					pipe, cons_state, smem.tile, tma_store_z,
 					m, num_n_tiles * Traits::TileN,
 					num_m_tiles, num_n_tiles, num_k_tiles);
 			} else {
 #if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ < 1000)
-				liger::mlp1_fused_consumer<Traits, 90, /*Warp3=*/false>(
+				liger::mlp1_fused_consumer<Traits, 90>(
 					pipe, cons_state, smem.tile, tma_store_z,
 					m, num_n_tiles * Traits::TileN,
 					num_m_tiles, num_n_tiles, num_k_tiles);

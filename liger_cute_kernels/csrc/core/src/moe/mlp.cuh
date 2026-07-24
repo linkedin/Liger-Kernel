@@ -46,14 +46,13 @@ struct MlpFusedSmem {
 };
 
 static constexpr int kMlpBarrierId      = 14;
-// MLP participants: warp 0 (TMA producer) + warps 4-11 (WGMMA consumers).
-// Warps 1-3 are comm warps in the fused MoE path, and also skipped in
-// the standalone kernel so counts match across both entry points.
-static constexpr int kMlpBarrierThreads = 9 * 32;  // 288
 
-// Target-based monotonic barrier for the FWD MLP warps. See
-// cta_barrier.cuh for why the modulo variant deadlocks under CTA skew.
-using MlpFwdCtaBarrier = CtaCounterBarrier<kMlpBarrierThreads, kMlpBarrierId>;
+// Target-based monotonic barrier for the FWD MLP warps. Count is Compute-aware:
+// Hopper 288 (w0 + w4-11); Blackwell 320 (w0 + w3-11, warp 3 = MLP1 UMMA). Must
+// match the in-fn kMlpBarrierThreads — both fire kMlpBarrierId. See cta_barrier.cuh
+// for why the modulo variant deadlocks under CTA skew.
+template <int Compute>
+using MlpFwdCtaBarrierT = CtaCounterBarrier<(Compute == 100 ? 10 : 9) * 32, kMlpBarrierId>;
 
 // ═══════════════════════════════════════════════════════════════════
 // MlpDims — invariant MLP dimensions, passed as __grid_constant__
@@ -111,7 +110,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 		// and threaded through here so target accumulates across all 3
 		// mlp_fused_fwd calls (A1 / B / A2). Standalone callers (no
 		// remote phase) still pass their own barrier instance.
-		MlpFwdCtaBarrier& x_barrier,
+		MlpFwdCtaBarrierT<Compute> & x_barrier,
 		int local_expert_start = 0,
 		// Logical column / grid_x for the flat-grid fused launch. Defaults
 		// (-1) fall back to blockIdx.x / gridDim.x for standalone 2-D-grid
@@ -135,6 +134,11 @@ __device__ __forceinline__ void mlp_fused_fwd(
 	using PipeState2 = typename Traits2::PipelineState;
 
 	int warp_id = threadIdx.x / Traits1::WarpSize;
+
+	// MLP-warp NamedBarrier arrival count — must equal MlpFwdCtaBarrierT<Compute>'s
+	// template count (both fire kMlpBarrierId). Hopper: w0+w4-11 (288). Blackwell:
+	// w0+w3-11 (320, warp 3 = MLP1 UMMA).
+	constexpr int kMlpBarrierThreads = (Compute == 100 ? 10 : 9) * 32;
 
 	cute::prefetch_tma_descriptor(tma_load_x.get_tma_descriptor());
 	cute::prefetch_tma_descriptor(tma_load_b.get_tma_descriptor());
@@ -160,9 +164,11 @@ __device__ __forceinline__ void mlp_fused_fwd(
 			return mlp2_make_pipe<Traits2>(smem.p2_pipe);
 	}();
 
-	if (warp_id >= 1 && warp_id <= 3) {
-		return;
-	}
+	if constexpr (Compute == 90) {
+		if (warp_id == 3) {
+			return;
+		}
+	} 
 
 	// Sync MLP warps only (excludes comm warps 1-3 which may be in
 	// nvshmem_comm_main when called from moe_fused_fwd).
@@ -173,7 +179,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 		constexpr int kMlp1Cols = Traits1::AccStages * (2 * Traits1::TileN);
 		constexpr int kTmemColumns = (kMlp1Cols > Traits2::TileN)
 			? kMlp1Cols : Traits2::TileN;
-		if (warp_id == 4) {
+		if (warp_id == 3) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tmem_base);
 			__syncwarp();
 		}
@@ -251,9 +257,9 @@ __device__ __forceinline__ void mlp_fused_fwd(
 			// untouched. Compile-time flag (no register cost). Enabling warp-3
 			// here would require the comm-warp + barrier migration (pipeline.md
 			// §5) — intentionally out of scope.
-			constexpr bool kMlp1FusedWarp3 = false;  // fused path: warp 3 is a comm warp
-			if (warp_id >= 4 && warp_id <= 11) {
-				mlp1_fused_consumer<Traits1, Compute, kMlp1FusedWarp3>(
+			
+			if (warp_id >= 3 && warp_id <= 11) {
+				mlp1_fused_consumer<Traits1, Compute>(
 					p1_pipe, p1_cons_state,
 					smem.mlp1, tma_store_z, z_m, dims.intermediate_dim,
 					num_z_m_tiles, dims.num_n_tiles_1, dims.num_k_tiles_1, n_split, n_count);
@@ -307,7 +313,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 					dims.total_n_rows_2,
 					dims.num_n_tiles_2, dims.num_k_tiles_2, n_split, n_count);
 			}
-
+			
 			if (warp_id >= 4 && warp_id <= 11) {
 				mlp2_fused_consumer<Traits2, Compute>(
 					p2_pipe, p2_cons_state,
@@ -340,7 +346,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 		constexpr int kTmemColumns = (kMlp1Cols > Traits2::TileN)
 			? kMlp1Cols : Traits2::TileN;
 		cutlass::arch::NamedBarrier::sync(kMlpBarrierThreads, kMlpBarrierId);
-		if (warp_id == 4) {
+		if (warp_id == 3) {
 			tmem_alloc.release_allocation_lock();
 			tmem_alloc.free(smem.tmem_base, kTmemColumns);
 		}
