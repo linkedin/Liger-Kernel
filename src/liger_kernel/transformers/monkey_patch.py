@@ -1484,6 +1484,142 @@ def apply_liger_kernel_to_gemma4(
         )
 
 
+def apply_liger_kernel_to_gemma4_unified_text(
+    rope: bool = False,
+    cross_entropy: bool = False,
+    fused_linear_cross_entropy: bool = True,
+    rms_norm: bool = True,
+    geglu: bool = True,
+    model: PreTrainedModel = None,
+) -> None:
+    """
+    Apply Liger kernels to replace original implementation in HuggingFace Gemma4
+    Unified text models (Gemma4UnifiedForCausalLM / Gemma4UnifiedTextModel).
+
+    Primary target: google/gemma-4-12B-it (model_type "gemma4_unified", text
+    stack "gemma4_unified_text"). Unlike gemma4 (omni), the unified text stack
+    has no PLE and no MoE; every decoder layer is a plain
+    (norm, attn, norm, mlp, norm) stack with optional KV sharing (the 12B
+    config sets num_kv_shared_layers=0).
+
+    Known limitation: rope kernel swap is a no-op on Gemma 4 Unified — HF's
+    apply_rotary_pos_emb takes a single tensor at a time, which is incompatible
+    with Liger's (q, k, cos, sin) signature. HF's plain pytorch rope stays in
+    place. The large training-memory win (fused linear cross-entropy: a ~32 GiB
+    bf16 logits tensor eliminated at seq 65536 / vocab 262144) is unaffected.
+
+    Args:
+        rope (bool): Currently a no-op for Gemma 4 Unified (HF uses single-tensor
+            apply_rotary_pos_emb incompatible with Liger). Default False.
+        cross_entropy (bool): Whether to apply Liger's cross entropy loss. Default False.
+        fused_linear_cross_entropy (bool): Fused linear CE for memory efficiency. Default True.
+            Mutually exclusive with `cross_entropy`.
+        rms_norm (bool): Whether to apply Liger's RMSNorm. Default True.
+        geglu (bool): Whether to apply Liger's GeGLU MLP. Default True.
+        model (PreTrainedModel): An already-instantiated model to patch in-place.
+    """
+    assert not (cross_entropy and fused_linear_cross_entropy), (
+        "cross_entropy and fused_linear_cross_entropy cannot both be True."
+    )
+
+    from transformers.models.gemma4_unified import modeling_gemma4_unified
+    from transformers.models.gemma4_unified.modeling_gemma4_unified import Gemma4UnifiedForCausalLM
+    from transformers.models.gemma4_unified.modeling_gemma4_unified import Gemma4UnifiedTextDecoderLayer
+    from transformers.models.gemma4_unified.modeling_gemma4_unified import Gemma4UnifiedTextModel
+
+    from liger_kernel.transformers.model.gemma4_unified import causal_forward
+    from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma4
+
+    # Gemma4UnifiedRMSNorm is identical to Gemma4RMSNorm (ones-init, no +1
+    # offset, fp32 compute), so the Gemma4 wrapper classes are reused; only
+    # the patch targets differ (modeling_gemma4_unified.*).
+    _patch_rms_norm_module_for_gemma4_unified = partial(
+        _patch_rms_norm_module, offset=0.0, casting_mode="gemma", in_place=False
+    )
+
+    def _maybe_patch_scaled_norm(module):
+        """Patch only Gemma4UnifiedRMSNorm modules that carry a weight.
+
+        Attention's ``v_norm`` and the multimodal embedder norms are
+        instantiated with ``with_scale=False`` — no weight exists, so Liger's
+        weight-multiplying kernel cannot apply. We leave these as HF's
+        scale-free RMSNorm (kernelized copies already swapped at the class
+        level via LigerRMSNormForGemma4 which also handles with_scale=False
+        correctly in its forward).
+        """
+        if module is None:
+            return
+        if not getattr(module, "with_scale", True):
+            return
+        _patch_rms_norm_module_for_gemma4_unified(module)
+
+    if rope:
+        # HF's Gemma 4 Unified apply_rotary_pos_emb has signature
+        #   apply_rotary_pos_emb(x, cos, sin, unsqueeze_dim=2)
+        # (single tensor at a time) whereas liger_rotary_pos_emb takes
+        # (q, k, cos, sin, ...). Until a Gemma-4-specific rope wrapper exists,
+        # leave HF's plain pytorch rope in place. Emit a single warning so
+        # callers flipping rope on aren't silently ignored.
+        logger.warning_once(
+            "rope=True is currently a no-op for Gemma 4 Unified: HF's "
+            "apply_rotary_pos_emb uses a single-tensor signature that is "
+            "incompatible with liger_rotary_pos_emb. Skipping rope kernel swap."
+        )
+
+    if rms_norm:
+        modeling_gemma4_unified.Gemma4UnifiedRMSNorm = LigerRMSNormForGemma4
+
+    if geglu:
+        # Gemma4UnifiedTextMLP is constructed with (config, layer_idx); the
+        # wrapper subclass accepts and discards layer_idx so the class-level
+        # swap doesn't crash model construction.
+        modeling_gemma4_unified.Gemma4UnifiedTextMLP = LigerGEGLUMLPForGemma4
+
+    # Handle loss function
+    if cross_entropy:
+        from transformers.loss.loss_utils import nn
+
+        nn.functional.cross_entropy = liger_cross_entropy
+
+    if fused_linear_cross_entropy:
+        if model is None:
+            modeling_gemma4_unified.Gemma4UnifiedForCausalLM.forward = causal_forward
+        elif isinstance(model, Gemma4UnifiedForCausalLM):
+            model.forward = MethodType(causal_forward, model)
+        # A bare Gemma4UnifiedTextModel has no lm_head / loss path, so the
+        # causal-LM forward cannot be bound to it; the norm/MLP instance
+        # patching below still applies.
+
+    if model is not None:
+        # The model instance already exists, so we need to additionally patch the
+        # instance variables that reference already-instantiated modules
+        if isinstance(model, (Gemma4UnifiedForCausalLM, Gemma4UnifiedTextModel)):
+            # get the base model from the model instance
+            base_model = model.model if isinstance(model, Gemma4UnifiedForCausalLM) else model
+
+            if rms_norm:
+                _maybe_patch_scaled_norm(base_model.norm)
+
+            for decoder_layer in base_model.layers:
+                decoder_layer: Gemma4UnifiedTextDecoderLayer
+                if geglu:
+                    _bind_method_to_module(decoder_layer.mlp, "forward", LigerGEGLUMLP.forward)
+                if rms_norm:
+                    _maybe_patch_scaled_norm(decoder_layer.input_layernorm)
+                    _maybe_patch_scaled_norm(decoder_layer.post_attention_layernorm)
+                    _maybe_patch_scaled_norm(decoder_layer.pre_feedforward_layernorm)
+                    _maybe_patch_scaled_norm(decoder_layer.post_feedforward_layernorm)
+                    # k_norm / v_norm exist only on non-KV-shared layers, so stay
+                    # defensive with getattr. v_norm is scale-free
+                    # (with_scale=False) on all layers so the helper
+                    # intentionally leaves it untouched.
+                    _maybe_patch_scaled_norm(getattr(decoder_layer.self_attn, "q_norm", None))
+                    _maybe_patch_scaled_norm(getattr(decoder_layer.self_attn, "k_norm", None))
+                    _maybe_patch_scaled_norm(getattr(decoder_layer.self_attn, "v_norm", None))
+        else:
+            raise TypeError("The model must be Gemma4UnifiedForCausalLM or Gemma4UnifiedTextModel.")
+
+
 def apply_liger_kernel_to_paligemma(
     rope: bool = True,
     cross_entropy: bool = False,
@@ -3539,6 +3675,7 @@ MODEL_TYPE_TO_APPLY_LIGER_FN = {
     "gemma3": apply_liger_kernel_to_gemma3,
     "gemma4_text": apply_liger_kernel_to_gemma4_text,
     "gemma4": apply_liger_kernel_to_gemma4,
+    "gemma4_unified_text": apply_liger_kernel_to_gemma4_unified_text,
     "glm4": apply_liger_kernel_to_glm4,
     "glm4v": apply_liger_kernel_to_glm4v,
     "glm4v_moe": apply_liger_kernel_to_glm4v_moe,
