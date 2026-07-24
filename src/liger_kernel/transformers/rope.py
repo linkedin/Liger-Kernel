@@ -3,6 +3,7 @@ from typing import Tuple
 import torch
 
 from liger_kernel.ops import LigerRopeFunction
+from liger_kernel.ops import LigerRopeTHDFunction
 
 
 def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
@@ -22,6 +23,23 @@ def liger_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """
 
     return LigerRopeFunction.apply(q, k, cos, sin, position_ids, unsqueeze_dim)
+
+
+def liger_rotary_pos_emb_thd(q, k, cos, sin):
+    """
+    Applies Rotary Positional Embedding (RoPE) operation to THD packed query and key states.
+
+    Args:
+        q (torch.Tensor): The query tensor of shape (total_tokens, n_q_head, head_dim).
+        k (torch.Tensor): The key tensor of shape (total_tokens, n_kv_head, head_dim).
+        cos (torch.Tensor): The cosine tensor of shape (total_tokens, head_dim).
+        sin (torch.Tensor): The sine tensor of shape (total_tokens, head_dim).
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: The query and key tensors after applying the RoPE operation.
+    """
+
+    return LigerRopeTHDFunction.apply(q, k, cos, sin)
 
 
 def liger_rotary_pos_emb_vision(

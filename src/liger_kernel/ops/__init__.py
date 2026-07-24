@@ -84,8 +84,11 @@ from liger_kernel.ops.rms_norm import LigerRMSNormFunction  # noqa: F401
 from liger_kernel.ops.rms_norm import rms_norm_backward  # noqa: F401
 from liger_kernel.ops.rms_norm import rms_norm_forward  # noqa: F401
 from liger_kernel.ops.rope import LigerRopeFunction  # noqa: F401
+from liger_kernel.ops.rope import LigerRopeTHDFunction  # noqa: F401
 from liger_kernel.ops.rope import rope_backward  # noqa: F401
+from liger_kernel.ops.rope import rope_backward_thd  # noqa: F401
 from liger_kernel.ops.rope import rope_forward  # noqa: F401
+from liger_kernel.ops.rope import rope_forward_thd  # noqa: F401
 from liger_kernel.ops.softmax import LigerSoftmaxFunction  # noqa: F401
 from liger_kernel.ops.sparsemax import LigerSparsemaxFunction  # noqa: F401
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction  # noqa: F401
