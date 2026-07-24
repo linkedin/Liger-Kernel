@@ -177,8 +177,9 @@ __device__ __forceinline__ void mlp_fused_fwd(
 	cute::TMEM::Allocator1Sm tmem_alloc{};
 	if constexpr (Compute == 100) {
 		constexpr int kMlp1Cols = Traits1::AccStages * (2 * Traits1::TileN);
-		constexpr int kTmemColumns = (kMlp1Cols > Traits2::TileN)
-			? kMlp1Cols : Traits2::TileN;
+		constexpr int kMlp2Cols = Traits2::AccStages * Traits2::TileN;
+		constexpr int kTmemColumns = (kMlp1Cols > kMlp2Cols)
+			? kMlp1Cols : kMlp2Cols;
 		if (warp_id == 3) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tmem_base);
 			__syncwarp();
@@ -297,8 +298,8 @@ __device__ __forceinline__ void mlp_fused_fwd(
 		const TmaStoreY& y_desc = y_direct ? y_peer_desc[tile.peer_rank] : tma_store_y;
 		int y_base   = y_direct ? tile.y_store_m : tile.y_m;
 		int y_ntiles = (y_direct ? dims.y_buf_m_tiles : num_m_tiles) * SubTiles;
-
 		// Phase 2: for each sub-tile, Y[y_base·SubTiles+sub] = Z[z_m_base+sub] @ A^T.
+		// Cooperative-M-split: both consumer WGs cooperate on the same (m,n) tile.
 		// Cooperative-M-split: both consumer WGs cooperate on the same (m,n) tile.
 		for (int sub = 0; sub < SubTiles; ++sub) {
 			int z_m     = z_m_base + sub;
@@ -314,7 +315,7 @@ __device__ __forceinline__ void mlp_fused_fwd(
 					dims.num_n_tiles_2, dims.num_k_tiles_2, n_split, n_count);
 			}
 			
-			if (warp_id >= 4 && warp_id <= 11) {
+			if (warp_id >= 3 && warp_id <= 11) {
 				mlp2_fused_consumer<Traits2, Compute>(
 					p2_pipe, p2_cons_state,
 					smem.mlp2, y_desc,
@@ -343,8 +344,9 @@ __device__ __forceinline__ void mlp_fused_fwd(
 
 	if constexpr (Compute == 100) {
 		constexpr int kMlp1Cols = Traits1::AccStages * (2 * Traits1::TileN);
-		constexpr int kTmemColumns = (kMlp1Cols > Traits2::TileN)
-			? kMlp1Cols : Traits2::TileN;
+		constexpr int kMlp2Cols = Traits2::AccStages * Traits2::TileN;
+		constexpr int kTmemColumns = (kMlp1Cols > kMlp2Cols)
+			? kMlp1Cols : kMlp2Cols;
 		cutlass::arch::NamedBarrier::sync(kMlpBarrierThreads, kMlpBarrierId);
 		if (warp_id == 3) {
 			tmem_alloc.release_allocation_lock();
