@@ -213,12 +213,19 @@ def fused_linear_cross_entropy_forward(
 
         if grad_weight is not None and input_requires_grad:
             grad_logits_t = grad_logits_chunk.t()
+            same_dtype = grad_weight.dtype == grad_logits_t.dtype
+            reduced_to_fp32 = grad_weight.dtype == torch.float32 and grad_logits_t.dtype in (
+                torch.float16,
+                torch.bfloat16,
+            )
+            requires_ampere = grad_logits_t.dtype == torch.bfloat16 or reduced_to_fp32
             if (
                 _ADDMM_SUPPORTS_OUT_DTYPE
                 and grad_weight.device.type == "cuda"
-                and torch.cuda.get_device_capability(grad_weight.device)[0] >= 8
-                and grad_weight.dtype == torch.float32
-                and grad_logits_t.dtype in (torch.float16, torch.bfloat16)
+                and not is_hip()
+                and grad_weight.dtype in (torch.float16, torch.bfloat16, torch.float32)
+                and (same_dtype or reduced_to_fp32)
+                and (not requires_ampere or torch.cuda.get_device_capability(grad_weight.device)[0] >= 8)
             ):
                 # Unlike torch.mm, torch.addmm's out_dtype path does not participate in
                 # autocast operand casting, so under AMP (fp32 params, no bias) _input_chunk
@@ -231,11 +238,11 @@ def fused_linear_cross_entropy_forward(
                     grad_weight,
                     grad_logits_t,
                     input_chunk,
-                    out_dtype=torch.float32,
+                    out_dtype=grad_weight.dtype,
                     out=grad_weight,
                 )
             else:
-                grad_weight += torch.mm(grad_logits_chunk.t(), _input_chunk).float()
+                grad_weight.add_(torch.mm(grad_logits_t, _input_chunk))
 
         if bias is not None and input_requires_grad:
             torch.add(
