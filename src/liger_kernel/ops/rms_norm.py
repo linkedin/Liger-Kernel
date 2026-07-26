@@ -36,6 +36,18 @@ else:
     from triton.language.math import rsqrt
 
 
+# Some torch builds don't eagerly import the ``torch.distributed.tensor`` submodule,
+# so ``torch.distributed.tensor.DTensor`` can raise
+# ``AttributeError: module 'torch.distributed' has no attribute 'tensor'``. Import
+# DTensor defensively: the import triggers the submodule load when available and gives
+# a class to isinstance against; when unavailable, ``()`` makes the isinstance checks
+# a safe no-op (a plain, non-distributed tensor is never a DTensor).
+try:
+    from torch.distributed.tensor import DTensor as _DTensor
+except Exception:
+    _DTensor = ()
+
+
 _CASTING_MODE_NONE: tl.constexpr = tl.constexpr(-1)
 _CASTING_MODE_LLAMA: tl.constexpr = tl.constexpr(0)
 _CASTING_MODE_GEMMA: tl.constexpr = tl.constexpr(1)
@@ -609,7 +621,7 @@ class LigerRMSNormFunction(torch.autograd.Function):
         X: (B, T, H) or (BxT, H)
         W: (H,)
         """
-        if isinstance(X, torch.distributed.tensor.DTensor):
+        if isinstance(X, _DTensor):
             # Input tensor is output of a tensor parallel module and
             # needs to be gathered to a local tensor to compute
             # RMSE layer norm on each TP worker.
@@ -642,7 +654,7 @@ class LigerRMSNormFunction(torch.autograd.Function):
             X, RSTD = ctx.saved_tensors
             W = None
 
-        if isinstance(dY, torch.distributed.tensor.DTensor):
+        if isinstance(dY, _DTensor):
             # Gradients are output of a tensor parallel module and
             # needs to be gathered to a local tensor for computing RMSE layer.
             # TODO: support CP.

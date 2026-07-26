@@ -21,12 +21,25 @@ from liger_kernel.ops.cutile.ops.fused_linear_jsd import fused_linear_jsd_forwar
 from liger_kernel.ops.cutile.ops.geglu import LigerGELUMulFunction
 from liger_kernel.ops.cutile.ops.geglu import geglu_backward
 from liger_kernel.ops.cutile.ops.geglu import geglu_forward
+from liger_kernel.ops.cutile.ops.group_norm import LigerGroupNormFunction
+from liger_kernel.ops.cutile.ops.group_norm import group_norm_backward
+from liger_kernel.ops.cutile.ops.group_norm import group_norm_forward
 from liger_kernel.ops.cutile.ops.jsd import LigerJSDFunction
 from liger_kernel.ops.cutile.ops.jsd import jsd_backward
 from liger_kernel.ops.cutile.ops.jsd import jsd_forward
+from liger_kernel.ops.cutile.ops.kl_div import LigerKLDivLossFunction
 from liger_kernel.ops.cutile.ops.layer_norm import LigerLayerNormFunction
 from liger_kernel.ops.cutile.ops.layer_norm import layer_norm_backward
 from liger_kernel.ops.cutile.ops.layer_norm import layer_norm_forward
+from liger_kernel.ops.cutile.ops.llama4_rope import LigerLlama4RopeFunction
+from liger_kernel.ops.cutile.ops.multi_token_attention import LigerMultiTokenAttentionFunction
+from liger_kernel.ops.cutile.ops.qwen2vl_mrope import LigerQwen2VLMRopeFunction
+from liger_kernel.ops.cutile.ops.rope import LigerRopeFunction
+from liger_kernel.ops.cutile.ops.rope import rope_backward
+from liger_kernel.ops.cutile.ops.rope import rope_forward
+from liger_kernel.ops.cutile.ops.sparsemax import LigerSparsemaxFunction
+from liger_kernel.ops.cutile.ops.tiled_mlp import LigerTiledMLPFunction
+from liger_kernel.ops.cutile.ops.tiled_mlp import apply_tiled_mlp
 
 __all__ = [
     "LigerCrossEntropyFunction",
@@ -38,10 +51,23 @@ __all__ = [
     "LigerGELUMulFunction",
     "geglu_backward",
     "geglu_forward",
+    "LigerGroupNormFunction",
+    "group_norm_backward",
+    "group_norm_forward",
     "LigerJSDFunction",
     "jsd_backward",
     "jsd_forward",
+    "LigerKLDivLossFunction",
     "LigerLayerNormFunction",
     "layer_norm_backward",
     "layer_norm_forward",
+    "LigerLlama4RopeFunction",
+    "LigerMultiTokenAttentionFunction",
+    "LigerQwen2VLMRopeFunction",
+    "LigerRopeFunction",
+    "rope_backward",
+    "rope_forward",
+    "LigerSparsemaxFunction",
+    "LigerTiledMLPFunction",
+    "apply_tiled_mlp",
 ]
