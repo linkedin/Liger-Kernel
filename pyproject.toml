@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "liger_kernel"
-version = "0.8.0"
+version = "0.8.1"
 description = "Efficient Triton kernels for LLM Training"
 urls = { "Homepage" = "https://github.com/linkedin/Liger-Kernel" }
 readme = { file = "README.md", content-type = "text/markdown" }
@@ -24,13 +24,6 @@ pythonpath = ["src", "."]
 asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"
-addopts = [
-    "--cov=src/liger_kernel",
-    "--cov-report=term-missing",
-    "--cov-report=html",
-    "--cov-config=pyproject.toml",
-    "--durations=0"
-]
 python_files = "test_*.py"
 testpaths = ["test/"]
 

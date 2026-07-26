@@ -42,7 +42,7 @@ def get_optional_dependencies():
     dev_deps = [
         "transformers>=4.52.0",
         "matplotlib>=3.7.2",
-        "ruff>=0.12.0",
+        "ruff>=0.12.0,<0.16.0",
         "pytest>=7.1.2",
         "pytest-xdist",
         "pytest-cov",
