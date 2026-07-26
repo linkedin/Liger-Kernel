@@ -1,24 +1,35 @@
-"""Mode 1 — monkey-patch Megatron-Core to use Liger RMSNorm + cross-entropy.
+"""Mode 1 — monkey-patch Megatron-Core to use Liger RMSNorm + cross-entropy + SwiGLU.
 
 Adapted from Megatron's ``examples/run_simple_mcore_train_loop.py``. The
 relevant additions (vs. that file) are:
 
-  1. ``apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True)``
-     called once at the top of ``model_provider()``. This patches:
+  1. ``apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True,
+     swiglu=True)`` called once at the top of ``model_provider()``. This patches:
        - ``LocalSpecProvider.layer_norm`` (per-layer norm slots)
        - ``transformer_block.LayerNormImpl`` (block-level ``final_layernorm``)
        - ``fused_cross_entropy.fused_vocab_parallel_cross_entropy``
          (the fused CE path)
        - ``tensor_parallel.cross_entropy.vocab_parallel_cross_entropy``
          (the unfused CE path)
+       - ``fusions.fused_bias_swiglu.bias_swiglu_impl`` *and* the by-name
+         re-exports of it in ``transformer.mlp`` and
+         ``transformer.moe.shared_experts`` (the SwiGLU activation)
 
   2. ``normalization="RMSNorm"`` added to ``TransformerConfig`` so the
      model actually has RMSNorm slots to patch (Megatron defaults to
      ``LayerNorm``).
 
-  3. ``_print_norm_classes`` + ``_print_ce_symbols`` after model construction
-     — print the resolved class/function bindings so you can verify Liger
-     took over for every slot.
+  3. The SwiGLU dispatch flags added to ``TransformerConfig``
+     (``gated_linear_unit``, ``activation_func=F.silu``,
+     ``bias_activation_fusion``). ``MLP.forward`` only routes through
+     ``bias_swiglu_impl`` when all three hold, so without them the patch is
+     applied but never reached. ``add_bias_linear=False`` keeps ``bias`` at
+     ``None``, which is the configuration Liger accelerates; with a bias the
+     wrapper transparently falls back to Megatron's own kernel.
+
+  4. ``_print_norm_classes`` + ``_print_ce_symbols`` + ``_print_swiglu_symbols``
+     after model construction — print the resolved class/function bindings so
+     you can verify Liger took over for every slot.
 
 Run with:
     torchrun --nproc_per_node=2 --master_addr=127.0.0.1 --master_port=29500 \\
@@ -34,6 +45,7 @@ from pathlib import Path
 from typing import Iterator
 
 import torch
+import torch.nn.functional as F
 
 from megatron.core import dist_checkpointing
 from megatron.core import parallel_state
@@ -74,7 +86,7 @@ def initialize_distributed(tp: int = 2, pp: int = 1) -> None:
 
 def model_provider() -> GPTModel:
     # ↓↓ Mode 1 — patch once, everything below picks up Liger ↓↓
-    apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True)
+    apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True, swiglu=True)
     # ↑↑ ------------------------------------------------------ ↑↑
 
     cfg = TransformerConfig(
@@ -84,6 +96,10 @@ def model_provider() -> GPTModel:
         use_cpu_initialization=True,
         pipeline_dtype=torch.float32,
         normalization="RMSNorm",
+        gated_linear_unit=True,
+        activation_func=F.silu,
+        bias_activation_fusion=True,
+        add_bias_linear=False,
     )
     return GPTModel(
         config=cfg,
@@ -93,9 +109,23 @@ def model_provider() -> GPTModel:
     )
 
 
+def _ensure_dataset_helpers() -> None:
+    """Build Megatron's C++ dataset helpers only if not already compiled.
+
+    ``compile_helpers()`` shells out to ``make``, which fails on pip-installed
+    megatron-core wheels (no Makefile, but the extension is already present).
+    """
+    try:
+        from megatron.core.datasets import helpers_cpp  # noqa: F401
+
+        return
+    except ImportError:
+        compile_helpers()
+
+
 def get_train_data_iterator() -> Iterator:
     if torch.distributed.get_rank() == 0:
-        compile_helpers()
+        _ensure_dataset_helpers()
     torch.distributed.barrier()
     cfg = GPTDatasetConfig(
         random_seed=0,
@@ -104,7 +134,7 @@ def get_train_data_iterator() -> Iterator:
         reset_attention_mask=False,
         eod_mask_loss=False,
         tokenizer=MegatronTokenizer.from_pretrained(
-            metadata_path={"library": "null-text"},
+            metadata_path={"library": "null"},
             vocab_size=_SEQUENCE_LENGTH,
         ),
         mid_level_dataset_surplus=0.005,
@@ -157,6 +187,28 @@ def _print_ce_symbols() -> None:
     print()
 
 
+def _print_swiglu_symbols() -> None:
+    """Show ``bias_swiglu_impl`` bindings in the defining module and its consumers.
+
+    The two consumer modules capture the symbol at import time, so the defining
+    module and each consumer are printed separately to verify all were rebound.
+    """
+    import megatron.core.fusions.fused_bias_swiglu as defining
+    import megatron.core.transformer.mlp as mlp
+    import megatron.core.transformer.moe.shared_experts as shared
+
+    print("\n=== Resolved SwiGLU symbols ===")
+    for label, mod in (
+        ("fusions.fused_bias_swiglu (defines)", defining),
+        ("transformer.mlp (consumes)", mlp),
+        ("transformer.moe.shared_experts (consumes)", shared),
+    ):
+        fn = mod.bias_swiglu_impl
+        tag = "Liger" if getattr(fn, "__liger_patched__", False) else "Megatron"
+        print(f"  {label:44s} →  {fn.__name__}  [{tag}]")
+    print()
+
+
 def main() -> None:
     # TP=1, DP=2 — CE patch (TP=1 only). Norms are correct under any TP value, so
     # demonstrating both Liger features in one script means running data-parallel.
@@ -171,6 +223,7 @@ def main() -> None:
         print(gpt_model)
         _print_norm_classes(gpt_model)
         _print_ce_symbols()
+        _print_swiglu_symbols()
 
     ddp_cfg = DistributedDataParallelConfig(
         grad_reduce_in_fp32=False,

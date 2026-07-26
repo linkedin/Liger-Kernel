@@ -88,6 +88,7 @@ from liger_kernel.ops.rope import rope_backward  # noqa: F401
 from liger_kernel.ops.rope import rope_forward  # noqa: F401
 from liger_kernel.ops.softmax import LigerSoftmaxFunction  # noqa: F401
 from liger_kernel.ops.sparsemax import LigerSparsemaxFunction  # noqa: F401
+from liger_kernel.ops.swiglu import LigerFusedGateUpSiLUMulFunction  # noqa: F401
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction  # noqa: F401
 from liger_kernel.ops.swiglu import swiglu_backward  # noqa: F401
 from liger_kernel.ops.swiglu import swiglu_forward  # noqa: F401
