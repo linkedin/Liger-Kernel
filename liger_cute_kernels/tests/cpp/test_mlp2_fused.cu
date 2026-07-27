@@ -109,7 +109,7 @@ mlp2_fused_test_kernel(
 	cute::TMEM::Allocator1Sm tmem_alloc{};
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns = Traits::AccStages * Traits::TileN;
-		if (warp_id == 4) {
+		if (warp_id == 3) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tile.tmem_base);
 			__syncwarp();
 		}
@@ -151,7 +151,7 @@ mlp2_fused_test_kernel(
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns = Traits::AccStages * Traits::TileN;
-		if (warp_id == 4) {
+		if (warp_id == 3) {
 			tmem_alloc.release_allocation_lock();
 			tmem_alloc.free(smem.tile.tmem_base, kTmemColumns);
 		}

@@ -22,9 +22,10 @@
 //
 // CTA layout (384 threads = 12 warps):
 //   WG0 warp 0     : Producer (TMA loads for X / B / C)
-//   WG0 warps 1-3  : Idle
-//   WG1 (warps 4-7)  : Consumer atom 0
-//   WG2 (warps 8-11) : Consumer atom 1
+//   WG0 warps 1-2  : Idle / reserved for fused-kernel communication
+//   WG0 warp 3     : Idle on SM90; dedicated UMMA producer on SM100
+//   WG1 (warps 4-7)  : WGMMA consumer on SM90; epilogue WG0 on SM100
+//   WG2 (warps 8-11) : WGMMA consumer on SM90; epilogue WG1 on SM100
 //
 // Per `expert_ids`: one int per TileM-row m-block.
 //
@@ -583,13 +584,11 @@ static __device__ __forceinline__ void run(
 // No cooperative-warpgroup machinery (UMMA has no warpgroup concept):
 //   - One 1SM UMMA atom with M=TileM covers the whole tile; accumulators
 //     U = X·B and V = X·C live in TMEM (no register/M-split).
-//   - The first warp of WG1 (warp 4) issues both UMMAs and owns the
-//     consumer-side accumulator handoff; it stays epilogue-free so it can
-//     run ahead to the alternate TMEM accumulator stage (AccStages=2).
-//   - Epilogue: the aligned consumer warpgroup in warps 8..11 reads
-//     TMEM→regs in EpiChunkN chunks, computes SiLU while the previous TMA
-//     store drains, then stores 64-row (AtomTileM) tiles via the existing
-//     reg→SMEM→TMA path (so the host TMA atom is unchanged).
+//   - Warp 3 issues both UMMAs and stays epilogue-free so it can run ahead to
+//     the alternate TMEM accumulator stage (AccStages=2).
+//   - Epilogue: aligned WGs in warps 4..11 split TileN, read TMEM→regs,
+//     compute SiLU while the previous TMA store drains, and store 64-row
+//     (AtomTileM) tiles via the existing reg→SMEM→TMA path.
 //
 // TileM is the template parameter as on Hopper (64 or 128 — both native
 // 1SM UMMA M sizes). For TileM=128 the epilogue stores MSub=2 row-tiles.
@@ -644,7 +643,11 @@ static __device__ __forceinline__ void run(
 	const int  wg_barrier_id = 1 + wg;                             // 1 (WG0) or 2 (WG1)
 	// Warps 3..11 (MMA + both epilogue WGs) rendezvous for the acc-pipe init and
 	// the launcher-safe TMEM free. ConsumerThreads (256) covers only warps 4..11.
-	constexpr int kMmaEpiThreads = Traits::ConsumerThreads + Traits::WarpSize;  // 288
+	constexpr int kEpilogueThreads = Traits::ConsumerThreads;
+	constexpr int kMmaEpiThreads = kEpilogueThreads + Traits::WarpSize;
+	static_assert(Traits::WarpGroupSize == 4 * Traits::WarpSize);
+	static_assert(kEpilogueThreads == 8 * Traits::WarpSize);
+	static_assert(kMmaEpiThreads == 9 * Traits::WarpSize);
 
 	// ── TiledMMA: single 1SM UMMA atom, M=TileM, N=TileN, K-major SS ──
 	auto tiled_mma = make_tiled_mma(
