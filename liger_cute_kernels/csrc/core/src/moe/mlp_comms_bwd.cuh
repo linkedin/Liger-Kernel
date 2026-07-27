@@ -4,10 +4,10 @@
 // Backward MoE communication: gets X + dY, puts dX
 // ═══════════════════════════════════════════════════════════════════
 //
-// Warp roles (mirrors fwd in mlp_comms.cuh):
-//   warp 1 → X/dY get warp 0
-//   warp 2 → X/dY get warp 1 (also prologue leader)
-//   warp 3 → dX put warp
+// Warp roles:
+//   warp 1 → X/dY get warp
+//   warp 2 → dX put warp
+//   warp 3 → MLP-side SM100 UMMA producer (exits early on SM90)
 //
 // Grid is launched 2D as (gridDim.x, NSplit) where NSplit is the
 // MLP-side cooperative count. Comms re-indexes the flat CTA id into
@@ -44,9 +44,8 @@ namespace liger {
 // Bwd comm warp constants
 // ═══════════════════════════════════════════════════════════════════
 //
-// Prologue still uses warps 2-3 (kCommWarpStart..kCommWarpEnd from
-// mlp_comms.cuh) since the prologue is shared with fwd. Main loop
-// runs on warps 1-3.
+// Main loop runs on warps 1-2 only. kCommBwdGetWarp1 remains for legacy
+// prologue compatibility with shared helpers; it is not a main-loop role.
 
 static constexpr int kCommBwdGetWarp0  = 1;
 static constexpr int kCommBwdGetWarp1  = 2;  // prologue compatibility only
@@ -381,12 +380,9 @@ __device__ __forceinline__ void do_get_bwd(
 // kWarpsPerTile = NC. NumProducers = NSplit (MLP-side),
 // NumConsumers = NC (comm-side).
 
-// num_put_warps / put_local_idx default to the original single-put-warp
-// layout (kWarpsPerTile = NC, slice = yc), so the getmem fallback caller is
-// byte-for-byte unchanged. The TMA-rebalanced caller passes num_put_warps=2
-// and put_local_idx ∈ {0,1} so the tile is split 2·NC ways across warps 2+3.
-// NumConsumers in the pipe type is cosmetic here (the consumer side never
-// reads it); both callers use a StagePipe with runtime producer counts.
+// num_put_warps / put_local_idx keep the single-put-warp layout
+// (kWarpsPerTile = NC, slice = yc): warp 2 owns dX puts while warp 3 is
+// reserved for the SM100 MLP path.
 template <typename Element, int TileM, int K, int NC>
 __device__ __forceinline__ void do_put_bwd(
 		StagePipe<K, 1, NC>& dst_pipe,

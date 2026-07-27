@@ -128,7 +128,7 @@ mlp1_fused_test_kernel(
 	cute::TMEM::Allocator1Sm tmem_alloc{};
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
-		if (warp_id == 4) {
+		if (warp_id == 3) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tile.tmem_base);
 			__syncwarp();
 		}
@@ -171,7 +171,7 @@ mlp1_fused_test_kernel(
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
-		if (warp_id == 4) {
+		if (warp_id == 3) {
 			tmem_alloc.release_allocation_lock();
 			tmem_alloc.free(smem.tile.tmem_base, kTmemColumns);
 		}
@@ -201,7 +201,8 @@ mlp1_act_test_kernel(
 	int warp_id = threadIdx.x / Traits::WarpSize;
 	int num_k_tiles = hidden_dim / Traits::TileK;
 	bool is_producer = (warp_id == 0);
-	bool is_consumer = (warp_id >= 4 && warp_id <= 11);
+	constexpr int  kFirstConsumerWarp = (Compute == 100) ? 3 : 4;
+	bool is_consumer = (warp_id >= kFirstConsumerWarp && warp_id <= 11);
 
 	auto pipe = [&]() {
 		if constexpr (Compute == 100)
@@ -213,7 +214,7 @@ mlp1_act_test_kernel(
 	cute::TMEM::Allocator1Sm tmem_alloc{};
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
-		if (warp_id == 4) {
+		if (warp_id == 3) {
 			tmem_alloc.allocate(kTmemColumns, &smem.tile.tmem_base);
 			__syncwarp();
 		}
@@ -262,7 +263,7 @@ mlp1_act_test_kernel(
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	if constexpr (Compute == 100) {
 		constexpr int kTmemColumns = Traits::AccStages * (2 * Traits::TileN);
-		if (warp_id == 4) {
+		if (warp_id == 3) {
 			tmem_alloc.release_allocation_lock();
 			tmem_alloc.free(smem.tile.tmem_base, kTmemColumns);
 		}

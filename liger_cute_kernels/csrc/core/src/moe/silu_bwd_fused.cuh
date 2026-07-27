@@ -158,9 +158,9 @@ __device__ __forceinline__ void silu_bwd_fused_strided(
 // visibility for downstream phases is handled by the existing
 // mlp_global_barrier.
 //
-// All non-comm warps participate (warps 0, 4-11 = 288 threads;
-// warps 1-3 already returned at the start of mlp_fused_bwd — warp 1
-// is reserved as a comm get-warp in moe_fused_bwd).
+// The elementwise pair phase uses the historical 9-warp work partition
+// (warps 0, 4-11 = 288 threads). SM100 warp 3 enters the BWD MLP path for
+// UMMA phases, but skips this elementwise helper.
 // ═══════════════════════════════════════════════════════════════════
 
 static constexpr int kSiluBwdPairThreads = 288;  // 9 warps
@@ -181,10 +181,9 @@ __device__ __forceinline__ void silu_bwd_pair_tile(
 
 	constexpr int kVecSize = sizeof(uint4) / sizeof(Element);
 
-	// Dense thread ID across 9 participating warps (0, 4-11). Warps
-	// 1-3 are reserved for comm in moe_fused_bwd; in standalone callers
-	// (mlp_bwd_kernel, bench_silu_bwd_pair) those warps reach this
-	// function but must not contribute to the work mapping.
+	// Dense thread ID across 9 participating warps (0, 4-11). Warps 1-2 are
+	// BWD comm warps; warp 3 is reserved for SM100 UMMA phases and does not
+	// contribute to this elementwise work mapping.
 	int warp_id    = threadIdx.x / 32;
 	if (warp_id >= 1 && warp_id <= 3) return;
 	int lane       = threadIdx.x % 32;

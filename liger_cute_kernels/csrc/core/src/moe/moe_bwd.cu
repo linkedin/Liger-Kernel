@@ -1275,7 +1275,7 @@ moe_bwd_fwd_bf16(const MoeBwdArgs& a, int static_nsplit) {
 		if (mlp_with_bounce <= (size_t)Config::kSmemBudget) smem_mlp = mlp_with_bounce;
 		else get_descs_bwd.enabled = 0;
 	}
-	// Unified BWD comm layout always uses one get warp and two put warps.
+	// Unified BWD comm layout always uses one get warp and one put warp.
 	// get_descs_bwd.enabled only controls whether same-host tiles use TMA;
 	// remote/unsupported tiles fall back inside do_get_bwd_tma.
 	mlp_dims.tma_get_enabled = 1;

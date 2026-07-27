@@ -20,9 +20,10 @@
 //
 // CTA layout (384 threads = 12 warps):
 //   WG0 warp 0     : Producer (TMA loads for Z / A)
-//   WG0 warps 1-3  : Idle
-//   WG1 (warps 4-7)  : Consumer atom 0
-//   WG2 (warps 8-11) : Consumer atom 1
+//   WG0 warps 1-2  : Idle / reserved for fused-kernel communication
+//   WG0 warp 3     : Idle on SM90; dedicated UMMA producer on SM100
+//   WG1 (warps 4-7)  : WGMMA consumer on SM90; epilogue WG0 on SM100
+//   WG2 (warps 8-11) : WGMMA consumer on SM90; epilogue WG1 on SM100
 //
 // Per `expert_ids`: one int per TileM-row m-block.
 //
@@ -210,7 +211,7 @@ __device__ __forceinline__ auto mlp2_make_pipe(
 
 	int warp_id = threadIdx.x / Traits::WarpSize;
 	bool is_producer = (warp_id == 0);
-	bool is_consumer = (warp_id >= 3 && warp_id <= 11);  // warp 3 = UMMA producer
+	bool is_consumer = (warp_id >= 4 && warp_id <= 11);
 
 	typename Pipeline::Params pp;
 	pp.transaction_bytes = Traits::TmaTransBytes;
@@ -244,7 +245,7 @@ __device__ __forceinline__ auto mlp2_make_pipe_umma(
 
 	int warp_id = threadIdx.x / Traits::WarpSize;
 	bool is_producer = (warp_id == 0);
-	bool is_consumer = (warp_id >= 4 && warp_id <= 11);
+	bool is_consumer = (warp_id >= 3 && warp_id <= 11);  // warp 3 = UMMA producer
 
 	typename Pipeline::Params pp;
 	pp.transaction_bytes = Traits::TmaTransBytes;
@@ -522,9 +523,8 @@ static __device__ __forceinline__ void run(
 // No cooperative-warpgroup machinery (UMMA has no warpgroup concept):
 //   - One 1SM UMMA atom with M=TileM covers the whole tile; the single
 //     accumulator Y = Z·Aᵀ lives in TMEM (no register/M-split).
-//   - The first warp of WG1 (warp 4) issues the UMMA and owns the
-//     consumer-side TMEM allocation; all consumer threads drive the
-//     shared TMA pipeline and help in the epilogue.
+//   - Warp 3 issues UMMA and stays epilogue-free; warps 4-11 form the two
+//     aligned epilogue WGs.
 //   - Epilogue: the two consumer warpgroups split TileN; each reads its
 //     N-half from TMEM→regs in EpiChunkN chunks, casts to bf16, and
 //     stores 64-row (AtomTileM) tiles via the existing reg→SMEM→TMA path
@@ -574,7 +574,11 @@ static __device__ __forceinline__ void run(
 	const int  tmem_copy_tid = tid_wg;
 	const bool is_wg_leader  = is_epilogue && (tid_wg == 0);
 	const int  wg_barrier_id = 1 + wg;                               // 1 or 2
-	constexpr int kMmaEpiThreads = Traits::ConsumerThreads + Traits::WarpSize;
+	constexpr int kEpilogueThreads = Traits::ConsumerThreads;
+	constexpr int kMmaEpiThreads = kEpilogueThreads + Traits::WarpSize;
+	static_assert(Traits::WarpGroupSize == 4 * Traits::WarpSize);
+	static_assert(kEpilogueThreads == 8 * Traits::WarpSize);
+	static_assert(kMmaEpiThreads == 9 * Traits::WarpSize);
 
 	// ── TiledMMA: single 1SM UMMA atom, M=TileM, N=TileN, K-major SS.
 	//    Operand A = Z, operand B = A (the down weight) — both K-major, the
@@ -654,7 +658,7 @@ static __device__ __forceinline__ void run(
 
 	for (int n = n_start; n < num_n_tiles; n += n_stride) {
 
-		// ── Mainloop (warp 4 only): bracket the k-loop with the accumulator
+		// ── Mainloop (warp 3 only): bracket the k-loop with the accumulator
 		//    pipeline. Each k-stage waits/releases the TMA→UMMA mainloop
 		//    pipeline; consumer_release issues the UMMA-gated smem-buffer
 		//    arrival (no hand-rolled mbarrier). (Conservative: no MMA/k overlap.)

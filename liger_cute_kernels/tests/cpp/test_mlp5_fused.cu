@@ -106,7 +106,8 @@ mlp5_fused_test_kernel(
 	int warp_id = threadIdx.x / Traits::WarpSize;
 	int num_k_tiles = intermediate_dim / Traits::TileK;
 	bool is_producer = (warp_id == 0);
-	bool is_consumer = (warp_id >= 4 && warp_id <= 11);
+	constexpr int kFirstConsumerWarp = (Compute == 100) ? 3 : 4;
+	bool is_consumer = (warp_id >= kFirstConsumerWarp && warp_id <= 11);
 
 	auto pipe = [&]() {
 		if constexpr (Compute == 100)
@@ -119,7 +120,7 @@ mlp5_fused_test_kernel(
 	// each CTA rasterize several m-tiles (grid.x = num_sms/NSplit < num_m_tiles
 	// for large shapes), so a per-tile tcgen05.alloc/relinquish would allocate
 	// after the permit was relinquished → "phase invalid during alloc" trap.
-	// Warp 4 (the UMMA warp) allocs TileN columns here; the __syncthreads below
+	// Warp 3 allocs all accumulator stages here; the __syncthreads below
 	// publishes smem.tile.tmem_base to every consumer warp. Freed after the loop.
 	// Arch-guarded: tcgen05 PTX only exists on sm_100a (the Compute=100 kernel
 	// is still *instantiated* on sm_90a — where its consumer traps — so the
@@ -127,8 +128,9 @@ mlp5_fused_test_kernel(
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	cute::TMEM::Allocator1Sm tmem_alloc{};
 	if constexpr (Compute == 100) {
-		if (warp_id == 4) {
-			tmem_alloc.allocate(Traits::TileN, &smem.tile.tmem_base);
+		constexpr int kTmemColumns = Traits::AccStages * Traits::TileN;
+		if (warp_id == 3) {
+			tmem_alloc.allocate(kTmemColumns, &smem.tile.tmem_base);
 			__syncwarp();
 		}
 	}
@@ -173,12 +175,13 @@ mlp5_fused_test_kernel(
 
 	// Free the CTA's TMEM allocation once, after every m-tile is drained.
 	// release_allocation_lock (relinquish permit) + dealloc are warp-synchronous;
-	// issue from the whole UMMA warp (warp 4), not one elected thread.
+	// issue from the same warp that allocated, not one elected thread.
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
 	if constexpr (Compute == 100) {
-		if (warp_id == 4) {
+		constexpr int kTmemColumns = Traits::AccStages * Traits::TileN;
+		if (warp_id == 3) {
 			tmem_alloc.release_allocation_lock();
-			tmem_alloc.free(smem.tile.tmem_base, Traits::TileN);
+			tmem_alloc.free(smem.tile.tmem_base, kTmemColumns);
 		}
 	}
 #endif

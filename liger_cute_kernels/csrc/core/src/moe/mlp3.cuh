@@ -20,9 +20,10 @@
 //
 // CTA layout (384 threads = 12 warps):
 //   WG0 warp 0     : Producer (TMA loads for DYT / Z)
-//   WG0 warps 1-3  : Idle
-//   WG1 (warps 4-7)  : Consumer atom 0
-//   WG2 (warps 8-11) : Consumer atom 1
+//   WG0 warps 1-2  : Idle / reserved for fused-kernel communication
+//   WG0 warp 3     : Idle on SM90; dedicated UMMA producer on SM100
+//   WG1 (warps 4-7)  : WGMMA consumer on SM90; epilogue WG0 on SM100
+//   WG2 (warps 8-11) : WGMMA consumer on SM90; epilogue WG1 on SM100
 //
 // Chunk-fixed walk: each CTA owns ONE (chunk, lane) cell. We hold the
 // SHARED (cooperative) operand chunk-constant and walk the cooperation
@@ -140,10 +141,11 @@ struct Mlp3Traits {
 	using MainloopPipelineUmma = cutlass::PipelineTmaUmmaAsync<
 		Stages, cute::Shape<cute::_1, cute::_1, cute::_1>,
 		cute::Shape<cute::_1, cute::_1, cute::_1>>;
-	// One TMEM accumulator, reused each (cell, walk) → AccStages=1 (no
-	// double-buffer). Hands the single accumulator from the MMA warp (warp 4)
-	// to the epilogue warps.
-	static constexpr int AccStages = 1;
+	// Double-buffered TMEM accumulators: MMA for the next (cell, walk) can fill
+	// the alternate stage while warps 4..11 drain/reduce-add the previous stage.
+	static constexpr int AccStages = 2;
+	static_assert(AccStages * TileN <= 512,
+		"SM100 MLP3 accumulator stages must fit in 512 TMEM columns");
 	using AccumulatorPipeline = cutlass::PipelineUmmaAsync<AccStages>;
 
 	// SM100 UMMA TiledMMA — one 1SM tcgen05 atom spanning (TileM, TileN) with
@@ -252,8 +254,9 @@ struct Mlp3FusedSmem {
 //
 // Mirrors mlp2/mlp5's make_pipe pattern: hides the role/transaction-
 // byte setup so callers (mlp3_fwd, or any fused parent kernel) get a
-// consistent Pipeline. Roles follow the standard mlp warp layout —
-// warp 0 = TMA producer, warps 4-11 = consumers.
+// consistent Pipeline. The plain SM90 helper uses warp 0 as TMA producer and
+// warps 4-11 as WGMMA consumers; the SM100 helper additionally enrolls warp 3
+// as the UMMA consumer of the TMA pipeline.
 
 template <typename Traits>
 __device__ __forceinline__ typename Traits::MainloopPipeline
@@ -295,7 +298,7 @@ mlp3_make_pipe_umma(typename Traits::MainloopPipelineUmma::SharedStorage& storag
 
 	int warp_id = threadIdx.x / Traits::WarpSize;
 	bool is_producer = (warp_id == 0);
-	bool is_consumer = (warp_id >= 4 && warp_id <= 11);
+	bool is_consumer = (warp_id >= 3 && warp_id <= 11);  // warp 3 = UMMA producer
 
 	typename Pipeline::Params pp;
 	pp.transaction_bytes = Traits::TmaTransBytes;
@@ -463,7 +466,7 @@ __device__ __forceinline__ void mlp3_producer(
 //                 partitions (TileM,TileN); each thread holds a register acc
 //                 slice, scatters into store_buf, and the WG leader issues
 //                 SM90_TMA_REDUCE_ADD.
-//   Compute=100 → Blackwell / UMMA. One 1SM tcgen05 atom (warp 4) fills ONE
+//   Compute=100 → Blackwell / UMMA. One 1SM tcgen05 atom (warp 3) fills ONE
 //                 TMEM accumulator over the whole (TileM,TileN); both WGs pull
 //                 their N-half from TMEM into the SAME store_buf slots, then the
 //                 IDENTICAL REDUCE_ADD leader block stores them.
@@ -729,10 +732,10 @@ static __device__ __forceinline__ void run(
 // ───────────────────────────────────────────────────────────────────
 // Compute=100 — Blackwell / UMMA.
 //
-// One 1SM tcgen05 atom with M=TileM, N=TileN covers the whole tile; the single
-// partial-dA accumulator lives in TMEM. Warp 4 (the MMA warp) issues the
-// continuous k-loop over the expert's K-blocks; ScaleOut::Zero on the very
-// first MMA of each (cell, walk) clears the accumulator, One thereafter.
+// One 1SM tcgen05 atom with M=TileM, N=TileN covers the whole tile. Warp 3
+// issues the continuous k-loop into double-buffered TMEM accumulators while
+// warps 4-11 drain the previous stage; ScaleOut::Zero on the first MMA of each
+// (cell, walk) clears its selected stage, One thereafter.
 //
 // Epilogue (the mlp3-specific bit): the store path is SM90_TMA_REDUCE_ADD and
 // is ARCH-AGNOSTIC (guarded only by __CUDA_ARCH__ in CUTLASS 4.4.1), so the
@@ -790,13 +793,22 @@ static __device__ __forceinline__ void run(
 	static_assert(!Traits::kMSplit, "Mlp3 Compute=100 is the N-split path");
 	static_assert(TileN % 2 == 0, "two consumer warpgroups split TileN");
 
-	// ── Thread identity (WGMMA naming, so the reduce-add block is verbatim) ──
-	const int  my_wg           = (threadIdx.x / Traits::WarpGroupSize) - 1;  // 0 or 1
+	// ── Thread identity ─────────────────────────────────────────────
+	// Warp 3 is the dedicated, epilogue-free UMMA producer. Warps 4..11 are
+	// the two aligned epilogue WGs.
+	const int  warp_id         = threadIdx.x / Traits::WarpSize;
+	const bool is_mma_warp     = (warp_id == 3);
+	const bool is_epilogue     = (warp_id >= 4 && warp_id <= 11);
+	const int  tid_in_epi      = threadIdx.x - Traits::WarpGroupSize;        // warps 4..11 -> 0..255
+	const int  my_wg           = is_epilogue ? tid_in_epi / Traits::WarpGroupSize : 0;
+	const int  tid_in_wg       = is_epilogue ? tid_in_epi % Traits::WarpGroupSize : 0;
 	const int  my_barrier_id   = 1 + my_wg;                                  // 1 or 2
-	const int  tid_in_mma      = threadIdx.x - Traits::WarpGroupSize;        // 0..255
-	const int  tid_in_wg       = tid_in_mma % Traits::WarpGroupSize;         // 0..127
-	const bool is_mma_warp     = (threadIdx.x / Traits::WarpSize) == 4;      // first warp of WG1
-	const bool is_my_wg_leader = (tid_in_wg == 0);
+	const bool is_my_wg_leader = is_epilogue && (tid_in_wg == 0);
+	constexpr int kEpilogueThreads = Traits::ConsumerThreads;
+	constexpr int kMmaEpiThreads = kEpilogueThreads + Traits::WarpSize;
+	static_assert(Traits::WarpGroupSize == 4 * Traits::WarpSize);
+	static_assert(kEpilogueThreads == 8 * Traits::WarpSize);
+	static_assert(kMmaEpiThreads == 9 * Traits::WarpSize);
 
 	// ── UMMA TiledMMA: one 1SM tcgen05 atom over (TileM, TileN); BOTH operands
 	//    MN-major (dY^T: M=H contiguous; Z: N=I contiguous). ──
@@ -813,10 +825,9 @@ static __device__ __forceinline__ void run(
 
 	// TMEM is allocated by the outer fused/standalone launcher once per CTA.
 
-	// ── Accumulator pipeline: UMMA producer (warp 4) → epilogue consumers (all
-	//    consumer warps). 1 stage — the TMEM acc is reused each (cell, walk).
-	//    producer_commit issues the UMMA-gated "acc ready" arrival; one elected
-	//    consumer thread releases when the epilogue is done reading TMEM. ──
+	// ── Accumulator pipeline: UMMA producer (warp 3) → epilogue consumers
+	//    (warps 4..11, both WGs). AccStages stages allow the next MMA to run
+	//    while the previous accumulator stage is drained and TMA-reduced. ──
 	using AccPipe = typename Traits::AccumulatorPipeline;
 	typename AccPipe::Params acc_params;
 	acc_params.role = is_mma_warp ? AccPipe::ThreadCategory::Producer
@@ -831,7 +842,7 @@ static __device__ __forceinline__ void run(
 
 	// The launcher hoisted tcgen05.alloc to once-per-CTA (persistent grid; a
 	// per-cell alloc traps with phase_invalid_during_alloc). Publish its base.
-	cutlass::arch::NamedBarrier::sync(Traits::ConsumerThreads, /*id=*/0);
+	cutlass::arch::NamedBarrier::sync(kMmaEpiThreads, /*id=*/3);
 	tCtAcc.data() = smem.tmem_base;
 
 	// ── Per-WG store slot (WgTileM × EpiChunkN) — SAME smem as Hopper ──
@@ -908,11 +919,13 @@ static __device__ __forceinline__ void run(
 			int m_tile = Traits::kMSplit ? w       : m_chunk;
 			int n_tile = Traits::kMSplit ? n_chunk : w;
 
-			// ── Mainloop: warp 4 issues one continuous UMMA k-loop into the
+			// ── Mainloop: warp 3 issues one continuous UMMA k-loop into the
 			//    single TMEM accumulator. ScaleOut::Zero on the first MMA of
 			//    this (cell, walk) (clears acc), One thereafter. ──
 			if (is_mma_warp) {
 				acc_pipe.producer_acquire(acc_prod_state);   // TMEM acc free
+				int acc_stage = acc_prod_state.index();
+				tCtAcc.data() = smem.tmem_base + uint32_t(acc_stage * TileN);
 				bool first = true;
 				for (int kb = kb_lo; kb < kb_hi; ++kb) {
 					pipe.consumer_wait(state);
@@ -936,77 +949,84 @@ static __device__ __forceinline__ void run(
 
 			// ── Epilogue: wait for the accumulator, then each WG pulls its
 			//    N-half from TMEM into store_buf and the leader reduce-adds. ──
-			acc_pipe.consumer_wait(acc_cons_state);
-
-			CUTE_UNROLL
-			for (int r = 0; r < NumEpiRounds; ++r) {
-				// TMEM → registers for this WG's r-th n-chunk (all WgTileM rows).
-				int chunk = my_wg * NumEpiRounds + r;   // absolute n-chunk
-				copy(t2r, tTR_tAcc(_, _, _, _0{}, chunk), tTR_rAcc);
-
-				if (store_in_flight)
-					cute::tma_store_wait<0>();
-
-				cutlass::arch::NamedBarrier::sync(Traits::WarpGroupSize, my_barrier_id);
+			if (is_epilogue) {
+				acc_pipe.consumer_wait(acc_cons_state);
+				int acc_stage = acc_cons_state.index();
+				tCtAcc.data() = smem.tmem_base + uint32_t(acc_stage * TileN);
+				auto acc_mn_stage   = tCtAcc(make_coord(_, _), _0{}, _0{});
+				auto tAcc_epi_stage = flat_divide(acc_mn_stage, epi_tile);
+				auto tTR_tAcc_stage = thr_t2r.partition_S(tAcc_epi_stage);
 
 				CUTE_UNROLL
-				for (int i = 0; i < size(tTR_rAcc); ++i) {
-					int m_local = get<0>(tTR_cChunk(i));   // 0..WgTileM
-					int chunk_n = get<1>(tTR_cChunk(i));   // 0..EpiChunkN
-					sStore(m_local, chunk_n) = static_cast<Element>(tTR_rAcc(i));
-				}
+				for (int r = 0; r < NumEpiRounds; ++r) {
+					// TMEM → registers for this WG's r-th n-chunk (all WgTileM rows).
+					int chunk = my_wg * NumEpiRounds + r;   // absolute n-chunk
+					copy(t2r, tTR_tAcc_stage(_, _, _, _0{}, chunk), tTR_rAcc);
 
-				cutlass::arch::NamedBarrier::sync(Traits::WarpGroupSize, my_barrier_id);
+					if (store_in_flight)
+						cute::tma_store_wait<0>();
 
-				if (is_my_wg_leader) {
-					cute::tma_store_fence();
-					int da_m = e * num_m_tiles + m_tile;
-					// Store box = ONE atom-row (AtomTileM). Each WG issues
-					// kAtomsPerWg stores, one per atom it owns. The store_buf
-					// holds the WG's atoms in contiguous local rows
-					// [a*AtomTileM, +AtomTileM); their gmem atom-rows differ:
-					//   M-split: the 2 atoms interleave → 4*da_m + my_wg + 2a
-					//            (gmem M-grid is TileM/AtomTileM rows per tile).
-					//   N-split: WG owns the full TileM (2 contiguous atoms) and
-					//            its own N-half → 2*da_m + a, n offset by my_wg.
-					int n_tile_idx;
-					if constexpr (Traits::kMSplit) {
-						n_tile_idx = n_tile * Traits::NumEpiRounds + r;
-					} else {
-						n_tile_idx = n_tile * (Traits::TileN / Traits::EpiChunkN)
-						           + my_wg * Traits::NumEpiRounds + r;
-					}
-					constexpr int kRowAtoms = Traits::TileM / Traits::AtomTileM;  // 4 (M-split) / 2 (N-split)
+					cutlass::arch::NamedBarrier::sync(Traits::WarpGroupSize, my_barrier_id);
+
 					CUTE_UNROLL
-					for (int a = 0; a < Traits::kAtomsPerWg; ++a) {
-						int m_atom_row = Traits::kMSplit
-							? (kRowAtoms * da_m + my_wg + Traits::kAtomsPerWg * a)
-							: (kRowAtoms * da_m + a);
-						auto sStore_a = local_tile(sStore,
-							make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
-							make_coord(a, 0));
-						auto gdA = local_tile(mdA,
-							make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
-							make_coord(m_atom_row, n_tile_idx));
-						copy(tma_reduce_da, cta_tma_da.partition_S(sStore_a),
-							cta_tma_da.partition_D(gdA));
+					for (int i = 0; i < size(tTR_rAcc); ++i) {
+						int m_local = get<0>(tTR_cChunk(i));   // 0..WgTileM
+						int chunk_n = get<1>(tTR_cChunk(i));   // 0..EpiChunkN
+						sStore(m_local, chunk_n) = static_cast<Element>(tTR_rAcc(i));
 					}
-					cute::tma_store_arrive();
-				}
-				store_in_flight = true;
-			}
 
-			// TMEM reads done → release the acc so the next (cell, walk) MMA
-			// may reuse it (one elected consumer thread arrives).
-			cutlass::arch::NamedBarrier::sync(Traits::ConsumerThreads, /*id=*/0);
-			if (tid_in_mma == Traits::WarpGroupSize)
-				acc_pipe.consumer_release(acc_cons_state);
-			++acc_cons_state;
+					cutlass::arch::NamedBarrier::sync(Traits::WarpGroupSize, my_barrier_id);
+
+					if (is_my_wg_leader) {
+						cute::tma_store_fence();
+						int da_m = e * num_m_tiles + m_tile;
+						// Store box = ONE atom-row (AtomTileM). Each WG issues
+						// kAtomsPerWg stores, one per atom it owns. The store_buf
+						// holds the WG's atoms in contiguous local rows
+						// [a*AtomTileM, +AtomTileM); their gmem atom-rows differ:
+						//   M-split: the 2 atoms interleave → 4*da_m + my_wg + 2a
+						//            (gmem M-grid is TileM/AtomTileM rows per tile).
+						//   N-split: WG owns the full TileM (2 contiguous atoms) and
+						//            its own N-half → 2*da_m + a, n offset by my_wg.
+						int n_tile_idx;
+						if constexpr (Traits::kMSplit) {
+							n_tile_idx = n_tile * Traits::NumEpiRounds + r;
+						} else {
+							n_tile_idx = n_tile * (Traits::TileN / Traits::EpiChunkN)
+							           + my_wg * Traits::NumEpiRounds + r;
+						}
+						constexpr int kRowAtoms = Traits::TileM / Traits::AtomTileM;  // 4 (M-split) / 2 (N-split)
+						CUTE_UNROLL
+						for (int a = 0; a < Traits::kAtomsPerWg; ++a) {
+							int m_atom_row = Traits::kMSplit
+								? (kRowAtoms * da_m + my_wg + Traits::kAtomsPerWg * a)
+								: (kRowAtoms * da_m + a);
+							auto sStore_a = local_tile(sStore,
+								make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
+								make_coord(a, 0));
+							auto gdA = local_tile(mdA,
+								make_tile(Int<Traits::AtomTileM>{}, Int<Traits::EpiChunkN>{}),
+								make_coord(m_atom_row, n_tile_idx));
+							copy(tma_reduce_da, cta_tma_da.partition_S(sStore_a),
+								cta_tma_da.partition_D(gdA));
+						}
+						cute::tma_store_arrive();
+					}
+					store_in_flight = true;
+				}
+
+				// TMEM reads done → release the acc so the next (cell, walk) MMA
+				// may reuse it (one elected consumer thread arrives).
+				cutlass::arch::NamedBarrier::sync(Traits::ConsumerThreads, /*id=*/0);
+				if (tid_in_epi == 0)
+					acc_pipe.consumer_release(acc_cons_state);
+				++acc_cons_state;
+			}
 		}
 	}
-	if (store_in_flight)
+	if (is_epilogue && store_in_flight)
 		cute::tma_store_wait<0>();
-	cutlass::arch::NamedBarrier::sync(Traits::ConsumerThreads, /*id=*/0);
+	cutlass::arch::NamedBarrier::sync(kMmaEpiThreads, /*id=*/3);
 #else
 	// Never dispatched on non-SM100 targets (host picks Compute=90 there).
 	__trap();

@@ -32,9 +32,10 @@
 //
 // CTA layout (384 threads = 12 warps):
 //   WG0 warp 0     : Producer (TMA loads for dU/dV/B/C)
-//   WG0 warps 1-3  : Idle (≥2 warps reserved for future nvshmem)
-//   WG1 (warps 4-7)  : Consumer atom 0 — owns m=[0, AtomTileM)
-//   WG2 (warps 8-11) : Consumer atom 1 — owns m=[AtomTileM, TileM)
+//   WG0 warps 1-2  : Idle / reserved for fused-kernel communication
+//   WG0 warp 3     : Idle on SM90; dedicated UMMA producer on SM100
+//   WG1 (warps 4-7)  : WGMMA consumer on SM90; epilogue WG0 on SM100
+//   WG2 (warps 8-11) : WGMMA consumer on SM90; epilogue WG1 on SM100
 //
 // Per `expert_for_m_block`: one int per TileM=128 m-block.
 //
@@ -157,10 +158,13 @@ struct Mlp5Traits {
 	using MainloopPipelineUmma = cutlass::PipelineTmaUmmaAsync<
 		Stages, cute::Shape<cute::_1, cute::_1, cute::_1>,
 		cute::Shape<cute::_1, cute::_1, cute::_1>>;
-	// One accumulator, reused each n-tile → AccStages=1 (no TMEM double-buffer).
-	// The single accumulator carries the cross-phase sum dU·B (phase 1) +
-	// dV·C (phase 2) across the whole 2·num_k_tiles mainloop.
-	static constexpr int AccStages = 1;
+	// Double-buffered TMEM accumulators: the single accumulator per stage still
+	// carries the cross-phase sum dU·B + dV·C across the whole 2·num_k_tiles
+	// mainloop, while the alternate stage lets the next n-tile's MMA overlap
+	// the previous n-tile's epilogue.
+	static constexpr int AccStages = 2;
+	static_assert(AccStages * TileN <= 512,
+		"SM100 MLP5 accumulator stages must fit in 512 TMEM columns");
 	using AccumulatorPipeline = cutlass::PipelineUmmaAsync<AccStages>;
 
 	static constexpr int TmaTransBytesZ =
@@ -256,7 +260,7 @@ __device__ __forceinline__ auto mlp5_make_pipe_umma(
 
 	int warp_id = threadIdx.x / Traits::WarpSize;
 	bool is_producer = (warp_id == 0);
-	bool is_consumer = (warp_id >= 4 && warp_id <= 11);
+	bool is_consumer = (warp_id >= 3 && warp_id <= 11);  // warp 3 = UMMA producer
 
 	typename Pipeline::Params pp;
 	pp.transaction_bytes = Traits::TmaTransBytes;

@@ -29,7 +29,7 @@
 //
 // CTA layout (384 threads = 12 warps):
 //   WG0 warp 0     : Producer (TMA loads for Z / A)
-//   WG0 warps 1-3  : Idle
+//   WG0 warps 1-3  : Idle on SM90; warp 3 issues UMMA on SM100
 //   WG1 (warps 4-7)  : Consumer atom 0 — owns m=[0, AtomTileM)
 //   WG2 (warps 8-11) : Consumer atom 1 — owns m=[AtomTileM, TileM)
 //
@@ -159,8 +159,12 @@ struct Mlp2TTraits {
 	using MainloopPipelineUmma = cutlass::PipelineTmaUmmaAsync<
 		Stages, cute::Shape<cute::_1, cute::_1, cute::_1>,
 		cute::Shape<cute::_1, cute::_1, cute::_1>>;
-	// One accumulator, reused each n-tile → AccStages=1 (no TMEM double-buffer).
-	static constexpr int AccStages = 1;
+	// Double-buffered SM100 TMEM accumulators: each stage owns one TileN-wide
+	// accumulator, allowing MMA(n+1) to fill the alternate stage while the
+	// epilogue drains/TMA-stores MMA(n).
+	static constexpr int AccStages = 2;
+	static_assert(AccStages * TileN <= 512,
+		"SM100 MLP2-T accumulator stages must fit in 512 TMEM columns");
 	using AccumulatorPipeline = cutlass::PipelineUmmaAsync<AccStages>;
 
 	// SM100 UMMA TiledMMA — one 1SM tcgen05 atom spanning the whole

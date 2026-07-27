@@ -4,8 +4,8 @@
 // Fused MoE Backward: MLP compute for local + remote tiles
 // ═══════════════════════════════════════════════════════════════════
 //
-// MLP-only device function — called by MLP warps (0,1,4-11).
-// Comm warps (2-3) are handled separately at the kernel level.
+// MLP-only device function — called by non-comm warps. In BWD comm uses
+// warps 1-2; warp 3 enters the MLP path on SM100 and exits immediately on SM90.
 //
 // Execution flow (UNIFIED — local tile loop removed, mirrors moe_fused_fwd):
 //   EVERY tile (local or remote) flows through the comm get→staging→MLP→put
@@ -125,9 +125,9 @@ __device__ __forceinline__ void moe_fused_bwd(
 	//   x_barrier is per logical Phase-1 column (col), stride runtime_nsplit.
 	int flat_id     = (int)blockIdx.x;
 
-	MlpBwdCtaBarrier global_barrier(bufs.barrier_counter,
+	MlpBwdCtaBarrierT<Compute> global_barrier(bufs.barrier_counter,
 		(int)gridDim.x * (int)gridDim.y);
-	MlpBwdCtaBarrier x_barrier(&dims.phase_counter[col],
+	MlpBwdCtaBarrierT<Compute> x_barrier(&dims.phase_counter[col],
 		runtime_nsplit);
 
 	// Initialize the fused iter's remote sub-iter from comm pipe pointers.
