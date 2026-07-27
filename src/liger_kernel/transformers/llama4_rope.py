@@ -31,6 +31,29 @@ def liger_llama4_text_rotary_pos_emb(
     return LigerLlama4RopeFunction.apply(xq, xk, freqs_cis)
 
 
+def _llama4_vision_rope_reference(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    freqs_ci: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Reference (non-fused) Llama4 vision RoPE, matching HF ``vision_apply_rotary_emb``.
+
+    Used as a fallback when ``freqs_ci`` is not a complex tensor (see
+    ``liger_llama4_vision_rotary_pos_emb``). ``query``/``key`` are interpreted as
+    interleaved real/imag pairs; multiplying by ``freqs_ci`` (which may itself be
+    real, e.g. a complex buffer whose imaginary part was dropped by a dtype cast)
+    reproduces exactly what the HF implementation computes.
+    """
+    query_ = torch.view_as_complex(query.float().reshape(*query.shape[:-1], -1, 2))
+    key_ = torch.view_as_complex(key.float().reshape(*key.shape[:-1], -1, 2))
+    ndim = query_.ndim
+    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(query_.shape)]
+    freqs_ci = freqs_ci.view(*shape).to(query_.device)
+    query_out = torch.view_as_real(query_ * freqs_ci).flatten(3)
+    key_out = torch.view_as_real(key_ * freqs_ci).flatten(3)
+    return query_out.type_as(query), key_out.type_as(key)
+
+
 def liger_llama4_vision_rotary_pos_emb(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -50,6 +73,16 @@ def liger_llama4_vision_rotary_pos_emb(
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: Rotated query and key tensors
     """
+    # The vision RoPE frequencies are stored on the model as a complex64 buffer
+    # (``Llama4VisionRotaryEmbedding.freqs_ci``). Casting the model to a real dtype
+    # (e.g. ``model.to(torch.bfloat16)``) silently casts that buffer to a real
+    # tensor, discarding the imaginary part. The fused complex kernel below assumes
+    # ``freqs_ci`` is complex (or its real/imag interleaving); a real tensor makes it
+    # index out of bounds and emit NaNs. Fall back to the reference implementation,
+    # which matches HF's ``vision_apply_rotary_emb`` for both complex and real freqs.
+    if not torch.is_complex(freqs_ci):
+        return _llama4_vision_rope_reference(query, key, freqs_ci)
+
     # Handle broadcasting for vision RoPE
     if freqs_ci.dim() == 3:
         try:
