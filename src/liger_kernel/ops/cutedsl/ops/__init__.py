@@ -17,6 +17,9 @@ from liger_kernel.ops.cutedsl.ops.cross_entropy import cross_entropy_forward
 from liger_kernel.ops.cutedsl.ops.rms_norm import LigerRMSNormFunction
 from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_backward
 from liger_kernel.ops.cutedsl.ops.rms_norm import rms_norm_forward
+from liger_kernel.ops.cutedsl.ops.swiglu import LigerSiLUMulCuteDSLFunction as LigerSiLUMulFunction
+from liger_kernel.ops.cutedsl.ops.swiglu import swiglu_backward
+from liger_kernel.ops.cutedsl.ops.swiglu import swiglu_forward
 
 __all__ = [
     "LigerCrossEntropyFunction",
@@ -25,4 +28,7 @@ __all__ = [
     "LigerRMSNormFunction",
     "rms_norm_backward",
     "rms_norm_forward",
+    "LigerSiLUMulFunction",
+    "swiglu_backward",
+    "swiglu_forward",
 ]
