@@ -216,7 +216,6 @@ def liger_cross_entropy_kernel(
                 X_block += 2 * lse_square_scale * lse * X_block
                 # smoothing term
                 X_block += -eps
-                # dx_y corrected once after the loop (removed the per-element tl.where)
                 # reduction scale
                 if reduction == "mean":
                     X_block = X_block / n_non_ignore
@@ -225,7 +224,6 @@ def liger_cross_entropy_kernel(
                 softmax_X = tl.exp2((X_block - m) * LOG2_E) / d
                 # derivative of original_loss
                 dloss_ori = (1 - label_smoothing) * softmax_X
-                # dx_y corrected once after the loop (removed the per-element tl.where)
                 dloss_ori = dloss_ori * weight_y
                 # derivative of smooth_loss
                 dloss_smooth = eps * (-weight_block + softmax_X * weight_sum)
