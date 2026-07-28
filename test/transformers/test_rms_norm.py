@@ -159,7 +159,7 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
     # reference (llama or gemma)
     ref_rms = reference(hidden_size=hd, elementwise_affine=elementwise_affine).to(device).to(dtype)
     ref_o = ref_rms(h1)
-    ref_o.backward(do, retain_graph=True)
+    ref_o.backward(do)
 
     # triton
     triton_rms = (
@@ -174,7 +174,8 @@ def test_correctness(bs, sl, hd, dtype, atol, rtol, reference, offset, casting_m
         .to(dtype)
     )
     triton_o = triton_rms(h2)
-    triton_o.backward(do, retain_graph=True)
+    # clone since in_place=True lets backward overwrite the grad-output buffer
+    triton_o.backward(do.clone())
 
     assert_verbose_allclose(ref_o, triton_o, atol=atol, rtol=rtol)
     if elementwise_affine:
@@ -232,8 +233,9 @@ def test_correctness_functional(bs, sl, hd, dtype, atol, rtol, reference, offset
 
     grad = torch.randn_like(y2)
 
-    y1.backward(grad)
-    y2.backward(grad)
+    # Clone grad since in_place=True lets backward overwrite the grad-output buffer
+    y1.backward(grad.clone())
+    y2.backward(grad.clone())
 
     assert torch.allclose(h1.grad, h2.grad, atol=atol, rtol=rtol)
 
