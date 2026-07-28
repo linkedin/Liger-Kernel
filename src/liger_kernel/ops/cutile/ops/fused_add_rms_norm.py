@@ -101,7 +101,9 @@ def _fused_add_rms_norm_fwd_ct(
             S_tile = ct.astype(ct.mul(S_tile, rstd), X.dtype)
             # W may be higher precision than X (e.g. fp32 norm weight, bf16 activations);
             # the multiply promotes to W's dtype, so cast back to Y.dtype before storing.
-            ct.scatter(Y, (row_idx, col_idx), ct.astype(ct.mul(S_tile, ct.add(W_tile, offset)), Y.dtype), check_bounds=True)
+            ct.scatter(
+                Y, (row_idx, col_idx), ct.astype(ct.mul(S_tile, ct.add(W_tile, offset)), Y.dtype), check_bounds=True
+            )
         elif casting_mode == _CASTING_MODE_GEMMA:
             S_tile = ct.astype(S_tile, ct.float32)
             rstd = ct.rsqrt(ct.sum(ct.mul(S_tile, S_tile), 0, keepdims=False) / n_cols + eps)
@@ -155,7 +157,9 @@ def _fused_add_rms_norm_fwd_ct(
         if casting_mode == _CASTING_MODE_LLAMA:
             S_tile = ct.astype(S_tile, ct.float32)
             S_normed = ct.astype(ct.mul(S_tile, rstd), X.dtype)
-            ct.scatter(Y, (row_idx, col_idx), ct.astype(ct.mul(S_normed, ct.add(W_tile, offset)), Y.dtype), check_bounds=True)
+            ct.scatter(
+                Y, (row_idx, col_idx), ct.astype(ct.mul(S_normed, ct.add(W_tile, offset)), Y.dtype), check_bounds=True
+            )
         elif casting_mode == _CASTING_MODE_GEMMA:
             S_tile = ct.astype(S_tile, ct.float32)
             W_shifted = ct.add(ct.astype(W_tile, ct.float32), offset)
