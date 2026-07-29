@@ -5,10 +5,11 @@ Public API:
         LayerNormBuilder protocol.
     LigerMegatronCrossEntropy — drop-in for Megatron-LM's vocab-parallel
         cross-entropy (Megatron defaults). Supports all TP sizes.
-    LigerMegatronSwiGLU — drop-in for Megatron-Core's ``bias_swiglu_impl``,
-        the fused gated-SiLU activation used by the dense MLP and the MoE
-        shared experts. Falls back to Megatron's implementation for bias,
-        FP8 input store, and CPU activation offload.
+    LigerMegatronSwiGLU — MLP subclass for Mode 2, replacing the fused
+        gated-SiLU activation used by the dense MLP and the MoE shared
+        experts. Mode 1 patches ``fused_bias_swiglu.SwiGLUFunction`` instead;
+        both fall back to Megatron for FP8 input store and CPU activation
+        offload, and neither touches the bias or MoE-routed variants.
     apply_liger_kernel_to_megatron — patches Megatron-Core so existing training
         scripts pick up Liger kernels with one line. Currently supports
         RMSNorm (via BackendSpecProvider), both the fused and unfused

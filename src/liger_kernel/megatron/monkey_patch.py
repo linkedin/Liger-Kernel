@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
 
 logger = logging.getLogger(__name__)
@@ -41,14 +40,11 @@ def apply_liger_kernel_to_megatron(
             argument, matching native's
             ``(logits, target, label_smoothing=0.0, tp_group=None)``.
         swiglu: When ``True`` replace
-            ``megatron.core.fusions.fused_bias_swiglu.bias_swiglu_impl`` with Liger's
-            Triton SiLU-multiply kernel. Covers the dense ``MLP`` and the MoE
-            ``SharedExpertMLP``, i.e. every site Megatron reaches when
-            ``config.bias_activation_fusion=True``, ``config.gated_linear_unit=True``
-            and ``config.activation_func is F.silu``. Default ``False`` so adopters
-            opt in explicitly. Calls Liger cannot serve (a non-``None`` bias,
-            ``activation_func_fp8_input_store=True``, or CPU activation offloading)
-            transparently defer to Megatron's original implementation.
+            ``megatron.core.fusions.fused_bias_swiglu.SwiGLUFunction`` with Liger's
+            Triton SiLU-multiply kernel, covering the dense ``MLP`` and the MoE
+            ``SharedExpertMLP``. Default ``False`` so adopters opt in explicitly.
+            See ``_patch_swiglu_function`` for the configurations this reaches
+            and the ones that stay on Megatron.
 
     Notes:
         Call this BEFORE building your model. Patching after instantiation
@@ -73,7 +69,7 @@ def apply_liger_kernel_to_megatron(
         _patch_fused_vocab_parallel_cross_entropy()
         _patch_vocab_parallel_cross_entropy()
     if swiglu:
-        _patch_bias_swiglu_impl()
+        _patch_swiglu_function()
 
 
 def _patch_local_spec_provider_layer_norm() -> None:
@@ -85,20 +81,11 @@ def _patch_local_spec_provider_layer_norm() -> None:
         return  # already patched
 
     original_layer_norm = backends.LocalSpecProvider.layer_norm
-    _original_sig = inspect.signature(original_layer_norm)
 
-    def patched_layer_norm(self, *args, **kwargs):
-        # Forward through the *original* signature rather than restating it. Megatron has
-        # changed this method's parameters across releases (``has_residual`` was added
-        # after ``for_qk``), and a hardcoded forwarding call raises TypeError on any
-        # version whose signature does not match exactly. Binding to the real signature
-        # also means ``rms_norm`` is read correctly whether the caller passed it
-        # positionally or by keyword.
-        bound = _original_sig.bind(self, *args, **kwargs)
-        bound.apply_defaults()
-        if bound.arguments.get("rms_norm", False):
+    def patched_layer_norm(self, rms_norm: bool = False, for_qk: bool = False, has_residual: bool = False, **kwargs):
+        if rms_norm:
             return LigerMegatronRMSNorm
-        return original_layer_norm(*bound.args, **bound.kwargs)
+        return original_layer_norm(self, rms_norm=rms_norm, for_qk=for_qk, has_residual=has_residual, **kwargs)
 
     setattr(patched_layer_norm, _PATCH_MARKER, True)
     setattr(patched_layer_norm, "__wrapped__", original_layer_norm)
@@ -279,27 +266,28 @@ def _patch_vocab_parallel_cross_entropy() -> None:
     )
 
 
-# Modules that do ``from megatron.core.fusions.fused_bias_swiglu import bias_swiglu_impl``
-# and therefore hold their own binding. Must be rebound individually after patching.
-# Verified against Megatron-LM ``main``; missing entries are skipped.
-_BIAS_SWIGLU_CONSUMER_MODULES = (
-    "megatron.core.transformer.mlp",
-    "megatron.core.transformer.moe.shared_experts",
-)
-
-
-def _patch_bias_swiglu_impl() -> None:
-    """Replace ``megatron.core.fusions.fused_bias_swiglu.bias_swiglu_impl`` with Liger.
+def _patch_swiglu_function() -> None:
+    """Replace ``megatron.core.fusions.fused_bias_swiglu.SwiGLUFunction`` with Liger.
 
     Covers ``MLP.forward`` and ``SharedExpertMLP.forward`` when
     ``config.bias_activation_fusion=True``, ``config.gated_linear_unit=True``
     and ``config.activation_func is F.silu``.
 
-    Not patched: ``weighted_bias_swiglu_impl`` (needs routing-weight grad),
-    the unfused ``glu()`` closure (no module-level symbol), and
-    ``config.use_te_activation_func=True`` (TE owns that path).
+    Megatron's ``bias_swiglu_impl`` is intentionally left alone: it is a plain function
+    that resolves ``SwiGLUFunction`` from its own globals on every call, so replacing the
+    class reaches every caller -- including modules that already did
+    ``from ... import bias_swiglu_impl`` -- regardless of import order. Nothing outside
+    ``fused_bias_swiglu`` references ``SwiGLUFunction``, so there is exactly one binding to
+    replace and no stale copies can exist.
 
-    Unsupported configs (bias, FP8, CPU offload) defer to Megatron's original at call time.
+    Patching one layer further down (the ``swiglu`` / ``swiglu_back`` math helpers) is not
+    an option: they are ``@jit_fuser``-decorated, and ``jit_fuser`` is ``torch.jit.script``
+    below torch 2.2, which compiles them at import time -- the patch would silently no-op.
+
+    Not patched: ``BiasSwiGLUFunction`` (Liger's kernel has no bias term, so a non-``None``
+    bias keeps using Megatron by construction), ``WeightedSwiGLUFunction`` (MoE routed
+    experts, needs routing-weight grad), and ``config.use_te_activation_func=True``
+    (TransformerEngine owns that path).
     """
     try:
         import megatron.core.fusions.fused_bias_swiglu as fused_swiglu
@@ -307,77 +295,57 @@ def _patch_bias_swiglu_impl() -> None:
         raise ImportError(
             "apply_liger_kernel_to_megatron(swiglu=True) requires megatron-core to be "
             "installed. Expected symbol path: "
-            "megatron.core.fusions.fused_bias_swiglu.bias_swiglu_impl."
+            "megatron.core.fusions.fused_bias_swiglu.SwiGLUFunction."
         ) from exc
 
-    if not hasattr(fused_swiglu, "bias_swiglu_impl"):
+    if not hasattr(fused_swiglu, "SwiGLUFunction"):
         raise ImportError(
-            "megatron.core.fusions.fused_bias_swiglu.bias_swiglu_impl not found. The symbol "
+            "megatron.core.fusions.fused_bias_swiglu.SwiGLUFunction not found. The symbol "
             "path may have changed in your Megatron-LM version. Please file an issue on "
             "https://github.com/linkedin/Liger-Kernel with your megatron-core version."
         )
 
-    if getattr(fused_swiglu.bias_swiglu_impl, _PATCH_MARKER, False):
-        # Already patched -- re-run consumer rebinding for modules imported after the
-        # first patch call (they'd still hold Megatron's original binding).
-        liger_impl = fused_swiglu.bias_swiglu_impl
-        _rebind_consumer_symbol(
-            _BIAS_SWIGLU_CONSUMER_MODULES,
-            "bias_swiglu_impl",
-            liger_impl.__wrapped__,
-            liger_impl,
-        )
-        return
+    if getattr(fused_swiglu.SwiGLUFunction, _PATCH_MARKER, False):
+        return  # already patched
 
-    original = fused_swiglu.bias_swiglu_impl
+    original = fused_swiglu.SwiGLUFunction
 
-    from liger_kernel.megatron.swiglu import LigerMegatronSwiGLU
+    from liger_kernel.ops.swiglu import LigerFusedGateUpSiLUMulFunction
 
-    # Reuse a single instance: stateless except for the fallback-log dedup set.
-    swiglu_module = LigerMegatronSwiGLU(fallback_impl=original)
+    # Deduplicate fallback logs so unsupported configs do not spam every step.
+    logged_fallbacks = set()
 
-    def liger_bias_swiglu_impl(input, bias, fp8_input_store=False, cpu_offload_input=False):
-        return swiglu_module(input, bias, fp8_input_store, cpu_offload_input)
+    class _LigerSwiGLUFunction:
+        """Adapter matching Megatron's ``SwiGLUFunction.apply`` signature.
 
-    setattr(liger_bias_swiglu_impl, _PATCH_MARKER, True)
-    setattr(liger_bias_swiglu_impl, "__wrapped__", original)
-    fused_swiglu.bias_swiglu_impl = liger_bias_swiglu_impl
+        This is not an ``autograd.Function``. It exists to map Megatron's
+        ``(input, fp8_input_store, cpu_offload_input)`` call shape to Liger's kernel
+        signature without changing call sites.
+        """
 
-    patched_consumers = _rebind_consumer_symbol(
-        _BIAS_SWIGLU_CONSUMER_MODULES,
-        "bias_swiglu_impl",
-        original,
-        liger_bias_swiglu_impl,
-    )
+        @staticmethod
+        def apply(input, fp8_input_store=False, cpu_offload_input=False):
+            # FP8 input-store and CPU offload use Megatron-specific backward storage
+            # semantics, so these paths defer to native.
+            reason = None
+            if fp8_input_store:
+                reason = "config.activation_func_fp8_input_store=True"
+            elif cpu_offload_input:
+                reason = "CPU activation offloading enabled"
+            if reason is not None:
+                if reason not in logged_fallbacks:
+                    logged_fallbacks.add(reason)
+                    logger.info(
+                        "Liger SwiGLU is deferring to Megatron's native SwiGLUFunction: %s. "
+                        "Numerics and memory behavior are unchanged for this configuration.",
+                        reason,
+                    )
+                return original.apply(input, fp8_input_store, cpu_offload_input)
 
-    logger.info(
-        "Patched megatron.core.fusions.fused_bias_swiglu.bias_swiglu_impl with Liger SwiGLU (also rebound in: %s).",
-        ", ".join(patched_consumers) if patched_consumers else "no already-imported consumers",
-    )
+            return LigerFusedGateUpSiLUMulFunction.apply(input, False)
 
+    setattr(_LigerSwiGLUFunction, _PATCH_MARKER, True)
+    setattr(_LigerSwiGLUFunction, "__wrapped__", original)
+    fused_swiglu.SwiGLUFunction = _LigerSwiGLUFunction
 
-def _rebind_consumer_symbol(
-    module_names,
-    attr_name: str,
-    original,
-    replacement,
-):
-    """Point already-imported ``from X import attr`` bindings at ``replacement``.
-
-    Only rebinds modules already in ``sys.modules`` whose binding is still ``original``.
-    Modules imported later pick up the patched symbol naturally.
-
-    Returns the list of module names actually rebound.
-    """
-    import sys
-
-    rebound = []
-    for name in module_names:
-        module = sys.modules.get(name)
-        if module is None:
-            continue  # not imported yet
-        if getattr(module, attr_name, None) is not original:
-            continue  # absent, or already pointing somewhere else
-        setattr(module, attr_name, replacement)
-        rebound.append(name)
-    return rebound
+    logger.info("Patched megatron.core.fusions.fused_bias_swiglu.SwiGLUFunction with Liger SwiGLU.")

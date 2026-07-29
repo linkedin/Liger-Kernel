@@ -11,9 +11,8 @@ relevant additions (vs. that file) are:
          (the fused CE path)
        - ``tensor_parallel.cross_entropy.vocab_parallel_cross_entropy``
          (the unfused CE path)
-       - ``fusions.fused_bias_swiglu.bias_swiglu_impl`` *and* the by-name
-         re-exports of it in ``transformer.mlp`` and
-         ``transformer.moe.shared_experts`` (the SwiGLU activation)
+       - ``fusions.fused_bias_swiglu.SwiGLUFunction`` (the SwiGLU
+         activation, reached via Megatron's own ``bias_swiglu_impl``)
 
   2. ``normalization="RMSNorm"`` added to ``TransformerConfig`` so the
      model actually has RMSNorm slots to patch (Megatron defaults to
@@ -109,23 +108,9 @@ def model_provider() -> GPTModel:
     )
 
 
-def _ensure_dataset_helpers() -> None:
-    """Build Megatron's C++ dataset helpers only if not already compiled.
-
-    ``compile_helpers()`` shells out to ``make``, which fails on pip-installed
-    megatron-core wheels (no Makefile, but the extension is already present).
-    """
-    try:
-        from megatron.core.datasets import helpers_cpp  # noqa: F401
-
-        return
-    except ImportError:
-        compile_helpers()
-
-
 def get_train_data_iterator() -> Iterator:
     if torch.distributed.get_rank() == 0:
-        _ensure_dataset_helpers()
+        compile_helpers()
     torch.distributed.barrier()
     cfg = GPTDatasetConfig(
         random_seed=0,
@@ -134,7 +119,7 @@ def get_train_data_iterator() -> Iterator:
         reset_attention_mask=False,
         eod_mask_loss=False,
         tokenizer=MegatronTokenizer.from_pretrained(
-            metadata_path={"library": "null"},
+            metadata_path={"library": "null-text"},
             vocab_size=_SEQUENCE_LENGTH,
         ),
         mid_level_dataset_surplus=0.005,
@@ -188,24 +173,27 @@ def _print_ce_symbols() -> None:
 
 
 def _print_swiglu_symbols() -> None:
-    """Show ``bias_swiglu_impl`` bindings in the defining module and its consumers.
+    """Show which ``SwiGLUFunction`` the dense MLP and shared experts end up running.
 
-    The two consumer modules capture the symbol at import time, so the defining
-    module and each consumer are printed separately to verify all were rebound.
+    Liger replaces the class, not ``bias_swiglu_impl``. That function is a plain
+    dispatcher that looks the class up in its own module globals on every call,
+    so the two consumer modules keep their import-time ``bias_swiglu_impl``
+    binding and still route to Liger. Both facts are printed below.
     """
     import megatron.core.fusions.fused_bias_swiglu as defining
     import megatron.core.transformer.mlp as mlp
     import megatron.core.transformer.moe.shared_experts as shared
 
+    tag = "Liger" if getattr(defining.SwiGLUFunction, "__liger_patched__", False) else "Megatron"
     print("\n=== Resolved SwiGLU symbols ===")
+    print(f"  {'fusions.fused_bias_swiglu.SwiGLUFunction':52s} \u2192  [{tag}]")
     for label, mod in (
-        ("fusions.fused_bias_swiglu (defines)", defining),
-        ("transformer.mlp (consumes)", mlp),
-        ("transformer.moe.shared_experts (consumes)", shared),
+        ("transformer.mlp", mlp),
+        ("transformer.moe.shared_experts", shared),
     ):
-        fn = mod.bias_swiglu_impl
-        tag = "Liger" if getattr(fn, "__liger_patched__", False) else "Megatron"
-        print(f"  {label:44s} →  {fn.__name__}  [{tag}]")
+        same = mod.bias_swiglu_impl is defining.bias_swiglu_impl
+        note = "unpatched, resolves the class above" if same else "REBOUND \u2014 unexpected"
+        print(f"  {label + '.bias_swiglu_impl':52s} \u2192  {note}")
     print()
 
 

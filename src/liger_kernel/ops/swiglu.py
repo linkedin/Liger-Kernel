@@ -286,14 +286,14 @@ class LigerSiLUMulFunction(torch.autograd.Function):
 # ---------------------------------------------------------------------------
 # Fused gate-up variant
 # ---------------------------------------------------------------------------
-# For fused ``[tokens, 2*n]`` gate-up tensors (Megatron, HF ``gate_up_proj``): the
-# kernels read both halves via a column offset into the single buffer -- no copies,
-# no cat. Input row stride is ``2*n``, output is ``n``.
+# For fused ``[tokens, 2 * ffn_size]`` gate-up tensors (Megatron, HF ``gate_up_proj``):
+# the kernels read both halves via a column offset into the single buffer -- no copies,
+# no cat. Input row stride is ``2 * ffn_size``, output is ``ffn_size``.
 
 
 @triton.jit
 def _swiglu_fused_gate_up_forward_kernel(
-    y_ptr, c_ptr, in_stride, out_stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr
+    y_ptr, c_ptr, in_stride, out_stride, ffn_size: tl.constexpr, BLOCK_SIZE: tl.constexpr
 ):
     program_id = tl.program_id(0).to(tl.int64)
 
@@ -301,17 +301,17 @@ def _swiglu_fused_gate_up_forward_kernel(
     c_ptr += program_id * out_stride
 
     col_offsets = tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < n_cols
+    mask = col_offsets < ffn_size
 
-    # Gate occupies columns [0, n), up occupies [n, 2n) of the same row.
+    # Gate occupies columns [0, ffn_size), up occupies [ffn_size, 2 * ffn_size) of the same row.
     gate = tl.load(y_ptr + col_offsets, mask=mask, other=0).to(tl.float32)
-    up = tl.load(y_ptr + n_cols + col_offsets, mask=mask, other=0)
+    up = tl.load(y_ptr + ffn_size + col_offsets, mask=mask, other=0)
     tl.store(c_ptr + col_offsets, silu(gate).cast(up.dtype) * up, mask=mask)
 
 
 @triton.jit
 def _swiglu_fused_gate_up_backward_kernel(
-    dc_ptr, y_ptr, dy_ptr, in_stride, out_stride, n_cols: tl.constexpr, BLOCK_SIZE: tl.constexpr
+    dc_ptr, y_ptr, dy_ptr, in_stride, out_stride, ffn_size: tl.constexpr, BLOCK_SIZE: tl.constexpr
 ):
     program_id = tl.program_id(0).to(tl.int64)
 
@@ -320,11 +320,11 @@ def _swiglu_fused_gate_up_backward_kernel(
     dy_ptr += program_id * in_stride
 
     col_offsets = tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < n_cols
+    mask = col_offsets < ffn_size
 
     dc = tl.load(dc_ptr + col_offsets, mask=mask, other=0)
     gate = tl.load(y_ptr + col_offsets, mask=mask, other=0).to(tl.float32)
-    up = tl.load(y_ptr + n_cols + col_offsets, mask=mask, other=0)
+    up = tl.load(y_ptr + ffn_size + col_offsets, mask=mask, other=0)
 
     # Recompute silu from saved input. When dy_ptr aliases y_ptr (in_place=True), all
     # loads precede all stores and each program owns one row, so aliasing is safe here.
@@ -335,59 +335,59 @@ def _swiglu_fused_gate_up_backward_kernel(
     d_up = dc * silu_gate
 
     tl.store(dy_ptr + col_offsets, d_gate, mask=mask)
-    tl.store(dy_ptr + n_cols + col_offsets, d_up, mask=mask)
+    tl.store(dy_ptr + ffn_size + col_offsets, d_up, mask=mask)
 
 
 def swiglu_fused_gate_up_forward(y):
-    """SwiGLU over a fused ``[..., 2 * n]`` gate-up tensor. Returns ``(y, c)``."""
+    """SwiGLU over a fused ``[..., 2 * ffn_size]`` gate-up tensor. Returns ``(y, c)``."""
     ori_shape = y.shape
-    two_n = ori_shape[-1]
-    if two_n % 2 != 0:
-        raise ValueError(f"fused gate-up input must have an even trailing dim; got {two_n}.")
-    n_cols = two_n // 2
+    fused_size = ori_shape[-1]
+    if fused_size % 2 != 0:
+        raise ValueError(f"fused gate-up input must have an even trailing dim; got {fused_size}.")
+    ffn_size = fused_size // 2
 
-    y = y.view(-1, two_n)
+    y = y.view(-1, fused_size)
     n_rows = y.shape[0]
-    c = torch.empty(n_rows, n_cols, dtype=y.dtype, device=y.device)
+    c = torch.empty(n_rows, ffn_size, dtype=y.dtype, device=y.device)
 
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    BLOCK_SIZE, num_warps = calculate_settings(ffn_size)
     _swiglu_fused_gate_up_forward_kernel[(n_rows,)](
         y,
         c,
         y.stride(-2),
         c.stride(-2),
-        n_cols=n_cols,
+        ffn_size=ffn_size,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )
-    return y, c.view(*ori_shape[:-1], n_cols)
+    return y, c.view(*ori_shape[:-1], ffn_size)
 
 
 def swiglu_fused_gate_up_backward(y, dc, in_place=False):
-    """Gradient w.r.t. the fused ``[..., 2 * n]`` gate-up tensor.
+    """Gradient w.r.t. the fused ``[..., 2 * ffn_size]`` gate-up tensor.
 
     Args:
         in_place: Overwrite ``y`` with the gradient in place instead of allocating a new
-            ``[..., 2*n]`` buffer. Saves ~1 GB peak on H100 at ``[2048*4, 2*32768]`` bf16.
+            ``[..., 2 * ffn_size]`` buffer. Saves ~1 GB peak on H100 at ``[2048*4, 2*32768]`` bf16.
             Default False -- Megatron may hold references to the fc1 output for activation
             recompute or CUDA-graph capture, so clobbering it requires care.
     """
-    two_n = y.shape[-1]
-    n_cols = two_n // 2
+    fused_size = y.shape[-1]
+    ffn_size = fused_size // 2
 
-    y = y.view(-1, two_n)
-    dc = dc.view(-1, n_cols)
+    y = y.view(-1, fused_size)
+    dc = dc.view(-1, ffn_size)
     n_rows = dc.shape[0]
     dy = y if in_place else torch.empty_like(y)
 
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    BLOCK_SIZE, num_warps = calculate_settings(ffn_size)
     _swiglu_fused_gate_up_backward_kernel[(n_rows,)](
         dc,
         y,
         dy,
         y.stride(-2),
         dc.stride(-2),
-        n_cols=n_cols,
+        ffn_size=ffn_size,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
     )

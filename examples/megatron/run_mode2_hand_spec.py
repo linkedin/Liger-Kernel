@@ -219,23 +219,9 @@ def model_provider() -> GPTModel:
     )
 
 
-def _ensure_dataset_helpers() -> None:
-    """Build Megatron's C++ dataset helpers only if not already compiled.
-
-    ``compile_helpers()`` shells out to ``make``, which fails on pip-installed
-    megatron-core wheels (no Makefile, but the extension is already present).
-    """
-    try:
-        from megatron.core.datasets import helpers_cpp  # noqa: F401
-
-        return
-    except ImportError:
-        compile_helpers()
-
-
 def get_train_data_iterator() -> Iterator:
     if torch.distributed.get_rank() == 0:
-        _ensure_dataset_helpers()
+        compile_helpers()
     torch.distributed.barrier()
     cfg = GPTDatasetConfig(
         random_seed=0,
@@ -244,7 +230,7 @@ def get_train_data_iterator() -> Iterator:
         reset_attention_mask=False,
         eod_mask_loss=False,
         tokenizer=MegatronTokenizer.from_pretrained(
-            metadata_path={"library": "null"},
+            metadata_path={"library": "null-text"},
             vocab_size=_SEQUENCE_LENGTH,
         ),
         mid_level_dataset_surplus=0.005,

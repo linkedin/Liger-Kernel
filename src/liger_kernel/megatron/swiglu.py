@@ -1,7 +1,12 @@
 """Megatron-Core compatible SwiGLU backed by the Liger Triton SiLU-multiply kernel.
 
-Drop-in for ``megatron.core.fusions.fused_bias_swiglu.bias_swiglu_impl``, which is the
-symbol ``MLP.forward`` and ``SharedExpertMLP.forward`` call when
+``LigerMegatronSwiGLU`` is an ``nn.Module`` mirroring ``bias_swiglu_impl``'s signature,
+for hand-assembled specs (Mode 2) where the caller owns the MLP class. Mode 1 does not use
+it: the monkey patch installs a small adapter over
+``megatron.core.fusions.fused_bias_swiglu.SwiGLUFunction`` instead -- see
+``monkey_patch._patch_swiglu_function``.
+
+Both cover the path ``MLP.forward`` and ``SharedExpertMLP.forward`` take when
 ``config.bias_activation_fusion=True``, ``config.gated_linear_unit=True`` and
 ``config.activation_func is F.silu``.
 
@@ -36,11 +41,6 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-
-# Force-import the submodule so liger_kernel.ops.swiglu can resolve
-# torch.distributed.tensor.DTensor on torch 2.11+, where the subpackage is no longer
-# auto-loaded as an attribute of torch.distributed.
-import torch.distributed.tensor  # noqa: F401  # isort: skip
 
 from liger_kernel.ops import LigerFusedGateUpSiLUMulFunction
 

@@ -2,29 +2,39 @@
 
 Two self-contained scripts demonstrating the integration modes shipped by
 `liger_kernel.megatron`. Both train a tiny GPT model with mock data on
-2 × GPU (TP=1, PP=1, DP=2) for 5 iterations and print the resolved norm
-classes, CE bindings and SwiGLU bindings so you can see which slots picked
-up Liger.
+2 × GPU (TP=1, PP=1, DP=2) for 5 iterations and print the resolved bindings
+so you can see which slots picked up Liger.
+
+## Op support matrix
+
+| Op | Mode 1 flag | Patched symbol(s) | Mode 2 class | Slot used in Mode 2 |
+|---|---|---|---|---|
+| RMSNorm | `rms_norm=True` (on by default) | `LocalSpecProvider.layer_norm`, `transformer_block.LayerNormImpl` | `LigerMegatronRMSNorm` | every norm slot, incl. block-level `final_layernorm` |
+| Cross-entropy | `cross_entropy=True` (opt-in) | `fused_cross_entropy.fused_vocab_parallel_cross_entropy`, `tensor_parallel.cross_entropy.vocab_parallel_cross_entropy` | `LigerMegatronCrossEntropy` | none — `GPTModel` subclass overriding `compute_language_model_loss` |
+| SwiGLU | `swiglu=True` (opt-in) | `fusions.fused_bias_swiglu.SwiGLUFunction` | `LigerMegatronSwiGLU` | the `mlp` module slot — an `MLP` subclass |
+
+Notes that apply to the table:
+
+- RMSNorm only covers the local (non-TE) backend.
+- SwiGLU is used only when `gated_linear_unit=True`, `activation_func=F.silu`,
+  and `bias_activation_fusion=True`; otherwise the patch is applied but not
+  exercised.
+- Liger replaces only `SwiGLUFunction`, so bias and MoE variants stay on
+  Megatron.
+- Cross-entropy and SwiGLU are wired through subclasses (no dedicated spec
+  slot).
 
 ## Prerequisites
 
 - A working Megatron-Core install (`pip install megatron-core`).
 - `liger-kernel` installed (editable or from PyPI).
-- `psutil` (used by Megatron's async checkpoint worker pool).
+- `psutil`.
 - At least 2 GPUs.
 
 ## Mode 1 — `apply_liger_kernel_to_megatron()` (monkey-patch)
 
-One-line opt-in. Patches `LocalSpecProvider.layer_norm` and
-`transformer_block.LayerNormImpl` so every RMSNorm slot becomes Liger, the
-two cross-entropy entry points, and `bias_swiglu_impl` — all without
-changing the spec the user constructs.
-
-Note the SwiGLU dispatch flags on `TransformerConfig`
-(`gated_linear_unit=True`, `activation_func=F.silu`,
-`bias_activation_fusion=True`). `MLP.forward` only routes through
-`bias_swiglu_impl` when all three hold, so without them the patch is
-applied but never reached — no speedup and no error.
+One-line opt-in. Patches the symbols in the matrix above without changing
+the spec the user constructs.
 
 ```bash
 torchrun --nproc_per_node=2 \
@@ -34,17 +44,9 @@ torchrun --nproc_per_node=2 \
 
 ## Mode 2 — hand-assembled `TransformerBlockSubmodules`
 
-Slot-level control. Explicitly places `LigerMegatronRMSNorm` into each
-norm slot, including the block-level `final_layernorm`, and a
-`LigerMegatronSwiGLU`-backed `MLP` subclass into the `mlp` slot. Useful
-when you want to mix Liger with other backends (e.g. TransformerEngine) on
-a per-slot basis.
-
-SwiGLU has no spec slot of its own — `MLPSubmodules.activation_func` is
-only read when `config.use_te_activation_func` is set, so it is the
-TransformerEngine hook rather than a general one. The MLP *class* is a
-slot, so this script subclasses `MLP`, the same way it subclasses
-`GPTModel` for cross-entropy.
+Slot-level control — see the "Mode 2 class" column of the matrix above.
+Useful when you want to mix Liger with other backends (e.g.
+TransformerEngine) on a per-slot basis.
 
 ```bash
 torchrun --nproc_per_node=2 \

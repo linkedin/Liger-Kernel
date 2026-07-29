@@ -60,7 +60,6 @@ def _install_fake_megatron_ce(
     Returns a tuple ``(fused_ce_module, unfused_ce_module)`` so tests can inspect what
     the patch helpers wrote onto them.
     """
-    _snapshot_real_megatron()
     _, megatron_core = _ensure_megatron_roots()
     fusions = types.ModuleType("megatron.core.fusions")
     fused_ce = types.ModuleType("megatron.core.fusions.fused_cross_entropy")
@@ -121,7 +120,6 @@ def _install_fake_megatron_rms_norm(
             level patch only displaces that fallback; set False to verify the no-op path
             taken under TE / Apex.
     """
-    _snapshot_real_megatron()
     _, megatron_core = _ensure_megatron_roots()
 
     backends = None
@@ -191,73 +189,31 @@ def _install_fake_megatron_rms_norm(
     return backends, transformer_block
 
 
-_SAVED_REAL_MEGATRON: dict = {}
-_STUBS_ACTIVE = False
-
-
-def _is_megatron_module(name: str) -> bool:
-    return name == "megatron" or name.startswith("megatron.")
-
-
-def _snapshot_real_megatron():
-    """Record the entire ``megatron*`` region of ``sys.modules`` before stubbing it.
-
-    Only has an effect when megatron-core is genuinely installed, e.g. an environment set
-    up to run the end-to-end section of ``test_swiglu.py``. See ``_uninstall_fake_megatron``
-    for why this has to cover the whole package rather than the specific names the stubs
-    replace.
-    """
-    global _STUBS_ACTIVE
-    if _STUBS_ACTIVE:
-        return  # a stub install is already in effect; don't snapshot the stubs themselves
-    _SAVED_REAL_MEGATRON.clear()
-    _SAVED_REAL_MEGATRON.update({name: mod for name, mod in sys.modules.items() if _is_megatron_module(name)})
-    _STUBS_ACTIVE = True
-
-
 def _uninstall_fake_megatron():
-    """Restore ``sys.modules`` to exactly its pre-stub state.
-
-    Two subtleties, both of which only bite when a real megatron-core is installed:
-
-    1. Popping a real module and walking away is not neutral. The next import rebuilds it
-       as a *new* object with fresh globals, silently discarding Megatron's process-global
-       parallel state -- so a later ``initialize_model_parallel`` appears not to have run.
-    2. Evicting a hand-picked list of names is not enough. Submodules outside the list
-       (e.g. ``megatron.core.tensor_parallel.random``) survive holding references to the
-       evicted parent, so the process ends up with two live ``parallel_state`` objects and
-       whichever one gets initialized is not the one that gets read.
-
-    Clearing and restoring the whole ``megatron*`` prefix avoids both.
-    """
-    global _STUBS_ACTIVE
-    if not _STUBS_ACTIVE:
-        return  # nothing was stubbed; leave a real install alone
-
-    stubbed = [n for n in list(sys.modules) if _is_megatron_module(n)]
-    for name in stubbed:
-        del sys.modules[name]
-    sys.modules.update(_SAVED_REAL_MEGATRON)
-
-    # sys.modules is not the only place a stub lands. Importing `megatron.core.x` also
-    # binds `x` as an *attribute* of the `megatron.core` package object, and restoring
-    # sys.modules does not undo that binding. A later `from megatron.core import x` reads
-    # the attribute and gets the stub straight back -- leaving two live copies of a module
-    # whose globals are process-wide state, which is how `initialize_model_parallel` ends
-    # up writing to one copy while everything else reads the other.
-    for name in stubbed:
-        parent_name, _, child = name.rpartition(".")
-        parent = sys.modules.get(parent_name)
-        if parent is None:
-            continue
-        real = _SAVED_REAL_MEGATRON.get(name)
-        if real is not None:
-            setattr(parent, child, real)
-        elif hasattr(parent, child):
-            delattr(parent, child)
-
-    _SAVED_REAL_MEGATRON.clear()
-    _STUBS_ACTIVE = False
+    """Tear down every stub module installed by any installer."""
+    for mod in [
+        # CE side
+        "megatron.core.parallel_state",
+        "megatron.core.fusions.fused_cross_entropy",
+        # RMSNorm side
+        "megatron.core.models.backends",
+        "megatron.core.models",
+        "megatron.core.transformer.transformer_block",
+        "megatron.core.transformer.torch_norm",
+        # SwiGLU side
+        "megatron.core.fusions.fused_bias_swiglu",
+        "megatron.core.transformer.mlp",
+        "megatron.core.transformer.moe.shared_experts",
+        "megatron.core.transformer.moe",
+        # Shared packages
+        "megatron.core.fusions",
+        "megatron.core.tensor_parallel.cross_entropy",
+        "megatron.core.tensor_parallel",
+        "megatron.core.transformer",
+        "megatron.core",
+        "megatron",
+    ]:
+        sys.modules.pop(mod, None)
 
 
 @pytest.fixture
@@ -286,37 +242,70 @@ def _install_fake_megatron_swiglu(
 
     Returns ``(fused_swiglu_module, consumer_modules_dict)``.
 
-    The consumer modules matter here in a way they don't for CE or RMSNorm: real Megatron
-    does ``from megatron.core.fusions.fused_bias_swiglu import bias_swiglu_impl`` in
-    ``transformer/mlp.py`` and ``transformer/moe/shared_experts.py``, so each holds its own
-    binding. A patch that only rewrites the defining module leaves every call site on
-    native Megatron. The stub reproduces those by-name imports so the tests can catch that.
+    The stub mirrors real Megatron's layering, because the layering is what the patch
+    depends on: ``bias_swiglu_impl`` is a plain function that resolves ``SwiGLUFunction``
+    from its own module globals on every call, and Liger replaces the class rather than
+    the function. The consumer modules reproduce
+    ``from megatron.core.fusions.fused_bias_swiglu import bias_swiglu_impl`` so the tests
+    can prove those stale bindings still reach Liger without being rebound.
     """
-    _snapshot_real_megatron()
     _, megatron_core = _ensure_megatron_roots()
 
     # ``megatron.core.fusions`` may already exist if the CE installer ran first.
     fusions = sys.modules.get("megatron.core.fusions") or types.ModuleType("megatron.core.fusions")
     fused_swiglu = types.ModuleType("megatron.core.fusions.fused_bias_swiglu")
 
-    def original_bias_swiglu_impl(input, bias, fp8_input_store=False, cpu_offload_input=False):
-        """Stub of Megatron's native impl. Returns Megatron's reference result so
-        fallback tests can assert numerics, and records that it ran."""
+    def _swiglu(y):
         import torch
         import torch.nn.functional as F
 
-        original_bias_swiglu_impl.call_count += 1
-        y = input if bias is None else input + bias
         y_1, y_2 = torch.chunk(y, 2, -1)
         return F.silu(y_1) * y_2
 
-    original_bias_swiglu_impl.call_count = 0
+    class BiasSwiGLUFunction:
+        """Stub of Megatron's bias autograd Function. Records that it ran."""
 
+        call_count = 0
+
+        @staticmethod
+        def apply(input, bias, fp8_input_store=False, cpu_offload_input=False):
+            BiasSwiGLUFunction.call_count += 1
+            return _swiglu(input + bias)
+
+    class SwiGLUFunction:
+        """Stub of Megatron's bias-free autograd Function -- the patch target."""
+
+        call_count = 0
+
+        @staticmethod
+        def apply(input, fp8_input_store=False, cpu_offload_input=False):
+            SwiGLUFunction.call_count += 1
+            return _swiglu(input)
+
+    class WeightedSwiGLUFunction:
+        """MoE routed-expert variant. Present so a test can assert Liger leaves it alone."""
+
+        @staticmethod
+        def apply(input, weights, fp8_input_store=False):
+            return _swiglu(input) * weights
+
+    def bias_swiglu_impl(input, bias, fp8_input_store=False, cpu_offload_input=False):
+        """Byte-for-byte reproduction of Megatron's dispatcher, including the global
+        lookups of ``BiasSwiGLUFunction`` / ``SwiGLUFunction`` that make the patch work."""
+        ori_shape = input.shape
+        assert len(ori_shape) in [2, 3]
+        input = input.view(-1, ori_shape[-1])
+        if bias is not None:
+            output = fused_swiglu.BiasSwiGLUFunction.apply(input, bias, fp8_input_store, cpu_offload_input)
+        else:
+            output = fused_swiglu.SwiGLUFunction.apply(input, fp8_input_store, cpu_offload_input)
+        return output if len(ori_shape) == 2 else output.view(ori_shape[0], ori_shape[1], -1)
+
+    fused_swiglu.BiasSwiGLUFunction = BiasSwiGLUFunction
+    fused_swiglu.WeightedSwiGLUFunction = WeightedSwiGLUFunction
+    fused_swiglu.bias_swiglu_impl = bias_swiglu_impl
     if with_symbol:
-        fused_swiglu.bias_swiglu_impl = original_bias_swiglu_impl
-    # The MoE-weighted variant is deliberately out of scope for the current patch; it is
-    # present on the stub so a test can assert Liger leaves it alone.
-    fused_swiglu.weighted_bias_swiglu_impl = lambda *a, **kw: None
+        fused_swiglu.SwiGLUFunction = SwiGLUFunction
 
     sys.modules["megatron.core.fusions"] = fusions
     sys.modules["megatron.core.fusions.fused_bias_swiglu"] = fused_swiglu
@@ -331,10 +320,9 @@ def _install_fake_megatron_swiglu(
         shared_experts = types.ModuleType("megatron.core.transformer.moe.shared_experts")
 
         # Reproduce the by-name import: each consumer gets its own binding to the
-        # original function object.
-        if with_symbol:
-            mlp.bias_swiglu_impl = original_bias_swiglu_impl
-            shared_experts.bias_swiglu_impl = original_bias_swiglu_impl
+        # original ``bias_swiglu_impl`` object, captured before any patching.
+        mlp.bias_swiglu_impl = bias_swiglu_impl
+        shared_experts.bias_swiglu_impl = bias_swiglu_impl
 
         sys.modules["megatron.core.transformer"] = transformer
         sys.modules["megatron.core.transformer.moe"] = moe
@@ -1169,10 +1157,14 @@ def test_rms_norm_only_patch_does_not_touch_ce_symbols(fake_megatron_ce):
 # ===========================================================================
 # 6. SwiGLU patch tests
 # ===========================================================================
-# Liger replaces ``megatron.core.fusions.fused_bias_swiglu.bias_swiglu_impl`` — the symbol
-# ``MLP.forward`` and ``SharedExpertMLP.forward`` call when bias_activation_fusion is on.
-# Unlike CE and RMSNorm, its consumers use by-name imports, so the patch has to rewrite
-# their module attributes too; several tests below exist specifically to enforce that.
+# Liger replaces ``megatron.core.fusions.fused_bias_swiglu.SwiGLUFunction`` -- the class
+# Megatron's ``bias_swiglu_impl`` dispatches to when ``bias is None``, which is the path
+# ``MLP.forward`` and ``SharedExpertMLP.forward`` take with bias_activation_fusion on.
+#
+# ``bias_swiglu_impl`` itself is deliberately *not* patched. It is a plain function that
+# looks ``SwiGLUFunction`` up in its own module globals on every call, so replacing the
+# class reaches consumers that already did ``from ... import bias_swiglu_impl`` -- no
+# rebinding of consumer modules needed. Section 6.2 pins that property down.
 
 from liger_kernel.utils import infer_device  # noqa: E402
 
@@ -1184,25 +1176,6 @@ _requires_accelerator = pytest.mark.skipif(
 )
 
 
-def _real_megatron_core_installed() -> bool:
-    """True when a genuine megatron-core is importable, as opposed to this file's stub.
-
-    Evaluated once at import time, before any test installs a stub into ``sys.modules``.
-    The "missing megatron-core" tests can only assert anything meaningful when the package
-    really is absent -- which is the assumption in this repo's CI, but not in an
-    environment where someone installed megatron-core to run the e2e suite.
-    """
-    import importlib.util
-
-    try:
-        return importlib.util.find_spec("megatron.core.fusions.fused_bias_swiglu") is not None
-    except (ImportError, ValueError):
-        return False
-
-
-_REAL_MEGATRON = _real_megatron_core_installed()
-
-
 # ---------------------------------------------------------------------------
 # 6.1 Symbol replacement + idempotency + opt-in.
 # ---------------------------------------------------------------------------
@@ -1212,124 +1185,170 @@ def test_swiglu_patch_replaces_symbol(fake_megatron_swiglu):
     fused_swiglu, _ = fake_megatron_swiglu
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
-    original = fused_swiglu.bias_swiglu_impl
+    original = fused_swiglu.SwiGLUFunction
     apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
 
-    assert fused_swiglu.bias_swiglu_impl is not original
-    assert fused_swiglu.bias_swiglu_impl.__name__ == "liger_bias_swiglu_impl"
-    assert fused_swiglu.bias_swiglu_impl.__wrapped__ is original
+    assert fused_swiglu.SwiGLUFunction is not original
+    assert fused_swiglu.SwiGLUFunction.__wrapped__ is original
 
 
 def test_swiglu_patch_is_opt_in(fake_megatron_swiglu):
-    """``swiglu`` defaults to False — the symbol must be untouched unless asked for."""
-    fused_swiglu, consumers = fake_megatron_swiglu
-    from liger_kernel.megatron import apply_liger_kernel_to_megatron
-
-    before = fused_swiglu.bias_swiglu_impl
-    apply_liger_kernel_to_megatron(rms_norm=False)
-
-    assert fused_swiglu.bias_swiglu_impl is before
-    assert consumers["mlp"].bias_swiglu_impl is before
-
-
-def test_swiglu_patch_is_idempotent(fake_megatron_swiglu):
-    """Calling apply twice must not stack wrappers — the sentinel attribute guards it."""
-    fused_swiglu, consumers = fake_megatron_swiglu
-    from liger_kernel.megatron import apply_liger_kernel_to_megatron
-
-    apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
-    first = fused_swiglu.bias_swiglu_impl
-    first_mlp = consumers["mlp"].bias_swiglu_impl
-
-    apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
-
-    assert fused_swiglu.bias_swiglu_impl is first
-    assert consumers["mlp"].bias_swiglu_impl is first_mlp
-    # And the fallback chain must still be one deep, not wrapped around itself.
-    assert not hasattr(fused_swiglu.bias_swiglu_impl.__wrapped__, "__wrapped__")
-
-
-def test_swiglu_patch_leaves_weighted_variant_alone(fake_megatron_swiglu):
-    """The MoE token-weighted variant is explicitly out of scope for this patch; it needs
-    a routing-weights gradient Liger has no kernel for."""
+    """``swiglu`` defaults to False -- the symbol must be untouched unless asked for."""
     fused_swiglu, _ = fake_megatron_swiglu
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
-    before = fused_swiglu.weighted_bias_swiglu_impl
+    before = fused_swiglu.SwiGLUFunction
+    apply_liger_kernel_to_megatron(rms_norm=False)
+
+    assert fused_swiglu.SwiGLUFunction is before
+
+
+def test_swiglu_patch_is_idempotent(fake_megatron_swiglu):
+    """Calling apply twice must not stack wrappers -- the sentinel attribute guards it."""
+    fused_swiglu, _ = fake_megatron_swiglu
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
+    first = fused_swiglu.SwiGLUFunction
+
     apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
 
-    assert fused_swiglu.weighted_bias_swiglu_impl is before
+    assert fused_swiglu.SwiGLUFunction is first
+    # And the fallback chain must still be one deep, not wrapped around itself.
+    assert not hasattr(fused_swiglu.SwiGLUFunction.__wrapped__, "__wrapped__")
+
+
+def test_swiglu_patch_leaves_sibling_functions_alone(fake_megatron_swiglu):
+    """Only the bias-free class is replaced.
+
+    ``BiasSwiGLUFunction`` has a bias term Liger's kernel does not implement, and
+    ``WeightedSwiGLUFunction`` (MoE routed experts) needs a routing-weights gradient Liger
+    has no kernel for. Leaving both untouched is what makes the bias/MoE fallbacks
+    structural rather than a runtime check.
+    """
+    fused_swiglu, _ = fake_megatron_swiglu
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    bias_before = fused_swiglu.BiasSwiGLUFunction
+    weighted_before = fused_swiglu.WeightedSwiGLUFunction
+    impl_before = fused_swiglu.bias_swiglu_impl
+
+    apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
+
+    assert fused_swiglu.BiasSwiGLUFunction is bias_before
+    assert fused_swiglu.WeightedSwiGLUFunction is weighted_before
+    assert fused_swiglu.bias_swiglu_impl is impl_before
 
 
 # ---------------------------------------------------------------------------
-# 6.2 Consumer-module rebinding — the failure mode unique to this patch.
+# 6.2 Consumers with by-name imports are reached without being rebound.
 # ---------------------------------------------------------------------------
 
 
-def test_swiglu_patch_rebinds_already_imported_consumers(fake_megatron_swiglu):
+def test_swiglu_patch_reaches_consumers_without_rebinding_them(fake_megatron_swiglu):
     """``mlp.py`` and ``shared_experts.py`` do ``from ... import bias_swiglu_impl``.
 
-    If the patch only rewrites the defining module, both keep calling native Megatron and
-    the patch silently does nothing. This is the single most important SwiGLU-specific
-    assertion in this file.
+    Those bindings are stale copies the patch never touches -- and must not need to,
+    because ``bias_swiglu_impl`` resolves ``SwiGLUFunction`` from its defining module's
+    globals at call time. This is the assertion that justifies patching the class instead
+    of the function.
     """
     fused_swiglu, consumers = fake_megatron_swiglu
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
+    impl_before = fused_swiglu.bias_swiglu_impl
     apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
 
-    patched = fused_swiglu.bias_swiglu_impl
-    assert consumers["mlp"].bias_swiglu_impl is patched
-    assert consumers["shared_experts"].bias_swiglu_impl is patched
+    # Consumers still hold Megatron's original function object...
+    assert consumers["mlp"].bias_swiglu_impl is impl_before
+    assert consumers["shared_experts"].bias_swiglu_impl is impl_before
+    assert fused_swiglu.SwiGLUFunction is not fused_swiglu.SwiGLUFunction.__wrapped__
+
+    # ...yet a call through those stale bindings still resolves whatever
+    # ``fused_bias_swiglu.SwiGLUFunction`` currently is. A probe stands in for Liger here
+    # so the assertion holds on CPU, where the Triton kernel cannot run.
+    import torch
+
+    class _Probe:
+        called = 0
+
+        @staticmethod
+        def apply(input, fp8_input_store=False, cpu_offload_input=False):
+            _Probe.called += 1
+            return input[..., : input.shape[-1] // 2]
+
+    fused_swiglu.SwiGLUFunction = _Probe
+    for consumer in consumers.values():
+        consumer.bias_swiglu_impl(torch.zeros(8, 128), None, False, False)
+
+    assert _Probe.called == len(consumers)
 
 
-def test_swiglu_patch_tolerates_absent_consumer_modules(fake_megatron_swiglu_no_consumers):
-    """Consumers not yet imported are fine — they'll import the already-patched symbol.
-    The patch must not crash trying to rebind them."""
+def test_swiglu_patch_is_import_order_independent(fake_megatron_swiglu_no_consumers):
+    """Patching before consumers exist works too, for the same reason.
+
+    The old failure mode -- patch applied, log emitted, nothing actually swapped -- was
+    entirely a function of whether the consumer had imported the symbol yet. Under the
+    class-level patch neither order matters, and the patch has nothing to rebind so it
+    cannot crash on absent consumer modules.
+    """
     fused_swiglu = fake_megatron_swiglu_no_consumers
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
+    original = fused_swiglu.SwiGLUFunction
     apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
+    patched = fused_swiglu.SwiGLUFunction
+    assert patched is not original
 
-    assert fused_swiglu.bias_swiglu_impl.__name__ == "liger_bias_swiglu_impl"
+    # A consumer importing *after* the patch picks up the dispatcher, which resolves the
+    # class lazily -- so it lands on the patched object, not on the pre-patch one.
+    import torch
 
+    late_consumer = types.ModuleType("late_consumer")
+    late_consumer.bias_swiglu_impl = fused_swiglu.bias_swiglu_impl
 
-def test_swiglu_patch_does_not_clobber_unrelated_consumer_binding(fake_megatron_swiglu):
-    """If a consumer's binding isn't the original (a user already replaced it), leave it."""
-    fused_swiglu, consumers = fake_megatron_swiglu
-    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+    class _Probe:
+        called = 0
 
-    sentinel = object()
-    consumers["mlp"].bias_swiglu_impl = sentinel
+        @staticmethod
+        def apply(input, fp8_input_store=False, cpu_offload_input=False):
+            _Probe.called += 1
+            return input[..., : input.shape[-1] // 2]
 
-    apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
+    fused_swiglu.SwiGLUFunction = _Probe
+    late_consumer.bias_swiglu_impl(torch.zeros(8, 128), None, False, False)
 
-    assert consumers["mlp"].bias_swiglu_impl is sentinel
-    # The other consumer, still on the original, is rebound normally.
-    assert consumers["shared_experts"].bias_swiglu_impl is fused_swiglu.bias_swiglu_impl
+    assert _Probe.called == 1
 
 
 # ---------------------------------------------------------------------------
-# 6.3 Missing megatron-core / missing symbol → actionable ImportError.
+# 6.3 Missing megatron-core / missing symbol -> actionable ImportError.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(_REAL_MEGATRON, reason="a real megatron-core is installed, so the import cannot fail")
-def test_swiglu_patch_raises_when_megatron_missing():
-    from liger_kernel.megatron import apply_liger_kernel_to_megatron
-
+def test_swiglu_patch_raises_when_megatron_not_installed():
     _uninstall_fake_megatron()
-    with pytest.raises(ImportError, match="fused_bias_swiglu"):
-        apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
+    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+
+    def blocking_import(name, *args, **kwargs):
+        if name == "megatron" or name.startswith("megatron."):
+            raise ImportError(f"No module named {name!r}")
+        return real_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=blocking_import):
+        from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+        with pytest.raises(ImportError, match="requires megatron-core"):
+            apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
 
 
 def test_swiglu_patch_raises_when_symbol_missing():
     """A renamed symbol in a future megatron-core must fail loudly, not silently no-op."""
-    from liger_kernel.megatron import apply_liger_kernel_to_megatron
-
     _install_fake_megatron_swiglu(with_symbol=False)
     try:
-        with pytest.raises(ImportError, match="bias_swiglu_impl not found"):
+        from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+        with pytest.raises(ImportError, match="symbol path may have changed"):
             apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
     finally:
         _uninstall_fake_megatron()
@@ -1349,17 +1368,20 @@ def _swiglu_reference(y):
 
 
 @_requires_accelerator
-def test_patched_swiglu_symbol_computes_correct_output(fake_megatron_swiglu):
+@pytest.mark.parametrize("shape", [(8, 128), (2, 4, 128)])
+def test_patched_swiglu_symbol_computes_correct_output(fake_megatron_swiglu, shape):
+    """3D input is covered because Megatron's dispatcher owns the flatten/restore, and
+    the patch relies on that rather than reimplementing it."""
     import torch
 
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
     from liger_kernel.utils import infer_device
 
-    fused_swiglu, consumers = fake_megatron_swiglu
+    _, consumers = fake_megatron_swiglu
     apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
 
-    x = torch.randn(8, 128, device=infer_device(), dtype=torch.float32)
-    # Call through the *consumer's* binding, exactly as MLP.forward does — positionally.
+    x = torch.randn(*shape, device=infer_device(), dtype=torch.float32)
+    # Call through the *consumer's* binding, exactly as MLP.forward does -- positionally.
     out = consumers["mlp"].bias_swiglu_impl(x, None, False, False)
 
     torch.testing.assert_close(out, _swiglu_reference(x), atol=1e-5, rtol=1e-5)
@@ -1386,23 +1408,26 @@ def test_patched_swiglu_symbol_preserves_gradients(fake_megatron_swiglu):
     torch.testing.assert_close(h_liger.grad, h_ref.grad, atol=1e-5, rtol=1e-5)
 
 
-def test_patched_swiglu_symbol_falls_back_for_bias(fake_megatron_swiglu):
-    """Bias is added pre-activation in Megatron and Liger has no bias term, so the patch
-    must hand the call straight back to the original. Runs on CPU — no Triton involved,
-    which is the point: the fallback path never touches the kernel."""
+def test_patched_swiglu_leaves_bias_path_on_megatron(fake_megatron_swiglu):
+    """Bias is added pre-activation in Megatron and Liger has no bias term.
+
+    With the class-level patch this needs no runtime check: a non-``None`` bias is routed
+    to ``BiasSwiGLUFunction`` by Megatron's own dispatcher, which we never replace. Runs on
+    CPU precisely because the kernel is never reached.
+    """
     import torch
 
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
     fused_swiglu, consumers = fake_megatron_swiglu
-    original = fused_swiglu.bias_swiglu_impl
     apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
 
     x = torch.randn(8, 128)
     bias = torch.randn(128)
     out = consumers["mlp"].bias_swiglu_impl(x, bias, False, False)
 
-    assert original.call_count == 1, "expected the native impl to be invoked for the bias path"
+    assert fused_swiglu.BiasSwiGLUFunction.call_count == 1
+    assert fused_swiglu.SwiGLUFunction.__wrapped__.call_count == 0
     torch.testing.assert_close(out, _swiglu_reference(x + bias), atol=1e-5, rtol=1e-5)
 
 
@@ -1413,13 +1438,15 @@ def test_patched_swiglu_symbol_falls_back_for_bias(fake_megatron_swiglu):
 def test_patched_swiglu_symbol_falls_back_for_unsupported_flags(
     fake_megatron_swiglu, fp8_input_store, cpu_offload_input
 ):
+    """fp8 input storage and CPU offload are activation-storage policies Liger's kernel
+    does not implement, so those calls go back to the wrapped original."""
     import torch
 
     from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
     fused_swiglu, consumers = fake_megatron_swiglu
-    original = fused_swiglu.bias_swiglu_impl
     apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
+    original = fused_swiglu.SwiGLUFunction.__wrapped__
 
     x = torch.randn(8, 128)
     consumers["mlp"].bias_swiglu_impl(x, None, fp8_input_store, cpu_offload_input)
@@ -1441,11 +1468,12 @@ def test_swiglu_patch_does_not_touch_other_kernels(fake_megatron_swiglu):
 
         ce_before = fused_ce.fused_vocab_parallel_cross_entropy
         unfused_before = unfused_ce.vocab_parallel_cross_entropy
+        swiglu_before = fused_swiglu.SwiGLUFunction
 
         apply_liger_kernel_to_megatron(rms_norm=False, swiglu=True)
 
         assert fused_ce.fused_vocab_parallel_cross_entropy is ce_before
         assert unfused_ce.vocab_parallel_cross_entropy is unfused_before
-        assert fused_swiglu.bias_swiglu_impl.__name__ == "liger_bias_swiglu_impl"
+        assert fused_swiglu.SwiGLUFunction is not swiglu_before
     finally:
         _uninstall_fake_megatron()
