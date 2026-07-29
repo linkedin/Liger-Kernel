@@ -79,8 +79,8 @@ def clip_coef_fn(coef, epsilon_low, epsilon_high, loss_type, advantages=None):
         positive_advantages = advantages.unsqueeze(1) >= 0
         clipped_coef = torch.where(
             positive_advantages,
-            torch.minimum(coef, torch.as_tensor(epsilon_high, device=coef.device, dtype=coef.dtype)),
-            torch.maximum(coef, torch.as_tensor(-epsilon_low, device=coef.device, dtype=coef.dtype)),
+            torch.clamp(coef, max=epsilon_high),
+            torch.clamp(coef, min=-epsilon_low),
         )
         is_lower_clipped = coef < -epsilon_low
         is_upper_clipped = coef > epsilon_high
