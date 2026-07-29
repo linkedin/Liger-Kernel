@@ -246,35 +246,17 @@ def multimodal_forward(
     logits = None
     token_accuracy = None
     predicted_tokens = None
-    if skip_logits and labels is None:
-        raise ValueError("skip_logits is True, but labels is None")
+    if skip_logits and labels is None and shift_labels is None:
+        raise ValueError("skip_logits is True, but both labels and shift_labels are None")
 
     if skip_logits is None:
-        skip_logits = self.training and (labels is not None)
+        skip_logits = self.training and (labels is not None or shift_labels is not None)
 
     if skip_logits:
-        shift_hidden_states = kept_hidden_states[..., :-1, :]
-        shift_labels = labels[..., 1:]
-
-        hidden_device = shift_hidden_states.device
-        if attention_mask is not None:
-            # we use the input attention mask to shift the hidden_states and labels, because it is 2D.
-            # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
-            shift_attention_mask = attention_mask[:, -shift_hidden_states.shape[1] :].to(hidden_device)
-            shift_hidden_states = shift_hidden_states[shift_attention_mask.to(hidden_device) != 0].contiguous()
-            shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
-        else:
-            shift_hidden_states = shift_hidden_states.contiguous()
-            shift_labels = shift_labels.contiguous()
-
-        # Flatten hidden state
-        shift_hidden_states = shift_hidden_states.view(-1, self.config.text_config.hidden_size)
-        shift_labels = shift_labels.view(-1).to(hidden_device)
-
         result = LigerForCausalLMLoss(
-            hidden_states=shift_hidden_states,
+            hidden_states=kept_hidden_states,
             lm_head_weight=self.lm_head.weight,
-            labels=shift_labels,
+            labels=labels,
             hidden_size=self.config.text_config.hidden_size,
             shift_labels=shift_labels,
             final_logit_softcapping=getattr(self.config.text_config, "final_logit_softcapping", None),
@@ -284,30 +266,12 @@ def multimodal_forward(
 
     else:
         logits = self.lm_head(kept_hidden_states)
-        if labels is not None:
+        if labels is not None or shift_labels is not None:
             # Upcast to float if we need to compute the loss to avoid potential precision issues
             logits = logits.float()
-            shift_logits = logits[..., :-1, :]
-            shift_labels = labels[..., 1:]
-            if attention_mask is not None:
-                # we use the input attention mask to shift the logits and labels, because it is 2D.
-                # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
-                shift_attention_mask = attention_mask[:, -shift_logits.shape[1] :].to(logits.device)
-                shift_logits = shift_logits[shift_attention_mask.to(logits.device) != 0].contiguous()
-                shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
-            else:
-                shift_logits = shift_logits.contiguous()
-                shift_labels = shift_labels.contiguous()
-            # Flatten the tokens
-            loss_fct = nn.CrossEntropyLoss()
-
-            flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
-            flat_labels = shift_labels.view(-1).to(shift_logits.device)
-            loss = loss_fct(flat_logits, flat_labels)
-        elif shift_labels is not None:
-            # Upcast to float if we need to compute the loss to avoid potential precision issues
-            logits = logits.float()
-            shift_logits = logits[..., :-1, :]
+            if shift_labels is None:
+                shift_labels = labels[..., 1:]
+            shift_logits = logits[..., : shift_labels.shape[1], :]
             if attention_mask is not None:
                 # we use the input attention mask to shift the logits and labels, because it is 2D.
                 # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft

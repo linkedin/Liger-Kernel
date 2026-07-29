@@ -162,6 +162,13 @@ class LigerFusedMoEFunction(torch.autograd.Function):
 
     Forward: routing metadata → fused gather+GEMM+SwiGLU → down-proj → token aggregation
     Backward: avoids caching Y (TK×H) by recomputing dA' = dO@W2^T in backward
+
+    Troubleshooting:
+        If Triton's autotune ``do_bench`` loop OOMs (each config holds its own
+        working set — see issue #1246), set ``LIGER_FUSED_MOE_AUTOTUNE=0`` before
+        importing liger_kernel to pin each kernel to a single config and skip the
+        benchmark loop. Temporary escape hatch until triton's autotuner handles
+        such errors itself.
     """
 
     @staticmethod

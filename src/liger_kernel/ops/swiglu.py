@@ -4,6 +4,30 @@ import triton.language as tl
 
 from liger_kernel.ops.utils import calculate_settings
 from liger_kernel.ops.utils import ensure_contiguous
+from liger_kernel.utils import infer_device_arch
+
+# Blackwell (B200) column-tiling parameters. The original one-row layout
+# (BLOCK_SIZE = next_pow2(n_cols)) is H100-tuned and leaves the backward kernel
+# occupancy-starved on Blackwell for wide rows. Splitting each row into fixed
+# 1024-wide column tiles over a 2D grid raises occupancy so HBM saturates
+# (~1.63x backward at n_cols=14336, bit-exact). Tile size 1024 chosen by sweep.
+_SWIGLU_TILE = 1024
+
+# Only tile when the original one-row block is register-heavy: next_pow2(n_cols)
+# >= this. Narrower rows gain nothing and keep the original one-row layout.
+_SWIGLU_TILE_MIN_BLOCK = 16384
+
+
+def _should_tile(n_cols):
+    """Use the Blackwell column-tiled path only for wide-enough rows."""
+    return infer_device_arch().startswith("blackwell") and triton.next_power_of_2(n_cols) >= _SWIGLU_TILE_MIN_BLOCK
+
+
+def _swiglu_tile_settings(n_cols):
+    """Pick the column-tile BLOCK_SIZE and num_warps for the Blackwell 2D-grid path."""
+    BLOCK_SIZE = min(_SWIGLU_TILE, triton.next_power_of_2(n_cols))
+    num_warps = 4
+    return BLOCK_SIZE, num_warps
 
 
 @triton.jit
@@ -62,6 +86,57 @@ def _swiglu_backward_kernel(
     tl.store(b_ptr + col_offsets, db_row, mask=mask)
 
 
+@triton.jit
+def _swiglu_forward_kernel_tiled(a_ptr, b_ptr, c_ptr, stride, gate_multiplier, n_cols, BLOCK_SIZE: tl.constexpr):
+    # Blackwell path: 2D grid -- axis 0 selects the row, axis 1 the column tile.
+    program_id = tl.program_id(0).to(tl.int64)
+    col_tile = tl.program_id(1)
+
+    # locate start index (row base; column offset added below)
+    a_ptr += program_id * stride
+    b_ptr += program_id * stride
+    c_ptr += program_id * stride
+
+    col_offsets = col_tile * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
+
+    # sigmoid requires type float32
+    a_row = tl.load(a_ptr + col_offsets, mask=mask, other=0).to(tl.float32) * gate_multiplier
+    b_row = tl.load(b_ptr + col_offsets, mask=mask, other=0)
+    c_row = silu(a_row).cast(b_row.dtype) * b_row
+    tl.store(c_ptr + col_offsets, c_row, mask=mask)
+
+
+@triton.jit
+def _swiglu_backward_kernel_tiled(dc_ptr, a_ptr, b_ptr, stride, gate_multiplier, n_cols, BLOCK_SIZE: tl.constexpr):
+    # Blackwell path: 2D grid -- axis 0 selects the row, axis 1 the column tile.
+    program_id = tl.program_id(0).to(tl.int64)
+    col_tile = tl.program_id(1)
+
+    # locate start index (row base; column offset added below)
+    dc_ptr += program_id * stride
+    a_ptr += program_id * stride
+    b_ptr += program_id * stride
+
+    col_offsets = col_tile * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
+
+    dc_row = tl.load(dc_ptr + col_offsets, mask=mask, other=0)
+    # sigmoid requires type float32
+    a_row = tl.load(a_ptr + col_offsets, mask=mask, other=0).to(tl.float32) * gate_multiplier
+    b_row = tl.load(b_ptr + col_offsets, mask=mask, other=0)
+
+    # recomputation to save memory. a_row already holds a * gate_multiplier.
+    sig_a = tl.sigmoid(a_row)
+    silu_a = a_row * sig_a
+    db_row = dc_row * silu_a
+    # chain rule pulls an extra factor of gate_multiplier through the pre-activation scaling
+    da_row = dc_row * (silu_a * (1 - sig_a) + sig_a) * b_row * gate_multiplier
+
+    tl.store(a_ptr + col_offsets, da_row, mask=mask)
+    tl.store(b_ptr + col_offsets, db_row, mask=mask)
+
+
 def swiglu_forward(a, b, gate_multiplier: float = 1.0):
     ori_shape = a.shape
 
@@ -70,6 +145,22 @@ def swiglu_forward(a, b, gate_multiplier: float = 1.0):
     b = b.view(-1, n_cols)
     c = torch.empty_like(a)
     n_rows = a.shape[0]
+
+    if _should_tile(n_cols):
+        # Blackwell (B200), wide rows: column-tiled 2D grid for higher SM occupancy.
+        BLOCK_SIZE, num_warps = _swiglu_tile_settings(n_cols)
+        grid = (n_rows, triton.cdiv(n_cols, BLOCK_SIZE))
+        _swiglu_forward_kernel_tiled[grid](
+            a,
+            b,
+            c,
+            c.stride(-2),
+            float(gate_multiplier),
+            n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
+        return a, b, c.view(*ori_shape)
 
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
@@ -91,6 +182,22 @@ def swiglu_backward(a, b, dc, gate_multiplier: float = 1.0):
     n_cols = ori_shape[-1]
     dc = dc.view(-1, n_cols)
     n_rows = dc.shape[0]
+
+    if _should_tile(n_cols):
+        # Blackwell (B200), wide rows: column-tiled 2D grid for higher SM occupancy.
+        BLOCK_SIZE, num_warps = _swiglu_tile_settings(n_cols)
+        grid = (n_rows, triton.cdiv(n_cols, BLOCK_SIZE))
+        _swiglu_backward_kernel_tiled[grid](
+            dc,
+            a,
+            b,
+            dc.stride(-2),
+            float(gate_multiplier),
+            n_cols,
+            BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+        )
+        return a.view(*ori_shape), b.view(*ori_shape)
 
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 

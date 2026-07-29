@@ -65,7 +65,6 @@ def _poly_norm_forward_kernel_no_tiling(
             X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
             mask=block_mask,
             other=0.0,
-            cache_modifier=".cg",
         )
 
         X_f32 = X_rows.to(tl.float32)
@@ -171,7 +170,7 @@ def _poly_norm_forward_kernel_npu(
             col_offsets = col_start + offsets
             mask = col_offsets < n_cols
 
-            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0, cache_modifier=".cg").to(tl.float32)
+            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
 
             # Compute powers
             X_pow3 = X_block * X_block * X_block
@@ -203,7 +202,7 @@ def _poly_norm_forward_kernel_npu(
             mask = col_offsets < n_cols
 
             # Load input
-            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0, cache_modifier=".ca").to(tl.float32)
+            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
 
             # Compute powers
             X_pow3 = X_block * X_block * X_block
@@ -291,13 +290,11 @@ def _poly_norm_backward_kernel_no_tiling(
             X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
             mask=block_mask,
             other=0.0,
-            cache_modifier=".cg",
         )
         dY_rows = tl.load(
             dY_ptr + row_idx[:, None] * dY_row_stride + col_offsets[None, :],
             mask=block_mask,
             other=0.0,
-            cache_modifier=".cg",
         )
 
         # Load cached rstd values (3 values per row)

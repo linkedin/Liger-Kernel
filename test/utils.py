@@ -872,6 +872,18 @@ def revert_liger_kernel_to_hunyuan_v1_moe(model_config: MiniModelConfig):
     print("Liger kernel patches have been reverted.")
 
 
+def revert_liger_kernel_to_deepseek_v4(model_config: MiniModelConfig):
+    """
+    Revert all Liger kernel patches applied to DeepSeek-V4.
+    """
+    from transformers.models.deepseek_v4 import modeling_deepseek_v4
+
+    importlib.reload(modeling_deepseek_v4)
+    model_config.model_class = modeling_deepseek_v4.DeepseekV4ForCausalLM
+
+    print("Liger kernel patches have been reverted.")
+
+
 def revert_liger_kernel_to_exaone4(model_config: MiniModelConfig):
     """
     Revert all Liger kernel patches applied to EXAONE4.

@@ -89,13 +89,11 @@ def _fused_add_rms_norm_forward_kernel_no_tiling(
             X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
             mask=block_mask,
             other=0.0,
-            eviction_policy="evict_first",
         )
         R_rows = tl.load(
             R_ptr + row_idx[:, None] * R_row_stride + col_offsets[None, :],
             mask=block_mask,
             other=0.0,
-            eviction_policy="evict_first",
         )
         S_rows = X_rows + R_rows
 
@@ -114,7 +112,6 @@ def _fused_add_rms_norm_forward_kernel_no_tiling(
             S_ptr + row_idx[:, None] * S_row_stride + col_offsets[None, :],
             S_rows,
             mask=block_mask,
-            cache_modifier=".cg",
         )
         tl.store(RSTD_ptr + row_idx * RSTD_row_stride, rstd_rows, mask=row_mask)
 
@@ -195,12 +192,12 @@ def _fused_add_rms_norm_forward_kernel_npu(
             col_offsets = col_start + offsets
             mask = col_offsets < n_cols
 
-            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0, eviction_policy="evict_first")
-            R_block = tl.load(R_row_ptr + col_offsets, mask=mask, other=0.0, eviction_policy="evict_first")
+            X_block = tl.load(X_row_ptr + col_offsets, mask=mask, other=0.0)
+            R_block = tl.load(R_row_ptr + col_offsets, mask=mask, other=0.0)
             S_block = X_block + R_block
 
             # Store S_row
-            tl.store(S_row_ptr + col_offsets, S_block, mask=mask, cache_modifier=".cg")
+            tl.store(S_row_ptr + col_offsets, S_block, mask=mask)
 
             if casting_mode == _CASTING_MODE_LLAMA or casting_mode == _CASTING_MODE_GEMMA:
                 S_block = S_block.to(tl.float32)
@@ -223,7 +220,7 @@ def _fused_add_rms_norm_forward_kernel_npu(
             mask = col_offsets < n_cols
 
             # Load S_block (already computed in first pass)
-            S_block = tl.load(S_row_ptr + col_offsets, mask=mask, other=0.0, cache_modifier=".ca")
+            S_block = tl.load(S_row_ptr + col_offsets, mask=mask, other=0.0)
             W_block = tl.load(W_ptr + col_offsets, mask=mask, other=0.0)
 
             # Apply casting based on mode
@@ -314,13 +311,11 @@ def _fused_add_rms_norm_backward_kernel_no_tiling(
             dY_ptr + row_idx[:, None] * dY_row_stride + col_offsets[None, :],
             mask=block_mask,
             other=0.0,
-            eviction_policy="evict_first",
         )
         X_rows = tl.load(
             X_ptr + row_idx[:, None] * X_row_stride + col_offsets[None, :],
             mask=block_mask,
             other=0.0,
-            eviction_policy="evict_first",
         )
 
         # Load rstd for all rows in the block

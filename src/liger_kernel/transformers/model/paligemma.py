@@ -152,37 +152,17 @@ def lce_forward(
     token_accuracy = None
     predicted_tokens = None
 
-    if skip_logits and labels is None:
-        raise ValueError("skip_logits is True, but labels is None")
+    if skip_logits and labels is None and shift_labels is None:
+        raise ValueError("skip_logits is True, but both labels and shift_labels are None")
 
     if skip_logits is None:
-        skip_logits = self.training and (labels is not None)
+        skip_logits = self.training and (labels is not None or shift_labels is not None)
 
     if skip_logits:
-        shift_hidden_states = hidden_states[..., :-1, :]
-        shift_labels = labels[..., 1:]
-
-        hidden_device = shift_hidden_states.device
-
-        if attention_mask is not None:
-            # we use the input attention mask to shift the hidden_states and labels, because it is 2D.
-            # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
-            shift_attention_mask = attention_mask[:, -shift_hidden_states.shape[1] :].to(hidden_device)
-            shift_hidden_states = shift_hidden_states[shift_attention_mask.to(hidden_device) != 0].contiguous()
-            shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
-        else:
-            shift_hidden_states = shift_hidden_states.contiguous()
-            shift_labels = shift_labels.contiguous()
-
-        # Flatten hidden state
-        shift_hidden_states = shift_hidden_states.view(-1, self.config.text_config.hidden_size)
-        shift_labels = shift_labels.view(-1).to(hidden_device)
-
-        # Use LigerForCausalLMLoss with accuracy support and pass already shifted labels
         result = LigerForCausalLMLoss(
-            hidden_states=shift_hidden_states,
+            hidden_states=hidden_states,
             lm_head_weight=self.language_model.lm_head.weight,
-            labels=None,
+            labels=labels,
             shift_labels=shift_labels,
             hidden_size=self.config.text_config.hidden_size,
             **lm_kwargs,
@@ -190,30 +170,12 @@ def lce_forward(
         loss, _, token_accuracy, predicted_tokens = unpack_cross_entropy_result(result)
     else:
         logits = self.language_model.lm_head(hidden_states)
-        if labels is not None:
+        if labels is not None or shift_labels is not None:
             # Upcast to float if we need to compute the loss to avoid potential precision issues
             logits = logits.float()
-            shift_logits = logits[..., :-1, :]
-            shift_labels = labels[..., 1:]
-            if attention_mask is not None:
-                # we use the input attention mask to shift the logits and labels, because it is 2D.
-                # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
-                shift_attention_mask = attention_mask[:, -shift_logits.shape[1] :].to(logits.device)
-                shift_logits = shift_logits[shift_attention_mask.to(logits.device) != 0].contiguous()
-                shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
-            else:
-                shift_logits = shift_logits.contiguous()
-                shift_labels = shift_labels.contiguous()
-            # Flatten the tokens
-            loss_fct = CrossEntropyLoss()
-
-            flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
-            flat_labels = shift_labels.view(-1).to(shift_logits.device)
-            loss = loss_fct(flat_logits, flat_labels)
-        elif shift_labels is not None:
-            # Upcast to float if we need to compute the loss to avoid potential precision issues
-            logits = logits.float()
-            shift_logits = logits[..., :-1, :]
+            if shift_labels is None:
+                shift_labels = labels[..., 1:]
+            shift_logits = logits[..., : shift_labels.shape[1], :]
             if attention_mask is not None:
                 # we use the input attention mask to shift the logits and labels, because it is 2D.
                 # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft

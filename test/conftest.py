@@ -2,6 +2,12 @@ import pytest
 import torch
 
 from liger_kernel.utils import is_npu_available
+from test.utils import set_seed
+
+
+@pytest.fixture(autouse=True)
+def set_random_seed():
+    set_seed(42)
 
 
 @pytest.fixture(autouse=True)
