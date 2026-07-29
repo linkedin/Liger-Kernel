@@ -159,6 +159,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
                 "and 'sequence'."
             )
 
+        # From here, log_importance_weights (and all subsequent tensors, coef_1, coef_2, etc.) shape depends on
+        # importance_sampling_level: "token" level: (B, T); "sequence" level: (B, 1)
         # GMPO coefficients are log-domain; all other loss types use ratio-domain coefficients.
         coef_1 = log_importance_weights if loss_type == "gmpo" else torch.exp(log_importance_weights)
         coef_2, is_lower_clipped, is_upper_clipped = clip_coef_fn(
@@ -230,6 +232,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
                 # importance_sampling_level (token: (B, T); sequence: (B, 1)),
                 # mirroring TRL's ``per_token_kl * coef_1`` (un-clamped, before delta).
                 kl_div = kl_div * torch.exp(log_importance_weights)
+            # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
 
         # Note: We normalize by the number of tokens in the batch (using full_attention_mask),
