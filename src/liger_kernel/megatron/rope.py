@@ -6,8 +6,7 @@ which is called **once per tensor** (first for the query, then for the key).
 Liger's Triton RoPE kernel (:class:`liger_kernel.ops.rope.LigerRopeFunction`)
 is instead a *fused* q/k kernel that rotates both tensors in one launch.
 
-To reuse the existing, battle-tested Liger kernel without writing a second
-Triton kernel, :class:`LigerMegatronRopeFunction` rotates a single tensor by
+To reuse the existing, Liger kernel, :class:`LigerMegatronRopeFunction` rotates a single tensor by
 passing it as the ``q`` argument and a one-head throwaway ``k`` (negligible
 extra work — one head out of typically dozens). The public entry point
 :func:`liger_apply_rotary_pos_emb_bshd` handles the layout / precision
