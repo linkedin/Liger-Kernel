@@ -143,9 +143,11 @@ def build_core(out_dir: Path | str, build_temp: Path | str | None = None) -> Pat
     build_temp = Path(build_temp or (out_dir / "_cmake_core"))
     build_temp.mkdir(parents=True, exist_ok=True)
 
-    subprocess.check_call(
-        ["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp), *_cmake_base_args(), "-DLIGER_CUTE_BUILD_BINDINGS=OFF"]
-    )
+    cmake_args = [*_cmake_base_args(), "-DLIGER_CUTE_BUILD_BINDINGS=OFF"]
+    nvshmem_home = _prepare_nvshmem_home(build_temp)
+    if nvshmem_home is not None:
+        cmake_args.append(f"-DNVSHMEM_HOME={nvshmem_home}")
+    subprocess.check_call(["cmake", "-S", str(CMAKE_DIR), "-B", str(build_temp), *cmake_args])
     subprocess.check_call(
         ["cmake", "--build", str(build_temp), "--config", "Release", "-j", "--target", "liger_cute_kernels"]
     )

@@ -10,9 +10,9 @@ group's global-rank mapping, none of which can live in the torch-free core.
 Typical use::
 
     from liger_cute_kernels import nvshmem
-    nvshmem.init_from_pg()                  # bootstrap NVSHMEM from WORLD
-    team = nvshmem.team_from_pg(ep_group)   # NVSHMEM team mirroring the EP group
-    ...                                     # pass `team` into the MoE entry points
+    nvshmem.init_from_pg()              # bootstrap NVSHMEM from WORLD
+    team = nvshmem.resolve_team(ep_group)  # collective setup; caches the team
+    ...                                 # MoE forward only reads the cached team
     nvshmem.finalize()
 
 Ported from LigerCommKernels' ``liger_comm_kernels/__init__.py`` (bootstrap /
@@ -45,6 +45,17 @@ __all__ = [
     "pool_clear_buffers",
 ]
 
+_BOOTSTRAP_PG: Optional["torch.distributed.ProcessGroup"] = None
+_BOOTSTRAP_GLOBAL_RANKS: tuple[int, ...] | None = None
+_PG_TEAM_CACHE: dict[int, int] = {}
+
+
+def _reset_team_state() -> None:
+    global _BOOTSTRAP_PG, _BOOTSTRAP_GLOBAL_RANKS
+    _BOOTSTRAP_PG = None
+    _BOOTSTRAP_GLOBAL_RANKS = None
+    _PG_TEAM_CACHE.clear()
+
 
 # ── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -64,6 +75,7 @@ def init_from_pg(pg: Optional["torch.distributed.ProcessGroup"] = None) -> None:
 
     rank = dist.get_rank(pg)
     world = dist.get_world_size(pg)
+    global_ranks = tuple(dist.get_global_rank(pg, i) for i in range(world))
 
     # NVSHMEM reads the unique id from host memory, but NCCL-backed PGs can only
     # broadcast CUDA tensors. Fill on CPU, move to CUDA for the broadcast, then
@@ -76,14 +88,65 @@ def init_from_pg(pg: Optional["torch.distributed.ProcessGroup"] = None) -> None:
     uid_cpu = uid_cuda.cpu().contiguous()
     tvm_ffi.init_with_uniqueid(rank, world, uid_cpu.data_ptr())
 
+    _reset_team_state()
+    global _BOOTSTRAP_PG, _BOOTSTRAP_GLOBAL_RANKS
+    _BOOTSTRAP_PG = pg
+    _BOOTSTRAP_GLOBAL_RANKS = global_ranks
 
-def init_pmi() -> None:
-    """Bootstrap NVSHMEM under the launcher's PMI bootstrap (srun/mpirun)."""
+
+def init_pmi(pg: Optional["torch.distributed.ProcessGroup"] = None) -> None:
+    """Bootstrap NVSHMEM under PMI and register an aligned torch rank mapping.
+
+    When torch.distributed is initialized, ``pg`` identifies the torch group
+    whose rank order must match NVSHMEM PE numbering. The default WORLD group is
+    registered automatically when its size matches the NVSHMEM job. If no
+    matching torch group is available, ``pg=None`` remains valid for callers
+    that use ``NVSHMEM_TEAM_WORLD`` directly without process-group translation.
+    """
+    import torch.distributed as dist
+
+    explicit_pg = pg is not None
+    if pg is not None and not dist.is_initialized():
+        raise RuntimeError("torch.distributed must be initialised before passing pg to init_pmi")
+
     tvm_ffi.init_pmi()
+    _reset_team_state()
+
+    if not dist.is_initialized():
+        return
+
+    pg = pg if pg is not None else dist.group.WORLD
+    pg_size = dist.get_world_size(pg)
+    nvshmem_size = tvm_ffi.n_pes()
+    if pg_size != nvshmem_size:
+        if not explicit_pg:
+            return
+        tvm_ffi.finalize()
+        _reset_team_state()
+        raise RuntimeError(
+            f"PMI NVSHMEM job has {nvshmem_size} PEs, but the supplied torch process group has {pg_size} ranks"
+        )
+
+    rank_matches = dist.get_rank(pg) == tvm_ffi.my_pe()
+    gathered_matches = [None] * pg_size
+    dist.all_gather_object(gathered_matches, rank_matches, group=pg)
+    if not all(gathered_matches):
+        if not explicit_pg:
+            return
+        tvm_ffi.finalize()
+        _reset_team_state()
+        raise RuntimeError("the supplied torch process-group rank order does not match PMI NVSHMEM PE numbering")
+
+    global _BOOTSTRAP_PG, _BOOTSTRAP_GLOBAL_RANKS
+    _BOOTSTRAP_PG = pg
+    _BOOTSTRAP_GLOBAL_RANKS = tuple(dist.get_global_rank(pg, i) for i in range(pg_size))
 
 
 def finalize() -> None:
-    tvm_ffi.finalize()
+    try:
+        tvm_ffi.finalize()
+    finally:
+        _reset_team_state()
 
 
 # ── PE queries / team wrappers ───────────────────────────────────────────────
@@ -144,6 +207,32 @@ def pool_clear_buffers() -> None:
 # ── Process group → NVSHMEM team translation ─────────────────────────────────
 
 
+def _bootstrap_context() -> tuple["torch.distributed.ProcessGroup", tuple[int, ...]]:
+    """Return the torch group whose rank order defines NVSHMEM_TEAM_WORLD."""
+    if _BOOTSTRAP_PG is not None and _BOOTSTRAP_GLOBAL_RANKS is not None:
+        return _BOOTSTRAP_PG, _BOOTSTRAP_GLOBAL_RANKS
+
+    raise RuntimeError(
+        "cannot map torch process groups to NVSHMEM PEs: initialize NVSHMEM "
+        "with init_from_pg(), or pass an aligned torch group to init_pmi()"
+    )
+
+
+def _pg_parent_pes(pg: "torch.distributed.ProcessGroup") -> tuple[int, ...]:
+    """Map a torch process group's rank order into NVSHMEM parent-team PEs."""
+    import torch.distributed as dist
+
+    _, bootstrap_global_ranks = _bootstrap_context()
+    global_to_parent = {global_rank: pe for pe, global_rank in enumerate(bootstrap_global_ranks)}
+    group_global_ranks = tuple(dist.get_global_rank(pg, i) for i in range(dist.get_world_size(pg)))
+    try:
+        return tuple(global_to_parent[global_rank] for global_rank in group_global_ranks)
+    except KeyError as exc:
+        raise ValueError(
+            f"process-group rank {exc.args[0]} is outside the NVSHMEM bootstrap group {bootstrap_global_ranks}"
+        ) from exc
+
+
 def _ranks_to_strided(ranks):
     """Return (start, stride, size) for an arithmetic rank list, or raise."""
     if len(ranks) == 0:
@@ -156,7 +245,7 @@ def _ranks_to_strided(ranks):
     for a, b in zip(ranks, ranks[1:]):
         if b - a != stride:
             raise ValueError(
-                f"process-group ranks {list(ranks)} are not strided "
+                f"process-group parent PEs {list(ranks)} are not strided "
                 f"(diffs vary); nvshmem team build requires arithmetic stride"
             )
     return ranks[0], stride, len(ranks)
@@ -165,35 +254,41 @@ def _ranks_to_strided(ranks):
 def team_from_pg(pg: "torch.distributed.ProcessGroup") -> int:
     """Build an NVSHMEM team that mirrors a torch process group.
 
-    Collective across ``dist.group.WORLD`` — every NVSHMEM PE must call this with
-    its own local ``pg``. The union of all callers' ``pg`` memberships must
-    partition WORLD.
+    Collective across the process group used by :func:`init_from_pg` — every
+    NVSHMEM PE must call this with its own local ``pg``. The union of all
+    callers' ``pg`` memberships must partition that bootstrap group.
 
-    The group's global ranks must form an arithmetic sequence (Megatron's
-    parallel_state always produces such ranks); otherwise ValueError is raised on
-    all ranks. Returns the NVSHMEM team handle for the caller's subgroup.
+    The group's ranks, after translation into bootstrap-group PE numbering, must
+    form an arithmetic sequence. Returns the NVSHMEM team handle for the caller's
+    subgroup.
     """
     import torch.distributed as dist
 
     if not dist.is_initialized():
         raise RuntimeError("torch.distributed is not initialised")
 
-    my_group_ranks = tuple(sorted(dist.get_global_rank(pg, i) for i in range(dist.get_world_size(pg))))
+    bootstrap_pg, bootstrap_global_ranks = _bootstrap_context()
+    bootstrap_size = len(bootstrap_global_ranks)
+    my_group_parent_pes = _pg_parent_pes(pg)
+    my_parent_pe = dist.get_rank(bootstrap_pg)
 
-    world_size = dist.get_world_size()
-
-    # Short-circuit: if the group already covers all of WORLD, skip the
+    # Short-circuit: if the group already covers the bootstrap group, skip the
     # (collective) split — just return NVSHMEM_TEAM_WORLD. Avoids creating a team
     # that has to be destroyed before finalize.
-    if len(my_group_ranks) == world_size and tuple(my_group_ranks) == tuple(range(world_size)):
+    if my_group_parent_pes == tuple(range(bootstrap_size)):
         return tvm_ffi.team_world()
 
-    gathered = [None] * world_size
-    dist.all_gather_object(gathered, my_group_ranks)
+    gathered = [None] * bootstrap_size
+    dist.all_gather_object(gathered, my_group_parent_pes, group=bootstrap_pg)
 
     unique_groups = sorted({tuple(g) for g in gathered})
+    for caller_pe, group in enumerate(gathered):
+        if caller_pe not in group or any(tuple(gathered[member]) != tuple(group) for member in group):
+            raise ValueError(
+                "callers' process groups must form a consistent partition of "
+                f"the NVSHMEM bootstrap team; gathered parent-PE groups: {gathered}"
+            )
 
-    my_global_rank = dist.get_rank()
     my_handle = -1
     for group in unique_groups:
         start, stride, size = _ranks_to_strided(group)
@@ -201,37 +296,44 @@ def team_from_pg(pg: "torch.distributed.ProcessGroup") -> int:
         # across the parent team); each rank keeps the handle for the group it is
         # a member of.
         handle = tvm_ffi.team_split_strided(tvm_ffi.team_world(), start, stride, size)
-        if my_global_rank in group:
+        if my_parent_pe in group:
             my_handle = handle
 
     if my_handle == -1:
         raise RuntimeError(
-            f"team_from_pg: rank {my_global_rank} did not land in any group (gathered groups: {unique_groups})"
+            f"team_from_pg: parent PE {my_parent_pe} did not land in any group (gathered groups: {unique_groups})"
         )
     return my_handle
 
 
-# Cache: id(pg) -> NVSHMEM team handle. team_from_pg is collective and kicks off
-# an all_gather_object for non-WORLD groups, so we resolve once per ProcessGroup.
-# id-based keying avoids requiring ProcessGroup to be hashable; entries become
-# stale only if a pg is destroyed and a new pg happens to land at the same id,
-# which is rare in practice.
-_PG_TEAM_CACHE: dict[int, int] = {}
-
-
-def resolve_team(pg: Optional["torch.distributed.ProcessGroup"]) -> int:
+def resolve_team(pg: Optional["torch.distributed.ProcessGroup"], *, create: bool = True) -> int:
     """Return the NVSHMEM team handle for ``pg`` (cached per ProcessGroup).
 
     ``pg=None`` maps to ``NVSHMEM_TEAM_WORLD``. On a single-PE NVSHMEM job that
     means no remote work; on a multi-PE job the kernel routes across every PE in
     WORLD — pass an explicit ``pg`` to scope the routing.
+
+    Creating a non-WORLD team is collective across the NVSHMEM bootstrap group.
+    Call this function with its default ``create=True`` during distributed setup
+    on every bootstrap PE. Runtime paths such as MoE forward use ``create=False``
+    and fail rather than starting an unexpected collective.
     """
     if pg is None:
+        return tvm_ffi.team_world()
+
+    parent_pes = _pg_parent_pes(pg)
+    if parent_pes == tuple(range(len(_bootstrap_context()[1]))):
         return tvm_ffi.team_world()
 
     key = id(pg)
     handle = _PG_TEAM_CACHE.get(key)
     if handle is None:
+        if not create:
+            raise RuntimeError(
+                "NVSHMEM team is not initialized for this process group; call "
+                "liger_cute_kernels.nvshmem.resolve_team(pg) collectively during "
+                "distributed setup before invoking the MoE forward path"
+            )
         handle = team_from_pg(pg)
         _PG_TEAM_CACHE[key] = handle
     return handle

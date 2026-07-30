@@ -32,25 +32,24 @@ tvm_ffi = _load_tvm_ffi()
 
 
 def _resolve_team(pg: Optional["ProcessGroup"]) -> int:
-    """Translate the expert-parallel ``ProcessGroup`` into an NVSHMEM team handle.
+    """Return the NVSHMEM team prepared for the expert-parallel process group.
 
-    ``pg=None`` maps to ``NVSHMEM_TEAM_WORLD``. ``resolve_team`` caches per
-    ProcessGroup, so the underlying collective (``team_from_pg``'s
-    all_gather_object for non-WORLD groups) runs at most once per group — the
-    cached handle is what later/captured calls see.
+    ``pg=None`` and a process group spanning the NVSHMEM bootstrap team map to
+    ``NVSHMEM_TEAM_WORLD`` without a collective. A proper subgroup must have
+    been cached explicitly with ``liger_cute_kernels.nvshmem.resolve_team(pg)``
+    during distributed setup; forward never creates a team collectively.
     """
     from liger_cute_kernels.nvshmem import resolve_team
 
-    return resolve_team(pg)
+    return resolve_team(pg, create=False)
 
 
 class LigerExpertParallelFusedMoEFunction(torch.autograd.Function):
     """Autograd wrapper around the fused expert-parallel MoE fwd/bwd kernels.
 
-    Takes the expert-parallel ``ProcessGroup`` directly and translates it into an
-    NVSHMEM team inside ``forward``; the resolved team handle is stashed on
-    ``ctx`` so ``backward`` reuses it rather than re-running the (collective)
-    translation.
+    Takes the expert-parallel ``ProcessGroup`` directly and looks up its
+    previously prepared NVSHMEM team inside ``forward``. The handle is stashed
+    on ``ctx`` so ``backward`` reuses it.
 
     The forward always uses the with-intermediates kernel and saves every tensor
     bwd consumes on ``ctx``. The no-grad fast path is handled in ``moe_fused``
@@ -175,10 +174,10 @@ def moe_fused(
     """Fused expert-parallel MoE forward with autograd support.
 
     ``pg`` is the expert-parallel process group whose ranks hold the remote
-    experts. The default ``pg=None`` runs purely local — the kernel uses
-    ``NVSHMEM_TEAM_WORLD`` and on single-PE jobs that means no cross-rank
-    traffic. For multi-rank EP the caller should pass the EP group; the resulting
-    NVSHMEM team is cached per ``ProcessGroup`` (``team_from_pg`` is collective).
+    experts. The default ``pg=None`` uses ``NVSHMEM_TEAM_WORLD``. Before passing
+    a proper subgroup, every NVSHMEM PE must collectively prepare it during
+    distributed setup with ``liger_cute_kernels.nvshmem.resolve_team(pg)``.
+    Forward only reads that cache and never starts a process-group collective.
 
     Returns the combined output ``Y`` of shape ``X.shape``. Under
     ``torch.no_grad()`` (or when no input requires grad) the symmetric memory
