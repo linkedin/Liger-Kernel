@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import sys
 
@@ -314,7 +315,18 @@ def _patch_apply_rotary_pos_emb() -> None:
 
     from liger_kernel.megatron.rope import liger_apply_rotary_pos_emb_bshd
 
-    def liger_apply_rotary_pos_emb(t, freqs, config, cu_seqlens=None, mscale=1.0, cp_group=None):
+    original_parameters = inspect.signature(original).parameters
+    original_accepts_mla_interleaving = "mla_rotary_interleaved" in original_parameters
+
+    def liger_apply_rotary_pos_emb(
+        t,
+        freqs,
+        config,
+        cu_seqlens=None,
+        mscale=1.0,
+        cp_group=None,
+        mla_rotary_interleaved=False,
+    ):
         # Route only the standard unfused bshd path to Liger; everything else
         # (fused TE/Apex RoPE, packed thd, interleaved, multi-latent attention,
         # mscale scaling, per-batch/mRoPE freqs) falls back to native so we
@@ -324,12 +336,20 @@ def _patch_apply_rotary_pos_emb() -> None:
             or mscale != 1.0
             or getattr(config, "apply_rope_fusion", False)
             or getattr(config, "rotary_interleaved", False)
+            or bool(mla_rotary_interleaved)
             or getattr(config, "multi_latent_attention", False)
             or freqs.shape[1] != 1
             or freqs.shape[2] != 1
         )
         if unsupported:
-            return original(t, freqs, config, cu_seqlens=cu_seqlens, mscale=mscale, cp_group=cp_group)
+            fallback_kwargs = {
+                "cu_seqlens": cu_seqlens,
+                "mscale": mscale,
+                "cp_group": cp_group,
+            }
+            if original_accepts_mla_interleaving:
+                fallback_kwargs["mla_rotary_interleaved"] = mla_rotary_interleaved
+            return original(t, freqs, config, **fallback_kwargs)
         return liger_apply_rotary_pos_emb_bshd(t, freqs)
 
     setattr(liger_apply_rotary_pos_emb, _PATCH_MARKER, True)

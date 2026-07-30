@@ -194,7 +194,11 @@ def _install_fake_megatron_rms_norm(
 _NATIVE_ROPE_SENTINEL = object()
 
 
-def _install_fake_megatron_rope(with_symbol: bool = True, with_consumer: bool = True):
+def _install_fake_megatron_rope(
+    with_symbol: bool = True,
+    with_consumer: bool = True,
+    with_mla_interleaving_parameter: bool = True,
+):
     """Install the RoPE slice of the Megatron stub.
 
     Returns ``(rope_utils_module, attention_module)`` so tests can inspect the
@@ -211,11 +215,37 @@ def _install_fake_megatron_rope(with_symbol: bool = True, with_consumer: bool = 
         "megatron.core.models.common.embeddings"
     )
     rope_utils = types.ModuleType("megatron.core.models.common.embeddings.rope_utils")
+    rope_utils._last_call = None
 
     if with_symbol:
+        if with_mla_interleaving_parameter:
 
-        def original_apply_rotary_pos_emb(t, freqs, config, cu_seqlens=None, mscale=1.0, cp_group=None):
-            return _NATIVE_ROPE_SENTINEL
+            def original_apply_rotary_pos_emb(
+                t,
+                freqs,
+                config,
+                cu_seqlens=None,
+                mscale=1.0,
+                cp_group=None,
+                mla_rotary_interleaved=False,
+            ):
+                rope_utils._last_call = {
+                    "cu_seqlens": cu_seqlens,
+                    "mscale": mscale,
+                    "cp_group": cp_group,
+                    "mla_rotary_interleaved": mla_rotary_interleaved,
+                }
+                return _NATIVE_ROPE_SENTINEL
+
+        else:
+
+            def original_apply_rotary_pos_emb(t, freqs, config, cu_seqlens=None, mscale=1.0, cp_group=None):
+                rope_utils._last_call = {
+                    "cu_seqlens": cu_seqlens,
+                    "mscale": mscale,
+                    "cp_group": cp_group,
+                }
+                return _NATIVE_ROPE_SENTINEL
 
         rope_utils.apply_rotary_pos_emb = original_apply_rotary_pos_emb
 
@@ -1244,6 +1274,47 @@ def test_rope_patch_delegates_unsupported_paths_to_native(fake_megatron_rope, kw
 
     result = rope_utils.apply_rotary_pos_emb(t, freqs, _rope_config(**config_kwargs), **call_kwargs)
     assert result is _NATIVE_ROPE_SENTINEL
+
+
+def test_rope_patch_delegates_mla_interleaving_to_native(fake_megatron_rope):
+    """Current Megatron passes MLA interleaving as a call-time argument."""
+    rope_utils, _ = fake_megatron_rope
+    from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+    apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+
+    t = torch.zeros(4, 1, 2, 8)
+    freqs = torch.zeros(4, 1, 1, 8)
+    result = rope_utils.apply_rotary_pos_emb(
+        t,
+        freqs,
+        _rope_config(),
+        mla_rotary_interleaved=True,
+    )
+
+    assert result is _NATIVE_ROPE_SENTINEL
+    assert rope_utils._last_call["mla_rotary_interleaved"] is True
+
+
+def test_rope_patch_delegates_with_older_megatron_signature():
+    """Fallback remains compatible with Megatron versions predating the MLA argument."""
+    rope_utils, _ = _install_fake_megatron_rope(with_mla_interleaving_parameter=False)
+    try:
+        from liger_kernel.megatron import apply_liger_kernel_to_megatron
+
+        apply_liger_kernel_to_megatron(rms_norm=False, rope=True)
+
+        t = torch.zeros(4, 1, 2, 8)
+        freqs = torch.zeros(4, 1, 1, 8)
+        result = rope_utils.apply_rotary_pos_emb(
+            t,
+            freqs,
+            _rope_config(apply_rope_fusion=True),
+        )
+
+        assert result is _NATIVE_ROPE_SENTINEL
+    finally:
+        _uninstall_fake_megatron()
 
 
 def test_rope_patch_delegates_per_batch_freqs_to_native(fake_megatron_rope):

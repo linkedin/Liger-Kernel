@@ -98,17 +98,17 @@ You can also use the Patching APIs to use the kernels for a specific model archi
 
 Liger also exposes a patch for the [Megatron-LM](https://github.com/NVIDIA/Megatron-LM)
 training framework, replacing Megatron's native RMSNorm and both vocab-parallel
-cross-entropy paths (fused and unfused) with Liger's Triton kernels.
+cross-entropy paths (fused and unfused), and standard unfused RoPE with Liger's
+Triton kernels.
 
-| **Framework** | **API**                                                | **Supported Operations** |
-|---------------|--------------------------------------------------------|--------------------------|
-| Megatron-LM   | `liger_kernel.megatron.apply_liger_kernel_to_megatron` | RMSNorm, CrossEntropyLoss |
+| **Framework** | **API**                                                | **Supported Operations**       |
+|---------------|--------------------------------------------------------|--------------------------------|
+| Megatron-LM   | `liger_kernel.megatron.apply_liger_kernel_to_megatron` | RMSNorm, CrossEntropyLoss, RoPE |
 
-**Scope**: Initial release supports `tensor_model_parallel_size=1` only for
-cross-entropy. Vocab-parallel cross-entropy (TP>1) is follow-up work — with
-TP>1, each rank holds a sharded `[N, V/tp]` logits slice and cross-entropy
-requires cross-rank all-reduces that Liger's kernel does not perform. The
-patch raises a `RuntimeError` at patch time or call time if TP>1 is detected.
+**Scope**: Vocab-parallel cross-entropy supports all tensor-parallel sizes.
+RoPE uses Liger for the standard unfused `bshd` path; fused RoPE, packed `thd`
+sequences, interleaved rotation, multi-latent attention, YaRN scaling, and
+per-batch mRoPE frequencies fall back to Megatron's native implementation.
 
 **Usage**:
 
@@ -117,13 +117,15 @@ from liger_kernel.megatron import apply_liger_kernel_to_megatron
 
 # Call before Megatron's forward pass reaches compute_language_model_loss.
 # Defaults match Megatron's native CE behavior; no CE-specific config needed.
-apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True)
+apply_liger_kernel_to_megatron(rms_norm=True, cross_entropy=True, rope=True)
 ```
 
 Both the fused (`config.cross_entropy_loss_fusion=True`,
 `cross_entropy_fusion_impl='native'`) and unfused
 (`config.cross_entropy_loss_fusion=False`) CE paths are patched in a single
 call, so Megatron picks up Liger regardless of which path your config selects.
+The RoPE patch similarly updates Megatron's dispatcher and all already-imported
+copies of it, while preserving native behavior for unsupported RoPE variants.
 
 For training setups that need explicit kernel configuration (custom
 `ignore_index`, `label_smoothing`, etc.), instantiate
